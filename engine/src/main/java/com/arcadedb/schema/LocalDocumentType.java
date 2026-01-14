@@ -946,8 +946,8 @@ public class LocalDocumentType implements DocumentType {
 
     bucketSelectionStrategy.setType(this);
 
-    // AUTOMATICALLY CREATES THE INDEX ON THE NEW BUCKET
-    final Collection<TypeIndex> existentIndexes = getAllIndexes(false);
+    // AUTOMATICALLY CREATES THE INDEX ON THE NEW BUCKET (INCLUDING INHERITED INDEXES FROM PARENT TYPES)
+    final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
 
     if (!existentIndexes.isEmpty()) {
       schema.getDatabase().transaction(() -> {
@@ -972,8 +972,8 @@ public class LocalDocumentType implements DocumentType {
     bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getFileId());
     cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
 
-    // AUTOMATICALLY DROP THE INDEX ON THE REMOVED BUCKET
-    final Collection<TypeIndex> existentIndexes = getAllIndexes(false);
+    // AUTOMATICALLY DROP THE INDEX ON THE REMOVED BUCKET (INCLUDING INHERITED INDEXES FROM PARENT TYPES)
+    final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
 
     if (!existentIndexes.isEmpty()) {
       schema.getDatabase().transaction(() -> {
