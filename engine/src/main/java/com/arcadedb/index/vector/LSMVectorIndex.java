@@ -270,7 +270,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           builder.getPageSize(), vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(), vectorBuilder.dimensions,
           vectorBuilder.similarityFunction, vectorBuilder.maxConnections, vectorBuilder.beamWidth, vectorBuilder.idPropertyName,
           vectorBuilder.quantizationType, vectorBuilder.locationCacheSize, vectorBuilder.graphBuildCacheSize,
-          vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph);
+          vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph, vectorBuilder.addHierarchy);
     }
   }
 
@@ -294,7 +294,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int pageSize, final String typeName, final String[] propertyNames, final int dimensions,
       final VectorSimilarityFunction similarityFunction, final int maxConnections, final int beamWidth, final String idPropertyName,
       final VectorQuantizationType quantizationType, final int locationCacheSize, final int graphBuildCacheSize,
-      final int mutationsBeforeRebuild, final boolean storeVectorsInGraph) {
+      final int mutationsBeforeRebuild, final boolean storeVectorsInGraph, final boolean addHierarchy) {
     try {
       this.indexName = name;
 
@@ -309,6 +309,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.metadata.graphBuildCacheSize = graphBuildCacheSize;
       this.metadata.mutationsBeforeRebuild = mutationsBeforeRebuild;
       this.metadata.storeVectorsInGraph = storeVectorsInGraph;
+      this.metadata.addHierarchy = addHierarchy;
 
       this.lock = new ReentrantReadWriteLock();
       this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
@@ -1115,12 +1116,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Build the graph index (parallel operation - no lock held)
       final ImmutableGraphIndex builtGraph;
-      try (final GraphIndexBuilder builder = new GraphIndexBuilder(scoreProvider, metadata.dimensions,
+      try (final GraphIndexBuilder builder = new GraphIndexBuilder(
+          scoreProvider,
+          metadata.dimensions,
           metadata.maxConnections,  // M parameter (graph degree)
           metadata.beamWidth,       // efConstruction (construction search depth)
           metadata.neighborOverflowFactor,    // neighbor overflow factor (default: 1.2)
           metadata.alphaDiversityRelaxation,  // alpha diversity relaxation (default: 1.2)
-          false,           // no distance transform
+          metadata.addHierarchy,
           true)) {         // enable concurrent updates
 
         // Start progress monitoring thread if callback provided

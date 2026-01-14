@@ -33,7 +33,9 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   protected TypeLSMVectorIndexBuilder(final TypeIndexBuilder copyFrom) {
     super(copyFrom.database, copyFrom.metadata.typeName, copyFrom.metadata.propertyNames.toArray(new String[0]));
 
-    this.metadata = new LSMVectorIndexMetadata(copyFrom.metadata.typeName, copyFrom.metadata.propertyNames.toArray(new String[0]),
+    this.metadata = new LSMVectorIndexMetadata(
+        copyFrom.metadata.typeName,
+        copyFrom.metadata.propertyNames.toArray(new String[0]),
         copyFrom.metadata.associatedBucketId);
 
     this.indexType = Schema.INDEX_TYPE.LSM_VECTOR;
@@ -163,6 +165,18 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Sets whether to add hierarchical layers to the HNSW graph.
+   * Enabling hierarchy can improve search performance at the cost of increased index size and build time.
+   * Default is true.
+   *
+   * @param addHierarchy true to add hierarchy, false otherwise
+   */
+  public TypeLSMVectorIndexBuilder withAddHierarchy(final Boolean addHierarchy) {
+    ((LSMVectorIndexMetadata) metadata).addHierarchy = addHierarchy;
+    return this;
+  }
+
+  /**
    * Sets the quantization type for vector compression by string name.
    *
    * @param quantization the quantization type name (NONE, INT8, BINARY)
@@ -183,10 +197,10 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   public void withMetadata(final JSONObject json) {
-    final LSMVectorIndexMetadata v = ((LSMVectorIndexMetadata) metadata);
+    final LSMVectorIndexMetadata meta = ((LSMVectorIndexMetadata) metadata);
 
     if (json.has("dimensions"))
-      v.dimensions = json.getInt("dimensions");
+      meta.dimensions = json.getInt("dimensions");
 
     if (json.has("similarity"))
       withSimilarity(json.getString("similarity"));
@@ -195,31 +209,34 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
       withQuantization(json.getString("quantization"));
 
     if (json.has("maxConnections"))
-      v.maxConnections = json.getInt("maxConnections");
+      meta.maxConnections = json.getInt("maxConnections");
 
     if (json.has("beamWidth"))
-      v.beamWidth = json.getInt("beamWidth");
+      meta.beamWidth = json.getInt("beamWidth");
 
     if (json.has("neighborOverflowFactor"))
-      v.neighborOverflowFactor = ((Number) json.get("neighborOverflowFactor")).floatValue();
+      meta.neighborOverflowFactor = ((Number) json.get("neighborOverflowFactor")).floatValue();
 
     if (json.has("alphaDiversityRelaxation"))
-      v.alphaDiversityRelaxation = ((Number) json.get("alphaDiversityRelaxation")).floatValue();
+      meta.alphaDiversityRelaxation = ((Number) json.get("alphaDiversityRelaxation")).floatValue();
 
     if (json.has("idPropertyName"))
-      v.idPropertyName = json.getString("idPropertyName");
+      meta.idPropertyName = json.getString("idPropertyName");
 
     // Phase 2: New configuration options
     if (json.has("locationCacheSize"))
-      v.locationCacheSize = json.getInt("locationCacheSize");
+      meta.locationCacheSize = json.getInt("locationCacheSize");
 
     if (json.has("graphBuildCacheSize"))
-      v.graphBuildCacheSize = json.getInt("graphBuildCacheSize");
+      meta.graphBuildCacheSize = json.getInt("graphBuildCacheSize");
 
     if (json.has("mutationsBeforeRebuild"))
-      v.mutationsBeforeRebuild = json.getInt("mutationsBeforeRebuild");
+      meta.mutationsBeforeRebuild = json.getInt("mutationsBeforeRebuild");
 
     if (json.has("storeVectorsInGraph"))
-      v.storeVectorsInGraph = json.getBoolean("storeVectorsInGraph");
+      meta.storeVectorsInGraph = json.getBoolean("storeVectorsInGraph");
+
+    if (json.has("addHierarchy"))
+      meta.addHierarchy = json.getBoolean("addHierarchy");
   }
 }
