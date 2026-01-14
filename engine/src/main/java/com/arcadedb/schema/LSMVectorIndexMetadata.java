@@ -34,6 +34,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      mutationsBeforeRebuild   = -1; // -1 = use global default
   public boolean                  storeVectorsInGraph      = false; // Phase 2: Store vectors inline in graph file
   public boolean                  addHierarchy             = false;
+  public String                   buildState               = "READY"; // BUILDING, READY, or INVALID
 
   public LSMVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);
@@ -84,6 +85,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("addHierarchy"))
       this.addHierarchy = metadata.getBoolean("addHierarchy");
+
+    if (metadata.has("buildState"))
+      this.buildState = metadata.getString("buildState");
 
   }
 }

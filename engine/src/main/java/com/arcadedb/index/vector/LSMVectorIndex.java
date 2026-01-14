@@ -119,6 +119,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     MUTABLE     // OnHeapGraphIndex - in memory, accepting incremental updates
   }
 
+  // Index build state (for crash recovery and WAL bypass safety)
+  public enum BUILD_STATE {
+    BUILDING,  // Index is being created/rebuilt with WAL disabled
+    READY,     // Index is complete and ready for use
+    INVALID    // Build was interrupted by crash, needs manual REBUILD INDEX
+  }
+
   private volatile GraphState                    graphState;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
@@ -141,6 +148,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final int                     minPagesToScheduleACompaction;
   private       LSMVectorIndexCompacted compactedSubIndex;
   private       boolean                 valid = true;
+  private volatile BUILD_STATE          buildState = BUILD_STATE.READY;
 
   // Page tracking for inserts (avoids getTotalPages() issue with transaction-local pages)
   // Protected by write lock, reset to -1 after transaction commits or graph rebuilds
@@ -416,6 +424,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
     LogManager.instance()
         .log(this, Level.SEVERE, "loadVectorsAfterSchemaLoad called for index %s: dimensions=%d, mutablePages=%d, hasGraphFile=%s",
             indexName, metadata.dimensions, mutable.getTotalPages(), graphFile != null);
+
+    // CRASH RECOVERY: Check if index was BUILDING when database crashed/shutdown
+    try {
+      final BUILD_STATE loadedState = BUILD_STATE.valueOf(this.metadata.buildState);
+      if (loadedState == BUILD_STATE.BUILDING) {
+        // Index was being built when database crashed/shutdown
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector index '%s' was BUILDING during last shutdown. Marking as INVALID. " +
+                "Run 'REBUILD INDEX %s' to recover.", indexName, indexName);
+
+        this.buildState = BUILD_STATE.INVALID;
+        this.metadata.buildState = BUILD_STATE.INVALID.name();
+
+        // Persist INVALID state immediately
+        try {
+          getDatabase().getSchema().getEmbedded().saveConfiguration();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to persist INVALID state for index '%s' after crash detection", e, indexName);
+        }
+      } else {
+        this.buildState = loadedState;
+      }
+    } catch (final Exception e) {
+      // Old index without buildState field - assume READY
+      this.buildState = BUILD_STATE.READY;
+      this.metadata.buildState = BUILD_STATE.READY.name();
+    }
 
     // Only load vectors if we have valid metadata (dimensions > 0) and pages exist
     if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
@@ -2193,6 +2229,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       throw new IllegalArgumentException(
           "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
+    // Ensure index is ready (not BUILDING or INVALID)
+    ensureIndexReady();
+
     final int k = limit > 0 ? limit : 10; // Default to top 10 results
 
     // Ensure graph is available (lazy-load from disk if needed)
@@ -2618,7 +2657,54 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public boolean isValid() {
-    return true; // Index is always valid unless explicitly dropped
+    return valid && buildState != BUILD_STATE.INVALID;
+  }
+
+  /**
+   * Ensures the index is in READY state before allowing queries.
+   * Throws IndexException if index is BUILDING or INVALID.
+   */
+  private void ensureIndexReady() {
+    if (buildState == BUILD_STATE.INVALID) {
+      throw new IndexException("Index '" + indexName +
+          "' is INVALID due to interrupted build. Run 'REBUILD INDEX " + indexName + "' to fix.");
+    }
+    if (buildState == BUILD_STATE.BUILDING) {
+      throw new IndexException("Index '" + indexName +
+          "' is currently being built. Wait for build to complete.");
+    }
+  }
+
+  /**
+   * Persists the build state to metadata and schema.
+   * Called during index build lifecycle to track state across restarts.
+   */
+  private void persistBuildState(final BUILD_STATE state) {
+    this.buildState = state;
+    this.metadata.buildState = state.name();
+    // Force schema save to persist state immediately
+    try {
+      getDatabase().getSchema().getEmbedded().saveConfiguration();
+    } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Failed to persist build state %s for index %s", e, state, indexName);
+      throw new IndexException("Failed to persist build state for index '" + indexName + "'", e);
+    }
+  }
+
+  /**
+   * FOR TESTING ONLY: Simulates a crash by setting build state to BUILDING.
+   * This is used by tests to verify crash recovery logic.
+   */
+  void simulateCrashForTest() {
+    persistBuildState(BUILD_STATE.BUILDING);
+  }
+
+  /**
+   * FOR TESTING ONLY: Marks index as INVALID for testing query blocking.
+   */
+  void markInvalidForTest() {
+    persistBuildState(BUILD_STATE.INVALID);
   }
 
   @Override
@@ -2723,6 +2809,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("beamWidth", metadata.beamWidth);
     json.put("idPropertyName", metadata.idPropertyName);
     json.put("storeVectorsInGraph", metadata.storeVectorsInGraph);
+    json.put("addHierarchy", metadata.addHierarchy);
+    json.put("buildState", metadata.buildState);
     json.put("version", CURRENT_VERSION);
 
     return json;
@@ -2950,8 +3038,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * Build the vector index with optional graph building progress callback.
+   * Uses WAL bypass and transaction chunking for efficient bulk loading.
    *
-   * @param buildIndexBatchSize Batch size for committing during index build
+   * @param buildIndexBatchSize Batch size for committing during index build (ignored, uses chunk-based commits)
    * @param callback            Callback for document indexing progress
    * @param graphCallback       Callback for graph building progress
    *
@@ -2964,67 +3053,66 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
         try {
-          final AtomicInteger total = new AtomicInteger();
-          final long LOG_INTERVAL = 10000; // Log every 10K records
-          final long startTime = System.currentTimeMillis();
-
-          if (metadata.propertyNames == null || metadata.propertyNames.isEmpty())
-            throw new IndexException("Cannot rebuild vector index '" + indexName + "' because property names are missing");
-
-          LogManager.instance()
-              .log(this, Level.INFO, "Building vector index '%s' on %d properties...", indexName, metadata.propertyNames.size());
-
           final DatabaseInternal db = getDatabase();
 
-          // Check if we need to start a transaction
+          // PHASE 1: Mark index as BUILDING and disable WAL
+          persistBuildState(BUILD_STATE.BUILDING);
+
           final boolean startedTransaction =
               db.getTransaction().getStatus() != TransactionContext.STATUS.BEGUN;
           if (startedTransaction)
             db.getWrappedDatabaseInstance().begin();
 
+          // Save original WAL setting and disable for bulk load
+          final boolean originalWAL = db.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
+          db.getTransaction().setUseWAL(false);
+
+          LogManager.instance().log(this, Level.INFO,
+              "Building vector index '%s' with WAL disabled and transaction chunking...", indexName);
+
           try {
-            // Scan the bucket and index all documents
-            db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
-              db.getIndexer().addToIndex(LSMVectorIndex.this, record.getIdentity(), (Document) record);
-              total.incrementAndGet();
+            // PHASE 2: Bulk load vector data with chunking
+            totalRecords = bulkLoadVectorData(callback);
 
-              // Periodic progress logging
-              if (total.get() % LOG_INTERVAL == 0) {
-                final long elapsed = System.currentTimeMillis() - startTime;
-                final double rate = total.get() / (elapsed / 1000.0);
-                LogManager.instance()
-                    .log(this, Level.INFO, "Building vector index '%s': processed %d records (%.0f records/sec)...", indexName,
-                        total.get(), rate);
-              }
+            // PHASE 3: Build and persist graph with chunking
+            if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
+              buildGraphWithChunking(graphCallback);
+            }
 
-              if (total.get() % buildIndexBatchSize == 0) {
-                // Commit in batches
-                db.getWrappedDatabaseInstance().commit();
-                db.getWrappedDatabaseInstance().begin();
-              }
-
-              if (callback != null)
-                callback.onDocumentIndexed((Document) record, total.get());
-
-              return true;
-            });
-
-            // Final commit if we started a transaction
+            // PHASE 4: Final commit and mark READY
             if (startedTransaction)
               db.getWrappedDatabaseInstance().commit();
 
-            // Completion logging
-            final long elapsed = System.currentTimeMillis() - startTime;
-            LogManager.instance()
-                .log(this, Level.INFO, "Completed building vector index '%s': processed %d records in %dms", indexName, total.get(),
-                    elapsed);
+            persistBuildState(BUILD_STATE.READY);
 
-            totalRecords = total.get();
-          } catch (final Exception e) {
-            // Rollback if we started a transaction
+            LogManager.instance().log(this, Level.INFO,
+                "Vector index '%s' build complete: %d records, state=READY", indexName, totalRecords);
+
+          } catch (final IOException e) {
+            // On IO error during graph building: rollback and mark INVALID
             if (startedTransaction && db.getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
               db.getWrappedDatabaseInstance().rollback();
+
+            persistBuildState(BUILD_STATE.INVALID);
+
+            LogManager.instance().log(this, Level.SEVERE,
+                "Vector index '%s' build FAILED (I/O error), marked INVALID: %s", e, indexName, e.getMessage());
+            throw new IndexException("Failed to build vector index '" + indexName + "' due to I/O error", e);
+
+          } catch (final Exception e) {
+            // On other error: rollback and mark INVALID
+            if (startedTransaction && db.getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
+              db.getWrappedDatabaseInstance().rollback();
+
+            persistBuildState(BUILD_STATE.INVALID);
+
+            LogManager.instance().log(this, Level.SEVERE,
+                "Vector index '%s' build FAILED, marked INVALID: %s", e, indexName, e.getMessage());
             throw e;
+
+          } finally {
+            // RESTORE WAL setting
+            db.getTransaction().setUseWAL(originalWAL);
           }
 
         } finally {
@@ -3036,19 +3124,145 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().unlock();
     }
 
-    // After index build completes, build and persist the graph
-    // This ensures the graph is ready for searches and persisted for fast restart
-    if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
-      LogManager.instance().log(this, Level.INFO, "Building graph after index build for: " + indexName);
-      try {
-        buildGraphFromScratch(graphCallback);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Failed to build graph after index build: " + e.getMessage(), e);
-        // Don't fail the whole index build if graph building fails
+    return totalRecords;
+  }
+
+  /**
+   * Bulk load vector data with transaction chunking to avoid memory/size limits.
+   * Called during index build with WAL disabled.
+   *
+   * @param callback Callback for document indexing progress
+   * @return Total number of vectors loaded
+   */
+  private long bulkLoadVectorData(final BuildIndexCallback callback) {
+    final AtomicInteger total = new AtomicInteger();
+    final long LOG_INTERVAL = 10000;
+    final long startTime = System.currentTimeMillis();
+    final DatabaseInternal db = getDatabase();
+
+    if (metadata.propertyNames == null || metadata.propertyNames.isEmpty())
+      throw new IndexException("Cannot rebuild vector index '" + indexName + "' because property names are missing");
+
+    // Get chunk size from configuration (default 50MB)
+    final long chunkSizeMB = db.getConfiguration()
+        .getValueAsLong(GlobalConfiguration.INDEX_BUILD_CHUNK_SIZE_MB);
+    final long chunkSizeBytes = chunkSizeMB * 1024 * 1024;
+
+    LogManager.instance().log(this, Level.INFO,
+        "Building vector index '%s' with %dMB chunk size (WAL disabled)...", indexName, chunkSizeMB);
+
+    // Track bytes written for chunking
+    final AtomicLong bytesInCurrentChunk = new AtomicLong(0);
+
+    // Scan the bucket and index all documents
+    db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
+      // Add to index
+      db.getIndexer().addToIndex(LSMVectorIndex.this, record.getIdentity(), (Document) record);
+      total.incrementAndGet();
+
+      // Estimate bytes written (rough approximation)
+      // Each vector: dimensions * 4 bytes + metadata overhead
+      final long estimatedBytes = (long) metadata.dimensions * 4 + 32;
+      bytesInCurrentChunk.addAndGet(estimatedBytes);
+
+      // Periodic logging
+      if (total.get() % LOG_INTERVAL == 0) {
+        final long elapsed = System.currentTimeMillis() - startTime;
+        final double rate = total.get() / (elapsed / 1000.0);
+        LogManager.instance().log(this, Level.INFO,
+            "Building vector index '%s': %d records (%.0f rec/sec), chunk: %.1fMB...",
+            indexName, total.get(), rate, bytesInCurrentChunk.get() / (1024.0 * 1024.0));
       }
+
+      // Chunk boundary: commit and start new transaction
+      if (bytesInCurrentChunk.get() >= chunkSizeBytes) {
+        LogManager.instance().log(this, Level.INFO,
+            "Committing chunk: %.1fMB written, %d vectors...",
+            bytesInCurrentChunk.get() / (1024.0 * 1024.0), total.get());
+
+        db.getWrappedDatabaseInstance().commit();
+        db.getWrappedDatabaseInstance().begin();
+        db.getTransaction().setUseWAL(false); // Re-disable WAL for new transaction
+
+        bytesInCurrentChunk.set(0);
+      }
+
+      if (callback != null)
+        callback.onDocumentIndexed((Document) record, total.get());
+
+      return true;
+    });
+
+    final long elapsed = System.currentTimeMillis() - startTime;
+    LogManager.instance().log(this, Level.INFO,
+        "Completed loading vectors for index '%s': %d records in %dms (%.0f rec/sec)",
+        indexName, total.get(), elapsed, total.get() / (elapsed / 1000.0));
+
+    return total.get();
+  }
+
+  /**
+   * Build graph from vectors and persist with chunking support.
+   * Called during index build with WAL disabled.
+   *
+   * @param graphCallback Callback for graph building progress
+   */
+  private void buildGraphWithChunking(final GraphBuildCallback graphCallback) throws IOException {
+    LogManager.instance().log(this, Level.INFO,
+        "Building graph with transaction chunking for: %s", indexName);
+
+    final DatabaseInternal db = getDatabase();
+
+    // Get chunk size from configuration (default 50MB)
+    final long chunkSizeMB = db.getConfiguration()
+        .getValueAsLong(GlobalConfiguration.INDEX_BUILD_CHUNK_SIZE_MB);
+
+    // Track if we started the transaction (for graph building)
+    final boolean startedTransaction =
+        db.getTransaction().getStatus() != TransactionContext.STATUS.BEGUN;
+    if (startedTransaction) {
+      db.begin();
+      db.getTransaction().setUseWAL(false);
     }
 
-    return totalRecords;
+    try {
+      // Build graph from scratch (already reads from pages)
+      buildGraphFromScratchWithRetry(graphCallback);
+
+      // Persist graph with chunking callback
+      final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+        LogManager.instance().log(this, Level.INFO,
+            "Graph persistence chunk complete: %.1fMB written",
+            bytesWritten / (1024.0 * 1024.0));
+
+        // Commit current transaction
+        db.commit();
+
+        // Start new transaction and disable WAL
+        db.begin();
+        db.getTransaction().setUseWAL(false);
+      };
+
+      // Create vector values accessor for graph serialization
+      final String vectorProp =
+          metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+      final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
+          vectorIndex, ordinalToVectorId, this);
+
+      graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
+
+      // Final commit for graph
+      if (startedTransaction) {
+        db.commit();
+        LogManager.instance().log(this, Level.INFO,
+            "Graph persisted with chunking for index: %s", indexName);
+      }
+
+    } catch (final Exception e) {
+      if (startedTransaction)
+        db.rollback();
+      throw e;
+    }
   }
 
   @Override
