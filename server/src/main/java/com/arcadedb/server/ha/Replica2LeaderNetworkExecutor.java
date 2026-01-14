@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
@@ -309,6 +310,74 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   public void connect() {
+    final int maxAttempts = server.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS);
+    final long baseDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS);
+    final long maxDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS);
+
+    ConnectionException lastException = null;
+    final long startTime = System.currentTimeMillis();
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (attempt > 1) {
+          LogManager.instance().log(this, Level.INFO, "Connection attempt %d/%d to leader %s", attempt, maxAttempts, leader);
+        }
+
+        attemptConnect();
+
+        // Success - log total retry time if there were retries
+        if (attempt > 1) {
+          final long totalTime = System.currentTimeMillis() - startTime;
+          LogManager.instance().log(this, Level.INFO,
+              "Successfully connected to leader %s after %d attempts in %dms", leader, attempt, totalTime);
+        }
+        return;
+
+      } catch (final ServerIsNotTheLeaderException | ReplicationException e) {
+        // These exceptions should not trigger retry - they are logical errors, not connection issues
+        throw e;
+
+      } catch (final ConnectionException e) {
+        lastException = e;
+
+        if (attempt == maxAttempts) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to connect to leader %s after %d attempts in %dms",
+              leader, maxAttempts, System.currentTimeMillis() - startTime);
+          break;
+        }
+
+        // Check if shutdown was requested
+        if (shutdown) {
+          LogManager.instance().log(this, Level.INFO, "Connection retry aborted due to shutdown request");
+          throw e;
+        }
+
+        // Calculate delay with exponential backoff and jitter
+        final long exponentialDelay = baseDelayMs * (1L << (attempt - 1));
+        final long cappedDelay = Math.min(exponentialDelay, maxDelayMs);
+        final long jitter = (long) (cappedDelay * 0.1 * Math.random()); // 0-10% jitter
+        final long delayMs = cappedDelay + jitter;
+
+        LogManager.instance().log(this, Level.FINE,
+            "Connection attempt %d/%d failed: %s. Retrying in %dms...",
+            attempt, maxAttempts, e.getMessage(), delayMs);
+
+        try {
+          Thread.sleep(delayMs);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          LogManager.instance().log(this, Level.INFO, "Connection retry interrupted");
+          throw e;
+        }
+      }
+    }
+
+    // All attempts failed
+    throw lastException;
+  }
+
+  private void attemptConnect() {
     LogManager.instance().log(this, Level.INFO, "Connecting to leader %s", leader);
 
     try {

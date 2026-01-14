@@ -564,6 +564,15 @@ public enum GlobalConfiguration {
       "Flush policy for replication log. Options: 'no', 'yes_full', 'yes_nometadata'. Default is 'yes_nometadata'", String.class,
       "yes_nometadata", Set.of(new String[] { "no", "yes_full", "yes_nometadata" })),
 
+  HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS("arcadedb.ha.replicaConnectRetryMaxAttempts", SCOPE.SERVER,
+      "Maximum number of connection retry attempts when replica connects to leader. Default is 5", Integer.class, 5),
+
+  HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS("arcadedb.ha.replicaConnectRetryBaseDelayMs", SCOPE.SERVER,
+      "Base delay in milliseconds between connection retry attempts (uses exponential backoff). Default is 100ms", Long.class, 100L),
+
+  HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS("arcadedb.ha.replicaConnectRetryMaxDelayMs", SCOPE.SERVER,
+      "Maximum delay in milliseconds between connection retry attempts. Default is 5000ms (5 seconds)", Long.class, 5000L),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 
