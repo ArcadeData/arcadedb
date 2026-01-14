@@ -58,6 +58,8 @@ public class ContiguousPageWriter implements IndexWriter {
   private final int              fileId;
   private final int              pageSize;
   private final int              usablePageSize; // pageSize - BasePage.PAGE_HEADER_SIZE
+  private final long             commitEveryBytes;
+  private final boolean          allowChunkedCommits;
 
   // Reusable buffer to avoid allocations (max size is 8 bytes for long/double)
   private final byte[]     buffer;
@@ -67,14 +69,23 @@ public class ContiguousPageWriter implements IndexWriter {
   private long        logicalPosition;  // Contiguous logical address (no gaps)
   private MutablePage currentPage;
   private int         currentPageNum;
+  private long        lastCommitPosition;
 
   public ContiguousPageWriter(final DatabaseInternal database, final int fileId, final int pageSize) {
+    this(database, fileId, pageSize, 0L, false);
+  }
+
+  public ContiguousPageWriter(final DatabaseInternal database, final int fileId, final int pageSize, final long commitEveryBytes,
+      final boolean allowChunkedCommits) {
     this.database = database;
     this.fileId = fileId;
     this.pageSize = pageSize;
     this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
+    this.commitEveryBytes = commitEveryBytes;
+    this.allowChunkedCommits = allowChunkedCommits && commitEveryBytes > 0;
     this.logicalPosition = 0;
     this.currentPageNum = -1;
+    this.lastCommitPosition = 0;
 
     // Allocate reusable buffer once (8 bytes for largest primitive type)
     this.buffer = new byte[Binary.LONG_SERIALIZED_SIZE];
@@ -158,6 +169,9 @@ public class ContiguousPageWriter implements IndexWriter {
       offset += toWrite;
       length -= toWrite;
 
+      // Commit in chunks to keep WAL size under control when allowed
+      maybeCommitChunk();
+
       // If more data remains, next iteration writes to next page automatically
     }
   }
@@ -206,6 +220,29 @@ public class ContiguousPageWriter implements IndexWriter {
   public void close() {
     // No-op: pages are managed by PageManager
     currentPage = null;
+  }
+
+  private void maybeCommitChunk() throws IOException {
+    if (!allowChunkedCommits)
+      return;
+
+    if (commitEveryBytes <= 0)
+      return;
+
+    if ((logicalPosition - lastCommitPosition) < commitEveryBytes)
+      return;
+
+    try {
+      database.commit();
+      database.begin();
+      currentPage = null; // Force reload on next write
+      currentPageNum = -1;
+      lastCommitPosition = logicalPosition;
+      LogManager.instance()
+          .log(this, INFO, "Committed graph write chunk at logical position %d bytes (fileId=%d)", logicalPosition, fileId);
+    } catch (final Exception e) {
+      throw new IOException("Failed to commit chunk for graph write", e);
+    }
   }
 
   /**

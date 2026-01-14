@@ -88,6 +88,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public static final  String            FILE_EXT        = "lsmvecidx";
   public static final  int               CURRENT_VERSION = 0;
   public static final  int               DEF_PAGE_SIZE   = 262_144;
+  private static final long              GRAPH_PERSIST_COMMIT_BYTES_DEFAULT = 256L * 1024 * 1024; // 256MB chunks
   private static final VectorTypeSupport vts             = VectorizationProvider.getInstance().getVectorTypeSupport();
 
   // Page header layout constants
@@ -1204,7 +1205,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           getDatabase().begin();
 
         try {
-          graphFile.writeGraph(graphIndex, vectors);
+          graphFile.writeGraph(graphIndex, vectors, startedTransaction);
 
           // Report persistence completion
           if (graphCallback != null) {
@@ -1238,10 +1239,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // Ignore rollback errors
             }
           }
-          LogManager.instance()
-              .log(this, Level.SEVERE, "PERSIST: Failed to persist graph for %s: %s - %s", indexName, e.getClass().getSimpleName(),
-                  e.getMessage());
-          e.printStackTrace();
+            // Log full exception with stack trace into arcadedb.log to avoid losing details to stderr only
+            LogManager.instance().log(this, Level.SEVERE, "PERSIST: Failed to persist graph for %s", e, indexName);
           // Don't throw - allow the index to continue working, just won't have persisted graph
         }
       } else {
@@ -1255,6 +1254,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.SEVERE, "Error building graph from scratch", e);
       throw new IndexException("Error building graph from scratch", e);
     }
+  }
+
+  long getGraphPersistCommitBytes() {
+    final String prop = System.getProperty("arcadedb.vector.graph.commitBytes");
+    if (prop != null) {
+      try {
+        final long parsed = Long.parseLong(prop.trim());
+        return parsed > 0 ? parsed : 0L; // allow disabling by setting <= 0
+      } catch (final NumberFormatException ignore) {
+        // Fallback to default
+      }
+    }
+    return GRAPH_PERSIST_COMMIT_BYTES_DEFAULT;
   }
 
   /**

@@ -126,7 +126,10 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * - Caller is responsible for committing the transaction
    * - Graph data starts at page 0 (no metadata page needed - JVector format is self-describing)
    */
-  public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors) {
+  /**
+   * @param allowChunkedCommits if true, periodically commits during the write to keep WAL size bounded
+   */
+  public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors, final boolean allowChunkedCommits) {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
@@ -136,7 +139,11 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
       // Create contiguous writer that provides gap-free logical address space over physical pages
       // This is critical: JVector assumes contiguous file layout with no gaps
-      final IndexWriter writer = new ContiguousPageWriter(database, getFileId(), getPageSize());
+        final long commitEveryBytes = mainIndex != null ? mainIndex.getGraphPersistCommitBytes() : 0L;
+        final boolean enableChunkedCommits = allowChunkedCommits && commitEveryBytes > 0;
+
+        final IndexWriter writer = new ContiguousPageWriter(database, getFileId(), getPageSize(),
+            enableChunkedCommits ? commitEveryBytes : 0L, enableChunkedCommits);
 
       // Phase 2: Optionally store vectors inline in graph file
       final boolean storeVectors = mainIndex != null && mainIndex.metadata.storeVectorsInGraph;
