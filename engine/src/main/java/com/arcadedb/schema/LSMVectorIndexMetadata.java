@@ -33,7 +33,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      graphBuildCacheSize      = -1; // -1 = use global default
   public int                      mutationsBeforeRebuild   = -1; // -1 = use global default
   public boolean                  storeVectorsInGraph      = false; // Phase 2: Store vectors inline in graph file
-  public boolean                  addHierarchy             = true;
+  public boolean                  addHierarchy             = false;
 
   public LSMVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);

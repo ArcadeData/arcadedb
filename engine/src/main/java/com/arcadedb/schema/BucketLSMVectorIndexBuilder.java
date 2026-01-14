@@ -42,7 +42,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public int                      graphBuildCacheSize      = -1; // -1 = use global default
   public int                      mutationsBeforeRebuild   = -1; // -1 = use global default
   public boolean                  storeVectorsInGraph      = false; // Phase 2: Store vectors inline in graph file
-  public boolean                  addHierarchy             = true;
+  public boolean                  addHierarchy             = false;
 
   protected BucketLSMVectorIndexBuilder(DatabaseInternal database, String typeName, String bucketName,
       String[] propertyNames) {

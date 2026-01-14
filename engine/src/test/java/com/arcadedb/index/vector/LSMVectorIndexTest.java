@@ -89,6 +89,7 @@ class LSMVectorIndexTest extends TestHelper {
     final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     assertThat(index.getDimensions()).as("Dimensions should be " + DIMENSIONS).isEqualTo(DIMENSIONS);
     assertThat(index.getSimilarityFunction().name()).as("Similarity should be COSINE").isEqualTo("COSINE");
+    assertThat(index.getMetadata().addHierarchy).as("addHierarchy should be true").isTrue();
 
     // Insert test data
     database.transaction(() -> {

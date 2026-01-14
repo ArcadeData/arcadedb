@@ -69,12 +69,23 @@ import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
-import java.io.*;
-import java.nio.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.concurrent.locks.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.logging.Level;
 
 /**
  * Vector index implementation using JVector library with page-based transactional storage.
@@ -137,17 +148,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Metrics tracking (Phase 1: JVector metrics extraction)
   // Package-private to allow access from ArcadePageVectorValues
-  final AtomicLong searchOperations       = new AtomicLong(0);
-  final AtomicLong insertOperations       = new AtomicLong(0);
-  final AtomicLong graphRebuildCount      = new AtomicLong(0);
-  final AtomicLong compactionCount        = new AtomicLong(0);
-  final AtomicLong vectorCacheHits        = new AtomicLong(0);
-  final AtomicLong vectorCacheMisses      = new AtomicLong(0);
+  final AtomicLong searchOperations         = new AtomicLong(0);
+  final AtomicLong insertOperations         = new AtomicLong(0);
+  final AtomicLong graphRebuildCount        = new AtomicLong(0);
+  final AtomicLong compactionCount          = new AtomicLong(0);
+  final AtomicLong vectorCacheHits          = new AtomicLong(0);
+  final AtomicLong vectorCacheMisses        = new AtomicLong(0);
   final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
   final AtomicLong vectorFetchFromDocuments = new AtomicLong(0);
-  final AtomicLong vectorFetchFromGraph   = new AtomicLong(0);
-  final AtomicLong searchLatencyMs        = new AtomicLong(0);
-  final AtomicLong insertLatencyMs        = new AtomicLong(0);
+  final AtomicLong vectorFetchFromGraph     = new AtomicLong(0);
+  final AtomicLong searchLatencyMs          = new AtomicLong(0);
+  final AtomicLong insertLatencyMs          = new AtomicLong(0);
 
   public interface GraphBuildCallback {
     /**
@@ -596,7 +607,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       // No persisted graph - build now for new indexes
-      LogManager.instance().log(this, Level.SEVERE, "DEBUG: initializeGraphIndex building graph for %s, vectorIndex.size=%d", indexName, vectorIndex.size());
+      LogManager.instance()
+          .log(this, Level.SEVERE, "DEBUG: initializeGraphIndex building graph for %s, vectorIndex.size=%d", indexName,
+              vectorIndex.size());
 
       // NOTE: buildGraphFromScratch() manages locking internally
       // Don't hold lock here - JVector uses parallel threads during graph build
@@ -2061,94 +2074,95 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.readLock().lock();
       readLockHeld = true;
       try {
-      // Phase 5+: Check if graph needs rebuilding due to pending mutations
-      // With periodic rebuilds (threshold=1000), we may have some pending mutations
-      if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
-        // Graph is out of sync - need to rebuild before searching
-        lock.readLock().unlock();
-        readLockHeld = false;
-        lock.writeLock().lock();
-        try {
-          // Double-check after acquiring write lock
-          if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
-            LogManager.instance().log(this, Level.FINE,
-                "Rebuilding graph before search (accumulated " + mutationsSinceSerialize.get() + " mutations)");
-            buildGraphFromScratch();
+        // Phase 5+: Check if graph needs rebuilding due to pending mutations
+        // With periodic rebuilds (threshold=1000), we may have some pending mutations
+        if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
+          // Graph is out of sync - need to rebuild before searching
+          lock.readLock().unlock();
+          readLockHeld = false;
+          lock.writeLock().lock();
+          try {
+            // Double-check after acquiring write lock
+            if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0) {
+              LogManager.instance().log(this, Level.FINE,
+                  "Rebuilding graph before search (accumulated " + mutationsSinceSerialize.get() + " mutations)");
+              buildGraphFromScratch();
+            }
+            // Downgrade to read lock
+            lock.readLock().lock();
+            readLockHeld = true;
+          } finally {
+            lock.writeLock().unlock();
           }
-          // Downgrade to read lock
-          lock.readLock().lock();
-          readLockHeld = true;
-        } finally {
-          lock.writeLock().unlock();
         }
-      }
 
-      if (graphIndex == null || vectorIndex.size() == 0)
-        return Collections.emptyList();
+        if (graphIndex == null || vectorIndex.size() == 0)
+          return Collections.emptyList();
 
-      // Convert query vector to VectorFloat
-      final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
+        // Convert query vector to VectorFloat
+        final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
-      // Create lazy-loading RandomAccessVectorValues
-      // Vector property name is the first property in the index
-      final String vectorProp =
-          metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+        // Create lazy-loading RandomAccessVectorValues
+        // Vector property name is the first property in the index
+        final String vectorProp =
+            metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
 
-      final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
-          vectorIndex, ordinalToVectorId, this  // Pass LSM index reference for quantization support
-      );
+        final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
+            vectorIndex, ordinalToVectorId, this  // Pass LSM index reference for quantization support
+        );
 
-      // Perform search with optional RID filtering
-      final Bits bitsFilter = (allowedRIDs != null && !allowedRIDs.isEmpty()) ?
-          new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
-          Bits.ALL;
+        // Perform search with optional RID filtering
+        final Bits bitsFilter = (allowedRIDs != null && !allowedRIDs.isEmpty()) ?
+            new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
+            Bits.ALL;
 
-      // TODO: Use instance GraphSearcher method with metadata.efSearch parameter for better recall control
-      // Current static method uses default efSearch behavior
-      final SearchResult searchResult = GraphSearcher.search(queryVectorFloat, k, vectors, metadata.similarityFunction, graphIndex,
-          bitsFilter);
+        // TODO: Use instance GraphSearcher method with metadata.efSearch parameter for better recall control
+        // Current static method uses default efSearch behavior
+        final SearchResult searchResult = GraphSearcher.search(queryVectorFloat, k, vectors, metadata.similarityFunction,
+            graphIndex,
+            bitsFilter);
 
-      LogManager.instance()
-          .log(this, Level.INFO, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
-              searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
+        LogManager.instance()
+            .log(this, Level.INFO, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
+                searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
 
-      // Extract RIDs and scores from search results using ordinal mapping
-      final List<Pair<RID, Float>> results = new ArrayList<>();
-      int skippedOutOfBounds = 0;
-      int skippedDeletedOrNull = 0;
-      for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
-        final int ordinal = nodeScore.node;
-        if (ordinal >= 0 && ordinal < ordinalToVectorId.length) {
-          final int vectorId = ordinalToVectorId[ordinal];
-          final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
-          if (loc != null && !loc.deleted) {
-            // JVector returns similarity scores - convert to distance based on similarity function
-            final float score = nodeScore.score;
-            final float distance = switch (metadata.similarityFunction) {
-              case COSINE ->
-                // For cosine, similarity is in [-1, 1], distance is 1 - similarity
-                  1.0f - score;
-              case EUCLIDEAN ->
-                // For euclidean, the score is already the distance
-                  score;
-              case DOT_PRODUCT ->
-                // For dot product, higher score is better (closer), so negate it
-                  -score;
-              default -> score;
-            };
-            results.add(new Pair<>(loc.rid, distance));
+        // Extract RIDs and scores from search results using ordinal mapping
+        final List<Pair<RID, Float>> results = new ArrayList<>();
+        int skippedOutOfBounds = 0;
+        int skippedDeletedOrNull = 0;
+        for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
+          final int ordinal = nodeScore.node;
+          if (ordinal >= 0 && ordinal < ordinalToVectorId.length) {
+            final int vectorId = ordinalToVectorId[ordinal];
+            final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+            if (loc != null && !loc.deleted) {
+              // JVector returns similarity scores - convert to distance based on similarity function
+              final float score = nodeScore.score;
+              final float distance = switch (metadata.similarityFunction) {
+                case COSINE ->
+                  // For cosine, similarity is in [-1, 1], distance is 1 - similarity
+                    1.0f - score;
+                case EUCLIDEAN ->
+                  // For euclidean, the score is already the distance
+                    score;
+                case DOT_PRODUCT ->
+                  // For dot product, higher score is better (closer), so negate it
+                    -score;
+                default -> score;
+              };
+              results.add(new Pair<>(loc.rid, distance));
+            } else {
+              skippedDeletedOrNull++;
+            }
           } else {
-            skippedDeletedOrNull++;
+            skippedOutOfBounds++;
           }
-        } else {
-          skippedOutOfBounds++;
         }
-      }
 
-      LogManager.instance()
-          .log(this, Level.INFO, "Vector search returned %d results (skipped: %d out of bounds, %d deleted/null)", results.size(),
-              skippedOutOfBounds, skippedDeletedOrNull);
-      return results;
+        LogManager.instance()
+            .log(this, Level.INFO, "Vector search returned %d results (skipped: %d out of bounds, %d deleted/null)", results.size(),
+                skippedOutOfBounds, skippedDeletedOrNull);
+        return results;
 
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
@@ -2368,61 +2382,61 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Validate vector - can be either float[] or ComparableVector (from transaction replay)
       final float[] vector;
-    if (keys[0] instanceof ComparableVector c)
-      vector = c.vector;
-    else
-      vector = VectorUtils.convertToFloatArray(keys[0]);
+      if (keys[0] instanceof ComparableVector c)
+        vector = c.vector;
+      else
+        vector = VectorUtils.convertToFloatArray(keys[0]);
 
-    if (vector == null) {
-      throw new IllegalArgumentException(
-          "Expected float array or ComparableVector as key for vector index, got " + keys[0].getClass());
-    }
-
-    if (vector.length != metadata.dimensions)
-      throw new IllegalArgumentException(
-          "Vector dimension " + vector.length + " does not match index dimension " + metadata.dimensions);
-
-    final RID rid = values[0];
-    final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
-
-    if (txStatus == TransactionContext.STATUS.BEGUN) {
-      // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
-      // Wrap vector in ComparableVector for TransactionIndexContext's TreeMap
-      // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
-      getDatabase().getTransaction()
-          .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
-              new Object[] { new ComparableVector(vector) }, rid);
-
-    } else {
-      // No transaction OR during commit replay: apply immediately
-      // During commit phases, TransactionIndexContext.commit() calls this method directly
-      lock.writeLock().lock();
-      try {
-        final int id = nextId.getAndIncrement();
-
-        // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
-        persistVectorWithLocation(id, rid, vector);
-
-        // Phase 5+: Periodic rebuild strategy (amortizes cost over many operations)
-        if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
-          // Transition to MUTABLE state to track ongoing mutations
-          this.graphState = GraphState.MUTABLE;
-        }
-
-        // Increment mutation counter
-        mutationsSinceSerialize.incrementAndGet();
-
-        // DON'T trigger rebuild during transaction commit - defer until query time
-        // rebuildGraphIfNeeded() calls buildGraphFromScratch() which clears vectorIndex and
-        // tries to reload from pages, but pages aren't visible yet during commit phase
-        // The graph will be rebuilt on the next query via ensureGraphAvailable() / get()
-        // Phase 2: When storeVectorsInGraph is enabled, the rebuilt graph will fetch updated vectors
-        // from documents/quantized pages and store them inline in the new graph file
-        // rebuildGraphIfNeeded();
-      } finally {
-        lock.writeLock().unlock();
+      if (vector == null) {
+        throw new IllegalArgumentException(
+            "Expected float array or ComparableVector as key for vector index, got " + keys[0].getClass());
       }
-    }
+
+      if (vector.length != metadata.dimensions)
+        throw new IllegalArgumentException(
+            "Vector dimension " + vector.length + " does not match index dimension " + metadata.dimensions);
+
+      final RID rid = values[0];
+      final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
+
+      if (txStatus == TransactionContext.STATUS.BEGUN) {
+        // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
+        // Wrap vector in ComparableVector for TransactionIndexContext's TreeMap
+        // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
+        getDatabase().getTransaction()
+            .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
+                new Object[] { new ComparableVector(vector) }, rid);
+
+      } else {
+        // No transaction OR during commit replay: apply immediately
+        // During commit phases, TransactionIndexContext.commit() calls this method directly
+        lock.writeLock().lock();
+        try {
+          final int id = nextId.getAndIncrement();
+
+          // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
+          persistVectorWithLocation(id, rid, vector);
+
+          // Phase 5+: Periodic rebuild strategy (amortizes cost over many operations)
+          if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
+            // Transition to MUTABLE state to track ongoing mutations
+            this.graphState = GraphState.MUTABLE;
+          }
+
+          // Increment mutation counter
+          mutationsSinceSerialize.incrementAndGet();
+
+          // DON'T trigger rebuild during transaction commit - defer until query time
+          // rebuildGraphIfNeeded() calls buildGraphFromScratch() which clears vectorIndex and
+          // tries to reload from pages, but pages aren't visible yet during commit phase
+          // The graph will be rebuilt on the next query via ensureGraphAvailable() / get()
+          // Phase 2: When storeVectorsInGraph is enabled, the rebuilt graph will fetch updated vectors
+          // from documents/quantized pages and store them inline in the new graph file
+          // rebuildGraphIfNeeded();
+        } finally {
+          lock.writeLock().unlock();
+        }
+      }
     } finally {
       // Track insert latency (only for actual writes, not transaction registration)
       final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
