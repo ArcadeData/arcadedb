@@ -33,6 +33,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.ha.HATestHelpers;
 import com.arcadedb.server.ha.HATestTimeouts;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
@@ -344,10 +345,13 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     if (serverCount == 1)
       return;
 
+    LogManager.instance().log(this, Level.INFO, "Waiting for all %d replicas to connect...", serverCount - 1);
+
     try {
+      // Use slightly longer poll interval to reduce CPU usage during connection retry
       Awaitility.await()
-          .atMost(60, TimeUnit.SECONDS)
-          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
+          .pollInterval(500, TimeUnit.MILLISECONDS)
           .until(() -> {
             // Safely find the leader without NPE during election phase
             ArcadeDBServer leader = null;
@@ -377,22 +381,40 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
             }
           });
     } catch (ConditionTimeoutException e) {
+      // Enhanced timeout logging with full cluster state
+      LogManager.instance().log(this, Level.SEVERE, "=== CLUSTER STABILIZATION TIMEOUT ===");
+
       int lastTotalConnectedReplica = 0;
       ArcadeDBServer leaderAtTimeout = null;
+
+      // Dump state of all servers
       for (int i = 0; i < serverCount; ++i) {
-        if (servers[i] != null && servers[i].getHA() != null && servers[i].getHA().isLeader()) {
-          leaderAtTimeout = servers[i];
-          lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
-          // Log detailed replica status summary for debugging
-          servers[i].getHA().logReplicaStatusSummary();
-          break;
+        if (servers[i] != null) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Server %d (%s): status=%s, isLeader=%s, HA=%s",
+              i,
+              servers[i].getServerName(),
+              servers[i].getStatus(),
+              servers[i].getHA() != null && servers[i].getHA().isLeader(),
+              servers[i].getHA() != null ? "initialized" : "null");
+
+          if (servers[i].getHA() != null && servers[i].getHA().isLeader()) {
+            leaderAtTimeout = servers[i];
+            lastTotalConnectedReplica = servers[i].getHA().getOnlineReplicas();
+            // Log detailed replica status summary for debugging
+            servers[i].getHA().logReplicaStatusSummary();
+          }
+        } else {
+          LogManager.instance().log(this, Level.SEVERE, "Server %d: NULL", i);
         }
       }
+
       LogManager.instance()
           .log(this, Level.SEVERE, "Timeout waiting for cluster to stabilize. Leader: %s, Online replicas: %d/%d",
               leaderAtTimeout != null ? leaderAtTimeout.getServerName() : "NONE",
               lastTotalConnectedReplica,
               serverCount - 1);
+
       throw new RuntimeException("Cluster failed to stabilize: expected " + serverCount + " servers, only " +
           (lastTotalConnectedReplica + 1) + " connected", e);
     }
@@ -711,6 +733,41 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   /**
+   * Waits for the leader to be fully ready to accept connections.
+   *
+   * <p>This method ensures the leader has:
+   * <ul>
+   *   <li>Completed election process
+   *   <li>Server is ONLINE
+   *   <li>HA system is initialized
+   * </ul>
+   *
+   * <p>Use this before attempting to connect replicas to avoid "connection refused" errors
+   * during cluster formation.
+   *
+   * @throws org.awaitility.core.ConditionTimeoutException if leader doesn't become ready within timeout
+   */
+  protected void waitForLeaderReady() {
+    LogManager.instance().log(this, Level.FINE, "Waiting for leader to be ready to accept connections...");
+
+    try {
+      // Delegate to HATestHelpers for consistent leader election waiting
+      HATestHelpers.waitForLeaderElection(getServers());
+
+      final ArcadeDBServer leader = getLeader();
+      LogManager.instance().log(this, Level.INFO,
+          "Leader %s is ready to accept connections", leader != null ? leader.getServerName() : "UNKNOWN");
+    } catch (ConditionTimeoutException e) {
+      final ArcadeDBServer leader = getLeader();
+      LogManager.instance().log(this, Level.SEVERE,
+          "Timeout waiting for leader readiness. Leader: %s, Status: %s",
+          leader != null ? leader.getServerName() : "NONE",
+          leader != null ? leader.getStatus() : "N/A");
+      throw new RuntimeException("Leader failed to become ready", e);
+    }
+  }
+
+  /**
    * Waits for the entire cluster to stabilize after server operations.
    *
    * <p>This method performs a 3-phase stabilization check:
@@ -729,36 +786,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   protected void waitForClusterStable(final int serverCount) {
     LogManager.instance().log(this, Level.FINE, "TEST: Waiting for cluster to stabilize (%d servers)...", serverCount);
 
-    // Phase 1: Wait for all servers to be ONLINE
-    Awaitility.await("all servers ONLINE")
-        .atMost(HATestTimeouts.CLUSTER_STABILIZATION_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
-        .until(() -> {
-          for (int i = 0; i < serverCount; i++) {
-            final ArcadeDBServer server = getServer(i);
-            if (server.getStatus() != ArcadeDBServer.Status.ONLINE) {
-              return false;
-            }
-          }
-          return true;
-        });
-
-    // Phase 2: Wait for replication queues to drain
-    for (int i = 0; i < serverCount; i++) {
-      waitForReplicationIsCompleted(i);
-    }
-
-    // Phase 3: Wait for all replicas to be connected
-    Awaitility.await("all replicas connected")
-        .atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
-        .until(() -> {
-          try {
-            return areAllReplicasAreConnected();
-          } catch (Exception e) {
-            return false;
-          }
-        });
+    // Delegate to HATestHelpers for consistent cluster stabilization across all tests
+    HATestHelpers.waitForClusterStable(getServers(), serverCount - 1);
 
     LogManager.instance().log(this, Level.FINE, "TEST: Cluster stabilization complete");
   }
@@ -776,10 +805,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   protected void waitForServerShutdown(final ArcadeDBServer server, final int serverId) {
     LogManager.instance().log(this, Level.FINE, "TEST: Waiting for server %d to complete shutdown...", serverId);
 
-    Awaitility.await("server shutdown")
-        .atMost(HATestTimeouts.SERVER_SHUTDOWN_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
-        .until(() -> server.getStatus() != ArcadeDBServer.Status.SHUTTING_DOWN);
+    // Delegate to HATestHelpers for consistent shutdown waiting
+    HATestHelpers.waitForServerShutdown(server);
 
     LogManager.instance().log(this, Level.FINE, "TEST: Server %d shutdown complete", serverId);
   }
@@ -798,10 +825,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   protected void waitForServerStartup(final ArcadeDBServer server, final int serverId) {
     LogManager.instance().log(this, Level.FINE, "TEST: Waiting for server %d to complete startup...", serverId);
 
-    Awaitility.await("server startup")
-        .atMost(HATestTimeouts.SERVER_STARTUP_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)
-        .until(() -> server.getStatus() == ArcadeDBServer.Status.ONLINE);
+    // Delegate to HATestHelpers for consistent startup waiting
+    HATestHelpers.waitForServerStartup(server);
 
     LogManager.instance().log(this, Level.FINE, "TEST: Server %d startup complete", serverId);
   }
