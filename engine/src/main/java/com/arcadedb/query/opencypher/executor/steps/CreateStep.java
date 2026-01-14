@@ -228,6 +228,9 @@ public class CreateStep extends AbstractExecutionStep {
   private Vertex createVertex(final NodePattern nodePattern) {
     final String label = nodePattern.hasLabels() ? nodePattern.getFirstLabel() : "Vertex";
 
+    // Ensure vertex type exists (Cypher auto-creates types)
+    context.getDatabase().getSchema().getOrCreateVertexType(label);
+
     final MutableVertex vertex = context.getDatabase().newVertex(label);
 
     // Set properties from pattern
@@ -244,6 +247,9 @@ public class CreateStep extends AbstractExecutionStep {
    */
   private Edge createEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern) {
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
+
+    // Ensure edge type exists (Cypher auto-creates types)
+    context.getDatabase().getSchema().getOrCreateEdgeType(type);
 
     final MutableEdge edge = fromVertex.newEdge(type, toVertex);
 
