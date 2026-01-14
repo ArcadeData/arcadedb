@@ -237,7 +237,8 @@ public class LeaderNetworkListener extends Thread {
               parsedAddress.host(), parsedAddress.port(), remoteServerName,
               parsedActual.host(), parsedActual.port()));
         } else {
-          serverInfo = Optional.of(parsedAddress);
+          // Use remoteServerName as alias, not the address-derived alias from parsedAddress
+          serverInfo = Optional.of(new HAServer.ServerInfo(parsedAddress.host(), parsedAddress.port(), remoteServerName));
         }
       }
     } else {
