@@ -26,6 +26,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
+import com.arcadedb.server.http.handler.GetClusterHealthHandler;
 import com.arcadedb.server.http.handler.GetClusterLeaderHandler;
 import com.arcadedb.server.http.handler.GetClusterStatusHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
@@ -174,6 +175,7 @@ public class HttpServer implements ServerPlugin {
         .get("/ready", new GetReadyHandler(this))
         .get("/cluster/status", new GetClusterStatusHandler(this))
         .get("/cluster/leader", new GetClusterLeaderHandler(this))
+        .get("/cluster/health", new GetClusterHealthHandler(this))
         .get("/openapi.json", new GetOpenApiHandler(this))
         .get("/docs", new GetApiDocsHandler(this))
     );
