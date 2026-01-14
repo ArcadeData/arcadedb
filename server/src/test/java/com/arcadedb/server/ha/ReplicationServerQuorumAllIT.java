@@ -20,7 +20,11 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.TimeUnit;
+
+@Timeout(value = 15, unit = TimeUnit.MINUTES)
 public class ReplicationServerQuorumAllIT extends ReplicationServerIT {
   public ReplicationServerQuorumAllIT() {
     GlobalConfiguration.HA_QUORUM.setValue("ALL");

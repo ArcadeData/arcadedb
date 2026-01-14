@@ -21,11 +21,13 @@ package com.arcadedb.server.ha;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Scanner;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration test for the cluster health endpoint.
  * Tests that the /api/v1/cluster/health endpoint returns expected health information.
  */
+@Timeout(value = 5, unit = TimeUnit.MINUTES)
 class GetClusterHealthIT extends BaseGraphServerTest {
 
   @Override

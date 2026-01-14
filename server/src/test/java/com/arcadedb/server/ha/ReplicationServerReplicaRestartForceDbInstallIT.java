@@ -32,6 +32,7 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Timeout(value = 15, unit = TimeUnit.MINUTES)
 public class ReplicationServerReplicaRestartForceDbInstallIT extends ReplicationServerIT {
   private final    AtomicLong totalMessages           = new AtomicLong();
   private volatile boolean    firstTimeServerShutdown = true;
