@@ -31,17 +31,18 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
  */
 public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public int                      dimensions;
-  public VectorSimilarityFunction similarityFunction = VectorSimilarityFunction.COSINE;
-  public VectorQuantizationType   quantizationType   = VectorQuantizationType.NONE;
-  public int                      maxConnections     = 16;
-  public int                      beamWidth          = 100;
-  public float                    neighborOverflowFactor = 1.2f;
+  public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;
+  public VectorQuantizationType   quantizationType         = VectorQuantizationType.NONE;
+  public int                      maxConnections           = 16;
+  public int                      beamWidth                = 100;
+  public float                    neighborOverflowFactor   = 1.2f;
   public float                    alphaDiversityRelaxation = 1.2f;
-  public String                   idPropertyName     = "id";
-  public int                      locationCacheSize  = -1;  // -1 = use global default
-  public int                      graphBuildCacheSize = -1; // -1 = use global default
-  public int                      mutationsBeforeRebuild = -1; // -1 = use global default
-  public boolean                  storeVectorsInGraph = false; // Phase 2: Store vectors inline in graph file
+  public String                   idPropertyName           = "id";
+  public int                      locationCacheSize        = -1;  // -1 = use global default
+  public int                      graphBuildCacheSize      = -1; // -1 = use global default
+  public int                      mutationsBeforeRebuild   = -1; // -1 = use global default
+  public boolean                  storeVectorsInGraph      = false; // Phase 2: Store vectors inline in graph file
+  public boolean                  addHierarchy             = false;
 
   protected BucketLSMVectorIndexBuilder(DatabaseInternal database, String typeName, String bucketName,
       String[] propertyNames) {
@@ -202,6 +203,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
       this.graphBuildCacheSize = v.graphBuildCacheSize;
       this.mutationsBeforeRebuild = v.mutationsBeforeRebuild;
       this.storeVectorsInGraph = v.storeVectorsInGraph;
+      this.addHierarchy = v.addHierarchy;
     }
     return this;
   }
@@ -243,5 +245,8 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
 
     if (metadata.has("storeVectorsInGraph"))
       this.storeVectorsInGraph = metadata.getBoolean("storeVectorsInGraph");
+
+    if (metadata.has("addHierarchy"))
+      this.addHierarchy = metadata.getBoolean("addHierarchy");
   }
 }
