@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.TimeUnit;
 
+@Timeout(value = 15, unit = TimeUnit.MINUTES)
 public class ReplicationServerQuorumNoneIT extends ReplicationServerIT {
   @Override
   public void setTestConfiguration() {
