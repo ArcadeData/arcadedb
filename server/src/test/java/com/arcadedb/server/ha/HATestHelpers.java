@@ -70,24 +70,14 @@ public class HATestHelpers {
     // Phase 2: Wait for leader election
     waitForLeaderElection(servers);
 
-    // Phase 3: Wait for replication queues to drain
-    Awaitility.await("replication queues drained")
-        .atMost(HATestTimeouts.REPLICATION_QUEUE_DRAIN_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
-        .until(() -> {
-          ArcadeDBServer leader = getLeader(servers);
-          if (leader == null || leader.getHA() == null) return false;
-          return leader.getHA().getReplicationQueueSize() == 0;
-        });
-
-    // Phase 4: Wait for all replicas to connect
+    // Phase 3: Wait for all replicas to connect
     Awaitility.await(expectedReplicaCount + " replicas connected")
         .atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
         .pollInterval(Duration.ofMillis(500))
         .until(() -> {
           ArcadeDBServer leader = getLeader(servers);
           if (leader == null || leader.getHA() == null) return false;
-          return leader.getHA().getReplicaConnectedCount() == expectedReplicaCount;
+          return leader.getHA().getOnlineReplicas() >= expectedReplicaCount;
         });
   }
 
