@@ -1,8 +1,8 @@
 # OpenCypher Implementation Status
 
 **Last Updated:** 2026-01-13
-**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND + WITH + Optimizer Phase 4 Complete + Range Index Optimization + All Tests Fixed)
-**Test Coverage:** 294/294 tests passing (100% - All tests passing! 🎉✅)
+**Implementation Version:** Native ANTLR4-based Parser (Phase 8 + Functions + GROUP BY + Pattern Predicates + COLLECT + UNWIND + WITH + Optimizer Phase 4 Complete + Range Index Optimization with Parameters + All Tests Fixed)
+**Test Coverage:** 295/295 tests passing (100% - All tests passing! 🎉✅)
 
 ---
 
@@ -796,11 +796,10 @@ RETURN count(n), avg(n.age)
 - ✅ Type-safe numeric comparisons (Integer/Long coercion)
 - ✅ Support for bounded ranges: `WHERE age >= 40 AND age <= 60`
 - ✅ Integration with RangeIndex.range() and RangeIndex.iterator() methods
-- ✅ 9 comprehensive tests in CypherRangeIndexTest
+- ✅ **Runtime parameter resolution** for parameterized queries (`WHERE age > $minAge`)
+- ✅ Support for multiple parameters in bounded ranges (`WHERE age >= $min AND age <= $max`)
+- ✅ 10 comprehensive tests in CypherRangeIndexTest
 - ✅ Significant performance improvement for selective range queries
-
-**Known Limitations:**
-- ⚠️ Parameterized range queries (`WHERE age > $minAge`) fall back to full scan + filter (parameter resolution at optimization time not yet implemented)
 
 ### Phase 5: Optimizer Coverage Expansion (Planned)
 **Target:** Q1-Q2 2026
@@ -838,7 +837,7 @@ RETURN count(n), avg(n.age)
 
 ## 🧪 Test Coverage
 
-**Overall:** 294/294 tests passing (100%) 🎉 - All tests passing!
+**Overall:** 295/295 tests passing (100%) 🎉 - All tests passing!
 
 | Test Suite | Tests | Status | Coverage |
 |------------|-------|--------|----------|
@@ -868,10 +867,10 @@ RETURN count(n), avg(n.age)
 | AnchorSelectorTest | 11/11 | ✅ PASS | Anchor selection algorithm |
 | IndexSelectionRuleTest | 11/11 | ✅ PASS | Index selection optimization |
 | ExpandIntoRuleTest | 11/11 | ✅ PASS | ExpandInto bounded pattern optimization |
-| **CypherRangeIndexTest** | **9/9** | **✅ PASS** | **Range index optimization with LSM indexes** |
+| **CypherRangeIndexTest** | **10/10** | **✅ PASS** | **Range index optimization with parameters** |
 | OrderByDebugTest | 2/2 | ✅ PASS | Debug tests |
 | ParserDebugTest | 2/2 | ✅ PASS | Parser tests |
-| **TOTAL** | **294/294** | **✅ 100%** 🎉 | **Phase 4 Complete + Range Index Optimization** |
+| **TOTAL** | **295/295** | **✅ 100%** 🎉 | **Phase 4 Complete + Range Index with Parameters** |
 
 **Phase 4 Improvements:**
 - +23 tests fixed (8 schema errors, 2 multiple MATCH, 3 named paths, 8 property constraints, 1 aggregation, 1 cross-type relationship)
@@ -884,6 +883,10 @@ RETURN count(n), avg(n.age)
 **Range Index Optimization Addition (2026-01-13):**
 - +9 new tests for range index queries with LSM indexes
 - From 285/285 → 294/294 tests passing (100%) 🎉
+
+**Parameter Resolution Enhancement (2026-01-13):**
+- +1 new test for parameterized range queries
+- From 294/294 → 295/295 tests passing (100%) 🎉
 **Result:** All tests passing!
 
 ### Test Files

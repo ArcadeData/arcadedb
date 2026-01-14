@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.opencypher;
+package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -96,6 +96,15 @@ public class CypherRangeIndexTest {
 
   @Test
   public void testRangeGreaterThan() {
+    // Verify EXPLAIN shows NodeIndexRangeScan
+    final ResultSet explainResults = database.query("opencypher", "EXPLAIN MATCH (p:Person) WHERE p.age > 90 RETURN p.name, p.age");
+    final StringBuilder plan = new StringBuilder();
+    while (explainResults.hasNext()) {
+      plan.append(explainResults.next().toJSON());
+    }
+    assertThat(plan.toString()).contains("NodeIndexRangeScan");
+    assertThat(plan.toString()).contains("age");
+
     // Query: age > 90 (should return 10 people)
     final ResultSet results = database.query("opencypher", "MATCH (p:Person) WHERE p.age > 90 RETURN p.name, p.age ORDER BY p.age");
 
@@ -111,6 +120,15 @@ public class CypherRangeIndexTest {
 
   @Test
   public void testRangeLessThan() {
+    // Verify EXPLAIN shows NodeIndexRangeScan
+    final ResultSet explainResults = database.query("opencypher", "EXPLAIN MATCH (p:Person) WHERE p.age < 11 RETURN p.name, p.age");
+    final StringBuilder plan = new StringBuilder();
+    while (explainResults.hasNext()) {
+      plan.append(explainResults.next().toJSON());
+    }
+    assertThat(plan.toString()).contains("NodeIndexRangeScan");
+    assertThat(plan.toString()).contains("age");
+
     // Query: age < 11 (should return 10 people)
     final ResultSet results = database.query("opencypher", "MATCH (p:Person) WHERE p.age < 11 RETURN p.name, p.age ORDER BY p.age");
 
@@ -126,6 +144,16 @@ public class CypherRangeIndexTest {
 
   @Test
   public void testRangeBetween() {
+    // Verify EXPLAIN shows NodeIndexRangeScan for bounded range
+    final ResultSet explainResults = database.query("opencypher",
+        "EXPLAIN MATCH (p:Person) WHERE p.age >= 40 AND p.age <= 60 RETURN p.name, p.age");
+    final StringBuilder plan = new StringBuilder();
+    while (explainResults.hasNext()) {
+      plan.append(explainResults.next().toJSON());
+    }
+    assertThat(plan.toString()).contains("NodeIndexRangeScan");
+    assertThat(plan.toString()).contains("age");
+
     // Query: age >= 40 AND age <= 60 (should return 21 people: 40-60 inclusive)
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age >= 40 AND p.age <= 60 RETURN p.name, p.age ORDER BY p.age");
@@ -143,6 +171,15 @@ public class CypherRangeIndexTest {
 
   @Test
   public void testRangeGreaterThanOrEqual() {
+    // Verify EXPLAIN shows NodeIndexRangeScan
+    final ResultSet explainResults = database.query("opencypher", "EXPLAIN MATCH (p:Person) WHERE p.age >= 95 RETURN p.name, p.age");
+    final StringBuilder plan = new StringBuilder();
+    while (explainResults.hasNext()) {
+      plan.append(explainResults.next().toJSON());
+    }
+    assertThat(plan.toString()).contains("NodeIndexRangeScan");
+    assertThat(plan.toString()).contains("age");
+
     // Query: age >= 95 (should return 6 people: 95-100)
     final ResultSet results = database.query("opencypher", "MATCH (p:Person) WHERE p.age >= 95 RETURN p.name, p.age ORDER BY p.age");
 
@@ -158,6 +195,15 @@ public class CypherRangeIndexTest {
 
   @Test
   public void testRangeLessThanOrEqual() {
+    // Verify EXPLAIN shows NodeIndexRangeScan
+    final ResultSet explainResults = database.query("opencypher", "EXPLAIN MATCH (p:Person) WHERE p.age <= 5 RETURN p.name, p.age");
+    final StringBuilder plan = new StringBuilder();
+    while (explainResults.hasNext()) {
+      plan.append(explainResults.next().toJSON());
+    }
+    assertThat(plan.toString()).contains("NodeIndexRangeScan");
+    assertThat(plan.toString()).contains("age");
+
     // Query: age <= 5 (should return 5 people: 1-5)
     final ResultSet results = database.query("opencypher", "MATCH (p:Person) WHERE p.age <= 5 RETURN p.name, p.age ORDER BY p.age");
 
@@ -173,8 +219,18 @@ public class CypherRangeIndexTest {
 
   @Test
   public void testRangeWithParameter() {
-    // TODO: Range scan optimization not yet supported for parameterized queries
-    // For now, this uses a full scan with filter instead of range scan
+    // Verify EXPLAIN shows NodeIndexRangeScan for parameterized query
+    final ResultSet explainResults = database.query("opencypher",
+        "EXPLAIN MATCH (p:Person) WHERE p.age > $minAge RETURN p.name, p.age",
+        Map.of("minAge", 80));
+    final StringBuilder plan = new StringBuilder();
+    while (explainResults.hasNext()) {
+      plan.append(explainResults.next().toJSON());
+    }
+    assertThat(plan.toString()).contains("NodeIndexRangeScan");
+    assertThat(plan.toString()).contains("age");
+
+    // Parameterized range query should use NodeIndexRangeScan with runtime parameter resolution
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age > $minAge RETURN p.name, p.age ORDER BY p.age",
         Map.of("minAge", 80));
@@ -187,6 +243,35 @@ public class CypherRangeIndexTest {
       count++;
     }
     assertThat(count).isEqualTo(20);
+  }
+
+  @Test
+  public void testRangeWithMultipleParameters() {
+    // Verify EXPLAIN shows NodeIndexRangeScan for parameterized bounded range
+    final ResultSet explainResults = database.query("opencypher",
+        "EXPLAIN MATCH (p:Person) WHERE p.age >= $min AND p.age <= $max RETURN p.name, p.age",
+        Map.of("min", 40, "max", 60));
+    final StringBuilder plan = new StringBuilder();
+    while (explainResults.hasNext()) {
+      plan.append(explainResults.next().toJSON());
+    }
+    assertThat(plan.toString()).contains("NodeIndexRangeScan");
+    assertThat(plan.toString()).contains("age");
+
+    // Bounded range query with two parameters
+    final ResultSet results = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.age >= $min AND p.age <= $max RETURN p.name, p.age ORDER BY p.age",
+        Map.of("min", 40, "max", 60));
+
+    int count = 0;
+    while (results.hasNext()) {
+      final Result result = results.next();
+      final int age = ((Number) result.getProperty("p.age")).intValue();
+      assertThat(age).isGreaterThanOrEqualTo(40);
+      assertThat(age).isLessThanOrEqualTo(60);
+      count++;
+    }
+    assertThat(count).isEqualTo(21);
   }
 
   @Test

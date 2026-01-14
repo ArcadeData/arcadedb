@@ -168,18 +168,6 @@ public class AnchorSelector {
         final String propertyName = rangeEntry.getKey();
         final List<RangePredicate> predicates = rangeEntry.getValue();
 
-        // Skip parameterized predicates for now (TODO: add runtime parameter resolution)
-        boolean hasParameters = false;
-        for (final RangePredicate pred : predicates) {
-          if (pred.isParameter()) {
-            hasParameters = true;
-            break;
-          }
-        }
-        if (hasParameters) {
-          continue;  // Skip range optimization for parameterized queries
-        }
-
         // Check if there's an index on this property
         final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
 
@@ -399,6 +387,7 @@ public class AnchorSelector {
             value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) right).getValue();
           } else if (right instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
             isParameter = true;
+            value = ((com.arcadedb.query.opencypher.ast.ParameterExpression) right).getParameterName();
           } else {
             return; // Unsupported right side (function call, etc.)
           }
@@ -422,6 +411,7 @@ public class AnchorSelector {
             value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) left).getValue();
           } else if (left instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
             isParameter = true;
+            value = ((com.arcadedb.query.opencypher.ast.ParameterExpression) left).getParameterName();
           } else {
             return; // Unsupported left side
           }

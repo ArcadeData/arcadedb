@@ -103,33 +103,12 @@ public class IndexSelectionRule implements OptimizationRule {
   public PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
     if (anchor.useIndex()) {
       if (anchor.isRangeScan()) {
-        // RANGE SCAN
-        final List<RangePredicate> predicates = anchor.getRangePredicates();
-
-        // Extract lower and upper bounds from predicates
-        Object lowerBound = null;
-        boolean lowerInclusive = false;
-        Object upperBound = null;
-        boolean upperInclusive = false;
-
-        for (final RangePredicate predicate : predicates) {
-          if (predicate.isLowerBound()) {
-            lowerBound = predicate.getValue();
-            lowerInclusive = predicate.isInclusive();
-          } else if (predicate.isUpperBound()) {
-            upperBound = predicate.getValue();
-            upperInclusive = predicate.isInclusive();
-          }
-        }
-
+        // RANGE SCAN - pass predicates for runtime parameter resolution
         return new NodeIndexRangeScan(
             anchor.getVariable(),
             anchor.getNode().getFirstLabel(),
             anchor.getPropertyName(),
-            lowerBound,
-            lowerInclusive,
-            upperBound,
-            upperInclusive,
+            anchor.getRangePredicates(),
             anchor.getIndex().getIndexName(),
             anchor.getEstimatedCost(),
             anchor.getEstimatedCardinality()

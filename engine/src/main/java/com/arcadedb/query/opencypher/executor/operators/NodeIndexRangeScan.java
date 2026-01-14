@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -49,39 +50,29 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   private final String variable;
   private final String label;
   private final String propertyName;
-  private final Object lowerBound;      // null if unbounded
-  private final boolean lowerInclusive;
-  private final Object upperBound;      // null if unbounded
-  private final boolean upperInclusive;
+  private final List<RangePredicate> predicates;  // Store predicates for parameter resolution
   private final String indexName;
 
   /**
-   * Create a range scan operator.
+   * Create a range scan operator from range predicates.
+   * Predicates may contain parameters which are resolved at execution time.
    *
    * @param variable variable name to bind results to
    * @param label vertex type/label
    * @param propertyName indexed property
-   * @param lowerBound lower bound value (null for unbounded)
-   * @param lowerInclusive whether lower bound is inclusive (>= vs >)
-   * @param upperBound upper bound value (null for unbounded)
-   * @param upperInclusive whether upper bound is inclusive (<= vs <)
+   * @param predicates range predicates (may contain parameters)
    * @param indexName name of the index being used
    * @param estimatedCost estimated cost from optimizer
    * @param estimatedCardinality estimated result count
    */
   public NodeIndexRangeScan(final String variable, final String label, final String propertyName,
-                           final Object lowerBound, final boolean lowerInclusive,
-                           final Object upperBound, final boolean upperInclusive,
-                           final String indexName,
+                           final List<RangePredicate> predicates, final String indexName,
                            final double estimatedCost, final long estimatedCardinality) {
     super(estimatedCost, estimatedCardinality);
     this.variable = variable;
     this.label = label;
     this.propertyName = propertyName;
-    this.lowerBound = lowerBound;
-    this.lowerInclusive = lowerInclusive;
-    this.upperBound = upperBound;
-    this.upperInclusive = upperInclusive;
+    this.predicates = predicates;
     this.indexName = indexName;
   }
 
@@ -92,6 +83,11 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      // Resolved bounds (after parameter resolution)
+      private Object resolvedLowerBound = null;
+      private boolean resolvedLowerInclusive = false;
+      private Object resolvedUpperBound = null;
+      private boolean resolvedUpperInclusive = false;
 
       @Override
       public boolean hasNext() {
@@ -136,17 +132,36 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
           final RangeIndex rangeIndex = (RangeIndex) typeIndex;
 
+          // Resolve bounds from predicates (may involve parameter resolution)
+          for (final RangePredicate predicate : predicates) {
+            // Resolve the value (may be a parameter)
+            Object value = predicate.getValue();
+            if (predicate.isParameter() && context != null && context.getInputParameters() != null) {
+              // Resolve parameter at execution time
+              final String paramName = (String) value;
+              value = context.getInputParameters().get(paramName);
+            }
+
+            if (predicate.isLowerBound()) {
+              resolvedLowerBound = value;
+              resolvedLowerInclusive = predicate.isInclusive();
+            } else if (predicate.isUpperBound()) {
+              resolvedUpperBound = value;
+              resolvedUpperInclusive = predicate.isInclusive();
+            }
+          }
+
           // Determine which range method to use based on bounds
-          if (lowerBound != null && upperBound != null) {
+          if (resolvedLowerBound != null && resolvedUpperBound != null) {
             // Both bounds specified: use range()
-            final Object[] beginKeys = new Object[]{lowerBound};
-            final Object[] endKeys = new Object[]{upperBound};
-            cursor = rangeIndex.range(true, beginKeys, lowerInclusive, endKeys, upperInclusive);
-          } else if (lowerBound != null) {
+            final Object[] beginKeys = new Object[]{resolvedLowerBound};
+            final Object[] endKeys = new Object[]{resolvedUpperBound};
+            cursor = rangeIndex.range(true, beginKeys, resolvedLowerInclusive, endKeys, resolvedUpperInclusive);
+          } else if (resolvedLowerBound != null) {
             // Only lower bound: use iterator(fromKeys)
-            final Object[] fromKeys = new Object[]{lowerBound};
-            cursor = rangeIndex.iterator(true, fromKeys, lowerInclusive);
-          } else if (upperBound != null) {
+            final Object[] fromKeys = new Object[]{resolvedLowerBound};
+            cursor = rangeIndex.iterator(true, fromKeys, resolvedLowerInclusive);
+          } else if (resolvedUpperBound != null) {
             // Only upper bound: iterate from beginning and stop at upper bound
             // Note: This is less efficient - we iterate all and filter
             cursor = rangeIndex.iterator(true);
@@ -164,13 +179,13 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           final Vertex vertex = identifiable.asVertex();
 
           // If we only have upper bound, we need to manually check and stop
-          if (upperBound != null && lowerBound == null) {
+          if (resolvedUpperBound != null && resolvedLowerBound == null) {
             final Object propertyValue = vertex.get(propertyName);
             if (propertyValue != null) {
               // Normalize numeric types to avoid ClassCastException
-              final int comparison = compareValues(propertyValue, upperBound);
+              final int comparison = compareValues(propertyValue, resolvedUpperBound);
 
-              if (upperInclusive) {
+              if (resolvedUpperInclusive) {
                 if (comparison > 0) {
                   finished = true;
                   break;
@@ -217,14 +232,20 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     sb.append(" [index=").append(indexName);
     sb.append(", ").append(propertyName);
 
-    // Build range description
-    if (lowerBound != null && upperBound != null) {
-      sb.append(" ").append(lowerInclusive ? ">=" : ">").append(" ").append(lowerBound);
-      sb.append(" AND ").append(upperInclusive ? "<=" : "<").append(" ").append(upperBound);
-    } else if (lowerBound != null) {
-      sb.append(" ").append(lowerInclusive ? ">=" : ">").append(" ").append(lowerBound);
-    } else if (upperBound != null) {
-      sb.append(" ").append(upperInclusive ? "<=" : "<").append(" ").append(upperBound);
+    // Build range description from predicates
+    for (final RangePredicate predicate : predicates) {
+      sb.append(" ");
+      if (predicate.isLowerBound()) {
+        sb.append(predicate.isInclusive() ? ">=" : ">");
+      } else {
+        sb.append(predicate.isInclusive() ? "<=" : "<");
+      }
+      sb.append(" ");
+      if (predicate.isParameter()) {
+        sb.append("$").append(predicate.getValue());
+      } else {
+        sb.append(predicate.getValue());
+      }
     }
 
     sb.append(", cost=").append(String.format("%.2f", estimatedCost));
@@ -246,20 +267,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     return propertyName;
   }
 
-  public Object getLowerBound() {
-    return lowerBound;
-  }
-
-  public boolean isLowerInclusive() {
-    return lowerInclusive;
-  }
-
-  public Object getUpperBound() {
-    return upperBound;
-  }
-
-  public boolean isUpperInclusive() {
-    return upperInclusive;
+  public List<RangePredicate> getPredicates() {
+    return predicates;
   }
 
   public String getIndexName() {
