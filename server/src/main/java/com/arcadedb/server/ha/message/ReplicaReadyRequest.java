@@ -18,12 +18,18 @@
  */
 package com.arcadedb.server.ha.message;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ha.HAServer;
+
+import java.util.logging.Level;
 
 public class ReplicaReadyRequest extends HAAbstractCommand {
 
   @Override
   public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
+    LogManager.instance().log(this, Level.INFO,
+        "ReplicaReadyRequest received from '%s', setting replica ONLINE",
+        remoteServerName.alias());
     server.setReplicaStatus(remoteServerName, true);
     return null;
   }
