@@ -116,7 +116,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   }
 
   /**
-   * Write a graph to pages using JVector's serialization format.
+   * Write a graph to pages using JVector's serialization format (without chunking).
    * This persists an in-memory graph to disk for later loading as OnDiskGraphIndex.
    * <p>
    * IMPORTANT:
@@ -127,16 +127,46 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    * - Graph data starts at page 0 (no metadata page needed - JVector format is self-describing)
    */
   public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors) {
+    writeGraph(graph, vectors, 0, null);
+  }
+
+  /**
+   * Write a graph to pages with chunking support for large bulk writes.
+   * <p>
+   * Chunking allows periodic commits during large writes to avoid exceeding
+   * transaction memory/size limits when WAL is disabled.
+   * <p>
+   * IMPORTANT:
+   * - MUST be called within an active transaction
+   * - Caller is responsible for transaction lifecycle and commits
+   * - chunkCallback handles commit/begin new transaction
+   * - Graph data starts at page 0 (no metadata page needed - JVector format is self-describing)
+   *
+   * @param graph          The graph index to persist
+   * @param vectors        Vector values to write (may be empty if storeVectorsInGraph=false)
+   * @param chunkSizeMB    Chunk size in MB (0 = no chunking)
+   * @param chunkCallback  Callback to invoke when chunk is complete (can be null if chunkSizeMB=0)
+   */
+  public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
+      final long chunkSizeMB, final ChunkCommitCallback chunkCallback) {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
 
     try {
-      LogManager.instance().log(this, Level.INFO, "Starting graph write (sequential): %d nodes", graph.getIdUpperBound());
+      if (chunkSizeMB > 0 && chunkCallback != null) {
+        LogManager.instance().log(this, Level.INFO,
+            "Starting graph write (sequential) with chunking: %d nodes, %dMB chunk size",
+            graph.getIdUpperBound(), chunkSizeMB);
+      } else {
+        LogManager.instance().log(this, Level.INFO,
+            "Starting graph write (sequential): %d nodes", graph.getIdUpperBound());
+      }
 
       // Create contiguous writer that provides gap-free logical address space over physical pages
       // This is critical: JVector assumes contiguous file layout with no gaps
-      final IndexWriter writer = new ContiguousPageWriter(database, getFileId(), getPageSize());
+      final IndexWriter writer = new ContiguousPageWriter(database, getFileId(), getPageSize(),
+          chunkSizeMB, chunkCallback);
 
       // Phase 2: Optionally store vectors inline in graph file
       final boolean storeVectors = mainIndex != null && mainIndex.metadata.storeVectorsInGraph;

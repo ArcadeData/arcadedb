@@ -32,6 +32,21 @@ import java.nio.*;
 import static java.util.logging.Level.*;
 
 /**
+ * Callback interface for handling chunk completion during large writes.
+ * Allows callers to commit transactions periodically to avoid exceeding memory or size limits.
+ */
+@FunctionalInterface
+interface ChunkCommitCallback {
+  /**
+   * Called when a chunk of data has been written and should be committed.
+   *
+   * @param bytesWritten Total bytes written in the current chunk
+   * @throws IOException if commit operation fails
+   */
+  void onChunkComplete(long bytesWritten) throws IOException;
+}
+
+/**
  * Provides a contiguous logical address space over ArcadeDB pages with headers.
  * Transparently splits writes that span page boundaries, hiding the 8-byte page headers
  * from the logical address space.
@@ -68,13 +83,38 @@ public class ContiguousPageWriter implements IndexWriter {
   private MutablePage currentPage;
   private int         currentPageNum;
 
+  // Chunking support (for large bulk writes with WAL disabled)
+  private long                 totalBytesWritten;   // Track bytes written in current chunk
+  private final long           chunkSizeBytes;      // Chunk size in bytes (0 = no chunking)
+  private final ChunkCommitCallback chunkCallback;  // Callback to commit chunks
+
+  /**
+   * Constructor without chunking support (backward compatibility).
+   */
   public ContiguousPageWriter(final DatabaseInternal database, final int fileId, final int pageSize) {
+    this(database, fileId, pageSize, 0, null);
+  }
+
+  /**
+   * Constructor with chunking support for bulk writes.
+   *
+   * @param database       Database instance
+   * @param fileId         File ID for page allocation
+   * @param pageSize       Page size in bytes
+   * @param chunkSizeMB    Chunk size in MB (0 = no chunking)
+   * @param chunkCallback  Callback to invoke when chunk is complete (can be null if chunkSizeMB=0)
+   */
+  public ContiguousPageWriter(final DatabaseInternal database, final int fileId, final int pageSize,
+      final long chunkSizeMB, final ChunkCommitCallback chunkCallback) {
     this.database = database;
     this.fileId = fileId;
     this.pageSize = pageSize;
     this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
     this.logicalPosition = 0;
     this.currentPageNum = -1;
+    this.totalBytesWritten = 0;
+    this.chunkSizeBytes = chunkSizeMB * 1024 * 1024;
+    this.chunkCallback = chunkCallback;
 
     // Allocate reusable buffer once (8 bytes for largest primitive type)
     this.buffer = new byte[Binary.LONG_SERIALIZED_SIZE];
@@ -157,6 +197,23 @@ public class ContiguousPageWriter implements IndexWriter {
       logicalPosition += toWrite;
       offset += toWrite;
       length -= toWrite;
+
+      // Track bytes for chunking
+      if (chunkCallback != null && chunkSizeBytes > 0) {
+        totalBytesWritten += toWrite;
+
+        // Check if chunk boundary reached
+        if (totalBytesWritten >= chunkSizeBytes) {
+          LogManager.instance().log(this, FINE,
+              "Chunk complete: %d bytes written, invoking commit callback", totalBytesWritten);
+
+          // Invoke callback to commit current transaction
+          chunkCallback.onChunkComplete(totalBytesWritten);
+
+          // Reset counter for next chunk
+          totalBytesWritten = 0;
+        }
+      }
 
       // If more data remains, next iteration writes to next page automatically
     }

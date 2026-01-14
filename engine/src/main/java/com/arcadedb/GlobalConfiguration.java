@@ -290,6 +290,13 @@ public enum GlobalConfiguration {
       Integer.class, 1000),
 
   // INDEXES
+  INDEX_BUILD_CHUNK_SIZE_MB("arcadedb.index.buildChunkSizeMB", SCOPE.DATABASE,
+          "Size in MB for transaction chunks during bulk index creation with WAL disabled. " +
+                  "Larger chunks reduce commit overhead but use more memory. " +
+                  "Smaller chunks reduce memory pressure but add commit overhead. " +
+                  "Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.",
+          Long.class, 50L),
+
   INDEX_COMPACTION_RAM_MB("arcadedb.indexCompactionRAM", SCOPE.DATABASE, "Maximum amount of RAM to use for index compaction, in MB",
       Long.class, 300),
 
