@@ -35,6 +35,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -92,6 +93,10 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private long latencyMin;
   private long latencyMax;
   private long latencyTotalTime;
+
+  // HEALTH MONITORING
+  private long lastActivityTimestamp = System.currentTimeMillis();
+  private long lastHealthCheckTimestamp = System.currentTimeMillis();
 
   public Leader2ReplicaNetworkExecutor(final HAServer ha, final ChannelBinaryServer channel, HAServer.ServerInfo remoteServer)
       throws IOException {
@@ -302,6 +307,9 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       return;
     }
 
+    // Update activity timestamp on each message
+    lastActivityTimestamp = System.currentTimeMillis();
+
     final HACommand command = request.getSecond();
 
     LogManager.instance()
@@ -313,10 +321,46 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     } else {
       executeMessage(buffer, request);
     }
+
+    // Periodic health check logging
+    checkConnectionHealth();
+  }
+
+  private void checkConnectionHealth() {
+    if (!server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_CONNECTION_HEALTH_CHECK_ENABLED)) {
+      return;
+    }
+
+    final long now = System.currentTimeMillis();
+    final long checkInterval = server.getServer().getConfiguration()
+        .getValueAsLong(GlobalConfiguration.HA_CONNECTION_HEALTH_CHECK_INTERVAL_MS);
+    final long timeout = server.getServer().getConfiguration()
+        .getValueAsLong(GlobalConfiguration.HA_CONNECTION_HEALTH_CHECK_TIMEOUT_MS);
+
+    if (now - lastHealthCheckTimestamp >= checkInterval) {
+      lastHealthCheckTimestamp = now;
+
+      final long timeSinceLastActivity = now - lastActivityTimestamp;
+
+      if (timeSinceLastActivity > timeout) {
+        LogManager.instance().log(this, Level.WARNING,
+            "No activity from replica %s for %dms (timeout: %dms, status: %s, queue: %d)",
+            remoteServer, timeSinceLastActivity, timeout, status, senderQueue.size());
+      } else {
+        LogManager.instance().log(this, Level.FINE,
+            "Connection health: replica %s is healthy (last activity: %dms ago, status: %s, queue: %d)",
+            remoteServer, timeSinceLastActivity, status, senderQueue.size());
+      }
+    }
   }
 
   private void handleIOException(IOException e) {
-    LogManager.instance().log(this, Level.FINE, "IO Error from reading requests (cause=%s)", e.getCause());
+    if (e instanceof EOFException) {
+      LogManager.instance().log(this, Level.FINE,
+          "Connection closed by replica %s during message exchange (will mark offline)", remoteServer);
+    } else {
+      LogManager.instance().log(this, Level.FINE, "IO Error from reading requests (cause=%s)", e.getCause());
+    }
     server.setReplicaStatus(remoteServer, false);
     close();
   }
@@ -567,6 +611,9 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
       c.writeVarLengthBytes(msg.getContent(), msg.size());
       c.flush();
+
+      // Update activity timestamp on successful send
+      lastActivityTimestamp = System.currentTimeMillis();
     }
   }
 
