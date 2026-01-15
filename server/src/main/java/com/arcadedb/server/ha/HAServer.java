@@ -1665,7 +1665,7 @@ public class HAServer implements ServerPlugin {
   /**
    * Connects to a remote server. The connection succeed only if the remote server is the leader.
    */
-  private void connectToLeader(ServerInfo server) {
+  private synchronized void connectToLeader(ServerInfo server) {
     LogManager.instance().log(this, Level.INFO, "Connecting to leader server %s", server);
 
     // If we were the leader, we must step down (fence ourselves) to prevent split-brain
@@ -1679,6 +1679,7 @@ public class HAServer implements ServerPlugin {
     // This prevents duplicate connection attempts in 2-server clusters where
     // connectToLeader() can be called from multiple places (initial startup + ELECTION_COMPLETED)
     // Note: We compare by host:port, not by equals(), because the alias might differ
+    // With synchronized method, second thread will wait and see the connection already established
     if (lc != null && lc.isAlive()) {
       final ServerInfo currentLeader = lc.getLeader();
       if (currentLeader.host().equals(server.host()) && currentLeader.port() == server.port()) {
