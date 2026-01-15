@@ -25,15 +25,17 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.io.*;
+import java.io.IOException;
 import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -97,6 +99,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see HATestTimeouts for timeout rationale
  * @see ReplicationServerIT for base replication test functionality
  */
+@Tag("ha")
 public class HASplitBrainIT extends ReplicationServerIT {
   private final    Timer      timer     = new Timer("HASplitBrainIT-Timer", true);  // daemon=true to prevent JVM hangs
   private final    AtomicLong messages  = new AtomicLong();
@@ -174,7 +177,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
     if (split && rejoining) {
       testLog("Waiting for cluster stabilization after rejoin...");
       try {
-        final String[] commonLeader = {null};  // Use array to allow mutation in lambda
+        final String[] commonLeader = { null };  // Use array to allow mutation in lambda
         Awaitility.await("cluster stabilization")
             .atMost(Duration.ofMinutes(2))  // Increased timeout for split-brain recovery
             .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL_LONG)

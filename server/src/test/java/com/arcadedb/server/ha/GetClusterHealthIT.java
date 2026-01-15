@@ -20,6 +20,7 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests that the /api/v1/cluster/health endpoint returns expected health information.
  */
 @Timeout(value = 5, unit = TimeUnit.MINUTES)
+@Tag("ha")
 class GetClusterHealthIT extends BaseGraphServerTest {
 
   @Override

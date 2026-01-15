@@ -21,6 +21,7 @@ package com.arcadedb.server.ha;
 import com.arcadedb.server.ha.HAServer.HACluster;
 import com.arcadedb.server.ha.HAServer.ServerInfo;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -40,6 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Claude Sonnet 4.5
  */
+@Tag("ha")
 class HAServerAliasResolutionTest {
 
   @Test

@@ -35,6 +35,7 @@ import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -45,6 +46,7 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT {
   private final AtomicInteger                       messagesInTotal    = new AtomicInteger();
   private final AtomicInteger                       messagesPerRestart = new AtomicInteger();

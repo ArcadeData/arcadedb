@@ -29,6 +29,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -39,6 +40,7 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 class IndexOperations3ServersIT extends BaseGraphServerTest {
 
   private static final int TOTAL_RECORDS = 10_000;

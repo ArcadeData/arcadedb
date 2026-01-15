@@ -5,6 +5,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -16,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.concurrent.TimeUnit;
 
+@Tag("ha")
 public class ReplicationLogFileTest {
     @TempDir
     Path tempDir;

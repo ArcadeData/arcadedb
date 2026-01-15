@@ -31,6 +31,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -100,6 +101,8 @@ import static org.assertj.core.api.Assertions.fail;
  * @see HATestTimeouts for timeout rationale
  * @see ReplicationServerIT for base replication test functionality
  */
+
+@Tag("ha")
 class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Database[]          databases   = new Database[getServerCount()];
   private final Map<String, String> schemaFiles = new LinkedHashMap<>(getServerCount());

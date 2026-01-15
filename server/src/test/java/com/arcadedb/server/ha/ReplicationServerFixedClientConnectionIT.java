@@ -31,6 +31,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -41,6 +42,7 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 public class ReplicationServerFixedClientConnectionIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
   private       int           errors   = 0;

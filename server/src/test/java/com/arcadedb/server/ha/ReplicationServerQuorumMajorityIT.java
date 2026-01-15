@@ -20,11 +20,13 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.TimeUnit;
 
 @Timeout(value = 15, unit = TimeUnit.MINUTES)
+@Tag("ha")
 public class ReplicationServerQuorumMajorityIT extends ReplicationServerIT {
 
   @Override

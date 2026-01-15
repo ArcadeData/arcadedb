@@ -26,6 +26,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 
 import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -39,6 +40,7 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 class HTTP2ServersIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {

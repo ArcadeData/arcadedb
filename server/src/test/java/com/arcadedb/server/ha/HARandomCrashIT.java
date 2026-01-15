@@ -34,6 +34,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -92,6 +93,7 @@ import static org.awaitility.Awaitility.await;
  * @see HATestTimeouts for timeout rationale
  * @see ReplicationServerIT for base replication test functionality
  */
+@Tag("ha")
 public class HARandomCrashIT extends ReplicationServerIT {
   private          int   restarts                = 0;
   private volatile long  delay                   = 0;
