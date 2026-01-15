@@ -305,6 +305,14 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     }
   }
 
+  public boolean isConnectInProgress() {
+    return connectInProgress;
+  }
+
+  public HAServer.ServerInfo getLeader() {
+    return leader;
+  }
+
   /**
    * Test purpose only.
    */

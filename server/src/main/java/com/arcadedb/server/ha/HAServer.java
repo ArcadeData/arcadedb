@@ -1674,8 +1674,21 @@ public class HAServer implements ServerPlugin {
     }
 
     final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
+
+    // Check if we're already connecting to the same server
+    // This prevents duplicate connection attempts in 2-server clusters where
+    // connectToLeader() can be called from multiple places (initial startup + ELECTION_COMPLETED)
+    if (lc != null && lc.getLeader().equals(server)) {
+      if (lc.isConnectInProgress()) {
+        LogManager.instance().log(this, Level.INFO,
+            "Connection to leader %s already in progress, skipping duplicate request", server);
+        return;
+      }
+    }
+
     if (lc != null) {
       // CLOSE ANY LEADER CONNECTION STILL OPEN
+      // kill() waits for any in-progress connection attempt to complete before proceeding
       lc.kill();
       leaderConnection.set(null);
     }
