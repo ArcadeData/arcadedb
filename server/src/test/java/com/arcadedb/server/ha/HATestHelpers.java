@@ -54,29 +54,31 @@ public class HATestHelpers {
    * @throws TimeoutException if cluster doesn't stabilize within timeout
    */
   public static void waitForClusterStable(ArcadeDBServer[] servers, int expectedReplicaCount) {
-    // Phase 1: Wait for all servers to be ONLINE
-    Awaitility.await("all servers ONLINE")
+    // Optimized single-phase wait that checks all conditions together
+    // This is faster than multi-phase waits and matches the original BaseGraphServerTest behavior
+    Awaitility.await("cluster stable")
         .atMost(HATestTimeouts.CLUSTER_STABILIZATION_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
+        .pollInterval(Duration.ofMillis(500))  // Match original poll interval for performance
         .until(() -> {
+          // Check all servers are ONLINE
           for (ArcadeDBServer server : servers) {
-            if (server.getStatus() != ArcadeDBServer.Status.ONLINE) {
+            if (server == null || server.getStatus() != ArcadeDBServer.Status.ONLINE) {
               return false;
             }
           }
-          return true;
-        });
 
-    // Phase 2: Wait for leader election
-    waitForLeaderElection(servers);
-
-    // Phase 3: Wait for all replicas to connect
-    Awaitility.await(expectedReplicaCount + " replicas connected")
-        .atMost(HATestTimeouts.REPLICA_RECONNECTION_TIMEOUT)
-        .pollInterval(Duration.ofMillis(500))
-        .until(() -> {
+          // Find leader
           ArcadeDBServer leader = getLeader(servers);
-          if (leader == null || leader.getHA() == null) return false;
+          if (leader == null) {
+            return false;
+          }
+
+          // Check HA is initialized
+          if (leader.getHA() == null) {
+            return false;
+          }
+
+          // Check all expected replicas are connected
           return leader.getHA().getOnlineReplicas() >= expectedReplicaCount;
         });
   }
@@ -92,7 +94,7 @@ public class HATestHelpers {
   public static void waitForServerShutdown(ArcadeDBServer server) {
     Awaitility.await("server shutdown")
         .atMost(HATestTimeouts.SERVER_SHUTDOWN_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
+        .pollInterval(Duration.ofMillis(500))
         .until(() -> server.getStatus() == ArcadeDBServer.Status.OFFLINE);
   }
 
@@ -107,7 +109,7 @@ public class HATestHelpers {
   public static void waitForServerStartup(ArcadeDBServer server) {
     Awaitility.await("server startup")
         .atMost(HATestTimeouts.SERVER_STARTUP_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
+        .pollInterval(Duration.ofMillis(500))
         .until(() -> server.getStatus() == ArcadeDBServer.Status.ONLINE);
   }
 
@@ -122,7 +124,7 @@ public class HATestHelpers {
   public static void waitForLeaderElection(ArcadeDBServer[] servers) {
     Awaitility.await("leader election")
         .atMost(HATestTimeouts.CLUSTER_STABILIZATION_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
+        .pollInterval(Duration.ofMillis(500))
         .until(() -> {
           ArcadeDBServer leader = getLeader(servers);
           if (leader == null || leader.getStatus() != ArcadeDBServer.Status.ONLINE) return false;
@@ -144,7 +146,7 @@ public class HATestHelpers {
   public static void waitForSchemaAlignment(ArcadeDBServer[] servers, SchemaCheck schemaCheckFunction) {
     Awaitility.await("schema alignment")
         .atMost(HATestTimeouts.SCHEMA_PROPAGATION_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
+        .pollInterval(Duration.ofMillis(200))  // Faster polling for schema checks
         .until(() -> schemaCheckFunction.check(servers));
   }
 
@@ -161,7 +163,7 @@ public class HATestHelpers {
   public static void waitForReplicationAlignment(ArcadeDBServer[] servers, ReplicationCheck alignmentCheckFunction) {
     Awaitility.await("replication alignment")
         .atMost(HATestTimeouts.REPLICATION_QUEUE_DRAIN_TIMEOUT)
-        .pollInterval(HATestTimeouts.AWAITILITY_POLL_INTERVAL)
+        .pollInterval(Duration.ofMillis(500))
         .until(() -> alignmentCheckFunction.check(servers));
   }
 
