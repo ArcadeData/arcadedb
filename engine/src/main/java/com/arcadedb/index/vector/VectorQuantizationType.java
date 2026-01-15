@@ -44,5 +44,14 @@ public enum VectorQuantizationType {
    * Uses Hamming distance instead of cosine/euclidean.
    * Suitable for approximate search with reranking.
    */
-  BINARY
+  BINARY,
+
+  /**
+   * Product Quantization (PQ) using JVector's native implementation.
+   * Divides vectors into M subspaces with K clusters each.
+   * Provides configurable compression (typically 16x-64x) via pqSubspaces parameter.
+   * Enables zero-disk-I/O approximate search by keeping compressed vectors in memory.
+   * Best for RAG systems where microsecond latency is required.
+   */
+  PRODUCT
 }
