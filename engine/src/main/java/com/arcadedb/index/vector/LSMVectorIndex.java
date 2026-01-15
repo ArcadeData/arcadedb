@@ -3040,19 +3040,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
-    return build(buildIndexBatchSize, callback, null);
+    return build(callback, null);
   }
 
   /**
    * Build the vector index with optional graph building progress callback.
    * Uses WAL bypass and transaction chunking for efficient bulk loading.
    *
-   * @param buildIndexBatchSize Batch size for committing during index build (ignored, uses chunk-based commits)
-   * @param callback            Callback for document indexing progress
-   * @param graphCallback       Callback for graph building progress
+   * @param callback      Callback for document indexing progress
+   * @param graphCallback Callback for graph building progress
    * @return Total number of records indexed
    */
-  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback, final GraphBuildCallback graphCallback) {
+  public long build(final BuildIndexCallback callback, final GraphBuildCallback graphCallback) {
     final long totalRecords;
 
     lock.writeLock().lock();
@@ -3214,7 +3213,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void buildGraphWithChunking(final GraphBuildCallback graphCallback) throws IOException {
     LogManager.instance().log(this, Level.INFO,
-            "Building graph with transaction chunking for: %s", indexName);
+            "LSM Vector graph building with transaction chunking for: %s", indexName);
 
     final DatabaseInternal db = getDatabase();
 
@@ -3235,7 +3234,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Persist graph with chunking callback
       final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
         LogManager.instance().log(this, Level.INFO,
-                "Graph persistence chunk complete: %.1fMB written",
+                "LSM Vector graph persistence chunk complete: %.1fMB written",
                 bytesWritten / (1024.0 * 1024.0));
 
         // Commit current transaction
@@ -3258,7 +3257,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (startedTransaction) {
         db.commit();
         LogManager.instance().log(this, Level.INFO,
-                "Graph persisted with chunking for index: %s", indexName);
+                "LSM Vector graph persisted with chunking for index: %s", indexName);
       }
 
     } catch (final Exception e) {
