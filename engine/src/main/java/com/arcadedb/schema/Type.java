@@ -503,7 +503,7 @@ public enum Type {
           else {
             // GUESS FORMAT BY STRING LENGTH
             if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
+              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern(DATE_FORMAT_DAYS));
           }
         }
       } else if (targetClass.equals(LocalDateTime.class)) {
