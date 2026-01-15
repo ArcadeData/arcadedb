@@ -61,6 +61,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   private          String              leaderServerHTTPAddress;
   private          ChannelBinaryClient channel;
   private volatile boolean             shutdown                     = false;
+  private volatile boolean             connectInProgress            = false;
   private final    Object              channelOutputLock            = new Object();
   private final    Object              channelInputLock             = new Object();
   private          long                installDatabaseLastLogNumber = -1;
@@ -276,6 +277,26 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     interrupt();
     close();
 
+    // Wait for any in-progress connection attempt to finish
+    // This prevents race conditions in 2-server clusters where old and new executors
+    // might try to connect simultaneously, causing "Connection reset" errors
+    final long maxWaitMs = 10000; // 10 seconds max wait
+    final long startWait = System.currentTimeMillis();
+    while (connectInProgress && (System.currentTimeMillis() - startWait) < maxWaitMs) {
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+
+    if (connectInProgress) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Connection attempt still in progress after %dms wait during kill()",
+          System.currentTimeMillis() - startWait);
+    }
+
     // WAIT THE THREAD IS DEAD
     try {
       join();
@@ -311,14 +332,23 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   public void connect() {
-    final int maxAttempts = server.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS);
-    final long baseDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS);
-    final long maxDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS);
+    connectInProgress = true;
+    try {
+      final int maxAttempts = server.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS);
+      final long baseDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS);
+      final long maxDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS);
 
-    ConnectionException lastException = null;
-    final long startTime = System.currentTimeMillis();
+      ConnectionException lastException = null;
+      final long startTime = System.currentTimeMillis();
 
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Check if shutdown was requested before each attempt
+      // This is critical for 2-server clusters where connection replacement can happen mid-retry
+      if (shutdown) {
+        LogManager.instance().log(this, Level.INFO, "Connection retry aborted: shutdown requested before attempt %d/%d", attempt, maxAttempts);
+        throw new ConnectionException(leader.toString(), "Connection aborted: executor shutdown");
+      }
+
       try {
         if (attempt > 1) {
           LogManager.instance().log(this, Level.INFO, "Connection attempt %d/%d to leader %s", attempt, maxAttempts, leader);
@@ -371,11 +401,14 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.INFO, "Connection retry interrupted");
           throw e;
         }
+        }
       }
-    }
 
-    // All attempts failed
-    throw lastException;
+      // All attempts failed
+      throw lastException;
+    } finally {
+      connectInProgress = false;
+    }
   }
 
   private void attemptConnect() {
