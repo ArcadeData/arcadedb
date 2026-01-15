@@ -122,13 +122,21 @@ public class CypherExecutionPlan {
     AbstractExecutionStep rootStep;
 
     // Phase 4: Use optimized physical plan if available
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null) {
+    // BUT: Disable optimizer when UNWIND precedes MATCH in the query
+    // The optimizer doesn't handle clause ordering correctly - it puts the WHERE filter
+    // before UNWIND, which breaks queries like:
+    //   UNWIND $batch as row MATCH (a) WHERE ID(a) = row.source_id
+    // In this case, the WHERE filter needs to run AFTER UNWIND to access 'row'.
+    final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
+
+    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch) {
       // Use optimizer - execute physical operators directly
       // Note: For Phase 4, we only optimize MATCH patterns
       // RETURN, ORDER BY, LIMIT are still handled by execution steps
       rootStep = buildExecutionStepsWithOptimizer(context);
     } else {
       // Fall back to non-optimized execution
+      // This path correctly handles clause ordering (UNWIND before MATCH)
       rootStep = buildExecutionSteps(context);
     }
 
@@ -379,9 +387,406 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Checks if the query has UNWIND before MATCH in clause order.
+   * This is used to disable the optimizer for such queries because the optimizer
+   * doesn't handle clause ordering correctly.
+   */
+  private boolean hasUnwindPrecedingMatch() {
+    final List<com.arcadedb.query.opencypher.ast.ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    if (clausesInOrder == null || clausesInOrder.isEmpty()) {
+      // Fall back to checking if both UNWIND and MATCH exist
+      return !statement.getUnwindClauses().isEmpty() && !statement.getMatchClauses().isEmpty();
+    }
+
+    // Find the first UNWIND and first MATCH in clause order
+    int firstUnwindOrder = Integer.MAX_VALUE;
+    int firstMatchOrder = Integer.MAX_VALUE;
+
+    for (final com.arcadedb.query.opencypher.ast.ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() == com.arcadedb.query.opencypher.ast.ClauseEntry.ClauseType.UNWIND) {
+        firstUnwindOrder = Math.min(firstUnwindOrder, entry.getOrder());
+      } else if (entry.getType() == com.arcadedb.query.opencypher.ast.ClauseEntry.ClauseType.MATCH) {
+        firstMatchOrder = Math.min(firstMatchOrder, entry.getOrder());
+      }
+    }
+
+    // Return true if UNWIND appears before MATCH
+    return firstUnwindOrder < firstMatchOrder;
+  }
+
+  /**
    * Builds the execution step chain from the parsed statement.
    */
   private AbstractExecutionStep buildExecutionSteps(final CommandContext context) {
+    // Check if we have clause order information available
+    final List<com.arcadedb.query.opencypher.ast.ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    if (clausesInOrder != null && !clausesInOrder.isEmpty()) {
+      return buildExecutionStepsWithOrder(context, clausesInOrder);
+    }
+    // Fall back to legacy processing if no order info
+    return buildExecutionStepsLegacy(context);
+  }
+
+  /**
+   * Builds execution steps respecting the order clauses appear in the query.
+   * This is essential for queries like UNWIND...MATCH where UNWIND must run first.
+   */
+  private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
+      final List<com.arcadedb.query.opencypher.ast.ClauseEntry> clausesInOrder) {
+    AbstractExecutionStep currentStep = null;
+
+    // Get function factory from evaluator for steps that need it
+    final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
+
+    // Special case: RETURN without MATCH (standalone expressions)
+    // E.g., RETURN abs(-42), RETURN 1+1
+    if (statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null &&
+        clausesInOrder.stream().noneMatch(c -> c.getType() == com.arcadedb.query.opencypher.ast.ClauseEntry.ClauseType.UNWIND)) {
+      // Create a dummy row to evaluate expressions against
+      final ResultInternal dummyRow = new ResultInternal();
+      final List<Result> singleRow = List.of(dummyRow);
+
+      // Return the single row via an initial step
+      currentStep = new AbstractExecutionStep(context) {
+        private boolean consumed = false;
+
+        @Override
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+          if (consumed) {
+            return new IteratorResultSet(List.<ResultInternal>of().iterator());
+          }
+          consumed = true;
+          return new IteratorResultSet(singleRow.iterator());
+        }
+
+        @Override
+        public String prettyPrint(final int depth, final int indent) {
+          return "  ".repeat(Math.max(0, depth * indent)) + "+ DUMMY ROW (for standalone expressions)";
+        }
+      };
+    }
+
+    // Process clauses in order
+    for (final com.arcadedb.query.opencypher.ast.ClauseEntry entry : clausesInOrder) {
+      switch (entry.getType()) {
+        case UNWIND:
+          final com.arcadedb.query.opencypher.ast.UnwindClause unwindClause = entry.getTypedClause();
+          final com.arcadedb.query.opencypher.executor.steps.UnwindStep unwindStep =
+              new com.arcadedb.query.opencypher.executor.steps.UnwindStep(unwindClause, context, functionFactory);
+          if (currentStep != null) {
+            unwindStep.setPrevious(currentStep);
+          }
+          currentStep = unwindStep;
+          break;
+
+        case MATCH:
+          final MatchClause matchClause = entry.getTypedClause();
+          currentStep = buildMatchStep(matchClause, currentStep, context);
+          break;
+
+        case WITH:
+          final com.arcadedb.query.opencypher.ast.WithClause withClause = entry.getTypedClause();
+          currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
+          break;
+
+        case MERGE:
+          final com.arcadedb.query.opencypher.ast.MergeClause mergeClause = entry.getTypedClause();
+          final com.arcadedb.query.opencypher.executor.steps.MergeStep mergeStep =
+              new com.arcadedb.query.opencypher.executor.steps.MergeStep(mergeClause, context, functionFactory);
+          if (currentStep != null) {
+            mergeStep.setPrevious(currentStep);
+          }
+          currentStep = mergeStep;
+          break;
+
+        case CREATE:
+          final com.arcadedb.query.opencypher.ast.CreateClause createClause = entry.getTypedClause();
+          if (!createClause.isEmpty()) {
+            final CreateStep createStep = new CreateStep(createClause, context);
+            if (currentStep != null) {
+              createStep.setPrevious(currentStep);
+            }
+            currentStep = createStep;
+          }
+          break;
+
+        case SET:
+          final com.arcadedb.query.opencypher.ast.SetClause setClause = entry.getTypedClause();
+          if (!setClause.isEmpty() && currentStep != null) {
+            final com.arcadedb.query.opencypher.executor.steps.SetStep setStep =
+                new com.arcadedb.query.opencypher.executor.steps.SetStep(setClause, context, functionFactory);
+            setStep.setPrevious(currentStep);
+            currentStep = setStep;
+          }
+          break;
+
+        case DELETE:
+          final com.arcadedb.query.opencypher.ast.DeleteClause deleteClause = entry.getTypedClause();
+          if (!deleteClause.isEmpty() && currentStep != null) {
+            final com.arcadedb.query.opencypher.executor.steps.DeleteStep deleteStep =
+                new com.arcadedb.query.opencypher.executor.steps.DeleteStep(deleteClause, context);
+            deleteStep.setPrevious(currentStep);
+            currentStep = deleteStep;
+          }
+          break;
+
+        case RETURN:
+          // RETURN is handled at the end
+          break;
+      }
+    }
+
+    // Apply statement-level WHERE clause if present
+    if (statement.getWhereClause() != null && currentStep != null) {
+      final FilterPropertiesStep filterStep = new FilterPropertiesStep(statement.getWhereClause(), context);
+      filterStep.setPrevious(currentStep);
+      currentStep = filterStep;
+    }
+
+    // Process RETURN clause
+    if (statement.getReturnClause() != null && currentStep != null) {
+      if (statement.getReturnClause().hasAggregations()) {
+        if (statement.getReturnClause().hasNonAggregations()) {
+          final com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep groupByAggStep =
+              new com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep(
+                  statement.getReturnClause(), context, functionFactory);
+          groupByAggStep.setPrevious(currentStep);
+          currentStep = groupByAggStep;
+        } else {
+          final AggregationStep aggStep = new AggregationStep(statement.getReturnClause(), context, functionFactory);
+          aggStep.setPrevious(currentStep);
+          currentStep = aggStep;
+        }
+      } else {
+        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);
+        returnStep.setPrevious(currentStep);
+        currentStep = returnStep;
+      }
+    }
+
+    // ORDER BY
+    if (statement.getOrderByClause() != null && currentStep != null) {
+      final com.arcadedb.query.opencypher.executor.steps.OrderByStep orderByStep =
+          new com.arcadedb.query.opencypher.executor.steps.OrderByStep(statement.getOrderByClause(), context);
+      orderByStep.setPrevious(currentStep);
+      currentStep = orderByStep;
+    }
+
+    // SKIP
+    if (statement.getSkip() != null && currentStep != null) {
+      final com.arcadedb.query.opencypher.executor.steps.SkipStep skipStep =
+          new com.arcadedb.query.opencypher.executor.steps.SkipStep(statement.getSkip(), context);
+      skipStep.setPrevious(currentStep);
+      currentStep = skipStep;
+    }
+
+    // LIMIT
+    if (statement.getLimit() != null && currentStep != null) {
+      final com.arcadedb.query.opencypher.executor.steps.LimitStep limitStep =
+          new com.arcadedb.query.opencypher.executor.steps.LimitStep(statement.getLimit(), context);
+      limitStep.setPrevious(currentStep);
+      currentStep = limitStep;
+    }
+
+    // Final projection
+    if (statement.getReturnClause() != null && currentStep != null) {
+      final FinalProjectionStep finalProjectionStep = new FinalProjectionStep(statement.getReturnClause(), context);
+      finalProjectionStep.setPrevious(currentStep);
+      currentStep = finalProjectionStep;
+    }
+
+    return currentStep;
+  }
+
+  /**
+   * Builds execution step for a WITH clause.
+   */
+  private AbstractExecutionStep buildWithStep(final com.arcadedb.query.opencypher.ast.WithClause withClause,
+      AbstractExecutionStep currentStep, final CommandContext context, final CypherFunctionFactory functionFactory) {
+    if (withClause.hasAggregations()) {
+      if (withClause.hasNonAggregations()) {
+        final com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep groupByStep =
+            new com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep(
+                new com.arcadedb.query.opencypher.ast.ReturnClause(withClause.getItems(), true),
+                context, functionFactory);
+        if (currentStep != null) {
+          groupByStep.setPrevious(currentStep);
+        }
+        currentStep = groupByStep;
+      } else {
+        final com.arcadedb.query.opencypher.executor.steps.AggregationStep aggStep =
+            new com.arcadedb.query.opencypher.executor.steps.AggregationStep(
+                new com.arcadedb.query.opencypher.ast.ReturnClause(withClause.getItems(), true),
+                context, functionFactory);
+        if (currentStep != null) {
+          aggStep.setPrevious(currentStep);
+        }
+        currentStep = aggStep;
+      }
+    } else {
+      final com.arcadedb.query.opencypher.executor.steps.WithStep withStep =
+          new com.arcadedb.query.opencypher.executor.steps.WithStep(withClause, context, functionFactory);
+      if (currentStep != null) {
+        withStep.setPrevious(currentStep);
+      }
+      currentStep = withStep;
+    }
+
+    // Apply ORDER BY if present in WITH
+    if (withClause.getOrderByClause() != null) {
+      final com.arcadedb.query.opencypher.executor.steps.OrderByStep orderByStep =
+          new com.arcadedb.query.opencypher.executor.steps.OrderByStep(withClause.getOrderByClause(), context);
+      if (currentStep != null) {
+        orderByStep.setPrevious(currentStep);
+      }
+      currentStep = orderByStep;
+    }
+
+    return currentStep;
+  }
+
+  /**
+   * Builds execution step for a MATCH clause.
+   */
+  private AbstractExecutionStep buildMatchStep(final MatchClause matchClause, AbstractExecutionStep currentStep,
+      final CommandContext context) {
+    if (!matchClause.hasPathPatterns()) {
+      return currentStep;
+    }
+
+    final List<PathPattern> pathPatterns = matchClause.getPathPatterns();
+    final AbstractExecutionStep stepBeforeMatch = currentStep;
+    final java.util.Set<String> matchVariables = new java.util.HashSet<>();
+    final boolean isOptional = matchClause.isOptional();
+
+    AbstractExecutionStep matchChainStart = null;
+
+    for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
+      final PathPattern pathPattern = pathPatterns.get(patternIndex);
+
+      if (pathPattern.isSingleNode()) {
+        final NodePattern nodePattern = pathPattern.getFirstNode();
+        final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("n" + patternIndex);
+        matchVariables.add(variable);
+        final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context);
+
+        if (isOptional) {
+          if (matchChainStart == null) {
+            matchChainStart = matchStep;
+            currentStep = matchStep;
+          } else {
+            matchStep.setPrevious(currentStep);
+            currentStep = matchStep;
+          }
+        } else {
+          if (currentStep != null) {
+            matchStep.setPrevious(currentStep);
+          }
+          currentStep = matchStep;
+        }
+      } else {
+        final NodePattern sourceNode = pathPattern.getFirstNode();
+        final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
+
+        final boolean sourceAlreadyBound = stepBeforeMatch != null &&
+            !sourceNode.hasLabels() && !sourceNode.hasProperties();
+
+        if (!sourceAlreadyBound) {
+          matchVariables.add(sourceVar);
+          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context);
+
+          if (isOptional) {
+            if (matchChainStart == null) {
+              matchChainStart = sourceStep;
+              currentStep = sourceStep;
+            } else {
+              sourceStep.setPrevious(currentStep);
+              currentStep = sourceStep;
+            }
+          } else {
+            if (currentStep != null) {
+              sourceStep.setPrevious(currentStep);
+            }
+            currentStep = sourceStep;
+          }
+        } else {
+          if (isOptional && matchChainStart == null) {
+            currentStep = null;
+          }
+        }
+
+        final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
+        if (pathVariable != null) {
+          matchVariables.add(pathVariable);
+        }
+
+        for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+          final RelationshipPattern relPattern = pathPattern.getRelationship(i);
+          final NodePattern targetNode = pathPattern.getNode(i + 1);
+          final String relVar = relPattern.getVariable();
+          final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("n" + i);
+
+          if (relVar != null && !relVar.isEmpty()) {
+            matchVariables.add(relVar);
+          }
+          matchVariables.add(targetVar);
+
+          AbstractExecutionStep nextStep;
+          if (relPattern.isVariableLength()) {
+            nextStep = new ExpandPathStep(sourceVar, pathVariable, targetVar, relPattern, context);
+          } else {
+            nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable, context);
+          }
+
+          if (isOptional && matchChainStart == null) {
+            matchChainStart = nextStep;
+            currentStep = nextStep;
+          } else if (sourceAlreadyBound && currentStep == null) {
+            nextStep.setPrevious(stepBeforeMatch);
+            currentStep = nextStep;
+          } else {
+            nextStep.setPrevious(currentStep);
+            currentStep = nextStep;
+          }
+        }
+      }
+    }
+
+    // Apply WHERE clause scoped to this MATCH
+    if (matchClause.hasWhereClause() && currentStep != null) {
+      final FilterPropertiesStep filterStep = new FilterPropertiesStep(matchClause.getWhereClause(), context);
+
+      if (isOptional) {
+        filterStep.setPrevious(currentStep);
+        currentStep = filterStep;
+        if (matchChainStart == null) {
+          matchChainStart = filterStep;
+        }
+      } else {
+        filterStep.setPrevious(currentStep);
+        currentStep = filterStep;
+      }
+    }
+
+    // Wrap in OptionalMatchStep if this is an OPTIONAL MATCH
+    if (isOptional && matchChainStart != null) {
+      final com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep optionalStep =
+          new com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep(matchChainStart, matchVariables, context);
+
+      if (stepBeforeMatch != null) {
+        optionalStep.setPrevious(stepBeforeMatch);
+      }
+      currentStep = optionalStep;
+    }
+
+    return currentStep;
+  }
+
+  /**
+   * Legacy method for building execution steps (fixed order).
+   * Used when clause order information is not available.
+   */
+  private AbstractExecutionStep buildExecutionStepsLegacy(final CommandContext context) {
     AbstractExecutionStep currentStep = null;
 
     // Get function factory from evaluator for steps that need it

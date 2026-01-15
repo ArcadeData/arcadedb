@@ -137,4 +137,14 @@ public interface CypherStatement {
    * @return list of WITH clauses (may be empty)
    */
   List<WithClause> getWithClauses();
+
+  /**
+   * Returns all clauses in the order they appear in the query.
+   * This is essential for queries like UNWIND...MATCH where clause order matters.
+   *
+   * @return list of clause entries in order (may be empty)
+   */
+  default List<ClauseEntry> getClausesInOrder() {
+    return List.of();
+  }
 }
