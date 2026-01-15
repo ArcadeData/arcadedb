@@ -713,6 +713,37 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Build (or rebuild) the vector graph immediately instead of waiting for the next search-triggered lazy build.
+   * Useful after bulk inserts/updates when callers want the graph to be ready right away.
+   */
+  public void buildVectorGraphNow() {
+    buildVectorGraphNow(null);
+  }
+
+  /**
+   * Build (or rebuild) the vector graph immediately with an optional progress callback.
+   * This forces a full rebuild even if the mutation threshold has not been reached yet.
+   *
+   * @param graphCallback optional progress callback invoked during graph construction/persistence
+   */
+  public void buildVectorGraphNow(final GraphBuildCallback graphCallback) {
+    checkIsValid();
+
+    // Prevent concurrent graph rebuilds and signal callers to retry if the index is busy.
+    if (!status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE))
+      throw new NeedRetryException("Vector index '" + indexName + "' is not available for rebuild");
+
+    try {
+      // Force rebuild from on-disk pages, bypassing mutation thresholds and lazy-load behavior.
+      graphState = GraphState.LOADING;
+      mutationsSinceSerialize.set(0);
+      buildGraphFromScratchWithRetry(graphCallback);
+    } finally {
+      status.set(INDEX_STATUS.AVAILABLE);
+    }
+  }
+
+  /**
    * Build graph from scratch by reading all active vectors and constructing the graph index.
    * After building, persists the graph to disk and transitions to IMMUTABLE state.
    */
