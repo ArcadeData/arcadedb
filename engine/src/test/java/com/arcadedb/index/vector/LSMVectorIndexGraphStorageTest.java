@@ -401,6 +401,145 @@ public class LSMVectorIndexGraphStorageTest {
     }
   }
 
+  /**
+   * Test for GitHub issue #3142: storeVectorsInGraph=false still produces a vecgraph file that
+   * inlines vectors, so vectors are stored twice (bucket + graph), inflating disk and RSS.
+   * <p>
+   * When storeVectorsInGraph=false, the graph file should store only topology (no vectors).
+   */
+  @Test
+  public void testStoreVectorsInGraphFalseShouldNotStoreVectors() {
+    final String dbPathWithVectors = DB_PATH + "_with_vectors";
+    final String dbPathWithoutVectors = DB_PATH + "_without_vectors";
+
+    FileUtils.deleteRecursively(new File(dbPathWithVectors));
+    FileUtils.deleteRecursively(new File(dbPathWithoutVectors));
+
+    try {
+      final int dimensions = 128;
+      final int numVectors = 1000; // Use 1000 vectors to ensure file size difference is significant
+
+      // Create database WITH storeVectorsInGraph=true
+      long graphFileSizeWithVectors;
+      try (final DatabaseFactory factory = new DatabaseFactory(dbPathWithVectors)) {
+        try (final Database db = factory.create()) {
+          db.transaction(() -> {
+            final DocumentType type = db.getSchema().createDocumentType("VectorDoc");
+            type.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+
+            db.command("sql", """
+                CREATE INDEX ON VectorDoc (embedding) LSM_VECTOR
+                METADATA {
+                  "dimensions": %d,
+                  "similarity": "COSINE",
+                  "storeVectorsInGraph": true
+                }
+                """.formatted(dimensions));
+          });
+
+          // Insert test vectors
+          db.transaction(() -> {
+            for (int i = 0; i < numVectors; i++) {
+              final float[] vector = generateRandomVector(dimensions, i);
+              final var doc = db.newDocument("VectorDoc");
+              doc.set("embedding", vector);
+              doc.save();
+            }
+          });
+
+          // Trigger graph build by performing a search
+          final LSMVectorIndex index = getVectorIndex(db, "VectorDoc", "embedding");
+          index.findNeighborsFromVector(generateRandomVector(dimensions, 999), 10);
+        }
+
+        graphFileSizeWithVectors = getVecgraphFileSize(dbPathWithVectors);
+        System.out.println("Graph file size WITH vectors: " + graphFileSizeWithVectors + " bytes");
+      }
+
+      // Create database WITHOUT storeVectorsInGraph (false)
+      long graphFileSizeWithoutVectors;
+      try (final DatabaseFactory factory = new DatabaseFactory(dbPathWithoutVectors)) {
+        try (final Database db = factory.create()) {
+          db.transaction(() -> {
+            final DocumentType type = db.getSchema().createDocumentType("VectorDoc");
+            type.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+
+            db.command("sql", """
+                CREATE INDEX ON VectorDoc (embedding) LSM_VECTOR
+                METADATA {
+                  "dimensions": %d,
+                  "similarity": "COSINE",
+                  "storeVectorsInGraph": false
+                }
+                """.formatted(dimensions));
+          });
+
+          // Insert identical test vectors
+          db.transaction(() -> {
+            for (int i = 0; i < numVectors; i++) {
+              final float[] vector = generateRandomVector(dimensions, i);
+              final var doc = db.newDocument("VectorDoc");
+              doc.set("embedding", vector);
+              doc.save();
+            }
+          });
+
+          // Trigger graph build by performing a search
+          final LSMVectorIndex index = getVectorIndex(db, "VectorDoc", "embedding");
+          index.findNeighborsFromVector(generateRandomVector(dimensions, 999), 10);
+        }
+
+        graphFileSizeWithoutVectors = getVecgraphFileSize(dbPathWithoutVectors);
+        System.out.println("Graph file size WITHOUT vectors: " + graphFileSizeWithoutVectors + " bytes");
+      }
+
+      // Calculate expected sizes:
+      // - Vector data per node: dimensions * 4 bytes (float32) = 128 * 4 = 512 bytes
+      // - Total vector data: numVectors * 512 = 200 * 512 = 102,400 bytes (~100KB)
+      // - When storeVectorsInGraph=false, the graph file should be ~100KB smaller
+      final long vectorDataSize = (long) numVectors * dimensions * 4;
+      System.out.println("Expected vector data size: " + vectorDataSize + " bytes");
+
+      // The graph file WITHOUT vectors should be significantly smaller
+      // We expect at least 80% of the vector data to be saved (allowing for overhead)
+      final long sizeDifference = graphFileSizeWithVectors - graphFileSizeWithoutVectors;
+      System.out.println("Size difference: " + sizeDifference + " bytes");
+
+      // This assertion should FAIL with the current bug (both sizes are similar)
+      // After the fix, this should PASS (WITHOUT vectors should be much smaller)
+      Assertions.assertTrue(sizeDifference > vectorDataSize * 0.8,
+          "BUG #3142: storeVectorsInGraph=false still stores vectors in graph file! " +
+              "Size with vectors: " + graphFileSizeWithVectors + " bytes, " +
+              "Size without vectors: " + graphFileSizeWithoutVectors + " bytes, " +
+              "Expected difference: >" + (vectorDataSize * 0.8) + " bytes, " +
+              "Actual difference: " + sizeDifference + " bytes");
+
+      System.out.println("✓ Test passed: storeVectorsInGraph=false correctly excludes vectors from graph file");
+    } finally {
+      FileUtils.deleteRecursively(new File(dbPathWithVectors));
+      FileUtils.deleteRecursively(new File(dbPathWithoutVectors));
+    }
+  }
+
+  /**
+   * Helper method to find and measure the vecgraph file size.
+   */
+  private long getVecgraphFileSize(final String dbPath) {
+    final File dbDir = new File(dbPath);
+    long totalSize = 0;
+
+    if (dbDir.exists() && dbDir.isDirectory()) {
+      final File[] vecgraphFiles = dbDir.listFiles((dir, name) -> name.endsWith(".vecgraph"));
+      if (vecgraphFiles != null) {
+        for (final File f : vecgraphFiles) {
+          totalSize += f.length();
+        }
+      }
+    }
+
+    return totalSize;
+  }
+
   // Helper methods
 
   private float[] generateRandomVector(final int dimensions, final int seed) {
