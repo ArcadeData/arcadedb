@@ -664,7 +664,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return; // Another thread already started building
 
       // Try to load persisted graph from disk
-      if (graphFile != null && graphFile.hasPersistedGraph()) {
+      // IMPORTANT: If PRODUCT quantization is enabled but PQ file doesn't exist, we need to rebuild
+      // the graph from scratch so that ordinalToVectorId is consistent between graph and PQ.
+      // Loading graph from disk and then building PQ separately causes ordinal mismatch.
+      final boolean needsGraphRebuildForPQ = metadata.quantizationType == VectorQuantizationType.PRODUCT &&
+              pqFile != null && !pqFile.exists();
+      if (needsGraphRebuildForPQ) {
+        LogManager.instance().log(this, Level.INFO,
+                "PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal consistency: %s",
+                indexName);
+      }
+      if (graphFile != null && graphFile.hasPersistedGraph() && !needsGraphRebuildForPQ) {
         try {
           this.graphIndex = graphFile.loadGraph();
           this.graphState = GraphState.IMMUTABLE;
@@ -681,8 +691,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
             }
 
             // Re-validate vectors to match graph building logic
-            if (metadata.quantizationType != VectorQuantizationType.NONE) {
-              // With quantization: verify we can read the quantized vector
+            // NOTE: PRODUCT quantization does NOT store vectors in pages - must read from documents like NONE
+            final boolean hasInlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8 ||
+                metadata.quantizationType == VectorQuantizationType.BINARY;
+            if (hasInlineQuantization) {
+              // With INT8/BINARY quantization: verify we can read the quantized vector from pages
               try {
                 final float[] vector = readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
                 if (vector == null || vector.length != metadata.dimensions) {
@@ -727,6 +740,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
           LogManager.instance().log(this, Level.INFO,
                   "Loaded graph from disk for index: %s, graphSize=%d, ordinalToVectorIdLength=%d, vectorIndexSize=%d", indexName,
                   graphIndex != null ? graphIndex.size() : 0, ordinalToVectorId.length, vectorIndex.size());
+
+          // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
+          // This handles the case where graph was built before PRODUCT quantization was added
+          if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null && !pqFile.isPQReady()) {
+            LogManager.instance().log(this, Level.INFO,
+                    "PQ not available after graph load, building PQ for index: %s", indexName);
+            try {
+              // Create vector values from the loaded vectorIndex for PQ building
+              final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
+              for (int vectorId : ordinalToVectorId) {
+                final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+                if (loc != null && !loc.deleted) {
+                  vectorLocationSnapshot.put(vectorId, loc);
+                }
+              }
+              final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
+                      vectorLocationSnapshot, ordinalToVectorId, this, getGraphBuildCacheSize());
+              buildAndPersistPQ(vectors);
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING,
+                      "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
+            }
+          }
           return;
         } catch (final Exception e) {
           LogManager.instance()
@@ -1065,10 +1101,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (loc != null && !loc.deleted) {
           validationAttempts++;
 
-          // CRITICAL FIX: When quantization is enabled, vectors are stored in index pages, not documents
+          // CRITICAL FIX: When INT8/BINARY quantization is enabled, vectors are stored in index pages, not documents
           // Skip expensive document validation and trust the page data we already read
-          if (metadata.quantizationType != VectorQuantizationType.NONE) {
-            // With quantization: vectors are in index pages, document validation not needed
+          // NOTE: PRODUCT quantization does NOT store vectors in pages - it uses a separate PQ file built AFTER graph construction
+          // So for PRODUCT, we must read from documents just like NONE
+          final boolean hasInlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8 ||
+              metadata.quantizationType == VectorQuantizationType.BINARY;
+          if (hasInlineQuantization) {
+            // With INT8/BINARY quantization: vectors are in index pages, document validation not needed
             // Just validate that we can read the quantized vector
             try {
               final float[] vector = readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
@@ -1929,6 +1969,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (metadata.quantizationType == VectorQuantizationType.NONE)
       return null; // No quantization
 
+    if (metadata.quantizationType == VectorQuantizationType.PRODUCT)
+      return null; // PQ is handled separately via LSMVectorIndexPQFile, not in page storage
+
     if (metadata.quantizationType == VectorQuantizationType.INT8)
       return quantizeToInt8(vector);
 
@@ -2491,9 +2534,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Execute search using the PQ-based score provider
         // The graph structure is typically small enough to stay in OS page cache
+        // Note: JVector 4.0's search method uses (scoreProvider, topK, Bits) signature
         final SearchResult searchResult;
         try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
-          searchResult = searcher.search(ssp, k, metadata.efSearch, bitsFilter);
+          searchResult = searcher.search(ssp, k, bitsFilter);
         }
 
         // Extract RIDs and scores from search results

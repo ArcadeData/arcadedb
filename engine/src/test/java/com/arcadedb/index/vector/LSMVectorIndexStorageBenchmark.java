@@ -119,7 +119,7 @@ public class LSMVectorIndexStorageBenchmark {
   }
 
   /**
-   * Benchmark 4: Quantization only (without graph storage).
+   * Benchmark 5: Quantization only (without graph storage).
    * Vectors fetched from quantized pages.
    */
   @Test
@@ -128,11 +128,43 @@ public class LSMVectorIndexStorageBenchmark {
     System.out.println("Benchmark 5: BINARY Quantization");
     System.out.println("========================================");
 
-    runBenchmark(false, VectorQuantizationType.BINARY, "BINARY Quantization Only (Pages)");
+    runBenchmark(false, VectorQuantizationType.BINARY, false, "BINARY Quantization Only (Pages)");
+  }
+
+  /**
+   * Benchmark 6: Product Quantization with exact search.
+   * PQ is built but search uses exact vectors (fallback mode).
+   */
+  @Test
+  public void benchmarkProductQuantizationExact() {
+    System.out.println("\n========================================");
+    System.out.println("Benchmark 6: PRODUCT Quantization (Exact Search)");
+    System.out.println("========================================");
+
+    runBenchmark(false, VectorQuantizationType.PRODUCT, false, "PRODUCT Quantization (Exact Search)");
+  }
+
+  /**
+   * Benchmark 7: Product Quantization with approximate (zero-disk-I/O) search.
+   * Uses in-memory PQ vectors for both navigation and scoring.
+   * This is the fastest option with sub-millisecond latency.
+   */
+  @Test
+  public void benchmarkProductQuantizationApproximate() {
+    System.out.println("\n========================================");
+    System.out.println("Benchmark 7: PRODUCT Quantization (Approximate/Zero-Disk-I/O)");
+    System.out.println("========================================");
+
+    runBenchmark(false, VectorQuantizationType.PRODUCT, true, "PRODUCT Quantization (Zero-Disk-I/O Approximate)");
   }
 
   private void runBenchmark(final boolean storeVectorsInGraph, final VectorQuantizationType quantization,
       final String label) {
+    runBenchmark(storeVectorsInGraph, quantization, false, label);
+  }
+
+  private void runBenchmark(final boolean storeVectorsInGraph, final VectorQuantizationType quantization,
+      final boolean useApproximateSearch, final String label) {
 
     final long setupStart = System.nanoTime();
 
@@ -202,11 +234,32 @@ public class LSMVectorIndexStorageBenchmark {
           index.findNeighborsFromVector(queryVector, K_NEIGHBORS);
         }
 
+        // Debug: verify PQ and exact search return similar results
+        if (useApproximateSearch && index.isPQSearchAvailable()) {
+          System.out.println("DEBUG: Verifying PQ search vs exact search...");
+          final float[] testVector = generateRandomVector(DIMENSIONS, 12345);
+          final List<Pair<RID, Float>> exactResults = index.findNeighborsFromVector(testVector, 5);
+          final List<Pair<RID, Float>> approxResults = index.findNeighborsFromVectorApproximate(testVector, 5);
+          System.out.println("  Exact search returned: " + exactResults.size() + " results");
+          System.out.println("  Approx search returned: " + approxResults.size() + " results");
+          if (!exactResults.isEmpty()) {
+            System.out.println("  Exact top result: RID=" + exactResults.get(0).getFirst() + ", dist=" + exactResults.get(0).getSecond());
+          }
+          if (!approxResults.isEmpty()) {
+            System.out.println("  Approx top result: RID=" + approxResults.get(0).getFirst() + ", dist=" + approxResults.get(0).getSecond());
+          }
+          // Check overlap
+          final var exactRIDs = exactResults.stream().map(p -> p.getFirst().toString()).collect(java.util.stream.Collectors.toSet());
+          final var approxRIDs = approxResults.stream().map(p -> p.getFirst().toString()).collect(java.util.stream.Collectors.toSet());
+          exactRIDs.retainAll(approxRIDs);
+          System.out.println("  Overlap (exact vs approx): " + exactRIDs.size() + "/" + Math.min(exactResults.size(), approxResults.size()));
+        }
+
         // Get stats before benchmark
         final Map<String, Long> statsBefore = index.getStats();
 
         // Run timed queries and collect results for quality measurement
-        System.out.println(String.format("Running %d queries...", NUM_QUERIES));
+        System.out.println(String.format("Running %d queries (approximate=%s)...", NUM_QUERIES, useApproximateSearch));
         final long[] latencies = new long[NUM_QUERIES];
         final float[][] queryVectors = new float[NUM_QUERIES][];
         final List<List<Pair<RID, Float>>> approximateResults = new ArrayList<>(NUM_QUERIES);
@@ -217,7 +270,14 @@ public class LSMVectorIndexStorageBenchmark {
           queryVectors[i] = queryVector;
 
           final long queryStart = System.nanoTime();
-          final List<Pair<RID, Float>> results = index.findNeighborsFromVector(queryVector, K_NEIGHBORS);
+          final List<Pair<RID, Float>> results;
+          if (useApproximateSearch) {
+            // Zero-disk-I/O search using in-memory PQ vectors
+            results = index.findNeighborsFromVectorApproximate(queryVector, K_NEIGHBORS);
+          } else {
+            // Standard search with exact vector fetching
+            results = index.findNeighborsFromVector(queryVector, K_NEIGHBORS);
+          }
           final long queryEnd = System.nanoTime();
 
           latencies[i] = (queryEnd - queryStart) / 1_000; // Convert to microseconds
@@ -265,6 +325,7 @@ public class LSMVectorIndexStorageBenchmark {
         System.out.println(String.format("  - Queries: %d (k=%d)", NUM_QUERIES, K_NEIGHBORS));
         System.out.println(String.format("  - storeVectorsInGraph: %s", storeVectorsInGraph));
         System.out.println(String.format("  - Quantization: %s", quantization));
+        System.out.println(String.format("  - Approximate (Zero-Disk-I/O): %s", useApproximateSearch));
         System.out.println();
         System.out.println(String.format("Timing:"));
         System.out.println(String.format("  - Database reopen: %d μs", reopenTime));
@@ -303,6 +364,31 @@ public class LSMVectorIndexStorageBenchmark {
             statsAfter.get("graphState")));
         System.out.println(String.format("  - Graph nodes:         %d", statsAfter.get("graphNodeCount")));
         System.out.println(String.format("  - Search operations:   %d", statsAfter.get("searchOperations")));
+
+        // PQ-specific stats
+        if (quantization == VectorQuantizationType.PRODUCT) {
+          System.out.println();
+          System.out.println(String.format("Product Quantization Stats:"));
+          System.out.println(String.format("  - PQ available:        %s", index.isPQSearchAvailable()));
+          System.out.println(String.format("  - PQ vector count:     %d", index.getPQVectorCount()));
+
+          // Estimate PQ RAM usage: each vector uses M bytes (1 byte per subspace)
+          // Plus codebook: M subspaces * K clusters * subspace_dimension * 4 bytes
+          final int pqVectorCount = index.getPQVectorCount();
+          final int estimatedSubspaces = DIMENSIONS / 4; // default: dimensions/4
+          final long pqCodesBytes = (long) pqVectorCount * estimatedSubspaces;
+          final long codebookBytes = (long) estimatedSubspaces * 256 * 4 * 4; // 256 clusters, float centroids
+          final long totalPqRamBytes = pqCodesBytes + codebookBytes;
+          System.out.println(String.format("  - Est. PQ codes RAM:   %.2f KB (%d vectors × %d subspaces)",
+              pqCodesBytes / 1024.0, pqVectorCount, estimatedSubspaces));
+          System.out.println(String.format("  - Est. codebook RAM:   %.2f KB", codebookBytes / 1024.0));
+          System.out.println(String.format("  - Est. total PQ RAM:   %.2f KB", totalPqRamBytes / 1024.0));
+
+          // Compare to full float vectors
+          final long fullVectorBytes = (long) pqVectorCount * DIMENSIONS * 4;
+          System.out.println(String.format("  - Full vectors RAM:    %.2f KB", fullVectorBytes / 1024.0));
+          System.out.println(String.format("  - Compression ratio:   %.1fx", (double) fullVectorBytes / totalPqRamBytes));
+        }
         System.out.println("=".repeat(60));
         System.out.println();
       }
