@@ -171,7 +171,6 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       // Phase 2: Optionally store vectors inline in graph file
       final boolean storeVectors = mainIndex != null && mainIndex.metadata.storeVectorsInGraph;
       final int dimension = vectors.dimension();
-      final VectorFloat<?> emptyVector = JVectorUtils.createVectorFloat(dimension);
 
       if (storeVectors) {
         LogManager.instance().log(this, Level.INFO,
@@ -179,26 +178,33 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
             mainIndex.metadata.quantizationType);
       } else {
         LogManager.instance().log(this, Level.INFO,
-            "Writing graph WITHOUT inline vectors (vectors fetched from documents on-demand)");
+            "Writing graph WITHOUT inline vectors (topology only; vectors fetched from documents on-demand)");
       }
 
-      try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer).with(
-          new InlineVectors(dimension)).build()) {
-        // Write header with startOffset 0 (graph data starts at beginning of file)
-        indexWriter.writeHeader(graph.getView(), 0L);
+      if (storeVectors) {
+        final VectorFloat<?> emptyVector = JVectorUtils.createVectorFloat(dimension);
+        try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer)
+            .with(new InlineVectors(dimension)).build()) {
+          // Write header with startOffset 0 (graph data starts at beginning of file)
+          indexWriter.writeHeader(graph.getView(), 0L);
 
-        // Write vectors (either actual or empty depending on storeVectorsInGraph flag)
-        indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
-            (IntFunction<Feature.State>) ordinal -> {
-              if (storeVectors) {
-                // Store actual vectors from documents/quantized pages
+          // Write actual vectors inline
+          indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
+              (IntFunction<Feature.State>) ordinal -> {
                 final VectorFloat<?> vector = vectors.getVector(ordinal);
                 return new InlineVectors.State(vector != null ? vector : emptyVector);
-              } else {
-                // Original behavior: empty vectors (fetched from documents on-demand)
-                return new InlineVectors.State(emptyVector);
-              }
-            }));
+              }));
+        }
+      } else {
+        // Topology-only: satisfy writer requirement with zero-dimension inline vectors (no payload)
+        final InlineVectors zeroInline = new InlineVectors(0);
+        final VectorFloat<?> emptyVector = JVectorUtils.createVectorFloat(0);
+        try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer)
+            .with(zeroInline).build()) {
+          indexWriter.writeHeader(graph.getView(), 0L);
+          indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
+              (IntFunction<Feature.State>) ordinal -> new InlineVectors.State(emptyVector)));
+        }
       }
 
       writer.close();
