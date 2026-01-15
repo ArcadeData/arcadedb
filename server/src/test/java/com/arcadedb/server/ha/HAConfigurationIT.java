@@ -20,6 +20,7 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerException;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -29,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 @Timeout(value = 5, unit = TimeUnit.MINUTES)
+@Tag("ha")
 class HAConfigurationIT extends BaseGraphServerTest {
   protected int getServerCount() {
     return 3;
