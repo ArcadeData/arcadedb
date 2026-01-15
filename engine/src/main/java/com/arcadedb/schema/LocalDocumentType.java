@@ -1159,7 +1159,8 @@ public class LocalDocumentType implements DocumentType {
 
                   boolean alreadyCreated = false;
                   for (IndexInternal idx : getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
-                    if (idx.getTypeIndex().equals(index)) {
+                    final TypeIndex typeIndex = idx.getTypeIndex();
+                    if (typeIndex != null && typeIndex.equals(index)) {
                       alreadyCreated = true;
                       break;
                     }
