@@ -701,9 +701,6 @@ public class ArcadeDBServer {
   private void init() {
     eventLog = new FileServerEventLog(this);
 
-    // SERVER DOES NOT NEED ASYNC WORKERS
-    GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(1);
-
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       LogManager.instance().log(this, Level.SEVERE, "Received shutdown signal. The server will be halted");
       stop();
