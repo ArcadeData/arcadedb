@@ -29,6 +29,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -40,6 +41,7 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @Timeout(value = 15, unit = TimeUnit.MINUTES)
+@Tag("ha")
 public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 

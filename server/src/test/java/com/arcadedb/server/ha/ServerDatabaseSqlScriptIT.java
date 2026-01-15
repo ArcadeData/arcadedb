@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
@@ -26,6 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -34,6 +34,7 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 public class ServerDatabaseSqlScriptIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {

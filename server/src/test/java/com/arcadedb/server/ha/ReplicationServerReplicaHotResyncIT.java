@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -31,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
+@Tag("ha")
 public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
   private final    CountDownLatch hotResyncLatch    = new CountDownLatch(1);
   private final    CountDownLatch fullResyncLatch   = new CountDownLatch(1);
