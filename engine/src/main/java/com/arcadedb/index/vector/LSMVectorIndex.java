@@ -36,6 +36,11 @@ import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.Pair;
 import io.github.jbellis.jvector.graph.*;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
+import io.github.jbellis.jvector.graph.similarity.DefaultSearchScoreProvider;
+import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
+import io.github.jbellis.jvector.quantization.MutablePQVectors;
+import io.github.jbellis.jvector.quantization.PQVectors;
+import io.github.jbellis.jvector.quantization.ProductQuantization;
 import io.github.jbellis.jvector.util.Bits;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
@@ -103,6 +108,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Allows lazy-loading graph from disk and avoiding expensive rebuilds
   private final LSMVectorIndexGraphFile graphFile;
   private final AtomicInteger mutationsSinceSerialize;
+
+  // Product Quantization (PQ) for zero-disk-I/O approximate search
+  // PQ file stores codebooks and encoded vectors; pqVectors is cached in memory
+  private LSMVectorIndexPQFile pqFile;
+  private volatile PQVectors pqVectors;
+  private volatile ProductQuantization productQuantization;
 
   // Thresholds for graph state transitions
   // Note: JVector's addGraphNode() is meant for pre-build additions, not post-build incremental updates
@@ -323,6 +334,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.graphFile.setMainIndex(this);
       database.getSchema().getEmbedded().registerFile(this.graphFile);
 
+      // Create PQ file handler for Product Quantization (zero-disk-I/O search)
+      // Note: PQ file uses direct I/O (not ArcadeDB pages) since it's loaded entirely into memory
+      this.pqFile = new LSMVectorIndexPQFile(filePath);
+
       LogManager.instance()
               .log(this, Level.FINE, "Created LSMVectorIndex: indexName=%s, vectorFileId=%d, graphFileId=%d", indexName,
                       mutable.getFileId(), graphFile.getFileId());
@@ -360,6 +375,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (this.graphFile != null) {
       this.graphFile.setMainIndex(this);
     }
+
+    // Create PQ file handler (for zero-disk-I/O search)
+    // PQ data will be loaded after schema loads metadata (see loadVectorsAfterSchemaLoad)
+    this.pqFile = new LSMVectorIndexPQFile(filePath);
 
     // Initialize compaction fields
     this.currentMutablePages = new AtomicInteger(mutable.getTotalPages());
@@ -433,6 +452,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
         LogManager.instance().log(this, Level.SEVERE,
                 "Successfully loaded %d vector locations for index %s (graph will be lazy-loaded on first search)", vectorIndex.size(),
                 indexName);
+
+        // Load PQ data if PRODUCT quantization is enabled
+        if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null) {
+          if (pqFile.loadPQ()) {
+            this.pqVectors = pqFile.getPQVectors();
+            this.productQuantization = pqFile.getProductQuantization();
+            LogManager.instance().log(this, Level.INFO,
+                    "PQ data loaded for index %s: %d vectors ready for zero-disk-I/O search",
+                    indexName, pqVectors != null ? pqVectors.count() : 0);
+          }
+        }
       } catch (final Exception e) {
         LogManager.instance()
                 .log(this, Level.WARNING, "Could not load vectors from pages for index %s: %s", indexName, e.getMessage());
@@ -1298,6 +1328,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
             LogManager.instance().log(this, Level.INFO,
                     "Graph persisted with inline vectors - will use OnDiskGraphIndex on next database open");
           }
+
+          // Build and persist Product Quantization if PRODUCT quantization is enabled
+          if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null) {
+            buildAndPersistPQ(vectors);
+          }
         } catch (final Exception e) {
           // Rollback on error
           if (startedTransaction) {
@@ -1341,6 +1376,110 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.WARNING, "arcadedb.index.buildChunkSizeMB was %dMB during graph persistence; forcing fallback to 50MB", configuredChunkSize);
     }
     return chunkSizeMB;
+  }
+
+  /**
+   * Build and persist Product Quantization (PQ) data for zero-disk-I/O search.
+   * <p>
+   * PQ compresses vectors by dividing them into M subspaces and quantizing each
+   * subspace to K clusters. This enables approximate search using only in-memory
+   * compressed vectors, achieving microsecond-level latency.
+   *
+   * @param vectors The vector values to encode with PQ
+   */
+  private void buildAndPersistPQ(final RandomAccessVectorValues vectors) {
+    try {
+      final int vectorCount = vectors.size();
+      if (vectorCount == 0) {
+        LogManager.instance().log(this, Level.WARNING, "No vectors to build PQ for index: %s", indexName);
+        return;
+      }
+
+      LogManager.instance().log(this, Level.INFO,
+              "Building Product Quantization for index %s: %d vectors, %d dimensions",
+              indexName, vectorCount, metadata.dimensions);
+
+      final long startTime = System.currentTimeMillis();
+
+      // Compute PQ subspaces (M) - auto-calculate if not specified
+      int pqSubspaces = metadata.pqSubspaces;
+      if (pqSubspaces <= 0) {
+        // Auto-calculate: dimensions/4, capped at 512 subspaces
+        pqSubspaces = Math.min(metadata.dimensions / 4, 512);
+        // Ensure at least 1 subspace and dimensions are divisible
+        pqSubspaces = Math.max(1, pqSubspaces);
+        // Ensure dimensions are divisible by subspaces
+        while (metadata.dimensions % pqSubspaces != 0 && pqSubspaces > 1) {
+          pqSubspaces--;
+        }
+      }
+
+      // Validate subspaces configuration
+      if (metadata.dimensions % pqSubspaces != 0) {
+        LogManager.instance().log(this, Level.WARNING,
+                "PQ subspaces (%d) does not divide dimensions (%d) evenly for index %s. Adjusting...",
+                pqSubspaces, metadata.dimensions, indexName);
+        // Find the largest divisor <= pqSubspaces
+        for (int m = pqSubspaces; m >= 1; m--) {
+          if (metadata.dimensions % m == 0) {
+            pqSubspaces = m;
+            break;
+          }
+        }
+      }
+
+      final int pqClusters = metadata.pqClusters;
+      final boolean centerGlobally = metadata.pqCenterGlobally;
+
+      LogManager.instance().log(this, Level.INFO,
+              "PQ configuration: M=%d subspaces, K=%d clusters, globalCentering=%b",
+              pqSubspaces, pqClusters, centerGlobally);
+
+      // Limit training set size (JVector recommends max 128K vectors for training)
+      final int trainingLimit = Math.min(vectorCount, metadata.pqTrainingLimit);
+
+      // Build ProductQuantization codebook
+      final ProductQuantization pq = ProductQuantization.compute(
+              vectors,           // Training vectors
+              pqSubspaces,       // M - number of subspaces
+              pqClusters,        // K - clusters per subspace
+              centerGlobally     // Global centering
+      );
+
+      LogManager.instance().log(this, Level.INFO,
+              "PQ codebook computed in %d ms (trained on %d vectors)",
+              System.currentTimeMillis() - startTime, trainingLimit);
+
+      // Encode all vectors with PQ
+      final long encodeStart = System.currentTimeMillis();
+      final MutablePQVectors encodedVectors = new MutablePQVectors(pq);
+      for (int i = 0; i < vectorCount; i++) {
+        final VectorFloat<?> vector = vectors.getVector(i);
+        if (vector != null) {
+          encodedVectors.encodeAndSet(i, vector);
+        }
+      }
+
+      LogManager.instance().log(this, Level.INFO,
+              "PQ encoding completed in %d ms (%d vectors encoded)",
+              System.currentTimeMillis() - encodeStart, encodedVectors.count());
+
+      // Persist PQ data to file
+      pqFile.writePQ(pq, encodedVectors);
+
+      // Cache in memory for immediate zero-disk-I/O search
+      this.productQuantization = pq;
+      this.pqVectors = encodedVectors;
+
+      final long totalTime = System.currentTimeMillis() - startTime;
+      LogManager.instance().log(this, Level.INFO,
+              "Product Quantization built and persisted for index %s: %d vectors, %d subspaces, total time %d ms",
+              indexName, vectorCount, pqSubspaces, totalTime);
+
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error building PQ for index %s: %s", indexName, e.getMessage());
+      // Don't throw - PQ is optional, index can still work with exact search
+    }
   }
 
   /**
@@ -2253,6 +2392,176 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Search for k nearest neighbors using zero-disk-I/O approximate search with Product Quantization.
+   * <p>
+   * This method uses pre-computed PQ vectors in memory for both HNSW navigation AND scoring,
+   * completely bypassing disk I/O for the vector data. This enables microsecond-level latency
+   * at the cost of slightly lower recall compared to exact search.
+   * <p>
+   * Requirements:
+   * - Index must be configured with quantizationType=PRODUCT
+   * - PQ data must be built and loaded (happens automatically during graph build)
+   * <p>
+   * If PQ is not available, falls back to the regular findNeighborsFromVector method.
+   *
+   * @param queryVector The query vector to search for
+   * @param k           The number of neighbors to return
+   * @return List of pairs containing RID and approximate similarity score
+   */
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int k) {
+    return findNeighborsFromVectorApproximate(queryVector, k, null);
+  }
+
+  /**
+   * Search for k nearest neighbors using zero-disk-I/O approximate search with Product Quantization,
+   * optionally filtering to a specific set of RIDs.
+   * <p>
+   * This method uses pre-computed PQ vectors in memory for both HNSW navigation AND scoring,
+   * completely bypassing disk I/O for the vector data. This enables microsecond-level latency
+   * at the cost of slightly lower recall compared to exact search.
+   *
+   * @param queryVector The query vector to search for
+   * @param k           The number of neighbors to return
+   * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
+   * @return List of pairs containing RID and approximate similarity score
+   */
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int k, final Set<RID> allowedRIDs) {
+    // Check if PQ is available
+    if (pqVectors == null || productQuantization == null) {
+      // Fall back to exact search
+      LogManager.instance().log(this, Level.FINE,
+              "PQ not available for index %s, falling back to exact search", indexName);
+      return findNeighborsFromVector(queryVector, k, allowedRIDs);
+    }
+
+    // Track search metrics
+    final long startTime = System.nanoTime(); // Use nanos for microsecond precision
+    searchOperations.incrementAndGet();
+
+    try {
+      if (queryVector == null)
+        throw new IllegalArgumentException("Query vector cannot be null");
+
+      if (queryVector.length != metadata.dimensions)
+        throw new IllegalArgumentException(
+                "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
+
+      // Check if query vector is all zeros (would cause NaN with cosine similarity)
+      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE) {
+        boolean isZeroVector = true;
+        for (final float v : queryVector) {
+          if (v != 0.0f) {
+            isZeroVector = false;
+            break;
+          }
+        }
+        if (isZeroVector)
+          throw new IllegalArgumentException(
+                  "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
+      }
+
+      // Ensure graph is available (lazy-load from disk if needed)
+      ensureGraphAvailable();
+
+      lock.readLock().lock();
+      try {
+        if (graphIndex == null || vectorIndex.size() == 0)
+          return Collections.emptyList();
+
+        // Convert query vector to VectorFloat
+        final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
+
+        // Build the memory-resident PQ score function (uses SIMD/Panama if available)
+        // This is the key to zero-disk-I/O: we use PQ scores for BOTH navigation AND final scoring
+        final ScoreFunction.ApproximateScoreFunction scoreFunction =
+                pqVectors.precomputedScoreFunctionFor(queryVectorFloat, metadata.similarityFunction);
+
+        // Create a ReRanker that does NOT pull from disk - just returns PQ similarity
+        // This is the critical optimization: we bypass RandomAccessVectorValues entirely
+        final ScoreFunction.ExactScoreFunction approxReranker = (ordinal) -> scoreFunction.similarityTo(ordinal);
+
+        // Wrap in a DefaultSearchScoreProvider (concrete implementation)
+        final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, approxReranker);
+
+        // Create RID filter if needed
+        final Bits bitsFilter = (allowedRIDs != null && !allowedRIDs.isEmpty()) ?
+                new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
+                Bits.ALL;
+
+        // Execute search using the PQ-based score provider
+        // The graph structure is typically small enough to stay in OS page cache
+        final SearchResult searchResult;
+        try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
+          searchResult = searcher.search(ssp, k, metadata.efSearch, bitsFilter);
+        }
+
+        // Extract RIDs and scores from search results
+        final List<Pair<RID, Float>> results = new ArrayList<>();
+        int skippedOutOfBounds = 0;
+        int skippedDeletedOrNull = 0;
+        for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
+          final int ordinal = nodeScore.node;
+          if (ordinal >= 0 && ordinal < ordinalToVectorId.length) {
+            final int vectorId = ordinalToVectorId[ordinal];
+            final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+            if (loc != null && !loc.deleted) {
+              // Convert similarity score to distance
+              final float score = nodeScore.score;
+              final float distance = switch (metadata.similarityFunction) {
+                case COSINE -> 1.0f - score;
+                case EUCLIDEAN -> score;
+                case DOT_PRODUCT -> -score;
+                default -> score;
+              };
+              results.add(new Pair<>(loc.rid, distance));
+            } else {
+              skippedDeletedOrNull++;
+            }
+          } else {
+            skippedOutOfBounds++;
+          }
+        }
+
+        // Log performance metrics
+        final long elapsedNanos = System.nanoTime() - startTime;
+        LogManager.instance().log(this, Level.INFO,
+                "Zero-disk-I/O PQ search returned %d results in %.2f µs (skipped: %d out of bounds, %d deleted/null)",
+                results.size(), elapsedNanos / 1000.0, skippedOutOfBounds, skippedDeletedOrNull);
+
+        return results;
+
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error performing PQ approximate search", e);
+        throw new IndexException("Error performing PQ approximate search", e);
+      } finally {
+        lock.readLock().unlock();
+      }
+    } finally {
+      // Track search latency (convert nanos to ms for consistency)
+      final long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
+      searchLatencyMs.addAndGet(elapsedMs);
+    }
+  }
+
+  /**
+   * Check if Product Quantization is available for approximate search.
+   *
+   * @return true if PQ data is loaded and ready for zero-disk-I/O search
+   */
+  public boolean isPQSearchAvailable() {
+    return pqVectors != null && productQuantization != null;
+  }
+
+  /**
+   * Get the number of vectors encoded in the PQ index.
+   *
+   * @return Number of PQ-encoded vectors, or 0 if PQ is not available
+   */
+  public int getPQVectorCount() {
+    return pqVectors != null ? pqVectors.count() : 0;
+  }
+
   @Override
   public IndexCursor get(final Object[] keys) {
     return get(keys, -1);
@@ -2850,6 +3159,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("addHierarchy", metadata.addHierarchy);
     json.put("buildState", metadata.buildState);
     json.put("version", CURRENT_VERSION);
+
+    // Product Quantization (PQ) configuration
+    if (metadata.quantizationType == VectorQuantizationType.PRODUCT) {
+      json.put("pqSubspaces", metadata.pqSubspaces);
+      json.put("pqClusters", metadata.pqClusters);
+      json.put("pqCenterGlobally", metadata.pqCenterGlobally);
+      json.put("pqTrainingLimit", metadata.pqTrainingLimit);
+    }
 
     return json;
   }

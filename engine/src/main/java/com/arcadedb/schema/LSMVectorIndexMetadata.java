@@ -36,6 +36,12 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public boolean                  addHierarchy             = false;
   public String                   buildState               = "READY"; // BUILDING, READY, or INVALID
 
+  // Product Quantization (PQ) configuration - used when quantizationType=PRODUCT
+  public int                      pqSubspaces              = -1;    // Number of subspaces (M), -1 = auto (dimensions/4, capped at 512)
+  public int                      pqClusters               = 256;   // Clusters per subspace (K), typically 256 for byte-sized codes
+  public boolean                  pqCenterGlobally         = true;  // Whether to globally center vectors before PQ encoding
+  public int                      pqTrainingLimit          = 128000; // Max vectors for PQ training (128K is JVector's recommended max)
+
   public LSMVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);
   }
@@ -88,6 +94,19 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("buildState"))
       this.buildState = metadata.getString("buildState");
+
+    // Product Quantization (PQ) configuration
+    if (metadata.has("pqSubspaces"))
+      this.pqSubspaces = metadata.getInt("pqSubspaces");
+
+    if (metadata.has("pqClusters"))
+      this.pqClusters = metadata.getInt("pqClusters");
+
+    if (metadata.has("pqCenterGlobally"))
+      this.pqCenterGlobally = metadata.getBoolean("pqCenterGlobally");
+
+    if (metadata.has("pqTrainingLimit"))
+      this.pqTrainingLimit = metadata.getInt("pqTrainingLimit");
 
   }
 }
