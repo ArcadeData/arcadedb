@@ -22,6 +22,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -33,6 +34,7 @@ import java.util.logging.*;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 class HTTP2ServersCreateReplicatedDatabaseIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {

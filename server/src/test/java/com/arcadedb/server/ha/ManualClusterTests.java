@@ -19,7 +19,9 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Tag;
 
+@Tag("ha")
 public class ManualClusterTests extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
