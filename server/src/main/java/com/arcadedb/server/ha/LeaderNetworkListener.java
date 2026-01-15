@@ -43,6 +43,7 @@ public class LeaderNetworkListener extends Thread {
   private final        ServerSocketFactory socketFactory;
   private              ServerSocket        serverSocket;
   private volatile     boolean             active          = true;
+  private volatile     boolean             ready           = false;
   private final static int                 protocolVersion = -1;
   private final        String              hostName;
   private              int                 port;
@@ -58,6 +59,10 @@ public class LeaderNetworkListener extends Thread {
     listen(hostName, hostPortRange);
 
     start();
+
+    // Mark as ready after socket is bound and thread is started
+    ready = true;
+    LogManager.instance().log(this, Level.FINE, "Leader listener ready to accept connections on %s:%d", hostName, port);
   }
 
   @Override
@@ -80,6 +85,14 @@ public class LeaderNetworkListener extends Thread {
   private void handleIncomingConnection() throws IOException {
     final Socket socket = serverSocket.accept();
     socket.setPerformancePreferences(0, 2, 1);
+
+    // Log if connection arrives before we're fully ready (should be rare with retry logic)
+    if (!ready) {
+      LogManager.instance().log(this, Level.FINE,
+          "Connection from %s arrived before listener fully ready (will process normally)",
+          socket.getInetAddress());
+    }
+
     handleConnection(socket);
   }
 
@@ -110,6 +123,7 @@ public class LeaderNetworkListener extends Thread {
 
   public void close() {
     this.active = false;
+    this.ready = false;
 
     if (serverSocket != null)
       try {
@@ -117,6 +131,10 @@ public class LeaderNetworkListener extends Thread {
       } catch (final IOException e) {
         // IGNORE IT
       }
+  }
+
+  public boolean isReady() {
+    return ready && active;
   }
 
   @Override

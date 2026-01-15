@@ -565,13 +565,22 @@ public enum GlobalConfiguration {
       "yes_nometadata", Set.of(new String[] { "no", "yes_full", "yes_nometadata" })),
 
   HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS("arcadedb.ha.replicaConnectRetryMaxAttempts", SCOPE.SERVER,
-      "Maximum number of connection retry attempts when replica connects to leader. Default is 5", Integer.class, 5),
+      "Maximum number of connection retry attempts when replica connects to leader. Default is 10", Integer.class, 10),
 
   HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS("arcadedb.ha.replicaConnectRetryBaseDelayMs", SCOPE.SERVER,
-      "Base delay in milliseconds between connection retry attempts (uses exponential backoff). Default is 100ms", Long.class, 100L),
+      "Base delay in milliseconds between connection retry attempts (uses exponential backoff). Default is 200ms", Long.class, 200L),
 
   HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS("arcadedb.ha.replicaConnectRetryMaxDelayMs", SCOPE.SERVER,
-      "Maximum delay in milliseconds between connection retry attempts. Default is 5000ms (5 seconds)", Long.class, 5000L),
+      "Maximum delay in milliseconds between connection retry attempts. Default is 10000ms (10 seconds)", Long.class, 10000L),
+
+  HA_CONNECTION_HEALTH_CHECK_ENABLED("arcadedb.ha.connectionHealthCheckEnabled", SCOPE.SERVER,
+      "Enable periodic health check for replica connections. Default is true", Boolean.class, true),
+
+  HA_CONNECTION_HEALTH_CHECK_INTERVAL_MS("arcadedb.ha.connectionHealthCheckIntervalMs", SCOPE.SERVER,
+      "Interval in milliseconds between connection health checks (heartbeat). Default is 5000ms (5 seconds)", Long.class, 5000L),
+
+  HA_CONNECTION_HEALTH_CHECK_TIMEOUT_MS("arcadedb.ha.connectionHealthCheckTimeoutMs", SCOPE.SERVER,
+      "Timeout in milliseconds for health check responses. Default is 15000ms (15 seconds)", Long.class, 15000L),
 
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
