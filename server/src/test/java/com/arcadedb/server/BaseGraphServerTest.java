@@ -93,11 +93,12 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     super.setTestConfiguration();
 
     // Override HA connection retry settings for faster test execution
-    // These values reduce cluster startup time by using faster retry intervals
-    // Production defaults (200ms base, 10s max) cause 6-35s delays during test startup
-    GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS.setValue(100L);  // Faster initial retry
-    GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS.setValue(500L);   // Lower cap on exponential backoff
-    GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS.setValue(5);      // Fewer attempts before giving up
+    // These values balance fast retries with allowing time for sequential server startup
+    // Production defaults (200ms base, 10s max) cause excessive delays in tests
+    // Test values allow ~5-8 seconds total retry time to accommodate sequential startup
+    GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS.setValue(200L);  // Keep reasonable base delay
+    GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS.setValue(2000L);  // Cap at 2 seconds
+    GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS.setValue(8);      // Allow more attempts for startup
   }
 
   @BeforeEach
