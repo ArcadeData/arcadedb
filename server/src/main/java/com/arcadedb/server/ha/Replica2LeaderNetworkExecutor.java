@@ -44,6 +44,7 @@ import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -446,6 +447,13 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 //        server.setServerAddresses(server.parseServerList(memberList));
       }
 
+    } catch (final EOFException e) {
+      // Connection closed during handshake - this is a transient error that should trigger retry
+      LogManager.instance().log(this, Level.FINE,
+          "Connection closed during handshake with leader %s (will retry)", leader);
+      closeChannel();
+      throw new ConnectionException(leader.toString(), "Handshake interrupted: connection closed by remote server");
+
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s (cause=%s)", leader, e.toString());
 
@@ -585,13 +593,21 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   private HACommand receiveCommandFromLeaderDuringJoin(final Binary buffer) throws IOException {
-    final byte[] response = receiveResponse();
+    try {
+      final byte[] response = receiveResponse();
 
-    final Pair<ReplicationMessage, HACommand> command = server.getMessageFactory().deserializeCommand(buffer, response);
-    if (command == null)
-      throw new NetworkProtocolException("Error on reading response, message " + response[0] + " not valid");
+      final Pair<ReplicationMessage, HACommand> command = server.getMessageFactory().deserializeCommand(buffer, response);
+      if (command == null)
+        throw new NetworkProtocolException("Error on reading response, message " + response[0] + " not valid");
 
-    return command.getSecond();
+      return command.getSecond();
+
+    } catch (final EOFException e) {
+      // Connection closed during database installation - log and re-throw as IOException
+      LogManager.instance().log(this, Level.WARNING,
+          "Connection closed during database installation from leader %s", leader);
+      throw new IOException("Database installation interrupted: connection closed by leader", e);
+    }
   }
 
   private void shutdown() {
