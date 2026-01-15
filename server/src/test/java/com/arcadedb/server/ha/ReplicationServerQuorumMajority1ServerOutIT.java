@@ -21,6 +21,7 @@ package com.arcadedb.server.ha;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.TimeUnit;
@@ -29,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 @Timeout(value = 15, unit = TimeUnit.MINUTES)
+@Tag("ha")
 public class ReplicationServerQuorumMajority1ServerOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -47,6 +48,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 4. Verify stability with multiple test runs
  * </pre>
  */
+
+@Tag("ha")
 public class SimpleReplicationServerIT extends BaseGraphServerTest {
 
   @Override

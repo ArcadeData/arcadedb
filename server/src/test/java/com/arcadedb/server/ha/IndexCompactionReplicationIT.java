@@ -30,6 +30,7 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -43,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration tests for LSM index compaction replication in distributed mode.
  * Verifies that index compaction is properly tracked and replicated to all replicas.
  */
+@Tag("ha")
 class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
   private static final int TOTAL_RECORDS = 5_000;
