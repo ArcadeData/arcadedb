@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.function.vector;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
@@ -157,9 +158,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (int i = 0; i < resultCount; i++) {
       final Pair<RID, Float> neighbor = allNeighbors.get(i);
       final RID rid = neighbor.getFirst();
-      final Vertex vertex = rid.asVertex();
+      final Document record = rid.asDocument();
       final float distance = neighbor.getSecond();
-      result.add(Map.of("vertex", vertex, "distance", distance));
+      result.add(Map.of("record", record, "distance", distance));
     }
 
     return result;
