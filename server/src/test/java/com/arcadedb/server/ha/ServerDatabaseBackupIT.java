@@ -25,16 +25,18 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.io.File;
 import java.util.concurrent.TimeUnit;
-
-import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 public class ServerDatabaseBackupIT extends BaseGraphServerTest {
+
   @Override
   protected int getServerCount() {
     return 3;

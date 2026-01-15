@@ -24,11 +24,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.TimeUnit;
-
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -36,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
+@Tag("ha")
 public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
@@ -92,7 +93,7 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
           .isTrue();
 
     } catch (final Exception e) {
-      fail("Error on checking on server" + server  , e);
+      fail("Error on checking on server" + server, e);
     }
   }
 
