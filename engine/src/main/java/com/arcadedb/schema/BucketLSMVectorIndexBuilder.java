@@ -189,6 +189,8 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
 
   @Override
   public BucketLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
+    // Also store in base class for propagation through createBucketIndex()
+    super.withMetadata(metadata);
     if (metadata instanceof LSMVectorIndexMetadata v) {
       this.dimensions = v.dimensions;
       withSimilarity(v.similarityFunction.name());

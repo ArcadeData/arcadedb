@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
@@ -149,6 +150,8 @@ public class RebuildIndexStatement extends DDLStatement {
         final List<String> propertyNames = idx.getPropertyNames();
         final int pageSize = ((IndexInternal) idx).getPageSize();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
+        // Get index metadata (includes vector-specific settings like dimensions, similarity, etc.)
+        final IndexMetadata indexMetadata = ((IndexInternal) idx).getMetadata();
 
         ((DatabaseInternal) database).executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
           database.getSchema().dropIndex(idx.getName());
@@ -156,7 +159,8 @@ public class RebuildIndexStatement extends DDLStatement {
           if (typeName != null && idx instanceof TypeIndex) {
             database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
                 .withUnique(unique).withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize)
-                .withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)//
+                .withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)
+                .withMetadata(indexMetadata)
                 .create();
 
           } else {
@@ -164,7 +168,8 @@ public class RebuildIndexStatement extends DDLStatement {
                 .buildBucketIndex(typeName, database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
                     propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
                 .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
-                .withNullStrategy(nullStrategy)//
+                .withNullStrategy(nullStrategy)
+                .withMetadata(indexMetadata)
                 .create();
           }
           return null;
