@@ -79,34 +79,46 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     MergeClause mergeClause = null;
     final List<UnwindClause> unwindClauses = new ArrayList<>();
     final List<WithClause> withClauses = new ArrayList<>();
+    final List<ClauseEntry> clausesInOrder = new ArrayList<>();
     WhereClause whereClause = null;
     ReturnClause returnClause = null;
     OrderByClause orderByClause = null;
     Integer skip = null;
     Integer limit = null;
 
+    int clauseOrder = 0;
     for (final Cypher25Parser.ClauseContext clauseCtx : ctx.clause()) {
       if (clauseCtx.matchClause() != null) {
         final MatchClause match = visitMatchClause(clauseCtx.matchClause());
         matchClauses.add(match);
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.MATCH, match, clauseOrder++));
 
         // WHERE clause is now scoped to the MatchClause itself, not extracted at statement level
       } else if (clauseCtx.createClause() != null) {
         createClause = visitCreateClause(clauseCtx.createClause());
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.CREATE, createClause, clauseOrder++));
       } else if (clauseCtx.setClause() != null) {
         setClause = visitSetClause(clauseCtx.setClause());
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.SET, setClause, clauseOrder++));
       } else if (clauseCtx.deleteClause() != null) {
         deleteClause = visitDeleteClause(clauseCtx.deleteClause());
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.DELETE, deleteClause, clauseOrder++));
       } else if (clauseCtx.mergeClause() != null) {
         mergeClause = visitMergeClause(clauseCtx.mergeClause());
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.MERGE, mergeClause, clauseOrder++));
       } else if (clauseCtx.unwindClause() != null) {
-        unwindClauses.add(visitUnwindClause(clauseCtx.unwindClause()));
+        final UnwindClause unwind = visitUnwindClause(clauseCtx.unwindClause());
+        unwindClauses.add(unwind);
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.UNWIND, unwind, clauseOrder++));
       } else if (clauseCtx.withClause() != null) {
-        withClauses.add(visitWithClause(clauseCtx.withClause()));
+        final WithClause with = visitWithClause(clauseCtx.withClause());
+        withClauses.add(with);
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.WITH, with, clauseOrder++));
       } else if (clauseCtx.returnClause() != null) {
         // RETURN clause with embedded ORDER BY, SKIP, LIMIT
         final Cypher25Parser.ReturnBodyContext body = clauseCtx.returnClause().returnBody();
         returnClause = visitReturnClause(clauseCtx.returnClause());
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.RETURN, returnClause, clauseOrder++));
 
         // Extract ORDER BY, SKIP, LIMIT from returnBody
         if (body.orderBy() != null) {
@@ -158,6 +170,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         mergeClause,
         unwindClauses,
         withClauses,
+        clausesInOrder,
         hasCreate,
         hasMerge,
         hasDelete
@@ -1011,6 +1024,29 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new LiteralExpression(literalValue, text);
     }
 
+    // Check for comparison expressions: expr1 op expr2
+    // This handles cases like ID(a) = row.source_id, x > 5, etc.
+    // We need to handle this before function calls because comparisons like ID(a)=x
+    // contain parentheses but should be parsed as comparisons
+    final String[] comparisonOps = {"!=", "<=", ">=", "<>", "=", "<", ">"};
+    for (final String op : comparisonOps) {
+      // Find the operator, but be careful with operators inside parentheses
+      final int opIndex = findOperatorOutsideParentheses(text, op);
+      if (opIndex > 0 && opIndex < text.length() - op.length()) {
+        final String leftText = text.substring(0, opIndex).trim();
+        final String rightText = text.substring(opIndex + op.length()).trim();
+        if (!leftText.isEmpty() && !rightText.isEmpty()) {
+          final Expression left = parseExpressionText(leftText);
+          final Expression right = parseExpressionText(rightText);
+          final ComparisonExpression.Operator compOp = op.equals("<>") ?
+              ComparisonExpression.Operator.NOT_EQUALS :
+              ComparisonExpression.Operator.fromString(op);
+          // Return a BooleanExpression wrapped as Expression
+          return new ComparisonExpressionWrapper(left, compOp, right);
+        }
+      }
+    }
+
     // Check for function call: functionName(args)
     // This handles cases like ID(n), count(n), etc. in WHERE clauses
     if (text.contains("(") && text.endsWith(")")) {
@@ -1078,6 +1114,17 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return parseExtendedCaseExpression(extCaseCtx);
     }
 
+    // Check for comparison expressions FIRST (before function invocations)
+    // This is critical for expressions like ID(a) = row.source_id
+    // where we need to recognize the comparison operator at the top level
+    final Cypher25Parser.Expression8Context expr8Ctx = findExpression8Recursive(ctx);
+    if (expr8Ctx != null) {
+      // Check if this Expression8 actually contains a comparison (has 2+ expression7 children)
+      if (expr8Ctx.expression7().size() > 1) {
+        return parseComparisonFromExpression8(expr8Ctx);
+      }
+    }
+
     // Check for function invocations BEFORE list literals
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
@@ -1097,14 +1144,65 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return parseIsNullExpression(nullCtx);
     }
 
-    // Check for comparison expressions (for CASE WHEN clauses)
-    final Cypher25Parser.Expression8Context expr8Ctx = findExpression8Recursive(ctx);
-    if (expr8Ctx != null) {
-      return parseComparisonFromExpression8(expr8Ctx);
-    }
-
     // Use the shared text parsing logic
     return parseExpressionText(text);
+  }
+
+  /**
+   * Find an operator outside of parentheses in the given text.
+   * This ensures we don't match operators inside function calls like ID(a).
+   */
+  private int findOperatorOutsideParentheses(final String text, final String op) {
+    int parenDepth = 0;
+    int bracketDepth = 0;
+    boolean inString = false;
+    char stringChar = 0;
+
+    for (int i = 0; i <= text.length() - op.length(); i++) {
+      final char c = text.charAt(i);
+
+      // Track string literals
+      if ((c == '\'' || c == '"') && (i == 0 || text.charAt(i - 1) != '\\')) {
+        if (!inString) {
+          inString = true;
+          stringChar = c;
+        } else if (c == stringChar) {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (inString) {
+        continue;
+      }
+
+      // Track parentheses
+      if (c == '(') {
+        parenDepth++;
+        continue;
+      }
+      if (c == ')') {
+        parenDepth--;
+        continue;
+      }
+      // Track brackets
+      if (c == '[') {
+        bracketDepth++;
+        continue;
+      }
+      if (c == ']') {
+        bracketDepth--;
+        continue;
+      }
+
+      // Only match operator at top level
+      if (parenDepth == 0 && bracketDepth == 0) {
+        if (text.substring(i).startsWith(op)) {
+          return i;
+        }
+      }
+    }
+    return -1;
   }
 
   /**

@@ -18,38 +18,25 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.Map;
-
 /**
- * Expression representing property access on a variable.
- * Example: n.name, person.age
+ * Wrapper that allows a ComparisonExpression to be used as a regular Expression.
+ * This is needed when comparisons appear in contexts that expect Expression (like RETURN).
+ * The evaluate method returns Boolean (true/false) as the comparison result.
  */
-public class PropertyAccessExpression implements Expression {
-  private final String variableName;
-  private final String propertyName;
+public class ComparisonExpressionWrapper implements Expression {
+  private final ComparisonExpression comparison;
 
-  public PropertyAccessExpression(final String variableName, final String propertyName) {
-    this.variableName = variableName;
-    this.propertyName = propertyName;
+  public ComparisonExpressionWrapper(final Expression left, final ComparisonExpression.Operator operator,
+      final Expression right) {
+    this.comparison = new ComparisonExpression(left, operator, right);
   }
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    final Object variable = result.getProperty(variableName);
-    if (variable instanceof Document) {
-      return ((Document) variable).get(propertyName);
-    } else if (variable instanceof Map) {
-      // Handle Map types (e.g., from UNWIND with parameter maps)
-      return ((Map<?, ?>) variable).get(propertyName);
-    } else if (variable instanceof Result) {
-      // Handle Result types (nested results)
-      return ((Result) variable).getProperty(propertyName);
-    }
-    return null;
+    return comparison.evaluate(result, context);
   }
 
   @Override
@@ -59,14 +46,13 @@ public class PropertyAccessExpression implements Expression {
 
   @Override
   public String getText() {
-    return variableName + "." + propertyName;
+    return comparison.getText();
   }
 
-  public String getVariableName() {
-    return variableName;
-  }
-
-  public String getPropertyName() {
-    return propertyName;
+  /**
+   * Returns the underlying ComparisonExpression for use in boolean contexts.
+   */
+  public ComparisonExpression getComparison() {
+    return comparison;
   }
 }
