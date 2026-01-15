@@ -1675,19 +1675,17 @@ public class HAServer implements ServerPlugin {
 
     final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
 
-    // Check if we're already connecting to the same server (by host:port)
+    // Check if we're already connected/connecting to the same server (by host:port)
     // This prevents duplicate connection attempts in 2-server clusters where
     // connectToLeader() can be called from multiple places (initial startup + ELECTION_COMPLETED)
     // Note: We compare by host:port, not by equals(), because the alias might differ
-    if (lc != null) {
+    if (lc != null && lc.isAlive()) {
       final ServerInfo currentLeader = lc.getLeader();
       if (currentLeader.host().equals(server.host()) && currentLeader.port() == server.port()) {
-        if (lc.isConnectInProgress()) {
-          LogManager.instance().log(this, Level.INFO,
-              "Connection to leader %s (host:port %s:%d) already in progress, skipping duplicate request",
-              server, server.host(), server.port());
-          return;
-        }
+        LogManager.instance().log(this, Level.INFO,
+            "Already connected/connecting to leader %s (host:port %s:%d), skipping duplicate request",
+            server, server.host(), server.port());
+        return;
       }
     }
 
