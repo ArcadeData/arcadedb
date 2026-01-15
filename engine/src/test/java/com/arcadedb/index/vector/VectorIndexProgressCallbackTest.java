@@ -77,7 +77,7 @@ class VectorIndexProgressCallbackTest extends TestHelper {
 
     // Build with callbacks
     lsmIndex.build(
-        100000, // batch size
+            // batch size
         (doc, total) -> {
           documentsIndexed.set((int) total);
 //          if (total % 100 == 0) {
@@ -181,8 +181,7 @@ class VectorIndexProgressCallbackTest extends TestHelper {
 
     // Rebuild with graph callback
     lsmIndex.build(
-        100000,
-        null, // No document callback needed
+            null, // No document callback needed
         (phase, processedNodes, totalNodes, vecAccesses) -> {
           graphBuildCalls.incrementAndGet();
           phaseLog.append(String.format("[%s: %d/%d] ", phase, processedNodes, totalNodes));

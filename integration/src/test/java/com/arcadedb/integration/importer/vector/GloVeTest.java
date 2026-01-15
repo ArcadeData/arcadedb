@@ -105,7 +105,7 @@ public class GloVeTest {
 
       // Build with callbacks
       lsmIndex.build(
-          100000, // batch size
+              // batch size
           (doc, total) -> {
             if (total % 10000 == 0) {
               LogManager.instance().log(this, Level.SEVERE, "Indexed " + total + " documents...");
