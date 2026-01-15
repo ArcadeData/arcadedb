@@ -58,8 +58,11 @@ public interface HATestTimeouts {
    *   <li>Leader election to occur
    *   <li>Replicas to commit new leader
    * </ul>
+   *
+   * <p>Increased to 120s to accommodate connection retry logic with exponential backoff
+   * (Phase 3 Priority 1: Connection Resilience).
    */
-  Duration CLUSTER_STABILIZATION_TIMEOUT = Duration.ofSeconds(60);
+  Duration CLUSTER_STABILIZATION_TIMEOUT = Duration.ofSeconds(120);
 
   /**
    * Timeout for server shutdown operations.
@@ -90,8 +93,11 @@ public interface HATestTimeouts {
    *
    * <p>Includes detection of network availability and re-synchronization with leader.
    * Extended to account for potential backoff delays.
+   *
+   * <p>Increased to 60s to accommodate connection retry logic with exponential backoff
+   * (Phase 3 Priority 1: Connection Resilience).
    */
-  Duration REPLICA_RECONNECTION_TIMEOUT = Duration.ofSeconds(30);
+  Duration REPLICA_RECONNECTION_TIMEOUT = Duration.ofSeconds(60);
 
   /**
    * Timeout for transaction execution during chaos testing.
