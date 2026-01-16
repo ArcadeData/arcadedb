@@ -676,6 +676,67 @@ public class BasicGraphTest extends BaseGraphTest {
         .isInstanceOf(ClassCastException.class);
   }
 
+  // https://github.com/ArcadeData/arcadedb/issues/3152
+  @Test
+  void testRegression_Issue3152_EdgeIterableReuse() {
+    database.transaction(() -> {
+      // Create a source vertex and multiple target vertices with edges
+      final MutableVertex source = database.newVertex(VERTEX1_TYPE_NAME).set("name", "Source").save();
+      final MutableVertex target1 = database.newVertex(VERTEX2_TYPE_NAME).set("name", "Target1").save();
+      final MutableVertex target2 = database.newVertex(VERTEX2_TYPE_NAME).set("name", "Target2").save();
+      final MutableVertex target3 = database.newVertex(VERTEX2_TYPE_NAME).set("name", "Target3").save();
+
+      // Create 3 edges from source to targets
+      source.newEdge(EDGE1_TYPE_NAME, target1);
+      source.newEdge(EDGE1_TYPE_NAME, target2);
+      source.newEdge(EDGE1_TYPE_NAME, target3);
+
+      // Test OUT direction from source vertex - should work (creates new iterator each time)
+      final Iterable<Edge> outEdges = source.getEdges(Vertex.DIRECTION.OUT);
+      int firstIterationOut = 0;
+      for (final Edge e : outEdges)
+        firstIterationOut++;
+      int secondIterationOut = 0;
+      for (final Edge e : outEdges)
+        secondIterationOut++;
+      assertThat(firstIterationOut).as("OUT first iteration").isEqualTo(3);
+      assertThat(secondIterationOut).as("OUT second iteration should equal first").isEqualTo(firstIterationOut);
+
+      // Test IN direction from target vertex - this is reported as failing
+      final Iterable<Edge> inEdges = target1.getEdges(Vertex.DIRECTION.IN);
+      int firstIterationIn = 0;
+      for (final Edge e : inEdges)
+        firstIterationIn++;
+      int secondIterationIn = 0;
+      for (final Edge e : inEdges)
+        secondIterationIn++;
+      assertThat(firstIterationIn).as("IN first iteration").isEqualTo(1);
+      assertThat(secondIterationIn).as("IN second iteration should equal first").isEqualTo(firstIterationIn);
+
+      // Test BOTH direction - this uses MultiIterator and is reported as failing
+      final Iterable<Edge> bothEdges = source.getEdges(Vertex.DIRECTION.BOTH);
+      int firstIterationBoth = 0;
+      for (final Edge e : bothEdges)
+        firstIterationBoth++;
+      int secondIterationBoth = 0;
+      for (final Edge e : bothEdges)
+        secondIterationBoth++;
+      assertThat(firstIterationBoth).as("BOTH first iteration").isEqualTo(3);
+      assertThat(secondIterationBoth).as("BOTH second iteration should equal first").isEqualTo(firstIterationBoth);
+
+      // Test no-argument getEdges() which also uses MultiIterator
+      final Iterable<Edge> allEdges = source.getEdges();
+      int firstIterationAll = 0;
+      for (final Edge e : allEdges)
+        firstIterationAll++;
+      int secondIterationAll = 0;
+      for (final Edge e : allEdges)
+        secondIterationAll++;
+      assertThat(firstIterationAll).as("ALL first iteration").isEqualTo(3);
+      assertThat(secondIterationAll).as("ALL second iteration should equal first").isEqualTo(firstIterationAll);
+    });
+  }
+
   // https://github.com/ArcadeData/arcadedb/issues/689
   @Test
   void edgeDescendantOrder() {
