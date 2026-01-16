@@ -305,6 +305,16 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public com.arcadedb.query.opencypher.query.CypherStatementCache getCypherStatementCache() {
+        return null;
+      }
+
+      @Override
+      public com.arcadedb.query.opencypher.query.CypherPlanCache getCypherPlanCache() {
+        return null;
+      }
+
+      @Override
       public int getNewEdgeListSize(int previousSize) {
         return 0;
       }
