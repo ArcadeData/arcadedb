@@ -19,17 +19,10 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.security.SecurityUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -46,15 +39,15 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
-  private static final String     AUTHORIZATION_BASIC = "Basic";
-  protected final      HttpServer httpServer;
+  private static final String AUTHORIZATION_BASIC = "Basic";
+  protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
   }
 
   protected abstract ExecutionResponse execute(HttpServerExchange exchange, ServerSecurityUser user, JSONObject payload)
-      throws Exception;
+          throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
@@ -62,18 +55,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
     if (!mustExecuteOnWorkerThread())
       LogManager.instance()
-          .log(this, Level.SEVERE, "Error: handler must return true at mustExecuteOnWorkerThread() to read payload from request");
+              .log(this, Level.SEVERE, "Error: handler must return true at mustExecuteOnWorkerThread() to read payload from request");
 
     final AtomicReference<String> result = new AtomicReference<>();
     e.getRequestReceiver().receiveFullBytes(
-        // OK
-        (exchange, data) -> result.set(new String(data, DatabaseFactory.getDefaultCharset())),
-        // ERROR
-        (exchange, err) -> {
-          LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
-          exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
-          exchange.getResponseSender().send("Invalid Request");
-        });
+            // OK
+            (exchange, data) -> result.set(new String(data, DatabaseFactory.getDefaultCharset())),
+            // ERROR
+            (exchange, err) -> {
+              LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
+              exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
+              exchange.getResponseSender().send("Invalid Request");
+            });
     return result.get();
   }
 
@@ -144,32 +137,32 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     } catch (final ServerSecurityException e) {
       // PASS SecurityException TO THE CLIENT
       LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
-          SecurityException.class.getSimpleName(), e.getMessage());
+              SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
       LogManager.instance()
-          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-              e.getMessage());
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
       sendErrorResponse(exchange, 400, "Cannot execute command", e, e.getLeaderAddress());
     } catch (final NeedRetryException e) {
       LogManager.instance()
-          .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
+              .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
     } catch (final DuplicatedKeyException e) {
       LogManager.instance()
-          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-              e.getMessage());
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
       sendErrorResponse(exchange, 503, "Found duplicate key in index", e,
-          e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID());
+              e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID());
     } catch (final RecordNotFoundException e) {
       LogManager.instance()
-          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-              e.getMessage());
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
       sendErrorResponse(exchange, 404, "Record not found", e, null);
     } catch (final IllegalArgumentException e) {
       LogManager.instance()
-          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-              e.getMessage());
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
       sendErrorResponse(exchange, 400, "Cannot execute command", e, null);
     } catch (final CommandExecutionException | CommandParsingException e) {
       Throwable realException = e;
@@ -177,8 +170,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         realException = e.getCause();
 
       LogManager.instance()
-          .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-              e.getMessage());
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
       sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
     } catch (final TransactionException e) {
       Throwable realException = e;
@@ -186,12 +179,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         realException = e.getCause();
 
       LogManager.instance()
-          .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
-              e.getMessage());
+              .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
       sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
     } catch (final Throwable e) {
       LogManager.instance()
-          .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
+              .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
       LogManager.instance().setContext(null);
@@ -219,7 +212,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   protected String error2json(final String error, final String detail, final Throwable exception, final String exceptionArgs,
-      final String help) {
+                              final String help) {
     final JSONObject json = new JSONObject();
     json.put("error", error);
     if (detail != null)
@@ -255,20 +248,35 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   private Level getErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
-        Level.SEVERE :
-        Level.FINE;
+            Level.SEVERE :
+            Level.FINE;
   }
 
   private Level getUserSevereErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
-        Level.INFO :
-        Level.FINE;
+            Level.INFO :
+            Level.FINE;
   }
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
-      final String exceptionArgs) {
+                                 final String exceptionArgs) {
     if (!exchange.isResponseStarted())
       exchange.setStatusCode(code);
-    exchange.getResponseSender().send(error2json(errorMessage, e != null ? e.getMessage() : "", e, exceptionArgs, null));
+
+    String detail = "";
+    if (e != null) {
+      final StringBuilder buffer = new StringBuilder();
+      buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
+
+      Throwable current = e.getCause();
+      while (current != null && current != current.getCause() && current != e) {
+        buffer.append(" -> ");
+        buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
+        current = current.getCause();
+      }
+      detail = buffer.toString();
+    }
+
+    exchange.getResponseSender().send(error2json(errorMessage, detail, e, exceptionArgs, null));
   }
 }
