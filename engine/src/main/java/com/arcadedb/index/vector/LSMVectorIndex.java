@@ -131,19 +131,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Protected by write lock, reset to -1 after transaction commits or graph rebuilds
   private int currentInsertPageNum = -1;
 
-  // Metrics tracking (Phase 1: JVector metrics extraction)
-  // Package-private to allow access from ArcadePageVectorValues
-  final AtomicLong searchOperations = new AtomicLong(0);
-  final AtomicLong insertOperations = new AtomicLong(0);
-  final AtomicLong graphRebuildCount = new AtomicLong(0);
-  final AtomicLong compactionCount = new AtomicLong(0);
-  final AtomicLong vectorCacheHits = new AtomicLong(0);
-  final AtomicLong vectorCacheMisses = new AtomicLong(0);
-  final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
-  final AtomicLong vectorFetchFromDocuments = new AtomicLong(0);
-  final AtomicLong vectorFetchFromGraph = new AtomicLong(0);
-  final AtomicLong searchLatencyMs = new AtomicLong(0);
-  final AtomicLong insertLatencyMs = new AtomicLong(0);
+  // Metrics tracking - package-private to allow access from ArcadePageVectorValues
+  final LSMVectorIndexMetrics metrics = new LSMVectorIndexMetrics();
 
   public interface GraphBuildCallback {
     /**
@@ -157,87 +146,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     void onGraphBuildProgress(String phase, int processedNodes, int totalNodes, long vectorAccesses);
   }
 
-  /**
-   * Custom Bits implementation for filtering vector search by RID.
-   * Maps graph ordinals to vector IDs, then checks if the corresponding RID is in the allowed set.
-   */
-  private class RIDBitsFilter implements Bits {
-    private final Set<RID> allowedRIDs;
-    private final int[] ordinalToVectorIdSnapshot;
-    private final VectorLocationIndex vectorIndexSnapshot;
-
-    RIDBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot,
-                  final VectorLocationIndex vectorIndexSnapshot) {
-      this.allowedRIDs = allowedRIDs;
-      this.ordinalToVectorIdSnapshot = ordinalToVectorIdSnapshot;
-      this.vectorIndexSnapshot = vectorIndexSnapshot;
-    }
-
-    @Override
-    public boolean get(final int ordinal) {
-      // Check if ordinal is within bounds
-      if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
-        return false;
-
-      // Map ordinal to vector ID
-      final int vectorId = ordinalToVectorIdSnapshot[ordinal];
-
-      // Get the RID for this vector ID
-      final VectorLocationIndex.VectorLocation loc = vectorIndexSnapshot.getLocation(vectorId);
-      if (loc == null || loc.deleted)
-        return false;
-
-      // Check if this RID is in the allowed set
-      return allowedRIDs.contains(loc.rid);
-    }
-  }
-
-  /**
-   * Comparable wrapper for float[] to use in transaction tracking.
-   * Vectors are compared by their hash code for uniqueness in the transaction map.
-   */
-  private static class ComparableVector implements Comparable<ComparableVector> {
-    final float[] vector;
-    final int hashCode;
-
-    ComparableVector(final float[] vector) {
-      this.vector = vector;
-      this.hashCode = Arrays.hashCode(vector);
-    }
-
-    @Override
-    public int compareTo(final ComparableVector other) {
-      // First compare by hash code for performance
-      final int hashCompare = Integer.compare(this.hashCode, other.hashCode);
-      if (hashCompare != 0)
-        return hashCompare;
-
-      // If hash codes are equal, perform lexicographical comparison of vector elements
-      // to maintain the Comparable contract: compareTo == 0 iff equals == true
-      final int minLength = Math.min(this.vector.length, other.vector.length);
-      for (int i = 0; i < minLength; i++) {
-        final int elementCompare = Float.compare(this.vector[i], other.vector[i]);
-        if (elementCompare != 0)
-          return elementCompare;
-      }
-      // If all compared elements are equal, compare by length
-      return Integer.compare(this.vector.length, other.vector.length);
-    }
-
-    @Override
-    public boolean equals(final Object o) {
-      if (this == o)
-        return true;
-      if (!(o instanceof ComparableVector other))
-        return false;
-      return Arrays.equals(vector, other.vector);
-    }
-
-    @Override
-    public int hashCode() {
-      return hashCode;
-    }
-  }
 
   /**
    * Helper class for collecting vector entries during graph build.
@@ -839,212 +747,50 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // This avoids race conditions where concurrent replication adds entries to vectorIndex
     // that don't yet exist on disk pages. We iterate pages and read what's actually persisted.
     final Map<RID, VectorEntryForGraphBuild> ridToLatestVector = new HashMap<>();
-    int totalEntriesRead = 0;
-    int filteredZeroVectors = 0;
-    int filteredDeletedVectors = 0;
+    final int[] totalEntriesRead = {0};
+    final int[] filteredDeletedVectors = {0};
 
-    // First, read from compacted sub-index if it exists
     final DatabaseInternal database = getDatabase();
 
+    // Read from compacted sub-index if it exists
     if (compactedSubIndex != null) {
-      final int compactedTotalPages = compactedSubIndex.getTotalPages();
-      for (int pageNum = 0; pageNum < compactedTotalPages; pageNum++) {
-        try {
-          final PageId pageId = new PageId(database, compactedSubIndex.getFileId(), pageNum);
-          final var page = database.getPageManager().getImmutablePage(pageId, getPageSize(), false, false);
-          if (page == null)
-            continue;
-
-          final int numberOfEntries = page.readInt(OFFSET_NUM_ENTRIES);
-          if (numberOfEntries == 0)
-            continue;
-
-          // Calculate header size (page 0 has extra metadata)
-          final int headerSize;
-          if (pageNum == 0) {
-            // Compacted page 0: base header + dimensions + similarity + maxConn + beamWidth
-            headerSize = HEADER_BASE_SIZE + (4 * 4); // 9 + 16 = 25 bytes
-          } else {
-            headerSize = HEADER_BASE_SIZE; // 9 bytes
-          }
-
-          // Calculate absolute file offset for this page
-          final long pageStartOffset = (long) pageNum * getPageSize();
-
-          // Parse variable-sized entries sequentially (no pointer table)
-          int currentOffset = headerSize;
-          for (int i = 0; i < numberOfEntries; i++) {
-            // Record absolute file offset for this entry
-            final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
-
-            // Read variable-sized vectorId
-            final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
-            final int vectorId = (int) vectorIdAndSize[0];
-            currentOffset += (int) vectorIdAndSize[1];
-
-            // Read variable-sized bucketId
-            final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
-            final int bucketId = (int) bucketIdAndSize[0];
-            currentOffset += (int) bucketIdAndSize[1];
-
-            // Read variable-sized position
-            final long[] positionAndSize = page.readNumberAndSize(currentOffset);
-            final long position = positionAndSize[0];
-            currentOffset += (int) positionAndSize[1];
-
-            final RID rid = new RID(database, bucketId, position);
-
-            // Read deleted flag (fixed 1 byte)
-            final boolean deleted = page.readByte(currentOffset) == 1;
-            currentOffset += 1;
-
-            // CRITICAL: Skip over quantization type byte (always present after my fix)
-            final byte quantTypeOrdinal = page.readByte(currentOffset);
-            currentOffset += 1;
-
-            // CRITICAL: Skip over quantized vector data if quantization is enabled
-            if (quantTypeOrdinal == VectorQuantizationType.INT8.ordinal()) {
-              // Skip vector length (4 bytes)
-              final int vectorLength = page.readInt(currentOffset);
-              currentOffset += 4;
-              // Skip quantized bytes
-              currentOffset += vectorLength;
-              // Skip min and max (2 floats = 8 bytes)
-              currentOffset += 8;
-            } else if (quantTypeOrdinal == VectorQuantizationType.BINARY.ordinal()) {
-              // Skip original length (4 bytes)
-              final int originalLength = page.readInt(currentOffset);
-              currentOffset += 4;
-              // Skip packed bytes
-              final int byteCount = (originalLength + 7) / 8;
-              currentOffset += byteCount;
-              // Skip median (4 bytes)
-              currentOffset += 4;
+      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
+          getPageSize(), true, entry -> {
+            totalEntriesRead[0]++;
+            if (entry.deleted) {
+              filteredDeletedVectors[0]++;
+              return;
             }
-            // If quantType is NONE (0), no additional data to skip
-
-            totalEntriesRead++;
-
-            if (deleted) {
-              filteredDeletedVectors++;
-              continue;
-            }
-
-            // Note: Zero vector check will be done when loading from document during graph build
             // Keep latest (highest ID) vector for each RID
-            final VectorEntryForGraphBuild existing = ridToLatestVector.get(rid);
-            if (existing == null || vectorId > existing.vectorId) {
-              ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid, true, entryFileOffset));
-            }
-          }
-        } catch (final Exception e) {
-          // Skip problematic pages
-          LogManager.instance()
-                  .log(this, Level.WARNING, "Error reading compacted page %d during graph build: %s", null, pageNum, e.getMessage());
-        }
-      }
+            final VectorEntryForGraphBuild existing = ridToLatestVector.get(entry.rid);
+            if (existing == null || entry.vectorId > existing.vectorId)
+              ridToLatestVector.put(entry.rid,
+                  new VectorEntryForGraphBuild(entry.vectorId, entry.rid, true, entry.absoluteFileOffset));
+          });
     }
 
-    // Then read from mutable index
-    final int mutableTotalPages = getTotalPages();
-    for (int pageNum = 0; pageNum < mutableTotalPages; pageNum++) {
-      try {
-        final PageId pageId = new PageId(database, getFileId(), pageNum);
-        final var page = database.getPageManager().getImmutablePage(pageId, getPageSize(), false, false);
-        if (page == null)
-          continue;
-
-        final int numberOfEntries = page.readInt(OFFSET_NUM_ENTRIES);
-        if (numberOfEntries == 0)
-          continue;
-
-        // Calculate absolute file offset for this page
-        final long pageStartOffset = (long) pageNum * getPageSize();
-
-        // Parse variable-sized entries sequentially (no pointer table)
-        int currentOffset = HEADER_BASE_SIZE; // Mutable pages always use base header size
-        for (int i = 0; i < numberOfEntries; i++) {
-          // Record absolute file offset for this entry
-          final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
-
-          // Read variable-sized vectorId
-          final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
-          final int vectorId = (int) vectorIdAndSize[0];
-          currentOffset += (int) vectorIdAndSize[1];
-
-          // Read variable-sized bucketId
-          final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
-          final int bucketId = (int) bucketIdAndSize[0];
-          currentOffset += (int) bucketIdAndSize[1];
-
-          // Read variable-sized position
-          final long[] positionAndSize = page.readNumberAndSize(currentOffset);
-          final long position = positionAndSize[0];
-          currentOffset += (int) positionAndSize[1];
-
-          final RID rid = new RID(database, bucketId, position);
-
-          // Read deleted flag (fixed 1 byte)
-          final boolean deleted = page.readByte(currentOffset) == 1;
-          currentOffset += 1;
-
-          // CRITICAL: Skip over quantization type byte (always present after my fix)
-          final byte quantTypeOrdinal = page.readByte(currentOffset);
-          currentOffset += 1;
-
-          // CRITICAL: Skip over quantized vector data if quantization is enabled
-          if (quantTypeOrdinal == VectorQuantizationType.INT8.ordinal()) {
-            // Skip vector length (4 bytes)
-            final int vectorLength = page.readInt(currentOffset);
-            currentOffset += 4;
-            // Skip quantized bytes
-            currentOffset += vectorLength;
-            // Skip min and max (2 floats = 8 bytes)
-            currentOffset += 8;
-          } else if (quantTypeOrdinal == VectorQuantizationType.BINARY.ordinal()) {
-            // Skip original length (4 bytes)
-            final int originalLength = page.readInt(currentOffset);
-            currentOffset += 4;
-            // Skip packed bytes
-            final int byteCount = (originalLength + 7) / 8;
-            currentOffset += byteCount;
-            // Skip median (4 bytes)
-            currentOffset += 4;
-          }
-          // If quantType is NONE (0), no additional data to skip
-
-          totalEntriesRead++;
-
-          if (deleted) {
-            filteredDeletedVectors++;
-            continue;
-          }
-
-          // Note: Zero vector check will be done when loading from document during graph build
-          // Keep latest (highest ID) vector for each RID (mutable entries override compacted)
-          final VectorEntryForGraphBuild existing = ridToLatestVector.get(rid);
-          if (existing == null || vectorId > existing.vectorId) {
-            ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid, false, entryFileOffset));
-          }
-        }
-      } catch (final Exception e) {
-        // Skip problematic pages
-        LogManager.instance().log(this, Level.WARNING, "Error reading mutable page %d during graph build: %s - %s", null, pageNum,
-                e.getClass().getSimpleName(), e.getMessage());
-        if (LogManager.instance().isDebugEnabled())
-          e.printStackTrace();
+    // Read from mutable index
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, entry -> {
+      totalEntriesRead[0]++;
+      if (entry.deleted) {
+        filteredDeletedVectors[0]++;
+        return;
       }
-    }
+      // Keep latest (highest ID) vector for each RID (mutable entries override compacted)
+      final VectorEntryForGraphBuild existing = ridToLatestVector.get(entry.rid);
+      if (existing == null || entry.vectorId > existing.vectorId)
+        ridToLatestVector.put(entry.rid,
+            new VectorEntryForGraphBuild(entry.vectorId, entry.rid, false, entry.absoluteFileOffset));
+    });
 
     // Build ordinal mapping from deduplicated vectors read directly from pages
     final int[] activeVectorIds = ridToLatestVector.values().stream().mapToInt(v -> v.vectorId).sorted().toArray();
 
     // Log statistics
-    if (filteredZeroVectors > 0 || filteredDeletedVectors > 0) {
-      LogManager.instance()
-              .log(this, Level.INFO, "Graph build from pages: %d total entries, %d deleted, %d zero vectors, %d active for graph",
-                      totalEntriesRead, filteredDeletedVectors, filteredZeroVectors, activeVectorIds.length);
-    }
+    if (filteredDeletedVectors[0] > 0)
+      LogManager.instance().log(this, Level.INFO,
+          "Graph build from pages: %d total entries, %d deleted, %d active for graph",
+          totalEntriesRead[0], filteredDeletedVectors[0], activeVectorIds.length);
 
     // Acquire write lock for updating vectorIndex and preparing build
     lock.writeLock().lock();
@@ -1301,7 +1047,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         this.graphIndex = builtGraph;
         this.graphState = GraphState.IMMUTABLE;
         // Track graph rebuild metric
-        graphRebuildCount.incrementAndGet();
+        metrics.incrementGraphRebuildCount();
         // Reset page tracking since we rebuilt from persisted pages
         currentInsertPageNum = -1;
       } finally {
@@ -1605,6 +1351,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * Load vector location metadata from a specific file's pages.
+   * Uses LSMVectorIndexPageParser to parse page entries.
    *
    * @param fileId      The file ID to load from
    * @param totalPages  The number of pages in that file
@@ -1612,110 +1359,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return Number of entries read
    */
   private int loadVectorsFromFile(final int fileId, final int totalPages, final boolean isCompacted) {
-    int entriesRead = 0;
-    int pagesWithEntries = 0;
+    LogManager.instance().log(this, Level.FINE,
+        "loadVectorsFromFile: fileId=%d, totalPages=%d, isCompacted=%s", fileId, totalPages, isCompacted);
+
+    final int entriesRead = LSMVectorIndexPageParser.parsePages(getDatabase(), fileId, totalPages, getPageSize(), isCompacted,
+        entry -> vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, entry.deleted));
 
     LogManager.instance().log(this, Level.FINE,
-            "loadVectorsFromFile: fileId=" + fileId + ", totalPages=" + totalPages + ", isCompacted=" + isCompacted);
-
-    for (int pageNum = 0; pageNum < totalPages; pageNum++) {
-      try {
-        // Use getImmutablePage to read directly from disk, not from transaction cache
-        final BasePage currentPage = getDatabase().getPageManager()
-                .getImmutablePage(new PageId(getDatabase(), fileId, pageNum), getPageSize(), false, false);
-
-        if (currentPage == null) {
-          LogManager.instance().log(this, Level.FINE, "Page %d in file %d does not exist", null, pageNum, fileId);
-          continue;
-        }
-
-        // Read page header
-        final int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
-        final int numberOfEntries = currentPage.readInt(OFFSET_NUM_ENTRIES);
-
-        if (numberOfEntries == 0)
-          continue; // Empty page
-
-        pagesWithEntries++;
-
-        // Calculate header size (page 0 of compacted index has extra metadata)
-        final int headerSize;
-        if (isCompacted && pageNum == 0) {
-          // Compacted page 0: base header + dimensions + similarity + maxConn + beamWidth
-          headerSize = HEADER_BASE_SIZE + (4 * 4); // 9 + 16 = 25 bytes (base + 4 ints)
-        } else {
-          headerSize = HEADER_BASE_SIZE; // 9 bytes
-        }
-
-        // Calculate absolute file offset for the start of this page's data
-        final long pageStartOffset = (long) pageNum * getPageSize();
-
-        // Parse variable-sized entries sequentially (no pointer table)
-        int currentOffset = headerSize;
-        for (int i = 0; i < numberOfEntries; i++) {
-          // Record absolute file offset for this entry (before reading it)
-          final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
-
-          // Read variable-sized vectorId
-          final long[] vectorIdAndSize = currentPage.readNumberAndSize(currentOffset);
-          final int id = (int) vectorIdAndSize[0];
-          currentOffset += (int) vectorIdAndSize[1];
-
-          // Read variable-sized bucketId
-          final long[] bucketIdAndSize = currentPage.readNumberAndSize(currentOffset);
-          final int bucketId = (int) bucketIdAndSize[0];
-          currentOffset += (int) bucketIdAndSize[1];
-
-          // Read variable-sized position
-          final long[] positionAndSize = currentPage.readNumberAndSize(currentOffset);
-          final long position = positionAndSize[0];
-          currentOffset += (int) positionAndSize[1];
-
-          final RID rid = new RID(getDatabase(), bucketId, position);
-
-          // Read deleted flag (fixed 1 byte)
-          final boolean deleted = currentPage.readByte(currentOffset) == 1;
-          currentOffset += 1;
-
-          // CRITICAL FIX: Always read quantization type byte (matches writer that always writes it)
-          // The writer ALWAYS writes this byte, even when quantization is NONE
-          final byte quantTypeOrdinal = currentPage.readByte(currentOffset);
-          currentOffset += 1;
-
-          // Skip quantized vector data if quantization is enabled
-          // This data is not needed for location index, only for vector retrieval
-          if (quantTypeOrdinal > 0 && quantTypeOrdinal < VectorQuantizationType.values().length) {
-            final VectorQuantizationType quantType = VectorQuantizationType.values()[quantTypeOrdinal];
-
-            if (quantType == VectorQuantizationType.INT8) {
-              // Skip: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
-              final int vectorLength = currentPage.readInt(currentOffset);
-              currentOffset += 4; // vector length
-              currentOffset += vectorLength; // quantized bytes
-              currentOffset += 8; // min + max (2 floats)
-
-            } else if (quantType == VectorQuantizationType.BINARY) {
-              // Skip: original length (4 bytes) + packed bytes + median (4 bytes)
-              final int originalLength = currentPage.readInt(currentOffset);
-              currentOffset += 4; // original length
-              final int byteCount = (originalLength + 7) / 8; // packed bytes
-              currentOffset += byteCount; // packed bytes
-              currentOffset += 4; // median (float)
-            }
-          }
-
-          // Store location metadata with absolute file offset
-          vectorIndex.addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
-          entriesRead++;
-        }
-      } catch (final Exception e) {
-        // Page might not exist, skip
-        LogManager.instance().log(this, Level.SEVERE, "Skipping page %d in file %d: %s", null, pageNum, fileId, e.getMessage());
-      }
-    }
-
-    LogManager.instance().log(this, Level.FINE,
-            "loadVectorsFromFile DONE: fileId=" + fileId + ", entriesRead=" + entriesRead + ", pagesWithEntries=" + pagesWithEntries);
+        "loadVectorsFromFile DONE: fileId=%d, entriesRead=%d", fileId, entriesRead);
 
     return entriesRead;
   }
@@ -2299,7 +1950,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final Set<RID> allowedRIDs) {
     // Track search metrics
     final long startTime = System.currentTimeMillis();
-    searchOperations.incrementAndGet();
+    metrics.incrementSearchOperations();
 
     try {
       if (queryVector == null)
@@ -2431,7 +2082,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } finally {
       // Track search latency
       final long elapsed = System.currentTimeMillis() - startTime;
-      searchLatencyMs.addAndGet(elapsed);
+      metrics.addSearchLatency(elapsed);
     }
   }
 
@@ -2480,7 +2131,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Track search metrics
     final long startTime = System.nanoTime(); // Use nanos for microsecond precision
-    searchOperations.incrementAndGet();
+    metrics.incrementSearchOperations();
 
     try {
       if (queryVector == null)
@@ -2584,7 +2235,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } finally {
       // Track search latency (convert nanos to ms for consistency)
       final long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
-      searchLatencyMs.addAndGet(elapsedMs);
+      metrics.addSearchLatency(elapsedMs);
     }
   }
 
@@ -2795,7 +2446,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public void put(final Object[] keys, final RID[] values) {
     // Track insert metrics
     final long startTime = System.currentTimeMillis();
-    insertOperations.incrementAndGet();
+    metrics.incrementInsertOperations();
 
     try {
       if (keys == null || keys.length == 0)
@@ -2872,7 +2523,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
       if (txStatus != TransactionContext.STATUS.BEGUN) {
         final long elapsed = System.currentTimeMillis() - startTime;
-        insertLatencyMs.addAndGet(elapsed);
+        metrics.addInsertLatency(elapsed);
       }
     }
   }
@@ -3165,7 +2816,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final boolean success = LSMVectorIndexCompactor.compact(this);
       if (success) {
         // Track successful compaction
-        compactionCount.incrementAndGet();
+        metrics.incrementCompactionCount();
       }
       return success;
     } catch (final TimeoutException e) {
@@ -3374,26 +3025,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("mutationsThreshold", metadata.mutationsBeforeRebuild > 0 ?
             (long) metadata.mutationsBeforeRebuild : (long) defaultMutationsThreshold);
 
-    // NEW: Operation counters
-    stats.put("searchOperations", searchOperations.get());
-    stats.put("insertOperations", insertOperations.get());
-    stats.put("graphRebuildCount", graphRebuildCount.get());
-    stats.put("compactionCount", compactionCount.get());
-
-    // NEW: Cache statistics
-    stats.put("vectorCacheHits", vectorCacheHits.get());
-    stats.put("vectorCacheMisses", vectorCacheMisses.get());
-
-    // NEW: Vector fetch source tracking
-    stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
-    stats.put("vectorFetchFromDocuments", vectorFetchFromDocuments.get());
-    stats.put("vectorFetchFromGraph", vectorFetchFromGraph.get());
-
-    // NEW: Performance metrics (average latencies)
-    final long searchOps = searchOperations.get();
-    final long insertOps = insertOperations.get();
-    stats.put("avgSearchLatencyMs", searchOps > 0 ? searchLatencyMs.get() / searchOps : 0L);
-    stats.put("avgInsertLatencyMs", insertOps > 0 ? insertLatencyMs.get() / insertOps : 0L);
+    // Populate metrics from LSMVectorIndexMetrics
+    metrics.populateStats(stats);
 
     // NEW: Memory estimates
     stats.put("estimatedLocationIndexBytes", (long) vectorIndex.size() * 24L);
