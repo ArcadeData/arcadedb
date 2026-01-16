@@ -50,6 +50,8 @@ import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -244,7 +246,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Create PQ file handler for Product Quantization (zero-disk-I/O search)
       // Note: PQ file uses direct I/O (not ArcadeDB pages) since it's loaded entirely into memory
-      this.pqFile = new LSMVectorIndexPQFile(filePath);
+      this.pqFile = createPQFileWithFallback(mutable.getFilePath());
 
       LogManager.instance()
               .log(this, Level.FINE, "Created LSMVectorIndex: indexName=%s, vectorFileId=%d, graphFileId=%d", indexName,
@@ -286,7 +288,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Create PQ file handler (for zero-disk-I/O search)
     // PQ data will be loaded after schema loads metadata (see loadVectorsAfterSchemaLoad)
-    this.pqFile = new LSMVectorIndexPQFile(filePath);
+    this.pqFile = createPQFileWithFallback(mutable.getFilePath());
 
     // Initialize compaction fields
     this.currentMutablePages = new AtomicInteger(mutable.getTotalPages());
@@ -307,6 +309,39 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // DON'T load vectors here - metadata.dimensions is still -1 at this point!
     // Vector loading is deferred until after schema loads metadata via onAfterSchemaLoad() hook.
     // See loadVectorsAfterSchemaLoad() method which is called by LSMVectorIndexMutable.onAfterSchemaLoad()
+  }
+
+  private LSMVectorIndexPQFile createPQFileWithFallback(final String primaryBasePath) {
+    // Use the component file path as canonical. If legacy PQ exists at a shorter base name, migrate it once.
+    final LSMVectorIndexPQFile pq = new LSMVectorIndexPQFile(primaryBasePath);
+
+    // Derive a legacy base path by stripping the first extension (e.g., drop .4.262144.v0.lsmvecidx)
+    String legacyBasePath = null;
+    final int dot = primaryBasePath.indexOf('.');
+    if (dot > 0) {
+      legacyBasePath = primaryBasePath.substring(0, dot);
+    }
+
+    if (!pq.exists() && legacyBasePath != null) {
+      final LSMVectorIndexPQFile legacyPQ = new LSMVectorIndexPQFile(legacyBasePath);
+      if (legacyPQ.exists()) {
+        try {
+          final var targetParent = pq.getFilePath().getParent();
+          if (targetParent != null && !Files.exists(targetParent)) {
+            Files.createDirectories(targetParent);
+          }
+          Files.move(legacyPQ.getFilePath(), pq.getFilePath(), StandardCopyOption.REPLACE_EXISTING);
+          LogManager.instance().log(this, Level.INFO,
+                  "Migrated PQ file from legacy path %s to canonical %s", legacyPQ.getFilePath(), pq.getFilePath());
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+                  "Failed to migrate PQ file from legacy path %s to canonical %s: %s", legacyPQ.getFilePath(), pq.getFilePath(),
+                  e.getMessage());
+        }
+      }
+    }
+
+    return pq;
   }
 
   /**
