@@ -50,6 +50,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.opencypher.query.CypherPlanCache;
+import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
@@ -544,6 +546,16 @@ public class ServerDatabase implements DatabaseInternal {
 
   public ExecutionPlanCache getExecutionPlanCache() {
     return wrapped.getExecutionPlanCache();
+  }
+
+  @Override
+  public CypherStatementCache getCypherStatementCache() {
+    return wrapped.getCypherStatementCache();
+  }
+
+  @Override
+  public CypherPlanCache getCypherPlanCache() {
+    return wrapped.getCypherPlanCache();
   }
 
   public WALFileFactory getWALFileFactory() {
