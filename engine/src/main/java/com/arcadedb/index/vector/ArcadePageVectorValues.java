@@ -153,7 +153,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           final io.github.jbellis.jvector.vector.types.VectorFloat<?> vector = diskGraph.getView().getVector(ordinal);
           if (vector != null) {
             // Track fetch source for metrics
-            lsmIndex.vectorFetchFromGraph.incrementAndGet();
+            lsmIndex.metrics.incrementVectorFetchFromGraph();
 
             if (vectorCache != null) {
               synchronized (vectorCache) {
@@ -180,7 +180,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           final VectorFloat<?> result = vts.createFloatVector(vector);
 
           // Track fetch source for metrics
-          lsmIndex.vectorFetchFromQuantized.incrementAndGet();
+          lsmIndex.metrics.incrementVectorFetchFromQuantized();
 
           // Cache the result if caching is enabled
           if (vectorCache != null) {
@@ -246,7 +246,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
       // Track fetch source for metrics
       if (lsmIndex != null)
-        lsmIndex.vectorFetchFromDocuments.incrementAndGet();
+        lsmIndex.metrics.incrementVectorFetchFromDocuments();
 
       // Cache the result if caching is enabled (for graph building performance)
       if (vectorCache != null) {
