@@ -30,7 +30,7 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     await page.fill('#inputUserPassword', 'playwithdata');
 
     // Click sign in button
-    await page.click('button[onclick="login()"]');
+    await page.getByRole('button', { name: 'Sign In' }).click();
 
     // Wait for login to complete
     await Promise.all([
@@ -44,9 +44,6 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     // Navigate to Server tab to ensure ApexCharts is loaded
     // Server tab is usually tab index 2 (Query=0, Database=1, Server=2)
     await page.getByRole('tab').nth(2).click();
-
-    // Wait for server tab content to load
-    await page.waitForTimeout(2000);
 
     // Check that ApexCharts is loaded and can create charts
     const apexChartsLoaded = await page.evaluate(() => {
@@ -69,9 +66,6 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
   test('should render server monitoring charts on Server tab', async ({ page }) => {
     // Navigate to Server tab (index 2)
     await page.getByRole('tab').nth(2).click();
-
-    // Wait for server metrics to load (give it time to fetch data)
-    await page.waitForTimeout(3000);
 
     // Check that ApexCharts SVG elements are present for the charts
     // ApexCharts renders SVG elements inside divs with specific IDs
@@ -105,9 +99,6 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     // Navigate to Server tab
     await page.getByRole('tab').nth(2).click();
 
-    // Wait for charts to render
-    await page.waitForTimeout(3000);
-
     // Verify CPU chart has proper SVG structure
     const cpuChartSvg = page.locator('#serverChartOSCPU svg.apexcharts-svg');
     await expect(cpuChartSvg).toBeVisible();
@@ -127,17 +118,19 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     // Navigate to Server tab
     await page.getByRole('tab').nth(2).click();
 
-    // Wait for initial chart render
-    await page.waitForTimeout(3000);
+    // Verify chart is rendered with initial data
+    const cpuChartSvg = page.locator('#serverChartOSCPU svg.apexcharts-svg');
+    await expect(cpuChartSvg).toBeVisible();
 
     // Get initial CPU chart data points
     const initialDataPoints = await page.locator('#serverChartOSCPU svg.apexcharts-svg circle.apexcharts-marker').count();
 
-    // Wait for refresh interval (charts should update periodically)
-    await page.waitForTimeout(3000);
+    // Wait for the metrics API response to ensure data refresh
+    await page.waitForResponse(response =>
+      response.url().includes('/api/server') && response.url().includes('mode=metrics')
+    );
 
     // Verify chart is still rendered and has data
-    const cpuChartSvg = page.locator('#serverChartOSCPU svg.apexcharts-svg');
     await expect(cpuChartSvg).toBeVisible();
 
     // Charts should have markers/data points
@@ -166,8 +159,8 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     // Navigate to Server tab
     await page.getByRole('tab').nth(2).click();
 
-    // Wait for charts to render
-    await page.waitForTimeout(4000);
+    // Wait for charts to render by checking for a chart element
+    await expect(page.locator('#serverChartCommands svg.apexcharts-svg')).toBeVisible({ timeout: 10000 });
 
     // Filter out expected/known errors if any
     const relevantErrors = errors.filter(error => {
@@ -185,23 +178,15 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
     // Navigate to Server tab
     await page.getByRole('tab').nth(2).click();
 
-    // Wait for charts to render
-    await page.waitForTimeout(3000);
+    // Wait for chart to be fully rendered
+    const cpuChart = page.locator('#serverChartOSCPU');
+    await expect(cpuChart.locator('svg.apexcharts-svg')).toBeVisible();
 
     // Hover over a chart to trigger tooltip
-    const cpuChart = page.locator('#serverChartOSCPU');
     await cpuChart.hover();
 
-    // Wait a moment for potential tooltip
-    await page.waitForTimeout(500);
-
-    // Check if ApexCharts tooltip container exists
-    // Note: Tooltip may not always appear if there's no data point at hover location
-    // This is a soft check - we're mainly verifying no errors occur
-    const tooltipExists = await page.locator('.apexcharts-tooltip').count() > 0;
-
-    // Just log the result, not asserting as tooltip behavior can vary
-    console.log(`Tooltip container exists: ${tooltipExists}`);
+    // Verify ApexCharts tooltip appears
+    await expect(page.locator('.apexcharts-tooltip')).toBeVisible({ timeout: 2000 });
   });
 
   test('should verify charts use new @svgdotjs dependencies (v5 migration)', async ({ page }) => {
@@ -210,7 +195,6 @@ test.describe('ApexCharts v5 Upgrade Validation', () => {
 
     // Navigate to Server tab to trigger chart rendering
     await page.getByRole('tab').nth(2).click();
-    await page.waitForTimeout(3000);
 
     // Verify charts rendered successfully with new dependencies
     const chartSvgs = page.locator('svg.apexcharts-svg');
