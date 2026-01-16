@@ -259,6 +259,85 @@ RETURN p.name
 - ⚠️ UNWIND after WITH: Variable passing from WITH to UNWIND needs additional work
 - ⚠️ MATCH after WITH: Chaining another MATCH clause after WITH not yet fully implemented
 
+### UNION / UNION ALL
+```cypher
+// ✅ UNION - Combine results with deduplication
+MATCH (n:Person) RETURN n.name AS name
+UNION
+MATCH (n:Company) RETURN n.name AS name
+
+// ✅ UNION ALL - Combine results without deduplication
+MATCH (n:Person) RETURN n.name AS name
+UNION ALL
+MATCH (n:Company) RETURN n.name AS name
+
+// ✅ Multiple UNIONs
+MATCH (n:Person) RETURN n.name AS name
+UNION
+MATCH (n:Company) RETURN n.name AS name
+UNION
+MATCH (n:City) RETURN n.name AS name
+```
+
+**Features:**
+- ✅ UNION (removes duplicates)
+- ✅ UNION ALL (keeps duplicates)
+- ✅ Multiple UNION chains
+
+**Status:** ✅ **Fully Implemented**
+
+### CALL Clause
+```cypher
+// ✅ Built-in procedures
+CALL db.labels() YIELD label
+CALL db.relationshipTypes() YIELD relationshipType
+CALL db.propertyKeys() YIELD propertyKey
+
+// ✅ Call ArcadeDB SQL functions
+CALL abs(-42) YIELD value
+
+// ✅ Call custom user-defined functions (DEFINE FUNCTION)
+// First define: DEFINE FUNCTION math.add "SELECT :a + :b AS result" PARAMETERS [a,b] LANGUAGE sql
+CALL math.add(3, 5) YIELD value
+
+// ✅ CALL with YIELD filtering
+CALL db.labels() YIELD label WHERE label STARTS WITH 'P'
+
+// ✅ OPTIONAL CALL - returns null if procedure fails
+OPTIONAL CALL unknownProcedure()
+```
+
+**Built-in Procedures:**
+- `db.labels()` - Returns all vertex type names
+- `db.relationshipTypes()` - Returns all edge type names
+- `db.propertyKeys()` - Returns all property keys
+- `db.schema()` / `db.schema.visualization()` - Returns schema info
+
+**Custom Functions:**
+- Custom functions defined with `DEFINE FUNCTION` can be called
+- Supports SQL-based functions with parameters
+- Example: `DEFINE FUNCTION my.echo "SELECT :input AS output" PARAMETERS [input] LANGUAGE sql`
+
+**SQL Functions:**
+- Any ArcadeDB SQL function can be called via CALL
+
+**Status:** ✅ **Fully Implemented**
+
+### EXPLAIN and PROFILE
+```cypher
+// ✅ EXPLAIN - Show execution plan without executing
+EXPLAIN MATCH (n:Person) RETURN n.name
+
+// ✅ PROFILE - Execute with profiling metrics
+PROFILE MATCH (n:Person) RETURN n.name
+```
+
+**Features:**
+- ✅ EXPLAIN shows execution plan with cost estimates
+- ✅ PROFILE executes and returns timing + row count metrics
+
+**Status:** ✅ **Fully Implemented**
+
 ### CREATE Clause
 ```cypher
 // ✅ Create single vertex with properties
@@ -494,8 +573,8 @@ ON MATCH SET r.promoted = true
 | Feature | Example | Status | Priority |
 |---------|---------|--------|----------|
 | **WITH** | `MATCH (n) WITH n.name AS name RETURN name` | ✅ **Implemented** | 🟡 MEDIUM |
-| **UNION** | `MATCH (n:Person) RETURN n UNION MATCH (n:Company) RETURN n` | ❌ Not Implemented | 🟢 LOW |
-| **UNION ALL** | `... UNION ALL ...` | ❌ Not Implemented | 🟢 LOW |
+| **UNION** | `MATCH (n:Person) RETURN n UNION MATCH (n:Company) RETURN n` | ✅ **Implemented** | 🟢 LOW |
+| **UNION ALL** | `... UNION ALL ...` | ✅ **Implemented** | 🟢 LOW |
 
 ### Aggregation Functions
 | Function | Example | Status | Priority |
@@ -708,14 +787,14 @@ RETURN count(n), avg(n.age)
 ---
 
 ### Advanced Features
-| Feature | Example | Priority |
-|---------|---------|----------|
-| **CALL procedures** | `CALL db.labels()` | 🟢 LOW |
-| **Subqueries** | `RETURN [(n)-[:KNOWS]->(m) \| m.name]` | 🟢 LOW |
-| **FOREACH** | `FOREACH (n IN nodes \| SET n.marked = true)` | 🟢 LOW |
-| **Index hints** | `USING INDEX n:Person(name)` | 🟢 LOW |
-| **EXPLAIN** | `EXPLAIN MATCH (n) RETURN n` | 🟢 LOW |
-| **PROFILE** | `PROFILE MATCH (n) RETURN n` | 🟢 LOW |
+| Feature | Example | Status | Priority |
+|---------|---------|--------|----------|
+| **CALL procedures** | `CALL db.labels()` | ✅ **Implemented** | 🟢 LOW |
+| **Subqueries** | `RETURN [(n)-[:KNOWS]->(m) \| m.name]` | ❌ Not Implemented | 🟢 LOW |
+| **FOREACH** | `FOREACH (n IN nodes \| SET n.marked = true)` | ❌ Not Implemented | 🟢 LOW |
+| **Index hints** | `USING INDEX n:Person(name)` | ❌ Not Implemented | 🟢 LOW |
+| **EXPLAIN** | `EXPLAIN MATCH (n) RETURN n` | ✅ **Implemented** | 🟢 LOW |
+| **PROFILE** | `PROFILE MATCH (n) RETURN n` | ✅ **Implemented** | 🟢 LOW |
 
 ---
 
@@ -859,12 +938,24 @@ RETURN count(n), avg(n.age)
 - [ ] Performance benchmarks and validation
 - [ ] Query plan caching
 
+### Phase 9: Query Composition & Procedures (January 2026) ✅ **COMPLETED**
+**Focus:** UNION, CALL procedures, PROFILE
+
+- [x] ✅ **UNION/UNION ALL** - Combine results from multiple queries
+- [x] ✅ **CALL procedures** - Invoke built-in and user-defined functions
+- [x] ✅ **PROFILE** - Execute queries with profiling metrics
+
+**Implementation Files:**
+- `UnionStatement.java` - AST node for UNION queries
+- `UnionStep.java` - Execution step for combining result sets
+- `CallClause.java` - AST node for CALL clause
+- `CallStep.java` - Execution step for invoking procedures
+- Enhanced `OpenCypherQueryEngine` for PROFILE prefix handling
+
 ### Future Phases
-- UNION/UNION ALL
 - Shortest path algorithms
-- CALL procedures
-- Subqueries
-- Full function library
+- Subqueries (full variable scoping)
+- Full function library expansion
 
 ### All Tests Fixed! 🎉
 

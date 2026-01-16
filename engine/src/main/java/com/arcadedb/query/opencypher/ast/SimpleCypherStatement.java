@@ -40,6 +40,7 @@ public class SimpleCypherStatement implements CypherStatement {
   private final MergeClause mergeClause;
   private final List<UnwindClause> unwindClauses;
   private final List<WithClause> withClauses;
+  private final List<CallClause> callClauses;
   private final List<ClauseEntry> clausesInOrder;
   private final boolean hasCreate;
   private final boolean hasMerge;
@@ -75,6 +76,16 @@ public class SimpleCypherStatement implements CypherStatement {
       final DeleteClause deleteClause, final MergeClause mergeClause, final List<UnwindClause> unwindClauses,
       final List<WithClause> withClauses, final List<ClauseEntry> clausesInOrder,
       final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
+    this(originalQuery, matchClauses, whereClause, returnClause, orderByClause, skip, limit, createClause, setClause,
+        deleteClause, mergeClause, unwindClauses, withClauses, null, clausesInOrder, hasCreate, hasMerge, hasDelete);
+  }
+
+  public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
+      final WhereClause whereClause, final ReturnClause returnClause, final OrderByClause orderByClause,
+      final Integer skip, final Integer limit, final CreateClause createClause, final SetClause setClause,
+      final DeleteClause deleteClause, final MergeClause mergeClause, final List<UnwindClause> unwindClauses,
+      final List<WithClause> withClauses, final List<CallClause> callClauses, final List<ClauseEntry> clausesInOrder,
+      final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
     this.originalQuery = originalQuery;
     this.matchClauses = matchClauses != null ? matchClauses : new ArrayList<>();
     this.whereClause = whereClause;
@@ -88,6 +99,7 @@ public class SimpleCypherStatement implements CypherStatement {
     this.mergeClause = mergeClause;
     this.unwindClauses = unwindClauses != null ? unwindClauses : new ArrayList<>();
     this.withClauses = withClauses != null ? withClauses : new ArrayList<>();
+    this.callClauses = callClauses != null ? callClauses : new ArrayList<>();
     this.clausesInOrder = clausesInOrder != null ? clausesInOrder : new ArrayList<>();
     this.hasCreate = hasCreate;
     this.hasMerge = hasMerge;
@@ -177,6 +189,11 @@ public class SimpleCypherStatement implements CypherStatement {
   @Override
   public List<ClauseEntry> getClausesInOrder() {
     return clausesInOrder;
+  }
+
+  @Override
+  public List<CallClause> getCallClauses() {
+    return callClauses;
   }
 
   public String getOriginalQuery() {

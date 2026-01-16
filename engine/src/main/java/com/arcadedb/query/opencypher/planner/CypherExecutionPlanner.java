@@ -21,11 +21,14 @@ package com.arcadedb.query.opencypher.planner;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -56,6 +59,11 @@ public class CypherExecutionPlanner {
    * @return execution plan
    */
   public CypherExecutionPlan createExecutionPlan(final ContextConfiguration configuration) {
+    // Handle UNION statements specially
+    if (statement instanceof UnionStatement) {
+      return createUnionExecutionPlan((UnionStatement) statement, configuration);
+    }
+
     PhysicalPlan physicalPlan = null;
 
     // Use optimizer for applicable queries
@@ -73,6 +81,31 @@ public class CypherExecutionPlanner {
     }
 
     return new CypherExecutionPlan(database, statement, parameters, configuration, physicalPlan, expressionEvaluator);
+  }
+
+  /**
+   * Creates an execution plan for a UNION statement.
+   * Combines results from multiple subqueries.
+   *
+   * @param unionStatement the UNION statement
+   * @param configuration  context configuration
+   * @return execution plan that combines subquery results
+   */
+  private CypherExecutionPlan createUnionExecutionPlan(final UnionStatement unionStatement,
+                                                       final ContextConfiguration configuration) {
+    // Create execution plans for each subquery
+    final List<CypherExecutionPlan> subqueryPlans = new ArrayList<>();
+    for (final CypherStatement subquery : unionStatement.getQueries()) {
+      final CypherExecutionPlanner subPlanner = new CypherExecutionPlanner(database, subquery, parameters, expressionEvaluator);
+      subqueryPlans.add(subPlanner.createExecutionPlan(configuration));
+    }
+
+    // Determine if all unions are UNION ALL (no deduplication needed)
+    final boolean removeDuplicates = !unionStatement.isAllUnionAll();
+
+    // Return a special execution plan for UNION
+    return new CypherExecutionPlan(database, unionStatement, parameters, configuration, null, expressionEvaluator,
+        subqueryPlans, removeDuplicates);
   }
 
   /**

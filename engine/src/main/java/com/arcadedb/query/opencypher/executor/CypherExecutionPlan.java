@@ -62,6 +62,10 @@ public class CypherExecutionPlan {
   private final PhysicalPlan physicalPlan;
   private final ExpressionEvaluator expressionEvaluator;
 
+  // UNION support
+  private final List<CypherExecutionPlan> unionSubqueryPlans;
+  private final boolean unionRemoveDuplicates;
+
   /**
    * Constructor for backward compatibility (without optimizer, without evaluator).
    */
@@ -99,12 +103,33 @@ public class CypherExecutionPlan {
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
       final Map<String, Object> parameters, final ContextConfiguration configuration,
       final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator) {
+    this(database, statement, parameters, configuration, physicalPlan, expressionEvaluator, null, false);
+  }
+
+  /**
+   * Constructor for UNION queries.
+   *
+   * @param database              database instance
+   * @param statement             parsed Cypher statement (UnionStatement)
+   * @param parameters            query parameters
+   * @param configuration         context configuration
+   * @param physicalPlan          optional optimized physical plan (null for UNION)
+   * @param expressionEvaluator   shared expression evaluator
+   * @param unionSubqueryPlans    execution plans for each subquery in the UNION
+   * @param unionRemoveDuplicates true for UNION (dedup), false for UNION ALL
+   */
+  public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
+      final Map<String, Object> parameters, final ContextConfiguration configuration,
+      final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator,
+      final List<CypherExecutionPlan> unionSubqueryPlans, final boolean unionRemoveDuplicates) {
     this.database = database;
     this.statement = statement;
     this.parameters = parameters;
     this.configuration = configuration;
     this.physicalPlan = physicalPlan;
     this.expressionEvaluator = expressionEvaluator;
+    this.unionSubqueryPlans = unionSubqueryPlans;
+    this.unionRemoveDuplicates = unionRemoveDuplicates;
   }
 
   /**
@@ -114,6 +139,10 @@ public class CypherExecutionPlan {
    * @return result set
    */
   public ResultSet execute() {
+    // Handle UNION queries specially
+    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty())
+      return executeUnion();
+
     // Build execution context
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
@@ -170,6 +199,23 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Executes a UNION query by combining results from all subqueries.
+   *
+   * @return combined result set
+   */
+  private ResultSet executeUnion() {
+    // Use UnionStep to combine results from all subqueries
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+
+    final com.arcadedb.query.opencypher.executor.steps.UnionStep unionStep =
+        new com.arcadedb.query.opencypher.executor.steps.UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+
+    return unionStep.syncPull(context, 100);
+  }
+
+  /**
    * Returns EXPLAIN output showing the query execution plan.
    * Displays physical operators with cost and cardinality estimates.
    *
@@ -204,6 +250,91 @@ public class CypherExecutionPlan {
     results.add(result);
 
     return new IteratorResultSet(results.iterator());
+  }
+
+  /**
+   * Executes the query with profiling enabled.
+   * Returns the query results along with execution metrics.
+   *
+   * @return result set containing results and profiling metrics
+   */
+  public ResultSet profile() {
+    // Record start time
+    final long startTime = System.nanoTime();
+
+    // Build execution context with profiling enabled
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    context.setProfiling(true); // Enable profiling
+
+    // Execute the query and collect results
+    final List<ResultInternal> allResults = new ArrayList<>();
+    long rowCount = 0;
+
+    try {
+      // Handle UNION queries specially
+      if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
+        final com.arcadedb.query.opencypher.executor.steps.UnionStep unionStep =
+            new com.arcadedb.query.opencypher.executor.steps.UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+        final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE);
+        while (resultSet.hasNext()) {
+          allResults.add((ResultInternal) resultSet.next());
+          rowCount++;
+        }
+      } else {
+        // Build execution steps
+        AbstractExecutionStep rootStep;
+        final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
+
+        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch) {
+          rootStep = buildExecutionStepsWithOptimizer(context);
+        } else {
+          rootStep = buildExecutionSteps(context);
+        }
+
+        if (rootStep != null) {
+          final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE);
+          while (resultSet.hasNext()) {
+            allResults.add((ResultInternal) resultSet.next());
+            rowCount++;
+          }
+        }
+      }
+    } catch (final Exception e) {
+      // Include error in profile output
+      final ResultInternal errorResult = new ResultInternal();
+      errorResult.setProperty("error", e.getMessage());
+      allResults.add(errorResult);
+    }
+
+    // Calculate execution time
+    final long endTime = System.nanoTime();
+    final double executionTimeMs = (endTime - startTime) / 1_000_000.0;
+
+    // Generate profile output
+    final StringBuilder profileOutput = new StringBuilder();
+    profileOutput.append("OpenCypher Query Profile\n");
+    profileOutput.append("========================\n\n");
+    profileOutput.append(String.format("Execution Time: %.3f ms\n", executionTimeMs));
+    profileOutput.append(String.format("Rows Returned: %d\n", rowCount));
+
+    if (physicalPlan != null && physicalPlan.getRootOperator() != null) {
+      profileOutput.append("\nExecution Plan (Cost-Based Optimizer):\n");
+      profileOutput.append(physicalPlan.getRootOperator().explain(0));
+      profileOutput.append(String.format("\nEstimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
+      profileOutput.append(String.format("Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
+    } else {
+      profileOutput.append("\nExecution Plan (Traditional):\n");
+      profileOutput.append("Step-by-step interpretation\n");
+    }
+
+    // Add profile as first result
+    final ResultInternal profileResult = new ResultInternal();
+    profileResult.setProperty("profile", profileOutput.toString());
+    allResults.add(0, profileResult);
+
+    return new IteratorResultSet(allResults.iterator());
   }
 
   /**
@@ -532,6 +663,16 @@ public class CypherExecutionPlan {
 
         case RETURN:
           // RETURN is handled at the end
+          break;
+
+        case CALL:
+          final com.arcadedb.query.opencypher.ast.CallClause callClause = entry.getTypedClause();
+          final com.arcadedb.query.opencypher.executor.steps.CallStep callStep =
+              new com.arcadedb.query.opencypher.executor.steps.CallStep(callClause, context, functionFactory);
+          if (currentStep != null) {
+            callStep.setPrevious(currentStep);
+          }
+          currentStep = callStep;
           break;
       }
     }
