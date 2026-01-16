@@ -62,11 +62,49 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   @Override
   public CypherStatement visitUnion(final Cypher25Parser.UnionContext ctx) {
-    // For now, support single singleQuery (no UNION support yet)
-    if (ctx.singleQuery().size() > 1) {
-      throw new CommandParsingException("UNION not yet supported");
+    final List<Cypher25Parser.SingleQueryContext> singleQueries = ctx.singleQuery();
+
+    // Single query - no UNION
+    if (singleQueries.size() == 1)
+      return (CypherStatement) visit(singleQueries.get(0));
+
+    // Multiple queries - parse as UNION
+    final List<CypherStatement> queries = new ArrayList<>();
+    final List<Boolean> unionAllFlags = new ArrayList<>();
+
+    // Parse each singleQuery
+    for (final Cypher25Parser.SingleQueryContext sqCtx : singleQueries)
+      queries.add((CypherStatement) visit(sqCtx));
+
+    // Determine if each UNION is ALL or DISTINCT
+    // Grammar: singleQuery (UNION (ALL | DISTINCT)? singleQuery)*
+    // We have N queries and N-1 UNION tokens
+    final List<org.antlr.v4.runtime.tree.TerminalNode> unionTokens = ctx.UNION();
+    final List<org.antlr.v4.runtime.tree.TerminalNode> allTokens = ctx.ALL();
+    final List<org.antlr.v4.runtime.tree.TerminalNode> distinctTokens = ctx.DISTINCT();
+
+    // Build a simple flag for each union: default is DISTINCT (false), unless ALL is present
+    // We need to determine which ALL/DISTINCT tokens correspond to which UNION
+    // Since ANTLR gives us tokens in document order, we can match them by position
+    for (int i = 0; i < unionTokens.size(); i++) {
+      final int unionStart = unionTokens.get(i).getSymbol().getStartIndex();
+      final int nextQueryStart = singleQueries.get(i + 1).getStart().getStartIndex();
+
+      // Check if there's an ALL token between this UNION and the next query
+      boolean isAll = false;
+      for (final org.antlr.v4.runtime.tree.TerminalNode allToken : allTokens) {
+        final int allPos = allToken.getSymbol().getStartIndex();
+        if (allPos > unionStart && allPos < nextQueryStart) {
+          isAll = true;
+          break;
+        }
+      }
+
+      // DISTINCT is the default, so we only need to check for ALL
+      unionAllFlags.add(isAll);
     }
-    return (CypherStatement) visit(ctx.singleQuery(0));
+
+    return new UnionStatement(queries, unionAllFlags);
   }
 
   @Override
@@ -79,6 +117,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     MergeClause mergeClause = null;
     final List<UnwindClause> unwindClauses = new ArrayList<>();
     final List<WithClause> withClauses = new ArrayList<>();
+    final List<CallClause> callClauses = new ArrayList<>();
     final List<ClauseEntry> clausesInOrder = new ArrayList<>();
     WhereClause whereClause = null;
     ReturnClause returnClause = null;
@@ -142,6 +181,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         if (orderBySkipLimit.limit() != null) {
           limit = visitLimit(orderBySkipLimit.limit());
         }
+      } else if (clauseCtx.callClause() != null) {
+        final CallClause call = visitCallClause(clauseCtx.callClause());
+        callClauses.add(call);
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.CALL, call, clauseOrder++));
       }
     }
 
@@ -170,6 +213,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         mergeClause,
         unwindClauses,
         withClauses,
+        callClauses,
         clausesInOrder,
         hasCreate,
         hasMerge,
@@ -250,6 +294,54 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new MergeClause(pathPattern, onCreateSet, onMatchSet);
+  }
+
+  @Override
+  public CallClause visitCallClause(final Cypher25Parser.CallClauseContext ctx) {
+    // Grammar: OPTIONAL? CALL procedureName (LPAREN (procedureArgument (COMMA procedureArgument)*)? RPAREN)?
+    //          (YIELD (TIMES | procedureResultItem (COMMA procedureResultItem)* whereClause?))?
+    final boolean optional = ctx.OPTIONAL() != null;
+
+    // Parse procedure name: namespace symbolicNameString
+    final Cypher25Parser.ProcedureNameContext nameCtx = ctx.procedureName();
+    final StringBuilder procedureName = new StringBuilder();
+    if (nameCtx.namespace() != null) {
+      // Namespace is (symbolicNameString DOT)*
+      for (final Cypher25Parser.SymbolicNameStringContext nsCtx : nameCtx.namespace().symbolicNameString()) {
+        procedureName.append(nsCtx.getText()).append(".");
+      }
+    }
+    procedureName.append(nameCtx.symbolicNameString().getText());
+
+    // Parse arguments
+    final List<Expression> arguments = new ArrayList<>();
+    for (final Cypher25Parser.ProcedureArgumentContext argCtx : ctx.procedureArgument()) {
+      arguments.add(parseExpression(argCtx.expression()));
+    }
+
+    // Parse YIELD items
+    List<CallClause.YieldItem> yieldItems = null;
+    if (ctx.YIELD() != null) {
+      yieldItems = new ArrayList<>();
+      if (ctx.TIMES() != null) {
+        // YIELD * - empty list means all fields
+        // yieldItems remains empty
+      } else {
+        for (final Cypher25Parser.ProcedureResultItemContext itemCtx : ctx.procedureResultItem()) {
+          final String fieldName = itemCtx.yieldItemName.getText();
+          final String alias = itemCtx.yieldItemAlias != null ? itemCtx.yieldItemAlias.getText() : null;
+          yieldItems.add(new CallClause.YieldItem(fieldName, alias));
+        }
+      }
+    }
+
+    // Parse YIELD WHERE clause
+    WhereClause yieldWhere = null;
+    if (ctx.whereClause() != null) {
+      yieldWhere = visitWhereClause(ctx.whereClause());
+    }
+
+    return new CallClause(procedureName.toString(), arguments, yieldItems, yieldWhere, optional);
   }
 
   @Override

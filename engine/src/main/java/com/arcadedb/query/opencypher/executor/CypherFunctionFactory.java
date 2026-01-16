@@ -43,6 +43,13 @@ public class CypherFunctionFactory {
   }
 
   /**
+   * Returns the underlying SQL function factory.
+   */
+  public DefaultSQLFunctionFactory getSQLFunctionFactory() {
+    return sqlFunctionFactory;
+  }
+
+  /**
    * Create a mapping from Cypher function names to SQL function names.
    * Many functions have the same name, but some need mapping.
    */

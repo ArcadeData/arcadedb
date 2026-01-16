@@ -85,16 +85,26 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
-      // Check for EXPLAIN prefix
-      final boolean explain = query.trim().toUpperCase().startsWith("EXPLAIN ");
-      final String actualQuery = explain ? query.trim().substring(8).trim() : query;
+      // Check for EXPLAIN or PROFILE prefix
+      String actualQuery = query.trim();
+      final String upperQuery = actualQuery.toUpperCase();
+      boolean explain = false;
+      boolean profile = false;
+
+      if (upperQuery.startsWith("EXPLAIN ")) {
+        explain = true;
+        actualQuery = actualQuery.substring(8).trim();
+      } else if (upperQuery.startsWith("PROFILE ")) {
+        profile = true;
+        actualQuery = actualQuery.substring(8).trim();
+      }
 
       final CypherStatement statement = parser.parse(actualQuery);
 
       if (!statement.isReadOnly())
         throw new CommandExecutionException("Query contains write operations. Use command() instead of query()");
 
-      return execute(statement, configuration, parameters, explain);
+      return execute(statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException e) {
       throw e;
     } catch (final Exception e) {
@@ -110,12 +120,22 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
-      // Check for EXPLAIN prefix
-      final boolean explain = query.trim().toUpperCase().startsWith("EXPLAIN ");
-      final String actualQuery = explain ? query.trim().substring(8).trim() : query;
+      // Check for EXPLAIN or PROFILE prefix
+      String actualQuery = query.trim();
+      final String upperQuery = actualQuery.toUpperCase();
+      boolean explain = false;
+      boolean profile = false;
+
+      if (upperQuery.startsWith("EXPLAIN ")) {
+        explain = true;
+        actualQuery = actualQuery.substring(8).trim();
+      } else if (upperQuery.startsWith("PROFILE ")) {
+        profile = true;
+        actualQuery = actualQuery.substring(8).trim();
+      }
 
       final CypherStatement statement = parser.parse(actualQuery);
-      return execute(statement, configuration, parameters, explain);
+      return execute(statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException e) {
       throw e;
     } catch (final Exception e) {
@@ -135,13 +155,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * @param configuration context configuration
    * @param parameters    query parameters
    * @param explain       if true, return EXPLAIN output instead of executing
+   * @param profile       if true, execute with profiling and return metrics
    * @return result set
    */
   private ResultSet execute(final CypherStatement statement, final ContextConfiguration configuration,
-      final Map<String, Object> parameters, final boolean explain) {
+      final Map<String, Object> parameters, final boolean explain, final boolean profile) {
     final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters, EXPRESSION_EVALUATOR);
     final CypherExecutionPlan plan = planner.createExecutionPlan(configuration);
-    return explain ? plan.explain() : plan.execute();
+    if (explain)
+      return plan.explain();
+    if (profile)
+      return plan.profile();
+    return plan.execute();
   }
 
   /**

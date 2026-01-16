@@ -36,7 +36,8 @@ public class ClauseEntry {
     MERGE,
     SET,
     DELETE,
-    RETURN
+    RETURN,
+    CALL
   }
 
   private final ClauseType type;

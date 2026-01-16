@@ -147,4 +147,14 @@ public interface CypherStatement {
   default List<ClauseEntry> getClausesInOrder() {
     return List.of();
   }
+
+  /**
+   * Returns the CALL clauses if present.
+   * CALL clauses invoke procedures/functions.
+   *
+   * @return list of CALL clauses (may be empty)
+   */
+  default List<CallClause> getCallClauses() {
+    return List.of();
+  }
 }
