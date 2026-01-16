@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
 import com.arcadedb.network.binary.NetworkProtocolException;
@@ -57,7 +58,7 @@ import java.util.logging.Level;
 
 public class Replica2LeaderNetworkExecutor extends Thread {
   private final    HAServer            server;
-  private final    HAServer.ServerInfo leader;
+  private HAServer.ServerInfo leader;
   private          String              leaderServerHTTPAddress;
   private          ChannelBinaryClient channel;
   private volatile boolean             shutdown                     = false;
@@ -372,8 +373,22 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         }
         return;
 
-      } catch (final ServerIsNotTheLeaderException | ReplicationException e) {
-        // These exceptions should not trigger retry - they are logical errors, not connection issues
+      } catch (final ServerIsNotTheLeaderException e) {
+        // Server we tried is not the leader - extract actual leader and retry
+        final String leaderAddress = e.getLeaderAddress();
+        LogManager.instance().log(this, Level.INFO,
+            "Server %s is not the leader, redirecting to %s (attempt %d/%d)",
+            leader, leaderAddress, attempt, maxAttempts);
+
+        // Parse the actual leader address and update our target
+        final String[] leaderParts = HostUtil.parseHostAddress(leaderAddress, HAServer.DEFAULT_PORT);
+        this.leader = new HAServer.ServerInfo(leaderParts[0], Integer.parseInt(leaderParts[1]), leaderParts[2]);
+
+        // Continue retry loop with new leader target (no delay needed for redirect)
+        continue;
+
+      } catch (final ReplicationException e) {
+        // Replication exceptions should not trigger retry - they are logical errors
         throw e;
 
       } catch (final ConnectionException e) {
@@ -494,6 +509,12 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           "Connection closed during handshake with leader %s (will retry)", leader);
       closeChannel();
       throw new ConnectionException(leader.toString(), "Handshake interrupted: connection closed by remote server");
+
+    } catch (final ServerIsNotTheLeaderException | ReplicationException e) {
+      // These are logical errors, not connection issues - propagate without wrapping
+      // This allows connect() to catch ServerIsNotTheLeaderException and handle redirects
+      // within the bounded retry loop, or let ReplicationException propagate to caller
+      throw e;
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s (cause=%s)", leader, e.toString());
