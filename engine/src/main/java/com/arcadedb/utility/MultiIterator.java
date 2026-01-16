@@ -107,6 +107,13 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
 
   @Override
   public void reset() {
+    // Reset all resettable source iterators so they can be iterated again
+    if (sources != null) {
+      for (final Object source : sources) {
+        if (source instanceof ResettableIterator<?> resettable)
+          resettable.reset();
+      }
+    }
     sourcesIterator = null;
     partialIterator = null;
     browsed = 0;
