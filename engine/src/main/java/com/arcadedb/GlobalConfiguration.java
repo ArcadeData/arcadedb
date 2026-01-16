@@ -255,6 +255,13 @@ public enum GlobalConfiguration {
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
 
+  // OPENCYPHER
+  OPENCYPHER_STATEMENT_CACHE("arcadedb.opencypher.statementCache", SCOPE.DATABASE,
+      "Maximum number of parsed OpenCypher statements to keep in cache", Integer.class, 300),
+
+  OPENCYPHER_PLAN_CACHE("arcadedb.opencypher.planCache", SCOPE.DATABASE,
+      "Maximum number of OpenCypher execution plans to keep in cache (frequency-based eviction)", Integer.class, 300),
+
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
 

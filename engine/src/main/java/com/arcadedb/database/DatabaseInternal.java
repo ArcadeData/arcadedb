@@ -121,6 +121,10 @@ public interface DatabaseInternal extends Database {
 
   ExecutionPlanCache getExecutionPlanCache();
 
+  com.arcadedb.query.opencypher.query.CypherStatementCache getCypherStatementCache();
+
+  com.arcadedb.query.opencypher.query.CypherPlanCache getCypherPlanCache();
+
   int getNewEdgeListSize(int previousSize);
 
   <RET> RET recordFileChanges(final Callable<Object> callback);

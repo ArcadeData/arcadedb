@@ -134,6 +134,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
   private final        StatementCache                            statementCache;
   private final        ExecutionPlanCache                        executionPlanCache;
+  private final        com.arcadedb.query.opencypher.query.CypherStatementCache cypherStatementCache;
+  private final        com.arcadedb.query.opencypher.query.CypherPlanCache      cypherPlanCache;
   private final        File                                      configurationFile;
   private              DatabaseInternal                          wrappedDatabaseInstance              = this;
   private              int                                       edgeListSize                         = EDGE_LIST_INITIAL_CHUNK_SIZE;
@@ -163,6 +165,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
+      this.cypherStatementCache = new com.arcadedb.query.opencypher.query.CypherStatementCache(this,
+          configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
+      this.cypherPlanCache = new com.arcadedb.query.opencypher.query.CypherPlanCache(this,
+          configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_PLAN_CACHE));
 
       if (path.endsWith(File.separator))
         databasePath = path.substring(0, path.length() - 1);
@@ -1539,6 +1545,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public ExecutionPlanCache getExecutionPlanCache() {
     return executionPlanCache;
+  }
+
+  public com.arcadedb.query.opencypher.query.CypherStatementCache getCypherStatementCache() {
+    return cypherStatementCache;
+  }
+
+  public com.arcadedb.query.opencypher.query.CypherPlanCache getCypherPlanCache() {
+    return cypherPlanCache;
   }
 
   @Override

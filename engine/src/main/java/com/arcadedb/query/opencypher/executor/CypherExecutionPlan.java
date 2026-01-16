@@ -1304,4 +1304,14 @@ public class CypherExecutionPlan {
 
     return currentStep;
   }
+
+  /**
+   * Returns the physical plan for this execution plan (if optimizer was used).
+   * Used by plan cache to store optimized plans for reuse.
+   *
+   * @return the physical plan, or null if optimizer was not used
+   */
+  public PhysicalPlan getPhysicalPlan() {
+    return physicalPlan;
+  }
 }

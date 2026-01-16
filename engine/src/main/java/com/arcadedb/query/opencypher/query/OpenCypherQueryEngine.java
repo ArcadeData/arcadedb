@@ -48,11 +48,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private static final ExpressionEvaluator EXPRESSION_EVALUATOR = new ExpressionEvaluator(CYPHER_FUNCTION_FACTORY);
 
   private final DatabaseInternal database;
-  private final Cypher25AntlrParser parser;
 
   protected OpenCypherQueryEngine(final DatabaseInternal database) {
     this.database = database;
-    this.parser = new Cypher25AntlrParser(database);
   }
 
   @Override
@@ -63,7 +61,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public AnalyzedQuery analyze(final String query) {
     try {
-      final CypherStatement statement = parser.parse(query);
+      // Use statement cache to avoid re-parsing
+      final CypherStatement statement = database.getCypherStatementCache().get(query);
 
       return new AnalyzedQuery() {
         @Override
@@ -99,12 +98,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
-      final CypherStatement statement = parser.parse(actualQuery);
+      // Use statement cache to avoid re-parsing
+      final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
 
       if (!statement.isReadOnly())
         throw new CommandExecutionException("Query contains write operations. Use command() instead of query()");
 
-      return execute(statement, configuration, parameters, explain, profile);
+      return execute(actualQuery, statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException e) {
       throw e;
     } catch (final Exception e) {
@@ -134,8 +134,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
-      final CypherStatement statement = parser.parse(actualQuery);
-      return execute(statement, configuration, parameters, explain, profile);
+      // Use statement cache to avoid re-parsing
+      final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
+      return execute(actualQuery, statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException e) {
       throw e;
     } catch (final Exception e) {
@@ -151,6 +152,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * Executes a parsed Cypher statement.
    *
+   * @param queryString   the original query string (for plan cache key)
    * @param statement     the parsed Cypher statement
    * @param configuration context configuration
    * @param parameters    query parameters
@@ -158,10 +160,31 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * @param profile       if true, execute with profiling and return metrics
    * @return result set
    */
-  private ResultSet execute(final CypherStatement statement, final ContextConfiguration configuration,
+  private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile) {
-    final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters, EXPRESSION_EVALUATOR);
-    final CypherExecutionPlan plan = planner.createExecutionPlan(configuration);
+    // Try to get cached physical plan first (saves optimization time: 200-500ms)
+    com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan physicalPlan = null;
+
+    if (!explain && !profile) {
+      // Only use plan cache for normal execution (not explain/profile)
+      physicalPlan = database.getCypherPlanCache().get(queryString);
+    }
+
+    final CypherExecutionPlan plan;
+    if (physicalPlan != null) {
+      // Reuse cached physical plan (avoids expensive statistics collection and optimization)
+      plan = new com.arcadedb.query.opencypher.executor.CypherExecutionPlan(
+          database, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
+    } else {
+      // Create new plan from scratch and cache it
+      final CypherExecutionPlanner planner = new CypherExecutionPlanner(database, statement, parameters, EXPRESSION_EVALUATOR);
+      plan = planner.createExecutionPlan(configuration);
+
+      // Cache the physical plan for future use (if not explain/profile)
+      if (!explain && !profile && plan.getPhysicalPlan() != null)
+        database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan());
+    }
+
     if (explain)
       return plan.explain();
     if (profile)
