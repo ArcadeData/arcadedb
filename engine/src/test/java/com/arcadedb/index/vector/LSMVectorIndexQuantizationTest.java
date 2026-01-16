@@ -322,6 +322,80 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
     });
   }
 
+  @Test
+  void testProductQuantizationCustomParameters() {
+    // Test for GitHub issue #3160: Expose PQ tuning parameters via builder API
+    // This test verifies that custom PQ parameters can be set and are properly applied
+    database.transaction(() -> {
+      final DocumentType docType = database.getSchema().createDocumentType("Document");
+      docType.createProperty("id", Type.INTEGER);
+      docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+
+      // Create index with custom PQ parameters
+      // Note: This is the DESIRED API that should work after implementing issue #3160
+      database.getSchema()
+          .buildTypeIndex("Document", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(128)
+          .withSimilarity("COSINE")
+          .withQuantization(VectorQuantizationType.PRODUCT)
+          .withPQSubspaces(16)          // Custom M value (default would be 128/4 = 32)
+          .withPQClusters(128)           // Custom K value (default is 256)
+          .withPQCenterGlobally(false)   // Custom centering (default is true)
+          .withPQTrainingLimit(50000)    // Custom training limit (default is 128000)
+          .create();
+
+      // Insert test vectors to trigger PQ build
+      for (int i = 0; i < 200; i++) {
+        final MutableDocument doc = database.newDocument("Document");
+        doc.set("id", i);
+        doc.set("embedding", generateTestVector(128, i));
+        doc.save();
+      }
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Document[embedding]");
+      assertThat(index).isNotNull();
+
+      final LSMVectorIndex lsmIndex = (LSMVectorIndex) index.getIndexesOnBuckets()[0];
+
+      // Verify custom PQ parameters are set correctly
+      assertThat(lsmIndex.getMetadata().quantizationType).isEqualTo(VectorQuantizationType.PRODUCT);
+      assertThat(lsmIndex.getMetadata().pqSubspaces).isEqualTo(16);
+      assertThat(lsmIndex.getMetadata().pqClusters).isEqualTo(128);
+      assertThat(lsmIndex.getMetadata().pqCenterGlobally).isEqualTo(false);
+      assertThat(lsmIndex.getMetadata().pqTrainingLimit).isEqualTo(50000);
+
+      // Verify search works with custom PQ configuration
+      final float[] queryVector = generateTestVector(128, 0);
+      final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+      assertThat(results).isNotEmpty();
+
+      // Verify JSON serialization includes custom PQ parameters
+      final JSONObject json = lsmIndex.toJSON();
+      assertThat(json.getString("quantization")).isEqualTo("PRODUCT");
+      assertThat(json.getInt("pqSubspaces")).isEqualTo(16);
+      assertThat(json.getInt("pqClusters")).isEqualTo(128);
+      assertThat(json.getBoolean("pqCenterGlobally")).isEqualTo(false);
+      assertThat(json.getInt("pqTrainingLimit")).isEqualTo(50000);
+    });
+
+    // Reopen database to verify persistence
+    reopenDatabase();
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Document[embedding]");
+      final LSMVectorIndex lsmIndex = (LSMVectorIndex) index.getIndexesOnBuckets()[0];
+
+      // Verify custom PQ parameters persisted across database restart
+      assertThat(lsmIndex.getMetadata().pqSubspaces).isEqualTo(16);
+      assertThat(lsmIndex.getMetadata().pqClusters).isEqualTo(128);
+      assertThat(lsmIndex.getMetadata().pqCenterGlobally).isEqualTo(false);
+      assertThat(lsmIndex.getMetadata().pqTrainingLimit).isEqualTo(50000);
+    });
+  }
+
   // Helper methods
 
   private float[] generateTestVector(final int dimensions, final int seed) {

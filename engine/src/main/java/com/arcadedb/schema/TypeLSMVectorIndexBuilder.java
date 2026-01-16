@@ -179,15 +179,73 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   /**
    * Sets the quantization type for vector compression by string name.
    *
-   * @param quantization the quantization type name (NONE, INT8, BINARY)
+   * @param quantization the quantization type name (NONE, INT8, BINARY, PRODUCT)
    */
   public TypeLSMVectorIndexBuilder withQuantization(final String quantization) {
     try {
       ((LSMVectorIndexMetadata) metadata).quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
       return this;
     } catch (final IllegalArgumentException e) {
-      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY");
+      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY, PRODUCT");
     }
+  }
+
+  /**
+   * Sets the number of subspaces (M) for Product Quantization.
+   * Only applicable when quantization type is PRODUCT.
+   * The value must evenly divide the number of dimensions.
+   * Default: min(dimensions/4, 512), adjusted to evenly divide dimensions
+   *
+   * @param pqSubspaces the number of subspaces (M)
+   */
+  public TypeLSMVectorIndexBuilder withPQSubspaces(final int pqSubspaces) {
+    if (pqSubspaces < 1)
+      throw new IllegalArgumentException("pqSubspaces must be at least 1");
+    ((LSMVectorIndexMetadata) metadata).pqSubspaces = pqSubspaces;
+    return this;
+  }
+
+  /**
+   * Sets the number of clusters per subspace (K) for Product Quantization.
+   * Only applicable when quantization type is PRODUCT.
+   * Typical values: 128 or 256 (for byte-sized codes)
+   * Default: 256
+   *
+   * @param pqClusters the number of clusters per subspace (K)
+   */
+  public TypeLSMVectorIndexBuilder withPQClusters(final int pqClusters) {
+    if (pqClusters < 1)
+      throw new IllegalArgumentException("pqClusters must be at least 1");
+    ((LSMVectorIndexMetadata) metadata).pqClusters = pqClusters;
+    return this;
+  }
+
+  /**
+   * Sets whether to globally center vectors before PQ encoding.
+   * Only applicable when quantization type is PRODUCT.
+   * Global centering can improve recall by normalizing the data distribution.
+   * Default: true
+   *
+   * @param pqCenterGlobally true to globally center vectors, false otherwise
+   */
+  public TypeLSMVectorIndexBuilder withPQCenterGlobally(final boolean pqCenterGlobally) {
+    ((LSMVectorIndexMetadata) metadata).pqCenterGlobally = pqCenterGlobally;
+    return this;
+  }
+
+  /**
+   * Sets the maximum number of vectors to use for PQ training.
+   * Only applicable when quantization type is PRODUCT.
+   * Higher values improve codebook quality but increase training time.
+   * Default: 128000 (JVector's recommended maximum)
+   *
+   * @param pqTrainingLimit the maximum number of training vectors
+   */
+  public TypeLSMVectorIndexBuilder withPQTrainingLimit(final int pqTrainingLimit) {
+    if (pqTrainingLimit < 1)
+      throw new IllegalArgumentException("pqTrainingLimit must be at least 1");
+    ((LSMVectorIndexMetadata) metadata).pqTrainingLimit = pqTrainingLimit;
+    return this;
   }
 
   @Override
@@ -238,5 +296,18 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
 
     if (json.has("addHierarchy"))
       meta.addHierarchy = json.getBoolean("addHierarchy");
+
+    // Product Quantization parameters
+    if (json.has("pqSubspaces"))
+      meta.pqSubspaces = json.getInt("pqSubspaces");
+
+    if (json.has("pqClusters"))
+      meta.pqClusters = json.getInt("pqClusters");
+
+    if (json.has("pqCenterGlobally"))
+      meta.pqCenterGlobally = json.getBoolean("pqCenterGlobally");
+
+    if (json.has("pqTrainingLimit"))
+      meta.pqTrainingLimit = json.getInt("pqTrainingLimit");
   }
 }

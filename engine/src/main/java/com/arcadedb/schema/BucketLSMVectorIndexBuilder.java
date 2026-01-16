@@ -43,6 +43,11 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public int                      mutationsBeforeRebuild   = -1; // -1 = use global default
   public boolean                  storeVectorsInGraph      = false; // Phase 2: Store vectors inline in graph file
   public boolean                  addHierarchy             = false;
+  // Product Quantization parameters
+  public int                      pqSubspaces              = -1;   // -1 = auto (dimensions/4, capped at 512)
+  public int                      pqClusters               = 256;  // Clusters per subspace (K)
+  public boolean                  pqCenterGlobally         = true; // Global centering before PQ
+  public int                      pqTrainingLimit          = 128000; // Max training vectors
 
   protected BucketLSMVectorIndexBuilder(DatabaseInternal database, String typeName, String bucketName,
       String[] propertyNames) {
@@ -176,15 +181,73 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   /**
    * Sets the quantization type for vector compression by string name.
    *
-   * @param quantization the quantization type name (NONE, INT8, BINARY)
+   * @param quantization the quantization type name (NONE, INT8, BINARY, PRODUCT)
    */
   public BucketLSMVectorIndexBuilder withQuantization(final String quantization) {
     try {
       this.quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
       return this;
     } catch (final IllegalArgumentException e) {
-      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY");
+      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY, PRODUCT");
     }
+  }
+
+  /**
+   * Sets the number of subspaces (M) for Product Quantization.
+   * Only applicable when quantization type is PRODUCT.
+   * The value must evenly divide the number of dimensions.
+   * Default: min(dimensions/4, 512), adjusted to evenly divide dimensions
+   *
+   * @param pqSubspaces the number of subspaces (M)
+   */
+  public BucketLSMVectorIndexBuilder withPQSubspaces(final int pqSubspaces) {
+    if (pqSubspaces < 1)
+      throw new IllegalArgumentException("pqSubspaces must be at least 1");
+    this.pqSubspaces = pqSubspaces;
+    return this;
+  }
+
+  /**
+   * Sets the number of clusters per subspace (K) for Product Quantization.
+   * Only applicable when quantization type is PRODUCT.
+   * Typical values: 128 or 256 (for byte-sized codes)
+   * Default: 256
+   *
+   * @param pqClusters the number of clusters per subspace (K)
+   */
+  public BucketLSMVectorIndexBuilder withPQClusters(final int pqClusters) {
+    if (pqClusters < 1)
+      throw new IllegalArgumentException("pqClusters must be at least 1");
+    this.pqClusters = pqClusters;
+    return this;
+  }
+
+  /**
+   * Sets whether to globally center vectors before PQ encoding.
+   * Only applicable when quantization type is PRODUCT.
+   * Global centering can improve recall by normalizing the data distribution.
+   * Default: true
+   *
+   * @param pqCenterGlobally true to globally center vectors, false otherwise
+   */
+  public BucketLSMVectorIndexBuilder withPQCenterGlobally(final boolean pqCenterGlobally) {
+    this.pqCenterGlobally = pqCenterGlobally;
+    return this;
+  }
+
+  /**
+   * Sets the maximum number of vectors to use for PQ training.
+   * Only applicable when quantization type is PRODUCT.
+   * Higher values improve codebook quality but increase training time.
+   * Default: 128000 (JVector's recommended maximum)
+   *
+   * @param pqTrainingLimit the maximum number of training vectors
+   */
+  public BucketLSMVectorIndexBuilder withPQTrainingLimit(final int pqTrainingLimit) {
+    if (pqTrainingLimit < 1)
+      throw new IllegalArgumentException("pqTrainingLimit must be at least 1");
+    this.pqTrainingLimit = pqTrainingLimit;
+    return this;
   }
 
   @Override
@@ -206,6 +269,11 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
       this.mutationsBeforeRebuild = v.mutationsBeforeRebuild;
       this.storeVectorsInGraph = v.storeVectorsInGraph;
       this.addHierarchy = v.addHierarchy;
+      // Product Quantization parameters
+      this.pqSubspaces = v.pqSubspaces;
+      this.pqClusters = v.pqClusters;
+      this.pqCenterGlobally = v.pqCenterGlobally;
+      this.pqTrainingLimit = v.pqTrainingLimit;
     }
     return this;
   }
@@ -250,5 +318,18 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
 
     if (metadata.has("addHierarchy"))
       this.addHierarchy = metadata.getBoolean("addHierarchy");
+
+    // Product Quantization parameters
+    if (metadata.has("pqSubspaces"))
+      this.pqSubspaces = metadata.getInt("pqSubspaces");
+
+    if (metadata.has("pqClusters"))
+      this.pqClusters = metadata.getInt("pqClusters");
+
+    if (metadata.has("pqCenterGlobally"))
+      this.pqCenterGlobally = metadata.getBoolean("pqCenterGlobally");
+
+    if (metadata.has("pqTrainingLimit"))
+      this.pqTrainingLimit = metadata.getInt("pqTrainingLimit");
   }
 }

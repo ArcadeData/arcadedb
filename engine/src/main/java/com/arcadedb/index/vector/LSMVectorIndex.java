@@ -174,7 +174,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
               builder.getPageSize(), vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(), vectorBuilder.dimensions,
               vectorBuilder.similarityFunction, vectorBuilder.maxConnections, vectorBuilder.beamWidth, vectorBuilder.idPropertyName,
               vectorBuilder.quantizationType, vectorBuilder.locationCacheSize, vectorBuilder.graphBuildCacheSize,
-              vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph, vectorBuilder.addHierarchy);
+              vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph, vectorBuilder.addHierarchy,
+              vectorBuilder.pqSubspaces, vectorBuilder.pqClusters, vectorBuilder.pqCenterGlobally, vectorBuilder.pqTrainingLimit);
     }
   }
 
@@ -198,7 +199,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
                         final int pageSize, final String typeName, final String[] propertyNames, final int dimensions,
                         final VectorSimilarityFunction similarityFunction, final int maxConnections, final int beamWidth, final String idPropertyName,
                         final VectorQuantizationType quantizationType, final int locationCacheSize, final int graphBuildCacheSize,
-                        final int mutationsBeforeRebuild, final boolean storeVectorsInGraph, final boolean addHierarchy) {
+                        final int mutationsBeforeRebuild, final boolean storeVectorsInGraph, final boolean addHierarchy,
+                        final int pqSubspaces, final int pqClusters, final boolean pqCenterGlobally, final int pqTrainingLimit) {
     try {
       this.indexName = name;
 
@@ -214,6 +216,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.metadata.mutationsBeforeRebuild = mutationsBeforeRebuild;
       this.metadata.storeVectorsInGraph = storeVectorsInGraph;
       this.metadata.addHierarchy = addHierarchy;
+      this.metadata.pqSubspaces = pqSubspaces;
+      this.metadata.pqClusters = pqClusters;
+      this.metadata.pqCenterGlobally = pqCenterGlobally;
+      this.metadata.pqTrainingLimit = pqTrainingLimit;
 
       this.lock = new ReentrantReadWriteLock();
       this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
