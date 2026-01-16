@@ -21,7 +21,8 @@
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.1.0",
-    "apexcharts": "^3.45.2",
+    "@popperjs/core": "^2.11.8",
+    "apexcharts": "^5.3.6",
     "bootstrap": "^5.3.8",
     "clipboard": "^2.0.11",
     "codemirror": "^5.65.18",
