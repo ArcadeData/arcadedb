@@ -99,6 +99,12 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS.setValue(200L);  // Keep reasonable base delay
     GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS.setValue(2000L);  // Cap at 2 seconds
     GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS.setValue(8);      // Allow more attempts for startup
+
+    // Set vector index location cache to unlimited for HA tests
+    // Default is -1 (unlimited), but ensure it's not overridden by test profiles
+    // Without this, LRU cache eviction causes countEntries() to undercount vectors
+    // since countEntries() only counts in-memory cache, not persisted pages
+    GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(-1);
   }
 
   @BeforeEach
