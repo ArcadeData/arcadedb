@@ -257,7 +257,7 @@ public class LSMTreeIndexCompactor {
                   minorKey, new RID[] { new RID(database, 0, newPageNum) });
 
               LogManager.instance()
-                  .log(mainIndex, Level.WARNING,
+                  .log(mainIndex, Level.FINE,
                       "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
                       Arrays.toString(minorKey), newPageNum, mutableIndex.getCount(rootPage) - 1,
                       Thread.currentThread().threadId());
