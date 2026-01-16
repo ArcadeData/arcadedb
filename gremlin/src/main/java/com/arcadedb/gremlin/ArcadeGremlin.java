@@ -68,14 +68,14 @@ public class ArcadeGremlin extends ArcadeQuery {
           (Boolean) parameters.remove("$profileExecution") :
           false;
 
-      final Iterator resultSet = executeStatement();
+      final Iterator<?> resultSet = executeStatement();
 
       ExecutionPlan executionPlan = null;
       if (profileExecution) {
         final String originalQuery = query;
         query += ".profile()";
         try {
-          final Iterator profilerResultSet = executeStatement();
+          final Iterator<?> profilerResultSet = executeStatement();
           if (profilerResultSet.hasNext()) {
             final Object result = profilerResultSet.next();
             executionPlan = new ExecutionPlan() {
@@ -115,7 +115,7 @@ public class ArcadeGremlin extends ArcadeQuery {
           final Object next = resultSet.next();
           if (next instanceof Document document)
             return new ResultInternal(document);
-          else if (next instanceof ArcadeElement element)
+          else if (next instanceof ArcadeElement<?> element)
             return new ResultInternal(element.getBaseElement());
           else if (next instanceof Map) {
             final Map<String, Object> stringMap = getStringObjectMap((Map<Object, Object>) next);
@@ -150,7 +150,7 @@ public class ArcadeGremlin extends ArcadeQuery {
 
   public QueryEngine.AnalyzedQuery parse() {
     try {
-      final DefaultGraphTraversal resultSet = (DefaultGraphTraversal) executeStatement();
+      final DefaultGraphTraversal<?,?> resultSet = (DefaultGraphTraversal<?,?>) executeStatement();
 
       boolean idempotent = true;
       for (final Object step : resultSet.getSteps()) {
@@ -187,11 +187,11 @@ public class ArcadeGremlin extends ArcadeQuery {
     return this;
   }
 
-  private Iterator executeStatement() throws ScriptException {
+  private Iterator<?> executeStatement() throws ScriptException {
     final BasicDatabase database = graph.getDatabase();
     String gremlinEngine = database instanceof Database d ?
         d.getConfiguration().getValueAsString(GlobalConfiguration.GREMLIN_ENGINE) :
-        "auto";
+            GlobalConfiguration.GREMLIN_ENGINE.getValueAsString();
 
     if ("auto".equals(gremlinEngine)) {
       if (parameters == null || parameters.isEmpty()) {
@@ -210,7 +210,7 @@ public class ArcadeGremlin extends ArcadeQuery {
     return executeStatement(gremlinEngine);
   }
 
-  private Iterator executeStatement(final String gremlinEngine) throws ScriptException {
+  private Iterator<?> executeStatement(final String gremlinEngine) throws ScriptException {
     final Object result;
     if ("java".equals(gremlinEngine)) {
       // USE THE NATIVE GREMLIN PARSER
@@ -241,7 +241,7 @@ public class ArcadeGremlin extends ArcadeQuery {
     } else
       throw new IllegalArgumentException("Gremlin engine '" + gremlinEngine + "' not supported");
 
-    if (result instanceof GraphTraversal traversal)
+    if (result instanceof GraphTraversal<?,?> traversal)
       return traversal;
 
     return Set.of(result).iterator();
