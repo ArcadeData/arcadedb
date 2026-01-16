@@ -212,6 +212,10 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
       final long entriesOnReplica = serverVectorIndex.countEntries();
       LogManager.instance().log(this, Level.INFO, "Server %d: index has %d entries (expected %d)", serverIndex, entriesOnReplica, entriesOnLeader);
+      if (entriesOnReplica != entriesOnLeader) {
+        LogManager.instance().log(this, Level.SEVERE, "MISMATCH on server %d: expected %d but got %d (missing %d entries)",
+            serverIndex, entriesOnLeader, entriesOnReplica, entriesOnLeader - entriesOnReplica);
+      }
       assertThat(entriesOnReplica).isEqualTo(entriesOnLeader);
     });
 
