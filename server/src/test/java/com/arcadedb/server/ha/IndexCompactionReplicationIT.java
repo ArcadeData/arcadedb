@@ -59,6 +59,11 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
   protected void onServerConfiguration(final ContextConfiguration config) {
     // INCREASE HA QUORUM TIMEOUT FROM DEFAULT 10s TO 30s FOR VECTOR INDEX OPERATIONS
     config.setValue(GlobalConfiguration.HA_QUORUM_TIMEOUT, 30_000L);
+
+    // Set vector index location cache to unlimited for this test
+    // Without this, LRU cache eviction causes countEntries() to undercount vectors
+    // since countEntries() only counts in-memory cache, not persisted pages
+    config.setValue(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE, -1);
   }
 
   @Override
@@ -144,39 +149,56 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.FINE, "Vector index created: %s", vectorIndex.getName());
     assertThat(vectorIndex).as("Vector index should be created successfully").isNotNull();
 
-    LogManager.instance().log(this, Level.FINE, "Inserting %d records into vector index...", TOTAL_RECORDS);
+    LogManager.instance().log(this, Level.INFO, "Inserting %d records into vector index...", TOTAL_RECORDS);
     // INSERT VECTOR RECORDS IN BATCHES
-    database.transaction(() -> {
-      for (int i = 0; i < TOTAL_RECORDS; i++) {
-        final float[] vector = new float[10];
-        for (int j = 0; j < vector.length; j++)
-          vector[j] = (i + j) % 100f;
+    database.begin();
+    int commitCount = 0;
+    for (int i = 0; i < TOTAL_RECORDS; i++) {
+      final float[] vector = new float[10];
+      // Create unique vectors by using i as the base value (no modulo to avoid duplicates)
+      // Each vector will be unique based on its index i
+      for (int j = 0; j < vector.length; j++)
+        vector[j] = i + (j * 0.1f);
 
-        database.newVertex("Embedding").set("vector", vector).save();
+      database.newVertex("Embedding").set("vector", vector).save();
 
-        if (i % TX_CHUNK == 0) {
-          database.commit();
-          database.begin();
-        }
+      if (i > 0 && i % TX_CHUNK == 0) {
+        database.commit();
+        commitCount++;
+        final long entriesAfterCommit = vectorIndex.countEntries();
+        LogManager.instance().log(this, Level.INFO, "After commit #%d (i=%d): %d entries in index", commitCount, i, entriesAfterCommit);
+        database.begin();
       }
-    });
+    }
+    database.commit();
+    commitCount++;
+    final long entriesAfterFinalCommit = vectorIndex.countEntries();
+    LogManager.instance().log(this, Level.INFO, "After final commit #%d: %d entries in index (expected %d)", commitCount, entriesAfterFinalCommit, TOTAL_RECORDS);
 
-    LogManager.instance().log(this, Level.FINE, "Verifying vector index on leader...");
+    LogManager.instance().log(this, Level.INFO, "Completed inserting %d records", TOTAL_RECORDS);
+    LogManager.instance().log(this, Level.INFO, "Verifying vector index on leader (server 0)...");
     final long entriesOnLeader = vectorIndex.countEntries();
-    LogManager.instance().log(this, Level.FINE, "Vector index contains %d entries on leader", entriesOnLeader);
-    assertThat(entriesOnLeader > 0).as("Vector index should contain entries after inserting records").isTrue();
+    LogManager.instance().log(this, Level.INFO, "Leader (server 0): Vector index contains %d entries", entriesOnLeader);
+    assertThat(entriesOnLeader).as("Vector index should contain all inserted records").isEqualTo(TOTAL_RECORDS);
 
     // WAIT FOR REPLICATION TO COMPLETE
-    LogManager.instance().log(this, Level.FINE, "Waiting for replication...");
-    for (int i = 0; i < getServerCount(); i++)
+    LogManager.instance().log(this, Level.INFO, "Waiting for replication to complete on all servers...");
+    for (int i = 0; i < getServerCount(); i++) {
+      LogManager.instance().log(this, Level.INFO, "Waiting for replication on server %d...", i);
       waitForReplicationIsCompleted(i);
+      LogManager.instance().log(this, Level.INFO, "Replication complete on server %d (queue empty)", i);
+    }
 
     // VERIFY THAT VECTOR INDEX DEFINITION IS REPLICATED TO ALL SERVERS
     final String actualIndexName = vectorIndex.getName();
     testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.FINE, "Verifying vector index definition on server %d...", serverIndex);
+      LogManager.instance().log(this, Level.INFO, "Verifying vector index definition on server %d...", serverIndex);
 
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
+
+      // Log configuration value on this server
+      final int cacheSize = serverDb.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
+      LogManager.instance().log(this, Level.INFO, "Server %d: VECTOR_INDEX_LOCATION_CACHE_SIZE = %d", serverIndex, cacheSize);
 
       // Check if the index exists in schema
       final Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
@@ -189,6 +211,7 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
       assertThat(serverVectorIndex).as("Vector index should be replicated to server " + serverIndex).isNotNull();
 
       final long entriesOnReplica = serverVectorIndex.countEntries();
+      LogManager.instance().log(this, Level.INFO, "Server %d: index has %d entries (expected %d)", serverIndex, entriesOnReplica, entriesOnLeader);
       assertThat(entriesOnReplica).isEqualTo(entriesOnLeader);
     });
 
@@ -222,20 +245,20 @@ class IndexCompactionReplicationIT extends BaseGraphServerTest {
 
     LogManager.instance().log(this, Level.FINE, "Inserting %d records into vector index...", TOTAL_RECORDS);
     // INSERT VECTOR RECORDS IN BATCHES
-    database.transaction(() -> {
-      for (int i = 0; i < TOTAL_RECORDS; i++) {
-        final float[] vector = new float[10];
-        for (int j = 0; j < vector.length; j++)
-          vector[j] = (i + j) % 100f;
+    database.begin();
+    for (int i = 0; i < TOTAL_RECORDS; i++) {
+      final float[] vector = new float[10];
+      for (int j = 0; j < vector.length; j++)
+        vector[j] = (i + j) % 100f;
 
-        database.newVertex("Embedding").set("vector", vector).save();
+      database.newVertex("Embedding").set("vector", vector).save();
 
-        if (i % TX_CHUNK == 0) {
-          database.commit();
-          database.begin();
-        }
+      if (i > 0 && i % TX_CHUNK == 0) {
+        database.commit();
+        database.begin();
       }
-    });
+    }
+    database.commit();
 
     // GET THE INDEX AND TRIGGER COMPACTION ON LEADER
     LogManager.instance().log(this, Level.FINE, "Triggering compaction on index '%s' on leader...", vectorIndex.getName());
