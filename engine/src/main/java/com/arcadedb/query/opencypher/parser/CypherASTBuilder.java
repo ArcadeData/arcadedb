@@ -1114,7 +1114,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return parseExtendedCaseExpression(extCaseCtx);
     }
 
-    // Check for comparison expressions FIRST (before function invocations)
+    // Check for list comprehensions BEFORE comparison expressions
+    // List comprehensions can contain comparisons in WHERE clause, e.g., [x IN list WHERE x > 2 | x * 10]
+    // If we check comparisons first, the inner comparison gets matched instead
+    final Cypher25Parser.ListComprehensionContext listCompCtx = findListComprehensionRecursive(ctx);
+    if (listCompCtx != null) {
+      return parseListComprehension(listCompCtx);
+    }
+
+    // Check for comparison expressions (before function invocations)
     // This is critical for expressions like ID(a) = row.source_id
     // where we need to recognize the comparison operator at the top level
     final Cypher25Parser.Expression8Context expr8Ctx = findExpression8Recursive(ctx);
@@ -1132,10 +1140,35 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return parseFunctionInvocation(funcCtx);
     }
 
-    // Check for list literals
+    // Check for list literals (after list comprehensions to avoid matching inner lists)
     final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
     if (listCtx != null) {
       return parseListLiteral(listCtx);
+    }
+
+    // Check for map projections BEFORE arithmetic expressions
+    // Map projections have syntax: n{.name, .age} and can contain arithmetic inside
+    final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
+    if (mapProjCtx != null) {
+      return parseMapProjection(mapProjCtx);
+    }
+
+    // Check for map literals BEFORE arithmetic expressions
+    // Map literals can contain arithmetic expressions inside, e.g., {doubled: n.age * 2}
+    final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
+    if (mapCtx != null) {
+      return parseMapLiteralExpression(mapCtx);
+    }
+
+    // Check for arithmetic expressions (+ - * / % ^)
+    // Must be checked BEFORE falling back to text parsing
+    final Cypher25Parser.Expression6Context arith6Ctx = findArithmeticExpression6Recursive(ctx);
+    if (arith6Ctx != null) {
+      return parseArithmeticExpression6(arith6Ctx);
+    }
+    final Cypher25Parser.Expression5Context arith5Ctx = findArithmeticExpression5Recursive(ctx);
+    if (arith5Ctx != null) {
+      return parseArithmeticExpression5(arith5Ctx);
     }
 
     // Check for IS NULL / IS NOT NULL expressions
@@ -1620,5 +1653,317 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Fallback: parse as text
     return parseExpressionText(ctx.getText());
+  }
+
+  // ============================================================================
+  // Arithmetic Expression Parsing
+  // ============================================================================
+
+  /**
+   * Recursively find Expression6Context with arithmetic operators (+ - ||)
+   */
+  private Cypher25Parser.Expression6Context findArithmeticExpression6Recursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.Expression6Context) {
+      final Cypher25Parser.Expression6Context ctx = (Cypher25Parser.Expression6Context) node;
+      // Only return if it has multiple expression5 children (i.e., has operators)
+      if (ctx.expression5().size() > 1)
+        return ctx;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.Expression6Context found = findArithmeticExpression6Recursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
+   * Recursively find Expression5Context with arithmetic operators (* / %)
+   */
+  private Cypher25Parser.Expression5Context findArithmeticExpression5Recursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.Expression5Context) {
+      final Cypher25Parser.Expression5Context ctx = (Cypher25Parser.Expression5Context) node;
+      // Only return if it has multiple expression4 children (i.e., has operators)
+      if (ctx.expression4().size() > 1)
+        return ctx;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.Expression5Context found = findArithmeticExpression5Recursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse an arithmetic expression from Expression6Context (handles + - ||)
+   */
+  private Expression parseArithmeticExpression6(final Cypher25Parser.Expression6Context ctx) {
+    final List<Cypher25Parser.Expression5Context> operands = ctx.expression5();
+    if (operands.size() == 1)
+      return parseArithmeticExpression5(operands.get(0));
+
+    // Build left-associative expression tree
+    Expression result = parseArithmeticExpression5(operands.get(0));
+
+    int operandIndex = 1;
+    for (int i = 0; i < ctx.getChildCount() && operandIndex < operands.size(); i++) {
+      if (ctx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+        final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) ctx.getChild(i);
+        final int type = terminal.getSymbol().getType();
+
+        ArithmeticExpression.Operator op = null;
+        if (type == Cypher25Parser.PLUS)
+          op = ArithmeticExpression.Operator.ADD;
+        else if (type == Cypher25Parser.MINUS)
+          op = ArithmeticExpression.Operator.SUBTRACT;
+
+        if (op != null) {
+          final Expression right = parseArithmeticExpression5(operands.get(operandIndex));
+          result = new ArithmeticExpression(result, op, right, ctx.getText());
+          operandIndex++;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Parse an arithmetic expression from Expression5Context (handles * / %)
+   */
+  private Expression parseArithmeticExpression5(final Cypher25Parser.Expression5Context ctx) {
+    final List<Cypher25Parser.Expression4Context> operands = ctx.expression4();
+    if (operands.size() == 1)
+      return parseArithmeticExpression4(operands.get(0));
+
+    // Build left-associative expression tree
+    Expression result = parseArithmeticExpression4(operands.get(0));
+
+    int operandIndex = 1;
+    for (int i = 0; i < ctx.getChildCount() && operandIndex < operands.size(); i++) {
+      if (ctx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+        final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) ctx.getChild(i);
+        final int type = terminal.getSymbol().getType();
+
+        ArithmeticExpression.Operator op = null;
+        if (type == Cypher25Parser.TIMES)
+          op = ArithmeticExpression.Operator.MULTIPLY;
+        else if (type == Cypher25Parser.DIVIDE)
+          op = ArithmeticExpression.Operator.DIVIDE;
+        else if (type == Cypher25Parser.PERCENT)
+          op = ArithmeticExpression.Operator.MODULO;
+
+        if (op != null) {
+          final Expression right = parseArithmeticExpression4(operands.get(operandIndex));
+          result = new ArithmeticExpression(result, op, right, ctx.getText());
+          operandIndex++;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Parse an arithmetic expression from Expression4Context (handles ^/POW)
+   */
+  private Expression parseArithmeticExpression4(final Cypher25Parser.Expression4Context ctx) {
+    final List<Cypher25Parser.Expression3Context> operands = ctx.expression3();
+    if (operands.size() == 1)
+      return parseArithmeticExpression3(operands.get(0));
+
+    // Build right-associative expression tree for power (a ^ b ^ c = a ^ (b ^ c))
+    Expression result = parseArithmeticExpression3(operands.get(operands.size() - 1));
+    for (int i = operands.size() - 2; i >= 0; i--) {
+      final Expression left = parseArithmeticExpression3(operands.get(i));
+      result = new ArithmeticExpression(left, ArithmeticExpression.Operator.POWER, result, ctx.getText());
+    }
+
+    return result;
+  }
+
+  /**
+   * Parse an arithmetic expression from Expression3Context (handles unary + -)
+   */
+  private Expression parseArithmeticExpression3(final Cypher25Parser.Expression3Context ctx) {
+    // Check for unary plus/minus
+    if (ctx.getChildCount() > 1) {
+      final org.antlr.v4.runtime.tree.ParseTree firstChild = ctx.getChild(0);
+      if (firstChild instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+        final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) firstChild;
+        final int type = terminal.getSymbol().getType();
+        if (type == Cypher25Parser.MINUS) {
+          // Unary minus: -expression
+          final Expression inner = parseExpressionFromText(ctx.expression2());
+          return new ArithmeticExpression(new LiteralExpression(0L, "0"), ArithmeticExpression.Operator.SUBTRACT, inner,
+              ctx.getText());
+        }
+        // Unary plus is a no-op
+        if (type == Cypher25Parser.PLUS)
+          return parseExpressionFromText(ctx.expression2());
+      }
+    }
+
+    return parseExpressionFromText(ctx.expression2());
+  }
+
+  // ============================================================================
+  // Map Literal Parsing
+  // ============================================================================
+
+  /**
+   * Recursively find MapContext in the parse tree (for map literals like {name: 'Alice'})
+   */
+  private Cypher25Parser.MapContext findMapRecursive(final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.MapContext)
+      return (Cypher25Parser.MapContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.MapContext found = findMapRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse a map literal into a MapExpression.
+   * Example: {name: 'Alice', age: 30}
+   */
+  private MapExpression parseMapLiteralExpression(final Cypher25Parser.MapContext ctx) {
+    final Map<String, Expression> entries = new java.util.LinkedHashMap<>();
+
+    final List<Cypher25Parser.PropertyKeyNameContext> keys = ctx.propertyKeyName();
+    final List<Cypher25Parser.ExpressionContext> values = ctx.expression();
+
+    for (int i = 0; i < keys.size() && i < values.size(); i++) {
+      final String key = keys.get(i).getText();
+      final Expression valueExpr = parseExpression(values.get(i));
+      entries.put(key, valueExpr);
+    }
+
+    return new MapExpression(entries, ctx.getText());
+  }
+
+  // ============================================================================
+  // List Comprehension Parsing
+  // ============================================================================
+
+  /**
+   * Recursively find ListComprehensionContext in the parse tree.
+   */
+  private Cypher25Parser.ListComprehensionContext findListComprehensionRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.ListComprehensionContext)
+      return (Cypher25Parser.ListComprehensionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ListComprehensionContext found = findListComprehensionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse a list comprehension into a ListComprehensionExpression.
+   * Syntax: [variable IN listExpression WHERE filterExpression | mapExpression]
+   * Examples: [x IN [1,2,3] | x * 2], [x IN list WHERE x > 5 | x.name]
+   */
+  private ListComprehensionExpression parseListComprehension(final Cypher25Parser.ListComprehensionContext ctx) {
+    final String variable = ctx.variable().getText();
+
+    // The main expression after IN - it's the first expression in the list
+    final List<Cypher25Parser.ExpressionContext> expressions = ctx.expression();
+    final Expression listExpression = parseExpression(expressions.get(0));
+
+    // Optional WHERE clause
+    Expression whereExpression = null;
+    if (ctx.whereExp != null)
+      whereExpression = parseExpression(ctx.whereExp);
+
+    // Optional mapping expression after |
+    Expression mapExpression = null;
+    if (ctx.barExp != null)
+      mapExpression = parseExpression(ctx.barExp);
+
+    return new ListComprehensionExpression(variable, listExpression, whereExpression, mapExpression, ctx.getText());
+  }
+
+  // ============================================================================
+  // Map Projection Parsing
+  // ============================================================================
+
+  /**
+   * Recursively find MapProjectionContext in the parse tree.
+   */
+  private Cypher25Parser.MapProjectionContext findMapProjectionRecursive(
+      final org.antlr.v4.runtime.tree.ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.MapProjectionContext)
+      return (Cypher25Parser.MapProjectionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.MapProjectionContext found = findMapProjectionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse a map projection into a MapProjectionExpression.
+   * Syntax: variable{.property1, .property2, key: expression, .*}
+   * Examples: n{.name, .age}, n{.*, totalAge: n.age * 2}
+   */
+  private MapProjectionExpression parseMapProjection(final Cypher25Parser.MapProjectionContext ctx) {
+    final String variableName = ctx.variable().getText();
+    final List<MapProjectionExpression.ProjectionElement> elements = new ArrayList<>();
+
+    for (final Cypher25Parser.MapProjectionElementContext elemCtx : ctx.mapProjectionElement()) {
+      if (elemCtx.propertyKeyName() != null && elemCtx.expression() != null) {
+        // key: expression
+        final String key = elemCtx.propertyKeyName().getText();
+        final Expression expr = parseExpression(elemCtx.expression());
+        elements.add(new MapProjectionExpression.ProjectionElement(key, expr));
+      } else if (elemCtx.property() != null) {
+        // .propertyName
+        final String propName = elemCtx.property().propertyKeyName().getText();
+        elements.add(new MapProjectionExpression.ProjectionElement(propName));
+      } else if (elemCtx.variable() != null) {
+        // variable (include another variable's value)
+        final String varName = elemCtx.variable().getText();
+        elements.add(new MapProjectionExpression.ProjectionElement(varName, new VariableExpression(varName)));
+      } else if (elemCtx.DOT() != null && elemCtx.TIMES() != null) {
+        // .* (all properties)
+        elements.add(new MapProjectionExpression.ProjectionElement(true));
+      }
+    }
+
+    return new MapProjectionExpression(variableName, elements, ctx.getText());
   }
 }

@@ -612,13 +612,27 @@ ON MATCH SET r.promoted = true
 |---------|---------|--------|----------|
 | **CASE expressions** | `CASE WHEN n.age < 18 THEN 'minor' ELSE 'adult' END` | ✅ **Fully Implemented** | 🟡 MEDIUM |
 | **List literals** | `RETURN [1, 2, 3]` | ✅ **Implemented** | 🟡 MEDIUM |
-| **Map literals** | `RETURN {name: 'Alice', age: 30}` | 🔴 **Not Implemented** | 🟡 MEDIUM |
-| **List comprehensions** | `[x IN list WHERE x.age > 25 \| x.name]` | 🔴 **Not Implemented** | 🟢 LOW |
-| **Map projections** | `RETURN n{.name, .age}` | 🔴 **Not Implemented** | 🟢 LOW |
+| **Map literals** | `RETURN {name: 'Alice', age: 30}` | ✅ **Implemented** | 🟡 MEDIUM |
+| **List comprehensions** | `[x IN list WHERE x.age > 25 \| x.name]` | ✅ **Implemented** | 🟢 LOW |
+| **Map projections** | `RETURN n{.name, .age}` | ✅ **Implemented** | 🟢 LOW |
 | **Type coercion** | `toInteger('42')`, `toFloat('3.14')` | ✅ **Implemented** | 🟡 MEDIUM |
-| **Arithmetic** | `RETURN n.age * 2 + 10` | 🔴 **Not Implemented** | 🟡 MEDIUM |
+| **Arithmetic** | `RETURN n.age * 2 + 10` | ✅ **Implemented** | 🟡 MEDIUM |
 
 **Note:** List literals and type conversion functions are fully implemented and tested.
+
+**Expression Features Implementation (2026-01-15) - COMPLETED ✅:**
+- ✅ Arithmetic expressions: `+`, `-`, `*`, `/`, `%`, `^` operators
+- ✅ Map literals: `{name: 'Alice', age: 30}`
+- ✅ List comprehensions: `[x IN list WHERE x > 2 | x * 10]`
+- ✅ Map projections: `n{.name, .age}`, `n{.*}`, `n{.name, computed: n.age * 2}`
+- 📊 Test Status: **18/18 tests passing (100%)**
+
+**Implementation Files:**
+- `ArithmeticExpression.java` - AST for arithmetic operations with operator precedence
+- `MapExpression.java` - AST for map literals
+- `ListComprehensionExpression.java` - AST for list comprehensions with optional WHERE filter and mapping
+- `MapProjectionExpression.java` - AST for map projections (property selectors, computed values, all-properties)
+- Enhanced `CypherASTBuilder` with recursive parse tree traversal for all expression types
 
 **CASE Expression Implementation (2026-01-14) - COMPLETED ✅:**
 - ✅ Simple CASE: `CASE WHEN condition THEN result [WHEN ...] [ELSE default] END`
