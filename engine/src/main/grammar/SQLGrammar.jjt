@@ -231,10 +231,6 @@ TOKEN:
   | <ROLLBACK: ("R"|"r")("O"|"o")("L"|"l")("L"|"l")("B"|"b")("A"|"a")("C"|"c")("K"|"k")>
   | <IF: ("I"|"i")("F"|"f")>
   | <ELSE: ("E"|"e")("L"|"l")("S"|"s")("E"|"e")>
-  | <CASE: ("C"|"c")("A"|"a")("S"|"s")("E"|"e")>
-  | <WHEN: ("W"|"w")("H"|"h")("E"|"e")("N"|"n")>
-  | <THEN: ("T"|"t")("H"|"h")("E"|"e")("N"|"n")>
-  | <END: ("E"|"e")("N"|"n")("D"|"d")>
   | <CONTINUE: ("C"|"c")("O"|"o")("N"|"n")("T"|"t")("I"|"i")("N"|"n")("U"|"u")("E"|"e")>
   | <FAIL: ("F"|"f")("A"|"a")("I"|"i")("L"|"l")>
   | <FIX: ("F"|"f")("I"|"i")("X"|"x")>
@@ -1832,9 +1828,6 @@ MathExpression FirstLevelExpression():
 { MathExpression expr;}
 {
   (
-    LOOKAHEAD( <CASE> )
-    expr = CaseExpression()
-    |
     LOOKAHEAD( <LPAREN> )
     expr = ParenthesisExpression()
     |
@@ -1859,55 +1852,6 @@ MathExpression ParenthesisExpression():
 )
   <RPAREN>
   {return jjtThis;}
-}
-
-CaseExpression CaseExpression():
-{
-  Expression caseExpr = null;
-  CaseWhenClause whenClause;
-  Expression elseExpr = null;
-}
-{
-  <CASE>
-  (
-    // Searched CASE: CASE WHEN condition THEN result [WHEN...] [ELSE result] END
-    LOOKAHEAD( <WHEN> )
-    (
-      whenClause = SearchedCaseWhenClause() { jjtThis.whenClauses.add(whenClause); }
-    )+
-    |
-    // Simple CASE: CASE expr WHEN value THEN result [WHEN...] [ELSE result] END
-    caseExpr = Expression() { jjtThis.caseExpression = caseExpr; }
-    (
-      whenClause = SimpleCaseWhenClause() { jjtThis.whenClauses.add(whenClause); }
-    )+
-  )
-  [
-    <ELSE>
-    elseExpr = Expression() { jjtThis.elseExpression = elseExpr; }
-  ]
-  <END>
-  { return jjtThis; }
-}
-
-CaseWhenClause SearchedCaseWhenClause() #CaseWhenClause :
-{}
-{
-  <WHEN>
-  jjtThis.whenCondition = OrBlock()
-  <THEN>
-  jjtThis.thenExpression = Expression()
-  { return jjtThis; }
-}
-
-CaseWhenClause SimpleCaseWhenClause() #CaseWhenClause :
-{}
-{
-  <WHEN>
-  jjtThis.whenExpression = Expression()
-  <THEN>
-  jjtThis.thenExpression = Expression()
-  { return jjtThis; }
 }
 
 BaseExpression BaseExpression():
@@ -2239,7 +2183,7 @@ BooleanExpression ConditionBlock():
   LOOKAHEAD(2)
   result = MatchesCondition()
   |
-  LOOKAHEAD(3)
+  LOOKAHEAD(2)
   result = IndexMatchCondition()
   |
   LOOKAHEAD(2)
