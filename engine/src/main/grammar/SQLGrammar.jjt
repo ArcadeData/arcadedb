@@ -248,14 +248,14 @@ TOKEN [IGNORE_CASE]:
   | <RID: "rid">
   | <SYSTEM: "system">
   | <UNIDIRECTIONAL: "unidirectional">
+  | <BUCKET: "bucket">
+  | <INDEX: "index">
 }
 
-/* Tokens still using verbose pattern (referenced by compound tokens or special cases) */
+/* Tokens still using verbose pattern (attribute tokens and compound definitions) */
 TOKEN:
 {
-  <BUCKET: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t")>
-  | <INDEX: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")>
-  | <THIS: "@" ( ("t"|"T")("h"|"H")("i"|"I")("s"|"S") )>
+  <THIS: "@" ( ("t"|"T")("h"|"H")("i"|"I")("s"|"S") )>
   | <RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <PROPS_ATTR> | <OUT_ATTR> | <IN_ATTR> >
   | <RID_ATTR: "@" ( ("r"|"R")("i"|"I")("d"|"D") )>
   | <RID_STRING: "\"@" ( ("r"|"R")("i"|"I")("d"|"D") ) "\"" >
@@ -422,12 +422,12 @@ TOKEN :
 {
   <IDENTIFIER: ( ((<DOLLAR>) | <LETTER>) (<PART_LETTER>)* ) >
   | <QUOTED_IDENTIFIER: ("`" (~["`"] | "\\`") (~["`"] | "\\`")*  "`") >
-  | <INDEX_COLON: <INDEX> ":" >
+  | <INDEX_COLON: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x") ":" >
   | <INDEXVALUES_IDENTIFIER: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
   | <INDEXVALUESASC_IDENTIFIER:("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s")("A"|"a")("S"|"s")("C"|"c") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
   | <INDEXVALUESDESC_IDENTIFIER: ("I"|"i")("N"|"n")("D"|"d")("E"|"e")("X"|"x")("V"|"v")("A"|"a")("L"|"l")("U"|"u")("E"|"e")("S"|"s")("D"|"d")("E"|"e")("S"|"s")("C"|"c") ":" ("__@recordmap@___")? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
-  | <BUCKET_IDENTIFIER: <BUCKET> <COLON> <IDENTIFIER> >
-  | <BUCKET_NUMBER_IDENTIFIER: <BUCKET> <COLON> <INTEGER_LITERAL>  >
+  | <BUCKET_IDENTIFIER: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t") <COLON> <IDENTIFIER> >
+  | <BUCKET_NUMBER_IDENTIFIER: ("B"|"b")("U"|"u")("C"|"c")("K"|"k")("E"|"e")("T"|"t") <COLON> <INTEGER_LITERAL>  >
   | <HTTP_URL: "http://" (   (~["\"","\\","\n","\r"," ",";"])
                   | ("\\"
                     ( ["n","t","b","r","f","\\","'","\"","/"]
