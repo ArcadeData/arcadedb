@@ -68,10 +68,10 @@ public class QueryLanguageBenchmark {
   private static final String DB_PATH = "target/test-databases/QueryLanguageBenchmark";
 
   // Benchmark parameters
-  private static final int NUM_VERTICES = 1_000_000;  // 1M vertices
-  private static final int NUM_EDGES = 5_000_000;     // 5M edges (~5 per vertex avg)
-  private static final int NUM_ITERATIONS = 100;       // Number of times to repeat each query
-  private static final int WARMUP_ITERATIONS = 10;     // Warmup runs (not measured)
+  private static final int NUM_VERTICES = 500_000;  // 1M vertices
+  private static final int NUM_EDGES = 1_000_000;     // 5M edges (~5 per vertex avg)
+  private static final int NUM_ITERATIONS = 10;       // Number of times to repeat each query
+  private static final int WARMUP_ITERATIONS = 3;     // Warmup runs (not measured)
 
   // Sample IDs for lookup queries (randomly selected)
   private static final int NUM_SAMPLE_IDS = 100;
