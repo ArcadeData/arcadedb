@@ -267,10 +267,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final String propertyName = entry.getKey();
       Object propertyValue = entry.getValue();
 
-      // Handle string literals: remove quotes
+      // Resolve parameter references (e.g., $id -> actual value from context)
       if (propertyValue instanceof String) {
         final String strValue = (String) propertyValue;
-        if (strValue.startsWith("'") && strValue.endsWith("'")) {
+
+        // Check if it's a parameter reference
+        if (strValue.startsWith("$")) {
+          final String paramName = strValue.substring(1);
+          if (context.getInputParameters() != null) {
+            final Object paramValue = context.getInputParameters().get(paramName);
+            if (paramValue != null) {
+              propertyValue = paramValue;
+            }
+          }
+        }
+        // Handle string literals: remove quotes
+        else if (strValue.startsWith("'") && strValue.endsWith("'")) {
           propertyValue = strValue.substring(1, strValue.length() - 1);
         } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
           propertyValue = strValue.substring(1, strValue.length() - 1);
@@ -350,10 +362,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final String key = entry.getKey();
       Object expectedValue = entry.getValue();
 
-      // Handle string literals: remove quotes
+      // Resolve parameter references (e.g., $id -> actual value from context)
       if (expectedValue instanceof String) {
         final String strValue = (String) expectedValue;
-        if (strValue.startsWith("'") && strValue.endsWith("'")) {
+
+        // Check if it's a parameter reference
+        if (strValue.startsWith("$")) {
+          final String paramName = strValue.substring(1);
+          if (context.getInputParameters() != null) {
+            final Object paramValue = context.getInputParameters().get(paramName);
+            if (paramValue != null) {
+              expectedValue = paramValue;
+            }
+          }
+        }
+        // Handle string literals: remove quotes
+        else if (strValue.startsWith("'") && strValue.endsWith("'")) {
           expectedValue = strValue.substring(1, strValue.length() - 1);
         } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
           expectedValue = strValue.substring(1, strValue.length() - 1);
