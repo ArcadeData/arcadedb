@@ -19,11 +19,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.cypher.ArcadeCypher;
-import com.arcadedb.database.BasicDatabase;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -49,35 +45,24 @@ import org.apache.tinkerpop.gremlin.jsr223.DefaultGremlinScriptEngineManager;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
-import org.codehaus.groovy.control.customizers.CompilationCustomizer;
-import org.codehaus.groovy.control.customizers.SecureASTCustomizer;
 import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
-import org.apache.tinkerpop.gremlin.structure.Direction;
-import org.apache.tinkerpop.gremlin.structure.Edge;
-import org.apache.tinkerpop.gremlin.structure.Graph;
+import org.apache.tinkerpop.gremlin.structure.*;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
-import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.io.Io;
 import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
 import org.apache.tinkerpop.gremlin.structure.service.ServiceRegistry;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
+import org.codehaus.groovy.control.customizers.CompilationCustomizer;
+import org.codehaus.groovy.control.customizers.SecureASTCustomizer;
 import org.opencypher.gremlin.traversal.CustomPredicate;
 
 import java.io.Closeable;
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.logging.Level;
 
 /**
@@ -96,16 +81,17 @@ public class ArcadeGraph implements Graph, Closeable {
   private static final int    GREMLIN_SERVER_PORT = 8182;
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
-  private final        ArcadeGraphTransaction    transaction;
-  protected final      BasicDatabase             database;
-  protected final      BaseConfiguration         configuration  = new BaseConfiguration();
-  private final static Iterator<Vertex>          EMPTY_VERTICES = Collections.emptyIterator();
-  private final static Iterator<Edge>            EMPTY_EDGES    = Collections.emptyIterator();
-  protected            Features                  features       = new ArcadeGraphFeatures();
-  private              GremlinLangScriptEngine   gremlinJavaEngine;
-  private              GremlinGroovyScriptEngine gremlinGroovyEngine;
-  private              ServiceRegistry           serviceRegistry;
-  private              GraphTraversalSource      traversal;
+  private final        ArcadeGraphTransaction      transaction;
+  protected final      BasicDatabase               database;
+  protected final      BaseConfiguration           configuration  = new BaseConfiguration();
+  private final static Iterator<Vertex>            EMPTY_VERTICES = Collections.emptyIterator();
+  private final static Iterator<Edge>              EMPTY_EDGES    = Collections.emptyIterator();
+  protected            Features                    features       = new ArcadeGraphFeatures();
+  private              GremlinLangScriptEngine     gremlinJavaEngine;
+  private              GremlinGroovyScriptEngine   gremlinGroovyEngine;
+  private              ServiceRegistry             serviceRegistry;
+  private              GraphTraversalSource        traversal;
+  private              ImportGremlinPlugin.Builder importPlugin;
 
   static {
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class,
@@ -194,7 +180,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
         final String[] hosts = new String[remoteAddresses.size()];
         for (int i = 0; i < remoteAddresses.size(); i++)
-          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(0), "" + GREMLIN_SERVER_PORT)[0];
+          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.getFirst(), "" + GREMLIN_SERVER_PORT)[0];
 
         final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
             new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
@@ -301,7 +287,7 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream().filter((a) -> a.getIdentity().isPresent() ? database.existsRecord(a.getIdentity().get()) : true)
+      return resultset.stream().filter((a) -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
           .map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
     }
 
@@ -309,18 +295,20 @@ public class ArcadeGraph implements Graph, Closeable {
 
     for (final Object o : vertexIds) {
       final RID rid;
-      if (o instanceof RID iD)
-        rid = iD;
-      else if (o instanceof Vertex vertex) {
-        final Object objectId = vertex.id();
-        if (objectId != null)
-          rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
-        else
+      switch (o) {
+        case RID iD -> rid = iD;
+        case Vertex vertex -> {
+          final Object objectId = vertex.id();
+          if (objectId != null)
+            rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
+          else
+            continue;
+        }
+        case String string -> rid = new RID(database, string);
+        case null, default -> {
           continue;
-      } else if (o instanceof String string)
-        rid = new RID(database, string);
-      else
-        continue;
+        }
+      }
 
       try {
         final Record r = database.lookupByRID(rid, true);
@@ -364,7 +352,7 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultSet = this.database.query("sql", query.toString());
-      return resultSet.stream().filter((a) -> a.getIdentity().isPresent() ? database.existsRecord(a.getIdentity().get()) : true)
+      return resultSet.stream().filter((a) -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
           .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
 
     }
@@ -373,18 +361,20 @@ public class ArcadeGraph implements Graph, Closeable {
 
     for (final Object o : edgeIds) {
       final RID rid;
-      if (o instanceof RID iD)
-        rid = iD;
-      else if (o instanceof Edge edge) {
-        final Object objectId = edge.id();
-        if (objectId != null)
-          rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
-        else
+      switch (o) {
+        case RID iD -> rid = iD;
+        case Edge edge -> {
+          final Object objectId = edge.id();
+          if (objectId != null)
+            rid = objectId instanceof RID rid1 ? rid1 : new RID(database, objectId.toString());
+          else
+            continue;
+        }
+        case String string -> rid = new RID(database, string);
+        case null, default -> {
           continue;
-      } else if (o instanceof String string)
-        rid = new RID(database, string);
-      else
-        continue;
+        }
+      }
 
       try {
         final Record r = database.lookupByRID(rid, true);
@@ -483,15 +473,11 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   public static com.arcadedb.graph.Vertex.DIRECTION mapDirection(final Direction direction) {
-    switch (direction) {
-    case OUT:
-      return com.arcadedb.graph.Vertex.DIRECTION.OUT;
-    case IN:
-      return com.arcadedb.graph.Vertex.DIRECTION.IN;
-    case BOTH:
-      return com.arcadedb.graph.Vertex.DIRECTION.BOTH;
-    }
-    throw new IllegalArgumentException("Cannot get direction for argument %s".formatted(direction));
+    return switch (direction) {
+      case OUT -> com.arcadedb.graph.Vertex.DIRECTION.OUT;
+      case IN -> com.arcadedb.graph.Vertex.DIRECTION.IN;
+      case BOTH -> com.arcadedb.graph.Vertex.DIRECTION.BOTH;
+    };
   }
 
   public GremlinLangScriptEngine getGremlinJavaEngine() {
@@ -499,6 +485,22 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   public GremlinGroovyScriptEngine getGremlinGroovyEngine() {
+    if (gremlinGroovyEngine == null) {
+      synchronized (this) {
+        if (gremlinGroovyEngine == null) {
+          // INITIALIZE GROOVY ENGINE (with attempted security restrictions - STILL VULNERABLE)
+          LogManager.instance().log(this, Level.WARNING,
+              "===== CRITICAL SECURITY WARNING =====\n" +
+                  "Initializing Groovy Gremlin engine which is VULNERABLE to Remote Code Execution (RCE) attacks.\n" +
+                  "Despite security restrictions, authenticated users can execute arbitrary OS commands.\n" +
+                  "DO NOT USE GROOVY ENGINE IN PRODUCTION OR WITH UNTRUSTED USERS.\n" +
+                  "Use the secure Java engine (arcadedb.gremlin.engine=java) instead.\n" +
+                  "======================================");
+          gremlinGroovyEngine = createSecureGroovyEngine(importPlugin);
+          gremlinGroovyEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
+        }
+      }
+    }
     return gremlinGroovyEngine;
   }
 
@@ -517,24 +519,13 @@ public class ArcadeGraph implements Graph, Closeable {
 
   private void init() {
     // INITIALIZE CYPHER
-    final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
+    importPlugin = ImportGremlinPlugin.build();
     importPlugin.classImports(Math.class, ArcadeCustomFunctions.class, CustomPredicate.class);
     importPlugin.methodImports(List.of("java.lang.Math#*", "com.arcadedb.gremlin.ArcadeCustomFunctions#*"));
 
     // INITIALIZE JAVA ENGINE (secure by design)
     gremlinJavaEngine = new GremlinLangScriptEngine(importPlugin.create().getCustomizers().get());
     gremlinJavaEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
-
-    // INITIALIZE GROOVY ENGINE (with attempted security restrictions - STILL VULNERABLE)
-    LogManager.instance().log(this, Level.WARNING,
-        "===== CRITICAL SECURITY WARNING =====\n" +
-        "Initializing Groovy Gremlin engine which is VULNERABLE to Remote Code Execution (RCE) attacks.\n" +
-        "Despite security restrictions, authenticated users can execute arbitrary OS commands.\n" +
-        "DO NOT USE GROOVY ENGINE IN PRODUCTION OR WITH UNTRUSTED USERS.\n" +
-        "Use the secure Java engine (arcadedb.gremlin.engine=java) instead.\n" +
-        "======================================");
-    gremlinGroovyEngine = createSecureGroovyEngine(importPlugin);
-    gremlinGroovyEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
 
     serviceRegistry = new ArcadeServiceRegistry(this);
     serviceRegistry.registerService(new VectorNeighborsFactory(this));
