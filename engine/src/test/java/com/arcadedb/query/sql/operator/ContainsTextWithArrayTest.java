@@ -100,9 +100,9 @@ public class ContainsTextWithArrayTest {
         // So when rightValue is an array, it returns false for all documents
         assertThat(ids).isEmpty();
 
-        System.out.println("✗ CONFIRMED: CONTAINSTEXT does NOT work with an array of strings");
-        System.out.println("  Current implementation only supports single string comparison");
-        System.out.println("  Use OR conditions as a workaround (see testWorkaroundWithOrConditions)");
+        // System.out.println("✗ CONFIRMED: CONTAINSTEXT does NOT work with an array of strings");
+        // System.out.println("  Current implementation only supports single string comparison");
+        // System.out.println("  Use OR conditions as a workaround (see testWorkaroundWithOrConditions)");
       });
     });
   }
@@ -128,11 +128,11 @@ public class ContainsTextWithArrayTest {
         while (result.hasNext())
           ids.add(result.next().getProperty("id"));
 
-        System.out.println("Workaround with OR conditions matched IDs: " + ids);
+        // System.out.println("Workaround with OR conditions matched IDs: " + ids);
         assertThat(ids).containsExactlyInAnyOrder(1, 2, 4);
 
-        System.out.println("✓ WORKAROUND: Use OR conditions instead of array");
-        System.out.println("  WHERE text CONTAINSTEXT 'xyz' OR text CONTAINSTEXT 'abc'");
+        // System.out.println("✓ WORKAROUND: Use OR conditions instead of array");
+        // System.out.println("  WHERE text CONTAINSTEXT 'xyz' OR text CONTAINSTEXT 'abc'");
       });
     });
   }
