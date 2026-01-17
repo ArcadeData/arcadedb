@@ -120,7 +120,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
 
       // All results should be from EMBEDDING_IMAGE type
       for (Map<String, Object> neighbor : neighbors) {
-        Vertex vertex = (Vertex) neighbor.get("vertex");
+        Vertex vertex = (Vertex) neighbor.get("record");
         String typeName = vertex.getTypeName();
         System.out.println("   Found neighbor: " + vertex.getIdentity() + " type=" + typeName);
         assertThat(typeName).as("All results should be EMBEDDING_IMAGE").isEqualTo("EMBEDDING_IMAGE");
@@ -150,7 +150,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
       // Count types in results
       Set<String> typesFound = new HashSet<>();
       for (Map<String, Object> neighbor : neighbors) {
-        Vertex vertex = (Vertex) neighbor.get("vertex");
+        Vertex vertex = (Vertex) neighbor.get("record");
         typesFound.add(vertex.getTypeName());
       }
 
@@ -179,7 +179,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
 
       // All results should be from EMBEDDING_DOCUMENT type
       for (Map<String, Object> neighbor : neighbors) {
-        Vertex vertex = (Vertex) neighbor.get("vertex");
+        Vertex vertex = (Vertex) neighbor.get("record");
         assertThat(vertex.getTypeName()).isEqualTo("EMBEDDING_DOCUMENT");
       }
       System.out.println("   ✓ EMBEDDING_DOCUMENT search returned only document records");
@@ -236,7 +236,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
       assertThat(neighbors).as("Should find some neighbors").isNotEmpty();
 
       for (Map<String, Object> neighbor : neighbors) {
-        Vertex vertex = (Vertex) neighbor.get("vertex");
+        Vertex vertex = (Vertex) neighbor.get("record");
         assertThat(vertex.getTypeName()).as("All results should be EMBEDDING_A").isEqualTo("EMBEDDING_A");
       }
       System.out.println("✓ Type-specific search correctly excluded other types (found " + neighbors.size() + " results)");
