@@ -2059,49 +2059,49 @@ BooleanExpression ConditionBlock():
   |
   <NULL> { result =null;}
   |
-  LOOKAHEAD(4)
+  LOOKAHEAD(IsNotNullCondition())
   result = IsNotNullCondition()
   |
-  LOOKAHEAD(3)
+  LOOKAHEAD(IsNullCondition())
   result = IsNullCondition()
   |
-  LOOKAHEAD(4)
+  LOOKAHEAD(IsNotDefinedCondition())
   result = IsNotDefinedCondition()
   |
-  LOOKAHEAD(3)
+  LOOKAHEAD(IsDefinedCondition())
   result = IsDefinedCondition()
   |
-  LOOKAHEAD(3)
+  LOOKAHEAD(NotInCondition())
   result = NotInCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(InCondition())
   result = InCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(BetweenCondition())
   result = BetweenCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(ContainsCondition())
   result = ContainsCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(ContainsValueCondition())
   result = ContainsValueCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(ContainsAllCondition())
   result = ContainsAllCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(ContainsAnyCondition())
   result = ContainsAnyCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(ContainsTextCondition())
   result = ContainsTextCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(MatchesCondition())
   result = MatchesCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(IndexMatchCondition())
   result = IndexMatchCondition()
   |
-  LOOKAHEAD(2)
+  LOOKAHEAD(InstanceofCondition())
   result = InstanceofCondition()
   |
   result = BinaryCondition()
