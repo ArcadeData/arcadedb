@@ -180,41 +180,21 @@ public class MatchNodeStep extends AbstractExecutionStep {
   /**
    * Gets an iterator for vertices matching the pattern.
    * OPTIMIZATION: Uses indexes for property equality constraints when available.
+   * Supports composite indexes with partial key matching (leftmost prefix).
    */
   private Iterator<Identifiable> getVertexIterator() {
     if (pattern.hasLabels()) {
       final String label = pattern.getFirstLabel();
 
       // OPTIMIZATION: Check if we can use an index for property lookup
-      if (pattern.hasProperties() && pattern.getProperties().size() == 1) {
-        final java.util.Map.Entry<String, Object> property = pattern.getProperties().entrySet().iterator().next();
-        final String propertyName = property.getKey();
-        Object propertyValue = property.getValue();
-
-        // Handle string literals: remove quotes
-        if (propertyValue instanceof String) {
-          final String strValue = (String) propertyValue;
-          if (strValue.startsWith("'") && strValue.endsWith("'")) {
-            propertyValue = strValue.substring(1, strValue.length() - 1);
-          } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
-            propertyValue = strValue.substring(1, strValue.length() - 1);
-          }
-        }
-
-        // Check if an index exists for this property
+      if (pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
         final com.arcadedb.schema.DocumentType type = context.getDatabase().getSchema().getType(label);
         if (type != null) {
-          final java.util.Collection<com.arcadedb.index.TypeIndex> indexes = type.getAllIndexes(false);
-          for (final com.arcadedb.index.TypeIndex index : indexes) {
-            final java.util.List<String> indexProperties = index.getPropertyNames();
-            if (indexProperties.size() == 1 && indexProperties.get(0).equals(propertyName)) {
-              // Found matching index - use it!
-              @SuppressWarnings("unchecked")
-              final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
-                  context.getDatabase().lookupByKey(label, new String[]{propertyName}, new Object[]{propertyValue});
-              return iter;
-            }
-          }
+          // Try to find an index that matches the property constraints
+          // Support composite indexes with partial keys (leftmost prefix matching)
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label);
+          if (indexedIter != null)
+            return indexedIter;
         }
       }
 
@@ -270,6 +250,88 @@ public class MatchNodeStep extends AbstractExecutionStep {
       }
       return iterators.get(currentIndex).next();
     }
+  }
+
+  /**
+   * Tries to find and use an index for the property constraints.
+   * Supports composite indexes with partial key matching (leftmost prefix).
+   *
+   * @param type  the document type
+   * @param label the type label
+   * @return iterator from index lookup, or null if no suitable index found
+   */
+  private Iterator<Identifiable> tryFindAndUseIndex(final com.arcadedb.schema.DocumentType type, final String label) {
+    // Prepare property names and values from the pattern
+    final java.util.Map<String, Object> properties = new java.util.LinkedHashMap<>();
+    for (final java.util.Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+      final String propertyName = entry.getKey();
+      Object propertyValue = entry.getValue();
+
+      // Handle string literals: remove quotes
+      if (propertyValue instanceof String) {
+        final String strValue = (String) propertyValue;
+        if (strValue.startsWith("'") && strValue.endsWith("'")) {
+          propertyValue = strValue.substring(1, strValue.length() - 1);
+        } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
+          propertyValue = strValue.substring(1, strValue.length() - 1);
+        }
+      }
+
+      properties.put(propertyName, propertyValue);
+    }
+
+    // Find the best index (longest leftmost prefix match)
+    com.arcadedb.index.TypeIndex bestIndex = null;
+    int bestMatchCount = 0;
+    java.util.List<String> bestMatchedProperties = null;
+
+    for (final com.arcadedb.index.TypeIndex index : type.getAllIndexes(false)) {
+      final java.util.List<String> indexProperties = index.getPropertyNames();
+
+      // Check how many properties match as a leftmost prefix
+      // For composite indexes, we can only use a partial key if we have values for all
+      // properties from the beginning (leftmost prefix)
+      // Example: Index [a,b,c] can be used for [a], [a,b], or [a,b,c] but not [b] or [a,c]
+      int matchCount = 0;
+      final java.util.List<String> matchedProperties = new java.util.ArrayList<>();
+
+      for (int i = 0; i < indexProperties.size(); i++) {
+        final String indexProp = indexProperties.get(i);
+        if (properties.containsKey(indexProp)) {
+          // This property is available in the query
+          matchCount++;
+          matchedProperties.add(indexProp);
+        } else {
+          // Missing property - can't use further properties from this index
+          break;
+        }
+      }
+
+      // Update best match if this index matches more properties
+      if (matchCount > 0 && matchCount > bestMatchCount) {
+        bestMatchCount = matchCount;
+        bestIndex = index;
+        bestMatchedProperties = matchedProperties;
+      }
+    }
+
+    // If we found a suitable index, use it
+    if (bestIndex != null && bestMatchedProperties != null && !bestMatchedProperties.isEmpty()) {
+      final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
+      final Object[] propertyValues = new Object[propertyNames.length];
+
+      for (int i = 0; i < propertyNames.length; i++) {
+        propertyValues[i] = properties.get(propertyNames[i]);
+      }
+
+      // Use the index for lookup
+      @SuppressWarnings("unchecked")
+      final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
+          context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+      return iter;
+    }
+
+    return null;
   }
 
   /**
