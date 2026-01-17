@@ -558,12 +558,17 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
 
       // Execute query that may return complex/nested data
       await studioHelper.executeQuery('SELECT *, out() as connections FROM Beer LIMIT 5', false);
-      // Switch to Table tab - use simple approach that works
-      await page.locator('a[href="#tab-table"]').click();
-      await page.waitForTimeout(500);
+
+      // Wait a moment for graph rendering to stabilize before switching tabs
+      await page.waitForTimeout(1000);
+
+      // Switch to Table tab
+      await page.locator('a[href="#tab-table"]').click({ force: true });
+
+      // Wait for table to be visible (complex data may take longer to render)
+      await expect(page.locator('#result')).toBeVisible({ timeout: 10000 });
 
       // Verify table renders without breaking
-      await expect(page.locator('#result')).toBeVisible();
       const rowCount = await page.locator('#result tbody tr').count();
       expect(rowCount).toBeGreaterThan(0);
 
