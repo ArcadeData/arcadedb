@@ -91,9 +91,14 @@ public class ExpandPathStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("ExpandPathStep requires a previous step");
 
+    // Optimization: Use vertex iterator when path variable is not needed (avoids loading edges)
+    final boolean needsPath = pathVariable != null && !pathVariable.isEmpty();
+
     return new ResultSet() {
+      private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<TraversalPath> currentPaths = null;
+      private Iterator<Vertex> currentVertices = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -126,45 +131,88 @@ public class ExpandPathStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         while (buffer.size() < n) {
-          // Get paths from current vertex
-          if (currentPaths != null && currentPaths.hasNext()) {
-            final TraversalPath path = currentPaths.next();
-            final Vertex targetVertex = path.getEndVertex();
+          // Optimization: Use vertex-only iterator when path is not needed
+          if (needsPath) {
+            // Path needed: use full path traversal (slower, loads edges)
+            if (currentPaths != null && currentPaths.hasNext()) {
+              final TraversalPath path = currentPaths.next();
+              final Vertex targetVertex = path.getEndVertex();
 
-            // Create result with path and target vertex
-            final ResultInternal result = new ResultInternal();
+              // Create result with path and target vertex
+              final ResultInternal result = new ResultInternal();
 
-            // Copy all properties from previous result
-            for (final String prop : lastResult.getPropertyNames()) {
-              result.setProperty(prop, lastResult.getProperty(prop));
-            }
+              // Copy all properties from previous result
+              for (final String prop : lastResult.getPropertyNames()) {
+                result.setProperty(prop, lastResult.getProperty(prop));
+              }
 
-            // Add path binding if variable is specified
-            if (pathVariable != null && !pathVariable.isEmpty()) {
+              // Add path binding
               result.setProperty(pathVariable, path);
-            }
 
-            // Add target vertex binding
-            result.setProperty(targetVariable, targetVertex);
+              // Add target vertex binding
+              result.setProperty(targetVariable, targetVertex);
 
-            buffer.add(result);
-          } else {
-            // Get next source vertex from previous step
-            final ResultSet prevResults = prev.syncPull(context, 1);
-            if (!prevResults.hasNext()) {
-              finished = true;
-              break;
-            }
-
-            lastResult = prevResults.next();
-            final Object sourceObj = lastResult.getProperty(sourceVariable);
-
-            if (sourceObj instanceof Vertex) {
-              final Vertex sourceVertex = (Vertex) sourceObj;
-              currentPaths = createTraverser().traversePaths(sourceVertex);
+              buffer.add(result);
             } else {
-              // Source is not a vertex, skip
-              currentPaths = null;
+              // Get next source vertex from previous step
+              if (prevResults == null) {
+                prevResults = prev.syncPull(context, nRecords);
+              }
+
+              if (!prevResults.hasNext()) {
+                finished = true;
+                break;
+              }
+
+              lastResult = prevResults.next();
+              final Object sourceObj = lastResult.getProperty(sourceVariable);
+
+              if (sourceObj instanceof Vertex) {
+                final Vertex sourceVertex = (Vertex) sourceObj;
+                currentPaths = createTraverser().traversePaths(sourceVertex);
+              } else {
+                // Source is not a vertex, skip
+                currentPaths = null;
+              }
+            }
+          } else {
+            // Path not needed: use vertex-only traversal (faster, no edge loading)
+            if (currentVertices != null && currentVertices.hasNext()) {
+              final Vertex targetVertex = currentVertices.next();
+
+              // Create result with target vertex only
+              final ResultInternal result = new ResultInternal();
+
+              // Copy all properties from previous result
+              for (final String prop : lastResult.getPropertyNames()) {
+                result.setProperty(prop, lastResult.getProperty(prop));
+              }
+
+              // Add target vertex binding
+              result.setProperty(targetVariable, targetVertex);
+
+              buffer.add(result);
+            } else {
+              // Get next source vertex from previous step
+              if (prevResults == null) {
+                prevResults = prev.syncPull(context, nRecords);
+              }
+
+              if (!prevResults.hasNext()) {
+                finished = true;
+                break;
+              }
+
+              lastResult = prevResults.next();
+              final Object sourceObj = lastResult.getProperty(sourceVariable);
+
+              if (sourceObj instanceof Vertex) {
+                final Vertex sourceVertex = (Vertex) sourceObj;
+                currentVertices = createTraverser().traverse(sourceVertex);
+              } else {
+                // Source is not a vertex, skip
+                currentVertices = null;
+              }
             }
           }
         }

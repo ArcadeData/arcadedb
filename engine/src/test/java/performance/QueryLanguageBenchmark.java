@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -31,11 +30,10 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import java.io.*;
+import java.io.File;
 import java.util.*;
 
 /**
@@ -45,19 +43,19 @@ import java.util.*;
  * - Index lookups
  * - Graph traversals (3 and 5 levels)
  * - Filtered queries
- *
+ * <p>
  * Query languages tested:
  * - Java Native API (database.iterateType, database.lookupByKey, etc.)
  * - SQL (ArcadeDB SQL dialect)
  * - OpenCypher (Cypher graph query language)
- *
+ * <p>
  * NOTE: Gremlin benchmarking requires the gremlin module dependency and should
  * be implemented in a separate benchmark in the gremlin module's test suite.
- *
+ * <p>
  * Dataset: Synthetic social network with 1M vertices (Account) and 5M edges (Follows).
  * Each query is executed 100 times (after 10 warmup iterations) and statistics are
  * collected including min, max, avg, P50, P95, P99 latencies.
- *
+ * <p>
  * Results are presented in a comparison table showing relative performance across
  * different query languages and patterns.
  *
@@ -70,8 +68,8 @@ public class QueryLanguageBenchmark {
   // Benchmark parameters
   private static final int NUM_VERTICES = 500_000;  // 1M vertices
   private static final int NUM_EDGES = 1_000_000;     // 5M edges (~5 per vertex avg)
-  private static final int NUM_ITERATIONS = 10;       // Number of times to repeat each query
-  private static final int WARMUP_ITERATIONS = 3;     // Warmup runs (not measured)
+  private static final int NUM_ITERATIONS = 20;       // Number of times to repeat each query
+  private static final int WARMUP_ITERATIONS = 5;     // Warmup runs (not measured)
 
   // Sample IDs for lookup queries (randomly selected)
   private static final int NUM_SAMPLE_IDS = 100;
@@ -268,7 +266,7 @@ public class QueryLanguageBenchmark {
     results.put("Filter Scan (age > 30)", benchmarkCypherFilterScan());
     results.put("Count", benchmarkCypherCount());
     results.put("3-Level Traversal", benchmarkCypherTraversal(3));
-    results.put("5-Level Traversal", benchmarkCypherTraversal(5));
+//    results.put("5-Level Traversal", benchmarkCypherTraversal(5));
 
     benchmarkResults.put("OpenCypher", results);
   }
@@ -582,8 +580,10 @@ public class QueryLanguageBenchmark {
     System.out.println("Running SQL: " + depth + "-Level Traversal");
 
     // Warmup
-    for (int i = 0; i < WARMUP_ITERATIONS; i++)
-      executeSQLTraversal(sampleIds[i % NUM_SAMPLE_IDS], depth);
+    for (int i = 0; i < WARMUP_ITERATIONS; i++) {
+      final int total = executeSQLTraversal(sampleIds[i % NUM_SAMPLE_IDS], depth);
+      System.out.println("- sql " + sampleIds[i % NUM_SAMPLE_IDS] + ": " + total);
+    }
 
     // Benchmark
     final long[] times = new long[NUM_ITERATIONS];
@@ -751,8 +751,10 @@ public class QueryLanguageBenchmark {
     System.out.println("Running OpenCypher: " + depth + "-Level Traversal");
 
     // Warmup
-    for (int i = 0; i < WARMUP_ITERATIONS; i++)
-      executeCypherTraversal(sampleIds[i % NUM_SAMPLE_IDS], depth);
+    for (int i = 0; i < WARMUP_ITERATIONS; i++) {
+      final int total = executeCypherTraversal(sampleIds[i % NUM_SAMPLE_IDS], depth);
+      System.out.println("- opencypher " + sampleIds[i % NUM_SAMPLE_IDS] + ": " + total);
+    }
 
     // Benchmark
     final long[] times = new long[NUM_ITERATIONS];
