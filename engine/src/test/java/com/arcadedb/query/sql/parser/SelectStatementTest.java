@@ -259,7 +259,7 @@ class SelectStatementTest {
   @Test
   void selectFunction() {
     final SimpleNode result = checkRightSyntax("select max(1,2,7,0,-2,3), 'pluto'");
-    assertThat(result instanceof SelectWithoutTargetStatement).isTrue();
+    assertThat(result instanceof SelectStatement).isTrue();
   }
 
   @Test
