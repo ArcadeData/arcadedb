@@ -788,17 +788,8 @@ Statement StatementInternal():
     LOOKAHEAD(CreateBucketStatement())
     result = CreateBucketStatement()
     |
-    LOOKAHEAD(CreateVertexStatementNoTarget())
-    result = CreateVertexStatementNoTarget()
-    |
     LOOKAHEAD(CreateVertexStatement())
     result = CreateVertexStatement()
-    |
-    LOOKAHEAD(CreateVertexStatementEmpty())
-    result = CreateVertexStatementEmpty()
-    |
-    LOOKAHEAD(CreateVertexStatementEmptyNoTarget())
-    result = CreateVertexStatementEmptyNoTarget()
     |
     LOOKAHEAD(CreateEdgeStatement())
     result = CreateEdgeStatement()
@@ -1296,51 +1287,26 @@ InsertBody InsertBody():
   { return jjtThis; }
 }
 
-CreateVertexStatementEmptyNoTarget CreateVertexStatementEmptyNoTarget():
-{}
-{
-  <CREATE> <VERTEX>
-  {return jjtThis;}
-}
-
-CreateVertexStatementEmpty CreateVertexStatementEmpty():
-{}
-{
-  <CREATE> <VERTEX>
-  jjtThis.targetType = Identifier()
-  [
-    <BUCKET>
-    jjtThis.targetBucketName = Identifier()
-  ]
-  {return jjtThis;}
-}
-
 CreateVertexStatement CreateVertexStatement():
 {}
 {
   <CREATE> <VERTEX>
-  (
-    LOOKAHEAD( Identifier() )
+  [
+    // Optional target: type+bucket or just bucket
+    LOOKAHEAD(2)
     (
+      LOOKAHEAD( Bucket() )
+      jjtThis.targetBucket = Bucket()
+      |
       jjtThis.targetType = Identifier()
       [
         <BUCKET>
         jjtThis.targetBucketName = Identifier()
       ]
     )
-    |
-    LOOKAHEAD( Bucket() )
-    jjtThis.targetBucket = Bucket()
-  )
+  ]
   [ <RETURN> jjtThis.returnStatement = Projection() ]
-  [ LOOKAHEAD(InsertBody()) jjtThis.insertBody = InsertBody() ] {return jjtThis;}
-}
-
-CreateVertexStatementNoTarget CreateVertexStatementNoTarget():
-{}
-{
-  <CREATE> <VERTEX>
-  jjtThis.insertBody = InsertBody()
+  [ LOOKAHEAD(InsertBody()) jjtThis.insertBody = InsertBody() ]
   {return jjtThis;}
 }
 
