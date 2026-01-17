@@ -748,22 +748,21 @@ Statement StatementInternal():
 }
 {
   (
-    LOOKAHEAD(ExplainStatement())
+    // Unique token statements - LOOKAHEAD removed for performance
     result = ExplainStatement()
     |
-    LOOKAHEAD(ProfileStatement())
     result = ProfileStatement()
     |
-    LOOKAHEAD(LetStatement())
     result = LetStatement()
     |
+    // QueryStatement needs LOOKAHEAD - SELECT/TRAVERSE/MATCH need disambiguation
     LOOKAHEAD(QueryStatement())
     result = QueryStatement()
     |
+    // DELETE needs LOOKAHEAD - conflicts with DeleteFunctionStatement (DELETE vs DELETE FUNCTION)
     LOOKAHEAD(DeleteStatement())
     result = DeleteStatement()
     |
-    LOOKAHEAD(UpdateStatement())
     result = UpdateStatement()
     |
     LOOKAHEAD(CreateDocumentTypeStatement())
@@ -799,9 +798,9 @@ Statement StatementInternal():
     LOOKAHEAD(CreateEdgeStatement())
     result = CreateEdgeStatement()
     |
-    LOOKAHEAD(DefineFunctionStatement())
     result = DefineFunctionStatement()
     |
+    // DeleteFunctionStatement needs LOOKAHEAD - conflicts with DeleteStatement
     LOOKAHEAD(DeleteFunctionStatement())
     result = DeleteFunctionStatement()
     |
@@ -838,19 +837,15 @@ Statement StatementInternal():
     LOOKAHEAD(AlterDatabaseStatement())
     result = AlterDatabaseStatement()
     |
-    LOOKAHEAD(ImportDatabaseStatement())
+    // Database operations with unique tokens - LOOKAHEAD removed
     result = ImportDatabaseStatement()
     |
-    LOOKAHEAD(ExportDatabaseStatement())
     result = ExportDatabaseStatement()
     |
-    LOOKAHEAD(BackupDatabaseStatement())
     result = BackupDatabaseStatement()
     |
-    LOOKAHEAD(CheckDatabaseStatement())
     result = CheckDatabaseStatement()
     |
-    LOOKAHEAD(AlignDatabaseStatement())
     result = AlignDatabaseStatement()
     |
     // Simple statements that start with unique tokens
