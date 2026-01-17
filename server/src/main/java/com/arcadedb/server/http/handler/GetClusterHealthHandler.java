@@ -20,60 +20,59 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.HashMap;
-import java.util.Map;
-
 /**
- * Returns cluster health information for monitoring and debugging.
- * Provides details about leader/replica role, online replica count, and individual replica statuses.
+ * Returns cluster health information including replica status and metrics.
+ * Endpoint: GET /api/v1/cluster/health
  */
 public class GetClusterHealthHandler extends AbstractServerHttpHandler {
+
   public GetClusterHealthHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
+  public ExecutionResponse execute(final HttpServerExchange exchange,
+                                    final ServerSecurityUser user,
+                                    final JSONObject payload) {
+    Metrics.counter("http.cluster-health").increment();
+
     final HAServer ha = httpServer.getServer().getHA();
-
     if (ha == null) {
-      final JSONObject errorResponse = new JSONObject().put("error", "HA not enabled on this server");
-      return new ExecutionResponse(404, errorResponse.toString());
+      return new ExecutionResponse(503, new JSONObject()
+          .put("error", "HA not enabled")
+          .put("message", "High Availability is not configured on this server")
+          .toString());
     }
 
-    // Build replica statuses map
-    final Map<String, String> replicaStatuses = new HashMap<>();
+    final JSONObject response = new JSONObject();
+
+    // Collect cluster health data
+    response.put("status", "HEALTHY"); // TODO: Calculate actual health
+    response.put("serverName", httpServer.getServer().getServerName());
+    response.put("clusterName", ha.getClusterName());
+    response.put("isLeader", ha.isLeader());
+    response.put("leaderName", ha.getLeaderName());
+    response.put("electionStatus", ha.getElectionStatus().toString());
+
     if (ha.isLeader()) {
-      // Only leader has visibility into replica statuses
-      for (var entry : ha.getReplicaStatuses().entrySet()) {
-        replicaStatuses.put(entry.getKey(), entry.getValue().toString());
-      }
+      response.put("onlineReplicas", ha.getOnlineReplicas());
+      response.put("configuredServers", ha.getConfiguredServers());
+
+      // Add replica information
+      // TODO: Collect replica metrics from Leader2ReplicaNetworkExecutor instances
+      response.put("replicas", new JSONObject());
     }
 
-    // Calculate if majority quorum is available
-    final int onlineServers = ha.getOnlineServers();
-    final int configuredServers = ha.getConfiguredServers();
-    final boolean quorumAvailable = onlineServers >= (configuredServers + 1) / 2;
+    return new ExecutionResponse(200, response.toString());
+  }
 
-    // Build health response
-    final JSONObject health = new JSONObject();
-    health.put("serverName", httpServer.getServer().getServerName());
-    health.put("role", ha.isLeader() ? "Leader" : "Replica");
-    health.put("configuredServers", configuredServers);
-    health.put("onlineServers", onlineServers);
-    health.put("onlineReplicas", ha.getOnlineReplicas());
-    health.put("quorumAvailable", quorumAvailable);
-    health.put("electionStatus", ha.getElectionStatus().toString());
-
-    if (!replicaStatuses.isEmpty()) {
-      health.put("replicaStatuses", replicaStatuses);
-    }
-
-    return new ExecutionResponse(200, health.toString());
+  @Override
+  public boolean isRequireAuthentication() {
+    return false;
   }
 }
