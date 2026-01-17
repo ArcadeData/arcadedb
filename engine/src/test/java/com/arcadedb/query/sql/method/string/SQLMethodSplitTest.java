@@ -57,6 +57,7 @@ class SQLMethodSplitTest {
   }
 
   //@Test
+  @Disabled
   void perfTestSystemSplitVsCodeUtils() {
     long start = System.currentTimeMillis();
     for (int i = 0; i < 10; i++)

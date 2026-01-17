@@ -47,7 +47,7 @@ class GitHubIssueCustomFunctionTest {
 
       final Object beerRid = result.next().getProperty("beerRid");
       assertThat(beerRid).isNotNull();
-      System.out.println("Case 1 - Beer RID: " + beerRid);
+      // System.out.println("Case 1 - Beer RID: " + beerRid);
     });
   }
 
@@ -64,7 +64,7 @@ class GitHubIssueCustomFunctionTest {
       final Object output = result.next().getProperty("output");
       assertThat(output).isNotNull();
       assertThat(output.toString()).isEqualTo("Hocus Pocus");
-      System.out.println("Case 2 - Output: " + output);
+      // System.out.println("Case 2 - Output: " + output);
     });
   }
 
@@ -81,7 +81,7 @@ class GitHubIssueCustomFunctionTest {
       final Object output = result.next().getProperty("output");
       assertThat(output).isNotNull();
       assertThat(output.toString()).isEqualTo("Hocus Pocus");
-      System.out.println("Case 3 - Output: " + output);
+      // System.out.println("Case 3 - Output: " + output);
     });
   }
 
@@ -97,7 +97,7 @@ class GitHubIssueCustomFunctionTest {
 
       final String output = result.next().getProperty("output");
       assertThat(output).isEqualTo("Hello World");
-      System.out.println("Observation - No double quoting needed: " + output);
+      // System.out.println("Observation - No double quoting needed: " + output);
     });
   }
 }
