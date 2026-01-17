@@ -25,6 +25,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ConnectionException;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ha.message.CommandForwardRequest;
 import com.arcadedb.server.ha.message.HACommand;
 import com.arcadedb.server.ha.message.ReplicaConnectFullResyncResponse;
@@ -37,6 +38,8 @@ import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -86,6 +89,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private          ChannelBinaryServer                                channel;
   private          STATUS                                             status                = STATUS.JOINING;
   private volatile boolean                                            shutdownCommunication = false;
+  private final    ReplicaConnectionMetrics                           metrics               = new ReplicaConnectionMetrics();
 
   // STATS
   private long totalMessages;
@@ -626,6 +630,67 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   protected Object executeInLock(final Callable<Object, Object> callback) {
     synchronized (lock) {
       return callback.call(null);
+    }
+  }
+
+  /**
+   * Classifies if exception is a transient network failure.
+   *
+   * @param e the exception to classify
+   * @return true if transient network failure
+   */
+  private boolean isTransientNetworkFailure(Exception e) {
+    return e instanceof SocketTimeoutException ||
+           e instanceof SocketException ||
+           (e instanceof IOException &&
+            e.getMessage() != null &&
+            e.getMessage().contains("Connection reset"));
+  }
+
+  /**
+   * Classifies if exception indicates a leadership change.
+   *
+   * @param e the exception to classify
+   * @return true if leadership change
+   */
+  private boolean isLeadershipChange(Exception e) {
+    return e instanceof ServerIsNotTheLeaderException ||
+           (e instanceof ConnectionException &&
+            e.getMessage() != null &&
+            e.getMessage().contains("not the Leader")) ||
+           (e instanceof ReplicationException &&
+            e.getMessage() != null &&
+            e.getMessage().contains("election in progress"));
+  }
+
+  /**
+   * Classifies if exception is a protocol error.
+   *
+   * @param e the exception to classify
+   * @return true if protocol error
+   */
+  private boolean isProtocolError(Exception e) {
+    // For now, only message-based detection since we don't have NetworkProtocolException in production
+    return e instanceof IOException &&
+           e.getMessage() != null &&
+           e.getMessage().contains("Protocol");
+  }
+
+  /**
+   * Categorizes an exception into one of 4 categories.
+   *
+   * @param e the exception to categorize
+   * @return the exception category
+   */
+  private ExceptionCategory categorizeException(Exception e) {
+    if (isTransientNetworkFailure(e)) {
+      return ExceptionCategory.TRANSIENT_NETWORK;
+    } else if (isLeadershipChange(e)) {
+      return ExceptionCategory.LEADERSHIP_CHANGE;
+    } else if (isProtocolError(e)) {
+      return ExceptionCategory.PROTOCOL_ERROR;
+    } else {
+      return ExceptionCategory.UNKNOWN;
     }
   }
 }
