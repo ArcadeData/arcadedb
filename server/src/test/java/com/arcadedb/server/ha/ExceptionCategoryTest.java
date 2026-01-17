@@ -42,5 +42,9 @@ class ExceptionCategoryTest {
         .isEqualTo("Transient Network Failure");
     assertThat(ExceptionCategory.LEADERSHIP_CHANGE.getDisplayName())
         .isEqualTo("Leadership Change");
+    assertThat(ExceptionCategory.PROTOCOL_ERROR.getDisplayName())
+        .isEqualTo("Protocol Error");
+    assertThat(ExceptionCategory.UNKNOWN.getDisplayName())
+        .isEqualTo("Unknown Error");
   }
 }
