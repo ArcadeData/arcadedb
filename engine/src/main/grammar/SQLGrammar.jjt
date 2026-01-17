@@ -2188,114 +2188,45 @@ BooleanExpression ConditionBlock():
 ){ return result; }
 }
 
-BinaryCompareOperator CompareOperator():
-{  BinaryCompareOperator result;}
+BinaryCompareOperator CompareOperator() #void:
+{ BinaryCompareOperator result; }
 {
-(
-  result = EqualsCompareOperator()
-  | result = NullSafeEqualsCompareOperator()
-  | result = LtOperator()
-  | result = GtOperator()
-  | result = NeOperator()
-  | result = NeqOperator()
-  | result = GeOperator()
-  | result = LeOperator()
-  | result = LikeOperator()
-  | result = ILikeOperator()
-  | result = ContainsKeyOperator()
-  | result = NearOperator()
-  | result = WithinOperator()
-
-){return result;}
-}
-
-
-LtOperator LtOperator():
-{}
-{
-  <LT> {return jjtThis;}
-}
-
-GtOperator GtOperator():
-{}
-{
-  <GT> {return jjtThis;}
-}
-
-NeOperator NeOperator():
-{}
-{
-  <NE> {return jjtThis;}
-}
-
-NeqOperator NeqOperator():
-{}
-{
-  <NEQ> {return jjtThis;}
-}
-
-GeOperator GeOperator():
-{}
-{
-  <GE> {return jjtThis;}
-}
-
-LeOperator LeOperator():
-{}
-{
-  <LE> {return jjtThis;}
-}
-
-LikeOperator LikeOperator():
-{}
-{
-  <LIKE> {return jjtThis;}
-}
-
-ILikeOperator ILikeOperator():
-{}
-{
-  <ILIKE> {return jjtThis;}
-}
-
-NearOperator NearOperator():
-{}
-{
-  <NEAR> {return jjtThis;}
-}
-
-WithinOperator WithinOperator():
-{}
-{
-  <WITHIN> {return jjtThis;}
-}
-
-ContainsKeyOperator ContainsKeyOperator():
-{}
-{
-  <CONTAINSKEY> {return jjtThis;}
+  (
+    <EQ> { jjtThis.doubleEquals = false; result = jjtThis; } #EqualsCompareOperator
+    |
+    <EQEQ> { jjtThis.doubleEquals = true; result = jjtThis; } #EqualsCompareOperator
+    |
+    <NSEQ> { result = jjtThis; } #NullSafeEqualsCompareOperator
+    |
+    <LT> { result = jjtThis; } #LtOperator
+    |
+    <GT> { result = jjtThis; } #GtOperator
+    |
+    <NE> { result = jjtThis; } #NeOperator
+    |
+    <NEQ> { result = jjtThis; } #NeqOperator
+    |
+    <GE> { result = jjtThis; } #GeOperator
+    |
+    <LE> { result = jjtThis; } #LeOperator
+    |
+    <LIKE> { result = jjtThis; } #LikeOperator
+    |
+    <ILIKE> { result = jjtThis; } #ILikeOperator
+    |
+    <CONTAINSKEY> { result = jjtThis; } #ContainsKeyOperator
+    |
+    <NEAR> { result = jjtThis; } #NearOperator
+    |
+    <WITHIN> { result = jjtThis; } #WithinOperator
+  )
+  { return result; }
 }
 
 ContainsValueOperator ContainsValueOperator():
 {}
 {
   <CONTAINSVALUE> {return jjtThis;}
-}
-
-EqualsCompareOperator EqualsCompareOperator():
-{}
-{
-(
-  <EQ> { jjtThis.doubleEquals = false; }
-  |
-  <EQEQ> { jjtThis.doubleEquals = true; }
-){return jjtThis;}
-}
-
-NullSafeEqualsCompareOperator NullSafeEqualsCompareOperator():
-{}
-{
- <NSEQ> {return jjtThis;}
 }
 
 
