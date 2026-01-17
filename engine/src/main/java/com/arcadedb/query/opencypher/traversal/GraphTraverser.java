@@ -80,6 +80,8 @@ public abstract class GraphTraverser {
 
   /**
    * Gets edges from a vertex based on direction and relationship types.
+   * <p>
+   * NOTE: Use getNextVertices() when you don't need the edge objects for better performance.
    *
    * @param vertex vertex to get edges from
    * @return iterable of matching edges
@@ -89,6 +91,23 @@ public abstract class GraphTraverser {
       return vertex.getEdges(direction.toArcadeDirection());
     } else {
       return vertex.getEdges(direction.toArcadeDirection(), relationshipTypes);
+    }
+  }
+
+  /**
+   * Gets connected vertices directly without loading edge records.
+   * <p>
+   * PERFORMANCE: This is much faster than getEdges() + getOtherVertex()
+   * because it skips loading the edge records entirely.
+   *
+   * @param vertex vertex to get connected vertices from
+   * @return iterable of connected vertices
+   */
+  protected Iterable<Vertex> getNextVertices(final Vertex vertex) {
+    if (relationshipTypes == null || relationshipTypes.length == 0) {
+      return vertex.getVertices(direction.toArcadeDirection());
+    } else {
+      return vertex.getVertices(direction.toArcadeDirection(), relationshipTypes);
     }
   }
 
