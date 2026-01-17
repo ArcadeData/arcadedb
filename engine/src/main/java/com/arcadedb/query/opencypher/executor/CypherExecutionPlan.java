@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
@@ -569,6 +570,12 @@ public class CypherExecutionPlan {
     // Get function factory from evaluator for steps that need it
     final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
 
+    // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
+    // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
+    final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
+    if (typeCountStep != null)
+      return typeCountStep;
+
     // Special case: RETURN without MATCH (standalone expressions)
     // E.g., RETURN abs(-42), RETURN 1+1
     if (statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null &&
@@ -932,6 +939,12 @@ public class CypherExecutionPlan {
 
     // Get function factory from evaluator for steps that need it
     final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
+
+    // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
+    // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
+    final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
+    if (typeCountStep != null)
+      return typeCountStep;
 
     // Special case: RETURN without MATCH (standalone expressions)
     // E.g., RETURN abs(-42), RETURN 1+1
@@ -1313,5 +1326,136 @@ public class CypherExecutionPlan {
    */
   public PhysicalPlan getPhysicalPlan() {
     return physicalPlan;
+  }
+
+  /**
+   * Attempts to create an optimized TYPE COUNT step for simple count queries.
+   * <p>
+   * Optimizes queries matching this pattern:
+   * MATCH (variable:TypeName) RETURN COUNT(variable) as alias
+   * <p>
+   * Requirements:
+   * - Exactly one MATCH clause with one node pattern that has a label
+   * - No WHERE clause
+   * - RETURN clause with exactly one item: COUNT(variable)
+   * - No other clauses (WITH, ORDER BY, SKIP, LIMIT, etc.)
+   * <p>
+   * Uses O(1) database.countType() instead of O(n) iteration.
+   *
+   * @param context command context
+   * @return optimized TypeCountStep if pattern matches, null otherwise
+   */
+  private AbstractExecutionStep tryCreateTypeCountOptimization(final CommandContext context) {
+    // Must have exactly one MATCH clause
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+
+    // Must not be OPTIONAL MATCH
+    if (matchClause.isOptional())
+      return null;
+
+    // Must not have WHERE clause
+    if (matchClause.hasWhereClause() || statement.getWhereClause() != null)
+      return null;
+
+    // Must have path patterns
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+
+    // Must be a single node pattern (not a relationship pattern)
+    if (!pathPattern.isSingleNode())
+      return null;
+
+    final NodePattern nodePattern = pathPattern.getFirstNode();
+
+    // Node must have at least one label
+    if (!nodePattern.hasLabels())
+      return null;
+
+    // Node must not have property constraints
+    if (nodePattern.hasProperties())
+      return null;
+
+    final String variable = nodePattern.getVariable();
+    if (variable == null)
+      return null;
+
+    // Get the first label (for simplicity, use the first one if multiple labels exist)
+    final String typeName = nodePattern.getLabels().get(0);
+
+    // Must have RETURN clause
+    if (statement.getReturnClause() == null)
+      return null;
+
+    // RETURN must have exactly one item
+    if (statement.getReturnClause().getReturnItems().size() != 1)
+      return null;
+
+    final ReturnClause.ReturnItem returnItem = statement.getReturnClause().getReturnItems().get(0);
+    final com.arcadedb.query.opencypher.ast.Expression returnExpr = returnItem.getExpression();
+
+    // Must be a function call
+    if (!(returnExpr instanceof com.arcadedb.query.opencypher.ast.FunctionCallExpression))
+      return null;
+
+    final com.arcadedb.query.opencypher.ast.FunctionCallExpression funcExpr =
+        (com.arcadedb.query.opencypher.ast.FunctionCallExpression) returnExpr;
+
+    // Function must be COUNT
+    if (!"count".equalsIgnoreCase(funcExpr.getFunctionName()))
+      return null;
+
+    // COUNT must have exactly one argument
+    if (funcExpr.getArguments().size() != 1)
+      return null;
+
+    final com.arcadedb.query.opencypher.ast.Expression countArg = funcExpr.getArguments().get(0);
+
+    // Argument must be a variable reference
+    if (!(countArg instanceof com.arcadedb.query.opencypher.ast.VariableExpression))
+      return null;
+
+    final com.arcadedb.query.opencypher.ast.VariableExpression varExpr =
+        (com.arcadedb.query.opencypher.ast.VariableExpression) countArg;
+
+    // Variable in COUNT must match the MATCH variable
+    if (!variable.equals(varExpr.getVariableName()))
+      return null;
+
+    // Must not have any other clauses that would invalidate the optimization
+    if (!statement.getUnwindClauses().isEmpty())
+      return null;
+
+    if (!statement.getWithClauses().isEmpty())
+      return null;
+
+    if (statement.getOrderByClause() != null)
+      return null;
+
+    if (statement.getSkip() != null)
+      return null;
+
+    if (statement.getLimit() != null)
+      return null;
+
+    if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty())
+      return null;
+
+    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty())
+      return null;
+
+    if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty())
+      return null;
+
+    if (statement.getMergeClause() != null)
+      return null;
+
+    // All conditions met - create optimized TypeCountStep
+    final String outputAlias = returnItem.getOutputName();
+    return new com.arcadedb.query.opencypher.executor.steps.TypeCountStep(typeName, outputAlias, context);
   }
 }
