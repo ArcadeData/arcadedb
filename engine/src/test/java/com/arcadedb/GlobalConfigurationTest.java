@@ -63,4 +63,21 @@ class GlobalConfigurationTest extends TestHelper {
 
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue(original);
   }
+
+  @Test
+  void testHAEnhancedReconnectionConfig() {
+    // Test feature flag
+    assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION).isNotNull();
+    assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION.getDefValue()).isEqualTo(false);
+    assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION.getType())
+        .isEqualTo(Boolean.class);
+
+    // Test transient failure config
+    assertThat(GlobalConfiguration.HA_TRANSIENT_FAILURE_MAX_ATTEMPTS.getDefValue()).isEqualTo(3);
+    assertThat(GlobalConfiguration.HA_TRANSIENT_FAILURE_BASE_DELAY_MS.getDefValue()).isEqualTo(1000L);
+
+    // Test unknown error config
+    assertThat(GlobalConfiguration.HA_UNKNOWN_ERROR_MAX_ATTEMPTS.getDefValue()).isEqualTo(5);
+    assertThat(GlobalConfiguration.HA_UNKNOWN_ERROR_BASE_DELAY_MS.getDefValue()).isEqualTo(2000L);
+  }
 }
