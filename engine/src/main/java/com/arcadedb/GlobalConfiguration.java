@@ -582,42 +582,20 @@ public enum GlobalConfiguration {
   HA_CONNECTION_HEALTH_CHECK_TIMEOUT_MS("arcadedb.ha.connectionHealthCheckTimeoutMs", SCOPE.SERVER,
       "Timeout in milliseconds for health check responses. Default is 15000ms (15 seconds)", Long.class, 15000L),
 
-  /**
-   * Enable enhanced reconnection logic with exception classification.
-   * When true: Uses new state machine and intelligent recovery strategies.
-   * When false: Uses legacy reconnection logic.
-   * Default: false (legacy behavior).
-   */
   HA_ENHANCED_RECONNECTION("arcadedb.ha.enhancedReconnection", SCOPE.SERVER,
-      "Enable enhanced reconnection with exception classification", Boolean.class, false),
+      "Enable enhanced reconnection logic with exception classification. When true uses new state machine and intelligent recovery strategies, when false uses legacy reconnection logic. Default is false", Boolean.class, false),
 
-  /**
-   * Transient failure maximum retry attempts.
-   * Default: 3 attempts (1s, 2s, 4s = ~7s total).
-   */
   HA_TRANSIENT_FAILURE_MAX_ATTEMPTS("arcadedb.ha.transientFailure.maxAttempts", SCOPE.SERVER,
-      "Transient network failure max retry attempts", Integer.class, 3),
+      "Maximum number of retry attempts for transient network failures (temporary connectivity issues). Uses exponential backoff: 1s, 2s, 4s for ~7s total. Default is 3", Integer.class, 3),
 
-  /**
-   * Transient failure base delay in milliseconds.
-   * Default: 1000ms (1 second).
-   */
   HA_TRANSIENT_FAILURE_BASE_DELAY_MS("arcadedb.ha.transientFailure.baseDelayMs", SCOPE.SERVER,
-      "Transient network failure base delay in ms", Long.class, 1000L),
+      "Base delay in milliseconds for exponential backoff when retrying transient network failures. Default is 1000ms (1 second)", Long.class, 1000L),
 
-  /**
-   * Unknown error maximum retry attempts.
-   * Default: 5 attempts (2s, 4s, 8s, 16s, 30s = ~60s total).
-   */
   HA_UNKNOWN_ERROR_MAX_ATTEMPTS("arcadedb.ha.unknownError.maxAttempts", SCOPE.SERVER,
-      "Unknown error max retry attempts", Integer.class, 5),
+      "Maximum number of retry attempts for unknown/unclassified errors. Uses exponential backoff: 2s, 4s, 8s, 16s, 30s for ~60s total. Default is 5", Integer.class, 5),
 
-  /**
-   * Unknown error base delay in milliseconds.
-   * Default: 2000ms (2 seconds).
-   */
   HA_UNKNOWN_ERROR_BASE_DELAY_MS("arcadedb.ha.unknownError.baseDelayMs", SCOPE.SERVER,
-      "Unknown error base delay in ms", Long.class, 2000L),
+      "Base delay in milliseconds for exponential backoff when retrying unknown errors. Default is 2000ms (2 seconds)", Long.class, 2000L),
 
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
