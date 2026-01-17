@@ -118,8 +118,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
             // Match nodes and add to input result
             if (iterator.hasNext()) {
               final Identifiable identifiable = iterator.next();
-              if (identifiable instanceof Vertex) {
-                final Vertex vertex = (Vertex) identifiable;
+              // Load the record if it's not already loaded
+              final com.arcadedb.database.Document record = identifiable.asDocument();
+              if (record instanceof Vertex) {
+                final Vertex vertex = (Vertex) record;
 
                 // Apply property filters if specified in pattern
                 if (!matchesProperties(vertex)) {
@@ -149,8 +151,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
           while (buffer.size() < n && iterator.hasNext()) {
             final Identifiable identifiable = iterator.next();
 
-            if (identifiable instanceof Vertex) {
-              final Vertex vertex = (Vertex) identifiable;
+            // Load the record if it's not already loaded
+            final com.arcadedb.database.Document record = identifiable.asDocument();
+            if (record instanceof Vertex) {
+              final Vertex vertex = (Vertex) record;
 
               // Apply property filters if specified in pattern
               if (!matchesProperties(vertex)) {
