@@ -84,14 +84,8 @@ public class DepthFirstTraverser extends GraphTraverser {
         return;
       }
 
-      // Recursively explore neighbors
-      for (final Edge edge : getEdges(vertex)) {
-        if (!matchesTypeFilter(edge)) {
-          continue;
-        }
-
-        final Vertex nextVertex = getOtherVertex(edge, vertex);
-
+      // Recursively explore neighbors using fast getNextVertices() (skips loading edge records)
+      for (final Vertex nextVertex : getNextVertices(vertex)) {
         // Skip if already visited
         if (detectCycles && isVisited(nextVertex, visited)) {
           continue;
