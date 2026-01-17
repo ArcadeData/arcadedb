@@ -22,14 +22,14 @@ public class LetDivisionBugTest extends TestHelper {
       assertThat(result1.hasNext()).isTrue();
       final Result r1 = result1.next();
       final Object ratio = r1.getProperty("ratio");
-      System.out.println("Ratio: " + ratio);
-      System.out.println("Ratio type: " + (ratio != null ? ratio.getClass().getName() : "null"));
+      // System.out.println("Ratio: " + ratio);
+      // System.out.println("Ratio type: " + (ratio != null ? ratio.getClass().getName() : "null"));
 
       // The ratio should be 1.0 since both expressions are mathematically equivalent
       assertThat(ratio).isNotNull();
       if (ratio instanceof Number) {
         double ratioValue = ((Number) ratio).doubleValue();
-        System.out.println("Ratio value: " + ratioValue);
+        // System.out.println("Ratio value: " + ratioValue);
         assertThat(ratioValue).isCloseTo(1.0, Offset.offset(0.0001));
       }
       result1.close();
@@ -42,15 +42,15 @@ public class LetDivisionBugTest extends TestHelper {
       final Result r2 = result2.next();
       final Object val1 = r2.getProperty("$val1");
       final Object val2 = r2.getProperty("$val2");
-      System.out.println("$val1: " + val1);
-      System.out.println("$val2: " + val2);
+      // System.out.println("$val1: " + val1);
+      // System.out.println("$val2: " + val2);
 
       if (val1 instanceof Number && val2 instanceof Number) {
         double v1 = ((Number) val1).doubleValue();
         double v2 = ((Number) val2).doubleValue();
-        System.out.println("$val1 (double): " + v1);
-        System.out.println("$val2 (double): " + v2);
-        System.out.println("Calculated ratio: " + (v2 / v1));
+        // System.out.println("$val1 (double): " + v1);
+        // System.out.println("$val2 (double): " + v2);
+        // System.out.println("Calculated ratio: " + (v2 / v1));
 
         // Both should be approximately 3.17E-11
         assertThat(v1).isCloseTo(v2, Percentage.withPercentage(0.01));
@@ -70,14 +70,14 @@ public class LetDivisionBugTest extends TestHelper {
       final Result r = result.next();
       final Object val1 = r.getProperty("val1");
       final Object val2 = r.getProperty("val2");
-      System.out.println("Direct val1: " + val1);
-      System.out.println("Direct val2: " + val2);
+      // System.out.println("Direct val1: " + val1);
+      // System.out.println("Direct val2: " + val2);
 
       if (val1 instanceof Number && val2 instanceof Number) {
         double v1 = ((Number) val1).doubleValue();
         double v2 = ((Number) val2).doubleValue();
-        System.out.println("Direct val1 (double): " + v1);
-        System.out.println("Direct val2 (double): " + v2);
+        // System.out.println("Direct val1 (double): " + v1);
+        // System.out.println("Direct val2 (double): " + v2);
       }
       result.close();
 
@@ -87,9 +87,9 @@ public class LetDivisionBugTest extends TestHelper {
 
       assertThat(result2.hasNext()).isTrue();
       final Result r2 = result2.next();
-      System.out.println("step1 (1000*3600): " + r2.getProperty("step1"));
-      System.out.println("step2 (1000*3600*24): " + r2.getProperty("step2"));
-      System.out.println("step3 (1000*3600*24*365): " + r2.getProperty("step3"));
+      // System.out.println("step1 (1000*3600): " + r2.getProperty("step1"));
+      // System.out.println("step2 (1000*3600*24): " + r2.getProperty("step2"));
+      // System.out.println("step3 (1000*3600*24*365): " + r2.getProperty("step3"));
       result2.close();
 
       // Test what 1/step3 gives
@@ -98,9 +98,9 @@ public class LetDivisionBugTest extends TestHelper {
 
       assertThat(result3.hasNext()).isTrue();
       final Result r3 = result3.next();
-      System.out.println("div1 (1/(1000*3600)): " + r3.getProperty("div1"));
-      System.out.println("div2 (1/(1000*3600*24)): " + r3.getProperty("div2"));
-      System.out.println("div3 (1/(1000*3600*24*365)): " + r3.getProperty("div3"));
+      // System.out.println("div1 (1/(1000*3600)): " + r3.getProperty("div1"));
+      // System.out.println("div2 (1/(1000*3600*24)): " + r3.getProperty("div2"));
+      // System.out.println("div3 (1/(1000*3600*24*365)): " + r3.getProperty("div3"));
       result3.close();
 
       // Now assert that val1 and val2 should be equal

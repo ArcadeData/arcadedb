@@ -141,6 +141,16 @@ public class SelectStatement extends Statement {
       throw new CommandSQLParsingException("SELECT without FROM clause requires a projection");
     }
 
+    // WHERE, GROUP BY, ORDER BY require FROM clause
+    if (target == null) {
+      if (whereClause != null)
+        throw new CommandSQLParsingException("WHERE clause requires FROM clause");
+      if (groupBy != null)
+        throw new CommandSQLParsingException("GROUP BY clause requires FROM clause");
+      if (orderBy != null)
+        throw new CommandSQLParsingException("ORDER BY clause requires FROM clause");
+    }
+
     if (projection != null) {
       projection.validate();
       if (projection.isExpand() && groupBy != null) {
