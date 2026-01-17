@@ -266,7 +266,7 @@ public class QueryLanguageBenchmark {
     results.put("Filter Scan (age > 30)", benchmarkCypherFilterScan());
     results.put("Count", benchmarkCypherCount());
     results.put("3-Level Traversal", benchmarkCypherTraversal(3));
-//    results.put("5-Level Traversal", benchmarkCypherTraversal(5));
+    results.put("5-Level Traversal", benchmarkCypherTraversal(5));
 
     benchmarkResults.put("OpenCypher", results);
   }
