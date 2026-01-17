@@ -21,31 +21,11 @@ package com.arcadedb.server.ha;
 /**
  * Records a state transition for historical tracking.
  */
-public class StateTransition {
-  private final Leader2ReplicaNetworkExecutor.STATUS fromStatus;
-  private final Leader2ReplicaNetworkExecutor.STATUS toStatus;
-  private final long timestampMs;
-
-  public StateTransition(Leader2ReplicaNetworkExecutor.STATUS fromStatus,
-                         Leader2ReplicaNetworkExecutor.STATUS toStatus,
-                         long timestampMs) {
-    this.fromStatus = fromStatus;
-    this.toStatus = toStatus;
-    this.timestampMs = timestampMs;
-  }
-
-  public Leader2ReplicaNetworkExecutor.STATUS getFromStatus() {
-    return fromStatus;
-  }
-
-  public Leader2ReplicaNetworkExecutor.STATUS getToStatus() {
-    return toStatus;
-  }
-
-  public long getTimestampMs() {
-    return timestampMs;
-  }
-
+public record StateTransition(
+    Leader2ReplicaNetworkExecutor.STATUS fromStatus,
+    Leader2ReplicaNetworkExecutor.STATUS toStatus,
+    long timestampMs
+) {
   @Override
   public String toString() {
     return fromStatus + " -> " + toStatus + " at " + timestampMs;

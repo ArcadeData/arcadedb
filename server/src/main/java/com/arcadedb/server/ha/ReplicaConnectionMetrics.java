@@ -18,6 +18,9 @@
  */
 package com.arcadedb.server.ha;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -59,7 +62,7 @@ public class ReplicaConnectionMetrics {
     }
   }
 
-  public void recordSuccessfulRecovery(int attempts, long recoveryTimeMs) {
+  public void recordSuccessfulRecovery(long recoveryTimeMs) {
     successfulRecoveries.incrementAndGet();
     totalRecoveryTimeMs.addAndGet(recoveryTimeMs);
 
@@ -68,51 +71,84 @@ public class ReplicaConnectionMetrics {
   }
 
   // Getters
-  public AtomicLong getTotalReconnections() {
-    return totalReconnections;
+  public long getTotalReconnections() {
+    return totalReconnections.get();
   }
 
-  public AtomicLong getConsecutiveFailures() {
-    return consecutiveFailures;
+  public long getConsecutiveFailures() {
+    return consecutiveFailures.get();
   }
 
-  public AtomicLong getTransientNetworkFailures() {
-    return transientNetworkFailures;
+  public long getTransientNetworkFailures() {
+    return transientNetworkFailures.get();
   }
 
-  public AtomicLong getLeadershipChanges() {
-    return leadershipChanges;
+  public long getLeadershipChanges() {
+    return leadershipChanges.get();
   }
 
-  public AtomicLong getProtocolErrors() {
-    return protocolErrors;
+  public long getProtocolErrors() {
+    return protocolErrors.get();
   }
 
-  public AtomicLong getUnknownErrors() {
-    return unknownErrors;
+  public long getUnknownErrors() {
+    return unknownErrors.get();
   }
 
-  public AtomicLong getSuccessfulRecoveries() {
-    return successfulRecoveries;
+  public long getSuccessfulRecoveries() {
+    return successfulRecoveries.get();
   }
 
-  public AtomicLong getFailedRecoveries() {
-    return failedRecoveries;
+  public long getFailedRecoveries() {
+    return failedRecoveries.get();
   }
 
-  public AtomicLong getFastestRecoveryMs() {
-    return fastestRecoveryMs;
+  public long getFastestRecoveryMs() {
+    return fastestRecoveryMs.get();
   }
 
-  public AtomicLong getSlowestRecoveryMs() {
-    return slowestRecoveryMs;
+  public long getSlowestRecoveryMs() {
+    return slowestRecoveryMs.get();
   }
 
   public Leader2ReplicaNetworkExecutor.STATUS getCurrentStatus() {
     return currentStatus;
   }
 
-  public ConcurrentLinkedDeque<StateTransition> getRecentTransitions() {
-    return recentTransitions;
+  public Collection<StateTransition> getRecentTransitions() {
+    return Collections.unmodifiableCollection(new ArrayList<>(recentTransitions));
+  }
+
+  // Package-private accessors for internal use
+  AtomicLong transientNetworkFailuresCounter() {
+    return transientNetworkFailures;
+  }
+
+  AtomicLong leadershipChangesCounter() {
+    return leadershipChanges;
+  }
+
+  AtomicLong protocolErrorsCounter() {
+    return protocolErrors;
+  }
+
+  AtomicLong unknownErrorsCounter() {
+    return unknownErrors;
+  }
+
+  AtomicLong totalReconnectionsCounter() {
+    return totalReconnections;
+  }
+
+  AtomicLong consecutiveFailuresCounter() {
+    return consecutiveFailures;
+  }
+
+  AtomicLong failedRecoveriesCounter() {
+    return failedRecoveries;
+  }
+
+  AtomicLong lastSuccessfulMessageTimeCounter() {
+    return lastSuccessfulMessageTime;
   }
 }

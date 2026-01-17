@@ -41,23 +41,23 @@ class ReplicaConnectionMetricsTest {
   void testFailureCategoryIncrement() {
     var metrics = new ReplicaConnectionMetrics();
 
-    metrics.getTransientNetworkFailures().incrementAndGet();
-    metrics.getLeadershipChanges().incrementAndGet();
+    metrics.transientNetworkFailuresCounter().incrementAndGet();
+    metrics.leadershipChangesCounter().incrementAndGet();
 
-    assertThat(metrics.getTransientNetworkFailures().get()).isEqualTo(1);
-    assertThat(metrics.getLeadershipChanges().get()).isEqualTo(1);
-    assertThat(metrics.getProtocolErrors().get()).isEqualTo(0);
+    assertThat(metrics.getTransientNetworkFailures()).isEqualTo(1);
+    assertThat(metrics.getLeadershipChanges()).isEqualTo(1);
+    assertThat(metrics.getProtocolErrors()).isEqualTo(0);
   }
 
   @Test
   void testRecoveryMetrics() {
     var metrics = new ReplicaConnectionMetrics();
 
-    metrics.recordSuccessfulRecovery(3, 2500);
+    metrics.recordSuccessfulRecovery(2500);
 
-    assertThat(metrics.getSuccessfulRecoveries().get()).isEqualTo(1);
-    assertThat(metrics.getFastestRecoveryMs().get()).isEqualTo(2500);
-    assertThat(metrics.getSlowestRecoveryMs().get()).isEqualTo(2500);
+    assertThat(metrics.getSuccessfulRecoveries()).isEqualTo(1);
+    assertThat(metrics.getFastestRecoveryMs()).isEqualTo(2500);
+    assertThat(metrics.getSlowestRecoveryMs()).isEqualTo(2500);
   }
 
   @Test
