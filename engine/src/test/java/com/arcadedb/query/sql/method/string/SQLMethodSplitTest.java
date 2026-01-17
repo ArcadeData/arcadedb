@@ -21,9 +21,10 @@ package com.arcadedb.query.sql.method.string;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,7 +40,7 @@ class SQLMethodSplitTest {
   @Test
   void testNull() {
     //null ithis
-    Object result = method.execute(null, null, null, new Object[] { "," });
+    Object result = method.execute(null, null, null, new Object[]{","});
     assertThat(result).isNull();
 
     //null prefix
@@ -50,14 +51,14 @@ class SQLMethodSplitTest {
   @Test
   void splitByComma() {
     //null separator
-    final Object result = method.execute("first,second", null, null, new Object[] { "," });
+    final Object result = method.execute("first,second", null, null, new Object[]{","});
     assertThat(result).isInstanceOf(String[].class);
     final String[] splitted = (String[]) result;
     assertThat(splitted).hasSize(2).contains("first", "second");
   }
 
-  //@Test
   @Disabled
+  @Test
   void perfTestSystemSplitVsCodeUtils() {
     long start = System.currentTimeMillis();
     for (int i = 0; i < 10; i++)
