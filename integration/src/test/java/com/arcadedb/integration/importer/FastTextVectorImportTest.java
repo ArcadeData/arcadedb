@@ -29,101 +29,100 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class FastTextVectorImportTest extends TestHelper
-{
+class FastTextVectorImportTest extends TestHelper {
   @Test
   void vectorNeighborsQuery() {
-        database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
-                + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
-                + "vertexType = Word, vectorProperty = vector, idProperty = name" //
-        );
-        assertThat(database.countType("Word", true)).isEqualTo(1000);
+    database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
+        + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
+        + "vertexType = Word, vectorProperty = vector, idProperty = name" //
+    );
+    assertThat(database.countType("Word", true)).isEqualTo(1000);
 
-        // Verify LSMVector index was created
-        final var index = database.getSchema().getIndexByName("Word[vector]");
-        assertThat(index).isNotNull();
+    // Verify LSMVector index was created
+    final var index = database.getSchema().getIndexByName("Word[vector]");
+    assertThat(index).isNotNull();
 
-        // Verify we can query the data
-        final ResultSet rs = database.query("sql", "SELECT FROM Word LIMIT 10");
+    // Verify we can query the data
+    final ResultSet rs = database.query("sql", "SELECT FROM Word LIMIT 10");
 
-        final AtomicInteger total = new AtomicInteger();
-        while (rs.hasNext()) {
-            final Result record = rs.next();
-            assertThat(record).isNotNull();
-            total.incrementAndGet();
-        }
-        rs.close();
-
-        assertThat(total.get()).isEqualTo(10);
+    final AtomicInteger total = new AtomicInteger();
+    while (rs.hasNext()) {
+      final Result record = rs.next();
+      assertThat(record).isNotNull();
+      total.incrementAndGet();
     }
+    rs.close();
+
+    assertThat(total.get()).isEqualTo(10);
+  }
 
   @Test
   void parsingLimitEntries() {
-        database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
-                + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
-                + "vertexType = Word, vectorProperty = vector, idProperty = name, "
-                + "parsingLimitEntries = 101"
-        );
+    database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
+        + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
+        + "vertexType = Word, vectorProperty = vector, idProperty = name, "
+        + "parsingLimitEntries = 101"
+    );
 
-        // The header is skipped, so we expect 100 entries
-        assertThat(database.countType("Word", true)).isEqualTo(100);
-    }
+    // The header is skipped, so we expect 100 entries
+    assertThat(database.countType("Word", true)).isEqualTo(100);
+  }
 
   @Test
   void vectorNeighborsFunction() {
-        database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
-                + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
-                + "vertexType = Word, vectorProperty = vector, idProperty = name" //
-        );
-        assertThat(database.countType("Word", true)).isEqualTo(1000);
+    database.command("sql", "import database file://src/test/resources/cc.en.300.small.vec.gz "  //
+        + "with distanceFunction = cosine, m = 16, beamWidth = 100, " //
+        + "vertexType = Word, vectorProperty = vector, idProperty = name" //
+    );
+    assertThat(database.countType("Word", true)).isEqualTo(1000);
 
-        // Test vectorNeighbors with a word key
-        final ResultSet rs = database.query("sql",
-            "SELECT vectorNeighbors('Word[vector]', 'the', 5) as neighbors");
+    // Test vectorNeighbors with a word key
+    final ResultSet rs = database.query("sql",
+        "SELECT vectorNeighbors('Word[vector]', 'the', 5) as neighbors");
 
-        assertThat(rs.hasNext()).isTrue();
-        final Result result = rs.next();
-        final Object neighbors = result.getProperty("neighbors");
-        assertThat(neighbors).isNotNull();
-        assertThat(neighbors).isInstanceOf(List.class);
+    assertThat(rs.hasNext()).isTrue();
+    final Result result = rs.next();
+    final Object neighbors = result.getProperty("neighbors");
+    assertThat(neighbors).isNotNull();
+    assertThat(neighbors).isInstanceOf(List.class);
 
-        final List<?> neighborsList = (List<?>) neighbors;
-        assertThat(neighborsList).hasSizeLessThanOrEqualTo(5);
+    final List<?> neighborsList = (List<?>) neighbors;
+    assertThat(neighborsList).hasSizeLessThanOrEqualTo(5);
 
-        // Verify each neighbor has vertex and distance
-        for (Object neighbor : neighborsList) {
-            assertThat(neighbor).isInstanceOf(Map.class);
-            final Map<String, Object> neighborMap = (Map<String, Object>) neighbor;
-            assertThat(neighborMap).containsKey("vertex");
-            assertThat(neighborMap).containsKey("distance");
-            assertThat(neighborMap.get("distance")).isInstanceOf(Number.class);
-        }
-
-        rs.close();
-
-        // Test vectorNeighbors with a vector array
-        final ResultSet rs2 = database.query("sql", "SELECT vector FROM Word WHERE name = 'the' LIMIT 1");
-        assertThat(rs2.hasNext()).isTrue();
-        final float[] queryVector = rs2.next().getProperty("vector");
-        rs2.close();
-
-        final ResultSet rs3 = database.query("sql",
-            "SELECT vectorNeighbors('Word[vector]', ?, 3) as neighbors", queryVector);
-
-        assertThat(rs3.hasNext()).isTrue();
-        final Result result3 = rs3.next();
-        final Object neighbors3 = result3.getProperty("neighbors");
-        assertThat(neighbors3).isNotNull();
-        assertThat(neighbors3).isInstanceOf(List.class);
-
-        final List<?> neighborsList3 = (List<?>) neighbors3;
-        assertThat(neighborsList3).hasSizeLessThanOrEqualTo(3);
-
-        rs3.close();
+    // Verify each neighbor has vertex and distance
+    for (Object neighbor : neighborsList) {
+      assertThat(neighbor).isInstanceOf(Map.class);
+      final Map<String, Object> neighborMap = (Map<String, Object>) neighbor;
+      assertThat(neighborMap).containsKey("record");
+      assertThat(neighborMap).containsKey("distance");
+      assertThat(neighborMap.get("distance")).isInstanceOf(Number.class);
     }
 
-    @Override
-    protected String getDatabasePath() {
-        return "target/databases/test-fasttextsmall";
-    }
+    rs.close();
+
+    // Test vectorNeighbors with a vector array
+    final ResultSet rs2 = database.query("sql", "SELECT vector FROM Word WHERE name = 'the' LIMIT 1");
+    assertThat(rs2.hasNext()).isTrue();
+    final float[] queryVector = rs2.next().getProperty("vector");
+    rs2.close();
+
+    final ResultSet rs3 = database.query("sql",
+        "SELECT vectorNeighbors('Word[vector]', ?, 3) as neighbors", queryVector);
+
+    assertThat(rs3.hasNext()).isTrue();
+    final Result result3 = rs3.next();
+    final Object neighbors3 = result3.getProperty("neighbors");
+    assertThat(neighbors3).isNotNull();
+    assertThat(neighbors3).isInstanceOf(List.class);
+
+    final List<?> neighborsList3 = (List<?>) neighbors3;
+    assertThat(neighborsList3).hasSizeLessThanOrEqualTo(3);
+
+    rs3.close();
+  }
+
+  @Override
+  protected String getDatabasePath() {
+    return "target/databases/test-fasttextsmall";
+  }
 }
