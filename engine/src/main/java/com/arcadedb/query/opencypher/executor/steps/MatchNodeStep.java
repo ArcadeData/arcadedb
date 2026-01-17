@@ -179,11 +179,46 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   /**
    * Gets an iterator for vertices matching the pattern.
+   * OPTIMIZATION: Uses indexes for property equality constraints when available.
    */
   private Iterator<Identifiable> getVertexIterator() {
     if (pattern.hasLabels()) {
-      // Iterate vertices of specific type(s)
       final String label = pattern.getFirstLabel();
+
+      // OPTIMIZATION: Check if we can use an index for property lookup
+      if (pattern.hasProperties() && pattern.getProperties().size() == 1) {
+        final java.util.Map.Entry<String, Object> property = pattern.getProperties().entrySet().iterator().next();
+        final String propertyName = property.getKey();
+        Object propertyValue = property.getValue();
+
+        // Handle string literals: remove quotes
+        if (propertyValue instanceof String) {
+          final String strValue = (String) propertyValue;
+          if (strValue.startsWith("'") && strValue.endsWith("'")) {
+            propertyValue = strValue.substring(1, strValue.length() - 1);
+          } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
+            propertyValue = strValue.substring(1, strValue.length() - 1);
+          }
+        }
+
+        // Check if an index exists for this property
+        final com.arcadedb.schema.DocumentType type = context.getDatabase().getSchema().getType(label);
+        if (type != null) {
+          final java.util.Collection<com.arcadedb.index.TypeIndex> indexes = type.getAllIndexes(false);
+          for (final com.arcadedb.index.TypeIndex index : indexes) {
+            final java.util.List<String> indexProperties = index.getPropertyNames();
+            if (indexProperties.size() == 1 && indexProperties.get(0).equals(propertyName)) {
+              // Found matching index - use it!
+              @SuppressWarnings("unchecked")
+              final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
+                  context.getDatabase().lookupByKey(label, new String[]{propertyName}, new Object[]{propertyValue});
+              return iter;
+            }
+          }
+        }
+      }
+
+      // No index available - fall back to full type scan
       @SuppressWarnings("unchecked")
       final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
       return iter;
