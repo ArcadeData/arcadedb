@@ -2003,16 +2003,6 @@ OrBlock OrBlock():
   lastAnd = AndBlock() { jjtThis.getSubBlocks().add(lastAnd); }
   (
     <OR>
-    {
-      // Validate that we have a proper condition after OR
-      if (getToken(1).kind == AND || getToken(1).kind == OR ||
-          getToken(1).kind == EOF || getToken(1).kind == RPAREN ||
-          getToken(1).kind == RBRACE || getToken(1).kind == SEMICOLON) {
-        throw new ParseException("Syntax error: OR operator at line " + token.beginLine +
-          ", column " + token.beginColumn + " must be followed by a condition, not '" +
-          getToken(1).image + "'");
-      }
-    }
     lastAnd = AndBlock() { jjtThis.getSubBlocks().add(lastAnd); }
   )*
   { return jjtThis; }
@@ -2024,16 +2014,6 @@ AndBlock AndBlock():
   lastNot = NotBlock() { jjtThis.getSubBlocks().add(lastNot); }
   (
     <AND>
-    {
-      // Validate that we have a proper condition after AND
-      if (getToken(1).kind == AND || getToken(1).kind == OR ||
-          getToken(1).kind == EOF || getToken(1).kind == RPAREN ||
-          getToken(1).kind == RBRACE || getToken(1).kind == SEMICOLON) {
-        throw new ParseException("Syntax error: AND operator at line " + token.beginLine +
-          ", column " + token.beginColumn + " must be followed by a condition, not '" +
-          getToken(1).image + "'");
-      }
-    }
     lastNot = NotBlock() { jjtThis.getSubBlocks().add(lastNot); }
   )*
   { return jjtThis; }
@@ -2785,8 +2765,7 @@ MatchPathItem MultiMatchPathItem():
 
 MatchPathItem MultiMatchPathItemArrows():
 {
-  MatchPathItem prevItem = null;
-  MatchPathItem nextItem = null;
+  MatchPathItem item = null;
 }
 {
   <DOT>
@@ -2794,19 +2773,14 @@ MatchPathItem MultiMatchPathItemArrows():
   (
     (
       LOOKAHEAD( OutPathItemOpt() )
-      nextItem = OutPathItemOpt()  { jjtThis.items.add(nextItem); }
+      item = OutPathItemOpt()  { jjtThis.items.add(item); }
       |
       LOOKAHEAD( InPathItemOpt() )
-      nextItem = InPathItemOpt()  { jjtThis.items.add(nextItem); }
+      item = InPathItemOpt()  { jjtThis.items.add(item); }
       |
       LOOKAHEAD( BothPathItemOpt() )
-      nextItem = BothPathItemOpt()  { jjtThis.items.add(nextItem); }
-    ){
-      if(prevItem !=null && prevItem.filter == null){
-        throw new CommandParsingException("MATCH sub-pattern with no square brackets");
-      }
-      prevItem = nextItem;
-    }
+      item = BothPathItemOpt()  { jjtThis.items.add(item); }
+    )
   )+
   <RPAREN>
   [ jjtThis.filter = MatchFilter() ]

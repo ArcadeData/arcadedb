@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.*;
@@ -31,6 +32,18 @@ public class MultiMatchPathItem extends MatchPathItem {
 
   public MultiMatchPathItem(final int id) {
     super(id);
+  }
+
+  public void validate() throws CommandParsingException {
+    // Validate that all items except the last one have a filter (square brackets)
+    if (items != null && items.size() > 1) {
+      for (int i = 0; i < items.size() - 1; i++) {
+        final MatchPathItem item = items.get(i);
+        if (item.filter == null) {
+          throw new CommandParsingException("MATCH sub-pattern with no square brackets");
+        }
+      }
+    }
   }
 
   public boolean isBidirectional() {
