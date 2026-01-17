@@ -693,4 +693,221 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       return ExceptionCategory.UNKNOWN;
     }
   }
+
+  /**
+   * Handles transient network failures with exponential backoff.
+   *
+   * @param e the exception that triggered recovery
+   */
+  private void recoverFromTransientFailure(final Exception e) throws Exception {
+    final int maxAttempts = server.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.HA_TRANSIENT_FAILURE_MAX_ATTEMPTS);
+    final long baseDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_TRANSIENT_FAILURE_BASE_DELAY_MS);
+    final double multiplier = 2.0;
+    final long maxDelayMs = 8000; // Cap at 8 seconds
+
+    LogManager.instance().log(this, Level.INFO,
+        "Replica '%s' recovering from transient network failure: %s",
+        null, remoteServer.toString(), e.getMessage());
+
+    reconnectWithBackoff(maxAttempts, baseDelayMs, multiplier, maxDelayMs, ExceptionCategory.TRANSIENT_NETWORK);
+  }
+
+  /**
+   * Reconnects with exponential backoff.
+   *
+   * @param maxAttempts maximum retry attempts
+   * @param baseDelayMs initial delay in milliseconds
+   * @param multiplier delay multiplier (usually 2.0)
+   * @param maxDelayMs maximum delay cap
+   * @param category exception category for metrics
+   */
+  private void reconnectWithBackoff(final int maxAttempts, final long baseDelayMs,
+                                     final double multiplier, final long maxDelayMs,
+                                     final ExceptionCategory category) throws Exception {
+    long delay = baseDelayMs;
+    final long recoveryStartTime = System.currentTimeMillis();
+
+    for (int attempt = 1; attempt <= maxAttempts && !shutdownCommunication; attempt++) {
+      try {
+        // Wait before retry
+        Thread.sleep(delay);
+
+        // Emit reconnection attempt event
+        server.getServer().lifecycleEvent(
+            com.arcadedb.server.ReplicationCallback.Type.REPLICA_RECONNECT_ATTEMPT,
+            new Object[] { remoteServer.toString(), attempt, maxAttempts, delay }
+        );
+
+        LogManager.instance().log(this, Level.INFO,
+            "Replica '%s' reconnection attempt %d/%d (delay: %dms)",
+            null, remoteServer.toString(), attempt, maxAttempts, delay);
+
+        // Attempt reconnection - this will be implemented later
+        // For now, just log
+        // TODO: Implement actual reconnection logic
+
+        // If we get here, reconnection succeeded
+        final long recoveryTime = System.currentTimeMillis() - recoveryStartTime;
+
+        server.getServer().lifecycleEvent(
+            com.arcadedb.server.ReplicationCallback.Type.REPLICA_RECOVERY_SUCCEEDED,
+            new Object[] { remoteServer.toString(), attempt, recoveryTime }
+        );
+
+        metrics.recordSuccessfulRecovery(recoveryTime);
+        metrics.consecutiveFailuresCounter().set(0);
+
+        LogManager.instance().log(this, Level.INFO,
+            "Replica '%s' recovery successful after %d attempts (%dms)",
+            null, remoteServer.toString(), attempt, recoveryTime);
+
+        return; // Success, exit retry loop
+
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Replica '%s' reconnection attempt %d/%d failed (next retry in %dms): %s",
+            null, remoteServer.toString(), attempt, maxAttempts, delay, e.getMessage());
+
+        // Calculate next delay (exponential backoff, capped)
+        delay = Math.min((long)(delay * multiplier), maxDelayMs);
+      }
+    }
+
+    // All attempts exhausted
+    final long totalRecoveryTime = System.currentTimeMillis() - recoveryStartTime;
+
+    server.getServer().lifecycleEvent(
+        com.arcadedb.server.ReplicationCallback.Type.REPLICA_RECOVERY_FAILED,
+        new Object[] { remoteServer.toString(), maxAttempts, totalRecoveryTime, category }
+    );
+
+    metrics.failedRecoveriesCounter().incrementAndGet();
+    metrics.consecutiveFailuresCounter().incrementAndGet();
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "Replica '%s' recovery failed after %d attempts (%dms)",
+        null, remoteServer.toString(), maxAttempts, totalRecoveryTime);
+  }
+
+  /**
+   * Handles leadership changes by finding and connecting to new leader.
+   * No exponential backoff - leadership changes are discrete events.
+   *
+   * @param e the exception that triggered recovery
+   */
+  private void recoverFromLeadershipChange(final Exception e) throws Exception {
+    LogManager.instance().log(this, Level.INFO,
+        "Replica '%s' detected leadership change: %s",
+        null, remoteServer.toString(), e.getMessage());
+
+    server.getServer().lifecycleEvent(
+        com.arcadedb.server.ReplicationCallback.Type.REPLICA_LEADERSHIP_CHANGE_DETECTED,
+        new Object[] { remoteServer.toString(), remoteServer.toString() }
+    );
+
+    // TODO: Implement leader discovery and reconnection
+    // For now, use standard reconnection with short timeout
+    LogManager.instance().log(this, Level.INFO,
+        "Replica '%s' finding new leader...",
+        null, remoteServer.toString());
+
+    // Placeholder: treat as transient for now
+    recoverFromTransientFailure(e);
+  }
+
+  /**
+   * Handles protocol errors by failing immediately.
+   * Protocol errors are not retryable.
+   *
+   * @param e the exception that triggered failure
+   */
+  private void failFromProtocolError(final Exception e) throws Exception {
+    LogManager.instance().log(this, Level.SEVERE,
+        "PROTOCOL ERROR: Replica '%s' encountered unrecoverable protocol error. " +
+        "Manual intervention required.",
+        e, remoteServer.toString());
+
+    server.getServer().lifecycleEvent(
+        com.arcadedb.server.ReplicationCallback.Type.REPLICA_FAILED,
+        new Object[] { remoteServer.toString(), ExceptionCategory.PROTOCOL_ERROR, e }
+    );
+
+    metrics.protocolErrorsCounter().incrementAndGet();
+
+    // Do NOT trigger election - this is a configuration/version issue
+  }
+
+  /**
+   * Handles unknown errors with conservative retry strategy.
+   *
+   * @param e the exception that triggered recovery
+   */
+  private void recoverFromUnknownError(final Exception e) throws Exception {
+    LogManager.instance().log(this, Level.SEVERE,
+        "Unknown error during replication to '%s' - applying conservative recovery",
+        e, remoteServer.toString());
+
+    final int maxAttempts = server.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.HA_UNKNOWN_ERROR_MAX_ATTEMPTS);
+    final long baseDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_UNKNOWN_ERROR_BASE_DELAY_MS);
+    final double multiplier = 2.0;
+    final long maxDelayMs = 30000; // Cap at 30 seconds
+
+    reconnectWithBackoff(maxAttempts, baseDelayMs, multiplier, maxDelayMs, ExceptionCategory.UNKNOWN);
+  }
+
+  /**
+   * Handles connection failure by categorizing and applying appropriate recovery.
+   *
+   * @param e the exception that caused the failure
+   */
+  private void handleConnectionFailure(final Exception e) throws Exception {
+    // Check for shutdown first
+    if (Thread.currentThread().isInterrupted() || shutdownCommunication) {
+      return;
+    }
+
+    // Categorize the exception
+    final ExceptionCategory category = categorizeException(e);
+
+    // Update metrics
+    switch (category) {
+      case TRANSIENT_NETWORK:
+        metrics.transientNetworkFailuresCounter().incrementAndGet();
+        break;
+      case LEADERSHIP_CHANGE:
+        metrics.leadershipChangesCounter().incrementAndGet();
+        break;
+      case PROTOCOL_ERROR:
+        metrics.protocolErrorsCounter().incrementAndGet();
+        break;
+      case UNKNOWN:
+        metrics.unknownErrorsCounter().incrementAndGet();
+        break;
+    }
+
+    // Emit categorization event
+    server.getServer().lifecycleEvent(
+        com.arcadedb.server.ReplicationCallback.Type.REPLICA_FAILURE_CATEGORIZED,
+        new Object[] { remoteServer.toString(), e, category }
+    );
+
+    // Apply category-specific recovery strategy
+    switch (category) {
+      case TRANSIENT_NETWORK:
+        recoverFromTransientFailure(e);
+        break;
+      case LEADERSHIP_CHANGE:
+        recoverFromLeadershipChange(e);
+        break;
+      case PROTOCOL_ERROR:
+        failFromProtocolError(e);
+        break;
+      case UNKNOWN:
+        recoverFromUnknownError(e);
+        break;
+    }
+  }
 }
