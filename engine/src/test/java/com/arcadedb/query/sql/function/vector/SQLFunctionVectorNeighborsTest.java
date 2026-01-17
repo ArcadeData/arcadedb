@@ -60,7 +60,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
 
     // Verify results contain the expected structure
     for (Map<String, Object> result : results) {
-      assertThat(result.containsKey("vertex")).as("Result should contain 'vertex' key").isTrue();
+      assertThat(result.containsKey("record")).as("Result should contain 'record' key").isTrue();
       assertThat(result.containsKey("distance")).as("Result should contain 'distance' key").isTrue();
       assertThat(result.get("distance")).as("Distance should not be null").isNotNull();
     }
@@ -85,7 +85,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
 
     // docB should be close to docA (both have similar vectors)
     boolean foundDocB = results.stream()
-        .anyMatch(r -> r.get("vertex").toString().contains("docB"));
+        .anyMatch(r -> r.get("record").toString().contains("docB"));
     assertThat(foundDocB).as("DocB should be found as a neighbor of DocA").isTrue();
   }
 
