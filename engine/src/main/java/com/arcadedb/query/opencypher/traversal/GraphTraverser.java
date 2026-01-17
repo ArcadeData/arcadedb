@@ -151,31 +151,40 @@ public abstract class GraphTraverser {
 
   /**
    * Creates a visited set for cycle detection.
+   * Uses RIDs instead of Vertex objects for efficient O(1) hash lookups.
    *
-   * @return new hash set for tracking visited vertices
+   * @return new hash set for tracking visited vertex RIDs
    */
-  protected Set<Vertex> createVisitedSet() {
+  protected Set<com.arcadedb.database.RID> createVisitedSet() {
     return new HashSet<>();
   }
 
   /**
    * Checks if a vertex has been visited.
+   * O(1) hash lookup using RID.
+   * Creates a database-independent RID to ensure proper equality/hashCode.
    *
    * @param vertex  vertex to check
-   * @param visited set of visited vertices
+   * @param visited set of visited vertex RIDs
    * @return true if visited
    */
-  protected boolean isVisited(final Vertex vertex, final Set<Vertex> visited) {
-    return visited.stream().anyMatch(v -> v.getIdentity().equals(vertex.getIdentity()));
+  protected boolean isVisited(final Vertex vertex, final Set<com.arcadedb.database.RID> visited) {
+    final com.arcadedb.database.RID rid = vertex.getIdentity();
+    // Create database-independent RID for consistent equals/hashCode
+    return visited.contains(new com.arcadedb.database.RID(rid.getBucketId(), rid.getPosition()));
   }
 
   /**
    * Marks a vertex as visited.
+   * Stores only the RID for memory efficiency and O(1) lookups.
+   * Creates a database-independent RID to ensure proper equality/hashCode.
    *
    * @param vertex  vertex to mark
-   * @param visited set of visited vertices
+   * @param visited set of visited vertex RIDs
    */
-  protected void markVisited(final Vertex vertex, final Set<Vertex> visited) {
-    visited.add(vertex);
+  protected void markVisited(final Vertex vertex, final Set<com.arcadedb.database.RID> visited) {
+    final com.arcadedb.database.RID rid = vertex.getIdentity();
+    // Create database-independent RID for consistent equals/hashCode
+    visited.add(new com.arcadedb.database.RID(rid.getBucketId(), rid.getPosition()));
   }
 }
