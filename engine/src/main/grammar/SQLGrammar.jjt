@@ -585,62 +585,92 @@ Identifier Identifier():
 }
 {
 (
+  // Regular identifier
   token = <IDENTIFIER>
-  | token = <ALIASES>
-  | token = <ALIGN>
-  | token = <IN>
+
+  // Contextual keywords - keywords that can be used as identifiers
+  // These are keywords in specific contexts but are allowed as table/column names
+
+  // Schema and DDL keywords
+  | token = <TYPE>
+  | token = <TYPES>
+  | token = <PROPERTY>
+  | token = <INDEX>
+  | token = <BUCKETS>
+  | token = <BUCKETSELECTIONSTRATEGY>
+  | token = <DATABASE>
+  | token = <SUPERTYPE>
+  | token = <EXTENDS>
+  | token = <HIDDEN>
+  | token = <CUSTOM>
+  | token = <ENGINE>
+  | token = <METADATA>
+
+  // Statement keywords that can be identifiers
+  | token = <ALTER>
+  | token = <DROP>
+  | token = <TRUNCATE>
+  | token = <REBUILD>
+  | token = <EXPORT>
+  | token = <IMPORT>
+  | token = <CHECK>
+  | token = <EXPLAIN>
+  | token = <PROFILE>
+  | token = <MOVE>
+  | token = <BEGIN>
+  | token = <COMMIT>
+  | token = <ROLLBACK>
+  | token = <LOCK>
+  | token = <SLEEP>
+  | token = <CONSOLE>
+
+  // DML keywords
   | token = <SET>
   | token = <PUT>
   | token = <ADD>
   | token = <REMOVE>
   | token = <MERGE>
   | token = <CONTENT>
-  | token = <KEY>
-  | token = <ITEM>
-  | token = <OF>
-  | token = <OFFSET>
   | token = <VALUE>
   | token = <VALUES>
   | token = <RECORD>
+
+  // Query modifiers and options
   | token = <TO>
-  | token = <TYPE>
-  | token = <TYPES>
-  | token = <MINDEPTH>
-  | token = <NEAR>
+  | token = <OF>
+  | token = <OFFSET>
+  | token = <IN>
   | token = <WITH>
   | token = <WITHIN>
-  | token = <EXCEPTION>
-  | token = <PROFILE>
-  | token = <CUSTOM>
-  | token = <CHECK>
+  | token = <NEAR>
+  | token = <MINDEPTH>
   | token = <ON>
   | token = <OFF>
-  | token = <TRUNCATE>
-  | token = <FIND>
-  | token = <EXTENDS>
-  | token = <BUCKETS>
-  | token = <BUCKETSELECTIONSTRATEGY>
-  | token = <ALTER>
+  | token = <OPTIONAL>
+  | token = <COUNT>
+  | token = <EXISTS>
+
+  // Control flow
+  | token = <IF>
+  | token = <ELSE>
+  | token = <CONTINUE>
+  | token = <FAIL>
+
+  // Attributes and properties
   | token = <NAME>
-  | token = <SUPERTYPE>
+  | token = <KEY>
+  | token = <ITEM>
+  | token = <ALIASES>
+  | token = <ALIGN>
+  | token = <EXCEPTION>
+  | token = <FIND>
   | token = <ADDBUCKET>
   | token = <REMOVEBUCKET>
-  | token = <DROP>
-  | token = <PROPERTY>
-  | token = <HIDDEN>
   | token = <FORCE>
-  | token = <INDEX>
-  | token = <ENGINE>
-  | token = <METADATA>
-  | token = <REBUILD>
   | token = <FORMAT>
-  | token = <EXPORT>
-  | token = <IMPORT>
-  | token = <DATABASE>
   | token = <OPTIMIZE>
   | token = <LINK>
   | token = <INVERSE>
-  | token = <EXPLAIN>
   | token = <GRANT>
   | token = <REVOKE>
   | token = <READ>
@@ -650,28 +680,16 @@ Identifier Identifier():
   | token = <FUNCTION>
   | token = <LANGUAGE>
   | token = <PARAMETERS>
-  | token = <BEGIN>
-  | token = <COMMIT>
-  | token = <ROLLBACK>
-  | token = <IF>
-  | token = <ELSE>
-  | token = <CONTINUE>
-  | token = <FAIL>
   | token = <ISOLATION>
-  | token = <LOCK>
-  | token = <SLEEP>
-  | token = <CONSOLE>
   | token = <START>
-  | token = <OPTIONAL>
-  | token = <COUNT>
-  | token = <EXISTS>
-  | token = <MOVE>
   | token = <DEPTH_ALIAS>
   | token = <PATH_ALIAS>
   | token = <IDENTIFIED>
   | token = <RID>
   | token = <SYSTEM>
   | token = <UNIDIRECTIONAL>
+
+  // Quoted identifier
   | quotedToken = <QUOTED_IDENTIFIER>
 ) {
   if(token!=null){
