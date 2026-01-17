@@ -89,7 +89,7 @@ public class Issue3075PropertyPathValidationTest extends TestHelper {
       // Verify index is being used for backtick nested property
       String explain = database.query("sql", "EXPLAIN SELECT FROM Product WHERE `tags.tag-id` CONTAINSANY [100]")
           .next().getProperty("executionPlan").toString();
-      System.out.println("Explain plan: " + explain);
+      // System.out.println("Explain plan: " + explain);
       // This should use the index but currently fails due to regex issue
       assertThat(explain).contains("FETCH FROM INDEX Product[tags.tag-idbyitem]");
     });
@@ -102,7 +102,7 @@ public class Issue3075PropertyPathValidationTest extends TestHelper {
       // Verify index is being used
       String explain = database.query("sql", "EXPLAIN SELECT FROM Product WHERE `tags.tag-id` CONTAINS 100")
           .next().getProperty("executionPlan").toString();
-      System.out.println("Explain plan for CONTAINS: " + explain);
+      // System.out.println("Explain plan for CONTAINS: " + explain);
       assertThat(explain).contains("FETCH FROM INDEX Product[tags.tag-idbyitem]");
     });
   }
@@ -131,7 +131,7 @@ public class Issue3075PropertyPathValidationTest extends TestHelper {
       // Verify index usage
       String explain = database.query("sql", "EXPLAIN SELECT FROM Article WHERE `metadata.content-type` CONTAINS 'text/html'")
           .next().getProperty("executionPlan").toString();
-      System.out.println("Explain plan for nested backtick: " + explain);
+      // System.out.println("Explain plan for nested backtick: " + explain);
       assertThat(explain).contains("FETCH FROM INDEX Article[metadata.content-typebyitem]");
     });
   }
@@ -164,7 +164,7 @@ public class Issue3075PropertyPathValidationTest extends TestHelper {
       // THIS SHOULD USE THE INDEX but may not if the regex doesn't handle the partial backtick syntax
       String explain = database.query("sql", "EXPLAIN SELECT FROM Page WHERE `item-list`.value CONTAINSANY ['test1']")
           .next().getProperty("executionPlan").toString();
-      System.out.println("Explain plan for partial backtick syntax: " + explain);
+      // System.out.println("Explain plan for partial backtick syntax: " + explain);
       assertThat(explain).contains("FETCH FROM INDEX Page[item-list.valuebyitem]");
     });
   }

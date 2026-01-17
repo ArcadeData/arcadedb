@@ -66,10 +66,10 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
 
   @Test
   void testConcurrentMultiPageVectorUpdates() throws Exception {
-    System.out.println("\n=== Testing Concurrent Multi-Page Vector Updates (Issue #3135) ===");
+    // System.out.println("\n=== Testing Concurrent Multi-Page Vector Updates (Issue #3135) ===");
 
     // Phase 1: Create schema with inheritance and LSM_VECTOR index
-    System.out.println("\n1. Creating schema with inheritance and LSM_VECTOR index");
+    // System.out.println("\n1. Creating schema with inheritance and LSM_VECTOR index");
     database.transaction(() -> {
       final Schema schema = database.getSchema();
 
@@ -95,7 +95,7 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
     });
 
     // Phase 2: Create records with zero embeddings
-    System.out.println("\n2. Creating " + NUM_RECORDS + " records with zero embeddings");
+    // System.out.println("\n2. Creating " + NUM_RECORDS + " records with zero embeddings");
     for (int i = 0; i < NUM_RECORDS; i++) {
       final String id = "record_" + i;
       final float[] zeroEmbedding = new float[EMBEDDING_DIM];
@@ -109,12 +109,12 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
       try (final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM RecordV")) {
         final long count = rs.hasNext() ? rs.next().<Long>getProperty("cnt") : 0L;
         assertThat(count).isEqualTo(NUM_RECORDS);
-        System.out.println("   Created " + count + " records successfully");
+        // System.out.println("   Created " + count + " records successfully");
       }
     });
 
     // Phase 3: Concurrently update embeddings
-    System.out.println("\n3. Updating embeddings with " + CONCURRENT_THREADS + " concurrent threads");
+    // System.out.println("\n3. Updating embeddings with " + CONCURRENT_THREADS + " concurrent threads");
     final ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_THREADS);
     final CountDownLatch latch = new CountDownLatch(NUM_RECORDS);
 
@@ -136,10 +136,10 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
     executor.shutdown();
     executor.awaitTermination(1, TimeUnit.MINUTES);
 
-    System.out.println("   Update errors during concurrent phase: " + updateErrors.get());
+    // System.out.println("   Update errors during concurrent phase: " + updateErrors.get());
 
     // Phase 4: Verification - try to read all embeddings to detect corruption
-    System.out.println("\n4. Verifying all records for corruption");
+    // System.out.println("\n4. Verifying all records for corruption");
     for (int i = 0; i < NUM_RECORDS; i++) {
       final String id = "record_" + i;
       try {
@@ -166,17 +166,17 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
     }
 
     // Results
-    System.out.println("\n=== RESULTS ===");
-    System.out.println("Total records: " + NUM_RECORDS);
-    System.out.println("Update errors: " + updateErrors.get());
-    System.out.println("Verification errors (corruption): " + verifyErrors.get());
+    // System.out.println("\n=== RESULTS ===");
+    // System.out.println("Total records: " + NUM_RECORDS);
+    // System.out.println("Update errors: " + updateErrors.get());
+    // System.out.println("Verification errors (corruption): " + verifyErrors.get());
 
     // The test should pass with no corruption errors
     assertThat(verifyErrors.get())
         .as("Corruption errors detected during verification")
         .isEqualTo(0);
 
-    System.out.println("\n=== Test completed ===");
+    // System.out.println("\n=== Test completed ===");
   }
 
   private void updateEmbedding(final String id) {
