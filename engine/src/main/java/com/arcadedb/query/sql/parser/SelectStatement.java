@@ -136,6 +136,11 @@ public class SelectStatement extends Statement {
   }
 
   public void validate() throws CommandSQLParsingException {
+    // SELECT without FROM requires a projection
+    if (target == null && projection == null) {
+      throw new CommandSQLParsingException("SELECT without FROM clause requires a projection");
+    }
+
     if (projection != null) {
       projection.validate();
       if (projection.isExpand() && groupBy != null) {

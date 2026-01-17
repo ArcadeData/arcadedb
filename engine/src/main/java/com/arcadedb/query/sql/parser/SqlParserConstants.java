@@ -175,123 +175,123 @@ public interface SqlParserConstants {
   /** RegularExpression Id. */
   int BACKUP = 90;
   /** RegularExpression Id. */
-  int BUCKET = 91;
+  int BUCKETS = 91;
   /** RegularExpression Id. */
-  int BUCKETS = 92;
+  int BUCKETSELECTIONSTRATEGY = 92;
   /** RegularExpression Id. */
-  int BUCKETSELECTIONSTRATEGY = 93;
+  int ALTER = 93;
   /** RegularExpression Id. */
-  int ALTER = 94;
+  int NAME = 94;
   /** RegularExpression Id. */
-  int NAME = 95;
+  int ADDBUCKET = 95;
   /** RegularExpression Id. */
-  int ADDBUCKET = 96;
+  int REMOVEBUCKET = 96;
   /** RegularExpression Id. */
-  int REMOVEBUCKET = 97;
+  int DROP = 97;
   /** RegularExpression Id. */
-  int DROP = 98;
+  int PROPERTY = 98;
   /** RegularExpression Id. */
-  int PROPERTY = 99;
+  int HIDDEN = 99;
   /** RegularExpression Id. */
-  int HIDDEN = 100;
+  int FORCE = 100;
   /** RegularExpression Id. */
-  int FORCE = 101;
+  int SCHEMA = 101;
   /** RegularExpression Id. */
-  int SCHEMA = 102;
+  int NULL_STRATEGY = 102;
   /** RegularExpression Id. */
-  int INDEX = 103;
+  int ENGINE = 103;
   /** RegularExpression Id. */
-  int NULL_STRATEGY = 104;
+  int METADATA = 104;
   /** RegularExpression Id. */
-  int ENGINE = 105;
+  int REBUILD = 105;
   /** RegularExpression Id. */
-  int METADATA = 106;
+  int FORMAT = 106;
   /** RegularExpression Id. */
-  int REBUILD = 107;
+  int OVERWRITE = 107;
   /** RegularExpression Id. */
-  int FORMAT = 108;
+  int EXPORT = 108;
   /** RegularExpression Id. */
-  int OVERWRITE = 109;
+  int IMPORT = 109;
   /** RegularExpression Id. */
-  int EXPORT = 110;
+  int DATABASE = 110;
   /** RegularExpression Id. */
-  int IMPORT = 111;
+  int OPTIMIZE = 111;
   /** RegularExpression Id. */
-  int DATABASE = 112;
+  int LINK = 112;
   /** RegularExpression Id. */
-  int OPTIMIZE = 113;
+  int INVERSE = 113;
   /** RegularExpression Id. */
-  int LINK = 114;
+  int EXPLAIN = 114;
   /** RegularExpression Id. */
-  int INVERSE = 115;
+  int GRANT = 115;
   /** RegularExpression Id. */
-  int EXPLAIN = 116;
+  int REVOKE = 116;
   /** RegularExpression Id. */
-  int GRANT = 117;
+  int READ = 117;
   /** RegularExpression Id. */
-  int REVOKE = 118;
+  int EXECUTE = 118;
   /** RegularExpression Id. */
-  int READ = 119;
+  int ALL = 119;
   /** RegularExpression Id. */
-  int EXECUTE = 120;
+  int NONE = 120;
   /** RegularExpression Id. */
-  int ALL = 121;
+  int FUNCTION = 121;
   /** RegularExpression Id. */
-  int NONE = 122;
+  int PARAMETERS = 122;
   /** RegularExpression Id. */
-  int FUNCTION = 123;
+  int LANGUAGE = 123;
   /** RegularExpression Id. */
-  int PARAMETERS = 124;
+  int BEGIN = 124;
   /** RegularExpression Id. */
-  int LANGUAGE = 125;
+  int COMMIT = 125;
   /** RegularExpression Id. */
-  int BEGIN = 126;
+  int ROLLBACK = 126;
   /** RegularExpression Id. */
-  int COMMIT = 127;
+  int IF = 127;
   /** RegularExpression Id. */
-  int ROLLBACK = 128;
+  int ELSE = 128;
   /** RegularExpression Id. */
-  int IF = 129;
+  int CONTINUE = 129;
   /** RegularExpression Id. */
-  int ELSE = 130;
+  int FAIL = 130;
   /** RegularExpression Id. */
-  int CONTINUE = 131;
+  int FIX = 131;
   /** RegularExpression Id. */
-  int FAIL = 132;
+  int ISOLATION = 132;
   /** RegularExpression Id. */
-  int FIX = 133;
+  int SLEEP = 133;
   /** RegularExpression Id. */
-  int ISOLATION = 134;
+  int CONSOLE = 134;
   /** RegularExpression Id. */
-  int SLEEP = 135;
+  int START = 135;
   /** RegularExpression Id. */
-  int CONSOLE = 136;
+  int OPTIONAL = 136;
   /** RegularExpression Id. */
-  int START = 137;
+  int COUNT = 137;
   /** RegularExpression Id. */
-  int OPTIONAL = 138;
+  int DISTINCT = 138;
   /** RegularExpression Id. */
-  int COUNT = 139;
+  int EXISTS = 139;
   /** RegularExpression Id. */
-  int DISTINCT = 140;
+  int FOREACH = 140;
   /** RegularExpression Id. */
-  int EXISTS = 141;
+  int MOVE = 141;
   /** RegularExpression Id. */
-  int FOREACH = 142;
+  int DEPTH_ALIAS = 142;
   /** RegularExpression Id. */
-  int MOVE = 143;
+  int PATH_ALIAS = 143;
   /** RegularExpression Id. */
-  int DEPTH_ALIAS = 144;
+  int IDENTIFIED = 144;
   /** RegularExpression Id. */
-  int PATH_ALIAS = 145;
+  int RID = 145;
   /** RegularExpression Id. */
-  int IDENTIFIED = 146;
+  int SYSTEM = 146;
   /** RegularExpression Id. */
-  int RID = 147;
+  int UNIDIRECTIONAL = 147;
   /** RegularExpression Id. */
-  int SYSTEM = 148;
+  int BUCKET = 148;
   /** RegularExpression Id. */
-  int UNIDIRECTIONAL = 149;
+  int INDEX = 149;
   /** RegularExpression Id. */
   int THIS = 150;
   /** RegularExpression Id. */
@@ -534,144 +534,144 @@ public interface SqlParserConstants {
     "\"*/\"",
     "<token of kind 10>",
     "<SINGLE_LINE_COMMENT>",
-    "<ALIASES>",
-    "<ALIGN>",
-    "<BATCH>",
-    "<SELECT>",
-    "<TRAVERSE>",
-    "<MATCH>",
-    "<INSERT>",
-    "<CREATE>",
-    "<CUSTOM>",
-    "<DELETE>",
-    "<DOCUMENT>",
-    "<VERTEX>",
-    "<EDGE>",
-    "<UPDATE>",
-    "<UPSERT>",
-    "<FROM>",
-    "<TO>",
-    "<WHERE>",
-    "<WHILE>",
-    "<INTO>",
-    "<VALUE>",
-    "<VALUES>",
-    "<SET>",
-    "<ADD>",
-    "<PUT>",
-    "<MERGE>",
-    "<CONTENT>",
-    "<REMOVE>",
-    "<INCREMENT>",
-    "<AND>",
-    "<OR>",
-    "<NULL>",
-    "<DEFINE>",
-    "<DEFINED>",
+    "\"aliases\"",
+    "\"align\"",
+    "\"batch\"",
+    "\"select\"",
+    "\"traverse\"",
+    "\"match\"",
+    "\"insert\"",
+    "\"create\"",
+    "\"custom\"",
+    "\"delete\"",
+    "\"document\"",
+    "\"vertex\"",
+    "\"edge\"",
+    "\"update\"",
+    "\"upsert\"",
+    "\"from\"",
+    "\"to\"",
+    "\"where\"",
+    "\"while\"",
+    "\"into\"",
+    "\"value\"",
+    "\"values\"",
+    "\"set\"",
+    "\"add\"",
+    "\"put\"",
+    "\"merge\"",
+    "\"content\"",
+    "\"remove\"",
+    "\"increment\"",
+    "\"and\"",
+    "\"or\"",
+    "\"null\"",
+    "\"define\"",
+    "\"defined\"",
     "<ORDER_BY>",
     "<GROUP_BY>",
-    "<BY>",
-    "<BREAK>",
-    "<LIMIT>",
-    "<SKIP2>",
-    "<ERROR2>",
-    "<OF>",
-    "<OFFSET>",
-    "<TIMEOUT>",
-    "<ASC>",
-    "<AS>",
-    "<DESC>",
-    "<RETURN>",
-    "<BEFORE>",
-    "<AFTER>",
-    "<RECORD>",
-    "<WAIT>",
-    "<RETRY>",
-    "<LET>",
-    "<LOCK>",
-    "<CHECK>",
-    "<UNSAFE>",
-    "<STRATEGY>",
-    "<DEPTH_FIRST>",
-    "<BREADTH_FIRST>",
-    "<NEAR>",
-    "<WITH>",
-    "<WITHIN>",
-    "<UNWIND>",
-    "<MAXDEPTH>",
-    "<MINDEPTH>",
-    "<TYPE>",
-    "<SUPERTYPE>",
-    "<TYPES>",
-    "<EXCEPTION>",
-    "<PROFILE>",
-    "<ON>",
-    "<OFF>",
-    "<COMPRESS>",
-    "<TRUNCATE>",
-    "<POLYMORPHIC>",
-    "<FIND>",
-    "<EXTENDS>",
-    "<BACKUP>",
-    "<BUCKET>",
-    "<BUCKETS>",
-    "<BUCKETSELECTIONSTRATEGY>",
-    "<ALTER>",
-    "<NAME>",
-    "<ADDBUCKET>",
-    "<REMOVEBUCKET>",
-    "<DROP>",
-    "<PROPERTY>",
-    "<HIDDEN>",
-    "<FORCE>",
-    "<SCHEMA>",
-    "<INDEX>",
-    "<NULL_STRATEGY>",
-    "<ENGINE>",
-    "<METADATA>",
-    "<REBUILD>",
-    "<FORMAT>",
-    "<OVERWRITE>",
-    "<EXPORT>",
-    "<IMPORT>",
-    "<DATABASE>",
-    "<OPTIMIZE>",
-    "<LINK>",
-    "<INVERSE>",
-    "<EXPLAIN>",
-    "<GRANT>",
-    "<REVOKE>",
-    "<READ>",
-    "<EXECUTE>",
-    "<ALL>",
-    "<NONE>",
-    "<FUNCTION>",
-    "<PARAMETERS>",
-    "<LANGUAGE>",
-    "<BEGIN>",
-    "<COMMIT>",
-    "<ROLLBACK>",
-    "<IF>",
-    "<ELSE>",
-    "<CONTINUE>",
-    "<FAIL>",
-    "<FIX>",
-    "<ISOLATION>",
-    "<SLEEP>",
-    "<CONSOLE>",
-    "<START>",
-    "<OPTIONAL>",
-    "<COUNT>",
-    "<DISTINCT>",
-    "<EXISTS>",
-    "<FOREACH>",
-    "<MOVE>",
-    "<DEPTH_ALIAS>",
-    "<PATH_ALIAS>",
-    "<IDENTIFIED>",
-    "<RID>",
-    "<SYSTEM>",
-    "<UNIDIRECTIONAL>",
+    "\"by\"",
+    "\"break\"",
+    "\"limit\"",
+    "\"skip\"",
+    "\"error\"",
+    "\"of\"",
+    "\"offset\"",
+    "\"timeout\"",
+    "\"asc\"",
+    "\"as\"",
+    "\"desc\"",
+    "\"return\"",
+    "\"before\"",
+    "\"after\"",
+    "\"record\"",
+    "\"wait\"",
+    "\"retry\"",
+    "\"let\"",
+    "\"lock\"",
+    "\"check\"",
+    "\"unsafe\"",
+    "\"strategy\"",
+    "\"depth_first\"",
+    "\"breadth_first\"",
+    "\"near\"",
+    "\"with\"",
+    "\"within\"",
+    "\"unwind\"",
+    "\"maxdepth\"",
+    "\"mindepth\"",
+    "\"type\"",
+    "\"supertype\"",
+    "\"types\"",
+    "\"exception\"",
+    "\"profile\"",
+    "\"on\"",
+    "\"off\"",
+    "\"compress\"",
+    "\"truncate\"",
+    "\"polymorphic\"",
+    "\"find\"",
+    "\"extends\"",
+    "\"backup\"",
+    "\"buckets\"",
+    "\"bucketselectionstrategy\"",
+    "\"alter\"",
+    "\"name\"",
+    "\"addbucket\"",
+    "\"removebucket\"",
+    "\"drop\"",
+    "\"property\"",
+    "\"hidden\"",
+    "\"force\"",
+    "\"schema\"",
+    "\"null_strategy\"",
+    "\"engine\"",
+    "\"metadata\"",
+    "\"rebuild\"",
+    "\"format\"",
+    "\"overwrite\"",
+    "\"export\"",
+    "\"import\"",
+    "\"database\"",
+    "\"optimize\"",
+    "\"link\"",
+    "\"inverse\"",
+    "\"explain\"",
+    "\"grant\"",
+    "\"revoke\"",
+    "\"read\"",
+    "\"execute\"",
+    "\"all\"",
+    "\"none\"",
+    "\"function\"",
+    "\"parameters\"",
+    "\"language\"",
+    "\"begin\"",
+    "\"commit\"",
+    "\"rollback\"",
+    "\"if\"",
+    "\"else\"",
+    "\"continue\"",
+    "\"fail\"",
+    "\"fix\"",
+    "\"isolation\"",
+    "\"sleep\"",
+    "\"console\"",
+    "\"start\"",
+    "\"optional\"",
+    "\"count\"",
+    "\"distinct\"",
+    "\"exists\"",
+    "\"foreach\"",
+    "\"move\"",
+    "\"depthalias\"",
+    "\"pathalias\"",
+    "\"identified\"",
+    "\"rid\"",
+    "\"system\"",
+    "\"unidirectional\"",
+    "\"bucket\"",
+    "\"index\"",
     "<THIS>",
     "<RECORD_ATTRIBUTE>",
     "<RID_ATTR>",

@@ -881,55 +881,32 @@ Statement QueryStatement():
     LOOKAHEAD( SelectStatement() )
     result = SelectStatement()
     |
-    result = SelectWithoutTargetStatement()
-    |
     result = TraverseStatement()
     |
     result = MatchStatement()
   ){ return result; }
 }
 
-SelectWithoutTargetStatement SelectWithoutTargetStatement():
+SelectStatement SelectStatement():
 {}
 {
   (
     <SELECT>
-    jjtThis.projection = Projection()
+    [ jjtThis.projection = Projection() ]
+    [
+      <FROM>
+      jjtThis.target = FromClause()
+    ]
     [ jjtThis.letClause = LetClause() ]
+    [ <WHERE> jjtThis.whereClause = WhereClause() ]
+    [ jjtThis.groupBy = GroupBy() ]
+    [ jjtThis.orderBy = OrderBy() ]
     [ jjtThis.unwind = Unwind() ]
     [
       jjtThis.skip = Skip() [ jjtThis.limit = Limit() ]
       |
       jjtThis.limit = Limit() [ jjtThis.skip = Skip() ]
     ]
-    [ jjtThis.timeout = Timeout() ]
-  )
-  {
-    jjtThis.validate();
-    return jjtThis;
-  }
-}
-
-SelectStatement SelectStatement():
-{}
-{
-  (
-      <SELECT>
-    [ jjtThis.projection = Projection() ]
-    <FROM>
-    jjtThis.target = FromClause()
-    [ jjtThis.letClause = LetClause() ]
-    [ <WHERE> jjtThis.whereClause = WhereClause() ]
-    [ jjtThis.groupBy = GroupBy() ]
-    [ jjtThis.orderBy = OrderBy() ]
-    [ jjtThis.unwind = Unwind() ]
-    (
-      [
-        jjtThis.skip = Skip() [ jjtThis.limit = Limit() ]
-        |
-        jjtThis.limit = Limit() [ jjtThis.skip = Skip() ]
-      ]
-    )
     [ jjtThis.timeout = Timeout() ]
   )
   {
@@ -1181,22 +1158,12 @@ InsertStatement InsertStatement():
   [
     [ <FROM> { jjtThis.selectWithFrom = true; } ]
     (
-       (
-         LOOKAHEAD( SelectStatement() )
-         jjtThis.selectStatement = SelectStatement()
-         |
-         jjtThis.selectStatement = SelectWithoutTargetStatement()
-       )
+       jjtThis.selectStatement = SelectStatement()
        |
        LOOKAHEAD(2)
       (
         <LPAREN>
-        (
-          LOOKAHEAD( SelectStatement() )
-          jjtThis.selectStatement = SelectStatement()
-          |
-          jjtThis.selectStatement = SelectWithoutTargetStatement()
-        )
+        jjtThis.selectStatement = SelectStatement()
         { jjtThis.selectInParentheses = true; }
         <RPAREN>
       )
@@ -2367,11 +2334,7 @@ BooleanExpression InCondition():
   (
     LOOKAHEAD(2)
     ( <LPAREN>
-      (
-       LOOKAHEAD(SelectStatement())(jjtThis.rightStatement = SelectStatement())
-       |
-       jjtThis.rightStatement = SelectWithoutTargetStatement()
-      )
+      jjtThis.rightStatement = SelectStatement()
       <RPAREN>
     )
     |
@@ -2392,11 +2355,7 @@ BooleanExpression NotInCondition():
   (
     LOOKAHEAD(2)
     ( <LPAREN>
-    (
-    LOOKAHEAD(SelectStatement())(jjtThis.rightStatement = SelectStatement())
-    |
-    jjtThis.rightStatement = SelectWithoutTargetStatement()
-    )
+    jjtThis.rightStatement = SelectStatement()
     <RPAREN>
     )
     |
