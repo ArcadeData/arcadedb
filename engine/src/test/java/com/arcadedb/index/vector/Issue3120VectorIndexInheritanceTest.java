@@ -35,15 +35,15 @@ class Issue3120VectorIndexInheritanceTest extends TestHelper {
 
   @Test
   void testVectorIndexInheritance() {
-    System.out.println("\n=== Testing Vector Index Inheritance ===");
+    // System.out.println("\n=== Testing Vector Index Inheritance ===");
 
     // Step 1: Create parent vertex type with vector property and index
     database.transaction(() -> {
-      System.out.println("\n1. Creating parent type EMBEDDING with vector property");
+      // System.out.println("\n1. Creating parent type EMBEDDING with vector property");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING");
       database.command("sql", "CREATE PROPERTY EMBEDDING.vector ARRAY_OF_FLOATS");
 
-      System.out.println("2. Creating LSM vector index on EMBEDDING.vector");
+      // System.out.println("2. Creating LSM vector index on EMBEDDING.vector");
       database.command("sql", """
           CREATE INDEX ON EMBEDDING (vector) LSM_VECTOR
           METADATA {
@@ -54,25 +54,25 @@ class Issue3120VectorIndexInheritanceTest extends TestHelper {
 
     // Step 2: Insert into parent class (this should work)
     database.transaction(() -> {
-      System.out.println("\n3. Testing INSERT into parent class EMBEDDING");
+      // System.out.println("\n3. Testing INSERT into parent class EMBEDDING");
       final float[] testVector = new float[1024];
       for (int i = 0; i < 1024; i++) {
         testVector[i] = (float) Math.random();
       }
 
       database.command("sql", "INSERT INTO EMBEDDING SET vector = ?", (Object) testVector);
-      System.out.println("   ✓ Parent class insert successful");
+      // System.out.println("   ✓ Parent class insert successful");
     });
 
     // Step 3: Create child vertex type that extends parent
     database.transaction(() -> {
-      System.out.println("\n4. Creating child type CHUNK_EMBEDDING EXTENDS EMBEDDING");
+      // System.out.println("\n4. Creating child type CHUNK_EMBEDDING EXTENDS EMBEDDING");
       database.command("sql", "CREATE VERTEX TYPE CHUNK_EMBEDDING EXTENDS EMBEDDING");
     });
 
     // Step 4: Insert into child class (this is where the bug occurs)
     database.transaction(() -> {
-      System.out.println("\n5. Testing INSERT into child class CHUNK_EMBEDDING");
+      // System.out.println("\n5. Testing INSERT into child class CHUNK_EMBEDDING");
       final float[] testVector = new float[1024];
       for (int i = 0; i < 1024; i++) {
         testVector[i] = (float) Math.random();
@@ -80,10 +80,10 @@ class Issue3120VectorIndexInheritanceTest extends TestHelper {
 
       try {
         database.command("sql", "INSERT INTO CHUNK_EMBEDDING SET vector = ?", (Object) testVector);
-        System.out.println("   ✓ Child class insert successful");
+        // System.out.println("   ✓ Child class insert successful");
       } catch (final Exception e) {
-        System.out.println("   ✗ Child class insert FAILED");
-        System.out.println("   Error: " + e.getMessage());
+        // System.out.println("   ✗ Child class insert FAILED");
+        // System.out.println("   Error: " + e.getMessage());
         e.printStackTrace();
         throw e;
       }
@@ -91,27 +91,27 @@ class Issue3120VectorIndexInheritanceTest extends TestHelper {
 
     // Step 5: Verify both records exist
     database.transaction(() -> {
-      System.out.println("\n6. Verifying records");
+      // System.out.println("\n6. Verifying records");
 
       final ResultSet parentRecords = database.query("sql", "SELECT count(*) as cnt FROM EMBEDDING");
       final long parentCount = parentRecords.hasNext() ?
           parentRecords.next().<Long>getProperty("cnt") : 0L;
-      System.out.println("   EMBEDDING records: " + parentCount);
+      // System.out.println("   EMBEDDING records: " + parentCount);
       assertThat(parentCount).isEqualTo(2L); // Should have both parent and child records
 
       final ResultSet childRecords = database.query("sql", "SELECT count(*) as cnt FROM CHUNK_EMBEDDING");
       final long childCount = childRecords.hasNext() ?
           childRecords.next().<Long>getProperty("cnt") : 0L;
-      System.out.println("   CHUNK_EMBEDDING records: " + childCount);
+      // System.out.println("   CHUNK_EMBEDDING records: " + childCount);
       assertThat(childCount).isEqualTo(1L);
     });
 
-    System.out.println("\n=== Test completed successfully ===");
+    // System.out.println("\n=== Test completed successfully ===");
   }
 
   @Test
   void testVectorIndexInheritanceMultipleLevels() {
-    System.out.println("\n=== Testing Multi-Level Vector Index Inheritance ===");
+    // System.out.println("\n=== Testing Multi-Level Vector Index Inheritance ===");
 
     // Create hierarchy: EMBEDDING -> CHUNK_EMBEDDING -> SPECIFIC_CHUNK
     database.transaction(() -> {

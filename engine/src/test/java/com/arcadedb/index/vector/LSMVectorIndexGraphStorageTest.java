@@ -102,7 +102,7 @@ public class LSMVectorIndexGraphStorageTest {
         Assertions.assertEquals(VectorQuantizationType.NONE, index.metadata.quantizationType,
             "Should have no quantization");
 
-        System.out.println("✓ Index created with storeVectorsInGraph=true, closing database...");
+        // System.out.println("✓ Index created with storeVectorsInGraph=true, closing database...");
       }
 
       // Phase 2: Reopen database and verify vectors are fetched from graph
@@ -131,9 +131,9 @@ public class LSMVectorIndexGraphStorageTest {
         Assertions.assertEquals(fetchFromDocsBefore, fetchFromDocsAfter,
             "Should NOT have fetched from documents when storeVectorsInGraph is enabled");
 
-        System.out.println("✓ Test passed: Vectors stored and fetched from graph file (no quantization)");
-        System.out.println("  Vectors fetched from graph: " + (fetchFromGraphAfter - fetchFromGraphBefore));
-        System.out.println("  Graph state: " + statsAfter.get("graphState") + " (0=LOADING, 1=IMMUTABLE, 2=MUTABLE)");
+        // System.out.println("✓ Test passed: Vectors stored and fetched from graph file (no quantization)");
+        // System.out.println("  Vectors fetched from graph: " + (fetchFromGraphAfter - fetchFromGraphBefore));
+        // System.out.println("  Graph state: " + statsAfter.get("graphState") + " (0=LOADING, 1=IMMUTABLE, 2=MUTABLE)");
       }
     }
   }
@@ -183,7 +183,7 @@ public class LSMVectorIndexGraphStorageTest {
         Assertions.assertEquals(VectorQuantizationType.INT8, index.metadata.quantizationType,
             "Should have INT8 quantization");
 
-        System.out.println("✓ Index created with INT8 quantization and storeVectorsInGraph=true");
+        // System.out.println("✓ Index created with INT8 quantization and storeVectorsInGraph=true");
       }
 
       // Phase 2: Reopen and verify
@@ -209,9 +209,9 @@ public class LSMVectorIndexGraphStorageTest {
             "Should fetch from graph when storeVectorsInGraph is enabled (graph: " + fetchFromGraph + ", docs: " + fetchFromDocs
                 + ")");
 
-        System.out.println("✓ Test passed: INT8 quantized vectors stored and fetched from graph");
-        System.out.println("  Vectors fetched from graph: " + fetchFromGraph);
-        System.out.println("  Vectors fetched from docs: " + fetchFromDocs);
+        // System.out.println("✓ Test passed: INT8 quantized vectors stored and fetched from graph");
+        // System.out.println("  Vectors fetched from graph: " + fetchFromGraph);
+        // System.out.println("  Vectors fetched from docs: " + fetchFromDocs);
       }
     }
   }
@@ -265,7 +265,7 @@ public class LSMVectorIndexGraphStorageTest {
 
         Assertions.assertTrue(results.size() > 0, "Should find neighbors even with binary quantization");
 
-        System.out.println("✓ Test passed: BINARY quantized vectors stored and fetched from graph");
+        // System.out.println("✓ Test passed: BINARY quantized vectors stored and fetched from graph");
       }
     }
   }
@@ -335,10 +335,10 @@ public class LSMVectorIndexGraphStorageTest {
         Assertions.assertTrue(rebuildsAfterUpdate >= rebuildsAfterInsert,
             "Graph should be rebuilt after mutations (before: " + rebuildsAfterInsert + ", after: " + rebuildsAfterUpdate + ")");
 
-        System.out.println("✓ Test passed: Vector updates trigger graph rebuilds");
-        System.out.println("  Rebuilds after insert: " + rebuildsAfterInsert);
-        System.out.println("  Rebuilds after update: " + rebuildsAfterUpdate);
-        System.out.println("  Mutations since rebuild: " + statsAfterUpdate.get("mutationsSinceRebuild"));
+        // System.out.println("✓ Test passed: Vector updates trigger graph rebuilds");
+        // System.out.println("  Rebuilds after insert: " + rebuildsAfterInsert);
+        // System.out.println("  Rebuilds after update: " + rebuildsAfterUpdate);
+        // System.out.println("  Mutations since rebuild: " + statsAfterUpdate.get("mutationsSinceRebuild"));
       }
     }
   }
@@ -395,8 +395,8 @@ public class LSMVectorIndexGraphStorageTest {
         Assertions.assertTrue(fetchFromDocs > 0, "Should fetch from documents when graph storage is disabled");
         Assertions.assertEquals(0, fetchFromGraph, "Should NOT fetch from graph when disabled");
 
-        System.out.println("✓ Test passed: Disabled graph storage fetches from documents");
-        System.out.println("  Vectors fetched from documents: " + fetchFromDocs);
+        // System.out.println("✓ Test passed: Disabled graph storage fetches from documents");
+        // System.out.println("  Vectors fetched from documents: " + fetchFromDocs);
       }
     }
   }
@@ -453,7 +453,7 @@ public class LSMVectorIndexGraphStorageTest {
         }
 
         graphFileSizeWithVectors = getVecgraphFileSize(dbPathWithVectors);
-        System.out.println("Graph file size WITH vectors: " + graphFileSizeWithVectors + " bytes");
+        // System.out.println("Graph file size WITH vectors: " + graphFileSizeWithVectors + " bytes");
       }
 
       // Create database WITHOUT storeVectorsInGraph (false)
@@ -490,7 +490,7 @@ public class LSMVectorIndexGraphStorageTest {
         }
 
         graphFileSizeWithoutVectors = getVecgraphFileSize(dbPathWithoutVectors);
-        System.out.println("Graph file size WITHOUT vectors: " + graphFileSizeWithoutVectors + " bytes");
+        // System.out.println("Graph file size WITHOUT vectors: " + graphFileSizeWithoutVectors + " bytes");
       }
 
       // Calculate expected sizes:
@@ -498,12 +498,12 @@ public class LSMVectorIndexGraphStorageTest {
       // - Total vector data: numVectors * 512 = 200 * 512 = 102,400 bytes (~100KB)
       // - When storeVectorsInGraph=false, the graph file should be ~100KB smaller
       final long vectorDataSize = (long) numVectors * dimensions * 4;
-      System.out.println("Expected vector data size: " + vectorDataSize + " bytes");
+      // System.out.println("Expected vector data size: " + vectorDataSize + " bytes");
 
       // The graph file WITHOUT vectors should be significantly smaller
       // We expect at least 80% of the vector data to be saved (allowing for overhead)
       final long sizeDifference = graphFileSizeWithVectors - graphFileSizeWithoutVectors;
-      System.out.println("Size difference: " + sizeDifference + " bytes");
+      // System.out.println("Size difference: " + sizeDifference + " bytes");
 
       // This assertion should FAIL with the current bug (both sizes are similar)
       // After the fix, this should PASS (WITHOUT vectors should be much smaller)
@@ -514,7 +514,7 @@ public class LSMVectorIndexGraphStorageTest {
               "Expected difference: >" + (vectorDataSize * 0.8) + " bytes, " +
               "Actual difference: " + sizeDifference + " bytes");
 
-      System.out.println("✓ Test passed: storeVectorsInGraph=false correctly excludes vectors from graph file");
+      // System.out.println("✓ Test passed: storeVectorsInGraph=false correctly excludes vectors from graph file");
     } finally {
       FileUtils.deleteRecursively(new File(dbPathWithVectors));
       FileUtils.deleteRecursively(new File(dbPathWithoutVectors));

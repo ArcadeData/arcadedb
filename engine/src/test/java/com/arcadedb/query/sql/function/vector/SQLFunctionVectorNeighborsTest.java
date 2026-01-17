@@ -32,12 +32,12 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
 
     // Insert some documents with known vectors
     database.transaction(() -> {
-      database.newVertex("Doc").set("name", "docA").set("embedding", new float[] { 1.0f, 0.0f, 0.0f }).save();
-      database.newVertex("Doc").set("name", "docB").set("embedding", new float[] { 0.9f, 0.1f, 0.0f }).save(); // Close to A
-      database.newVertex("Doc").set("name", "docC").set("embedding", new float[] { 0.0f, 1.0f, 0.0f })
+      database.newVertex("Doc").set("name", "docA").set("embedding", new float[]{1.0f, 0.0f, 0.0f}).save();
+      database.newVertex("Doc").set("name", "docB").set("embedding", new float[]{0.9f, 0.1f, 0.0f}).save(); // Close to A
+      database.newVertex("Doc").set("name", "docC").set("embedding", new float[]{0.0f, 1.0f, 0.0f})
           .save(); // Far from A, close to D
-      database.newVertex("Doc").set("name", "docD").set("embedding", new float[] { 0.1f, 0.9f, 0.0f }).save(); // Close to C
-      database.newVertex("Doc").set("name", "docE").set("embedding", new float[] { 0.0f, 0.0f, 1.0f }).save(); // Far from all
+      database.newVertex("Doc").set("name", "docD").set("embedding", new float[]{0.1f, 0.9f, 0.0f}).save(); // Close to C
+      database.newVertex("Doc").set("name", "docE").set("embedding", new float[]{0.0f, 0.0f, 1.0f}).save(); // Far from all
     });
   }
 
@@ -51,7 +51,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
     // Search with a raw vector (similar to docE)
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> results = (List<Map<String, Object>>) function.execute(null, null, null,
-        new Object[] { "Doc[embedding]", new float[] { 0.0f, 0.0f, 1.0f }, 3 },
+        new Object[]{"Doc[embedding]", new float[]{0.0f, 0.0f, 1.0f}, 3},
         context);
 
     assertThat(results).as("Results should not be null").isNotNull();
@@ -76,7 +76,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
     // Search using a vertex identifier (docA)
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> results = (List<Map<String, Object>>) function.execute(null, null, null,
-        new Object[] { "Doc[embedding]", "docA", 3 },
+        new Object[]{"Doc[embedding]", "docA", 3},
         context);
 
     assertThat(results).isNotNull();
@@ -147,7 +147,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
       float previousDistance = -1;
       for (Map<String, Object> neighbor : neighbors) {
         float distance = ((Number) neighbor.get("distance")).floatValue();
-        assertThat(distance ).as("Results should be ordered by distance").isGreaterThanOrEqualTo(previousDistance);
+        assertThat(distance).as("Results should be ordered by distance").isGreaterThanOrEqualTo(previousDistance);
         previousDistance = distance;
       }
     }
@@ -163,13 +163,13 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
     // Test with limit of 2
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> resultsLimit2 = (List<Map<String, Object>>) function.execute(null, null, null,
-        new Object[] { "Doc[embedding]", new float[] { 1.0f, 0.0f, 0.0f }, 2 },
+        new Object[]{"Doc[embedding]", new float[]{1.0f, 0.0f, 0.0f}, 2},
         context);
 
     // Test with limit of 5
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> resultsLimit5 = (List<Map<String, Object>>) function.execute(null, null, null,
-        new Object[] { "Doc[embedding]", new float[] { 1.0f, 0.0f, 0.0f }, 5 },
+        new Object[]{"Doc[embedding]", new float[]{1.0f, 0.0f, 0.0f}, 5},
         context);
 
     assertThat(resultsLimit2).as("Should respect limit of 2").hasSizeLessThanOrEqualTo(2);
