@@ -37,12 +37,13 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   protected       List<Result> entryPoints = null;
   protected final List<Result> results     = new ArrayList<>();
 
-  final Set<RID> traversed = new RidSet();
+  final Set<RID> traversed;
 
   public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause,
       final PInteger maxDepth,
       final CommandContext context) {
     super(context);
+    this.traversed = new RidSet(context);
     this.whileClause = whileClause;
     this.maxDepth = maxDepth;
     this.projections = projections.stream().map(TraverseProjectionItem::copy).collect(Collectors.toList());
