@@ -753,103 +753,27 @@ Statement StatementInternal():
 }
 {
   (
-    // Unique token statements - LOOKAHEAD removed for performance
-    result = ExplainStatement()
+    // Token-based dispatch - organized by first token for efficient parsing
+    // Statements with unique first tokens (no LOOKAHEAD needed)
+    result = SelectStatement()
     |
-    result = ProfileStatement()
+    result = TraverseStatement()
     |
-    result = LetStatement()
-    |
-    // QueryStatement needs LOOKAHEAD - SELECT/TRAVERSE/MATCH need disambiguation
-    LOOKAHEAD(QueryStatement())
-    result = QueryStatement()
-    |
-    // DELETE needs LOOKAHEAD - conflicts with DeleteFunctionStatement (DELETE vs DELETE FUNCTION)
-    LOOKAHEAD(DeleteStatement())
-    result = DeleteStatement()
+    result = MatchStatement()
     |
     result = UpdateStatement()
     |
-    LOOKAHEAD(CreateDocumentTypeStatement())
-    result = CreateDocumentTypeStatement()
-    |
-    LOOKAHEAD(CreateVertexTypeStatement())
-    result = CreateVertexTypeStatement()
-    |
-    LOOKAHEAD(CreateEdgeTypeStatement())
-    result = CreateEdgeTypeStatement()
-    |
-    LOOKAHEAD(CreatePropertyStatement())
-    result = CreatePropertyStatement()
-    |
-    LOOKAHEAD(CreateIndexStatement())
-    result = CreateIndexStatement()
-    |
-    LOOKAHEAD(CreateBucketStatement())
-    result = CreateBucketStatement()
-    |
-    LOOKAHEAD(CreateVertexStatement())
-    result = CreateVertexStatement()
-    |
-    LOOKAHEAD(CreateEdgeStatement())
-    result = CreateEdgeStatement()
-    |
-    result = DefineFunctionStatement()
-    |
-    // DeleteFunctionStatement needs LOOKAHEAD - conflicts with DeleteStatement
-    LOOKAHEAD(DeleteFunctionStatement())
-    result = DeleteFunctionStatement()
-    |
-    LOOKAHEAD(TruncateTypeStatement())
-    result = TruncateTypeStatement()
-    |
-    LOOKAHEAD(TruncateBucketStatement())
-    result = TruncateBucketStatement()
-    |
-    LOOKAHEAD(TruncateRecordStatement())
-    result = TruncateRecordStatement()
-    |
-    LOOKAHEAD(AlterTypeStatement())
-    result = AlterTypeStatement()
-    |
-    LOOKAHEAD(DropTypeStatement())
-    result = DropTypeStatement()
-    |
-    LOOKAHEAD(AlterPropertyStatement())
-    result = AlterPropertyStatement()
-    |
-    LOOKAHEAD(DropPropertyStatement())
-    result = DropPropertyStatement()
-    |
-    LOOKAHEAD(DropIndexStatement())
-    result = DropIndexStatement()
-    |
-    LOOKAHEAD(AlterBucketStatement())
-    result = AlterBucketStatement()
-    |
-    LOOKAHEAD(DropBucketStatement())
-    result = DropBucketStatement()
-    |
-    LOOKAHEAD(AlterDatabaseStatement())
-    result = AlterDatabaseStatement()
-    |
-    // Database operations with unique tokens - LOOKAHEAD removed
-    result = ImportDatabaseStatement()
-    |
-    result = ExportDatabaseStatement()
-    |
-    result = BackupDatabaseStatement()
-    |
-    result = CheckDatabaseStatement()
-    |
-    result = AlignDatabaseStatement()
-    |
-    // Simple statements that start with unique tokens
     result = InsertStatement()
     |
     result = MoveVertexStatement()
     |
     result = RebuildIndexStatement()
+    |
+    result = ExplainStatement()
+    |
+    result = ProfileStatement()
+    |
+    result = LetStatement()
     |
     result = BeginStatement()
     |
@@ -861,11 +785,71 @@ Statement StatementInternal():
     |
     result = ReturnStatement()
     |
+    result = IfStatement()
+    |
     result = SleepStatement()
     |
     result = ConsoleStatement()
     |
-    result = IfStatement()
+    result = ImportDatabaseStatement()
+    |
+    result = ExportDatabaseStatement()
+    |
+    result = BackupDatabaseStatement()
+    |
+    result = CheckDatabaseStatement()
+    |
+    result = AlignDatabaseStatement()
+    |
+    result = DefineFunctionStatement()
+    |
+    // Statements that share first token - use LOOKAHEAD on second/third token
+    // CREATE variants (TYPE variants need LOOKAHEAD(3) to see all 3 tokens)
+    LOOKAHEAD(3) result = CreateDocumentTypeStatement()
+    |
+    LOOKAHEAD(3) result = CreateVertexTypeStatement()
+    |
+    LOOKAHEAD(3) result = CreateEdgeTypeStatement()
+    |
+    LOOKAHEAD(2) result = CreatePropertyStatement()
+    |
+    LOOKAHEAD(2) result = CreateIndexStatement()
+    |
+    LOOKAHEAD(2) result = CreateBucketStatement()
+    |
+    LOOKAHEAD(2) result = CreateVertexStatement()
+    |
+    LOOKAHEAD(2) result = CreateEdgeStatement()
+    |
+    // DELETE variants
+    LOOKAHEAD(2) result = DeleteFunctionStatement()
+    |
+    result = DeleteStatement()
+    |
+    // TRUNCATE variants
+    LOOKAHEAD(2) result = TruncateTypeStatement()
+    |
+    LOOKAHEAD(2) result = TruncateBucketStatement()
+    |
+    LOOKAHEAD(2) result = TruncateRecordStatement()
+    |
+    // ALTER variants
+    LOOKAHEAD(2) result = AlterTypeStatement()
+    |
+    LOOKAHEAD(2) result = AlterPropertyStatement()
+    |
+    LOOKAHEAD(2) result = AlterBucketStatement()
+    |
+    LOOKAHEAD(2) result = AlterDatabaseStatement()
+    |
+    // DROP variants
+    LOOKAHEAD(2) result = DropTypeStatement()
+    |
+    LOOKAHEAD(2) result = DropPropertyStatement()
+    |
+    LOOKAHEAD(2) result = DropIndexStatement()
+    |
+    LOOKAHEAD(2) result = DropBucketStatement()
   )
   {
     return result;
