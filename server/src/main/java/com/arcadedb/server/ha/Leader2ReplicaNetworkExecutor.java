@@ -194,9 +194,17 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       } catch (final TimeoutException e) {
         LogManager.instance().log(this, Level.FINE, "Request in timeout (cause=%s)", e.getCause());
       } catch (final IOException e) {
-        handleIOException(e);
+        try {
+          handleIOException(e);
+        } catch (final Exception ex) {
+          LogManager.instance().log(this, Level.SEVERE, "Error handling IO exception", ex);
+        }
       } catch (final Exception e) {
-        handleGenericException(e);
+        try {
+          handleGenericException(e);
+        } catch (final Exception ex) {
+          LogManager.instance().log(this, Level.SEVERE, "Error handling generic exception", ex);
+        }
       }
     }
   }
@@ -358,25 +366,46 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     }
   }
 
-  private void handleIOException(IOException e) {
-    if (e instanceof EOFException) {
-      LogManager.instance().log(this, Level.FINE,
-          "Connection closed by replica %s during message exchange (will mark offline)", remoteServer);
+  private void handleIOException(IOException e) throws Exception {
+    if (server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENHANCED_RECONNECTION)) {
+      // New enhanced reconnection logic with exception classification
+      handleConnectionFailure(e);
     } else {
-      LogManager.instance().log(this, Level.FINE, "IO Error from reading requests (cause=%s)", e.getCause());
+      // Legacy reconnection logic
+      if (e instanceof EOFException) {
+        LogManager.instance().log(this, Level.FINE,
+            "Connection closed by replica %s during message exchange (will mark offline)", remoteServer);
+      } else {
+        LogManager.instance().log(this, Level.FINE, "IO Error from reading requests (cause=%s)", e.getCause());
+      }
+      server.setReplicaStatus(remoteServer, false);
+      close();
     }
-    server.setReplicaStatus(remoteServer, false);
-    close();
   }
 
-  private void handleGenericException(Exception e) {
-    LogManager.instance().log(this, Level.SEVERE, "Generic error during applying of request from Leader (cause=%s)", e.toString());
-    server.setReplicaStatus(remoteServer, false);
-    close();
+  private void handleGenericException(Exception e) throws Exception {
+    if (server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENHANCED_RECONNECTION)) {
+      // New enhanced reconnection logic with exception classification
+      handleConnectionFailure(e);
+    } else {
+      // Legacy generic exception handling
+      LogManager.instance().log(this, Level.SEVERE, "Generic error during applying of request from Leader (cause=%s)", e.toString());
+      server.setReplicaStatus(remoteServer, false);
+      close();
+    }
   }
 
   public int getMessagesInQueue() {
     return senderQueue.size();
+  }
+
+  /**
+   * Returns connection metrics for monitoring.
+   *
+   * @return replica connection metrics
+   */
+  public ReplicaConnectionMetrics getMetrics() {
+    return metrics;
   }
 
   private void executeMessage(final Binary buffer, final Pair<ReplicationMessage, HACommand> request) throws IOException {
