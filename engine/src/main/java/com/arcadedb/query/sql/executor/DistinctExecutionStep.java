@@ -67,13 +67,14 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   }
 
   final Set<DistinctKey> pastItems = new HashSet<>();
-  final RidSet           pastRids  = new RidSet();
+  final RidSet           pastRids;
   ResultSet lastResult = null;
   Result    nextValue;
   private final long maxElementsAllowed;
 
   public DistinctExecutionStep(final CommandContext context) {
     super(context);
+    this.pastRids = new RidSet(context);
     final Database db = context == null ? null : context.getDatabase();
     maxElementsAllowed = db == null ?
         GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :

@@ -30,7 +30,7 @@ import java.util.*;
  */
 public class RidSet implements Set<RID> {
 
-  CommandContext context; //TODO, set this!!!
+  CommandContext context;
 
   protected static final int INITIAL_BLOCK_SIZE = 4096;
 
@@ -54,10 +54,28 @@ public class RidSet implements Set<RID> {
   }
 
   /**
+   * instantiates an ORidSet with a bucket size of Integer.MAX_VALUE / 10 and a CommandContext
+   *
+   * @param context the command context for iterator support
+   */
+  public RidSet(final CommandContext context) {
+    this(context, Integer.MAX_VALUE / 10);
+  }
+
+  /**
    * @param bucketSize
    */
   public RidSet(final int bucketSize) {
-    maxArraySize = bucketSize;
+    this.maxArraySize = bucketSize;
+  }
+
+  /**
+   * @param context    the command context for iterator support
+   * @param bucketSize the maximum bucket size
+   */
+  public RidSet(final CommandContext context, final int bucketSize) {
+    this.context = context;
+    this.maxArraySize = bucketSize;
   }
 
   @Override
@@ -75,10 +93,8 @@ public class RidSet implements Set<RID> {
     if (size == 0L)
       return false;
 
-    if (!(o instanceof RID))
+    if (!(o instanceof RID identifiable))
       throw new IllegalArgumentException();
-
-    final RID identifiable = ((RID) o);
 
     final int bucket = identifiable.getBucketId();
     final long position = identifiable.getPosition();
@@ -243,7 +259,7 @@ public class RidSet implements Set<RID> {
     if (existed > 0)
       size--;
 
-    return existed == 0L;
+    return existed > 0L;
   }
 
   @Override
@@ -260,7 +276,7 @@ public class RidSet implements Set<RID> {
   public boolean addAll(final Collection<? extends RID> c) {
     boolean added = false;
     for (final RID o : c)
-      added = added && add(o);
+      added = add(o) || added;
 
     return added;
   }

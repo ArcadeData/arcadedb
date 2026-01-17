@@ -58,7 +58,7 @@ public class BreadthFirstTraverser extends GraphTraverser {
    */
   private class BFSVertexIterator implements Iterator<Vertex> {
     private final Queue<VertexWithDepth> queue = new LinkedList<>();
-    private final Set<Vertex> visited;
+    private final Set<com.arcadedb.database.RID> visited;
     private final List<Vertex> results = new ArrayList<>();
     private int currentIndex = 0;
 
@@ -71,20 +71,15 @@ public class BreadthFirstTraverser extends GraphTraverser {
     }
 
     private void performTraversal() {
+      // Mark start vertex as visited
+      if (detectCycles) {
+        markVisited(queue.peek().vertex, visited);
+      }
+
       while (!queue.isEmpty()) {
         final VertexWithDepth current = queue.poll();
         final Vertex vertex = current.vertex;
         final int depth = current.depth;
-
-        // Skip if already visited (cycle detection)
-        if (detectCycles && isVisited(vertex, visited)) {
-          continue;
-        }
-
-        // Mark as visited
-        if (detectCycles) {
-          markVisited(vertex, visited);
-        }
 
         // Add to results if depth is within bounds
         if (depth >= minHops && depth <= maxHops) {
@@ -98,9 +93,14 @@ public class BreadthFirstTraverser extends GraphTraverser {
 
         // Expand to neighbors using fast getNextVertices() (skips loading edge records)
         for (final Vertex nextVertex : getNextVertices(vertex)) {
-          // Skip if already visited
+          // Skip if already visited - mark as visited when adding to queue
           if (detectCycles && isVisited(nextVertex, visited)) {
             continue;
+          }
+
+          // Mark as visited BEFORE adding to queue (prevents duplicates)
+          if (detectCycles) {
+            markVisited(nextVertex, visited);
           }
 
           queue.add(new VertexWithDepth(nextVertex, depth + 1));
@@ -127,7 +127,7 @@ public class BreadthFirstTraverser extends GraphTraverser {
    */
   private class BFSPathIterator implements Iterator<TraversalPath> {
     private final Queue<PathWithDepth> queue = new LinkedList<>();
-    private final Set<Vertex> visited;
+    private final Set<com.arcadedb.database.RID> visited;
     private final List<TraversalPath> results = new ArrayList<>();
     private int currentIndex = 0;
 
@@ -141,21 +141,16 @@ public class BreadthFirstTraverser extends GraphTraverser {
     }
 
     private void performTraversal() {
+      // Mark start vertex as visited
+      if (detectCycles && !queue.isEmpty()) {
+        markVisited(queue.peek().path.getEndVertex(), visited);
+      }
+
       while (!queue.isEmpty()) {
         final PathWithDepth current = queue.poll();
         final TraversalPath path = current.path;
         final int depth = current.depth;
         final Vertex vertex = path.getEndVertex();
-
-        // Skip if already visited (cycle detection)
-        if (detectCycles && isVisited(vertex, visited)) {
-          continue;
-        }
-
-        // Mark as visited
-        if (detectCycles) {
-          markVisited(vertex, visited);
-        }
 
         // Add to results if depth is within bounds
         if (depth >= minHops && depth <= maxHops) {
@@ -175,9 +170,14 @@ public class BreadthFirstTraverser extends GraphTraverser {
 
           final Vertex nextVertex = getOtherVertex(edge, vertex);
 
-          // Skip if already visited or creates cycle
+          // Skip if already visited or creates cycle in path
           if (detectCycles && (isVisited(nextVertex, visited) || path.containsVertex(nextVertex))) {
             continue;
+          }
+
+          // Mark as visited BEFORE adding to queue (prevents duplicates)
+          if (detectCycles) {
+            markVisited(nextVertex, visited);
           }
 
           final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
