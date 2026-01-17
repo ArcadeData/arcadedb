@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.ChannelBinaryClient;
@@ -66,6 +67,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   private final    Object              channelOutputLock            = new Object();
   private final    Object              channelInputLock             = new Object();
   private          long                installDatabaseLastLogNumber = -1;
+  private volatile boolean             forceFullResync              = false;
 
   public Replica2LeaderNetworkExecutor(final HAServer ha, HAServer.ServerInfo leader) {
     this.server = ha;
@@ -161,6 +163,17 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
       } catch (final SocketTimeoutException e) {
         // IGNORE IT
+      } catch (final ConcurrentModificationException e) {
+        // DATA CORRUPTION DETECTED - page version mismatch in WAL
+        // This indicates the replica's database state is inconsistent with the WAL
+        // Reconnecting won't fix this - we need a full resync from the leader
+        LogManager.instance().log(this, Level.SEVERE,
+            "DATA CORRUPTION: ConcurrentModificationException during WAL replay (request=%d). " +
+            "Page version mismatch detected. Forcing full resync from leader. Error: %s",
+            e, reqId, e.getMessage());
+
+        forceFullResync = true;
+        reconnect(e);
       } catch (final Exception e) {
         LogManager.instance()
             .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", e, reqId, shutdown,
@@ -540,7 +553,16 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     final Binary buffer = new Binary(8192);
     buffer.setAllocationChunkSize(1024);
 
-    final long lastLogNumber = server.getReplicationLogFile().getLastMessageNumber();
+    // Check if full resync was forced due to data corruption
+    final long lastLogNumber;
+    if (forceFullResync) {
+      // Force full resync by sending -1 (replica has no log history)
+      lastLogNumber = -1;
+      LogManager.instance().log(this, Level.WARNING,
+          "Forcing full resync due to data corruption (ConcurrentModificationException)");
+    } else {
+      lastLogNumber = server.getReplicationLogFile().getLastMessageNumber();
+    }
 
     LogManager.instance().log(this, Level.INFO, "Requesting install of databases up to log %d...", lastLogNumber);
 
@@ -557,6 +579,10 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         for (final String db : databases)
           requestInstallDatabase(buffer, db);
+
+        // Full resync completed - clear the flag
+        forceFullResync = false;
+        LogManager.instance().log(this, Level.INFO, "Full resync completed successfully");
 
       } else {
         LogManager.instance().log(this, Level.INFO, "Receiving hot resync (from=%d)...", lastLogNumber);
