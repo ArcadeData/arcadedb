@@ -484,6 +484,10 @@ public class ArcadeGraph implements Graph, Closeable {
     return gremlinJavaEngine;
   }
 
+  public boolean isGremlinGroovyEngineUsed() {
+    return gremlinGroovyEngine != null;
+  }
+
   public GremlinGroovyScriptEngine getGremlinGroovyEngine() {
     if (gremlinGroovyEngine == null) {
       synchronized (this) {

@@ -73,7 +73,7 @@ class CypherTest {
     } finally {
       graph.drop();
       assertThat(graph.getGremlinJavaEngine()).isNull();
-      assertThat(graph.getGremlinGroovyEngine()).isNull();
+      assertThat(graph.isGremlinGroovyEngineUsed()).isFalse();
     }
   }
 
@@ -90,7 +90,7 @@ class CypherTest {
     } finally {
       graph.drop();
       assertThat(graph.getGremlinJavaEngine()).isNull();
-      assertThat(graph.getGremlinGroovyEngine()).isNull();
+      assertThat(graph.isGremlinGroovyEngineUsed()).isFalse();
     }
   }
 
@@ -150,7 +150,7 @@ class CypherTest {
     } finally {
       graph.drop();
       assertThat(graph.getGremlinJavaEngine()).isNull();
-      assertThat(graph.getGremlinGroovyEngine()).isNull();
+      assertThat(graph.isGremlinGroovyEngineUsed()).isFalse();
     }
   }
 
@@ -173,7 +173,7 @@ class CypherTest {
     } finally {
       graph.drop();
       assertThat(graph.getGremlinJavaEngine()).isNull();
-      assertThat(graph.getGremlinGroovyEngine()).isNull();
+      assertThat(graph.isGremlinGroovyEngineUsed()).isFalse();
     }
   }
 
@@ -208,7 +208,7 @@ class CypherTest {
     } finally {
       graph.drop();
       assertThat(graph.getGremlinJavaEngine()).isNull();
-      assertThat(graph.getGremlinGroovyEngine()).isNull();
+      assertThat(graph.isGremlinGroovyEngineUsed()).isFalse();
     }
   }
 
@@ -233,7 +233,7 @@ class CypherTest {
       GlobalConfiguration.GREMLIN_ENGINE.reset();
       graph.drop();
       assertThat(graph.getGremlinJavaEngine()).isNull();
-      assertThat(graph.getGremlinGroovyEngine()).isNull();
+      assertThat(graph.isGremlinGroovyEngineUsed()).isFalse();
     }
   }
 
@@ -247,18 +247,18 @@ class CypherTest {
       GlobalConfiguration.GREMLIN_ENGINE.setValue("groovy");
 
       graph.database.command("sqlscript",//
-              "CREATE VERTEX TYPE CHUNK;" + //
-                      "CREATE PROPERTY CHUNK.subtype STRING;" +//
-                      "CREATE PROPERTY CHUNK.name STRING;" +//
-                      "CREATE PROPERTY CHUNK.text STRING;" +//
-                      "CREATE PROPERTY CHUNK.index INTEGER;" +//
-                      "CREATE PROPERTY CHUNK.pages STRING;");
+          "CREATE VERTEX TYPE CHUNK;" + //
+              "CREATE PROPERTY CHUNK.subtype STRING;" +//
+              "CREATE PROPERTY CHUNK.name STRING;" +//
+              "CREATE PROPERTY CHUNK.text STRING;" +//
+              "CREATE PROPERTY CHUNK.index INTEGER;" +//
+              "CREATE PROPERTY CHUNK.pages STRING;");
 
       // Test the original failing query from issue #3118
       String originalQuery = "UNWIND [] AS BatchEntry " +
-              "MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name, " +
-              "text: BatchEntry.text, index: BatchEntry.index, pages: BatchEntry.pages }) " +
-              "return ID(n) as id";
+          "MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name, " +
+          "text: BatchEntry.text, index: BatchEntry.index, pages: BatchEntry.pages }) " +
+          "return ID(n) as id";
 
       final ResultSet result = graph.database.query("cypher", originalQuery);
 
