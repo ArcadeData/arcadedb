@@ -1095,6 +1095,83 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * JSON visitor - handles mapLiteral.
+   * Grammar: json : mapLiteral
+   */
+  @Override
+  public Json visitJson(final SQLParser.JsonContext ctx) {
+    return (Json) visit(ctx.mapLiteral());
+  }
+
+  /**
+   * Map literal visitor - handles {key: value, ...}.
+   * Grammar: mapLiteral : LBRACE (mapEntry (COMMA mapEntry)*)? RBRACE
+   */
+  @Override
+  public Json visitMapLiteral(final SQLParser.MapLiteralContext ctx) {
+    try {
+      final Json json = new Json(-1);
+
+      if (ctx.mapEntry() != null) {
+        final java.lang.reflect.Field itemsField = Json.class.getDeclaredField("items");
+        itemsField.setAccessible(true);
+
+        for (final SQLParser.MapEntryContext entryCtx : ctx.mapEntry()) {
+          final JsonItem item = (JsonItem) visit(entryCtx);
+          @SuppressWarnings("unchecked")
+          final java.util.List<JsonItem> items = (java.util.List<JsonItem>) itemsField.get(json);
+          items.add(item);
+        }
+      }
+
+      return json;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build map literal: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Map entry visitor - handles key: value.
+   * Grammar: mapEntry : (identifier | STRING_LITERAL) COLON expression
+   */
+  @Override
+  public JsonItem visitMapEntry(final SQLParser.MapEntryContext ctx) {
+    try {
+      final JsonItem item = new JsonItem();
+
+      // Left side (key) can be identifier or string literal
+      if (ctx.identifier() != null) {
+        final java.lang.reflect.Field leftIdentifierField = JsonItem.class.getDeclaredField("leftIdentifier");
+        leftIdentifierField.setAccessible(true);
+        leftIdentifierField.set(item, (Identifier) visit(ctx.identifier()));
+      } else if (ctx.STRING_LITERAL() != null) {
+        // Remove quotes from string literal
+        String str = ctx.STRING_LITERAL().getText();
+        if (str.length() >= 2 && str.startsWith("\"") && str.endsWith("\"")) {
+          str = str.substring(1, str.length() - 1);
+        } else if (str.length() >= 2 && str.startsWith("'") && str.endsWith("'")) {
+          str = str.substring(1, str.length() - 1);
+        }
+        // Unescape string
+        str = BaseExpression.decode(str);
+
+        final java.lang.reflect.Field leftStringField = JsonItem.class.getDeclaredField("leftString");
+        leftStringField.setAccessible(true);
+        leftStringField.set(item, str);
+      }
+
+      // Right side (value) is an expression
+      final java.lang.reflect.Field rightField = JsonItem.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(item, (Expression) visit(ctx.expression()));
+
+      return item;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build map entry: " + e.getMessage(), e);
+    }
+  }
+
+  /**
    * Math expression visitor.
    * Handles arithmetic operations with proper precedence.
    * Delegates to labeled alternative visitors.
