@@ -395,7 +395,19 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         // Parse the actual leader address and update our target
         final String[] leaderParts = HostUtil.parseHostAddress(leaderAddress, HAServer.DEFAULT_PORT);
-        this.leader = new HAServer.ServerInfo(leaderParts[0], Integer.parseInt(leaderParts[1]), leaderParts[2]);
+        final HAServer.ServerInfo newLeader = new HAServer.ServerInfo(leaderParts[0], Integer.parseInt(leaderParts[1]), leaderParts[2]);
+
+        // Check if we're being redirected to ourselves - this means WE are the leader
+        if (server.isCurrentServer(newLeader)) {
+          LogManager.instance().log(this, Level.INFO,
+              "Redirected to ourselves (%s) - we are the leader, triggering election to claim leadership",
+              newLeader);
+          // Trigger election - we should win since we're being told we're the leader
+          server.startElection(false);
+          return;
+        }
+
+        this.leader = newLeader;
 
         // Continue retry loop with new leader target (no delay needed for redirect)
         continue;
