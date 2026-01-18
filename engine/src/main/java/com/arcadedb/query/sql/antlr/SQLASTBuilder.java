@@ -3153,6 +3153,170 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Array binary condition selector visitor - handles [expr LIKE expr], [expr IN expr], etc.
+   * Grammar: LBRACKET expression comparisonOperator expression RBRACKET
+   *
+   * Note: This is different from arrayFilterSelector which is [operator expr].
+   * This handles the full binary condition [leftExpr operator rightExpr] for operators like LIKE.
+   */
+  @Override
+  public Modifier visitArrayBinaryCondSelector(final SQLParser.ArrayBinaryCondSelectorContext ctx) {
+    try {
+      // Create a binary condition to filter elements
+      final BinaryCondition condition = new BinaryCondition(-1);
+
+      // Set left side - use special placeholder for "current element"
+      // In array filter context, the left side will be substituted with each element
+      condition.left = (Expression) visit(ctx.expression(0));
+
+      // Set operator
+      condition.operator = mapComparisonOperator(ctx.comparisonOperator());
+
+      // Set right side
+      condition.right = (Expression) visit(ctx.expression(1));
+
+      // Wrap in WhereClause, then OrBlock for the condition field
+      final WhereClause whereClause = new WhereClause(-1);
+      try {
+        final java.lang.reflect.Field baseExpressionField = WhereClause.class.getDeclaredField("baseExpression");
+        baseExpressionField.setAccessible(true);
+        baseExpressionField.set(whereClause, condition);
+      } catch (final Exception e) {
+        throw new CommandSQLParsingException("Failed to set baseExpression: " + e.getMessage(), e);
+      }
+
+      final OrBlock orBlock = new OrBlock(-1);
+      try {
+        final java.lang.reflect.Field subBlocksField = OrBlock.class.getDeclaredField("subBlocks");
+        subBlocksField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        final List<AndBlock> subBlocks = (List<AndBlock>) subBlocksField.get(orBlock);
+
+        final AndBlock andBlock = new AndBlock(-1);
+        final java.lang.reflect.Field subConditionsField = AndBlock.class.getDeclaredField("subConditions");
+        subConditionsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        final List<BooleanExpression> subConditions = (List<BooleanExpression>) subConditionsField.get(andBlock);
+        subConditions.add(condition);
+
+        subBlocks.add(andBlock);
+      } catch (final Exception e) {
+        throw new CommandSQLParsingException("Failed to build OrBlock: " + e.getMessage(), e);
+      }
+
+      // Create Modifier with the condition
+      final Modifier modifier = new Modifier(-1);
+      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
+      squareBracketsField.setAccessible(true);
+      squareBracketsField.set(modifier, true);
+
+      final java.lang.reflect.Field conditionField = Modifier.class.getDeclaredField("condition");
+      conditionField.setAccessible(true);
+      conditionField.set(modifier, orBlock);
+
+      return modifier;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array binary condition selector: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Array LIKE selector visitor - handles [LIKE expression].
+   * Grammar: LBRACKET LIKE expression RBRACKET
+   */
+  @Override
+  public Modifier visitArrayLikeSelector(final SQLParser.ArrayLikeSelectorContext ctx) {
+    try {
+      final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
+
+      final java.lang.reflect.Field operatorField = RightBinaryCondition.class.getDeclaredField("operator");
+      operatorField.setAccessible(true);
+      operatorField.set(rightBinaryCondition, new LikeOperator(-1));
+
+      final java.lang.reflect.Field rightField = RightBinaryCondition.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(rightBinaryCondition, visit(ctx.expression()));
+
+      final Modifier modifier = new Modifier(-1);
+      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
+      squareBracketsField.setAccessible(true);
+      squareBracketsField.set(modifier, true);
+
+      final java.lang.reflect.Field rightBinaryConditionField = Modifier.class.getDeclaredField("rightBinaryCondition");
+      rightBinaryConditionField.setAccessible(true);
+      rightBinaryConditionField.set(modifier, rightBinaryCondition);
+
+      return modifier;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array LIKE selector: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Array ILIKE selector visitor - handles [ILIKE expression].
+   * Grammar: LBRACKET ILIKE expression RBRACKET
+   */
+  @Override
+  public Modifier visitArrayIlikeSelector(final SQLParser.ArrayIlikeSelectorContext ctx) {
+    try {
+      final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
+
+      final java.lang.reflect.Field operatorField = RightBinaryCondition.class.getDeclaredField("operator");
+      operatorField.setAccessible(true);
+      operatorField.set(rightBinaryCondition, new ILikeOperator(-1));
+
+      final java.lang.reflect.Field rightField = RightBinaryCondition.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(rightBinaryCondition, visit(ctx.expression()));
+
+      final Modifier modifier = new Modifier(-1);
+      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
+      squareBracketsField.setAccessible(true);
+      squareBracketsField.set(modifier, true);
+
+      final java.lang.reflect.Field rightBinaryConditionField = Modifier.class.getDeclaredField("rightBinaryCondition");
+      rightBinaryConditionField.setAccessible(true);
+      rightBinaryConditionField.set(modifier, rightBinaryCondition);
+
+      return modifier;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array ILIKE selector: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Array IN selector visitor - handles [IN expression].
+   * Grammar: LBRACKET IN expression RBRACKET
+   */
+  @Override
+  public Modifier visitArrayInSelector(final SQLParser.ArrayInSelectorContext ctx) {
+    try {
+      final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
+
+      final java.lang.reflect.Field inOperatorField = RightBinaryCondition.class.getDeclaredField("inOperator");
+      inOperatorField.setAccessible(true);
+      inOperatorField.set(rightBinaryCondition, new InOperator(-1));
+
+      final java.lang.reflect.Field rightField = RightBinaryCondition.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(rightBinaryCondition, visit(ctx.expression()));
+
+      final Modifier modifier = new Modifier(-1);
+      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
+      squareBracketsField.setAccessible(true);
+      squareBracketsField.set(modifier, true);
+
+      final java.lang.reflect.Field rightBinaryConditionField = Modifier.class.getDeclaredField("rightBinaryCondition");
+      rightBinaryConditionField.setAccessible(true);
+      rightBinaryConditionField.set(modifier, rightBinaryCondition);
+
+      return modifier;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array IN selector: " + e.getMessage(), e);
+    }
+  }
+
+  /**
    * Create ArrayRangeSelector from INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE token.
    * Splits the token text on ".." or "..." to extract from and to integers.
    */

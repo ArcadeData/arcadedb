@@ -849,6 +849,9 @@ arraySelector
     | LBRACKET whereClause RBRACKET                                           # arrayConditionSelector
     | LBRACKET comparisonOperator expression RBRACKET                         # arrayFilterSelector
     | LBRACKET expression comparisonOperator expression RBRACKET              # arrayBinaryCondSelector
+    | LBRACKET LIKE expression RBRACKET                                       # arrayLikeSelector
+    | LBRACKET ILIKE expression RBRACKET                                      # arrayIlikeSelector
+    | LBRACKET IN expression RBRACKET                                         # arrayInSelector
     ;
 
 /**
