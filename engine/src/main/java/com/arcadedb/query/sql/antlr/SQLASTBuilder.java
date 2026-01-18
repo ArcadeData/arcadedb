@@ -608,11 +608,27 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Right side can be:
     // 1. IN (expr1, expr2, ...) - parenthesized list
     // 2. IN [expr1, expr2, ...] - array literal
-    // 3. IN ? or IN :param - input parameter (already an expression)
+    // 3. IN (?) or IN (:param) - single input parameter in parentheses
+    // 4. IN ? or IN :param - input parameter (without parentheses)
 
     if (ctx.LPAREN() != null) {
       // Form: IN (expr1, expr2, ...)
-      // Create array of expressions
+      // Check if it's a single parameter: IN (?)
+      if (ctx.expression().size() == 2) {
+        final Expression rightExpr = (Expression) visit(ctx.expression(1));
+
+        // Check if this is an input parameter
+        if (rightExpr.mathExpression instanceof BaseExpression) {
+          final BaseExpression baseExpr = (BaseExpression) rightExpr.mathExpression;
+          if (baseExpr.inputParam != null) {
+            // IN (?), IN (:name), or IN ($1)
+            condition.rightParam = baseExpr.inputParam;
+            return condition;
+          }
+        }
+      }
+
+      // Multiple expressions or non-parameter: IN (expr1, expr2, ...)
       final List<Expression> expressions = new ArrayList<>();
       for (int i = 1; i < ctx.expression().size(); i++) {
         expressions.add((Expression) visit(ctx.expression(i)));
@@ -622,7 +638,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Form: IN expression (could be array literal, input parameter, etc.)
       final Expression rightExpr = (Expression) visit(ctx.expression(1));
 
-      // Check if it's a math expression (array literal would be a BaseExpression with array)
+      // Check if it's an input parameter
+      if (rightExpr.mathExpression instanceof BaseExpression) {
+        final BaseExpression baseExpr = (BaseExpression) rightExpr.mathExpression;
+        if (baseExpr.inputParam != null) {
+          condition.rightParam = baseExpr.inputParam;
+          return condition;
+        }
+      }
+
+      // Check if it's a math expression (array literal would be ArrayLiteralExpression)
       if (rightExpr.mathExpression != null) {
         condition.rightMathExpression = rightExpr.mathExpression;
       } else {
