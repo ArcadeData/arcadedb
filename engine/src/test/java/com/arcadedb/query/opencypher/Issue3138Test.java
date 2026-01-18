@@ -20,7 +20,6 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -38,16 +37,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test case for GitHub issue #3138.
  * Tests UNWIND + MATCH + MERGE pattern for batch relationship creation.
- *
+ * <p>
  * The query pattern is:
  * UNWIND $batch as row
  * MATCH (a),(b) WHERE ID(a) = row.source_id and ID(b) = row.target_id
  * MERGE (a)-[r:in]->(b) RETURN a, b, r
  */
 class Issue3138Test {
-  private Database database;
+  private Database     database;
   private List<String> sourceIds;
-  private String targetId;
+  private String       targetId;
 
   @BeforeEach
   void setUp() {
@@ -74,8 +73,8 @@ class Issue3138Test {
       targetId = target.getIdentity().toString();
     });
 
-    System.out.println("Created source vertices: " + sourceIds);
-    System.out.println("Created target vertex: " + targetId);
+    ////System.out.println("Created source vertices: " + sourceIds);
+    ////System.out.println("Created target vertex: " + targetId);
   }
 
   @AfterEach
@@ -97,21 +96,21 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Batch parameter: " + batch);
+    //System.out.println("Batch parameter: " + batch);
 
     // Execute the UNWIND + MATCH + MERGE query
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
           "UNWIND $batch as row " +
-          "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
-          "MERGE (a)-[r:in]->(b) " +
-          "RETURN a, b, r",
+              "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
+              "MERGE (a)-[r:in]->(b) " +
+              "RETURN a, b, r",
           Map.of("batch", batch));
 
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("Result " + count + ": " + result.toJSON());
+        //System.out.println("Result " + count + ": " + result.toJSON());
         count++;
       }
 
@@ -142,21 +141,21 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Testing CREATE instead of MERGE");
+    //System.out.println("Testing CREATE instead of MERGE");
 
     // Execute the UNWIND + MATCH + CREATE query
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
           "UNWIND $batch as row " +
-          "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
-          "CREATE (a)-[r:in]->(b) " +
-          "RETURN a, b, r",
+              "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
+              "CREATE (a)-[r:in]->(b) " +
+              "RETURN a, b, r",
           Map.of("batch", batch));
 
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("Result " + count + ": " + result.toJSON());
+        //System.out.println("Result " + count + ": " + result.toJSON());
         count++;
       }
 
@@ -186,20 +185,20 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Testing UNWIND + MATCH only (no MERGE/CREATE)");
+    //System.out.println("Testing UNWIND + MATCH only (no MERGE/CREATE)");
 
     // Execute just UNWIND + MATCH + RETURN
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "UNWIND $batch as row " +
-          "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
-          "RETURN a, b",
+              "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
+              "RETURN a, b",
           Map.of("batch", batch));
 
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("Result " + count + ": " + result.toJSON());
+        //System.out.println("Result " + count + ": " + result.toJSON());
         count++;
       }
 
@@ -220,7 +219,7 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Testing UNWIND only");
+    //System.out.println("Testing UNWIND only");
 
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
@@ -230,7 +229,7 @@ class Issue3138Test {
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("UNWIND Result " + count + ": " + result.toJSON());
+        //System.out.println("UNWIND Result " + count + ": " + result.toJSON());
         count++;
       }
 
@@ -250,7 +249,7 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Testing UNWIND + MATCH single node with label");
+    //System.out.println("Testing UNWIND + MATCH single node with label");
 
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
@@ -260,7 +259,7 @@ class Issue3138Test {
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("MATCH Result " + count + ": " + result.toJSON());
+        //System.out.println("MATCH Result " + count + ": " + result.toJSON());
         count++;
       }
 
@@ -280,14 +279,14 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Testing UNWIND + MATCH (no WHERE)");
-    System.out.println("Batch: " + batch);
+    //System.out.println("Testing UNWIND + MATCH (no WHERE)");
+    //System.out.println("Batch: " + batch);
 
     database.transaction(() -> {
       // First check how many Source vertices exist
       final ResultSet countRs = database.query("opencypher",
           "MATCH (a:Source) RETURN count(a) as c");
-      System.out.println("Source vertex count: " + countRs.next().getProperty("c"));
+      //System.out.println("Source vertex count: " + countRs.next().getProperty("c"));
 
       // Now test UNWIND + MATCH
       final ResultSet rs = database.query("opencypher",
@@ -297,7 +296,7 @@ class Issue3138Test {
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("Result " + count + ": sid=" + result.getProperty("sid") + ", aid=" + result.getProperty("aid"));
+        //System.out.println("Result " + count + ": sid=" + result.getProperty("sid") + ", aid=" + result.getProperty("aid"));
         count++;
       }
 
@@ -318,7 +317,7 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Testing UNWIND + MATCH with WHERE row.source_id = row.source_id");
+    //System.out.println("Testing UNWIND + MATCH with WHERE row.source_id = row.source_id");
 
     database.transaction(() -> {
       // This should always be true
@@ -329,7 +328,7 @@ class Issue3138Test {
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("Result " + count + ": " + result.toJSON());
+        //System.out.println("Result " + count + ": " + result.toJSON());
         count++;
       }
 
@@ -349,7 +348,7 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Testing UNWIND + MATCH with WHERE ID(a) = ID(a)");
+    //System.out.println("Testing UNWIND + MATCH with WHERE ID(a) = ID(a)");
 
     database.transaction(() -> {
       // ID(a) = ID(a) should always be true
@@ -360,7 +359,7 @@ class Issue3138Test {
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("Result " + count + ": " + result.toJSON());
+        //System.out.println("Result " + count + ": " + result.toJSON());
         count++;
       }
 
@@ -373,8 +372,8 @@ class Issue3138Test {
   @Test
   void testUnwindMatchWithIdEqualsString() {
     // Test UNWIND + MATCH with WHERE ID(a) = literal string
-    System.out.println("Testing UNWIND + MATCH with WHERE ID(a) = '#1:0'");
-    System.out.println("First source ID: " + sourceIds.get(0));
+    //System.out.println("Testing UNWIND + MATCH with WHERE ID(a) = '#1:0'");
+    //System.out.println("First source ID: " + sourceIds.get(0));
 
     database.transaction(() -> {
       // ID(a) = '#1:0' should match one Source vertex
@@ -384,7 +383,7 @@ class Issue3138Test {
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("Result " + count + ": " + result.toJSON());
+        //System.out.println("Result " + count + ": " + result.toJSON());
         count++;
       }
 
@@ -404,41 +403,41 @@ class Issue3138Test {
       batch.add(row);
     }
 
-    System.out.println("Testing UNWIND + MATCH with WHERE ID(a) = row.source_id");
-    System.out.println("Batch: " + batch);
+    //System.out.println("Testing UNWIND + MATCH with WHERE ID(a) = row.source_id");
+    //System.out.println("Batch: " + batch);
 
     database.transaction(() -> {
       // First check what values are compared
       final ResultSet debugRs = database.query("opencypher",
           "UNWIND $batch as row MATCH (a:Source) " +
-          "RETURN ID(a) as aid, row.source_id as sid, ID(a) = row.source_id as isEqual",
+              "RETURN ID(a) as aid, row.source_id as sid, ID(a) = row.source_id as isEqual",
           Map.of("batch", batch));
 
       int debugCount = 0;
       while (debugRs.hasNext()) {
         final Result result = debugRs.next();
-        System.out.println("Debug " + debugCount + ": aid=" + result.getProperty("aid")
-            + ", sid=" + result.getProperty("sid")
-            + ", isEqual=" + result.getProperty("isEqual"));
+        //System.out.println("Debug " + debugCount + ": aid=" + result.getProperty("aid")
+        //    + ", sid=" + result.getProperty("sid")
+        //    + ", isEqual=" + result.getProperty("isEqual"));
         debugCount++;
       }
     });
 
     database.transaction(() -> {
       // Now the actual test - first let's verify the simpler case works
-      System.out.println("\n--- Testing WHERE with literal ID ---");
+      //System.out.println("\n--- Testing WHERE with literal ID ---");
       final ResultSet literalRs = database.query("opencypher",
           "UNWIND $batch as row MATCH (a:Source) WHERE ID(a) = '#1:0' RETURN a, row.source_id as sid",
           Map.of("batch", batch));
       int literalCount = 0;
       while (literalRs.hasNext()) {
         final Result r = literalRs.next();
-        System.out.println("Literal result " + literalCount + ": a=" + r.getProperty("a") + ", sid=" + r.getProperty("sid"));
+        //System.out.println("Literal result " + literalCount + ": a=" + r.getProperty("a") + ", sid=" + r.getProperty("sid"));
         literalCount++;
       }
-      System.out.println("Literal WHERE returned " + literalCount + " results");
+      //System.out.println("Literal WHERE returned " + literalCount + " results");
 
-      System.out.println("\n--- Testing WHERE with row.source_id ---");
+      //System.out.println("\n--- Testing WHERE with row.source_id ---");
       final ResultSet rs = database.query("opencypher",
           "UNWIND $batch as row MATCH (a:Source) WHERE ID(a) = row.source_id RETURN a",
           Map.of("batch", batch));
@@ -446,7 +445,7 @@ class Issue3138Test {
       int count = 0;
       while (rs.hasNext()) {
         final Result result = rs.next();
-        System.out.println("Result " + count + ": " + result.toJSON());
+        //System.out.println("Result " + count + ": " + result.toJSON());
         count++;
       }
 
