@@ -1097,10 +1097,37 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * JSON visitor - handles mapLiteral.
    * Grammar: json : mapLiteral
+   * NOTE: This is called from expression alternative, not from visitJsonLiteral.
+   * It needs to return Json (not Expression) for use in INSERT CONTENT clauses.
    */
   @Override
   public Json visitJson(final SQLParser.JsonContext ctx) {
     return (Json) visit(ctx.mapLiteral());
+  }
+
+  /**
+   * Map literal as baseExpression alternative - handles {} in expressions.
+   * Grammar: baseExpression : mapLiteral # mapLit
+   */
+  @Override
+  public BaseExpression visitMapLit(final SQLParser.MapLitContext ctx) {
+    final Json json = (Json) visit(ctx.mapLiteral());
+
+    // Wrap in Expression
+    final Expression expression = new Expression(-1);
+    expression.json = json;
+
+    // Wrap in BaseExpression
+    final BaseExpression baseExpr = new BaseExpression(-1);
+    try {
+      final java.lang.reflect.Field exprField = BaseExpression.class.getDeclaredField("expression");
+      exprField.setAccessible(true);
+      exprField.set(baseExpr, expression);
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to wrap map literal in BaseExpression: " + e.getMessage(), e);
+    }
+
+    return baseExpr;
   }
 
   /**
@@ -1455,7 +1482,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Visit each expression in the array literal
     if (ctx.arrayLiteral().expression() != null) {
       for (final SQLParser.ExpressionContext exprCtx : ctx.arrayLiteral().expression()) {
-        final Expression expr = (Expression) visit(exprCtx);
+        final Object visited = visit(exprCtx);
+
+        // Handle case where visit returns Json instead of Expression (for JSON literals)
+        final Expression expr;
+        if (visited instanceof Json json) {
+          // Wrap Json in Expression
+          expr = new Expression(-1);
+          expr.json = json;
+        } else {
+          expr = (Expression) visited;
+        }
+
         arrayLiteral.addItem(expr);
       }
     }
