@@ -680,9 +680,9 @@ conditionBlock
     | expression IS NOT? DEFINED                                        # isDefinedCondition
     | expression NOT? IN (LPAREN (expression (COMMA expression)*)? RPAREN | expression) # inCondition
     | expression NOT? BETWEEN expression AND expression                 # betweenCondition
-    | expression CONTAINS expression                                    # containsCondition
-    | expression CONTAINSALL expression                                 # containsAllCondition
-    | expression CONTAINSANY expression                                 # containsAnyCondition
+    | expression CONTAINS (LPAREN whereClause RPAREN | expression)      # containsCondition
+    | expression CONTAINSALL (LPAREN whereClause RPAREN | expression)   # containsAllCondition
+    | expression CONTAINSANY (LPAREN whereClause RPAREN | expression)   # containsAnyCondition
     | expression CONTAINSKEY expression                                 # containsKeyCondition
     | expression CONTAINSVALUE expression                               # containsValueCondition
     | expression CONTAINSTEXT expression                                # containsTextCondition

@@ -700,13 +700,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * CONTAINS condition - checks if collection contains a value.
-   * Grammar: expression CONTAINS expression
+   * CONTAINS condition - checks if collection contains a value or satisfies a condition.
+   * Grammar: expression CONTAINS (LPAREN whereClause RPAREN | expression)
    */
   @Override
   public BooleanExpression visitContainsCondition(final SQLParser.ContainsConditionContext ctx) {
     final Expression left = (Expression) visit(ctx.expression(0));
-    final Expression right = (Expression) visit(ctx.expression(1));
 
     try {
       final ContainsCondition condition = new ContainsCondition(-1);
@@ -714,9 +713,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       leftField.setAccessible(true);
       leftField.set(condition, left);
 
-      final java.lang.reflect.Field rightField = ContainsCondition.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(condition, right);
+      if (ctx.whereClause() != null) {
+        // Form: expression CONTAINS (whereClause)
+        final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
+        final java.lang.reflect.Field conditionField = ContainsCondition.class.getDeclaredField("condition");
+        conditionField.setAccessible(true);
+        conditionField.set(condition, whereClause.baseExpression);
+      } else {
+        // Form: expression CONTAINS expression
+        final Expression right = (Expression) visit(ctx.expression(1));
+        final java.lang.reflect.Field rightField = ContainsCondition.class.getDeclaredField("right");
+        rightField.setAccessible(true);
+        rightField.set(condition, right);
+      }
 
       return condition;
     } catch (final Exception e) {
@@ -725,12 +734,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * CONTAINSALL condition - checks if collection contains all specified values.
+   * CONTAINSALL condition - checks if collection contains all specified values or satisfies condition.
+   * Grammar: expression CONTAINSALL (LPAREN whereClause RPAREN | expression)
    */
   @Override
   public BooleanExpression visitContainsAllCondition(final SQLParser.ContainsAllConditionContext ctx) {
     final Expression left = (Expression) visit(ctx.expression(0));
-    final Expression right = (Expression) visit(ctx.expression(1));
 
     try {
       final ContainsAllCondition condition = new ContainsAllCondition(-1);
@@ -738,9 +747,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       leftField.setAccessible(true);
       leftField.set(condition, left);
 
-      final java.lang.reflect.Field rightField = ContainsAllCondition.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(condition, right);
+      if (ctx.whereClause() != null) {
+        // Form: expression CONTAINSALL (whereClause)
+        final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
+        final java.lang.reflect.Field conditionField = ContainsAllCondition.class.getDeclaredField("condition");
+        conditionField.setAccessible(true);
+        conditionField.set(condition, whereClause.baseExpression);
+      } else {
+        // Form: expression CONTAINSALL expression
+        final Expression right = (Expression) visit(ctx.expression(1));
+        final java.lang.reflect.Field rightField = ContainsAllCondition.class.getDeclaredField("right");
+        rightField.setAccessible(true);
+        rightField.set(condition, right);
+      }
 
       return condition;
     } catch (final Exception e) {
@@ -749,12 +768,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * CONTAINSANY condition - checks if collection contains any of the specified values.
+   * CONTAINSANY condition - checks if collection contains any of the specified values or satisfies condition.
+   * Grammar: expression CONTAINSANY (LPAREN whereClause RPAREN | expression)
    */
   @Override
   public BooleanExpression visitContainsAnyCondition(final SQLParser.ContainsAnyConditionContext ctx) {
     final Expression left = (Expression) visit(ctx.expression(0));
-    final Expression right = (Expression) visit(ctx.expression(1));
 
     try {
       final ContainsAnyCondition condition = new ContainsAnyCondition(-1);
@@ -762,9 +781,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       leftField.setAccessible(true);
       leftField.set(condition, left);
 
-      final java.lang.reflect.Field rightField = ContainsAnyCondition.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(condition, right);
+      if (ctx.whereClause() != null) {
+        // Form: expression CONTAINSANY (whereClause)
+        final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
+        final java.lang.reflect.Field conditionField = ContainsAnyCondition.class.getDeclaredField("condition");
+        conditionField.setAccessible(true);
+        conditionField.set(condition, whereClause.baseExpression);
+      } else {
+        // Form: expression CONTAINSANY expression
+        final Expression right = (Expression) visit(ctx.expression(1));
+        final java.lang.reflect.Field rightField = ContainsAnyCondition.class.getDeclaredField("right");
+        rightField.setAccessible(true);
+        rightField.set(condition, right);
+      }
 
       return condition;
     } catch (final Exception e) {
