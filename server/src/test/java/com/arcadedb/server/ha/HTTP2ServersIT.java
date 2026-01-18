@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.*;
 import java.net.*;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
@@ -129,9 +130,7 @@ class HTTP2ServersIT extends BaseGraphServerTest {
   void checkDeleteGraphElements() throws Exception {
 
     // Wait for initial synchronization of all servers
-    for (int i = 0; i < getServerCount(); i++) {
-      waitForReplicationIsCompleted(i);
-    }
+    waitForClusterStable(getServerCount());
 
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "TESTS SERVER " + serverIndex);
@@ -226,11 +225,7 @@ class HTTP2ServersIT extends BaseGraphServerTest {
       waitForReplicationIsCompleted(serverIndex);
 
       // Also wait for all other servers to process the delete
-      for (int i = 0; i < getServerCount(); i++) {
-        if (i != serverIndex) {
-          waitForReplicationIsCompleted(i);
-        }
-      }
+      waitForClusterStable(getServerCount());
 
       testEachServer((checkServer) -> {
         try {
