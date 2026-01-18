@@ -1497,6 +1497,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * (when the selector contains INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE).
    */
   private Modifier createModifierForArraySelector(final SQLParser.ArraySelectorContext selectorCtx) {
+    // Visit the selector to get the appropriate type
+    final Object selector = visit(selectorCtx);
+
+    // If visit() already returned a Modifier (e.g., from arrayFilterSelector), use it directly
+    if (selector instanceof Modifier) {
+      return (Modifier) selector;
+    }
+
+    // Otherwise, create a Modifier and wrap the selector
     final Modifier modifier = new Modifier(-1);
 
     try {
@@ -1504,9 +1513,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
       squareBracketsField.setAccessible(true);
       squareBracketsField.set(modifier, true);
-
-      // Visit the selector to get the appropriate type
-      final Object selector = visit(selectorCtx);
 
       if (selector instanceof ArrayRangeSelector) {
         // Range selector [0..3] or [0...3] or INTEGER_RANGE from arraySingleSelector
@@ -1525,8 +1531,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final java.lang.reflect.Field arraySingleValuesField = Modifier.class.getDeclaredField("arraySingleValues");
         arraySingleValuesField.setAccessible(true);
         arraySingleValuesField.set(modifier, singleValues);
+      } else if (selector instanceof OrBlock) {
+        // Condition selector [whereClause]
+        final java.lang.reflect.Field conditionField = Modifier.class.getDeclaredField("condition");
+        conditionField.setAccessible(true);
+        conditionField.set(modifier, selector);
       }
-      // TODO: Handle arrayConditionSelector and arrayFilterSelector when needed
+      // arrayFilterSelector returns Modifier directly, handled above
 
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to create modifier for array selector: " + e.getMessage(), e);
@@ -3103,6 +3114,42 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return new ArraySelector(-1);
+  }
+
+  /**
+   * Array filter selector visitor - handles [=expression], [<expression], etc.
+   * Grammar: LBRACKET comparisonOperator expression RBRACKET
+   */
+  @Override
+  public Modifier visitArrayFilterSelector(final SQLParser.ArrayFilterSelectorContext ctx) {
+    try {
+      // Create RightBinaryCondition for filtering
+      final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
+
+      // Get and set the comparison operator
+      final java.lang.reflect.Field operatorField = RightBinaryCondition.class.getDeclaredField("operator");
+      operatorField.setAccessible(true);
+      operatorField.set(rightBinaryCondition, mapComparisonOperator(ctx.comparisonOperator()));
+
+      // Get and set the right expression
+      final java.lang.reflect.Field rightField = RightBinaryCondition.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(rightBinaryCondition, visit(ctx.expression()));
+
+      // Create Modifier with the filter condition
+      final Modifier modifier = new Modifier(-1);
+      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
+      squareBracketsField.setAccessible(true);
+      squareBracketsField.set(modifier, true);
+
+      final java.lang.reflect.Field rightBinaryConditionField = Modifier.class.getDeclaredField("rightBinaryCondition");
+      rightBinaryConditionField.setAccessible(true);
+      rightBinaryConditionField.set(modifier, rightBinaryCondition);
+
+      return modifier;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array filter selector: " + e.getMessage(), e);
+    }
   }
 
   /**
