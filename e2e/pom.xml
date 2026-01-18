@@ -30,8 +30,8 @@
     </parent>
 
     <properties>
-        <postgresql.version>42.7.8</postgresql.version>
-        <logback-classic.version>1.5.24</logback-classic.version>
+        <postgresql.version>42.7.9</postgresql.version>
+        <logback-classic.version>1.5.25</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
         <assertj-db.version>3.0.1</assertj-db.version>
     </properties>

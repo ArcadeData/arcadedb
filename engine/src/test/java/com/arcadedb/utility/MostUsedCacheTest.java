@@ -341,12 +341,12 @@ public class MostUsedCacheTest {
     cache.put(10000, "trigger eviction");
     final long evictionTime = System.currentTimeMillis() - startEviction;
 
-    System.out.println("Performance test:");
-    System.out.println("  Insert 10K entries: " + insertTime + "ms");
-    System.out.println("  100K accesses: " + accessTime + "ms");
-    System.out.println("  Batch eviction (25% removed, 75% kept): " + evictionTime + "ms");
-    System.out.println("  Final size: " + cache.size());
-    System.out.println("  " + cache.getStats());
+    //System.out.println("Performance test:");
+    //System.out.println("  Insert 10K entries: " + insertTime + "ms");
+    //System.out.println("  100K accesses: " + accessTime + "ms");
+    //System.out.println("  Batch eviction (25% removed, 75% kept): " + evictionTime + "ms");
+    //System.out.println("  Final size: " + cache.size());
+    //System.out.println("  " + cache.getStats());
 
     // Sanity checks (not strict performance assertions)
     assertTrue(insertTime < 1000, "Insert should be fast");

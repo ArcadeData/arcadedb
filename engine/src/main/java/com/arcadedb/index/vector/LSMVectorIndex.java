@@ -784,6 +784,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param graphCallback Optional callback for graph build progress
    */
   private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback) {
+    // Always have a progress reporter: if caller didn't provide one, log throttled progress every ~2s
+    final GraphBuildCallback effectiveGraphCallback;
+    if (graphCallback != null) {
+      effectiveGraphCallback = graphCallback;
+    } else {
+      final long[] lastLogTimeMs = {System.currentTimeMillis()};
+      final int[] lastLoggedProcessed = {-1};
+      effectiveGraphCallback = (phase, processedNodes, totalNodes, vectorAccesses) -> {
+        if (totalNodes <= 0)
+          return;
+
+        final long now = System.currentTimeMillis();
+        final boolean progressed = processedNodes != lastLoggedProcessed[0];
+        final boolean timeElapsed = now - lastLogTimeMs[0] >= 2000;
+        final boolean reachedEnd = processedNodes >= totalNodes && lastLoggedProcessed[0] != totalNodes;
+        final boolean shouldLog = progressed && (timeElapsed || reachedEnd);
+
+        if (shouldLog) {
+          LogManager.instance().log(this, Level.INFO,
+              "Graph build %s: %d/%d (vector accesses=%d)", phase, processedNodes, totalNodes, vectorAccesses);
+          lastLogTimeMs[0] = now;
+          lastLoggedProcessed[0] = processedNodes;
+        }
+      };
+    }
     // CRITICAL FIX: Collect vectors DIRECTLY from pages instead of from vectorIndex.
     // This avoids race conditions where concurrent replication adds entries to vectorIndex
     // that don't yet exist on disk pages. We iterate pages and read what's actually persisted.
@@ -966,14 +991,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Report validation progress
         validatedCount++;
-        if (graphCallback != null && validatedCount % VALIDATION_PROGRESS_INTERVAL == 0) {
-          graphCallback.onGraphBuildProgress("validating", validatedCount, totalVectorsToValidate, 0);
+        if (effectiveGraphCallback != null && validatedCount % VALIDATION_PROGRESS_INTERVAL == 0) {
+          effectiveGraphCallback.onGraphBuildProgress("validating", validatedCount, totalVectorsToValidate, 0);
         }
       }
 
       // Final validation progress report
-      if (graphCallback != null && validatedCount > 0) {
-        graphCallback.onGraphBuildProgress("validating", validatedCount, totalVectorsToValidate, 0);
+      if (effectiveGraphCallback != null && validatedCount > 0) {
+        effectiveGraphCallback.onGraphBuildProgress("validating", validatedCount, totalVectorsToValidate, 0);
       }
 
       if (skippedDeletedDocs > 0) {
@@ -1034,7 +1059,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Start progress monitoring thread if callback provided
         final Thread progressMonitor;
         final AtomicBoolean buildComplete = new AtomicBoolean(false);
-        if (graphCallback != null) {
+        if (effectiveGraphCallback != null) {
           final int totalNodes = vectors.size();
           progressMonitor = new Thread(() -> {
             try {
@@ -1044,7 +1069,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 final int insertsInProgress = builder.insertsInProgress();
 
                 // Report progress
-                graphCallback.onGraphBuildProgress("building", nodesAdded, totalNodes, nodesAdded + insertsInProgress);
+                effectiveGraphCallback.onGraphBuildProgress("building", nodesAdded, totalNodes, nodesAdded + insertsInProgress);
 
                 // Sleep briefly before next poll
                 Thread.sleep(100); // Poll every 100ms
@@ -1102,8 +1127,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         LogManager.instance().log(this, Level.FINE, "Writing vector graph to disk for index: %s (nodes=%d)", indexName, totalNodes);
 
         // Report persistence phase start
-        if (graphCallback != null)
-          graphCallback.onGraphBuildProgress("persisting", 0, totalNodes, 0);
+        if (effectiveGraphCallback != null)
+          effectiveGraphCallback.onGraphBuildProgress("persisting", 0, totalNodes, 0);
 
         // Start a dedicated transaction for graph persistence with chunked commits
         long chunkSizeMB = getTxChunkSize();
@@ -1132,8 +1157,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
 
           // Report persistence completion
-          if (graphCallback != null) {
-            graphCallback.onGraphBuildProgress("persisting", totalNodes, totalNodes, 0);
+          if (effectiveGraphCallback != null) {
+            effectiveGraphCallback.onGraphBuildProgress("persisting", totalNodes, totalNodes, 0);
           }
 
           // Commit the transaction to persist graph pages
