@@ -38,7 +38,7 @@ options {
  * Main entry point - parses a single SQL statement
  */
 parse
-    : statement EOF
+    : statement SEMICOLON? EOF
     ;
 
 /**

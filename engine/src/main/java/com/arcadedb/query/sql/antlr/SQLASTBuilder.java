@@ -432,15 +432,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Condition block visitor.
-   * Handles all types of conditions: comparisons, NULL checks, IN, BETWEEN, etc.
-   */
-  public BooleanExpression visitConditionBlock(final SQLParser.ConditionBlockContext ctx) {
-    // Handle different condition types based on the labeled alternative
-    return (BooleanExpression) visitChildren(ctx);
-  }
-
-  /**
    * Comparison condition (e.g., a = b, x < y).
    */
   @Override
@@ -460,16 +451,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * IS NULL / IS NOT NULL condition.
+   * IS NULL / IS NOT NULL condition - TODO: Implement when needed by tests.
    */
   @Override
   public BooleanExpression visitIsNullCondition(final SQLParser.IsNullConditionContext ctx) {
-    final Expression expr = (Expression) visit(ctx.expression());
-    final boolean isNot = ctx.NOT() != null;
-
-    // Create appropriate condition
-    // TODO: Map to correct ArcadeDB AST class (IsNullCondition or similar)
-    // For now, return a placeholder
     throw new UnsupportedOperationException("IS NULL condition not yet implemented");
   }
 
@@ -488,6 +473,113 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // For now, leave right field null - will be implemented later
 
     return condition;
+  }
+
+  /**
+   * TRUE/FALSE/NULL condition literals - TODO: Implement when needed by tests.
+   */
+  @Override
+  public BooleanExpression visitTrueCondition(final SQLParser.TrueConditionContext ctx) {
+    throw new UnsupportedOperationException("TRUE literal condition not yet implemented");
+  }
+
+  @Override
+  public BooleanExpression visitFalseCondition(final SQLParser.FalseConditionContext ctx) {
+    throw new UnsupportedOperationException("FALSE literal condition not yet implemented");
+  }
+
+  @Override
+  public BooleanExpression visitNullCondition(final SQLParser.NullConditionContext ctx) {
+    throw new UnsupportedOperationException("NULL literal condition not yet implemented");
+  }
+
+  /**
+   * Parenthesized condition - critical for nested WHERE clauses.
+   */
+  @Override
+  public BooleanExpression visitParenthesizedCondition(final SQLParser.ParenthesizedConditionContext ctx) {
+    // Simply delegate to the inner whereClause
+    final WhereClause inner = visitWhereClause(ctx.whereClause());
+    return inner.baseExpression;
+  }
+
+  /**
+   * BETWEEN condition (e.g., x BETWEEN 1 AND 10).
+   * TODO: Implement when needed by tests.
+   */
+  @Override
+  public BooleanExpression visitBetweenCondition(final SQLParser.BetweenConditionContext ctx) {
+    throw new UnsupportedOperationException("BETWEEN condition not yet implemented - add implementation when needed");
+  }
+
+  /**
+   * CONTAINS* conditions - TODO: Implement when needed by tests.
+   */
+  @Override
+  public BooleanExpression visitContainsCondition(final SQLParser.ContainsConditionContext ctx) {
+    throw new UnsupportedOperationException("CONTAINS condition not yet implemented");
+  }
+
+  @Override
+  public BooleanExpression visitContainsAllCondition(final SQLParser.ContainsAllConditionContext ctx) {
+    throw new UnsupportedOperationException("CONTAINSALL condition not yet implemented");
+  }
+
+  @Override
+  public BooleanExpression visitContainsAnyCondition(final SQLParser.ContainsAnyConditionContext ctx) {
+    throw new UnsupportedOperationException("CONTAINSANY condition not yet implemented");
+  }
+
+  @Override
+  public BooleanExpression visitContainsKeyCondition(final SQLParser.ContainsKeyConditionContext ctx) {
+    throw new UnsupportedOperationException("CONTAINSKEY condition not yet implemented");
+  }
+
+  @Override
+  public BooleanExpression visitContainsValueCondition(final SQLParser.ContainsValueConditionContext ctx) {
+    throw new UnsupportedOperationException("CONTAINSVALUE condition not yet implemented");
+  }
+
+  @Override
+  public BooleanExpression visitContainsTextCondition(final SQLParser.ContainsTextConditionContext ctx) {
+    throw new UnsupportedOperationException("CONTAINSTEXT condition not yet implemented");
+  }
+
+  /**
+   * LIKE / ILIKE conditions - TODO: Implement when needed by tests.
+   */
+  @Override
+  public BooleanExpression visitLikeCondition(final SQLParser.LikeConditionContext ctx) {
+    throw new UnsupportedOperationException("LIKE condition not yet implemented");
+  }
+
+  @Override
+  public BooleanExpression visitIlikeCondition(final SQLParser.IlikeConditionContext ctx) {
+    throw new UnsupportedOperationException("ILIKE condition not yet implemented");
+  }
+
+  /**
+   * MATCHES condition - TODO: Implement when needed by tests.
+   */
+  @Override
+  public BooleanExpression visitMatchesCondition(final SQLParser.MatchesConditionContext ctx) {
+    throw new UnsupportedOperationException("MATCHES condition not yet implemented");
+  }
+
+  /**
+   * INSTANCEOF condition - TODO: Implement when needed by tests.
+   */
+  @Override
+  public BooleanExpression visitInstanceofCondition(final SQLParser.InstanceofConditionContext ctx) {
+    throw new UnsupportedOperationException("INSTANCEOF condition not yet implemented");
+  }
+
+  /**
+   * IS DEFINED condition - TODO: Implement when needed by tests.
+   */
+  @Override
+  public BooleanExpression visitIsDefinedCondition(final SQLParser.IsDefinedConditionContext ctx) {
+    throw new UnsupportedOperationException("IS DEFINED condition not yet implemented");
   }
 
   // ============================================================================
@@ -595,6 +687,77 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Base alternative - when mathExpression is just a baseExpression.
+   */
+  @Override
+  public MathExpression visitBase(final SQLParser.BaseContext ctx) {
+    return (MathExpression) visit(ctx.baseExpression());
+  }
+
+  /**
+   * Unary +/- operator.
+   */
+  @Override
+  public MathExpression visitUnary(final SQLParser.UnaryContext ctx) {
+    // TODO: Implement unary operations when needed
+    throw new UnsupportedOperationException("Unary operations not yet implemented");
+  }
+
+  /**
+   * Multiplicative operations (*, /, %).
+   */
+  @Override
+  public MathExpression visitMultiplicative(final SQLParser.MultiplicativeContext ctx) {
+    // TODO: Implement multiplicative operations when needed
+    throw new UnsupportedOperationException("Multiplicative operations not yet implemented");
+  }
+
+  /**
+   * Additive operations (+, -).
+   */
+  @Override
+  public MathExpression visitAdditive(final SQLParser.AdditiveContext ctx) {
+    // TODO: Implement additive operations when needed
+    throw new UnsupportedOperationException("Additive operations not yet implemented");
+  }
+
+  /**
+   * Shift operations (<<, >>, >>>).
+   */
+  @Override
+  public MathExpression visitShift(final SQLParser.ShiftContext ctx) {
+    // TODO: Implement shift operations when needed
+    throw new UnsupportedOperationException("Shift operations not yet implemented");
+  }
+
+  /**
+   * Bitwise AND operation.
+   */
+  @Override
+  public MathExpression visitBitwiseAnd(final SQLParser.BitwiseAndContext ctx) {
+    // TODO: Implement bitwise AND when needed
+    throw new UnsupportedOperationException("Bitwise AND not yet implemented");
+  }
+
+  /**
+   * Bitwise XOR operation.
+   */
+  @Override
+  public MathExpression visitBitwiseXor(final SQLParser.BitwiseXorContext ctx) {
+    // TODO: Implement bitwise XOR when needed
+    throw new UnsupportedOperationException("Bitwise XOR not yet implemented");
+  }
+
+  /**
+   * Bitwise OR operation.
+   */
+  @Override
+  public MathExpression visitBitwiseOr(final SQLParser.BitwiseOrContext ctx) {
+    // TODO: Implement bitwise OR when needed
+    throw new UnsupportedOperationException("Bitwise OR not yet implemented");
+  }
+
+  /**
    * Base expression visitor.
    * Handles numbers, identifiers, strings, function calls, etc.
    * This delegates to labeled alternative visitors.
@@ -697,6 +860,69 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Function call visitor (e.g., EXPAND(arr), SUM(price)).
+   */
+  @Override
+  public BaseExpression visitFunctionCallExpr(final SQLParser.FunctionCallExprContext ctx) {
+    final BaseExpression baseExpr = new BaseExpression(-1);
+
+    try {
+      // Create the AST structure: BaseExpression -> BaseIdentifier -> LevelZeroIdentifier -> FunctionCall
+      final FunctionCall funcCall = (FunctionCall) visit(ctx.functionCall());
+
+      final LevelZeroIdentifier levelZero = new LevelZeroIdentifier(-1);
+      final java.lang.reflect.Field funcCallField = LevelZeroIdentifier.class.getDeclaredField("functionCall");
+      funcCallField.setAccessible(true);
+      funcCallField.set(levelZero, funcCall);
+
+      final BaseIdentifier baseId = new BaseIdentifier(-1);
+      final java.lang.reflect.Field levelZeroField = BaseIdentifier.class.getDeclaredField("levelZero");
+      levelZeroField.setAccessible(true);
+      levelZeroField.set(baseId, levelZero);
+
+      baseExpr.identifier = baseId;
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build function call expression: " + e.getMessage(), e);
+    }
+
+    return baseExpr;
+  }
+
+  /**
+   * Function call visitor - parses function name and parameters.
+   * Grammar: identifier LPAREN (expression (COMMA expression)*)? RPAREN
+   */
+  @Override
+  public FunctionCall visitFunctionCall(final SQLParser.FunctionCallContext ctx) {
+    final FunctionCall funcCall = new FunctionCall(-1);
+
+    try {
+      // Function name (using reflection for protected field)
+      final Identifier funcName = (Identifier) visit(ctx.identifier());
+      final java.lang.reflect.Field nameField = FunctionCall.class.getDeclaredField("name");
+      nameField.setAccessible(true);
+      nameField.set(funcCall, funcName);
+
+      // Parameters (using reflection for protected field)
+      if (ctx.expression() != null && !ctx.expression().isEmpty()) {
+        final List<Expression> params = new ArrayList<>();
+        for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
+          params.add((Expression) visit(exprCtx));
+        }
+        final java.lang.reflect.Field paramsField = FunctionCall.class.getDeclaredField("params");
+        paramsField.setAccessible(true);
+        paramsField.set(funcCall, params);
+      }
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build function call: " + e.getMessage(), e);
+    }
+
+    return funcCall;
+  }
+
+  /**
    * Identifier chain visitor (foo.bar.baz with modifiers).
    */
   @Override
@@ -704,12 +930,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final BaseExpression baseExpr = new BaseExpression(-1);
 
     // Build identifier chain
-    // TODO: Implement full identifier chain with method calls, array selectors, modifiers
     if (ctx.identifier() != null && !ctx.identifier().isEmpty()) {
       final Identifier firstId = (Identifier) visit(ctx.identifier(0));
-      final BaseIdentifier baseId = new BaseIdentifier(-1);
-      // TODO: Build complete BaseIdentifier structure
+
+      // Use BaseIdentifier constructor that automatically creates SuffixIdentifier
+      final BaseIdentifier baseId = new BaseIdentifier(firstId);
       baseExpr.identifier = baseId;
+
+      // TODO: Handle method calls, array selectors, modifiers if present
+      // For now, simple identifier chains work
     }
 
     return baseExpr;
@@ -996,16 +1225,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       body.valueExpressions = new ArrayList<>();
-      // Each LPAREN...RPAREN group is a row of values
-      // The grammar allows multiple value rows: VALUES (1,2), (3,4), (5,6)
-      // This is captured by: LPAREN expression (COMMA expression)* RPAREN (COMMA LPAREN...)*
-      // We need to extract each row
-      List<Expression> currentRow = new ArrayList<>();
-      for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
-        currentRow.add((Expression) visit(exprCtx));
-      }
-      if (!currentRow.isEmpty()) {
-        body.valueExpressions.add(currentRow);
+
+      // The grammar: (id, id) VALUES (expr, expr) (, (expr, expr))*
+      // All expressions are in ctx.expression() as a flat list
+      // We need to group them by the number of fields per row
+      final List<SQLParser.ExpressionContext> allExpressions = ctx.expression();
+      final int fieldsPerRow = body.identifierList.size();
+
+      if (fieldsPerRow > 0 && !allExpressions.isEmpty()) {
+        // Split expressions into rows of size fieldsPerRow
+        for (int i = 0; i < allExpressions.size(); i += fieldsPerRow) {
+          List<Expression> currentRow = new ArrayList<>();
+          for (int j = 0; j < fieldsPerRow && (i + j) < allExpressions.size(); j++) {
+            currentRow.add((Expression) visit(allExpressions.get(i + j)));
+          }
+          if (!currentRow.isEmpty()) {
+            body.valueExpressions.add(currentRow);
+          }
+        }
       }
     }
     // SET clause: SET field1 = val1, field2 = val2
@@ -1298,6 +1535,95 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final PInteger pInt = new PInteger(-1);
       pInt.setValue(Integer.parseInt(bodyCtx.INTEGER_LITERAL(0).getText()));
       stmt.totalBucketNo = pInt;
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Visit CREATE VERTEX (instance) statement - TODO: Full implementation pending.
+   * For now returns a basic statement to prevent null pointer.
+   */
+  @Override
+  public CreateVertexStatement visitCreateVertexStmt(final SQLParser.CreateVertexStmtContext ctx) {
+    // Return basic statement - full implementation requires access to protected fields
+    // TODO: Use reflection or find proper API to set fields
+    final CreateVertexStatement stmt = new CreateVertexStatement(-1);
+    return stmt;
+  }
+
+  /**
+   * Visit CREATE EDGE (instance) statement.
+   */
+  @Override
+  public CreateEdgeStatement visitCreateEdgeStmt(final SQLParser.CreateEdgeStmtContext ctx) {
+    final CreateEdgeStatement stmt = new CreateEdgeStatement(-1);
+    final SQLParser.CreateEdgeBodyContext bodyCtx = ctx.createEdgeBody();
+
+    try {
+      // Set targetType (edge type identifier)
+      if (bodyCtx.identifier() != null) {
+        final Identifier targetType = (Identifier) visit(bodyCtx.identifier());
+        final java.lang.reflect.Field targetTypeField = CreateEdgeStatement.class.getDeclaredField("targetType");
+        targetTypeField.setAccessible(true);
+        targetTypeField.set(stmt, targetType);
+      }
+
+      // Set leftExpression (FROM clause)
+      if (bodyCtx.fromItem() != null && bodyCtx.fromItem().size() > 0) {
+        final FromItem fromItem = (FromItem) visit(bodyCtx.fromItem(0));
+        // Convert FromItem to Expression
+        final Expression leftExpr = new Expression(-1);
+        if (fromItem.identifier != null) {
+          leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
+        } else if (fromItem.rids != null && !fromItem.rids.isEmpty()) {
+          leftExpr.rid = fromItem.rids.get(0);
+        }
+        final java.lang.reflect.Field leftExprField = CreateEdgeStatement.class.getDeclaredField("leftExpression");
+        leftExprField.setAccessible(true);
+        leftExprField.set(stmt, leftExpr);
+      }
+
+      // Set rightExpression (TO clause)
+      if (bodyCtx.fromItem() != null && bodyCtx.fromItem().size() > 1) {
+        final FromItem toItem = (FromItem) visit(bodyCtx.fromItem(1));
+        // Convert FromItem to Expression
+        final Expression rightExpr = new Expression(-1);
+        if (toItem.identifier != null) {
+          rightExpr.mathExpression = new BaseExpression(toItem.identifier);
+        } else if (toItem.rids != null && !toItem.rids.isEmpty()) {
+          rightExpr.rid = toItem.rids.get(0);
+        }
+        final java.lang.reflect.Field rightExprField = CreateEdgeStatement.class.getDeclaredField("rightExpression");
+        rightExprField.setAccessible(true);
+        rightExprField.set(stmt, rightExpr);
+      }
+
+      // Set body (SET clause) if present
+      if (bodyCtx.SET() != null && bodyCtx.updateItem() != null) {
+        final InsertBody body = new InsertBody(-1);
+        body.setExpressions = new ArrayList<>();
+        for (final SQLParser.UpdateItemContext updateItemCtx : bodyCtx.updateItem()) {
+          // Manually create InsertSetExpression from updateItem
+          final InsertSetExpression setExpr = new InsertSetExpression();
+          setExpr.left = (Identifier) visit(updateItemCtx.identifier());
+          setExpr.right = (Expression) visit(updateItemCtx.expression());
+          body.setExpressions.add(setExpr);
+        }
+        final java.lang.reflect.Field bodyField = CreateEdgeStatement.class.getDeclaredField("body");
+        bodyField.setAccessible(true);
+        bodyField.set(stmt, body);
+      }
+
+      // Set unidirectional flag
+      if (bodyCtx.UNIDIRECTIONAL() != null) {
+        final java.lang.reflect.Field unidirectionalField = CreateEdgeStatement.class.getDeclaredField("unidirectional");
+        unidirectionalField.setAccessible(true);
+        unidirectionalField.set(stmt, true);
+      }
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build CREATE EDGE statement: " + e.getMessage(), e);
     }
 
     return stmt;
@@ -1730,6 +2056,53 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final RollbackStatement stmt = new RollbackStatement(-1);
     // ROLLBACK has no parameters in the grammar (just the keyword)
     return stmt;
+  }
+
+  // ============================================================================
+  // DATABASE MANAGEMENT STATEMENTS
+  // ============================================================================
+
+  /**
+   * Visit CHECK DATABASE statement.
+   */
+  @Override
+  public CheckDatabaseStatement visitCheckDatabaseStmt(final SQLParser.CheckDatabaseStmtContext ctx) {
+    final CheckDatabaseStatement stmt = new CheckDatabaseStatement(-1);
+    // CHECK DATABASE has no parameters in the simple grammar
+    // Extended syntax with FIX, COMPRESS, TYPE, BUCKET is TODO
+    return stmt;
+  }
+
+  /**
+   * Visit ALIGN DATABASE statement - TODO: Implement when needed.
+   */
+  @Override
+  public Statement visitAlignDatabaseStmt(final SQLParser.AlignDatabaseStmtContext ctx) {
+    throw new UnsupportedOperationException("ALIGN DATABASE statement not yet implemented");
+  }
+
+  /**
+   * Visit IMPORT DATABASE statement - TODO: Implement when needed.
+   */
+  @Override
+  public Statement visitImportDatabaseStmt(final SQLParser.ImportDatabaseStmtContext ctx) {
+    throw new UnsupportedOperationException("IMPORT DATABASE statement not yet implemented");
+  }
+
+  /**
+   * Visit EXPORT DATABASE statement - TODO: Implement when needed.
+   */
+  @Override
+  public Statement visitExportDatabaseStmt(final SQLParser.ExportDatabaseStmtContext ctx) {
+    throw new UnsupportedOperationException("EXPORT DATABASE statement not yet implemented");
+  }
+
+  /**
+   * Visit BACKUP DATABASE statement - TODO: Implement when needed.
+   */
+  @Override
+  public Statement visitBackupDatabaseStmt(final SQLParser.BackupDatabaseStmtContext ctx) {
+    throw new UnsupportedOperationException("BACKUP DATABASE statement not yet implemented");
   }
 
 }

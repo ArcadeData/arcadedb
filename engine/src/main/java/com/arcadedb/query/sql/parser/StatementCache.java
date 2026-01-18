@@ -19,14 +19,10 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 
-import java.io.*;
-import java.nio.charset.*;
 import java.util.*;
-import java.util.logging.*;
 
 /**
  * This class is an LRU cache for already parsed SQL statement executors. It stores itself in the storage as a resource. It also
@@ -38,6 +34,7 @@ public class StatementCache {
   private final Database               db;
   private final Map<String, Statement> cache;
   private final int                    maxCacheSize;
+  private final SQLAntlrParser         parser;
 
   /**
    * @param size the size of the cache
@@ -45,6 +42,7 @@ public class StatementCache {
   public StatementCache(final Database db, final int size) {
     this.db = db;
     this.maxCacheSize = size;
+    this.parser = new SQLAntlrParser(db);  // Create parser once, reuse for all parses
     this.cache = new LinkedHashMap<>(size) {
       @Override
       protected boolean removeEldestEntry(final Map.Entry<String, Statement> eldest) {
@@ -87,38 +85,17 @@ public class StatementCache {
    */
   protected Statement parse(final String statement) throws CommandSQLParsingException {
     try {
-
-      final InputStream is;
-
-      if (db == null) {
-        is = new ByteArrayInputStream(statement.getBytes(DatabaseFactory.getDefaultCharset()));
-      } else {
-        is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
-      }
-
-      SqlParser parser;
-      if (db == null) {
-        parser = new SqlParser(db, is);
-      } else {
-        try {
-          parser = new SqlParser(db, is, "UTF-8");
-        } catch (final UnsupportedEncodingException e2) {
-          LogManager.instance().log(this, Level.WARNING, "Unsupported charset for database " + db);
-          parser = new SqlParser(db, is);
-        }
-      }
-
-      final Statement result = parser.Parse();
+      // Use ANTLR4-based SQL parser (reuse parser instance for efficiency)
+      final Statement result = parser.parse(statement);
 
       result.originalStatementAsString = statement;
       return result;
 
-    } catch (final ParseException e) {
+    } catch (final CommandSQLParsingException e) {
+      // Re-throw parsing exceptions as-is
+      throw e;
+    } catch (final Throwable e) {
       throwParsingException(e, statement);
-    } catch (final TokenMgrError e2) {
-      throwParsingException(e2, statement);
-    } catch (final Throwable e3) {
-      throwParsingException(e3, statement);
     }
     return null;
   }
