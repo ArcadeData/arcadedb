@@ -1582,13 +1582,27 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final BaseIdentifier baseId = new BaseIdentifier(firstId);
       baseExpr.identifier = baseId;
 
-      // Build modifier chain from arraySelectors and modifiers
+      // Build modifier chain from methodCalls, arraySelectors and modifiers
       Modifier firstModifier = null;
       Modifier currentModifier = null;
 
       try {
         final java.lang.reflect.Field nextField = Modifier.class.getDeclaredField("next");
         nextField.setAccessible(true);
+
+        // Process method calls (.substring(0,1), etc.)
+        if (ctx.methodCall() != null) {
+          for (final SQLParser.MethodCallContext methodCtx : ctx.methodCall()) {
+            final Modifier modifier = createModifierForMethodCall(methodCtx);
+            if (firstModifier == null) {
+              firstModifier = modifier;
+              currentModifier = modifier;
+            } else {
+              nextField.set(currentModifier, modifier);
+              currentModifier = modifier;
+            }
+          }
+        }
 
         // Process array selectors
         if (ctx.arraySelector() != null) {
@@ -1681,6 +1695,48 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to create modifier for array selector: " + e.getMessage(), e);
+    }
+
+    return modifier;
+  }
+
+  /**
+   * Create a Modifier for a method call context.
+   * Grammar: methodCall: DOT identifier LPAREN (expression (COMMA expression)*)? RPAREN
+   *
+   * Example: type.substring(0,1) creates a Modifier with a MethodCall
+   */
+  private Modifier createModifierForMethodCall(final SQLParser.MethodCallContext methodCtx) {
+    final Modifier modifier = new Modifier(-1);
+
+    try {
+      // Create MethodCall object
+      final MethodCall methodCall = new MethodCall(-1);
+
+      // Set method name
+      final java.lang.reflect.Field methodNameField = MethodCall.class.getDeclaredField("methodName");
+      methodNameField.setAccessible(true);
+      methodNameField.set(methodCall, (Identifier) visit(methodCtx.identifier()));
+
+      // Set parameters
+      final java.lang.reflect.Field paramsField = MethodCall.class.getDeclaredField("params");
+      paramsField.setAccessible(true);
+      @SuppressWarnings("unchecked")
+      final List<Expression> params = (List<Expression>) paramsField.get(methodCall);
+
+      if (methodCtx.expression() != null) {
+        for (final SQLParser.ExpressionContext exprCtx : methodCtx.expression()) {
+          params.add((Expression) visit(exprCtx));
+        }
+      }
+
+      // Set methodCall field in Modifier
+      final java.lang.reflect.Field methodCallField = Modifier.class.getDeclaredField("methodCall");
+      methodCallField.setAccessible(true);
+      methodCallField.set(modifier, methodCall);
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to create modifier for method call: " + e.getMessage(), e);
     }
 
     return modifier;
