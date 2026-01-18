@@ -143,6 +143,27 @@ public class CollectionUtils {
     return Collections.unmodifiableList(result);
   }
 
+  /**
+   * Checks if a collection is not null and not empty.
+   * Useful for common pattern: if (collection != null && !collection.isEmpty())
+   *
+   * @param collection the collection to check
+   * @return true if collection is not null and not empty, false otherwise
+   */
+  public static boolean isNotEmpty(final Collection<?> collection) {
+    return collection != null && !collection.isEmpty();
+  }
+
+  /**
+   * Checks if a collection is null or empty.
+   * Useful for early return patterns: if (collection == null || collection.isEmpty())
+   *
+   * @param collection the collection to check
+   * @return true if collection is null or empty, false otherwise
+   */
+  public static boolean isEmpty(final Collection<?> collection) {
+    return collection == null || collection.isEmpty();
+  }
 
   /**
    * Converts any array (including primitive arrays) to a List.

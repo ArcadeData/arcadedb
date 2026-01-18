@@ -24,11 +24,14 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.utility.CollectionUtils;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import static com.arcadedb.query.sql.antlr.ReflectionUtils.*;
 
 /**
  * ANTLR4 visitor that builds ArcadeDB's internal AST from the SQL parse tree.
@@ -175,7 +178,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Handle projection item list
-    if (ctx.projectionItem() != null && !ctx.projectionItem().isEmpty()) {
+    if (CollectionUtils.isNotEmpty(ctx.projectionItem())) {
       for (final SQLParser.ProjectionItemContext itemCtx : ctx.projectionItem()) {
         items.add((ProjectionItem) visit(itemCtx));
       }
@@ -221,38 +224,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public NestedProjection visitNestedProjection(final SQLParser.NestedProjectionContext ctx) {
     final NestedProjection nestedProjection = new NestedProjection(-1);
 
-    try {
-      final java.lang.reflect.Field includeItemsField = NestedProjection.class.getDeclaredField("includeItems");
-      includeItemsField.setAccessible(true);
-      @SuppressWarnings("unchecked")
-      final List<NestedProjectionItem> includeItems = (List<NestedProjectionItem>) includeItemsField.get(nestedProjection);
+    @SuppressWarnings("unchecked")
+    final List<NestedProjectionItem> includeItems = (List<NestedProjectionItem>) getField(nestedProjection,
+        NestedProjection.class, "includeItems");
+    @SuppressWarnings("unchecked")
+    final List<NestedProjectionItem> excludeItems = (List<NestedProjectionItem>) getField(nestedProjection,
+        NestedProjection.class, "excludeItems");
 
-      final java.lang.reflect.Field excludeItemsField = NestedProjection.class.getDeclaredField("excludeItems");
-      excludeItemsField.setAccessible(true);
-      @SuppressWarnings("unchecked")
-      final List<NestedProjectionItem> excludeItems = (List<NestedProjectionItem>) excludeItemsField.get(nestedProjection);
+    for (final SQLParser.NestedProjectionItemContext itemCtx : ctx.nestedProjectionItem()) {
+      final NestedProjectionItem item = (NestedProjectionItem) visit(itemCtx);
+      final boolean isExclude = (Boolean) getField(item, NestedProjectionItem.class, "exclude");
+      final boolean isStar = (Boolean) getField(item, NestedProjectionItem.class, "star");
 
-      final java.lang.reflect.Field starItemField = NestedProjection.class.getDeclaredField("starItem");
-      starItemField.setAccessible(true);
-      final java.lang.reflect.Field itemExcludeField = NestedProjectionItem.class.getDeclaredField("exclude");
-      itemExcludeField.setAccessible(true);
-      final java.lang.reflect.Field itemStarField = NestedProjectionItem.class.getDeclaredField("star");
-      itemStarField.setAccessible(true);
-
-      for (final SQLParser.NestedProjectionItemContext itemCtx : ctx.nestedProjectionItem()) {
-        final NestedProjectionItem item = (NestedProjectionItem) visit(itemCtx);
-        final boolean isExclude = (Boolean) itemExcludeField.get(item);
-        final boolean isStar = (Boolean) itemStarField.get(item);
-
-        if (isStar)
-          starItemField.set(nestedProjection, item);
-        else if (isExclude)
-          excludeItems.add(item);
-        else
-          includeItems.add(item);
-      }
-    } catch (final Exception e) {
-      throw new CommandSQLParsingException("Failed to build nested projection: " + e.getMessage(), e);
+      if (isStar)
+        setField(nestedProjection, NestedProjection.class, "starItem", item);
+      else if (isExclude)
+        excludeItems.add(item);
+      else
+        includeItems.add(item);
     }
 
     return nestedProjection;
@@ -265,48 +254,29 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public NestedProjectionItem visitNestedProjectionItem(final SQLParser.NestedProjectionItemContext ctx) {
     final NestedProjectionItem item = new NestedProjectionItem(-1);
 
-    try {
-      // Get reflection fields
-      final java.lang.reflect.Field starField = NestedProjectionItem.class.getDeclaredField("star");
-      starField.setAccessible(true);
-      final java.lang.reflect.Field excludeField = NestedProjectionItem.class.getDeclaredField("exclude");
-      excludeField.setAccessible(true);
-      final java.lang.reflect.Field expressionField = NestedProjectionItem.class.getDeclaredField("expression");
-      expressionField.setAccessible(true);
-      final java.lang.reflect.Field rightWildcardField = NestedProjectionItem.class.getDeclaredField("rightWildcard");
-      rightWildcardField.setAccessible(true);
-      final java.lang.reflect.Field expansionField = NestedProjectionItem.class.getDeclaredField("expansion");
-      expansionField.setAccessible(true);
-      final java.lang.reflect.Field aliasField = NestedProjectionItem.class.getDeclaredField("alias");
-      aliasField.setAccessible(true);
+    // STAR
+    if (ctx.STAR() != null && ctx.expression() == null)
+      setField(item, NestedProjectionItem.class, "star", true);
 
-      // STAR
-      if (ctx.STAR() != null && ctx.expression() == null)
-        starField.set(item, true);
+    // BANG (exclude)
+    if (ctx.BANG() != null)
+      setField(item, NestedProjectionItem.class, "exclude", true);
 
-      // BANG (exclude)
-      if (ctx.BANG() != null)
-        excludeField.set(item, true);
+    // Expression
+    if (ctx.expression() != null)
+      setField(item, NestedProjectionItem.class, "expression", (Expression) visit(ctx.expression()));
 
-      // Expression
-      if (ctx.expression() != null)
-        expressionField.set(item, (Expression) visit(ctx.expression()));
+    // Right wildcard (expression followed by *)
+    if (ctx.expression() != null && ctx.STAR() != null)
+      setField(item, NestedProjectionItem.class, "rightWildcard", true);
 
-      // Right wildcard (expression followed by *)
-      if (ctx.expression() != null && ctx.STAR() != null)
-        rightWildcardField.set(item, true);
+    // Nested expansion
+    if (ctx.nestedProjection() != null)
+      setField(item, NestedProjectionItem.class, "expansion", (NestedProjection) visit(ctx.nestedProjection()));
 
-      // Nested expansion
-      if (ctx.nestedProjection() != null)
-        expansionField.set(item, (NestedProjection) visit(ctx.nestedProjection()));
-
-      // Alias
-      if (ctx.identifier() != null)
-        aliasField.set(item, (Identifier) visit(ctx.identifier()));
-
-    } catch (final Exception e) {
-      throw new CommandSQLParsingException("Failed to build nested projection item: " + e.getMessage(), e);
-    }
+    // Alias
+    if (ctx.identifier() != null)
+      setField(item, NestedProjectionItem.class, "alias", (Identifier) visit(ctx.identifier()));
 
     return item;
   }
@@ -334,12 +304,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final FromItem fromItem = new FromItem(-1);
 
     // First identifier is the main FROM target
-    if (ctx.identifier() != null && !ctx.identifier().isEmpty()) {
+    if (CollectionUtils.isNotEmpty(ctx.identifier())) {
       fromItem.identifier = (Identifier) visit(ctx.identifier(0));
     }
 
     // Handle modifiers if present
-    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
+    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
       // For now, just handle the first modifier
       // TODO: Handle modifier chains properly
       fromItem.modifier = (Modifier) visit(ctx.modifier(0));
@@ -458,7 +428,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     fromItem.statement = (Statement) visit(ctx.statement());
 
     // Handle modifiers if present
-    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
+    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
       fromItem.modifier = (Modifier) visit(ctx.modifier(0));
     }
 
@@ -1687,7 +1657,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         starExpr.mathExpression = baseExpr;
         params.add(starExpr);
         paramsField.set(funcCall, params);
-      } else if (ctx.expression() != null && !ctx.expression().isEmpty()) {
+      } else if (CollectionUtils.isNotEmpty(ctx.expression())) {
         // Regular parameters
         final List<Expression> params = new ArrayList<>();
         for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
@@ -1711,7 +1681,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final BaseExpression baseExpr = new BaseExpression(-1);
 
     // Build identifier chain
-    if (ctx.identifier() != null && !ctx.identifier().isEmpty()) {
+    if (CollectionUtils.isNotEmpty(ctx.identifier())) {
       final Identifier firstId = (Identifier) visit(ctx.identifier(0));
 
       // Use BaseIdentifier constructor that automatically creates SuffixIdentifier
@@ -2491,7 +2461,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.InsertStatementContext insertCtx = ctx.insertStatement();
 
     // Target: identifier (BUCKET identifier)? | bucketIdentifier
-    if (insertCtx.identifier() != null && !insertCtx.identifier().isEmpty()) {
+    if (CollectionUtils.isNotEmpty(insertCtx.identifier())) {
       stmt.targetType = (Identifier) visit(insertCtx.identifier(0));
       // Check for BUCKET clause
       if (insertCtx.identifier().size() > 1) {
