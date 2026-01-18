@@ -351,6 +351,17 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
       LogManager.instance().log(this, Level.FINE, "Server %d database directory: %s", i,
           servers[i].getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+
+      // For 3+ server clusters, wait for leader to be ready before starting replicas
+      // This prevents race conditions where replicas connect before leader finishes election
+      // Fix for issue #2043: 3-server cluster formation race condition
+      if (totalServers >= 3 && i == 0 && getServerRole(i) == HAServer.ServerRole.ANY) {
+        LogManager.instance().log(this, Level.INFO,
+            "Waiting for server 0 (leader candidate) to complete election before starting replicas...");
+        HATestHelpers.waitForLeaderElection(servers);
+        LogManager.instance().log(this, Level.INFO,
+            "Leader election complete, proceeding to start replica servers");
+      }
     }
 
     waitAllReplicasAreConnected();
