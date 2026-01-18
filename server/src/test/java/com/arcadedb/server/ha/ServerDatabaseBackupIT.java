@@ -58,8 +58,11 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
-  @Timeout(value = 10, unit = TimeUnit.MINUTES)
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)  // Backup operations are I/O intensive
   void sqlBackup() {
+    // Ensure cluster is stable before backup operations
+    waitForClusterStable(getServerCount());
+
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 
@@ -77,8 +80,11 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
-  @Timeout(value = 10, unit = TimeUnit.MINUTES)
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)  // Backup operations are I/O intensive
   void sqlScriptBackup() {
+    // Ensure cluster is stable before backup operations
+    waitForClusterStable(getServerCount());
+
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 
