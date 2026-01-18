@@ -617,6 +617,7 @@ fromItem
     : rid (COMMA rid)*                                               # fromRids
     | LBRACKET rid (COMMA rid)* RBRACKET                            # fromRidArray
     | LBRACKET inputParameter (COMMA inputParameter)* RBRACKET      # fromParamArray
+    | inputParameter                                                 # fromParam
     | bucketIdentifier                                              # fromBucket
     | bucketList                                                    # fromBucketList
     | indexIdentifier                                               # fromIndex
@@ -677,7 +678,7 @@ conditionBlock
     | NULL                                                              # nullCondition
     | expression IS NOT? NULL                                           # isNullCondition
     | expression IS NOT? DEFINED                                        # isDefinedCondition
-    | expression NOT? IN LPAREN (expression (COMMA expression)*)? RPAREN # inCondition
+    | expression NOT? IN (LPAREN (expression (COMMA expression)*)? RPAREN | expression) # inCondition
     | expression NOT? BETWEEN expression AND expression                 # betweenCondition
     | expression CONTAINS expression                                    # containsCondition
     | expression CONTAINSALL expression                                 # containsAllCondition
@@ -688,7 +689,7 @@ conditionBlock
     | expression LIKE expression                                        # likeCondition
     | expression ILIKE expression                                       # ilikeCondition
     | expression MATCHES expression                                     # matchesCondition
-    | expression INSTANCEOF identifier                                  # instanceofCondition
+    | expression INSTANCEOF (identifier | STRING_LITERAL)               # instanceofCondition
     | expression comparisonOperator expression                          # comparisonCondition
     | LPAREN whereClause RPAREN                                         # parenthesizedCondition
     ;
@@ -748,8 +749,7 @@ timeout
  * Projection - list of expressions to return
  */
 projection
-    : DISTINCT? projectionItem (COMMA projectionItem)*
-    | STAR
+    : DISTINCT? (STAR | projectionItem) (COMMA projectionItem)*
     ;
 
 projectionItem
@@ -821,9 +821,10 @@ baseExpression
 
 /**
  * Function call
+ * Allows STAR (*) as parameter for aggregate functions like COUNT(*), SUM(*), etc.
  */
 functionCall
-    : identifier LPAREN (expression (COMMA expression)*)? RPAREN
+    : identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN
     ;
 
 /**
@@ -846,6 +847,7 @@ arraySelector
     | LBRACKET expression? RANGE expression? RBRACKET                         # arrayRangeSelector
     | LBRACKET expression? ELLIPSIS expression? RBRACKET                      # arrayEllipsisSelector
     | LBRACKET whereClause RBRACKET                                           # arrayConditionSelector
+    | LBRACKET comparisonOperator expression RBRACKET                         # arrayFilterSelector
     | LBRACKET expression comparisonOperator expression RBRACKET              # arrayBinaryCondSelector
     ;
 
@@ -934,4 +936,5 @@ identifier
     | DEFAULT
     | KEY
     | FORMAT
+    | CUSTOM
     ;

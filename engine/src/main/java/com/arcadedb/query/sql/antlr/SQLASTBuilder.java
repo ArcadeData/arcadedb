@@ -199,12 +199,116 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public ProjectionItem visitProjectionItem(final SQLParser.ProjectionItemContext ctx) {
     final ProjectionItem item = new ProjectionItem(-1);
 
+    // BANG (exclude flag) - e.g., !surname
+    if (ctx.BANG() != null)
+      item.exclude = true;
+
     // Expression
     item.expression = (Expression) visit(ctx.expression());
 
+    // Nested projection (e.g., {field1, field2})
+    if (ctx.nestedProjection() != null)
+      item.nestedProjection = (NestedProjection) visit(ctx.nestedProjection());
+
     // Alias (AS identifier)
-    if (ctx.identifier() != null) {
+    if (ctx.identifier() != null)
       item.alias = (Identifier) visit(ctx.identifier());
+
+    return item;
+  }
+
+  /**
+   * Nested projection visitor (e.g., :{field1, field2}).
+   */
+  @Override
+  public NestedProjection visitNestedProjection(final SQLParser.NestedProjectionContext ctx) {
+    final NestedProjection nestedProjection = new NestedProjection(-1);
+
+    try {
+      final java.lang.reflect.Field includeItemsField = NestedProjection.class.getDeclaredField("includeItems");
+      includeItemsField.setAccessible(true);
+      @SuppressWarnings("unchecked")
+      final List<NestedProjectionItem> includeItems = (List<NestedProjectionItem>) includeItemsField.get(nestedProjection);
+
+      final java.lang.reflect.Field excludeItemsField = NestedProjection.class.getDeclaredField("excludeItems");
+      excludeItemsField.setAccessible(true);
+      @SuppressWarnings("unchecked")
+      final List<NestedProjectionItem> excludeItems = (List<NestedProjectionItem>) excludeItemsField.get(nestedProjection);
+
+      final java.lang.reflect.Field starItemField = NestedProjection.class.getDeclaredField("starItem");
+      starItemField.setAccessible(true);
+      final java.lang.reflect.Field itemExcludeField = NestedProjectionItem.class.getDeclaredField("exclude");
+      itemExcludeField.setAccessible(true);
+      final java.lang.reflect.Field itemStarField = NestedProjectionItem.class.getDeclaredField("star");
+      itemStarField.setAccessible(true);
+
+      for (final SQLParser.NestedProjectionItemContext itemCtx : ctx.nestedProjectionItem()) {
+        final NestedProjectionItem item = (NestedProjectionItem) visit(itemCtx);
+        final boolean isExclude = (Boolean) itemExcludeField.get(item);
+        final boolean isStar = (Boolean) itemStarField.get(item);
+
+        if (isStar)
+          starItemField.set(nestedProjection, item);
+        else if (isExclude)
+          excludeItems.add(item);
+        else
+          includeItems.add(item);
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build nested projection: " + e.getMessage(), e);
+    }
+
+    return nestedProjection;
+  }
+
+  /**
+   * Nested projection item visitor.
+   */
+  @Override
+  public NestedProjectionItem visitNestedProjectionItem(final SQLParser.NestedProjectionItemContext ctx) {
+    final NestedProjectionItem item = new NestedProjectionItem(-1);
+
+    try {
+      // Get reflection fields
+      final java.lang.reflect.Field starField = NestedProjectionItem.class.getDeclaredField("star");
+      starField.setAccessible(true);
+      final java.lang.reflect.Field excludeField = NestedProjectionItem.class.getDeclaredField("exclude");
+      excludeField.setAccessible(true);
+      final java.lang.reflect.Field expressionField = NestedProjectionItem.class.getDeclaredField("expression");
+      expressionField.setAccessible(true);
+      final java.lang.reflect.Field rightWildcardField = NestedProjectionItem.class.getDeclaredField("rightWildcard");
+      rightWildcardField.setAccessible(true);
+      final java.lang.reflect.Field expansionField = NestedProjectionItem.class.getDeclaredField("expansion");
+      expansionField.setAccessible(true);
+      final java.lang.reflect.Field aliasField = NestedProjectionItem.class.getDeclaredField("alias");
+      aliasField.setAccessible(true);
+
+      // STAR
+      if (ctx.STAR() != null && ctx.expression() == null)
+        starField.set(item, true);
+
+      // BANG (exclude)
+      if (ctx.BANG() != null)
+        excludeField.set(item, true);
+
+      // Expression
+      if (ctx.expression() != null)
+        expressionField.set(item, (Expression) visit(ctx.expression()));
+
+      // Right wildcard (expression followed by *)
+      if (ctx.expression() != null && ctx.STAR() != null)
+        rightWildcardField.set(item, true);
+
+      // Nested expansion
+      if (ctx.nestedProjection() != null)
+        expansionField.set(item, (NestedProjection) visit(ctx.nestedProjection()));
+
+      // Alias
+      if (ctx.identifier() != null)
+        aliasField.set(item, (Identifier) visit(ctx.identifier()));
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build nested projection item: " + e.getMessage(), e);
     }
 
     return item;
@@ -294,6 +398,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       fromItem.inputParams.add((InputParameter) visit(paramCtx));
     }
 
+    return fromItem;
+  }
+
+  /**
+   * FROM single parameter visitor (e.g., FROM ?).
+   */
+  @Override
+  public FromItem visitFromParam(final SQLParser.FromParamContext ctx) {
+    final FromItem fromItem = new FromItem(-1);
+    fromItem.inputParams = new ArrayList<>();
+    fromItem.inputParams.add((InputParameter) visit(ctx.inputParameter()));
     return fromItem;
   }
 
@@ -451,11 +566,32 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * IS NULL / IS NOT NULL condition - TODO: Implement when needed by tests.
+   * IS NULL / IS NOT NULL condition.
+   * Grammar: expression IS NOT? NULL
    */
   @Override
   public BooleanExpression visitIsNullCondition(final SQLParser.IsNullConditionContext ctx) {
-    throw new UnsupportedOperationException("IS NULL condition not yet implemented");
+    final Expression expr = (Expression) visit(ctx.expression());
+
+    try {
+      if (ctx.NOT() != null) {
+        // IS NOT NULL
+        final IsNotNullCondition condition = new IsNotNullCondition(-1);
+        final java.lang.reflect.Field exprField = IsNotNullCondition.class.getDeclaredField("expression");
+        exprField.setAccessible(true);
+        exprField.set(condition, expr);
+        return condition;
+      } else {
+        // IS NULL
+        final IsNullCondition condition = new IsNullCondition(-1);
+        final java.lang.reflect.Field exprField = IsNullCondition.class.getDeclaredField("expression");
+        exprField.setAccessible(true);
+        exprField.set(condition, expr);
+        return condition;
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build IS NULL condition: " + e.getMessage(), e);
+    }
   }
 
   /**
@@ -468,9 +604,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     condition.left = (Expression) visit(ctx.expression(0));
     condition.not = ctx.NOT() != null;
 
-    // Right side: list of expressions or subquery
-    // TODO: Build InItem from expression list
-    // For now, leave right field null - will be implemented later
+    // Right side can be:
+    // 1. IN (expr1, expr2, ...) - parenthesized list
+    // 2. IN [expr1, expr2, ...] - array literal
+    // 3. IN ? or IN :param - input parameter (already an expression)
+
+    if (ctx.LPAREN() != null) {
+      // Form: IN (expr1, expr2, ...)
+      // Create array of expressions
+      final List<Expression> expressions = new ArrayList<>();
+      for (int i = 1; i < ctx.expression().size(); i++) {
+        expressions.add((Expression) visit(ctx.expression(i)));
+      }
+      condition.right = expressions;
+    } else {
+      // Form: IN expression (could be array literal, input parameter, etc.)
+      final Expression rightExpr = (Expression) visit(ctx.expression(1));
+
+      // Check if it's a math expression (array literal would be a BaseExpression with array)
+      if (rightExpr.mathExpression != null) {
+        condition.rightMathExpression = rightExpr.mathExpression;
+      } else {
+        condition.right = rightExpr;
+      }
+    }
 
     return condition;
   }
@@ -505,81 +662,287 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * BETWEEN condition (e.g., x BETWEEN 1 AND 10).
-   * TODO: Implement when needed by tests.
+   * Grammar: expression NOT? BETWEEN expression AND expression
    */
   @Override
   public BooleanExpression visitBetweenCondition(final SQLParser.BetweenConditionContext ctx) {
-    throw new UnsupportedOperationException("BETWEEN condition not yet implemented - add implementation when needed");
+    final Expression first = (Expression) visit(ctx.expression(0));
+    final Expression second = (Expression) visit(ctx.expression(1));
+    final Expression third = (Expression) visit(ctx.expression(2));
+
+    try {
+      final BetweenCondition condition = new BetweenCondition(-1);
+      final java.lang.reflect.Field firstField = BetweenCondition.class.getDeclaredField("first");
+      firstField.setAccessible(true);
+      firstField.set(condition, first);
+
+      final java.lang.reflect.Field secondField = BetweenCondition.class.getDeclaredField("second");
+      secondField.setAccessible(true);
+      secondField.set(condition, second);
+
+      final java.lang.reflect.Field thirdField = BetweenCondition.class.getDeclaredField("third");
+      thirdField.setAccessible(true);
+      thirdField.set(condition, third);
+
+      // Handle NOT BETWEEN
+      if (ctx.NOT() != null) {
+        final NotBlock notBlock = new NotBlock(-1);
+        notBlock.sub = condition;
+        notBlock.negate = true;
+        return notBlock;
+      }
+
+      return condition;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build BETWEEN condition: " + e.getMessage(), e);
+    }
   }
 
   /**
-   * CONTAINS* conditions - TODO: Implement when needed by tests.
+   * CONTAINS condition - checks if collection contains a value.
+   * Grammar: expression CONTAINS expression
    */
   @Override
   public BooleanExpression visitContainsCondition(final SQLParser.ContainsConditionContext ctx) {
-    throw new UnsupportedOperationException("CONTAINS condition not yet implemented");
-  }
+    final Expression left = (Expression) visit(ctx.expression(0));
+    final Expression right = (Expression) visit(ctx.expression(1));
 
-  @Override
-  public BooleanExpression visitContainsAllCondition(final SQLParser.ContainsAllConditionContext ctx) {
-    throw new UnsupportedOperationException("CONTAINSALL condition not yet implemented");
-  }
+    try {
+      final ContainsCondition condition = new ContainsCondition(-1);
+      final java.lang.reflect.Field leftField = ContainsCondition.class.getDeclaredField("left");
+      leftField.setAccessible(true);
+      leftField.set(condition, left);
 
-  @Override
-  public BooleanExpression visitContainsAnyCondition(final SQLParser.ContainsAnyConditionContext ctx) {
-    throw new UnsupportedOperationException("CONTAINSANY condition not yet implemented");
-  }
+      final java.lang.reflect.Field rightField = ContainsCondition.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(condition, right);
 
-  @Override
-  public BooleanExpression visitContainsKeyCondition(final SQLParser.ContainsKeyConditionContext ctx) {
-    throw new UnsupportedOperationException("CONTAINSKEY condition not yet implemented");
-  }
-
-  @Override
-  public BooleanExpression visitContainsValueCondition(final SQLParser.ContainsValueConditionContext ctx) {
-    throw new UnsupportedOperationException("CONTAINSVALUE condition not yet implemented");
-  }
-
-  @Override
-  public BooleanExpression visitContainsTextCondition(final SQLParser.ContainsTextConditionContext ctx) {
-    throw new UnsupportedOperationException("CONTAINSTEXT condition not yet implemented");
+      return condition;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build CONTAINS condition: " + e.getMessage(), e);
+    }
   }
 
   /**
-   * LIKE / ILIKE conditions - TODO: Implement when needed by tests.
+   * CONTAINSALL condition - checks if collection contains all specified values.
+   */
+  @Override
+  public BooleanExpression visitContainsAllCondition(final SQLParser.ContainsAllConditionContext ctx) {
+    final Expression left = (Expression) visit(ctx.expression(0));
+    final Expression right = (Expression) visit(ctx.expression(1));
+
+    try {
+      final ContainsAllCondition condition = new ContainsAllCondition(-1);
+      final java.lang.reflect.Field leftField = ContainsAllCondition.class.getDeclaredField("left");
+      leftField.setAccessible(true);
+      leftField.set(condition, left);
+
+      final java.lang.reflect.Field rightField = ContainsAllCondition.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(condition, right);
+
+      return condition;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build CONTAINSALL condition: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * CONTAINSANY condition - checks if collection contains any of the specified values.
+   */
+  @Override
+  public BooleanExpression visitContainsAnyCondition(final SQLParser.ContainsAnyConditionContext ctx) {
+    final Expression left = (Expression) visit(ctx.expression(0));
+    final Expression right = (Expression) visit(ctx.expression(1));
+
+    try {
+      final ContainsAnyCondition condition = new ContainsAnyCondition(-1);
+      final java.lang.reflect.Field leftField = ContainsAnyCondition.class.getDeclaredField("left");
+      leftField.setAccessible(true);
+      leftField.set(condition, left);
+
+      final java.lang.reflect.Field rightField = ContainsAnyCondition.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(condition, right);
+
+      return condition;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build CONTAINSANY condition: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * CONTAINSKEY condition - for map key checking.
+   */
+  @Override
+  public BooleanExpression visitContainsKeyCondition(final SQLParser.ContainsKeyConditionContext ctx) {
+    // Use CONTAINS operator for key checking
+    final BinaryCondition condition = new BinaryCondition(-1);
+    condition.left = (Expression) visit(ctx.expression(0));
+    condition.right = (Expression) visit(ctx.expression(1));
+    condition.operator = new ContainsKeyOperator(-1);
+    return condition;
+  }
+
+  /**
+   * CONTAINSVALUE condition - for map value checking.
+   */
+  @Override
+  public BooleanExpression visitContainsValueCondition(final SQLParser.ContainsValueConditionContext ctx) {
+    final Expression left = (Expression) visit(ctx.expression(0));
+    final Expression right = (Expression) visit(ctx.expression(1));
+
+    try {
+      final ContainsValueCondition condition = new ContainsValueCondition(-1);
+      final java.lang.reflect.Field leftField = ContainsValueCondition.class.getDeclaredField("left");
+      leftField.setAccessible(true);
+      leftField.set(condition, left);
+
+      final java.lang.reflect.Field exprField = ContainsValueCondition.class.getDeclaredField("expression");
+      exprField.setAccessible(true);
+      exprField.set(condition, right);
+
+      return condition;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build CONTAINSVALUE condition: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * CONTAINSTEXT condition - for full-text search.
+   */
+  @Override
+  public BooleanExpression visitContainsTextCondition(final SQLParser.ContainsTextConditionContext ctx) {
+    final Expression left = (Expression) visit(ctx.expression(0));
+    final Expression right = (Expression) visit(ctx.expression(1));
+
+    try {
+      final ContainsTextCondition condition = new ContainsTextCondition(-1);
+      final java.lang.reflect.Field leftField = ContainsTextCondition.class.getDeclaredField("left");
+      leftField.setAccessible(true);
+      leftField.set(condition, left);
+
+      final java.lang.reflect.Field rightField = ContainsTextCondition.class.getDeclaredField("right");
+      rightField.setAccessible(true);
+      rightField.set(condition, right);
+
+      return condition;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build CONTAINSTEXT condition: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * LIKE condition (e.g., name LIKE 'John%').
+   * Grammar: expression LIKE expression
    */
   @Override
   public BooleanExpression visitLikeCondition(final SQLParser.LikeConditionContext ctx) {
-    throw new UnsupportedOperationException("LIKE condition not yet implemented");
-  }
-
-  @Override
-  public BooleanExpression visitIlikeCondition(final SQLParser.IlikeConditionContext ctx) {
-    throw new UnsupportedOperationException("ILIKE condition not yet implemented");
+    final BinaryCondition condition = new BinaryCondition(-1);
+    condition.left = (Expression) visit(ctx.expression(0));
+    condition.right = (Expression) visit(ctx.expression(1));
+    condition.operator = new LikeOperator(-1);
+    return condition;
   }
 
   /**
-   * MATCHES condition - TODO: Implement when needed by tests.
+   * ILIKE condition (case-insensitive LIKE).
+   * Grammar: expression ILIKE expression
+   */
+  @Override
+  public BooleanExpression visitIlikeCondition(final SQLParser.IlikeConditionContext ctx) {
+    final BinaryCondition condition = new BinaryCondition(-1);
+    condition.left = (Expression) visit(ctx.expression(0));
+    condition.right = (Expression) visit(ctx.expression(1));
+    condition.operator = new ILikeOperator(-1);
+    return condition;
+  }
+
+  /**
+   * MATCHES condition (regex matching).
+   * Grammar: expression MATCHES expression
    */
   @Override
   public BooleanExpression visitMatchesCondition(final SQLParser.MatchesConditionContext ctx) {
-    throw new UnsupportedOperationException("MATCHES condition not yet implemented");
+    final Expression leftExpr = (Expression) visit(ctx.expression(0));
+    final Expression rightExpr = (Expression) visit(ctx.expression(1));
+
+    try {
+      final MatchesCondition condition = new MatchesCondition(-1);
+      final java.lang.reflect.Field exprField = MatchesCondition.class.getDeclaredField("expression");
+      exprField.setAccessible(true);
+      exprField.set(condition, leftExpr);
+
+      // Set rightExpression (the regex pattern)
+      condition.rightExpression = rightExpr;
+
+      return condition;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build MATCHES condition: " + e.getMessage(), e);
+    }
   }
 
   /**
-   * INSTANCEOF condition - TODO: Implement when needed by tests.
+   * INSTANCEOF condition.
+   * Grammar: expression INSTANCEOF (identifier | STRING_LITERAL)
    */
   @Override
   public BooleanExpression visitInstanceofCondition(final SQLParser.InstanceofConditionContext ctx) {
-    throw new UnsupportedOperationException("INSTANCEOF condition not yet implemented");
+    final Expression left = (Expression) visit(ctx.expression());
+    final InstanceofCondition condition = new InstanceofCondition(-1);
+
+    try {
+      final java.lang.reflect.Field leftField = InstanceofCondition.class.getDeclaredField("left");
+      leftField.setAccessible(true);
+      leftField.set(condition, left);
+
+      if (ctx.identifier() != null) {
+        // Right side is an identifier
+        final Identifier right = (Identifier) visit(ctx.identifier());
+        final java.lang.reflect.Field rightField = InstanceofCondition.class.getDeclaredField("right");
+        rightField.setAccessible(true);
+        rightField.set(condition, right);
+      } else if (ctx.STRING_LITERAL() != null) {
+        // Right side is a string literal
+        final String rightString = ctx.STRING_LITERAL().getText();
+        final java.lang.reflect.Field rightStringField = InstanceofCondition.class.getDeclaredField("rightString");
+        rightStringField.setAccessible(true);
+        rightStringField.set(condition, rightString);
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build INSTANCEOF condition: " + e.getMessage(), e);
+    }
+
+    return condition;
   }
 
   /**
-   * IS DEFINED condition - TODO: Implement when needed by tests.
+   * IS DEFINED / IS NOT DEFINED condition.
+   * Grammar: expression IS NOT? DEFINED
    */
   @Override
   public BooleanExpression visitIsDefinedCondition(final SQLParser.IsDefinedConditionContext ctx) {
-    throw new UnsupportedOperationException("IS DEFINED condition not yet implemented");
+    final Expression expr = (Expression) visit(ctx.expression());
+
+    try {
+      if (ctx.NOT() != null) {
+        // IS NOT DEFINED
+        final IsNotDefinedCondition condition = new IsNotDefinedCondition(-1);
+        final java.lang.reflect.Field exprField = IsNotDefinedCondition.class.getDeclaredField("expression");
+        exprField.setAccessible(true);
+        exprField.set(condition, expr);
+        return condition;
+      } else {
+        // IS DEFINED
+        final IsDefinedCondition condition = new IsDefinedCondition(-1);
+        final java.lang.reflect.Field exprField = IsDefinedCondition.class.getDeclaredField("expression");
+        exprField.setAccessible(true);
+        exprField.set(condition, expr);
+        return condition;
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build IS DEFINED condition: " + e.getMessage(), e);
+    }
   }
 
   // ============================================================================
@@ -708,8 +1071,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitMultiplicative(final SQLParser.MultiplicativeContext ctx) {
-    // TODO: Implement multiplicative operations when needed
-    throw new UnsupportedOperationException("Multiplicative operations not yet implemented");
+    final MathExpression left = (MathExpression) visit(ctx.mathExpression(0));
+    final MathExpression right = (MathExpression) visit(ctx.mathExpression(1));
+
+    final MathExpression result = new MathExpression(-1);
+    result.childExpressions.add(left);
+    result.childExpressions.add(right);
+
+    if (ctx.STAR() != null) {
+      result.operators.add(MathExpression.Operator.STAR);
+    } else if (ctx.SLASH() != null) {
+      result.operators.add(MathExpression.Operator.SLASH);
+    } else if (ctx.REM() != null) {
+      result.operators.add(MathExpression.Operator.REM);
+    }
+
+    return result;
   }
 
   /**
@@ -717,8 +1094,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitAdditive(final SQLParser.AdditiveContext ctx) {
-    // TODO: Implement additive operations when needed
-    throw new UnsupportedOperationException("Additive operations not yet implemented");
+    final MathExpression left = (MathExpression) visit(ctx.mathExpression(0));
+    final MathExpression right = (MathExpression) visit(ctx.mathExpression(1));
+
+    final MathExpression result = new MathExpression(-1);
+    result.childExpressions.add(left);
+    result.childExpressions.add(right);
+
+    if (ctx.PLUS() != null) {
+      result.operators.add(MathExpression.Operator.PLUS);
+    } else if (ctx.MINUS() != null) {
+      result.operators.add(MathExpression.Operator.MINUS);
+    }
+
+    return result;
   }
 
   /**
@@ -726,8 +1115,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitShift(final SQLParser.ShiftContext ctx) {
-    // TODO: Implement shift operations when needed
-    throw new UnsupportedOperationException("Shift operations not yet implemented");
+    final MathExpression left = (MathExpression) visit(ctx.mathExpression(0));
+    final MathExpression right = (MathExpression) visit(ctx.mathExpression(1));
+
+    final MathExpression result = new MathExpression(-1);
+    result.childExpressions.add(left);
+    result.childExpressions.add(right);
+
+    if (ctx.LSHIFT() != null) {
+      result.operators.add(MathExpression.Operator.LSHIFT);
+    } else if (ctx.RSHIFT() != null) {
+      result.operators.add(MathExpression.Operator.RSHIFT);
+    } else if (ctx.RUNSIGNEDSHIFT() != null) {
+      result.operators.add(MathExpression.Operator.RUNSIGNEDSHIFT);
+    }
+
+    return result;
   }
 
   /**
@@ -735,8 +1138,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitBitwiseAnd(final SQLParser.BitwiseAndContext ctx) {
-    // TODO: Implement bitwise AND when needed
-    throw new UnsupportedOperationException("Bitwise AND not yet implemented");
+    final MathExpression left = (MathExpression) visit(ctx.mathExpression(0));
+    final MathExpression right = (MathExpression) visit(ctx.mathExpression(1));
+
+    final MathExpression result = new MathExpression(-1);
+    result.childExpressions.add(left);
+    result.childExpressions.add(right);
+    result.operators.add(MathExpression.Operator.BIT_AND);
+
+    return result;
   }
 
   /**
@@ -744,8 +1154,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitBitwiseXor(final SQLParser.BitwiseXorContext ctx) {
-    // TODO: Implement bitwise XOR when needed
-    throw new UnsupportedOperationException("Bitwise XOR not yet implemented");
+    final MathExpression left = (MathExpression) visit(ctx.mathExpression(0));
+    final MathExpression right = (MathExpression) visit(ctx.mathExpression(1));
+
+    final MathExpression result = new MathExpression(-1);
+    result.childExpressions.add(left);
+    result.childExpressions.add(right);
+    result.operators.add(MathExpression.Operator.XOR);
+
+    return result;
   }
 
   /**
@@ -753,8 +1170,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitBitwiseOr(final SQLParser.BitwiseOrContext ctx) {
-    // TODO: Implement bitwise OR when needed
-    throw new UnsupportedOperationException("Bitwise OR not yet implemented");
+    final MathExpression left = (MathExpression) visit(ctx.mathExpression(0));
+    final MathExpression right = (MathExpression) visit(ctx.mathExpression(1));
+
+    final MathExpression result = new MathExpression(-1);
+    result.childExpressions.add(left);
+    result.childExpressions.add(right);
+    result.operators.add(MathExpression.Operator.BIT_OR);
+
+    return result;
   }
 
   /**
@@ -775,13 +1199,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public BaseExpression visitIntegerLiteral(final SQLParser.IntegerLiteralContext ctx) {
     final BaseExpression baseExpr = new BaseExpression(-1);
 
-    final PNumber number = new PNumber(-1);
+    final PInteger number = new PInteger(-1);
     final String text = ctx.INTEGER_LITERAL().getText();
     try {
       if (text.endsWith("L") || text.endsWith("l")) {
-        number.value = Long.parseLong(text.substring(0, text.length() - 1));
+        number.setValue(Long.parseLong(text.substring(0, text.length() - 1)));
       } else {
-        number.value = Integer.parseInt(text);
+        number.setValue(Integer.parseInt(text));
       }
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid integer: " + text);
@@ -946,11 +1370,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Parenthesized expression visitor.
+   * Handles both (expression) and (statement) alternatives.
    */
   @Override
   public BaseExpression visitParenthesizedExpr(final SQLParser.ParenthesizedExprContext ctx) {
     final BaseExpression baseExpr = new BaseExpression(-1);
-    baseExpr.expression = (Expression) visit(ctx.expression());
+
+    if (ctx.expression() != null) {
+      // Regular parenthesized expression
+      baseExpr.expression = (Expression) visit(ctx.expression());
+    } else if (ctx.statement() != null) {
+      // Parenthesized statement (subquery)
+      // This case is typically handled at a higher level (e.g., visitLetItem checks for this pattern)
+      // For cases where it isn't handled higher up, we need to gracefully handle it here
+      // NOTE: Statements in expressions are not directly supported in all contexts
+      // The calling code should detect this pattern and handle it appropriately
+      // For now, create an empty BaseExpression - this will be detected as a parsing issue if used
+      baseExpr.expression = null;
+    }
+
     return baseExpr;
   }
 
@@ -1030,21 +1468,63 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public InputParameter visitInputParameter(final SQLParser.InputParameterContext ctx) {
-    final InputParameter param = new InputParameter(-1);
-
     if (ctx.HOOK() != null) {
       // Positional parameter: ?
-      param.value = "?";
+      // Use paramNumber = 0 to indicate unindexed positional parameter
+      final PositionalParameter param = new PositionalParameter(-1);
+      try {
+        final java.lang.reflect.Field paramNumberField = PositionalParameter.class.getDeclaredField("paramNumber");
+        paramNumberField.setAccessible(true);
+        paramNumberField.set(param, 0);
+      } catch (final Exception e) {
+        throw new CommandSQLParsingException("Failed to set paramNumber: " + e.getMessage(), e);
+      }
+      return param;
     } else if (ctx.identifier() != null) {
       // Named parameter: :name
       final Identifier id = (Identifier) visit(ctx.identifier());
-      param.value = ":" + id.getValue();
+      final NamedParameter param = new NamedParameter(-1);
+      try {
+        final java.lang.reflect.Field paramNameField = NamedParameter.class.getDeclaredField("paramName");
+        paramNameField.setAccessible(true);
+        paramNameField.set(param, id.getValue());
+        final java.lang.reflect.Field paramNumberField = NamedParameter.class.getDeclaredField("paramNumber");
+        paramNumberField.setAccessible(true);
+        paramNumberField.set(param, -1);
+      } catch (final Exception e) {
+        throw new CommandSQLParsingException("Failed to set paramName: " + e.getMessage(), e);
+      }
+      return param;
     } else if (ctx.INTEGER_LITERAL() != null) {
-      // Positional parameter: $1
-      param.value = "$" + ctx.INTEGER_LITERAL().getText();
+      // Positional parameter: $1, $2, etc.
+      final int paramNum = Integer.parseInt(ctx.INTEGER_LITERAL().getText());
+      final PositionalParameter param = new PositionalParameter(-1);
+      try {
+        final java.lang.reflect.Field paramNumberField = PositionalParameter.class.getDeclaredField("paramNumber");
+        paramNumberField.setAccessible(true);
+        paramNumberField.set(param, paramNum);
+      } catch (final Exception e) {
+        throw new CommandSQLParsingException("Failed to set paramNumber: " + e.getMessage(), e);
+      }
+      return param;
+    } else if (ctx.COLON() != null && ctx.INTEGER_LITERAL() != null) {
+      // Named parameter: :1, :2, etc. (numeric named params)
+      final int paramNum = Integer.parseInt(ctx.INTEGER_LITERAL().getText());
+      final NamedParameter param = new NamedParameter(-1);
+      try {
+        final java.lang.reflect.Field paramNameField = NamedParameter.class.getDeclaredField("paramName");
+        paramNameField.setAccessible(true);
+        paramNameField.set(param, String.valueOf(paramNum));
+        final java.lang.reflect.Field paramNumberField = NamedParameter.class.getDeclaredField("paramNumber");
+        paramNumberField.setAccessible(true);
+        paramNumberField.set(param, paramNum);
+      } catch (final Exception e) {
+        throw new CommandSQLParsingException("Failed to set paramName: " + e.getMessage(), e);
+      }
+      return param;
     }
 
-    return param;
+    throw new CommandSQLParsingException("Unknown input parameter format");
   }
 
   /**
@@ -1162,6 +1642,239 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return limit;
+  }
+
+  /**
+   * Visit SKIP clause.
+   */
+  @Override
+  public Skip visitSkip(final SQLParser.SkipContext ctx) {
+    final Skip skip = new Skip(-1);
+
+    // The skip expression can be a number or an input parameter
+    final Expression expr = (Expression) visit(ctx.expression());
+
+    // Extract the number or parameter from the expression
+    try {
+      if (expr.mathExpression instanceof BaseExpression) {
+        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+        final java.lang.reflect.Field numField = Skip.class.getDeclaredField("num");
+        numField.setAccessible(true);
+        final java.lang.reflect.Field inputParamField = Skip.class.getDeclaredField("inputParam");
+        inputParamField.setAccessible(true);
+
+        if (baseExpr.number instanceof PInteger) {
+          numField.set(skip, (PInteger) baseExpr.number);
+        } else if (baseExpr.inputParam != null) {
+          inputParamField.set(skip, baseExpr.inputParam);
+        }
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build SKIP clause: " + e.getMessage(), e);
+    }
+
+    return skip;
+  }
+
+  /**
+   * Visit GROUP BY clause.
+   */
+  @Override
+  public GroupBy visitGroupBy(final SQLParser.GroupByContext ctx) {
+    final GroupBy groupBy = new GroupBy(-1);
+
+    // GROUP BY has a list of expressions
+    try {
+      final java.lang.reflect.Field itemsField = GroupBy.class.getDeclaredField("items");
+      itemsField.setAccessible(true);
+      @SuppressWarnings("unchecked")
+      final List<Expression> items = (List<Expression>) itemsField.get(groupBy);
+
+      for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
+        final Expression expr = (Expression) visit(exprCtx);
+        items.add(expr);
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build GROUP BY clause: " + e.getMessage(), e);
+    }
+
+    return groupBy;
+  }
+
+  /**
+   * Visit ORDER BY clause.
+   */
+  @Override
+  public OrderBy visitOrderBy(final SQLParser.OrderByContext ctx) {
+    final OrderBy orderBy = new OrderBy(-1);
+
+    // ORDER BY has a list of orderByItem
+    final List<OrderByItem> items = new ArrayList<>();
+    for (final SQLParser.OrderByItemContext itemCtx : ctx.orderByItem()) {
+      final OrderByItem item = (OrderByItem) visit(itemCtx);
+      items.add(item);
+    }
+    orderBy.setItems(items);
+
+    return orderBy;
+  }
+
+  /**
+   * Visit ORDER BY item.
+   */
+  @Override
+  public OrderByItem visitOrderByItem(final SQLParser.OrderByItemContext ctx) {
+    final OrderByItem item = new OrderByItem();
+
+    // Get the expression and convert it to the appropriate field
+    final Expression expr = (Expression) visit(ctx.expression());
+
+    try {
+      // ORDER BY item can be an identifier or expression
+      // Try to extract simple identifier case
+      if (expr.mathExpression instanceof BaseExpression) {
+        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+
+        // Use reflection to access protected fields
+        final java.lang.reflect.Field suffixField = BaseIdentifier.class.getDeclaredField("suffix");
+        suffixField.setAccessible(true);
+        final SuffixIdentifier suffix = (SuffixIdentifier) suffixField.get(baseExpr.identifier);
+
+        if (suffix != null) {
+          final java.lang.reflect.Field identifierField = SuffixIdentifier.class.getDeclaredField("identifier");
+          identifierField.setAccessible(true);
+          final Identifier id = (Identifier) identifierField.get(suffix);
+
+          if (id != null) {
+            // Simple identifier case
+            item.setAlias(id.getValue());
+          }
+        }
+      }
+
+      // If we couldn't extract a simple alias, create a modifier
+      if (item.getAlias() == null) {
+        final Modifier modifier = new Modifier(-1);
+        // Use the expression by wrapping it in a method call or similar
+        // For now, just store in the recordAttr field as a fallback
+        final java.lang.reflect.Field modifierField = OrderByItem.class.getDeclaredField("modifier");
+        modifierField.setAccessible(true);
+        modifierField.set(item, modifier);
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build ORDER BY item: " + e.getMessage(), e);
+    }
+
+    // Set ASC or DESC
+    if (ctx.DESC() != null) {
+      item.setType(OrderByItem.DESC);
+    } else {
+      item.setType(OrderByItem.ASC);
+    }
+
+    return item;
+  }
+
+  /**
+   * Visit UNWIND clause.
+   */
+  @Override
+  public Unwind visitUnwind(final SQLParser.UnwindContext ctx) {
+    final Unwind unwind = new Unwind(-1);
+
+    // UNWIND expression (AS? identifier)?
+    // The Unwind class expects a list of identifiers
+    // Based on the grammar, we need to handle the identifier from the AS clause
+    try {
+      final java.lang.reflect.Field itemsField = Unwind.class.getDeclaredField("items");
+      itemsField.setAccessible(true);
+      @SuppressWarnings("unchecked")
+      final List<Identifier> items = (List<Identifier>) itemsField.get(unwind);
+
+      if (ctx.identifier() != null) {
+        final Identifier id = (Identifier) visit(ctx.identifier());
+        items.add(id);
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build UNWIND clause: " + e.getMessage(), e);
+    }
+
+    return unwind;
+  }
+
+  /**
+   * Visit LET clause.
+   */
+  @Override
+  public LetClause visitLetClause(final SQLParser.LetClauseContext ctx) {
+    final LetClause letClause = new LetClause(-1);
+
+    try {
+      final java.lang.reflect.Field itemsField = LetClause.class.getDeclaredField("items");
+      itemsField.setAccessible(true);
+      @SuppressWarnings("unchecked")
+      final List<LetItem> items = (List<LetItem>) itemsField.get(letClause);
+
+      for (final SQLParser.LetItemContext itemCtx : ctx.letItem()) {
+        final LetItem item = (LetItem) visit(itemCtx);
+        items.add(item);
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build LET clause: " + e.getMessage(), e);
+    }
+
+    return letClause;
+  }
+
+  /**
+   * Visit LET item (identifier = expression or identifier = (query)).
+   */
+  @Override
+  public LetItem visitLetItem(final SQLParser.LetItemContext ctx) {
+    final LetItem item = new LetItem(-1);
+
+    // Set the variable name
+    final Identifier varName = (Identifier) visit(ctx.identifier());
+    item.setVarName(varName);
+
+    // Check if we have a statement in parentheses within the expression
+    // This happens when the grammar matches: identifier EQ expression
+    // where expression → MathExprContext → mathExpression (BaseContext) → baseExpression (ParenthesizedExprContext) → statement
+    Statement statementFromExpr = null;
+    if (ctx.expression() != null && ctx.expression() instanceof SQLParser.MathExprContext) {
+      // Navigate the parse tree to find if this is a parenthesizedExpr with a statement
+      final SQLParser.MathExprContext mathExprCtx = (SQLParser.MathExprContext) ctx.expression();
+      final SQLParser.MathExpressionContext mathCtx = mathExprCtx.mathExpression();
+
+      if (mathCtx != null && mathCtx instanceof SQLParser.BaseContext) {
+        final SQLParser.BaseContext baseCtx = (SQLParser.BaseContext) mathCtx;
+        final SQLParser.BaseExpressionContext baseExprCtx = baseCtx.baseExpression();
+
+        if (baseExprCtx != null && baseExprCtx instanceof SQLParser.ParenthesizedExprContext) {
+          final SQLParser.ParenthesizedExprContext parenCtx = (SQLParser.ParenthesizedExprContext) baseExprCtx;
+          if (parenCtx.statement() != null) {
+            // Found a statement inside parentheses - visit it directly
+            statementFromExpr = (Statement) visit(parenCtx.statement());
+          }
+        }
+      }
+    }
+
+    // Set either expression or query
+    if (statementFromExpr != null) {
+      // Expression was actually a parenthesized statement - use it as a query
+      item.setQuery(statementFromExpr);
+    } else if (ctx.expression() != null) {
+      // Regular expression
+      final Expression expr = (Expression) visit(ctx.expression());
+      item.setExpression(expr);
+    } else if (ctx.statement() != null) {
+      // Direct statement (though this alternative may never be reached due to grammar ambiguity)
+      final Statement stmt = (Statement) visit(ctx.statement());
+      item.setQuery(stmt);
+    }
+
+    return item;
   }
 
   // ============================================================================
