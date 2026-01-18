@@ -1582,13 +1582,34 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final BaseIdentifier baseId = new BaseIdentifier(firstId);
       baseExpr.identifier = baseId;
 
-      // Build modifier chain from methodCalls, arraySelectors and modifiers
+      // Build modifier chain from additional identifiers, methodCalls, arraySelectors and modifiers
       Modifier firstModifier = null;
       Modifier currentModifier = null;
 
       try {
         final java.lang.reflect.Field nextField = Modifier.class.getDeclaredField("next");
         nextField.setAccessible(true);
+
+        // Process additional identifiers (DOT identifier)* - e.g., "custom.label"
+        if (ctx.identifier().size() > 1) {
+          for (int i = 1; i < ctx.identifier().size(); i++) {
+            final Modifier modifier = new Modifier(-1);
+            final Identifier id = (Identifier) visit(ctx.identifier(i));
+            final SuffixIdentifier suffix = new SuffixIdentifier(id);
+
+            final java.lang.reflect.Field suffixField = Modifier.class.getDeclaredField("suffix");
+            suffixField.setAccessible(true);
+            suffixField.set(modifier, suffix);
+
+            if (firstModifier == null) {
+              firstModifier = modifier;
+              currentModifier = modifier;
+            } else {
+              nextField.set(currentModifier, modifier);
+              currentModifier = modifier;
+            }
+          }
+        }
 
         // Process method calls (.substring(0,1), etc.)
         if (ctx.methodCall() != null) {
