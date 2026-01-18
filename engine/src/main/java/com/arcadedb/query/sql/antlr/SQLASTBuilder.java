@@ -1315,7 +1315,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Function call visitor - parses function name and parameters.
-   * Grammar: identifier LPAREN (expression (COMMA expression)*)? RPAREN
+   * Grammar: identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN
    */
   @Override
   public FunctionCall visitFunctionCall(final SQLParser.FunctionCallContext ctx) {
@@ -1329,13 +1329,39 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       nameField.set(funcCall, funcName);
 
       // Parameters (using reflection for protected field)
-      if (ctx.expression() != null && !ctx.expression().isEmpty()) {
+      final java.lang.reflect.Field paramsField = FunctionCall.class.getDeclaredField("params");
+      paramsField.setAccessible(true);
+
+      if (ctx.STAR() != null) {
+        // Handle COUNT(*), SUM(*), etc. - create a parameter representing *
+        final List<Expression> params = new ArrayList<>();
+        final Expression starExpr = new Expression(-1);
+        final BaseExpression baseExpr = new BaseExpression(-1);
+
+        // Create a special identifier for * using SuffixIdentifier with star flag
+        final BaseIdentifier starId = new BaseIdentifier(-1);
+        try {
+          final java.lang.reflect.Field suffixField = BaseIdentifier.class.getDeclaredField("suffix");
+          suffixField.setAccessible(true);
+          final SuffixIdentifier suffix = new SuffixIdentifier(-1);
+          final java.lang.reflect.Field starField = SuffixIdentifier.class.getDeclaredField("star");
+          starField.setAccessible(true);
+          starField.set(suffix, true);
+          suffixField.set(starId, suffix);
+        } catch (final Exception e) {
+          throw new CommandSQLParsingException("Failed to create star identifier: " + e.getMessage(), e);
+        }
+
+        baseExpr.identifier = starId;
+        starExpr.mathExpression = baseExpr;
+        params.add(starExpr);
+        paramsField.set(funcCall, params);
+      } else if (ctx.expression() != null && !ctx.expression().isEmpty()) {
+        // Regular parameters
         final List<Expression> params = new ArrayList<>();
         for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
           params.add((Expression) visit(exprCtx));
         }
-        final java.lang.reflect.Field paramsField = FunctionCall.class.getDeclaredField("params");
-        paramsField.setAccessible(true);
         paramsField.set(funcCall, params);
       }
 
@@ -1777,23 +1803,49 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit UNWIND clause.
+   * Grammar: UNWIND expression (AS? identifier)?
+   * The expression is what to unwind, the identifier is an optional alias.
    */
   @Override
   public Unwind visitUnwind(final SQLParser.UnwindContext ctx) {
     final Unwind unwind = new Unwind(-1);
 
-    // UNWIND expression (AS? identifier)?
-    // The Unwind class expects a list of identifiers
-    // Based on the grammar, we need to handle the identifier from the AS clause
     try {
       final java.lang.reflect.Field itemsField = Unwind.class.getDeclaredField("items");
       itemsField.setAccessible(true);
       @SuppressWarnings("unchecked")
       final List<Identifier> items = (List<Identifier>) itemsField.get(unwind);
 
+      // The expression is what we're unwinding - it should be an identifier
+      final Expression expr = (Expression) visit(ctx.expression());
+
+      // Extract the identifier from the expression
+      // The expression is typically a simple identifier like "iSeq"
+      Identifier unwindField = null;
+
+      if (expr != null && expr.mathExpression instanceof BaseExpression) {
+        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+        if (baseExpr.identifier != null) {
+          // Access protected suffix field using reflection
+          final java.lang.reflect.Field suffixField = BaseIdentifier.class.getDeclaredField("suffix");
+          suffixField.setAccessible(true);
+          final Object suffix = suffixField.get(baseExpr.identifier);
+
+          if (suffix != null) {
+            // Access protected identifier field from SuffixIdentifier
+            final java.lang.reflect.Field identifierField = suffix.getClass().getDeclaredField("identifier");
+            identifierField.setAccessible(true);
+            unwindField = (Identifier) identifierField.get(suffix);
+          }
+        }
+      }
+
+      // If there's an AS clause, use that identifier, otherwise use the field itself
       if (ctx.identifier() != null) {
-        final Identifier id = (Identifier) visit(ctx.identifier());
-        items.add(id);
+        final Identifier alias = (Identifier) visit(ctx.identifier());
+        items.add(alias);
+      } else if (unwindField != null) {
+        items.add(unwindField);
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build UNWIND clause: " + e.getMessage(), e);
