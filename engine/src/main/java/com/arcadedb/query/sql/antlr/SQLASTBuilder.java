@@ -2170,13 +2170,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
           if (id != null) {
             // Simple identifier case
-            item.setAlias(id.getValue());
+            final String identifierValue = id.getValue();
+
+            // For system attributes like @rid, @type, etc., use recordAttr instead of alias
+            if (identifierValue != null && identifierValue.startsWith("@")) {
+              final java.lang.reflect.Field recordAttrField = OrderByItem.class.getDeclaredField("recordAttr");
+              recordAttrField.setAccessible(true);
+              recordAttrField.set(item, identifierValue);
+            } else {
+              item.setAlias(identifierValue);
+            }
           }
         }
       }
 
-      // If we couldn't extract a simple alias, create a modifier
-      if (item.getAlias() == null) {
+      // If we couldn't extract a simple alias or recordAttr, create a modifier
+      if (item.getAlias() == null && item.getRecordAttr() == null) {
         final Modifier modifier = new Modifier(-1);
         // Use the expression by wrapping it in a method call or similar
         // For now, just store in the recordAttr field as a fallback
