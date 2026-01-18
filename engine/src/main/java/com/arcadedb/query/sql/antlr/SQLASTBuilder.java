@@ -1387,11 +1387,120 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final BaseIdentifier baseId = new BaseIdentifier(firstId);
       baseExpr.identifier = baseId;
 
-      // TODO: Handle method calls, array selectors, modifiers if present
-      // For now, simple identifier chains work
+      // Build modifier chain from arraySelectors and modifiers
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      try {
+        final java.lang.reflect.Field nextField = Modifier.class.getDeclaredField("next");
+        nextField.setAccessible(true);
+
+        // Process array selectors
+        if (ctx.arraySelector() != null) {
+          for (final SQLParser.ArraySelectorContext selectorCtx : ctx.arraySelector()) {
+            final Modifier modifier = createModifierForArraySelector(selectorCtx);
+            if (firstModifier == null) {
+              firstModifier = modifier;
+              currentModifier = modifier;
+            } else {
+              nextField.set(currentModifier, modifier);
+              currentModifier = modifier;
+            }
+          }
+        }
+
+        // Process modifiers (DOT identifier or more array selectors)
+        if (ctx.modifier() != null) {
+          for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+            final Modifier modifier = (Modifier) visit(modCtx);
+            if (firstModifier == null) {
+              firstModifier = modifier;
+              currentModifier = modifier;
+            } else {
+              nextField.set(currentModifier, modifier);
+              currentModifier = modifier;
+            }
+          }
+        }
+      } catch (final Exception e) {
+        throw new CommandSQLParsingException("Failed to build modifier chain: " + e.getMessage(), e);
+      }
+
+      // Set the first modifier on the base expression
+      if (firstModifier != null) {
+        baseExpr.modifier = firstModifier;
+      }
     }
 
     return baseExpr;
+  }
+
+  /**
+   * Create a Modifier for an array selector context.
+   */
+  private Modifier createModifierForArraySelector(final SQLParser.ArraySelectorContext selectorCtx) {
+    final Modifier modifier = new Modifier(-1);
+
+    try {
+      // Set squareBrackets flag
+      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
+      squareBracketsField.setAccessible(true);
+      squareBracketsField.set(modifier, true);
+
+      // Visit the selector to get the appropriate type
+      final Object selector = visit(selectorCtx);
+
+      if (selector instanceof ArrayRangeSelector) {
+        final java.lang.reflect.Field arrayRangeField = Modifier.class.getDeclaredField("arrayRange");
+        arrayRangeField.setAccessible(true);
+        arrayRangeField.set(modifier, selector);
+      } else if (selector instanceof ArraySelector) {
+        // Single selector - wrap in ArraySingleValuesSelector
+        final ArraySingleValuesSelector singleValues = new ArraySingleValuesSelector(-1);
+        final java.lang.reflect.Field itemsField = ArraySingleValuesSelector.class.getDeclaredField("items");
+        itemsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        final List<ArraySelector> items = (List<ArraySelector>) itemsField.get(singleValues);
+        items.add((ArraySelector) selector);
+
+        final java.lang.reflect.Field arraySingleValuesField = Modifier.class.getDeclaredField("arraySingleValues");
+        arraySingleValuesField.setAccessible(true);
+        arraySingleValuesField.set(modifier, singleValues);
+      }
+      // TODO: Handle arrayConditionSelector and arrayFilterSelector when needed
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to create modifier for array selector: " + e.getMessage(), e);
+    }
+
+    return modifier;
+  }
+
+  /**
+   * Visit modifier (DOT identifier or array selector).
+   * Grammar: modifier: DOT identifier | arraySelector
+   */
+  @Override
+  public Modifier visitModifier(final SQLParser.ModifierContext ctx) {
+    final Modifier modifier = new Modifier(-1);
+
+    try {
+      if (ctx.identifier() != null) {
+        // DOT identifier modifier
+        final Identifier id = (Identifier) visit(ctx.identifier());
+        final SuffixIdentifier suffix = new SuffixIdentifier(id);
+        final java.lang.reflect.Field suffixField = Modifier.class.getDeclaredField("suffix");
+        suffixField.setAccessible(true);
+        suffixField.set(modifier, suffix);
+      } else if (ctx.arraySelector() != null) {
+        // Array selector modifier
+        return createModifierForArraySelector(ctx.arraySelector());
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build modifier: " + e.getMessage(), e);
+    }
+
+    return modifier;
   }
 
   /**
@@ -2868,6 +2977,196 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public Statement visitBackupDatabaseStmt(final SQLParser.BackupDatabaseStmtContext ctx) {
     throw new UnsupportedOperationException("BACKUP DATABASE statement not yet implemented");
+  }
+
+  /**
+   * Visit array single selector: [0] or [expression] or [:param] or [#rid]
+   */
+  @Override
+  public ArraySelector visitArraySingleSelector(final SQLParser.ArraySingleSelectorContext ctx) {
+    final ArraySelector selector = new ArraySelector(-1);
+
+    try {
+      if (ctx.rid() != null) {
+        // RID selector like [#10:5]
+        final java.lang.reflect.Field ridField = ArraySelector.class.getDeclaredField("rid");
+        ridField.setAccessible(true);
+        ridField.set(selector, visit(ctx.rid()));
+      } else if (ctx.inputParameter() != null) {
+        // Parameter selector like [?] or [:name] or [$1]
+        final java.lang.reflect.Field paramField = ArraySelector.class.getDeclaredField("inputParam");
+        paramField.setAccessible(true);
+        paramField.set(selector, visit(ctx.inputParameter()));
+      } else if (ctx.expression() != null) {
+        // Expression selector like [i+1]
+        final java.lang.reflect.Field exprField = ArraySelector.class.getDeclaredField("expression");
+        exprField.setAccessible(true);
+        exprField.set(selector, visit(ctx.expression()));
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array selector: " + e.getMessage(), e);
+    }
+
+    return selector;
+  }
+
+  /**
+   * Visit array range selector: [0..3] (exclusive)
+   */
+  @Override
+  public ArrayRangeSelector visitArrayRangeSelector(final SQLParser.ArrayRangeSelectorContext ctx) {
+    final ArrayRangeSelector selector = new ArrayRangeSelector(-1);
+
+    try {
+      // Set newRange flag (true for .. syntax)
+      final java.lang.reflect.Field newRangeField = ArrayRangeSelector.class.getDeclaredField("newRange");
+      newRangeField.setAccessible(true);
+      newRangeField.set(selector, true);
+
+      // Set included flag (false for .. = exclusive)
+      final java.lang.reflect.Field includedField = ArrayRangeSelector.class.getDeclaredField("included");
+      includedField.setAccessible(true);
+      includedField.set(selector, false);
+
+      // Handle FROM expression (optional)
+      if (ctx.expression().size() >= 1 && ctx.expression(0) != null) {
+        final Expression fromExpr = (Expression) visit(ctx.expression(0));
+        final Integer fromInt = tryExtractIntegerLiteral(fromExpr);
+        if (fromInt != null) {
+          // Simple integer literal - set from field directly
+          final java.lang.reflect.Field fromField = ArrayRangeSelector.class.getDeclaredField("from");
+          fromField.setAccessible(true);
+          fromField.set(selector, fromInt);
+        } else {
+          // Complex expression - use fromSelector
+          final ArrayNumberSelector fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
+          final java.lang.reflect.Field fromSelectorField = ArrayRangeSelector.class.getDeclaredField("fromSelector");
+          fromSelectorField.setAccessible(true);
+          fromSelectorField.set(selector, fromSelector);
+        }
+      }
+
+      // Handle TO expression (optional)
+      if (ctx.expression().size() >= 2 && ctx.expression(1) != null) {
+        final Expression toExpr = (Expression) visit(ctx.expression(1));
+        final Integer toInt = tryExtractIntegerLiteral(toExpr);
+        if (toInt != null) {
+          // Simple integer literal - set to field directly
+          final java.lang.reflect.Field toField = ArrayRangeSelector.class.getDeclaredField("to");
+          toField.setAccessible(true);
+          toField.set(selector, toInt);
+        } else {
+          // Complex expression - use toSelector
+          final ArrayNumberSelector toSelector = createArrayNumberSelectorFromExpression(toExpr);
+          final java.lang.reflect.Field toSelectorField = ArrayRangeSelector.class.getDeclaredField("toSelector");
+          toSelectorField.setAccessible(true);
+          toSelectorField.set(selector, toSelector);
+        }
+      }
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array range selector: " + e.getMessage(), e);
+    }
+
+    return selector;
+  }
+
+  /**
+   * Visit array ellipsis selector: [0...3] (inclusive)
+   */
+  @Override
+  public ArrayRangeSelector visitArrayEllipsisSelector(final SQLParser.ArrayEllipsisSelectorContext ctx) {
+    final ArrayRangeSelector selector = new ArrayRangeSelector(-1);
+
+    try {
+      // Set newRange flag (true for ... syntax)
+      final java.lang.reflect.Field newRangeField = ArrayRangeSelector.class.getDeclaredField("newRange");
+      newRangeField.setAccessible(true);
+      newRangeField.set(selector, true);
+
+      // Set included flag (true for ... = inclusive)
+      final java.lang.reflect.Field includedField = ArrayRangeSelector.class.getDeclaredField("included");
+      includedField.setAccessible(true);
+      includedField.set(selector, true);
+
+      // Handle FROM expression (optional)
+      if (ctx.expression().size() >= 1 && ctx.expression(0) != null) {
+        final Expression fromExpr = (Expression) visit(ctx.expression(0));
+        final Integer fromInt = tryExtractIntegerLiteral(fromExpr);
+        if (fromInt != null) {
+          // Simple integer literal - set from field directly
+          final java.lang.reflect.Field fromField = ArrayRangeSelector.class.getDeclaredField("from");
+          fromField.setAccessible(true);
+          fromField.set(selector, fromInt);
+        } else {
+          // Complex expression - use fromSelector
+          final ArrayNumberSelector fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
+          final java.lang.reflect.Field fromSelectorField = ArrayRangeSelector.class.getDeclaredField("fromSelector");
+          fromSelectorField.setAccessible(true);
+          fromSelectorField.set(selector, fromSelector);
+        }
+      }
+
+      // Handle TO expression (optional)
+      if (ctx.expression().size() >= 2 && ctx.expression(1) != null) {
+        final Expression toExpr = (Expression) visit(ctx.expression(1));
+        final Integer toInt = tryExtractIntegerLiteral(toExpr);
+        if (toInt != null) {
+          // Simple integer literal - set to field directly
+          final java.lang.reflect.Field toField = ArrayRangeSelector.class.getDeclaredField("to");
+          toField.setAccessible(true);
+          toField.set(selector, toInt);
+        } else {
+          // Complex expression - use toSelector
+          final ArrayNumberSelector toSelector = createArrayNumberSelectorFromExpression(toExpr);
+          final java.lang.reflect.Field toSelectorField = ArrayRangeSelector.class.getDeclaredField("toSelector");
+          toSelectorField.setAccessible(true);
+          toSelectorField.set(selector, toSelector);
+        }
+      }
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array ellipsis selector: " + e.getMessage(), e);
+    }
+
+    return selector;
+  }
+
+  /**
+   * Try to extract an integer literal from an expression.
+   * Returns the integer value if it's a simple integer literal, null otherwise.
+   */
+  private Integer tryExtractIntegerLiteral(final Expression expr) {
+    try {
+      if (expr != null && expr.mathExpression instanceof BaseExpression) {
+        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+        if (baseExpr.number != null && baseExpr.number.getValue() != null) {
+          return baseExpr.number.getValue().intValue();
+        }
+      }
+    } catch (final Exception e) {
+      // Not a simple integer literal
+    }
+    return null;
+  }
+
+  /**
+   * Helper method to create ArrayNumberSelector from an already-visited expression.
+   */
+  private ArrayNumberSelector createArrayNumberSelectorFromExpression(final Expression expr) {
+    final ArrayNumberSelector selector = new ArrayNumberSelector(-1);
+
+    try {
+      // Use expressionValue for dynamic evaluation
+      final java.lang.reflect.Field exprField = ArrayNumberSelector.class.getDeclaredField("expressionValue");
+      exprField.setAccessible(true);
+      exprField.set(selector, expr.mathExpression);
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to create ArrayNumberSelector: " + e.getMessage(), e);
+    }
+
+    return selector;
   }
 
 }
