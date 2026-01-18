@@ -26,7 +26,7 @@ import java.util.*;
 
 public class CollectionUtils {
 
-  public static int compare(final List l1, final List l2) {
+  public static int compare(final List<?> l1, final List<?> l2) {
     final int length = Math.min(l1.size(), l2.size());
 
     for (int j = 0; j < length; j++) {
@@ -70,7 +70,7 @@ public class CollectionUtils {
    * Returns the count of the remaining items that have not been iterated yet.<br>
    * <b>NOTE: the default implementation consumes the iterator</b>.
    */
-  public static long countEntries(final Iterator iterator) {
+  public static long countEntries(final Iterator<?> iterator) {
     long tot = 0;
 
     while (iterator.hasNext()) {
@@ -122,7 +122,7 @@ public class CollectionUtils {
     final Set<T> result = new HashSet<>(list.size() + objsToAdd.size());
     result.addAll(list);
     result.addAll(objsToAdd);
-    return Collections.unmodifiableList(new ArrayList(result));
+    return Collections.unmodifiableList(new ArrayList<>(result));
   }
 
   public static <T> List<T> removeAllFromUnmodifiableList(List<T> list, List<T> objsToRemove) {
@@ -219,5 +219,4 @@ public class CollectionUtils {
     // For object arrays, use Arrays.asList
     return Arrays.asList((Object[]) array);
   }
-
 }

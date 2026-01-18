@@ -822,9 +822,12 @@ baseExpression
 /**
  * Function call
  * Allows STAR (*) as parameter for aggregate functions like COUNT(*), SUM(*), etc.
+ * Supports method call chains: out('Follows').out('Follows')
+ * Supports array selectors: someFunc()[0]
+ * Supports modifiers: someFunc().asString()
  */
 functionCall
-    : identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN
+    : identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN methodCall* arraySelector* modifier*
     ;
 
 /**

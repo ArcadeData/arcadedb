@@ -48,9 +48,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     this.database = database;
   }
 
-  // ============================================================================
   // ENTRY POINTS
-  // ============================================================================
 
   /**
    * Main entry point for parsing a single SQL statement.
@@ -88,9 +86,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return (WhereClause) visit(ctx.whereClause());
   }
 
-  // ============================================================================
   // QUERY STATEMENTS
-  // ============================================================================
 
   /**
    * SELECT statement visitor.
@@ -602,17 +598,61 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public BooleanExpression visitInCondition(final SQLParser.InConditionContext ctx) {
     final InCondition condition = new InCondition(-1);
 
-    condition.left = (Expression) visit(ctx.expression(0));
+    // Check if left side is a parenthesized statement (subquery): (SELECT ...) IN tags
+    final SQLParser.ExpressionContext leftExprCtx = ctx.expression(0);
+    if (leftExprCtx instanceof SQLParser.MathExprContext) {
+      final SQLParser.MathExpressionContext leftMathCtx = ((SQLParser.MathExprContext) leftExprCtx).mathExpression();
+      if (leftMathCtx instanceof SQLParser.BaseContext) {
+        final SQLParser.BaseExpressionContext leftBaseCtx = ((SQLParser.BaseContext) leftMathCtx).baseExpression();
+        if (leftBaseCtx instanceof SQLParser.ParenthesizedExprContext) {
+          final SQLParser.ParenthesizedExprContext leftParenCtx = (SQLParser.ParenthesizedExprContext) leftBaseCtx;
+          if (leftParenCtx.statement() != null) {
+            // (SELECT ...) IN tags - create expression wrapper for subquery
+            condition.left = createStatementExpression((SelectStatement) visit(leftParenCtx.statement()));
+            condition.not = ctx.NOT() != null;
+
+            // Process right side normally
+            if (ctx.LPAREN() != null) {
+              final List<Expression> expressions = new ArrayList<>();
+              for (int i = 1; i < ctx.expression().size(); i++) {
+                expressions.add((Expression) visit(ctx.expression(i)));
+              }
+              condition.right = expressions;
+            } else {
+              final Expression rightExpr = (Expression) visit(ctx.expression(1));
+              if (rightExpr.mathExpression instanceof BaseExpression) {
+                final BaseExpression baseExpr = (BaseExpression) rightExpr.mathExpression;
+                if (baseExpr.inputParam != null) {
+                  condition.rightParam = baseExpr.inputParam;
+                  return condition;
+                }
+              }
+              if (rightExpr.mathExpression != null) {
+                condition.rightMathExpression = rightExpr.mathExpression;
+              } else {
+                condition.right = rightExpr;
+              }
+            }
+
+            return condition;
+          }
+        }
+      }
+    }
+
+    // Normal case: left side is a regular expression
+    condition.left = (Expression) visit(leftExprCtx);
     condition.not = ctx.NOT() != null;
 
     // Right side can be:
-    // 1. IN (expr1, expr2, ...) - parenthesized list
-    // 2. IN [expr1, expr2, ...] - array literal
-    // 3. IN (?) or IN (:param) - single input parameter in parentheses
-    // 4. IN ? or IN :param - input parameter (without parentheses)
+    // 1. IN (SELECT ...) - subquery
+    // 2. IN (expr1, expr2, ...) - parenthesized list
+    // 3. IN [expr1, expr2, ...] - array literal
+    // 4. IN (?) or IN (:param) - single input parameter in parentheses
+    // 5. IN ? or IN :param - input parameter (without parentheses)
 
     if (ctx.LPAREN() != null) {
-      // Form: IN (expr1, expr2, ...)
+      // Form: IN (expr1, expr2, ...) - explicit parentheses at IN level
       // Check if it's a single parameter: IN (?)
       if (ctx.expression().size() == 2) {
         final Expression rightExpr = (Expression) visit(ctx.expression(1));
@@ -635,8 +675,27 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
       condition.right = expressions;
     } else {
-      // Form: IN expression (could be array literal, input parameter, etc.)
-      final Expression rightExpr = (Expression) visit(ctx.expression(1));
+      // Form: IN expression (could be array literal, input parameter, subquery, etc.)
+      final SQLParser.ExpressionContext exprCtx = ctx.expression(1);
+
+      // Check if the expression is a parenthesized statement (subquery): IN (SELECT ...)
+      if (exprCtx instanceof SQLParser.MathExprContext) {
+        final SQLParser.MathExpressionContext mathCtx = ((SQLParser.MathExprContext) exprCtx).mathExpression();
+        if (mathCtx instanceof SQLParser.BaseContext) {
+          final SQLParser.BaseExpressionContext baseCtx = ((SQLParser.BaseContext) mathCtx).baseExpression();
+          if (baseCtx instanceof SQLParser.ParenthesizedExprContext) {
+            final SQLParser.ParenthesizedExprContext parenCtx = (SQLParser.ParenthesizedExprContext) baseCtx;
+            if (parenCtx.statement() != null) {
+              // IN (SELECT ...) - extract the subquery
+              condition.rightStatement = (SelectStatement) visit(parenCtx.statement());
+              return condition;
+            }
+          }
+        }
+      }
+
+      // Not a subquery - process normally
+      final Expression rightExpr = (Expression) visit(exprCtx);
 
       // Check if it's an input parameter
       if (rightExpr.mathExpression instanceof BaseExpression) {
@@ -746,7 +805,29 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         conditionField.set(condition, whereClause.baseExpression);
       } else {
         // Form: expression CONTAINS expression
-        final Expression right = (Expression) visit(ctx.expression(1));
+        // Check if the expression is a parenthesized statement (subquery): CONTAINS (SELECT ...)
+        final SQLParser.ExpressionContext exprCtx = ctx.expression(1);
+        if (exprCtx instanceof SQLParser.MathExprContext) {
+          final SQLParser.MathExpressionContext mathCtx = ((SQLParser.MathExprContext) exprCtx).mathExpression();
+          if (mathCtx instanceof SQLParser.BaseContext) {
+            final SQLParser.BaseExpressionContext baseCtx = ((SQLParser.BaseContext) mathCtx).baseExpression();
+            if (baseCtx instanceof SQLParser.ParenthesizedExprContext) {
+              final SQLParser.ParenthesizedExprContext parenCtx = (SQLParser.ParenthesizedExprContext) baseCtx;
+              if (parenCtx.statement() != null) {
+                // CONTAINS (SELECT ...) - need to handle as subquery
+                // ContainsCondition doesn't have a rightStatement field, so wrap in expression
+                final Expression right = createStatementExpression((SelectStatement) visit(parenCtx.statement()));
+                final java.lang.reflect.Field rightField = ContainsCondition.class.getDeclaredField("right");
+                rightField.setAccessible(true);
+                rightField.set(condition, right);
+                return condition;
+              }
+            }
+          }
+        }
+
+        // Not a subquery - process normally
+        final Expression right = (Expression) visit(exprCtx);
         final java.lang.reflect.Field rightField = ContainsCondition.class.getDeclaredField("right");
         rightField.setAccessible(true);
         rightField.set(condition, right);
@@ -1000,9 +1081,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
   }
 
-  // ============================================================================
   // EXPRESSION VISITORS
-  // ============================================================================
 
   /**
    * Expression visitor - delegates to labeled alternatives.
@@ -1465,6 +1544,63 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       baseExpr.identifier = baseId;
 
+      // Handle method calls, array selectors, and modifiers on function call
+      // Grammar: functionCall: identifier LPAREN ... RPAREN methodCall* arraySelector* modifier*
+      final SQLParser.FunctionCallContext funcCtx = ctx.functionCall();
+
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      final java.lang.reflect.Field nextField = Modifier.class.getDeclaredField("next");
+      nextField.setAccessible(true);
+
+      // Process method calls (.out('Follows'), etc.)
+      if (funcCtx.methodCall() != null) {
+        for (final SQLParser.MethodCallContext methodCtx : funcCtx.methodCall()) {
+          final Modifier modifier = createModifierForMethodCall(methodCtx);
+          if (firstModifier == null) {
+            firstModifier = modifier;
+            currentModifier = modifier;
+          } else {
+            nextField.set(currentModifier, modifier);
+            currentModifier = modifier;
+          }
+        }
+      }
+
+      // Process array selectors
+      if (funcCtx.arraySelector() != null) {
+        for (final SQLParser.ArraySelectorContext selectorCtx : funcCtx.arraySelector()) {
+          final Modifier modifier = createModifierForArraySelector(selectorCtx);
+          if (firstModifier == null) {
+            firstModifier = modifier;
+            currentModifier = modifier;
+          } else {
+            nextField.set(currentModifier, modifier);
+            currentModifier = modifier;
+          }
+        }
+      }
+
+      // Process modifiers
+      if (funcCtx.modifier() != null) {
+        for (final SQLParser.ModifierContext modCtx : funcCtx.modifier()) {
+          final Modifier modifier = (Modifier) visit(modCtx);
+          if (firstModifier == null) {
+            firstModifier = modifier;
+            currentModifier = modifier;
+          } else {
+            nextField.set(currentModifier, modifier);
+            currentModifier = modifier;
+          }
+        }
+      }
+
+      // Set the first modifier on the base expression
+      if (firstModifier != null) {
+        baseExpr.modifier = firstModifier;
+      }
+
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build function call expression: " + e.getMessage(), e);
     }
@@ -1814,9 +1950,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return baseExpr;
   }
 
-  // ============================================================================
   // HELPER METHODS
-  // ============================================================================
+
+  /**
+   * Create an Expression that wraps a SelectStatement for execution.
+   * When the expression is evaluated, it executes the subquery and returns the result.
+   * For (SELECT ...) IN collection, we need to extract values from Results and check if ANY match.
+   */
+  private Expression createStatementExpression(final SelectStatement statement) {
+    final Expression expr = new Expression(-1);
+    expr.mathExpression = new SubqueryExpression(statement);
+    return expr;
+  }
 
   /**
    * Map ANTLR comparison operator to ArcadeDB BinaryCompareOperator.
@@ -2335,9 +2480,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return item;
   }
 
-  // ============================================================================
   // DML STATEMENT VISITORS
-  // ============================================================================
 
   /**
    * Visit INSERT statement.
@@ -2578,9 +2721,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  // ============================================================================
   // DDL STATEMENT VISITORS - CREATE
-  // ============================================================================
 
   /**
    * Visit CREATE DOCUMENT TYPE statement.
@@ -2877,9 +3018,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  // ============================================================================
   // DDL STATEMENTS - ALTER
-  // ============================================================================
 
   /**
    * Visit ALTER TYPE statement.
@@ -2990,9 +3129,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  // ============================================================================
   // DDL STATEMENTS - DROP
-  // ============================================================================
 
   /**
    * Visit DROP TYPE statement.
@@ -3067,9 +3204,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  // ============================================================================
   // DDL STATEMENTS - TRUNCATE
-  // ============================================================================
 
   /**
    * Visit TRUNCATE TYPE statement.
@@ -3125,9 +3260,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  // ============================================================================
   // CONTROL FLOW STATEMENTS
-  // ============================================================================
 
   /**
    * Visit LET statement.
@@ -3195,9 +3328,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  // ============================================================================
   // TRANSACTION STATEMENTS
-  // ============================================================================
 
   /**
    * Visit BEGIN statement.
@@ -3229,9 +3360,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  // ============================================================================
   // DATABASE MANAGEMENT STATEMENTS
-  // ============================================================================
 
   /**
    * Visit CHECK DATABASE statement.

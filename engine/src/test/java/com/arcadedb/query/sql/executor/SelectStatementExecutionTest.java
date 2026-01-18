@@ -1802,6 +1802,44 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void expandWithChainedMethodCalls() {
+    // Test for chained method calls within expand() function
+    // Query: SELECT expand(out('Follows').out('Follows').out('Follows')) FROM Account WHERE id = ?
+    final String className = "Account";
+    final String edgeClassName = "Follows";
+
+    database.getSchema().createVertexType(className);
+    database.getSchema().createEdgeType(edgeClassName);
+
+    database.begin();
+
+    // Create a chain: v0 -> v1 -> v2 -> v3 -> v4
+    final MutableVertex v0 = database.newVertex(className).set("id", 0).save();
+    final MutableVertex v1 = database.newVertex(className).set("id", 1).save();
+    final MutableVertex v2 = database.newVertex(className).set("id", 2).save();
+    final MutableVertex v3 = database.newVertex(className).set("id", 3).save();
+    final MutableVertex v4 = database.newVertex(className).set("id", 4).save();
+
+    v0.newEdge(edgeClassName, v1).save();
+    v1.newEdge(edgeClassName, v2).save();
+    v2.newEdge(edgeClassName, v3).save();
+    v3.newEdge(edgeClassName, v4).save();
+
+    database.commit();
+
+    // Test query: traverse 3 hops from v0
+    final ResultSet result = database.query("sql",
+      "SELECT expand(out('Follows').out('Follows').out('Follows')) FROM Account WHERE id = ?", 0);
+
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat(next).isNotNull();
+    assertThat((int) next.getProperty("id")).isEqualTo(3); // Should reach v3 (3 hops from v0)
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
   void distinct1() {
     final String className = "testDistinct1";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
