@@ -42,6 +42,7 @@ import java.util.List;
 public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   private final Database database;
+  private int positionalParamCounter = 0;
 
   public SQLASTBuilder(final Database database) {
     this.database = database;
@@ -1437,6 +1438,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Create a Modifier for an array selector context.
+   *
+   * Note: visitArraySingleSelector can return ArraySelector OR ArrayRangeSelector
+   * (when the selector contains INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE).
    */
   private Modifier createModifierForArraySelector(final SQLParser.ArraySelectorContext selectorCtx) {
     final Modifier modifier = new Modifier(-1);
@@ -1451,6 +1455,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final Object selector = visit(selectorCtx);
 
       if (selector instanceof ArrayRangeSelector) {
+        // Range selector [0..3] or [0...3] or INTEGER_RANGE from arraySingleSelector
         final java.lang.reflect.Field arrayRangeField = Modifier.class.getDeclaredField("arrayRange");
         arrayRangeField.setAccessible(true);
         arrayRangeField.set(modifier, selector);
@@ -1605,12 +1610,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public InputParameter visitInputParameter(final SQLParser.InputParameterContext ctx) {
     if (ctx.HOOK() != null) {
       // Positional parameter: ?
-      // Use paramNumber = 0 to indicate unindexed positional parameter
+      // Increment counter to assign sequential parameter numbers
       final PositionalParameter param = new PositionalParameter(-1);
       try {
         final java.lang.reflect.Field paramNumberField = PositionalParameter.class.getDeclaredField("paramNumber");
         paramNumberField.setAccessible(true);
-        paramNumberField.set(param, 0);
+        paramNumberField.set(param, positionalParamCounter);
+        positionalParamCounter++;
       } catch (final Exception e) {
         throw new CommandSQLParsingException("Failed to set paramNumber: " + e.getMessage(), e);
       }
@@ -2981,30 +2987,106 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit array single selector: [0] or [expression] or [:param] or [#rid]
+   *
+   * Special handling: If expression is INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE,
+   * create ArrayRangeSelector instead (JavaCC compatibility).
    */
   @Override
-  public ArraySelector visitArraySingleSelector(final SQLParser.ArraySingleSelectorContext ctx) {
-    final ArraySelector selector = new ArraySelector(-1);
-
+  public Object visitArraySingleSelector(final SQLParser.ArraySingleSelectorContext ctx) {
     try {
       if (ctx.rid() != null) {
         // RID selector like [#10:5]
+        final ArraySelector selector = new ArraySelector(-1);
         final java.lang.reflect.Field ridField = ArraySelector.class.getDeclaredField("rid");
         ridField.setAccessible(true);
         ridField.set(selector, visit(ctx.rid()));
+        return selector;
+
       } else if (ctx.inputParameter() != null) {
         // Parameter selector like [?] or [:name] or [$1]
+        final ArraySelector selector = new ArraySelector(-1);
         final java.lang.reflect.Field paramField = ArraySelector.class.getDeclaredField("inputParam");
         paramField.setAccessible(true);
         paramField.set(selector, visit(ctx.inputParameter()));
+        return selector;
+
       } else if (ctx.expression() != null) {
-        // Expression selector like [i+1]
+        // Check if this is an INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE
+        // These should create ArrayRangeSelector, not ArraySelector
+        final SQLParser.ExpressionContext exprCtx = ctx.expression();
+
+        if (exprCtx instanceof SQLParser.MathExprContext) {
+          final SQLParser.MathExprContext mathCtx = (SQLParser.MathExprContext) exprCtx;
+          final SQLParser.MathExpressionContext mathExprCtx = mathCtx.mathExpression();
+
+          if (mathExprCtx instanceof SQLParser.BaseContext) {
+            final SQLParser.BaseContext baseCtx = (SQLParser.BaseContext) mathExprCtx;
+            final SQLParser.BaseExpressionContext baseExprCtx = baseCtx.baseExpression();
+
+            // Check for INTEGER_RANGE (0..3)
+            if (baseExprCtx instanceof SQLParser.IntegerRangeContext) {
+              final SQLParser.IntegerRangeContext rangeCtx = (SQLParser.IntegerRangeContext) baseExprCtx;
+              return createRangeSelectorFromToken(rangeCtx.INTEGER_RANGE().getText(), false);
+            }
+
+            // Check for ELLIPSIS_INTEGER_RANGE (0...3)
+            if (baseExprCtx instanceof SQLParser.EllipsisIntegerRangeContext) {
+              final SQLParser.EllipsisIntegerRangeContext rangeCtx = (SQLParser.EllipsisIntegerRangeContext) baseExprCtx;
+              return createRangeSelectorFromToken(rangeCtx.ELLIPSIS_INTEGER_RANGE().getText(), true);
+            }
+          }
+        }
+
+        // Regular expression selector like [i+1]
+        final ArraySelector selector = new ArraySelector(-1);
         final java.lang.reflect.Field exprField = ArraySelector.class.getDeclaredField("expression");
         exprField.setAccessible(true);
         exprField.set(selector, visit(ctx.expression()));
+        return selector;
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build array selector: " + e.getMessage(), e);
+    }
+
+    return new ArraySelector(-1);
+  }
+
+  /**
+   * Create ArrayRangeSelector from INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE token.
+   * Splits the token text on ".." or "..." to extract from and to integers.
+   */
+  private ArrayRangeSelector createRangeSelectorFromToken(final String tokenText, final boolean inclusive) {
+    final ArrayRangeSelector selector = new ArrayRangeSelector(-1);
+
+    try {
+      // Split on ".." or "..."
+      final String[] parts = inclusive ? tokenText.split("\\.\\.\\.") : tokenText.split("\\.\\.");
+
+      if (parts.length == 2) {
+        final int from = Integer.parseInt(parts[0].trim());
+        final int to = Integer.parseInt(parts[1].trim());
+
+        // Set from and to fields
+        final java.lang.reflect.Field fromField = ArrayRangeSelector.class.getDeclaredField("from");
+        fromField.setAccessible(true);
+        fromField.set(selector, from);
+
+        final java.lang.reflect.Field toField = ArrayRangeSelector.class.getDeclaredField("to");
+        toField.setAccessible(true);
+        toField.set(selector, to);
+
+        // Set newRange flag
+        final java.lang.reflect.Field newRangeField = ArrayRangeSelector.class.getDeclaredField("newRange");
+        newRangeField.setAccessible(true);
+        newRangeField.set(selector, true);
+
+        // Set included flag
+        final java.lang.reflect.Field includedField = ArrayRangeSelector.class.getDeclaredField("included");
+        includedField.setAccessible(true);
+        includedField.set(selector, inclusive);
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to parse range token: " + e.getMessage(), e);
     }
 
     return selector;
@@ -3152,11 +3234,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Helper method to create ArrayNumberSelector from an already-visited expression.
+   * Handles input parameters, simple integers, and complex expressions.
    */
   private ArrayNumberSelector createArrayNumberSelectorFromExpression(final Expression expr) {
     final ArrayNumberSelector selector = new ArrayNumberSelector(-1);
 
     try {
+      // Check if the expression is an input parameter
+      if (expr != null && expr.mathExpression instanceof BaseExpression) {
+        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+
+        if (baseExpr.inputParam != null) {
+          // Input parameter like ? or :name or $1
+          final java.lang.reflect.Field inputField = ArrayNumberSelector.class.getDeclaredField("inputValue");
+          inputField.setAccessible(true);
+          inputField.set(selector, baseExpr.inputParam);
+          return selector;
+        }
+      }
+
       // Use expressionValue for dynamic evaluation
       final java.lang.reflect.Field exprField = ArrayNumberSelector.class.getDeclaredField("expressionValue");
       exprField.setAccessible(true);
