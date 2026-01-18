@@ -402,8 +402,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.INFO,
               "Redirected to ourselves (%s) - we are the leader, triggering election to claim leadership",
               newLeader);
-          // Trigger election - we should win since we're being told we're the leader
-          server.startElection(false);
+          // Trigger election and WAIT for it to complete to prevent split-brain
+          // We must become leader before the redirecting server steps down
+          server.startElection(true);
           return;
         }
 
