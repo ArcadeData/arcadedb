@@ -289,11 +289,26 @@ public class BaseExpression extends MathExpression {
     if (isAggregate(context)) {
       final BaseExpression result = new BaseExpression(-1);
 
-      final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, context);
-      if (splitResult instanceof BaseIdentifier baseIdentifier) {
-        result.identifier = baseIdentifier;
-      } else if (splitResult instanceof Expression expr) {
-        result.expression = expr;
+      // Handle case where identifier is set
+      if (identifier != null) {
+        final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, context);
+        if (splitResult instanceof BaseIdentifier baseIdentifier) {
+          result.identifier = baseIdentifier;
+        } else if (splitResult instanceof Expression expr) {
+          result.expression = expr;
+        }
+      }
+      // Handle case where expression is set instead (e.g., for array literals)
+      else if (expression != null) {
+        final SimpleNode splitResult = expression.splitForAggregation(aggregateProj, context);
+        if (splitResult instanceof Expression expr) {
+          result.expression = expr;
+        } else if (splitResult instanceof MathExpression mathExpr) {
+          // Wrap the MathExpression back in an Expression
+          final Expression wrapperExpr = new Expression(-1);
+          wrapperExpr.mathExpression = mathExpr;
+          result.expression = wrapperExpr;
+        }
       }
 
       if (this.modifier != null)

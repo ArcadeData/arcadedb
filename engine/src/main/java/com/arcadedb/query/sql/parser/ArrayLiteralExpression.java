@@ -132,4 +132,33 @@ public class ArrayLiteralExpression extends MathExpression {
     }
     return false;
   }
+
+  @Override
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
+    if (isAggregate(context)) {
+      final ArrayLiteralExpression result = new ArrayLiteralExpression(-1);
+
+      for (final Expression item : items) {
+        final SimpleNode splitResult = item.splitForAggregation(aggregateProj, context);
+
+        if (splitResult instanceof Expression expr) {
+          // Check if the result is either early calculated or aggregate
+          if (expr.isEarlyCalculated(context) || expr.isAggregate(context)) {
+            result.items.add(expr);
+          } else {
+            // This shouldn't happen, but follow the same pattern as MathExpression
+            throw new com.arcadedb.exception.CommandExecutionException(
+                "Cannot mix aggregate and single record attribute values in the same array projection");
+          }
+        } else {
+          // Shouldn't happen, but be defensive
+          throw new IllegalStateException("Unexpected split result type: " + splitResult.getClass());
+        }
+      }
+
+      return result;
+    } else {
+      return this;
+    }
+  }
 }
