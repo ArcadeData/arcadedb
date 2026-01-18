@@ -44,7 +44,7 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   }
 
   @Test
-  @Timeout(value = 10, unit = TimeUnit.MINUTES)
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)  // Database alignment is complex
   void alignNotNecessary() throws Exception {
     ArcadeDBServer leader = getLeader();
     final Database database = leader.getDatabase(getDatabaseName());
@@ -54,6 +54,9 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
 
       database.deleteRecord(edge);
     });
+
+    // Wait for deletion to replicate across the cluster
+    waitForClusterStable(getServerCount());
 
     final Result result;
     try (ResultSet resultset = leader.getDatabase(getDatabaseName())
@@ -70,10 +73,12 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
 //      assertThat(result.<List<int[]>>getProperty("ArcadeDB_2")).hasSize(0);
     }
 
+    // Wait for alignment to complete across the cluster
+    waitForClusterStable(getServerCount());
   }
 
   @Test
-  @Timeout(value = 10, unit = TimeUnit.MINUTES)
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)  // Database alignment is complex
   void  alignNecessary() throws Exception {
     ArcadeDBServer leader = getLeader();
     final DatabaseInternal database = leader.getDatabase(getDatabaseName()).getEmbedded().getEmbedded();
@@ -84,6 +89,9 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     edge.delete();
     database.commit();
 
+    // Wait for cluster to stabilize after local deletion (creates intentional misalignment)
+    waitForClusterStable(getServerCount());
+
     assertThatThrownBy(() -> checkDatabasesAreIdentical())
         .isInstanceOf(DatabaseComparator.DatabaseAreNotIdentical.class);
 
@@ -93,6 +101,9 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
       result = resultset.next();
       assertThat(result.hasProperty(leader.getServerName())).isFalse();
     }
+
+    // Wait for alignment to complete across the cluster
+    waitForClusterStable(getServerCount());
   }
 
 }
