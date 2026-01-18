@@ -1344,6 +1344,31 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Array literal visitor - handles [expr1, expr2, ...] syntax.
+   */
+  @Override
+  public BaseExpression visitArrayLit(final SQLParser.ArrayLitContext ctx) {
+    final ArrayLiteralExpression arrayLiteral = new ArrayLiteralExpression(-1);
+
+    // Visit each expression in the array literal
+    if (ctx.arrayLiteral().expression() != null) {
+      for (final SQLParser.ExpressionContext exprCtx : ctx.arrayLiteral().expression()) {
+        final Expression expr = (Expression) visit(exprCtx);
+        arrayLiteral.addItem(expr);
+      }
+    }
+
+    // Wrap in BaseExpression with mathExpression set to our array literal
+    final Expression expression = new Expression(-1);
+    expression.mathExpression = arrayLiteral;
+
+    final BaseExpression baseExpr = new BaseExpression(-1);
+    baseExpr.expression = expression;
+
+    return baseExpr;
+  }
+
+  /**
    * Function call visitor - parses function name and parameters.
    * Grammar: identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN
    */
