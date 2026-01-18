@@ -24,7 +24,7 @@ import java.util.*;
 
 public abstract class SimpleNode implements Node {
   protected Node[] children;
-  protected Object value;
+  public Object value;
   protected String cachedStringForm;
 
   public SimpleNode() {

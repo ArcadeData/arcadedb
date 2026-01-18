@@ -23,8 +23,8 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class Bucket extends SimpleNode {
-  protected String  bucketName;
-  protected Integer bucketNumber;
+  public String  bucketName;
+  public Integer bucketNumber;
 
   public Bucket(final String bucketName) {
     super(-1);

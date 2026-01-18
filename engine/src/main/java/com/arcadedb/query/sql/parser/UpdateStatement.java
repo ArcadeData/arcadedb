@@ -31,14 +31,14 @@ import java.util.*;
 import java.util.stream.*;
 
 public class UpdateStatement extends Statement {
-  protected FromClause             target;
-  protected List<UpdateOperations> operations   = new ArrayList<UpdateOperations>();
-  protected boolean                upsert       = false;
-  protected boolean                returnBefore = false;
-  protected boolean                returnAfter  = false;
-  protected boolean                returnCount  = false;
-  protected Projection             returnProjection;
-  protected WhereClause            whereClause;
+  public FromClause             target;
+  public List<UpdateOperations> operations   = new ArrayList<UpdateOperations>();
+  public boolean                upsert       = false;
+  public boolean                returnBefore = false;
+  public boolean                returnAfter  = false;
+  public boolean                returnCount  = false;
+  public Projection             returnProjection;
+  public WhereClause            whereClause;
 
   public UpdateStatement(final int id) {
     super(id);

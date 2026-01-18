@@ -32,12 +32,12 @@ public class UpdateOperations extends SimpleNode {
   public static final int TYPE_ADD       = 5;
   public static final int TYPE_REMOVE    = 6;
 
-  protected int                       type;
-  protected List<UpdateItem>          updateItems          = new ArrayList<UpdateItem>();
-  protected List<UpdatePutItem>       updatePutItems       = new ArrayList<UpdatePutItem>();
-  protected Json                      json;
-  protected List<UpdateIncrementItem> updateIncrementItems = new ArrayList<UpdateIncrementItem>();
-  protected List<UpdateRemoveItem>    updateRemoveItems    = new ArrayList<UpdateRemoveItem>();
+  public int                       type;
+  public List<UpdateItem>          updateItems          = new ArrayList<UpdateItem>();
+  public List<UpdatePutItem>       updatePutItems       = new ArrayList<UpdatePutItem>();
+  public Json                      json;
+  public List<UpdateIncrementItem> updateIncrementItems = new ArrayList<UpdateIncrementItem>();
+  public List<UpdateRemoveItem>    updateRemoveItems    = new ArrayList<UpdateRemoveItem>();
 
   public UpdateOperations(final int id) {
     super(id);

@@ -32,9 +32,9 @@ import java.util.*;
 
 public class DropIndexStatement extends DDLStatement {
 
-  protected boolean    all      = false;
-  protected Identifier name;
-  protected boolean    ifExists = false;
+  public boolean    all      = false;
+  public Identifier name;
+  public boolean    ifExists = false;
 
   public DropIndexStatement(final int id) {
     super(id);

@@ -38,8 +38,8 @@ import java.util.stream.*;
 
 public class MathExpression extends SimpleNode {
   private static final Object               NULL_VALUE       = new Object();
-  protected            List<MathExpression> childExpressions = new ArrayList<MathExpression>();
-  protected final      List<Operator>       operators        = new ArrayList<>();
+  public            List<MathExpression> childExpressions = new ArrayList<MathExpression>();
+  public final      List<Operator>       operators        = new ArrayList<>();
 
   public Expression getExpandContent() {
     throw new CommandExecutionException("Invalid expand expression");

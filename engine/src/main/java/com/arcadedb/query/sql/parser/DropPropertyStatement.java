@@ -34,10 +34,10 @@ import java.util.*;
 
 public class DropPropertyStatement extends DDLStatement {
 
-  protected Identifier typeName;
-  protected Identifier propertyName;
-  protected boolean    ifExists = false;
-  protected boolean    force    = false;
+  public Identifier typeName;
+  public Identifier propertyName;
+  public boolean    ifExists = false;
+  public boolean    force    = false;
 
   public DropPropertyStatement(final int id) {
     super(id);

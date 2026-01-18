@@ -33,12 +33,12 @@ import java.util.*;
 import java.util.stream.*;
 
 public class ProjectionItem extends SimpleNode {
-  protected boolean          exclude = false;
-  protected boolean          all     = false;
-  protected Identifier       alias;
-  protected Expression       expression;
-  protected Boolean          aggregate;
-  protected NestedProjection nestedProjection;
+  public boolean          exclude = false;
+  public boolean          all     = false;
+  public Identifier       alias;
+  public Expression       expression;
+  public Boolean          aggregate;
+  public NestedProjection nestedProjection;
 
   public ProjectionItem(final Expression expression, final Identifier alias, final NestedProjection nestedProjection) {
     super(-1);

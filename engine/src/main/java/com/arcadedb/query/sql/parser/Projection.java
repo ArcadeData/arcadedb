@@ -40,9 +40,9 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 public class Projection extends SimpleNode {
 
-  protected boolean distinct = false;
+  public boolean distinct = false;
 
-  List<ProjectionItem> items;
+  public List<ProjectionItem> items;
   // runtime
   private Set<String> excludes;
 

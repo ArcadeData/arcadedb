@@ -23,8 +23,8 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class BucketIdentifier extends SimpleNode {
-  protected PInteger   bucketId;
-  protected Identifier bucketName;
+  public PInteger   bucketId;
+  public Identifier bucketName;
 
   public BucketIdentifier(final int id) {
     super(id);

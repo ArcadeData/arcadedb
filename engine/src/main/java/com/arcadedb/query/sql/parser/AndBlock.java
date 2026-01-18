@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 public class AndBlock extends BooleanExpression {
-  final List<BooleanExpression> subBlocks;
+  public final List<BooleanExpression> subBlocks;
 
   public AndBlock(final int id) {
     super(id);

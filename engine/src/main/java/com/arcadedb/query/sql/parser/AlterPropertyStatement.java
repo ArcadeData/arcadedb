@@ -34,11 +34,11 @@ import java.util.*;
 
 public class AlterPropertyStatement extends DDLStatement {
   public Expression settingValue;
-  Identifier typeName;
-  Identifier propertyName;
-  Identifier customPropertyName;
-  Expression customPropertyValue;
-  Identifier settingName;
+  public Identifier typeName;
+  public Identifier propertyName;
+  public Identifier customPropertyName;
+  public Expression customPropertyValue;
+  public Identifier settingName;
 
   public AlterPropertyStatement(final int id) {
     super(id);

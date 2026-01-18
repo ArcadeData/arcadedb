@@ -31,7 +31,7 @@ import java.util.*;
 
 public class ExplainStatement extends Statement {
 
-  protected Statement statement;
+  public Statement statement;
 
   public ExplainStatement(final int id) {
     super(id);

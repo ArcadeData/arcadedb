@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class SchemaIdentifier extends SimpleNode {
-  protected String name;
+  public String name;
 
   public SchemaIdentifier(final int id) {
     super(id);

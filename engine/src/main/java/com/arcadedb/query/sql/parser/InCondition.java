@@ -34,12 +34,13 @@ import java.util.*;
 import java.util.stream.*;
 
 public class InCondition extends BooleanExpression {
-  protected Expression            left;
-  protected BinaryCompareOperator operator;
-  protected SelectStatement       rightStatement;
-  protected InputParameter        rightParam;
-  protected MathExpression        rightMathExpression;
-  protected Object                right;
+  public Expression            left;
+  public BinaryCompareOperator operator;
+  public SelectStatement       rightStatement;
+  public InputParameter        rightParam;
+  public MathExpression        rightMathExpression;
+  public Object                right;
+  public boolean               not;
 
   private static final Object UNSET           = new Object();
   private final        Object inputFinalValue = UNSET;

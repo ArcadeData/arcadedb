@@ -30,7 +30,7 @@ import java.util.*;
 import java.util.stream.*;
 
 public class OrBlock extends BooleanExpression {
-  List<BooleanExpression> subBlocks = new ArrayList<BooleanExpression>();
+  public List<BooleanExpression> subBlocks = new ArrayList<BooleanExpression>();
 
   public OrBlock(final int id) {
     super(id);

@@ -30,9 +30,9 @@ import com.arcadedb.schema.DocumentType;
 import java.util.*;
 
 public class BinaryCondition extends BooleanExpression {
-  protected Expression            left;
-  protected BinaryCompareOperator operator;
-  protected Expression            right;
+  public Expression            left;
+  public BinaryCompareOperator operator;
+  public Expression            right;
 
   public BinaryCondition(final int id) {
     super(id);

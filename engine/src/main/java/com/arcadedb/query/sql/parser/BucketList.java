@@ -25,7 +25,7 @@ import java.util.stream.*;
 
 public class BucketList extends SimpleNode {
 
-  protected List<Identifier> buckets = new ArrayList<>();
+  public List<Identifier> buckets = new ArrayList<>();
 
   public BucketList(final int id) {
     super(id);

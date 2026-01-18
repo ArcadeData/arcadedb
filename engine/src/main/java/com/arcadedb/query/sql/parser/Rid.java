@@ -31,10 +31,10 @@ import com.arcadedb.utility.CodeUtils;
 import java.util.*;
 
 public class Rid extends SimpleNode {
-  protected PInteger   bucket;
-  protected PInteger   position;
-  protected Expression expression;
-  protected boolean    legacy;
+  public PInteger   bucket;
+  public PInteger   position;
+  public Expression expression;
+  public boolean    legacy;
 
   public Rid(final int id) {
     super(id);

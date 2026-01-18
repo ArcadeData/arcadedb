@@ -26,8 +26,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 public class Limit extends SimpleNode {
-  protected PInteger       num;
-  protected InputParameter inputParam;
+  public PInteger       num;
+  public InputParameter inputParam;
 
   public Limit(final int id) {
     super(id);

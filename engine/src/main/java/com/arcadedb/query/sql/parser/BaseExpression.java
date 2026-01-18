@@ -33,13 +33,13 @@ import com.arcadedb.utility.NumberUtils;
 import java.util.*;
 
 public class BaseExpression extends MathExpression {
-  protected PNumber        number;
-  protected BaseIdentifier identifier;
-  protected Expression     expression;
-  protected InputParameter inputParam;
-  protected String         string;
-  protected Modifier       modifier;
-  protected boolean        isNull = false;
+  public PNumber        number;
+  public BaseIdentifier identifier;
+  public Expression     expression;
+  public InputParameter inputParam;
+  public String         string;
+  public Modifier       modifier;
+  public boolean        isNull = false;
 
   public BaseExpression(final int id) {
     super(id);

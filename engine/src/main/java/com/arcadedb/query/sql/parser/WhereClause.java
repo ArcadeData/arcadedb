@@ -35,7 +35,7 @@ import java.util.*;
 import java.util.stream.*;
 
 public class WhereClause extends SimpleNode {
-  protected BooleanExpression baseExpression;
+  public BooleanExpression baseExpression;
   protected List<AndBlock>    flattened;
 
   public WhereClause(final int id) {

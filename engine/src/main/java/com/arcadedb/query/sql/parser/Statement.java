@@ -31,10 +31,10 @@ import java.util.*;
 public class Statement extends SimpleNode {
 
   //only for internal use!!! (caching)
-  protected Statement originalStatement;
-  protected String    originalStatementAsString;
-  protected Limit     limit   = null;
-  protected Timeout   timeout = null;
+  public Statement originalStatement;
+  public String    originalStatementAsString;
+  public Limit     limit   = null;
+  public Timeout   timeout = null;
 
   public static final String CUSTOM_STRICT_SQL = "strictSql";
 

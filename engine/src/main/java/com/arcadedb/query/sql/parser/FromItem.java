@@ -28,18 +28,18 @@ import java.util.*;
 import java.util.stream.*;
 
 public class FromItem extends SimpleNode {
-  protected List<Rid>            rids;
-  protected List<InputParameter> inputParams;
-  protected ResultSet            resultSet;
-  protected Bucket               bucket;
-  protected BucketList           bucketList;
-  protected IndexIdentifier      index;
-  protected SchemaIdentifier     schema;
-  protected Statement            statement;
-  protected InputParameter       inputParam;
-  protected Identifier           identifier;
-  protected FunctionCall         functionCall;
-  protected Modifier             modifier;
+  public List<Rid>            rids;
+  public List<InputParameter> inputParams;
+  public ResultSet            resultSet;
+  public Bucket               bucket;
+  public BucketList           bucketList;
+  public IndexIdentifier      index;
+  public SchemaIdentifier     schema;
+  public Statement            statement;
+  public InputParameter       inputParam;
+  public Identifier           identifier;
+  public FunctionCall         functionCall;
+  public Modifier             modifier;
 
   public FromItem(final int id) {
     super(id);

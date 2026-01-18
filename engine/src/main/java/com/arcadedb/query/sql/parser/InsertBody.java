@@ -25,12 +25,12 @@ import java.util.stream.*;
 
 public class InsertBody extends SimpleNode {
 
-  protected List<Identifier>          identifierList;
-  protected List<List<Expression>>    valueExpressions;
-  protected List<InsertSetExpression> setExpressions;
-  protected Json                      contentJson;
-  protected JsonArray                 contentArray;
-  protected InputParameter            contentInputParam;
+  public List<Identifier>          identifierList;
+  public List<List<Expression>>    valueExpressions;
+  public List<InsertSetExpression> setExpressions;
+  public Json                      contentJson;
+  public JsonArray                 contentArray;
+  public InputParameter            contentInputParam;
 
   public InsertBody(final int id) {
     super(id);

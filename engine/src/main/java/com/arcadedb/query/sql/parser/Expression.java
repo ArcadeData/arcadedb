@@ -31,15 +31,15 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class Expression extends SimpleNode {
-  protected boolean               singleQuotes;
-  protected boolean               doubleQuotes;
-  protected boolean               isNull = false;
-  protected Rid                   rid;
-  protected MathExpression        mathExpression;
-  protected ArrayConcatExpression arrayConcatExpression;
-  protected Json                  json;
-  protected Boolean               booleanValue;
-  protected WhereClause           whereCondition;
+  public boolean               singleQuotes;
+  public boolean               doubleQuotes;
+  public boolean               isNull = false;
+  public Rid                   rid;
+  public MathExpression        mathExpression;
+  public ArrayConcatExpression arrayConcatExpression;
+  public Json                  json;
+  public Boolean               booleanValue;
+  public WhereClause           whereCondition;
 
   public Expression(final int id) {
     super(id);

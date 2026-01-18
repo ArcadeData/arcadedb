@@ -28,9 +28,9 @@ public class IndexIdentifier extends SimpleNode {
     INDEX, VALUES, VALUESASC, VALUESDESC
   }
 
-  protected Type       type;
-  protected String     indexNameString;
-  protected Identifier indexName;
+  public Type       type;
+  public String     indexNameString;
+  public Identifier indexName;
 
   public IndexIdentifier(final int id) {
     super(id);
