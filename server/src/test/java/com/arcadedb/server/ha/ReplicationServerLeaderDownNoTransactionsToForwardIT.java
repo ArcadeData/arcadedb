@@ -29,14 +29,19 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.utility.CodeUtils;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Timeout(value = 15, unit = TimeUnit.MINUTES)
+@Tag("ha")
 public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
@@ -47,8 +52,8 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   }
 
   @Override
-  protected HAServer.SERVER_ROLE getServerRole(int serverIndex) {
-    return HAServer.SERVER_ROLE.ANY;
+  protected HAServer.ServerRole getServerRole(int serverIndex) {
+    return HAServer.ServerRole.ANY;
   }
 
   @Test
@@ -117,7 +122,7 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
   protected void onBeforeStarting(final ArcadeDBServer server) {
     if (server.getServerName().equals("ArcadeDB_2"))
       server.registerTestEventListener((type, object, server1) -> {
-        if (type == ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED) {
+        if (type == ReplicationCallback.Type.REPLICA_MSG_RECEIVED) {
           if (messages.incrementAndGet() > 10 && getServer(0).isStarted()) {
             testLog("TEST: Stopping the Leader...");
 

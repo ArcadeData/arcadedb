@@ -29,13 +29,18 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.TimeUnit;
 
 import java.util.*;
 import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 class IndexOperations3ServersIT extends BaseGraphServerTest {
 
   private static final int TOTAL_RECORDS = 10_000;
@@ -51,6 +56,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void rebuildIndex() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
@@ -82,6 +88,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void createIndexLater() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
@@ -114,6 +121,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void createIndexLaterDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();
@@ -149,6 +157,7 @@ class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void createIndexErrorDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("Person").withTotalBuckets(3).create();

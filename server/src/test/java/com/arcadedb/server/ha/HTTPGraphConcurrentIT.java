@@ -24,7 +24,9 @@ import com.arcadedb.server.BaseGraphServerTest;
 
 import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -33,6 +35,7 @@ import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.*;
 
+@Tag("ha")
 class HTTPGraphConcurrentIT extends BaseGraphServerTest {
   @Override
   protected int getServerCount() {
@@ -40,6 +43,7 @@ class HTTPGraphConcurrentIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.MINUTES)
   void oneEdgePerTxMultiThreads() throws Exception {
     testEachServer((serverIndex) -> {
       executeCommand(serverIndex, "sqlscript",

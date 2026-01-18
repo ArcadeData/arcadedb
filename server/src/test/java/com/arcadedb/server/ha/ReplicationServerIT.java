@@ -33,18 +33,22 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.fail;
 
+@Tag("ha")
 public abstract class ReplicationServerIT extends BaseGraphServerTest {
   private static final int DEFAULT_MAX_RETRIES = 30;
 
@@ -61,6 +65,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   public void replication() throws Exception {
     testReplication(0);
   }
@@ -118,8 +123,9 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
-    for (int i = 0; i < getServerCount(); i++)
-      waitForReplicationIsCompleted(i);
+    // Wait for cluster to stabilize before verification
+    // This ensures all servers are online, replication queues are empty, and replicas are connected
+    waitForClusterStable(getServerCount());
 
     assertThat(db.countType(VERTEX1_TYPE_NAME, true))
         .as("Check for vertex count for server" + 0)

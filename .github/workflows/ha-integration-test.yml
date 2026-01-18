@@ -1,0 +1,61 @@
+name: Java HA Integration Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1" # At 02:00 on Monday
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: Ensure SHA pinned actions
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@6124774845927d14c601359ab8138699fa5b70c3 # v4.0.1
+      - name: Run pre-commit
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.13.0"
+          cache: "pip"
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+
+  ha-integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: Set up JDK 21
+        uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      - name: Restore Maven artifacts
+        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: ~/.m2/repository
+          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Run HA Integration Tests with Coverage
+        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -Dgroups=ha -pl !e2e,!e2e-perf,!e2e-ha
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: HA IT Tests Reporter
+        uses: dorny/test-reporter@b082adf0eced0765477756c2a610396589b8c637 # v2.5.0
+        if: success() || failure()
+        with:
+          name: HA Tests Report
+          path: "**/failsafe-reports/TEST*.xml"
+          list-suites: "failed"
+          list-tests: "failed"
+          reporter: java-junit
+
+      - name: Upload HA integration test coverage reports
+        if: success() || failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ha-integration-coverage-reports
+          path: |
+            **/jacoco*.xml
+          retention-days: 1
