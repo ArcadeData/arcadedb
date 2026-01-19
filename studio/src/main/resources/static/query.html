@@ -39,8 +39,9 @@
         <select id="inputLanguage" class="px-1 form-control" style="color: #00aeee">
           <option value="sql" selected>SQL</option>
           <option value="sqlScript">SQL Script</option>
+          <option value="opencypher">Open Cypher (New Native Engine)</option>
           <option value="gremlin">Gremlin</option>
-          <option value="cypher">Cypher</option>
+          <option value="cypher">Cypher (Old Engine</option>
           <option value="graphql">GraphQL</option>
           <option value="mongo">MongoDB</option>
         </select>
@@ -422,6 +423,7 @@
     if (language == "sql") mime = "text/x-sql";
     else if (language == "sqlScript") mime = "text/x-sql";
     else if (language == "cypher") mime = "application/x-cypher-query";
+    else if (language == "opencypher") mime = "application/x-cypher-query";
     else if (language == "gremlin") mime = "sql";
     else if (language == "mongodb") mime = "application/json";
     else if (language == "graphql") mime = "application/json";
