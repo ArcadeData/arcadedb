@@ -1542,6 +1542,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * @this literal visitor.
+   */
+  @Override
+  public BaseExpression visitThisLiteral(final SQLParser.ThisLiteralContext ctx) {
+    final BaseExpression baseExpr = new BaseExpression(-1);
+    final RecordAttribute attr = new RecordAttribute(-1);
+    attr.setName("@this");
+    final BaseIdentifier baseId = new BaseIdentifier(attr);
+    baseExpr.identifier = baseId;
+    return baseExpr;
+  }
+
+  /**
    * Input parameter visitor.
    */
   @Override
@@ -1725,9 +1738,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (CollectionUtils.isNotEmpty(ctx.identifier())) {
       final SQLParser.IdentifierContext firstIdCtx = ctx.identifier(0);
 
-      // Check if the first identifier is a record attribute (@rid, @type, @in, @out)
+      // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this)
       if (firstIdCtx.RID_ATTR() != null || firstIdCtx.TYPE_ATTR() != null ||
-          firstIdCtx.IN_ATTR() != null || firstIdCtx.OUT_ATTR() != null) {
+          firstIdCtx.IN_ATTR() != null || firstIdCtx.OUT_ATTR() != null ||
+          firstIdCtx.THIS() != null) {
         // Handle record attributes specially
         final RecordAttribute attr = new RecordAttribute(-1);
         attr.setName(firstIdCtx.getText());
@@ -2062,7 +2076,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final Identifier id = (Identifier) visit(ctx.identifier());
       final NamedParameter param = new NamedParameter(-1);
       param.paramName = id.getValue();
-      param.paramNumber = -1;
+      param.paramNumber = positionalParamCounter;
+      positionalParamCounter++;
       return param;
     } else if (ctx.INTEGER_LITERAL() != null) {
       // Positional parameter: $1, $2, etc.
@@ -2275,6 +2290,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               item.recordAttr = identifierValue;
             } else {
               item.setAlias(identifierValue);
+            }
+          } else {
+            // Check for RecordAttribute (e.g., @rid, @type, @this)
+            // Use toString to get the record attribute name
+            final StringBuilder sb = new StringBuilder();
+            suffix.toString(java.util.Collections.emptyMap(), sb);
+            final String suffixStr = sb.toString();
+            if (suffixStr != null && suffixStr.startsWith("@")) {
+              item.recordAttr = suffixStr;
             }
           }
         }

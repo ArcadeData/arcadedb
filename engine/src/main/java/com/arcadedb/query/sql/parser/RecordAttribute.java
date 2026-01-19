@@ -28,11 +28,7 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
 
-import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.IN_PROPERTY;
-import static com.arcadedb.schema.Property.OUT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+import static com.arcadedb.schema.Property.*;
 
 public class RecordAttribute extends SimpleNode {
   protected String name;
@@ -96,6 +92,9 @@ public class RecordAttribute extends SimpleNode {
     } else if (name.equalsIgnoreCase(OUT_PROPERTY) && //
         currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
       return currentRecord.getElement().get().asEdge().getOut();
+    } else if (name.equalsIgnoreCase(THIS_PROPERTY)) {
+      // Return the entire current record
+      return currentRecord.getElement().orElse(null);
     }
     return null;
   }

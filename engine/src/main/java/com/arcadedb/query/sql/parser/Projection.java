@@ -104,7 +104,8 @@ public class Projection extends SimpleNode {
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
     if (items.size() == 1 &&
-        items.getFirst().getExpression().toString().equals("@this") &&
+        items.getFirst().getExpression() != null &&
+        items.getFirst().getExpression().toString().equals(Property.THIS_PROPERTY) &&
         items.getFirst().nestedProjection == null)
       return record;
 

@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Property;
 
 import java.util.*;
 
@@ -41,7 +42,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     if (functionCall != null) {
       functionCall.toString(params, builder);
     } else if (Boolean.TRUE.equals(self)) {
-      builder.append("@this");
+      builder.append(Property.THIS_PROPERTY);
     } else if (collection != null) {
       collection.toString(params, builder);
     }

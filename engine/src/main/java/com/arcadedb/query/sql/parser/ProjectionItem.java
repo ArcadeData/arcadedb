@@ -167,7 +167,7 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public boolean isExpand() {
-    return expression.isExpand();
+    return expression != null && expression.isExpand();
   }
 
   public ProjectionItem getExpandContent() {

@@ -219,7 +219,8 @@ matchPathItem
     ;
 
 matchFilter
-    : identifier
+    : functionCall
+    | identifier
     | LBRACE matchFilterItem (COMMA matchFilterItem)* RBRACE
     ;
 
@@ -1032,6 +1033,7 @@ identifier
     | VALUE
     | VALUES
     | TYPE
+    | TYPES
     | STATUS
     | COUNT
     | DATE
@@ -1057,4 +1059,8 @@ identifier
     | OUT
     | ERROR_KW
     | PROFILE
+    | HIDDEN_KW
+    | AS
+    | WHERE
+    | WHILE
     ;
