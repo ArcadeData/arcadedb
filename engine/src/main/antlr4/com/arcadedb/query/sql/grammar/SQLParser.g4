@@ -369,13 +369,25 @@ bucketIdentifier
 
 /**
  * CREATE PROPERTY statement
+ * CREATE PROPERTY Type.property [IF NOT EXISTS] propertyType [OF ofType] [(attributes)]
  */
 createPropertyBody
-    : identifier DOT identifier (IF NOT EXISTS)? propertyType
+    : identifier DOT identifier (IF NOT EXISTS)? identifier (OF identifier)? (LPAREN propertyAttributes RPAREN)?
     ;
 
+propertyAttributes
+    : propertyAttribute (COMMA propertyAttribute)*
+    ;
+
+propertyAttribute
+    : identifier (identifier | TRUE | FALSE | INTEGER_LITERAL | FLOATING_POINT_LITERAL | STRING_LITERAL)?
+    ;
+
+/**
+ * Property type specification - supports simple types and complex types like LIST OF INTEGER
+ */
 propertyType
-    : identifier
+    : identifier (OF identifier)?
     ;
 
 /**
@@ -384,7 +396,7 @@ propertyType
  * Unnamed: CREATE INDEX ON identifier (properties) [UNIQUE|NOTUNIQUE|FULL_TEXT] [NULL_STRATEGY ...] [ENGINE ...] [METADATA {...}]
  */
 createIndexBody
-    : identifier? ON TYPE? identifier LPAREN indexProperty (COMMA indexProperty)* RPAREN
+    : identifier? (IF NOT EXISTS)? ON TYPE? identifier LPAREN indexProperty (COMMA indexProperty)* RPAREN
       indexType?
       (NULL_STRATEGY identifier)?
       (METADATA json)?
@@ -392,7 +404,7 @@ createIndexBody
     ;
 
 indexProperty
-    : identifier (BY (KEY | VALUE))?
+    : identifier (BY (KEY | VALUE | ITEM))?
     ;
 
 indexType
@@ -516,7 +528,7 @@ truncateRecordBody
 // ============================================================================
 
 rebuildIndexStatement
-    : REBUILD INDEX identifier
+    : REBUILD INDEX (identifier | STAR)
     ;
 
 // ============================================================================
@@ -633,7 +645,8 @@ fromItem
     | LBRACKET rid (COMMA rid)* RBRACKET                            # fromRidArray
     | LBRACKET inputParameter (COMMA inputParameter)* RBRACKET      # fromParamArray
     | inputParameter                                                 # fromParam
-    | bucketIdentifier                                              # fromBucket
+    | BUCKET_IDENTIFIER                                             # fromBucket
+    | BUCKET_NUMBER_IDENTIFIER                                      # fromBucket
     | bucketList                                                    # fromBucketList
     | indexIdentifier                                               # fromIndex
     | schemaIdentifier                                              # fromSchema

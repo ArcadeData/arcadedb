@@ -385,12 +385,26 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * FROM bucket visitor (e.g., FROM bucket:users).
+   * FROM bucket visitor (e.g., FROM bucket:users or bucket:123).
+   * Grammar: BUCKET_IDENTIFIER | BUCKET_NUMBER_IDENTIFIER
    */
   @Override
   public FromItem visitFromBucket(final SQLParser.FromBucketContext ctx) {
     final FromItem fromItem = new FromItem(-1);
-    fromItem.bucket = (Bucket) visit(ctx.bucketIdentifier());
+    final Bucket bucket = new Bucket(-1);
+
+    if (ctx.BUCKET_IDENTIFIER() != null) {
+      // BUCKET:name format
+      final String text = ctx.BUCKET_IDENTIFIER().getText();
+      bucket.bucketName = text.substring("bucket:".length());
+    } else if (ctx.BUCKET_NUMBER_IDENTIFIER() != null) {
+      // BUCKET:123 format
+      final String text = ctx.BUCKET_NUMBER_IDENTIFIER().getText();
+      final String bucketNumberStr = text.substring("bucket:".length());
+      bucket.bucketNumber = Integer.parseInt(bucketNumberStr);
+    }
+
+    fromItem.bucket = bucket;
     return fromItem;
   }
 
@@ -3033,13 +3047,93 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     stmt.typeName = (Identifier) visit(bodyCtx.identifier(0));
     stmt.propertyName = (Identifier) visit(bodyCtx.identifier(1));
 
-    // Property type
-    stmt.propertyType = (Identifier) visit(bodyCtx.propertyType().identifier());
-
     // IF NOT EXISTS
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
+    // Property type (after IF NOT EXISTS clause if present)
+    stmt.propertyType = (Identifier) visit(bodyCtx.identifier(2));
+
+    // OF clause (optional - for types like LIST OF INTEGER)
+    if (bodyCtx.OF() != null && bodyCtx.identifier().size() > 3) {
+      stmt.ofType = (Identifier) visit(bodyCtx.identifier(3));
+    }
+
+    // Attributes (MANDATORY, READONLY, etc.)
+    if (bodyCtx.propertyAttributes() != null) {
+      for (final SQLParser.PropertyAttributeContext attrCtx : bodyCtx.propertyAttributes().propertyAttribute()) {
+        final CreatePropertyAttributeStatement attr = (CreatePropertyAttributeStatement) visit(attrCtx);
+        stmt.attributes.add(attr);
+      }
+    }
+
     return stmt;
+  }
+
+  /**
+   * Visit property attribute (e.g., MANDATORY, READONLY true, MAX 5).
+   */
+  @Override
+  public CreatePropertyAttributeStatement visitPropertyAttribute(final SQLParser.PropertyAttributeContext ctx) {
+    final CreatePropertyAttributeStatement attr = new CreatePropertyAttributeStatement(-1);
+
+    // Attribute name
+    attr.settingName = (Identifier) visit(ctx.identifier(0));
+
+    // Attribute value (optional - if not present, it's a boolean flag set to true)
+    if (ctx.TRUE() != null) {
+      // Value is boolean true
+      final Identifier trueId = new Identifier("true");
+      final Expression expr = new Expression(-1);
+      expr.mathExpression = new BaseExpression(trueId);
+      attr.settingValue = expr;
+    } else if (ctx.FALSE() != null) {
+      // Value is boolean false
+      final Identifier falseId = new Identifier("false");
+      final Expression expr = new Expression(-1);
+      expr.mathExpression = new BaseExpression(falseId);
+      attr.settingValue = expr;
+    } else if (ctx.identifier().size() > 1) {
+      // Value is another identifier (e.g., MANDATORY true)
+      final Identifier valueId = (Identifier) visit(ctx.identifier(1));
+      final Expression expr = new Expression(-1);
+      expr.mathExpression = new BaseExpression(valueId);
+      attr.settingValue = expr;
+    } else if (ctx.INTEGER_LITERAL() != null) {
+      // Value is an integer (e.g., MAX 5)
+      final PInteger pInt = new PInteger(-1);
+      pInt.setValue((Number) Integer.parseInt(ctx.INTEGER_LITERAL().getText()));
+      final BaseExpression baseExpr = new BaseExpression(-1);
+      baseExpr.number = pInt;
+      final Expression expr = new Expression(-1);
+      expr.mathExpression = baseExpr;
+      attr.settingValue = expr;
+    } else if (ctx.FLOATING_POINT_LITERAL() != null) {
+      // Value is a float
+      final PNumber pNum = new PNumber(-1);
+      pNum.value = new java.math.BigDecimal(ctx.FLOATING_POINT_LITERAL().getText());
+      final BaseExpression baseExpr = new BaseExpression(-1);
+      baseExpr.number = pNum;
+      final Expression expr = new Expression(-1);
+      expr.mathExpression = baseExpr;
+      attr.settingValue = expr;
+    } else if (ctx.STRING_LITERAL() != null) {
+      // Value is a string (e.g., DEFAULT "value")
+      String strValue = ctx.STRING_LITERAL().getText();
+      // Remove quotes
+      if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
+        strValue = strValue.substring(1, strValue.length() - 1);
+      } else if (strValue.startsWith("'") && strValue.endsWith("'")) {
+        strValue = strValue.substring(1, strValue.length() - 1);
+      }
+      final BaseExpression baseExpr = new BaseExpression(-1);
+      baseExpr.string = "\"" + strValue + "\"";
+      final Expression expr = new Expression(-1);
+      expr.mathExpression = baseExpr;
+      attr.settingValue = expr;
+    }
+    // If no value, settingValue remains null (treated as boolean true)
+
+    return attr;
   }
 
   /**
@@ -3049,6 +3143,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public CreateIndexStatement visitCreateIndexStmt(final SQLParser.CreateIndexStmtContext ctx) {
     final CreateIndexStatement stmt = new CreateIndexStatement(-1);
     final SQLParser.CreateIndexBodyContext bodyCtx = ctx.createIndexBody();
+
+    // IF NOT EXISTS flag
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
     // Index name (optional - can be null for unnamed indexes)
     if (bodyCtx.identifier().size() > 1) {
@@ -3063,12 +3160,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final CreateIndexStatement.Property prop = new CreateIndexStatement.Property();
       prop.name = (Identifier) visit(propCtx.identifier());
 
-      // Handle BY KEY/VALUE syntax
+      // Handle BY KEY/VALUE/ITEM syntax
       if (propCtx.BY() != null) {
         if (propCtx.KEY() != null) {
           prop.byKey = true;
         } else if (propCtx.VALUE() != null) {
           prop.byValue = true;
+        } else if (propCtx.ITEM() != null) {
+          prop.byItem = true;
         }
       }
 
@@ -3167,6 +3266,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.LANGUAGE() != null) {
       // The identifier after LANGUAGE is at index 2 (after library and function names)
       stmt.language = (Identifier) visit(ctx.identifier(2));
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Visit REBUILD INDEX statement.
+   * Grammar: REBUILD INDEX (identifier | STAR)
+   */
+  @Override
+  public RebuildIndexStatement visitRebuildIndexStatement(final SQLParser.RebuildIndexStatementContext ctx) {
+    final RebuildIndexStatement stmt = new RebuildIndexStatement(-1);
+
+    if (ctx.STAR() != null) {
+      // REBUILD INDEX * - rebuild all indexes
+      stmt.all = true;
+    } else {
+      // REBUILD INDEX indexName
+      stmt.name = (Identifier) visit(ctx.identifier());
     }
 
     return stmt;
