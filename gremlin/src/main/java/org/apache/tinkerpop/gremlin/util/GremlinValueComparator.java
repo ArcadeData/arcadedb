@@ -18,6 +18,7 @@
  */
 package org.apache.tinkerpop.gremlin.util;
 
+import org.apache.tinkerpop.gremlin.process.traversal.GremlinTypeErrorException;
 import org.apache.tinkerpop.gremlin.process.traversal.Path;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Element;
@@ -130,7 +131,7 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
         // comparable(f, s) assures that type(f) == type(s)
         final Type type = Type.type(f);
         return comparator(type).compare(f, s) == 0;
-      } catch (IllegalStateException ex) {
+      } catch (GremlinTypeErrorException ex) {
         /**
          * By routing through the compare(f, s) path we expose ourselves to type errors, which should be
          * reduced to false for equality:
@@ -158,7 +159,7 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
   };
 
   private static <T> T throwTypeError() {
-    throw new IllegalStateException("Objects are not comparable");
+    throw new GremlinTypeErrorException();
   }
 
   /**
@@ -299,9 +300,8 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
 
   /**
    * Return true if the two objects are of the same comparison type (although they may not be the exact same Class)
-   * Made public to allow TinkerPop 3.8.0 Compare class to access this method
    */
-  public static boolean comparable(final Object f, final Object s) {
+  private static boolean comparable(final Object f, final Object s) {
     if (f == null || s == null)
       return f == s; // true iff both in the null space
 
