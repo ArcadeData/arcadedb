@@ -24,6 +24,7 @@ hs_err_pid*
 .idea/
 ### Maven template
 target/
+gen/
 pom.xml.tag
 pom.xml.releaseBackup
 pom.xml.versionsBackup

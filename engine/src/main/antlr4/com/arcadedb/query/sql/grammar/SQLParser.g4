@@ -385,7 +385,7 @@ bucketIdentifier
  * CREATE PROPERTY Type.property [IF NOT EXISTS] propertyType [OF ofType] [(attributes)]
  */
 createPropertyBody
-    : identifier DOT identifier (IF NOT EXISTS)? identifier (OF identifier)? (LPAREN propertyAttributes RPAREN)?
+    : identifier DOT identifier (IF NOT EXISTS)? propertyType (LPAREN propertyAttributes RPAREN)?
     ;
 
 propertyAttributes
@@ -452,6 +452,7 @@ createVertexBody
 createEdgeBody
     : identifier?
       FROM fromItem TO fromItem
+      (IF NOT EXISTS)?
       (SET updateItem (COMMA updateItem)*)?
       (CONTENT expression)?
       UNIDIRECTIONAL?
@@ -470,6 +471,7 @@ alterTypeBody
 alterTypeItem
     : NAME identifier
     | SUPERTYPE identifier
+    | BUCKETSELECTIONSTRATEGY identifier
     | CUSTOM identifier EQ expression
     | ALIASES (identifier (COMMA identifier)* | NULL)
     ;
@@ -543,7 +545,7 @@ truncateRecordBody
 // ============================================================================
 
 rebuildIndexStatement
-    : REBUILD INDEX (identifier | STAR)
+    : REBUILD INDEX (identifier | STAR) (WITH identifier EQ expression (COMMA identifier EQ expression)*)?
     ;
 
 // ============================================================================
@@ -1039,7 +1041,7 @@ identifier
     | KEY
     | FORMAT
     | CUSTOM
-    | SKIP
+    | SKIP_KW
     | START
     | CONTENT
     | RID
@@ -1050,4 +1052,9 @@ identifier
     | VERTEX
     | EDGE
     | LIMIT
+    | LINK
+    | IN
+    | OUT
+    | ERROR_KW
+    | PROFILE
     ;

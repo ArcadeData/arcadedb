@@ -3054,7 +3054,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final FromItem fromItem = (FromItem) visit(bodyCtx.fromItem(0));
         // Convert FromItem to Expression
         final Expression leftExpr = new Expression(-1);
-        if (fromItem.identifier != null) {
+        if (fromItem.statement != null) {
+          // Handle subquery (e.g., CREATE EDGE FROM (SELECT ...) TO ...)
+          final ParenthesisExpression parenExpr = new ParenthesisExpression(-1);
+          parenExpr.setStatement(fromItem.statement);
+          leftExpr.mathExpression = parenExpr;
+        } else if (fromItem.identifier != null) {
           leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
         } else if (CollectionUtils.isNotEmpty(fromItem.rids)) {
           leftExpr.rid = fromItem.rids.get(0);
@@ -3072,7 +3077,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final FromItem toItem = (FromItem) visit(bodyCtx.fromItem(1));
         // Convert FromItem to Expression
         final Expression rightExpr = new Expression(-1);
-        if (toItem.identifier != null) {
+        if (toItem.statement != null) {
+          // Handle subquery (e.g., CREATE EDGE FROM ... TO (SELECT ...))
+          final ParenthesisExpression parenExpr = new ParenthesisExpression(-1);
+          parenExpr.setStatement(toItem.statement);
+          rightExpr.mathExpression = parenExpr;
+        } else if (toItem.identifier != null) {
           rightExpr.mathExpression = new BaseExpression(toItem.identifier);
         } else if (CollectionUtils.isNotEmpty(toItem.rids)) {
           rightExpr.rid = toItem.rids.get(0);
@@ -3098,6 +3108,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
         stmt.body = body;
       }
+
+      // Set IF NOT EXISTS flag
+      stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
       // Set unidirectional flag
       if (bodyCtx.UNIDIRECTIONAL() != null) {
@@ -3126,12 +3139,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // IF NOT EXISTS
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
-    // Property type (after IF NOT EXISTS clause if present)
-    stmt.propertyType = (Identifier) visit(bodyCtx.identifier(2));
+    // Property type - get from propertyType rule
+    final SQLParser.PropertyTypeContext propTypeCtx = bodyCtx.propertyType();
+    if (propTypeCtx != null) {
+      stmt.propertyType = (Identifier) visit(propTypeCtx.identifier(0));
 
-    // OF clause (optional - for types like LIST OF INTEGER)
-    if (bodyCtx.OF() != null && bodyCtx.identifier().size() > 3) {
-      stmt.ofType = (Identifier) visit(bodyCtx.identifier(3));
+      // OF clause (optional - for types like LIST OF INTEGER)
+      if (propTypeCtx.OF() != null && propTypeCtx.identifier().size() > 1) {
+        stmt.ofType = (Identifier) visit(propTypeCtx.identifier(1));
+      }
     }
 
     // Attributes (MANDATORY, READONLY, etc.)
@@ -3176,11 +3192,46 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // IF NOT EXISTS flag
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
-    // Index name (optional - can be null for unnamed indexes)
-    if (bodyCtx.identifier().size() > 1) {
-      stmt.name = (Identifier) visit(bodyCtx.identifier(0));
-      stmt.typeName = (Identifier) visit(bodyCtx.identifier(1));
+    // Index name and type name
+    // Grammar: identifier? (IF NOT EXISTS)? ON TYPE? identifier (properties) ...
+    // The identifier BEFORE ON is the optional index name
+    // The identifier AFTER ON is the type/table name
+    // We need to check if the first identifier comes before the ON keyword
+
+    int idxNamePos = -1;
+    int typeNamePos = -1;
+    int onTokenIndex = -1;
+
+    // Find the ON token position in the token stream
+    for (int i = 0; i < bodyCtx.getChildCount(); i++) {
+      if (bodyCtx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+        final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) bodyCtx.getChild(i);
+        if (termNode.getSymbol().getType() == SQLParser.ON) {
+          onTokenIndex = i;
+          break;
+        }
+      }
+    }
+
+    // Determine which identifiers are index name vs type name
+    if (onTokenIndex > 0) {
+      // Check if there's an identifier before ON
+      boolean hasIndexName = false;
+      for (int i = 0; i < onTokenIndex; i++) {
+        if (bodyCtx.getChild(i) == bodyCtx.identifier(0)) {
+          hasIndexName = true;
+          break;
+        }
+      }
+
+      if (hasIndexName && bodyCtx.identifier().size() >= 2) {
+        stmt.name = (Identifier) visit(bodyCtx.identifier(0));
+        stmt.typeName = (Identifier) visit(bodyCtx.identifier(1));
+      } else if (bodyCtx.identifier().size() >= 1) {
+        stmt.typeName = (Identifier) visit(bodyCtx.identifier(0));
+      }
     } else {
+      // Fallback: assume first identifier is type name if ON not found
       stmt.typeName = (Identifier) visit(bodyCtx.identifier(0));
     }
 
@@ -3217,11 +3268,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
-    // NULL_STRATEGY
-    if (bodyCtx.NULL_STRATEGY() != null && bodyCtx.identifier().size() > 2) {
-      // The null strategy identifier is the last one
-      final Identifier nsId = (Identifier) visit(bodyCtx.identifier(bodyCtx.identifier().size() - 1));
+    // NULL_STRATEGY and ENGINE
+    // Determine which identifiers are which based on presence of optional elements
+    // Grammar: identifier? (IF NOT EXISTS)? ON TYPE? identifier ... (NULL_STRATEGY identifier)? (ENGINE identifier)?
+    // If index name is present: identifier(0)=name, identifier(1)=table, identifier(2+)=NULL_STRATEGY/ENGINE
+    // If index name is NOT present: identifier(0)=table, identifier(1+)=NULL_STRATEGY/ENGINE
+
+    int extraIdIndex = stmt.name != null ? 2 : 1; // Start position for NULL_STRATEGY/ENGINE identifiers
+
+    if (bodyCtx.NULL_STRATEGY() != null && bodyCtx.identifier().size() > extraIdIndex) {
+      final Identifier nsId = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
       stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
+      extraIdIndex++; // Move to next identifier position for ENGINE
     }
 
     // METADATA
@@ -3230,9 +3288,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // ENGINE
-    if (bodyCtx.ENGINE() != null && bodyCtx.identifier().size() > 2) {
-      // The engine identifier is the last one
-      stmt.engine = (Identifier) visit(bodyCtx.identifier(bodyCtx.identifier().size() - 1));
+    if (bodyCtx.ENGINE() != null && bodyCtx.identifier().size() > extraIdIndex) {
+      stmt.engine = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
     }
 
     return stmt;
@@ -3302,7 +3359,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit REBUILD INDEX statement.
-   * Grammar: REBUILD INDEX (identifier | STAR)
+   * Grammar: REBUILD INDEX (identifier | STAR) (WITH identifier EQ expression (COMMA identifier EQ expression)*)?
    */
   @Override
   public RebuildIndexStatement visitRebuildIndexStatement(final SQLParser.RebuildIndexStatementContext ctx) {
@@ -3311,9 +3368,26 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.STAR() != null) {
       // REBUILD INDEX * - rebuild all indexes
       stmt.all = true;
-    } else {
-      // REBUILD INDEX indexName
-      stmt.name = (Identifier) visit(ctx.identifier());
+    } else if (ctx.identifier().size() > 0) {
+      // REBUILD INDEX indexName (the first identifier if not with WITH params, or the only identifier if WITH)
+      // If WITH is present, identifier(0) is the index name, identifier(1+) are setting keys
+      stmt.name = (Identifier) visit(ctx.identifier(0));
+    }
+
+    // Handle WITH settings
+    if (ctx.WITH() != null) {
+      // WITH identifier EQ expression (COMMA identifier EQ expression)*
+      // identifier(0) is index name (already processed above)
+      // identifier(1), identifier(2), ... are setting keys
+      // expression(0), expression(1), ... are setting values
+      final List<SQLParser.IdentifierContext> settingKeys = ctx.identifier().subList(1, ctx.identifier().size());
+      final List<SQLParser.ExpressionContext> settingValues = ctx.expression();
+
+      for (int i = 0; i < settingKeys.size() && i < settingValues.size(); i++) {
+        final Expression key = new Expression((Identifier) visit(settingKeys.get(i)));
+        final Expression value = (Expression) visit(settingValues.get(i));
+        stmt.settings.put(key, value);
+      }
     }
 
     return stmt;

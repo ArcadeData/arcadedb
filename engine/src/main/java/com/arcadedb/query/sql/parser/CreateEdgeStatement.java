@@ -36,7 +36,7 @@ public class CreateEdgeStatement extends Statement {
   public Expression leftExpression;
   public Expression rightExpression;
   public InsertBody body;
-  protected boolean    ifNotExists;
+  public boolean    ifNotExists;
   public boolean    unidirectional = false;
 
   public CreateEdgeStatement(final int id) {
