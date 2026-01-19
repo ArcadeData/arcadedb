@@ -43,9 +43,10 @@ parse
 
 /**
  * Script entry point - parses multiple SQL statements separated by semicolons
+ * Uses scriptStatement to allow FOREACH/WHILE which are NOT available in regular SQL
  */
 parseScript
-    : (statement SEMICOLON?)* EOF
+    : (scriptStatement SEMICOLON?)* EOF
     ;
 
 /**
@@ -139,6 +140,17 @@ statement
 
     // Function Management
     | defineFunctionStatement                        # defineFunctionStmt
+    ;
+
+/**
+ * Script statement rule - includes all regular statements PLUS script-only control flow
+ * This rule is ONLY used by parseScript, not by parse (regular SQL)
+ * FOREACH and WHILE are script-only and NOT available in regular SQL
+ */
+scriptStatement
+    : statement                                      # scriptRegularStmt
+    | foreachStatement                               # foreachStmt
+    | whileStatement                                 # whileStmt
     ;
 
 // ============================================================================
@@ -559,8 +571,24 @@ returnStatement
  * IF (condition) { statements } [ELSE { statements }]
  */
 ifStatement
-    : IF LPAREN expression RPAREN LBRACE statement* RBRACE
-      (ELSE LBRACE statement* RBRACE)?
+    : IF LPAREN orBlock RPAREN LBRACE (scriptStatement SEMICOLON?)* RBRACE
+      (ELSE LBRACE (scriptStatement SEMICOLON?)* RBRACE)?
+    ;
+
+/**
+ * FOREACH statement (script-only)
+ * FOREACH (variable IN expression) { statements }
+ */
+foreachStatement
+    : FOREACH LPAREN identifier IN expression RPAREN LBRACE (scriptStatement SEMICOLON?)* RBRACE
+    ;
+
+/**
+ * WHILE statement (script-only)
+ * WHILE (condition) { statements }
+ */
+whileStatement
+    : WHILE LPAREN orBlock RPAREN LBRACE (scriptStatement SEMICOLON?)* RBRACE
     ;
 
 // ============================================================================

@@ -38,9 +38,9 @@ import java.util.stream.*;
 
 public class ForEachBlock extends Statement {
   protected static final AtomicInteger   FOREACH_VARIABLE_PROGR = new AtomicInteger();
-  protected              Identifier      loopVariable;
-  protected              Expression      loopValues;
-  protected              List<Statement> statements             = new ArrayList<>();
+  public                 Identifier      loopVariable;
+  public                 Expression      loopValues;
+  public                 List<Statement> statements             = new ArrayList<>();
 
   public ForEachBlock(final int id) {
     super(id);

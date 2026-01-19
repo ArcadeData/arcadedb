@@ -63,7 +63,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public List<Statement> visitParseScript(final SQLParser.ParseScriptContext ctx) {
     final List<Statement> statements = new ArrayList<>();
-    for (final SQLParser.StatementContext stmtCtx : ctx.statement()) {
+    for (final SQLParser.ScriptStatementContext stmtCtx : ctx.scriptStatement()) {
       statements.add((Statement) visit(stmtCtx));
     }
     return statements;
@@ -3569,6 +3569,111 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     if (returnCtx.expression() != null) {
       stmt.expression = (Expression) visit(returnCtx.expression());
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Visit scriptRegularStmt - delegates to the underlying regular statement.
+   * This allows all regular SQL statements to work in script context.
+   */
+  @Override
+  public Statement visitScriptRegularStmt(final SQLParser.ScriptRegularStmtContext ctx) {
+    return (Statement) visit(ctx.statement());
+  }
+
+  /**
+   * Visit FOREACH statement (script-only).
+   * Grammar: FOREACH LPAREN identifier IN expression RPAREN LBRACE scriptStatement* RBRACE
+   */
+  @Override
+  public ForEachBlock visitForeachStmt(final SQLParser.ForeachStmtContext ctx) {
+    final ForEachBlock block = new ForEachBlock(-1);
+    final SQLParser.ForeachStatementContext foreachCtx = ctx.foreachStatement();
+
+    // Loop variable (the identifier after FOREACH and before IN)
+    block.loopVariable = (Identifier) visit(foreachCtx.identifier());
+
+    // Loop values (the expression after IN)
+    block.loopValues = (Expression) visit(foreachCtx.expression());
+
+    // Loop body statements (uses scriptStatement* to allow nested FOREACH/WHILE)
+    for (final SQLParser.ScriptStatementContext stmtCtx : foreachCtx.scriptStatement()) {
+      block.statements.add((Statement) visit(stmtCtx));
+    }
+
+    return block;
+  }
+
+  /**
+   * Visit WHILE statement (script-only).
+   * Grammar: WHILE LPAREN orBlock RPAREN LBRACE scriptStatement* RBRACE
+   */
+  @Override
+  public WhileBlock visitWhileStmt(final SQLParser.WhileStmtContext ctx) {
+    final WhileBlock block = new WhileBlock(-1);
+    final SQLParser.WhileStatementContext whileCtx = ctx.whileStatement();
+
+    // Condition (the orBlock produces a BooleanExpression)
+    block.condition = (BooleanExpression) visit(whileCtx.orBlock());
+
+    // Loop body statements (uses scriptStatement* to allow nested FOREACH/WHILE)
+    for (final SQLParser.ScriptStatementContext stmtCtx : whileCtx.scriptStatement()) {
+      block.statements.add((Statement) visit(stmtCtx));
+    }
+
+    return block;
+  }
+
+  /**
+   * Visit IF statement.
+   * Grammar: IF LPAREN orBlock RPAREN LBRACE (scriptStatement SEMICOLON?)* RBRACE (ELSE LBRACE (scriptStatement SEMICOLON?)* RBRACE)?
+   */
+  @Override
+  public IfStatement visitIfStmt(final SQLParser.IfStmtContext ctx) {
+    final IfStatement stmt = new IfStatement(-1);
+    final SQLParser.IfStatementContext ifCtx = ctx.ifStatement();
+
+    // Condition (the orBlock produces a BooleanExpression)
+    stmt.expression = (BooleanExpression) visit(ifCtx.orBlock());
+
+    // Get all script statements - first group is IF body, second group (if exists) is ELSE body
+    final List<SQLParser.ScriptStatementContext> allStatements = ifCtx.scriptStatement();
+
+    // Find the index where ELSE keyword appears (if it exists)
+    int elseIndex = -1;
+    if (ifCtx.ELSE() != null) {
+      // Count statements until we hit the second LBRACE (which comes after ELSE)
+      // The grammar generates scriptStatement* for both IF and ELSE blocks
+      // We need to split them based on which block they belong to
+      // This is tricky - let's use a different approach: count LBRACE tokens
+      final int numBraces = ifCtx.LBRACE().size();
+      if (numBraces == 2) {
+        // We have both IF and ELSE blocks - need to determine the split
+        // The safest way is to iterate and check each statement's start position
+        // against the ELSE token position
+        final int elseTokenIndex = ifCtx.ELSE().getSymbol().getTokenIndex();
+        for (int i = 0; i < allStatements.size(); i++) {
+          if (allStatements.get(i).start.getTokenIndex() > elseTokenIndex) {
+            elseIndex = i;
+            break;
+          }
+        }
+      }
+    }
+
+    // Add statements to IF block (before ELSE) or all statements if no ELSE
+    final int endIndex = (elseIndex != -1) ? elseIndex : allStatements.size();
+    for (int i = 0; i < endIndex; i++) {
+      stmt.statements.add((Statement) visit(allStatements.get(i)));
+    }
+
+    // Add statements to ELSE block (after ELSE)
+    if (elseIndex != -1) {
+      for (int i = elseIndex; i < allStatements.size(); i++) {
+        stmt.elseStatements.add((Statement) visit(allStatements.get(i)));
+      }
     }
 
     return stmt;

@@ -35,9 +35,9 @@ import java.util.*;
 import java.util.stream.*;
 
 public class IfStatement extends Statement {
-  protected BooleanExpression expression;
-  protected List<Statement>   statements     = new ArrayList<Statement>();
-  protected List<Statement>   elseStatements = new ArrayList<Statement>();//TODO support ELSE in the SQL syntax
+  public BooleanExpression expression;
+  public List<Statement>   statements     = new ArrayList<Statement>();
+  public List<Statement>   elseStatements = new ArrayList<Statement>();//TODO support ELSE in the SQL syntax
 
   public IfStatement(final int id) {
     super(id);
