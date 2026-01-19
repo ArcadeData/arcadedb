@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
@@ -107,8 +108,16 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           if (retry >= getMaxRetry() - 1)
             throw e;
           counter = lastGoodCounter;
+        } catch (final DatabaseIsClosedException e) {
+          // Server was stopped during test, this is expected in leader failover tests
+          LogManager.instance()
+              .log(this, Level.FINE, "TEST: - DATABASE CLOSED (server stopped during test): %s", null, e.toString());
+          throw e;
         } finally {
-          db.begin();
+          // Only call db.begin() if database is still open
+          if (db != null && db.isOpen() && !db.isTransactionActive()) {
+            db.begin();
+          }
         }
       }
 

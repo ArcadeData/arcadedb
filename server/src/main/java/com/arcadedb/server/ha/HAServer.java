@@ -1973,7 +1973,7 @@ public class HAServer implements ServerPlugin {
       return;
     }
 
-    LogManager.instance().log(this, Level.INFO, "Verifying %d database(s) are accessible after becoming leader",
+    LogManager.instance().log(this, Level.INFO, "Verifying %d database(s) are accessible during role transition",
         databaseNames.size());
 
     for (final String dbName : databaseNames) {

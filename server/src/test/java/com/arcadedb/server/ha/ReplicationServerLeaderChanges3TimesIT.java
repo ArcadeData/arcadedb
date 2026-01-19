@@ -64,6 +64,13 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
     return HAServer.ServerRole.ANY;
   }
 
+  @Override
+  @Disabled("Skipping parent's replication() test - we use testReplication() with RemoteDatabase instead")
+  public void replication() throws Exception {
+    // Parent test uses local database, but this test stops leaders multiple times
+    // So we override to disable the parent test and use our own testReplication() method
+  }
+
   @Test
   @Timeout(value = 15, unit = TimeUnit.MINUTES)
 //  @Disabled
@@ -76,74 +83,84 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
     final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]),
         getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    LogManager.instance()
-        .log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    try {
+      LogManager.instance()
+          .log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
-    long counter = 0;
-    final int maxRetry = 10;
-    int timeouts = 0;
+      long counter = 0;
+      final int maxRetry = 10;
+      int timeouts = 0;
 
-    for (int tx = 0; tx < getTxs(); ++tx) {
-      for (int retry = 0; retry < 3; ++retry) {
-        try {
-          for (int i = 0; i < getVerticesPerTx(); ++i) {
-            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
-                "distributed-test");
+      for (int tx = 0; tx < getTxs(); ++tx) {
+        for (int retry = 0; retry < 3; ++retry) {
+          try {
+            for (int i = 0; i < getVerticesPerTx(); ++i) {
+              final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter,
+                  "distributed-test");
 
-            assertThat(resultSet.hasNext()).isTrue();
-            final Result result = resultSet.next();
-            assertThat(result).isNotNull();
-            final Set<String> props = result.getPropertyNames();
-            assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
-            assertThat(props.contains("id")).isTrue();
-            assertThat((int) result.getProperty("id")).isEqualTo(counter);
-            assertThat(props.contains("name")).isTrue();
-            assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
+              assertThat(resultSet.hasNext()).isTrue();
+              final Result result = resultSet.next();
+              assertThat(result).isNotNull();
+              final Set<String> props = result.getPropertyNames();
+              assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
+              assertThat(props.contains("id")).isTrue();
+              assertThat((int) result.getProperty("id")).isEqualTo(counter);
+              assertThat(props.contains("name")).isTrue();
+              assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
 
-            if (counter % 100 == 0) {
-              LogManager.instance().log(this, Level.SEVERE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
-              if (isPrintingConfigurationAtEveryStep())
-                getLeaderServer().getHA().printClusterConfiguration();
+              if (counter % 100 == 0) {
+                LogManager.instance().log(this, Level.SEVERE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
+                if (isPrintingConfigurationAtEveryStep())
+                  getLeaderServer().getHA().printClusterConfiguration();
+              }
+
             }
+            break;
 
+          } catch (final NeedRetryException | TimeoutException | TransactionException e) {
+            if (e instanceof TimeoutException) {
+              if (++timeouts > 3)
+                throw e;
+            }
+            // IGNORE IT
+            LogManager.instance()
+                .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d): %s", counter, retry, maxRetry,
+                    e.getMessage());
+            CodeUtils.sleep(500);
+
+          } catch (final DuplicatedKeyException e) {
+            // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
+            LogManager.instance().log(this, Level.SEVERE, "Error: %s (IGNORE IT)", e.getMessage());
+          } catch (final Exception e) {
+            // IGNORE IT
+            LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", e.getMessage());
           }
-          break;
-
-        } catch (final NeedRetryException | TimeoutException | TransactionException e) {
-          if (e instanceof TimeoutException) {
-            if (++timeouts > 3)
-              throw e;
-          }
-          // IGNORE IT
-          LogManager.instance()
-              .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d): %s", counter, retry, maxRetry,
-                  e.getMessage());
-          CodeUtils.sleep(500);
-
-        } catch (final DuplicatedKeyException e) {
-          // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
-          LogManager.instance().log(this, Level.SEVERE, "Error: %s (IGNORE IT)", e.getMessage());
-        } catch (final Exception e) {
-          // IGNORE IT
-          LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", e.getMessage());
         }
       }
+
+      LogManager.instance().log(this, Level.SEVERE, "Done");
+
+      for (int i = 0; i < getServerCount(); i++)
+        waitForReplicationIsCompleted(i);
+
+      // CHECK INDEXES ARE REPLICATED CORRECTLY
+      for (final int s : getServerToCheck()) {
+        checkEntriesOnServer(s);
+      }
+
+      onAfterTest();
+
+      LogManager.instance().log(this, Level.FINE, "TEST Restart = %d", null, restarts);
+      assertThat(restarts.get() >= getServerCount()).as("Restarted " + restarts.get() + " times").isTrue();
+    } finally {
+      // Close the remote database connection before test cleanup
+      try {
+        db.close();
+      } catch (final Exception e) {
+        // Ignore exceptions during close - servers may already be stopped
+        LogManager.instance().log(this, Level.FINE, "Exception closing remote database: %s", null, e.getMessage());
+      }
     }
-
-    LogManager.instance().log(this, Level.SEVERE, "Done");
-
-    for (int i = 0; i < getServerCount(); i++)
-      waitForReplicationIsCompleted(i);
-
-    // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (final int s : getServerToCheck()) {
-      checkEntriesOnServer(s);
-    }
-
-    onAfterTest();
-
-    LogManager.instance().log(this, Level.FINE, "TEST Restart = %d", null, restarts);
-    assertThat(restarts.get() >= getServerCount()).as("Restarted " + restarts.get() + " times").isTrue();
   }
 
   @Override
