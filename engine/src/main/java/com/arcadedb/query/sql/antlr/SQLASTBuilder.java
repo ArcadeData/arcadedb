@@ -1568,13 +1568,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
         // Create a special identifier for * using SuffixIdentifier with star flag
         final BaseIdentifier starId = new BaseIdentifier(-1);
-        try {
-          final SuffixIdentifier suffix = new SuffixIdentifier(-1);
-          suffix.star = true;
-          starId.suffix = suffix;
-        } catch (final Exception e) {
-          throw new CommandSQLParsingException("Failed to create star identifier: " + e.getMessage(), e);
-        }
+        final SuffixIdentifier suffix = new SuffixIdentifier(-1);
+        suffix.star = true;
+        starId.suffix = suffix;
 
         baseExpr.identifier = starId;
         starExpr.mathExpression = baseExpr;
@@ -1905,44 +1901,28 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Positional parameter: ?
       // Increment counter to assign sequential parameter numbers
       final PositionalParameter param = new PositionalParameter(-1);
-      try {
-        param.paramNumber = positionalParamCounter;
-        positionalParamCounter++;
-      } catch (final Exception e) {
-        throw new CommandSQLParsingException("Failed to set paramNumber: " + e.getMessage(), e);
-      }
+      param.paramNumber = positionalParamCounter;
+      positionalParamCounter++;
       return param;
     } else if (ctx.identifier() != null) {
       // Named parameter: :name
       final Identifier id = (Identifier) visit(ctx.identifier());
       final NamedParameter param = new NamedParameter(-1);
-      try {
-        param.paramName = id.getValue();
-        param.paramNumber = -1;
-      } catch (final Exception e) {
-        throw new CommandSQLParsingException("Failed to set paramName: " + e.getMessage(), e);
-      }
+      param.paramName = id.getValue();
+      param.paramNumber = -1;
       return param;
     } else if (ctx.INTEGER_LITERAL() != null) {
       // Positional parameter: $1, $2, etc.
       final int paramNum = Integer.parseInt(ctx.INTEGER_LITERAL().getText());
       final PositionalParameter param = new PositionalParameter(-1);
-      try {
-        param.paramNumber = paramNum;
-      } catch (final Exception e) {
-        throw new CommandSQLParsingException("Failed to set paramNumber: " + e.getMessage(), e);
-      }
+      param.paramNumber = paramNum;
       return param;
     } else if (ctx.COLON() != null && ctx.INTEGER_LITERAL() != null) {
       // Named parameter: :1, :2, etc. (numeric named params)
       final int paramNum = Integer.parseInt(ctx.INTEGER_LITERAL().getText());
       final NamedParameter param = new NamedParameter(-1);
-      try {
-        param.paramName = String.valueOf(paramNum);
-        param.paramNumber = paramNum;
-      } catch (final Exception e) {
-        throw new CommandSQLParsingException("Failed to set paramName: " + e.getMessage(), e);
-      }
+      param.paramName = String.valueOf(paramNum);
+      param.paramNumber = paramNum;
       return param;
     }
 
@@ -2709,7 +2689,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Expression leftExpr = new Expression(-1);
         if (fromItem.identifier != null) {
           leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
-        } else if (fromItem.rids != null && !fromItem.rids.isEmpty()) {
+        } else if (CollectionUtils.isNotEmpty(fromItem.rids)) {
           leftExpr.rid = fromItem.rids.get(0);
         }
         stmt.leftExpression = leftExpr;
@@ -2722,7 +2702,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Expression rightExpr = new Expression(-1);
         if (toItem.identifier != null) {
           rightExpr.mathExpression = new BaseExpression(toItem.identifier);
-        } else if (toItem.rids != null && !toItem.rids.isEmpty()) {
+        } else if (CollectionUtils.isNotEmpty(toItem.rids)) {
           rightExpr.rid = toItem.rids.get(0);
         }
         stmt.rightExpression = rightExpr;
