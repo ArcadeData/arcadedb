@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class LevelZeroIdentifier extends SimpleNode {
-  protected FunctionCall functionCall;
+  public FunctionCall functionCall;
   protected Boolean      self;
   protected PCollection  collection;
 

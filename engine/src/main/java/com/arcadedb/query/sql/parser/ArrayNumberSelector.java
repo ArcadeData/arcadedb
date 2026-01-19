@@ -27,9 +27,9 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class ArrayNumberSelector extends SimpleNode {
-  InputParameter inputValue;
-  MathExpression expressionValue;
-  Integer        integer;
+  public InputParameter inputValue;
+  public MathExpression expressionValue;
+  public Integer        integer;
 
   public ArrayNumberSelector(final int id) {
     super(id);

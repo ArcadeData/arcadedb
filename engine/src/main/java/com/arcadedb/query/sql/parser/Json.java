@@ -32,7 +32,7 @@ import java.util.stream.*;
 
 public class Json extends SimpleNode {
 
-  protected List<JsonItem> items = new ArrayList<>();
+  public List<JsonItem> items = new ArrayList<>();
 
   public Json(final int id) {
     super(id);

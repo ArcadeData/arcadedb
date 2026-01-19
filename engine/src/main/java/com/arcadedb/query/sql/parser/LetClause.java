@@ -25,7 +25,7 @@ import java.util.stream.*;
 
 public class LetClause extends SimpleNode {
 
-  protected List<LetItem> items = new ArrayList<LetItem>();
+  public List<LetItem> items = new ArrayList<LetItem>();
 
   public LetClause(final int id) {
     super(id);

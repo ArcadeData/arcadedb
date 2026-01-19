@@ -31,8 +31,8 @@ import java.util.*;
 
 public class BaseIdentifier extends SimpleNode {
 
-  protected LevelZeroIdentifier levelZero;
-  protected SuffixIdentifier    suffix;
+  public LevelZeroIdentifier levelZero;
+  public SuffixIdentifier    suffix;
 
   public BaseIdentifier(final int id) {
     super(id);

@@ -36,8 +36,8 @@ import java.util.*;
 import java.util.stream.*;
 
 public class FunctionCall extends SimpleNode {
-  protected Identifier       name;
-  protected List<Expression> params = new ArrayList<>();
+  public Identifier       name;
+  public List<Expression> params = new ArrayList<>();
   private   SQLFunction      cachedFunction;
 
   public FunctionCall(final int id) {

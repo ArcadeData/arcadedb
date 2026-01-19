@@ -41,9 +41,9 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class SuffixIdentifier extends SimpleNode {
-  protected Identifier      identifier;
+  public Identifier      identifier;
   protected RecordAttribute recordAttribute;
-  protected boolean         star = false;
+  public boolean         star = false;
 
   public SuffixIdentifier(final int id) {
     super(id);

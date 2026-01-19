@@ -26,8 +26,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 public class Skip extends SimpleNode {
-  protected PInteger       num;
-  protected InputParameter inputParam;
+  public PInteger       num;
+  public InputParameter inputParam;
 
   public Skip(final int id) {
     super(id);

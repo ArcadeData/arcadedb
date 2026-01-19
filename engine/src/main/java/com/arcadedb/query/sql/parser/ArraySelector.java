@@ -29,9 +29,9 @@ import java.util.*;
 
 public class ArraySelector extends SimpleNode {
 
-  protected Rid            rid;
-  protected InputParameter inputParam;
-  protected Expression     expression;
+  public Rid            rid;
+  public InputParameter inputParam;
+  public Expression     expression;
   protected PInteger       integer;
 
   public ArraySelector(final int id) {

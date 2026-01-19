@@ -24,8 +24,8 @@ import java.util.*;
 
 public class NamedParameter extends InputParameter {
 
-  protected int    paramNumber;
-  protected String paramName;
+  public int    paramNumber;
+  public String paramName;
 
   public NamedParameter(final int id) {
     super(id);

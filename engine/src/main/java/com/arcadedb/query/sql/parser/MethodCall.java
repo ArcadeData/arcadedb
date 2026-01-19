@@ -45,8 +45,8 @@ public class MethodCall extends SimpleNode {
       "outv", "oute", //
       "inv", "ine");
 
-  protected Identifier       methodName;
-  protected List<Expression> params = new ArrayList<Expression>();
+  public Identifier       methodName;
+  public List<Expression> params = new ArrayList<Expression>();
 
   private Boolean calculatedIsGraph = null;
 

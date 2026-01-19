@@ -32,7 +32,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 public class MatchesCondition extends BooleanExpression {
-  protected Expression     expression;
+  public Expression     expression;
   protected String         right;
   public    Expression     rightExpression;
   protected InputParameter rightParam;

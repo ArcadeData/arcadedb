@@ -24,7 +24,7 @@ import java.util.*;
 import java.util.stream.*;
 
 public class GroupBy extends SimpleNode {
-  protected List<Expression> items = new ArrayList<Expression>();
+  public List<Expression> items = new ArrayList<Expression>();
 
   public GroupBy(final int id) {
     super(id);

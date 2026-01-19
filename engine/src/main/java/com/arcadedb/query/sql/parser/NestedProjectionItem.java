@@ -25,12 +25,12 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 public class NestedProjectionItem extends SimpleNode {
-  protected boolean          exclude       = false;
-  protected boolean          star          = false;
-  protected Expression       expression;
-  protected boolean          rightWildcard = false;
-  protected NestedProjection expansion;
-  protected Identifier       alias;
+  public boolean          exclude       = false;
+  public boolean          star          = false;
+  public Expression       expression;
+  public boolean          rightWildcard = false;
+  public NestedProjection expansion;
+  public Identifier       alias;
 
   public NestedProjectionItem(final int id) {
     super(id);

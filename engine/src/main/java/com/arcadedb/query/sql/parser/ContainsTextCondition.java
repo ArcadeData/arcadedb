@@ -28,8 +28,8 @@ import java.util.*;
 
 @SuppressWarnings("ALL")
 public class ContainsTextCondition extends BooleanExpression {
-  protected Expression left;
-  protected Expression right;
+  public Expression left;
+  public Expression right;
 
   public ContainsTextCondition(final int id) {
     super(id);

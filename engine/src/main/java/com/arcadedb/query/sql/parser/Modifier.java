@@ -31,14 +31,14 @@ import java.lang.reflect.*;
 import java.util.*;
 
 public class Modifier extends SimpleNode {
-  boolean                   squareBrackets = false;
-  ArrayRangeSelector        arrayRange;
-  OrBlock                   condition;
-  ArraySingleValuesSelector arraySingleValues;
-  RightBinaryCondition      rightBinaryCondition;
-  MethodCall                methodCall;
-  SuffixIdentifier          suffix;
-  Modifier                  next;
+  public boolean                   squareBrackets = false;
+  public ArrayRangeSelector        arrayRange;
+  public OrBlock                   condition;
+  public ArraySingleValuesSelector arraySingleValues;
+  public RightBinaryCondition      rightBinaryCondition;
+  public MethodCall                methodCall;
+  public SuffixIdentifier          suffix;
+  public Modifier                  next;
 
   public Modifier(final int id) {
     super(id);

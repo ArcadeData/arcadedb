@@ -27,10 +27,10 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class RightBinaryCondition extends SimpleNode {
-  BinaryCompareOperator operator;
-  boolean               not = false;
-  InOperator            inOperator;
-  Expression            right;
+  public BinaryCompareOperator operator;
+  public boolean               not = false;
+  public InOperator            inOperator;
+  public Expression            right;
 
   public RightBinaryCondition(final int id) {
     super(id);

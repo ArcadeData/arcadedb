@@ -31,8 +31,6 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.ArrayList;
 import java.util.List;
 
-import static com.arcadedb.query.sql.antlr.ReflectionUtils.*;
-
 /**
  * ANTLR4 visitor that builds ArcadeDB's internal AST from the SQL parse tree.
  * Transforms ANTLR's parse tree into Statement objects that are compatible
@@ -225,19 +223,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final NestedProjection nestedProjection = new NestedProjection(-1);
 
     @SuppressWarnings("unchecked")
-    final List<NestedProjectionItem> includeItems = (List<NestedProjectionItem>) getField(nestedProjection,
-        NestedProjection.class, "includeItems");
+    final List<NestedProjectionItem> includeItems = (List<NestedProjectionItem>) nestedProjection.includeItems;
     @SuppressWarnings("unchecked")
-    final List<NestedProjectionItem> excludeItems = (List<NestedProjectionItem>) getField(nestedProjection,
-        NestedProjection.class, "excludeItems");
+    final List<NestedProjectionItem> excludeItems = (List<NestedProjectionItem>) nestedProjection.excludeItems;
 
     for (final SQLParser.NestedProjectionItemContext itemCtx : ctx.nestedProjectionItem()) {
       final NestedProjectionItem item = (NestedProjectionItem) visit(itemCtx);
-      final boolean isExclude = (Boolean) getField(item, NestedProjectionItem.class, "exclude");
-      final boolean isStar = (Boolean) getField(item, NestedProjectionItem.class, "star");
+      final boolean isExclude = (Boolean) item.exclude;
+      final boolean isStar = (Boolean) item.star;
 
       if (isStar)
-        setField(nestedProjection, NestedProjection.class, "starItem", item);
+        nestedProjection.starItem = item;
       else if (isExclude)
         excludeItems.add(item);
       else
@@ -256,27 +252,27 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // STAR
     if (ctx.STAR() != null && ctx.expression() == null)
-      setField(item, NestedProjectionItem.class, "star", true);
+      item.star = true;
 
     // BANG (exclude)
     if (ctx.BANG() != null)
-      setField(item, NestedProjectionItem.class, "exclude", true);
+      item.exclude = true;
 
     // Expression
     if (ctx.expression() != null)
-      setField(item, NestedProjectionItem.class, "expression", (Expression) visit(ctx.expression()));
+      item.expression = (Expression) visit(ctx.expression());
 
     // Right wildcard (expression followed by *)
     if (ctx.expression() != null && ctx.STAR() != null)
-      setField(item, NestedProjectionItem.class, "rightWildcard", true);
+      item.rightWildcard = true;
 
     // Nested expansion
     if (ctx.nestedProjection() != null)
-      setField(item, NestedProjectionItem.class, "expansion", (NestedProjection) visit(ctx.nestedProjection()));
+      item.expansion = (NestedProjection) visit(ctx.nestedProjection());
 
     // Alias
     if (ctx.identifier() != null)
-      setField(item, NestedProjectionItem.class, "alias", (Identifier) visit(ctx.identifier()));
+      item.alias = (Identifier) visit(ctx.identifier());
 
     return item;
   }
@@ -544,16 +540,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (ctx.NOT() != null) {
         // IS NOT NULL
         final IsNotNullCondition condition = new IsNotNullCondition(-1);
-        final java.lang.reflect.Field exprField = IsNotNullCondition.class.getDeclaredField("expression");
-        exprField.setAccessible(true);
-        exprField.set(condition, expr);
+        condition.expression = expr;
         return condition;
       } else {
         // IS NULL
         final IsNullCondition condition = new IsNullCondition(-1);
-        final java.lang.reflect.Field exprField = IsNullCondition.class.getDeclaredField("expression");
-        exprField.setAccessible(true);
-        exprField.set(condition, expr);
+        condition.expression = expr;
         return condition;
       }
     } catch (final Exception e) {
@@ -727,17 +719,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       final BetweenCondition condition = new BetweenCondition(-1);
-      final java.lang.reflect.Field firstField = BetweenCondition.class.getDeclaredField("first");
-      firstField.setAccessible(true);
-      firstField.set(condition, first);
+      condition.first = first;
 
-      final java.lang.reflect.Field secondField = BetweenCondition.class.getDeclaredField("second");
-      secondField.setAccessible(true);
-      secondField.set(condition, second);
+      condition.second = second;
 
-      final java.lang.reflect.Field thirdField = BetweenCondition.class.getDeclaredField("third");
-      thirdField.setAccessible(true);
-      thirdField.set(condition, third);
+      condition.third = third;
 
       // Handle NOT BETWEEN
       if (ctx.NOT() != null) {
@@ -763,16 +749,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       final ContainsCondition condition = new ContainsCondition(-1);
-      final java.lang.reflect.Field leftField = ContainsCondition.class.getDeclaredField("left");
-      leftField.setAccessible(true);
-      leftField.set(condition, left);
+      condition.left = left;
 
       if (ctx.whereClause() != null) {
         // Form: expression CONTAINS (whereClause)
         final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
-        final java.lang.reflect.Field conditionField = ContainsCondition.class.getDeclaredField("condition");
-        conditionField.setAccessible(true);
-        conditionField.set(condition, whereClause.baseExpression);
+        condition.condition = whereClause.baseExpression;
       } else {
         // Form: expression CONTAINS expression
         // Check if the expression is a parenthesized statement (subquery): CONTAINS (SELECT ...)
@@ -787,9 +769,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
                 // CONTAINS (SELECT ...) - need to handle as subquery
                 // ContainsCondition doesn't have a rightStatement field, so wrap in expression
                 final Expression right = createStatementExpression((SelectStatement) visit(parenCtx.statement()));
-                final java.lang.reflect.Field rightField = ContainsCondition.class.getDeclaredField("right");
-                rightField.setAccessible(true);
-                rightField.set(condition, right);
+                condition.right = right;
                 return condition;
               }
             }
@@ -798,9 +778,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
         // Not a subquery - process normally
         final Expression right = (Expression) visit(exprCtx);
-        final java.lang.reflect.Field rightField = ContainsCondition.class.getDeclaredField("right");
-        rightField.setAccessible(true);
-        rightField.set(condition, right);
+        condition.right = right;
       }
 
       return condition;
@@ -819,22 +797,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       final ContainsAllCondition condition = new ContainsAllCondition(-1);
-      final java.lang.reflect.Field leftField = ContainsAllCondition.class.getDeclaredField("left");
-      leftField.setAccessible(true);
-      leftField.set(condition, left);
+      condition.left = left;
 
       if (ctx.whereClause() != null) {
         // Form: expression CONTAINSALL (whereClause)
         final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
-        final java.lang.reflect.Field conditionField = ContainsAllCondition.class.getDeclaredField("condition");
-        conditionField.setAccessible(true);
-        conditionField.set(condition, whereClause.baseExpression);
+        condition.rightBlock = (OrBlock) whereClause.baseExpression;
       } else {
         // Form: expression CONTAINSALL expression
         final Expression right = (Expression) visit(ctx.expression(1));
-        final java.lang.reflect.Field rightField = ContainsAllCondition.class.getDeclaredField("right");
-        rightField.setAccessible(true);
-        rightField.set(condition, right);
+        condition.right = right;
       }
 
       return condition;
@@ -853,22 +825,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       final ContainsAnyCondition condition = new ContainsAnyCondition(-1);
-      final java.lang.reflect.Field leftField = ContainsAnyCondition.class.getDeclaredField("left");
-      leftField.setAccessible(true);
-      leftField.set(condition, left);
+      condition.left = left;
 
       if (ctx.whereClause() != null) {
         // Form: expression CONTAINSANY (whereClause)
         final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
-        final java.lang.reflect.Field conditionField = ContainsAnyCondition.class.getDeclaredField("condition");
-        conditionField.setAccessible(true);
-        conditionField.set(condition, whereClause.baseExpression);
+        condition.rightBlock = (OrBlock) whereClause.baseExpression;
       } else {
         // Form: expression CONTAINSANY expression
         final Expression right = (Expression) visit(ctx.expression(1));
-        final java.lang.reflect.Field rightField = ContainsAnyCondition.class.getDeclaredField("right");
-        rightField.setAccessible(true);
-        rightField.set(condition, right);
+        condition.right = right;
       }
 
       return condition;
@@ -900,13 +866,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       final ContainsValueCondition condition = new ContainsValueCondition(-1);
-      final java.lang.reflect.Field leftField = ContainsValueCondition.class.getDeclaredField("left");
-      leftField.setAccessible(true);
-      leftField.set(condition, left);
+      condition.left = left;
 
-      final java.lang.reflect.Field exprField = ContainsValueCondition.class.getDeclaredField("expression");
-      exprField.setAccessible(true);
-      exprField.set(condition, right);
+      condition.expression = right;
 
       return condition;
     } catch (final Exception e) {
@@ -924,13 +886,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       final ContainsTextCondition condition = new ContainsTextCondition(-1);
-      final java.lang.reflect.Field leftField = ContainsTextCondition.class.getDeclaredField("left");
-      leftField.setAccessible(true);
-      leftField.set(condition, left);
+      condition.left = left;
 
-      final java.lang.reflect.Field rightField = ContainsTextCondition.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(condition, right);
+      condition.right = right;
 
       return condition;
     } catch (final Exception e) {
@@ -975,9 +933,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       final MatchesCondition condition = new MatchesCondition(-1);
-      final java.lang.reflect.Field exprField = MatchesCondition.class.getDeclaredField("expression");
-      exprField.setAccessible(true);
-      exprField.set(condition, leftExpr);
+      condition.expression = leftExpr;
 
       // Set rightExpression (the regex pattern)
       condition.rightExpression = rightExpr;
@@ -998,22 +954,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final InstanceofCondition condition = new InstanceofCondition(-1);
 
     try {
-      final java.lang.reflect.Field leftField = InstanceofCondition.class.getDeclaredField("left");
-      leftField.setAccessible(true);
-      leftField.set(condition, left);
+      condition.left = left;
 
       if (ctx.identifier() != null) {
         // Right side is an identifier
         final Identifier right = (Identifier) visit(ctx.identifier());
-        final java.lang.reflect.Field rightField = InstanceofCondition.class.getDeclaredField("right");
-        rightField.setAccessible(true);
-        rightField.set(condition, right);
+        condition.right = right;
       } else if (ctx.STRING_LITERAL() != null) {
         // Right side is a string literal
         final String rightString = ctx.STRING_LITERAL().getText();
-        final java.lang.reflect.Field rightStringField = InstanceofCondition.class.getDeclaredField("rightString");
-        rightStringField.setAccessible(true);
-        rightStringField.set(condition, rightString);
+        condition.rightString = rightString;
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build INSTANCEOF condition: " + e.getMessage(), e);
@@ -1034,16 +984,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (ctx.NOT() != null) {
         // IS NOT DEFINED
         final IsNotDefinedCondition condition = new IsNotDefinedCondition(-1);
-        final java.lang.reflect.Field exprField = IsNotDefinedCondition.class.getDeclaredField("expression");
-        exprField.setAccessible(true);
-        exprField.set(condition, expr);
+        condition.expression = expr;
         return condition;
       } else {
         // IS DEFINED
         final IsDefinedCondition condition = new IsDefinedCondition(-1);
-        final java.lang.reflect.Field exprField = IsDefinedCondition.class.getDeclaredField("expression");
-        exprField.setAccessible(true);
-        exprField.set(condition, expr);
+        condition.expression = expr;
         return condition;
       }
     } catch (final Exception e) {
@@ -1169,9 +1115,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Wrap in BaseExpression
     final BaseExpression baseExpr = new BaseExpression(-1);
     try {
-      final java.lang.reflect.Field exprField = BaseExpression.class.getDeclaredField("expression");
-      exprField.setAccessible(true);
-      exprField.set(baseExpr, expression);
+      baseExpr.expression = expression;
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to wrap map literal in BaseExpression: " + e.getMessage(), e);
     }
@@ -1189,14 +1133,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final Json json = new Json(-1);
 
       if (ctx.mapEntry() != null) {
-        final java.lang.reflect.Field itemsField = Json.class.getDeclaredField("items");
-        itemsField.setAccessible(true);
-
         for (final SQLParser.MapEntryContext entryCtx : ctx.mapEntry()) {
-          final JsonItem item = (JsonItem) visit(entryCtx);
-          @SuppressWarnings("unchecked")
-          final java.util.List<JsonItem> items = (java.util.List<JsonItem>) itemsField.get(json);
-          items.add(item);
+        final JsonItem item = (JsonItem) visit(entryCtx);
+        json.items.add(item);
         }
       }
 
@@ -1217,9 +1156,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       // Left side (key) can be identifier or string literal
       if (ctx.identifier() != null) {
-        final java.lang.reflect.Field leftIdentifierField = JsonItem.class.getDeclaredField("leftIdentifier");
-        leftIdentifierField.setAccessible(true);
-        leftIdentifierField.set(item, (Identifier) visit(ctx.identifier()));
+        item.leftIdentifier = (Identifier) visit(ctx.identifier());
       } else if (ctx.STRING_LITERAL() != null) {
         // Remove quotes from string literal
         String str = ctx.STRING_LITERAL().getText();
@@ -1231,15 +1168,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // Unescape string
         str = BaseExpression.decode(str);
 
-        final java.lang.reflect.Field leftStringField = JsonItem.class.getDeclaredField("leftString");
-        leftStringField.setAccessible(true);
-        leftStringField.set(item, str);
+        item.leftString = str;
       }
 
       // Right side (value) is an expression
-      final java.lang.reflect.Field rightField = JsonItem.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(item, (Expression) visit(ctx.expression()));
+      item.right = (Expression) visit(ctx.expression());
 
       return item;
     } catch (final Exception e) {
@@ -1503,14 +1436,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final FunctionCall funcCall = (FunctionCall) visit(ctx.functionCall());
 
       final LevelZeroIdentifier levelZero = new LevelZeroIdentifier(-1);
-      final java.lang.reflect.Field funcCallField = LevelZeroIdentifier.class.getDeclaredField("functionCall");
-      funcCallField.setAccessible(true);
-      funcCallField.set(levelZero, funcCall);
+      levelZero.functionCall = funcCall;
 
       final BaseIdentifier baseId = new BaseIdentifier(-1);
-      final java.lang.reflect.Field levelZeroField = BaseIdentifier.class.getDeclaredField("levelZero");
-      levelZeroField.setAccessible(true);
-      levelZeroField.set(baseId, levelZero);
+      baseId.levelZero = levelZero;
 
       baseExpr.identifier = baseId;
 
@@ -1521,8 +1450,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       Modifier firstModifier = null;
       Modifier currentModifier = null;
 
-      final java.lang.reflect.Field nextField = Modifier.class.getDeclaredField("next");
-      nextField.setAccessible(true);
 
       // Process method calls (.out('Follows'), etc.)
       if (funcCtx.methodCall() != null) {
@@ -1532,7 +1459,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             firstModifier = modifier;
             currentModifier = modifier;
           } else {
-            nextField.set(currentModifier, modifier);
+            currentModifier.next = modifier;
             currentModifier = modifier;
           }
         }
@@ -1546,7 +1473,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             firstModifier = modifier;
             currentModifier = modifier;
           } else {
-            nextField.set(currentModifier, modifier);
+            currentModifier.next = modifier;
             currentModifier = modifier;
           }
         }
@@ -1560,7 +1487,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             firstModifier = modifier;
             currentModifier = modifier;
           } else {
-            nextField.set(currentModifier, modifier);
+            currentModifier.next = modifier;
             currentModifier = modifier;
           }
         }
@@ -1625,15 +1552,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     try {
       // Function name (using reflection for protected field)
       final Identifier funcName = (Identifier) visit(ctx.identifier());
-      final java.lang.reflect.Field nameField = FunctionCall.class.getDeclaredField("name");
-      nameField.setAccessible(true);
-      nameField.set(funcCall, funcName);
+      funcCall.name = funcName;
 
       // Parameters (using reflection for protected field)
-      final java.lang.reflect.Field paramsField = FunctionCall.class.getDeclaredField("params");
-      paramsField.setAccessible(true);
-
-      if (ctx.STAR() != null) {
+            if (ctx.STAR() != null) {
         // Handle COUNT(*), SUM(*), etc. - create a parameter representing *
         final List<Expression> params = new ArrayList<>();
         final Expression starExpr = new Expression(-1);
@@ -1642,13 +1564,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // Create a special identifier for * using SuffixIdentifier with star flag
         final BaseIdentifier starId = new BaseIdentifier(-1);
         try {
-          final java.lang.reflect.Field suffixField = BaseIdentifier.class.getDeclaredField("suffix");
-          suffixField.setAccessible(true);
           final SuffixIdentifier suffix = new SuffixIdentifier(-1);
-          final java.lang.reflect.Field starField = SuffixIdentifier.class.getDeclaredField("star");
-          starField.setAccessible(true);
-          starField.set(suffix, true);
-          suffixField.set(starId, suffix);
+          suffix.star = true;
+          starId.suffix = suffix;
         } catch (final Exception e) {
           throw new CommandSQLParsingException("Failed to create star identifier: " + e.getMessage(), e);
         }
@@ -1656,14 +1574,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         baseExpr.identifier = starId;
         starExpr.mathExpression = baseExpr;
         params.add(starExpr);
-        paramsField.set(funcCall, params);
+        funcCall.params = params;
       } else if (CollectionUtils.isNotEmpty(ctx.expression())) {
         // Regular parameters
         final List<Expression> params = new ArrayList<>();
         for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
           params.add((Expression) visit(exprCtx));
         }
-        paramsField.set(funcCall, params);
+        funcCall.params = params;
       }
 
     } catch (final Exception e) {
@@ -1693,8 +1611,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       Modifier currentModifier = null;
 
       try {
-        final java.lang.reflect.Field nextField = Modifier.class.getDeclaredField("next");
-        nextField.setAccessible(true);
 
         // Process additional identifiers (DOT identifier)* - e.g., "custom.label"
         if (ctx.identifier().size() > 1) {
@@ -1703,15 +1619,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             final Identifier id = (Identifier) visit(ctx.identifier(i));
             final SuffixIdentifier suffix = new SuffixIdentifier(id);
 
-            final java.lang.reflect.Field suffixField = Modifier.class.getDeclaredField("suffix");
-            suffixField.setAccessible(true);
-            suffixField.set(modifier, suffix);
+            modifier.suffix = suffix;
 
             if (firstModifier == null) {
               firstModifier = modifier;
               currentModifier = modifier;
             } else {
-              nextField.set(currentModifier, modifier);
+              currentModifier.next = modifier;
               currentModifier = modifier;
             }
           }
@@ -1725,7 +1639,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               firstModifier = modifier;
               currentModifier = modifier;
             } else {
-              nextField.set(currentModifier, modifier);
+              currentModifier.next = modifier;
               currentModifier = modifier;
             }
           }
@@ -1739,7 +1653,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               firstModifier = modifier;
               currentModifier = modifier;
             } else {
-              nextField.set(currentModifier, modifier);
+              currentModifier.next = modifier;
               currentModifier = modifier;
             }
           }
@@ -1753,7 +1667,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               firstModifier = modifier;
               currentModifier = modifier;
             } else {
-              nextField.set(currentModifier, modifier);
+              currentModifier.next = modifier;
               currentModifier = modifier;
             }
           }
@@ -1791,32 +1705,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       // Set squareBrackets flag
-      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
-      squareBracketsField.setAccessible(true);
-      squareBracketsField.set(modifier, true);
+      modifier.squareBrackets = true;
 
       if (selector instanceof ArrayRangeSelector) {
         // Range selector [0..3] or [0...3] or INTEGER_RANGE from arraySingleSelector
-        final java.lang.reflect.Field arrayRangeField = Modifier.class.getDeclaredField("arrayRange");
-        arrayRangeField.setAccessible(true);
-        arrayRangeField.set(modifier, selector);
+        modifier.arrayRange = (ArrayRangeSelector) selector;
       } else if (selector instanceof ArraySelector) {
         // Single selector - wrap in ArraySingleValuesSelector
         final ArraySingleValuesSelector singleValues = new ArraySingleValuesSelector(-1);
-        final java.lang.reflect.Field itemsField = ArraySingleValuesSelector.class.getDeclaredField("items");
-        itemsField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        final List<ArraySelector> items = (List<ArraySelector>) itemsField.get(singleValues);
-        items.add((ArraySelector) selector);
+        singleValues.items.add((ArraySelector) selector);
 
-        final java.lang.reflect.Field arraySingleValuesField = Modifier.class.getDeclaredField("arraySingleValues");
-        arraySingleValuesField.setAccessible(true);
-        arraySingleValuesField.set(modifier, singleValues);
+        modifier.arraySingleValues = singleValues;
       } else if (selector instanceof OrBlock) {
         // Condition selector [whereClause]
-        final java.lang.reflect.Field conditionField = Modifier.class.getDeclaredField("condition");
-        conditionField.setAccessible(true);
-        conditionField.set(modifier, selector);
+        modifier.condition = (OrBlock) selector;
       }
       // arrayFilterSelector returns Modifier directly, handled above
 
@@ -1841,26 +1743,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final MethodCall methodCall = new MethodCall(-1);
 
       // Set method name
-      final java.lang.reflect.Field methodNameField = MethodCall.class.getDeclaredField("methodName");
-      methodNameField.setAccessible(true);
-      methodNameField.set(methodCall, (Identifier) visit(methodCtx.identifier()));
+      methodCall.methodName = (Identifier) visit(methodCtx.identifier());
 
       // Set parameters
-      final java.lang.reflect.Field paramsField = MethodCall.class.getDeclaredField("params");
-      paramsField.setAccessible(true);
-      @SuppressWarnings("unchecked")
-      final List<Expression> params = (List<Expression>) paramsField.get(methodCall);
-
       if (methodCtx.expression() != null) {
         for (final SQLParser.ExpressionContext exprCtx : methodCtx.expression()) {
-          params.add((Expression) visit(exprCtx));
+          methodCall.params.add((Expression) visit(exprCtx));
         }
       }
 
       // Set methodCall field in Modifier
-      final java.lang.reflect.Field methodCallField = Modifier.class.getDeclaredField("methodCall");
-      methodCallField.setAccessible(true);
-      methodCallField.set(modifier, methodCall);
+      modifier.methodCall = methodCall;
 
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to create modifier for method call: " + e.getMessage(), e);
@@ -1882,9 +1775,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // DOT identifier modifier
         final Identifier id = (Identifier) visit(ctx.identifier());
         final SuffixIdentifier suffix = new SuffixIdentifier(id);
-        final java.lang.reflect.Field suffixField = Modifier.class.getDeclaredField("suffix");
-        suffixField.setAccessible(true);
-        suffixField.set(modifier, suffix);
+        modifier.suffix = suffix;
       } else if (ctx.arraySelector() != null) {
         // Array selector modifier
         return createModifierForArraySelector(ctx.arraySelector());
@@ -2010,9 +1901,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Increment counter to assign sequential parameter numbers
       final PositionalParameter param = new PositionalParameter(-1);
       try {
-        final java.lang.reflect.Field paramNumberField = PositionalParameter.class.getDeclaredField("paramNumber");
-        paramNumberField.setAccessible(true);
-        paramNumberField.set(param, positionalParamCounter);
+        param.paramNumber = positionalParamCounter;
         positionalParamCounter++;
       } catch (final Exception e) {
         throw new CommandSQLParsingException("Failed to set paramNumber: " + e.getMessage(), e);
@@ -2023,12 +1912,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final Identifier id = (Identifier) visit(ctx.identifier());
       final NamedParameter param = new NamedParameter(-1);
       try {
-        final java.lang.reflect.Field paramNameField = NamedParameter.class.getDeclaredField("paramName");
-        paramNameField.setAccessible(true);
-        paramNameField.set(param, id.getValue());
-        final java.lang.reflect.Field paramNumberField = NamedParameter.class.getDeclaredField("paramNumber");
-        paramNumberField.setAccessible(true);
-        paramNumberField.set(param, -1);
+        param.paramName = id.getValue();
+        param.paramNumber = -1;
       } catch (final Exception e) {
         throw new CommandSQLParsingException("Failed to set paramName: " + e.getMessage(), e);
       }
@@ -2038,9 +1923,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final int paramNum = Integer.parseInt(ctx.INTEGER_LITERAL().getText());
       final PositionalParameter param = new PositionalParameter(-1);
       try {
-        final java.lang.reflect.Field paramNumberField = PositionalParameter.class.getDeclaredField("paramNumber");
-        paramNumberField.setAccessible(true);
-        paramNumberField.set(param, paramNum);
+        param.paramNumber = paramNum;
       } catch (final Exception e) {
         throw new CommandSQLParsingException("Failed to set paramNumber: " + e.getMessage(), e);
       }
@@ -2050,12 +1933,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final int paramNum = Integer.parseInt(ctx.INTEGER_LITERAL().getText());
       final NamedParameter param = new NamedParameter(-1);
       try {
-        final java.lang.reflect.Field paramNameField = NamedParameter.class.getDeclaredField("paramName");
-        paramNameField.setAccessible(true);
-        paramNameField.set(param, String.valueOf(paramNum));
-        final java.lang.reflect.Field paramNumberField = NamedParameter.class.getDeclaredField("paramNumber");
-        paramNumberField.setAccessible(true);
-        paramNumberField.set(param, paramNum);
+        param.paramName = String.valueOf(paramNum);
+        param.paramNumber = paramNum;
       } catch (final Exception e) {
         throw new CommandSQLParsingException("Failed to set paramName: " + e.getMessage(), e);
       }
@@ -2196,15 +2075,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     try {
       if (expr.mathExpression instanceof BaseExpression) {
         final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
-        final java.lang.reflect.Field numField = Skip.class.getDeclaredField("num");
-        numField.setAccessible(true);
-        final java.lang.reflect.Field inputParamField = Skip.class.getDeclaredField("inputParam");
-        inputParamField.setAccessible(true);
 
         if (baseExpr.number instanceof PInteger) {
-          numField.set(skip, (PInteger) baseExpr.number);
+          skip.num = (PInteger) baseExpr.number;
         } else if (baseExpr.inputParam != null) {
-          inputParamField.set(skip, baseExpr.inputParam);
+          skip.inputParam = baseExpr.inputParam;
         }
       }
     } catch (final Exception e) {
@@ -2223,14 +2098,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // GROUP BY has a list of expressions
     try {
-      final java.lang.reflect.Field itemsField = GroupBy.class.getDeclaredField("items");
-      itemsField.setAccessible(true);
-      @SuppressWarnings("unchecked")
-      final List<Expression> items = (List<Expression>) itemsField.get(groupBy);
-
       for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
         final Expression expr = (Expression) visit(exprCtx);
-        items.add(expr);
+        groupBy.items.add(expr);
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build GROUP BY clause: " + e.getMessage(), e);
@@ -2273,15 +2143,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (expr.mathExpression instanceof BaseExpression) {
         final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
 
-        // Use reflection to access protected fields
-        final java.lang.reflect.Field suffixField = BaseIdentifier.class.getDeclaredField("suffix");
-        suffixField.setAccessible(true);
-        final SuffixIdentifier suffix = (SuffixIdentifier) suffixField.get(baseExpr.identifier);
+        // Use direct field access
+        final SuffixIdentifier suffix = (SuffixIdentifier) baseExpr.identifier.suffix;
 
         if (suffix != null) {
-          final java.lang.reflect.Field identifierField = SuffixIdentifier.class.getDeclaredField("identifier");
-          identifierField.setAccessible(true);
-          final Identifier id = (Identifier) identifierField.get(suffix);
+          final Identifier id = suffix.identifier;
 
           if (id != null) {
             // Simple identifier case
@@ -2289,9 +2155,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
             // For system attributes like @rid, @type, etc., use recordAttr instead of alias
             if (identifierValue != null && identifierValue.startsWith("@")) {
-              final java.lang.reflect.Field recordAttrField = OrderByItem.class.getDeclaredField("recordAttr");
-              recordAttrField.setAccessible(true);
-              recordAttrField.set(item, identifierValue);
+              item.recordAttr = identifierValue;
             } else {
               item.setAlias(identifierValue);
             }
@@ -2304,9 +2168,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Modifier modifier = new Modifier(-1);
         // Use the expression by wrapping it in a method call or similar
         // For now, just store in the recordAttr field as a fallback
-        final java.lang.reflect.Field modifierField = OrderByItem.class.getDeclaredField("modifier");
-        modifierField.setAccessible(true);
-        modifierField.set(item, modifier);
+        item.modifier = modifier;
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build ORDER BY item: " + e.getMessage(), e);
@@ -2332,11 +2194,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final Unwind unwind = new Unwind(-1);
 
     try {
-      final java.lang.reflect.Field itemsField = Unwind.class.getDeclaredField("items");
-      itemsField.setAccessible(true);
-      @SuppressWarnings("unchecked")
-      final List<Identifier> items = (List<Identifier>) itemsField.get(unwind);
-
       // The expression is what we're unwinding - it should be an identifier
       final Expression expr = (Expression) visit(ctx.expression());
 
@@ -2347,16 +2204,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (expr != null && expr.mathExpression instanceof BaseExpression) {
         final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
         if (baseExpr.identifier != null) {
-          // Access protected suffix field using reflection
-          final java.lang.reflect.Field suffixField = BaseIdentifier.class.getDeclaredField("suffix");
-          suffixField.setAccessible(true);
-          final Object suffix = suffixField.get(baseExpr.identifier);
+          // Access suffix field directly
+          final Object suffix = baseExpr.identifier.suffix;
 
-          if (suffix != null) {
-            // Access protected identifier field from SuffixIdentifier
-            final java.lang.reflect.Field identifierField = suffix.getClass().getDeclaredField("identifier");
-            identifierField.setAccessible(true);
-            unwindField = (Identifier) identifierField.get(suffix);
+          if (suffix != null && suffix instanceof SuffixIdentifier) {
+            // Access identifier field from SuffixIdentifier directly
+            unwindField = ((SuffixIdentifier) suffix).identifier;
           }
         }
       }
@@ -2364,9 +2217,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // If there's an AS clause, use that identifier, otherwise use the field itself
       if (ctx.identifier() != null) {
         final Identifier alias = (Identifier) visit(ctx.identifier());
-        items.add(alias);
+        unwind.items.add(alias);
       } else if (unwindField != null) {
-        items.add(unwindField);
+        unwind.items.add(unwindField);
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build UNWIND clause: " + e.getMessage(), e);
@@ -2383,14 +2236,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final LetClause letClause = new LetClause(-1);
 
     try {
-      final java.lang.reflect.Field itemsField = LetClause.class.getDeclaredField("items");
-      itemsField.setAccessible(true);
-      @SuppressWarnings("unchecked")
-      final List<LetItem> items = (List<LetItem>) itemsField.get(letClause);
-
       for (final SQLParser.LetItemContext itemCtx : ctx.letItem()) {
         final LetItem item = (LetItem) visit(itemCtx);
-        items.add(item);
+        letClause.items.add(item);
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build LET clause: " + e.getMessage(), e);
@@ -2846,9 +2694,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Set targetType (edge type identifier)
       if (bodyCtx.identifier() != null) {
         final Identifier targetType = (Identifier) visit(bodyCtx.identifier());
-        final java.lang.reflect.Field targetTypeField = CreateEdgeStatement.class.getDeclaredField("targetType");
-        targetTypeField.setAccessible(true);
-        targetTypeField.set(stmt, targetType);
+        stmt.targetType = targetType;
       }
 
       // Set leftExpression (FROM clause)
@@ -2861,9 +2707,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         } else if (fromItem.rids != null && !fromItem.rids.isEmpty()) {
           leftExpr.rid = fromItem.rids.get(0);
         }
-        final java.lang.reflect.Field leftExprField = CreateEdgeStatement.class.getDeclaredField("leftExpression");
-        leftExprField.setAccessible(true);
-        leftExprField.set(stmt, leftExpr);
+        stmt.leftExpression = leftExpr;
       }
 
       // Set rightExpression (TO clause)
@@ -2876,9 +2720,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         } else if (toItem.rids != null && !toItem.rids.isEmpty()) {
           rightExpr.rid = toItem.rids.get(0);
         }
-        final java.lang.reflect.Field rightExprField = CreateEdgeStatement.class.getDeclaredField("rightExpression");
-        rightExprField.setAccessible(true);
-        rightExprField.set(stmt, rightExpr);
+        stmt.rightExpression = rightExpr;
       }
 
       // Set body (SET clause) if present
@@ -2892,16 +2734,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           setExpr.right = (Expression) visit(updateItemCtx.expression());
           body.setExpressions.add(setExpr);
         }
-        final java.lang.reflect.Field bodyField = CreateEdgeStatement.class.getDeclaredField("body");
-        bodyField.setAccessible(true);
-        bodyField.set(stmt, body);
+        stmt.body = body;
       }
 
       // Set unidirectional flag
       if (bodyCtx.UNIDIRECTIONAL() != null) {
-        final java.lang.reflect.Field unidirectionalField = CreateEdgeStatement.class.getDeclaredField("unidirectional");
-        unidirectionalField.setAccessible(true);
-        unidirectionalField.set(stmt, true);
+        stmt.unidirectional = true;
       }
 
     } catch (final Exception e) {
@@ -3387,17 +3225,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (ctx.rid() != null) {
         // RID selector like [#10:5]
         final ArraySelector selector = new ArraySelector(-1);
-        final java.lang.reflect.Field ridField = ArraySelector.class.getDeclaredField("rid");
-        ridField.setAccessible(true);
-        ridField.set(selector, visit(ctx.rid()));
+        selector.rid = (Rid) visit(ctx.rid());
         return selector;
 
       } else if (ctx.inputParameter() != null) {
         // Parameter selector like [?] or [:name] or [$1]
         final ArraySelector selector = new ArraySelector(-1);
-        final java.lang.reflect.Field paramField = ArraySelector.class.getDeclaredField("inputParam");
-        paramField.setAccessible(true);
-        paramField.set(selector, visit(ctx.inputParameter()));
+        selector.inputParam = (InputParameter) visit(ctx.inputParameter());
         return selector;
 
       } else if (ctx.expression() != null) {
@@ -3429,9 +3263,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
         // Regular expression selector like [i+1]
         final ArraySelector selector = new ArraySelector(-1);
-        final java.lang.reflect.Field exprField = ArraySelector.class.getDeclaredField("expression");
-        exprField.setAccessible(true);
-        exprField.set(selector, visit(ctx.expression()));
+        selector.expression = (Expression) visit(ctx.expression());
         return selector;
       }
     } catch (final Exception e) {
@@ -3452,24 +3284,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
 
       // Get and set the comparison operator
-      final java.lang.reflect.Field operatorField = RightBinaryCondition.class.getDeclaredField("operator");
-      operatorField.setAccessible(true);
-      operatorField.set(rightBinaryCondition, mapComparisonOperator(ctx.comparisonOperator()));
+      rightBinaryCondition.operator = mapComparisonOperator(ctx.comparisonOperator());
 
       // Get and set the right expression
-      final java.lang.reflect.Field rightField = RightBinaryCondition.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(rightBinaryCondition, visit(ctx.expression()));
+      rightBinaryCondition.right = (Expression) visit(ctx.expression());
 
       // Create Modifier with the filter condition
       final Modifier modifier = new Modifier(-1);
-      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
-      squareBracketsField.setAccessible(true);
-      squareBracketsField.set(modifier, true);
+      modifier.squareBrackets = true;
 
-      final java.lang.reflect.Field rightBinaryConditionField = Modifier.class.getDeclaredField("rightBinaryCondition");
-      rightBinaryConditionField.setAccessible(true);
-      rightBinaryConditionField.set(modifier, rightBinaryCondition);
+      modifier.rightBinaryCondition = rightBinaryCondition;
 
       return modifier;
     } catch (final Exception e) {
@@ -3503,41 +3327,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Wrap in WhereClause, then OrBlock for the condition field
       final WhereClause whereClause = new WhereClause(-1);
       try {
-        final java.lang.reflect.Field baseExpressionField = WhereClause.class.getDeclaredField("baseExpression");
-        baseExpressionField.setAccessible(true);
-        baseExpressionField.set(whereClause, condition);
+        whereClause.baseExpression = condition;
       } catch (final Exception e) {
         throw new CommandSQLParsingException("Failed to set baseExpression: " + e.getMessage(), e);
       }
 
       final OrBlock orBlock = new OrBlock(-1);
       try {
-        final java.lang.reflect.Field subBlocksField = OrBlock.class.getDeclaredField("subBlocks");
-        subBlocksField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        final List<AndBlock> subBlocks = (List<AndBlock>) subBlocksField.get(orBlock);
-
         final AndBlock andBlock = new AndBlock(-1);
-        final java.lang.reflect.Field subConditionsField = AndBlock.class.getDeclaredField("subConditions");
-        subConditionsField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        final List<BooleanExpression> subConditions = (List<BooleanExpression>) subConditionsField.get(andBlock);
-        subConditions.add(condition);
-
-        subBlocks.add(andBlock);
+        andBlock.subBlocks.add(condition);
+        orBlock.subBlocks.add(andBlock);
       } catch (final Exception e) {
         throw new CommandSQLParsingException("Failed to build OrBlock: " + e.getMessage(), e);
       }
 
       // Create Modifier with the condition
       final Modifier modifier = new Modifier(-1);
-      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
-      squareBracketsField.setAccessible(true);
-      squareBracketsField.set(modifier, true);
+      modifier.squareBrackets = true;
 
-      final java.lang.reflect.Field conditionField = Modifier.class.getDeclaredField("condition");
-      conditionField.setAccessible(true);
-      conditionField.set(modifier, orBlock);
+      modifier.condition = orBlock;
 
       return modifier;
     } catch (final Exception e) {
@@ -3554,22 +3362,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     try {
       final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
 
-      final java.lang.reflect.Field operatorField = RightBinaryCondition.class.getDeclaredField("operator");
-      operatorField.setAccessible(true);
-      operatorField.set(rightBinaryCondition, new LikeOperator(-1));
+      rightBinaryCondition.operator = new LikeOperator(-1);
 
-      final java.lang.reflect.Field rightField = RightBinaryCondition.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(rightBinaryCondition, visit(ctx.expression()));
+      rightBinaryCondition.right = (Expression) visit(ctx.expression());
 
       final Modifier modifier = new Modifier(-1);
-      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
-      squareBracketsField.setAccessible(true);
-      squareBracketsField.set(modifier, true);
+      modifier.squareBrackets = true;
 
-      final java.lang.reflect.Field rightBinaryConditionField = Modifier.class.getDeclaredField("rightBinaryCondition");
-      rightBinaryConditionField.setAccessible(true);
-      rightBinaryConditionField.set(modifier, rightBinaryCondition);
+      modifier.rightBinaryCondition = rightBinaryCondition;
 
       return modifier;
     } catch (final Exception e) {
@@ -3586,22 +3386,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     try {
       final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
 
-      final java.lang.reflect.Field operatorField = RightBinaryCondition.class.getDeclaredField("operator");
-      operatorField.setAccessible(true);
-      operatorField.set(rightBinaryCondition, new ILikeOperator(-1));
+      rightBinaryCondition.operator = new ILikeOperator(-1);
 
-      final java.lang.reflect.Field rightField = RightBinaryCondition.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(rightBinaryCondition, visit(ctx.expression()));
+      rightBinaryCondition.right = (Expression) visit(ctx.expression());
 
       final Modifier modifier = new Modifier(-1);
-      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
-      squareBracketsField.setAccessible(true);
-      squareBracketsField.set(modifier, true);
+      modifier.squareBrackets = true;
 
-      final java.lang.reflect.Field rightBinaryConditionField = Modifier.class.getDeclaredField("rightBinaryCondition");
-      rightBinaryConditionField.setAccessible(true);
-      rightBinaryConditionField.set(modifier, rightBinaryCondition);
+      modifier.rightBinaryCondition = rightBinaryCondition;
 
       return modifier;
     } catch (final Exception e) {
@@ -3618,22 +3410,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     try {
       final RightBinaryCondition rightBinaryCondition = new RightBinaryCondition(-1);
 
-      final java.lang.reflect.Field inOperatorField = RightBinaryCondition.class.getDeclaredField("inOperator");
-      inOperatorField.setAccessible(true);
-      inOperatorField.set(rightBinaryCondition, new InOperator(-1));
+      rightBinaryCondition.inOperator = new InOperator(-1);
 
-      final java.lang.reflect.Field rightField = RightBinaryCondition.class.getDeclaredField("right");
-      rightField.setAccessible(true);
-      rightField.set(rightBinaryCondition, visit(ctx.expression()));
+      rightBinaryCondition.right = (Expression) visit(ctx.expression());
 
       final Modifier modifier = new Modifier(-1);
-      final java.lang.reflect.Field squareBracketsField = Modifier.class.getDeclaredField("squareBrackets");
-      squareBracketsField.setAccessible(true);
-      squareBracketsField.set(modifier, true);
+      modifier.squareBrackets = true;
 
-      final java.lang.reflect.Field rightBinaryConditionField = Modifier.class.getDeclaredField("rightBinaryCondition");
-      rightBinaryConditionField.setAccessible(true);
-      rightBinaryConditionField.set(modifier, rightBinaryCondition);
+      modifier.rightBinaryCondition = rightBinaryCondition;
 
       return modifier;
     } catch (final Exception e) {
@@ -3657,23 +3441,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final int to = Integer.parseInt(parts[1].trim());
 
         // Set from and to fields
-        final java.lang.reflect.Field fromField = ArrayRangeSelector.class.getDeclaredField("from");
-        fromField.setAccessible(true);
-        fromField.set(selector, from);
+        selector.from = from;
 
-        final java.lang.reflect.Field toField = ArrayRangeSelector.class.getDeclaredField("to");
-        toField.setAccessible(true);
-        toField.set(selector, to);
+        selector.to = to;
 
         // Set newRange flag
-        final java.lang.reflect.Field newRangeField = ArrayRangeSelector.class.getDeclaredField("newRange");
-        newRangeField.setAccessible(true);
-        newRangeField.set(selector, true);
+        selector.newRange = true;
 
         // Set included flag
-        final java.lang.reflect.Field includedField = ArrayRangeSelector.class.getDeclaredField("included");
-        includedField.setAccessible(true);
-        includedField.set(selector, inclusive);
+        selector.included = inclusive;
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to parse range token: " + e.getMessage(), e);
@@ -3691,14 +3467,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       // Set newRange flag (true for .. syntax)
-      final java.lang.reflect.Field newRangeField = ArrayRangeSelector.class.getDeclaredField("newRange");
-      newRangeField.setAccessible(true);
-      newRangeField.set(selector, true);
+      selector.newRange = true;
 
       // Set included flag (false for .. = exclusive)
-      final java.lang.reflect.Field includedField = ArrayRangeSelector.class.getDeclaredField("included");
-      includedField.setAccessible(true);
-      includedField.set(selector, false);
+      selector.included = false;
 
       // Handle FROM expression (optional)
       if (ctx.expression().size() >= 1 && ctx.expression(0) != null) {
@@ -3706,15 +3478,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Integer fromInt = tryExtractIntegerLiteral(fromExpr);
         if (fromInt != null) {
           // Simple integer literal - set from field directly
-          final java.lang.reflect.Field fromField = ArrayRangeSelector.class.getDeclaredField("from");
-          fromField.setAccessible(true);
-          fromField.set(selector, fromInt);
+          selector.from = fromInt;
         } else {
           // Complex expression - use fromSelector
           final ArrayNumberSelector fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
-          final java.lang.reflect.Field fromSelectorField = ArrayRangeSelector.class.getDeclaredField("fromSelector");
-          fromSelectorField.setAccessible(true);
-          fromSelectorField.set(selector, fromSelector);
+          selector.fromSelector = fromSelector;
         }
       }
 
@@ -3724,15 +3492,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Integer toInt = tryExtractIntegerLiteral(toExpr);
         if (toInt != null) {
           // Simple integer literal - set to field directly
-          final java.lang.reflect.Field toField = ArrayRangeSelector.class.getDeclaredField("to");
-          toField.setAccessible(true);
-          toField.set(selector, toInt);
+          selector.to = toInt;
         } else {
           // Complex expression - use toSelector
           final ArrayNumberSelector toSelector = createArrayNumberSelectorFromExpression(toExpr);
-          final java.lang.reflect.Field toSelectorField = ArrayRangeSelector.class.getDeclaredField("toSelector");
-          toSelectorField.setAccessible(true);
-          toSelectorField.set(selector, toSelector);
+          selector.toSelector = toSelector;
         }
       }
 
@@ -3752,14 +3516,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       // Set newRange flag (true for ... syntax)
-      final java.lang.reflect.Field newRangeField = ArrayRangeSelector.class.getDeclaredField("newRange");
-      newRangeField.setAccessible(true);
-      newRangeField.set(selector, true);
+      selector.newRange = true;
 
       // Set included flag (true for ... = inclusive)
-      final java.lang.reflect.Field includedField = ArrayRangeSelector.class.getDeclaredField("included");
-      includedField.setAccessible(true);
-      includedField.set(selector, true);
+      selector.included = true;
 
       // Handle FROM expression (optional)
       if (ctx.expression().size() >= 1 && ctx.expression(0) != null) {
@@ -3767,15 +3527,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Integer fromInt = tryExtractIntegerLiteral(fromExpr);
         if (fromInt != null) {
           // Simple integer literal - set from field directly
-          final java.lang.reflect.Field fromField = ArrayRangeSelector.class.getDeclaredField("from");
-          fromField.setAccessible(true);
-          fromField.set(selector, fromInt);
+          selector.from = fromInt;
         } else {
           // Complex expression - use fromSelector
           final ArrayNumberSelector fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
-          final java.lang.reflect.Field fromSelectorField = ArrayRangeSelector.class.getDeclaredField("fromSelector");
-          fromSelectorField.setAccessible(true);
-          fromSelectorField.set(selector, fromSelector);
+          selector.fromSelector = fromSelector;
         }
       }
 
@@ -3785,15 +3541,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Integer toInt = tryExtractIntegerLiteral(toExpr);
         if (toInt != null) {
           // Simple integer literal - set to field directly
-          final java.lang.reflect.Field toField = ArrayRangeSelector.class.getDeclaredField("to");
-          toField.setAccessible(true);
-          toField.set(selector, toInt);
+          selector.to = toInt;
         } else {
           // Complex expression - use toSelector
           final ArrayNumberSelector toSelector = createArrayNumberSelectorFromExpression(toExpr);
-          final java.lang.reflect.Field toSelectorField = ArrayRangeSelector.class.getDeclaredField("toSelector");
-          toSelectorField.setAccessible(true);
-          toSelectorField.set(selector, toSelector);
+          selector.toSelector = toSelector;
         }
       }
 
@@ -3836,17 +3588,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
         if (baseExpr.inputParam != null) {
           // Input parameter like ? or :name or $1
-          final java.lang.reflect.Field inputField = ArrayNumberSelector.class.getDeclaredField("inputValue");
-          inputField.setAccessible(true);
-          inputField.set(selector, baseExpr.inputParam);
+          selector.inputValue = baseExpr.inputParam;
           return selector;
         }
       }
 
       // Use expressionValue for dynamic evaluation
-      final java.lang.reflect.Field exprField = ArrayNumberSelector.class.getDeclaredField("expressionValue");
-      exprField.setAccessible(true);
-      exprField.set(selector, expr.mathExpression);
+      selector.expressionValue = expr.mathExpression;
 
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to create ArrayNumberSelector: " + e.getMessage(), e);

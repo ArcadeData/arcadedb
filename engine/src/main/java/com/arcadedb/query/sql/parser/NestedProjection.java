@@ -34,9 +34,9 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class NestedProjection extends SimpleNode {
-  protected List<NestedProjectionItem> includeItems = new ArrayList<>();
-  protected List<NestedProjectionItem> excludeItems = new ArrayList<>();
-  protected NestedProjectionItem       starItem;
+  public List<NestedProjectionItem> includeItems = new ArrayList<>();
+  public List<NestedProjectionItem> excludeItems = new ArrayList<>();
+  public NestedProjectionItem       starItem;
   private   PInteger                   recursion; //not used for now
 
   public NestedProjection(final int id) {

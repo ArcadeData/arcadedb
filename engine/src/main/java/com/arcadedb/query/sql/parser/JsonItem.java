@@ -26,9 +26,9 @@ import java.util.*;
  * Created by luigidellaquila on 18/02/15.
  */
 public class JsonItem {
-  protected Identifier leftIdentifier;
-  protected String     leftString;
-  protected Expression right;
+  public Identifier leftIdentifier;
+  public String     leftString;
+  public Expression right;
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (leftIdentifier != null) {

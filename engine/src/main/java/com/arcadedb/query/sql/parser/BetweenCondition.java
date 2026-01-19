@@ -29,9 +29,9 @@ import java.util.*;
 
 public class BetweenCondition extends BooleanExpression {
 
-  protected Expression first;
-  protected Expression second;
-  protected Expression third;
+  public Expression first;
+  public Expression second;
+  public Expression third;
 
   public BetweenCondition(final int id) {
     super(id);

@@ -31,13 +31,13 @@ import java.lang.reflect.*;
 import java.util.*;
 
 public class ArrayRangeSelector extends SimpleNode {
-  protected Integer from;
-  protected Integer to;
-  protected boolean newRange = false;
-  protected boolean included = false;
+  public Integer from;
+  public Integer to;
+  public boolean newRange = false;
+  public boolean included = false;
 
-  protected ArrayNumberSelector fromSelector;
-  protected ArrayNumberSelector toSelector;
+  public ArrayNumberSelector fromSelector;
+  public ArrayNumberSelector toSelector;
 
   public ArrayRangeSelector(final int id) {
     super(id);

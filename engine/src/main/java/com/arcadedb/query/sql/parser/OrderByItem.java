@@ -35,8 +35,8 @@ public class OrderByItem {
   public static final String   ASC  = "ASC";
   public static final String   DESC = "DESC";
   protected           String   alias;
-  protected           Modifier modifier;
-  protected           String   recordAttr;
+  public Modifier modifier;
+  public String   recordAttr;
   protected           String   type = ASC;
 
   public String getAlias() {

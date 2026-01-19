@@ -36,7 +36,7 @@ import java.util.stream.Collectors;
 
 public class ArraySingleValuesSelector extends SimpleNode {
 
-  protected List<ArraySelector> items = new ArrayList<>();
+  public List<ArraySelector> items = new ArrayList<>();
 
   public ArraySingleValuesSelector(final int id) {
     super(id);
