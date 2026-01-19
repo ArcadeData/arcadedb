@@ -485,6 +485,10 @@ public class HAServer implements ServerPlugin {
     final LeaderEpoch newEpoch = LeaderEpoch.create(lastElectionVote.getFirst(), getServerName());
     leaderFence.becomeLeader(newEpoch);
 
+    // Ensure all databases are accessible before completing leadership transition
+    // This prevents DatabaseIsClosedException during leader failover
+    ensureDatabasesAccessible();
+
     setElectionStatus(ElectionStatus.LEADER_WAITING_FOR_QUORUM);
 
     LogManager.instance()
@@ -1671,6 +1675,10 @@ public class HAServer implements ServerPlugin {
     // If we were the leader, we must step down (fence ourselves) to prevent split-brain
     if (isLeader()) {
       leaderFence.stepDown("Connecting to new leader: " + server);
+
+      // Ensure databases remain accessible after stepping down from leader role
+      // This prevents DatabaseIsClosedException when transitioning from leader to replica
+      ensureDatabasesAccessible();
     }
 
     final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
@@ -1950,6 +1958,39 @@ public class HAServer implements ServerPlugin {
 
   public HACluster getCluster() {
     return cluster;
+  }
+
+  /**
+   * Ensures that all databases are accessible by attempting to get each one.
+   * This is called when a server becomes leader to prevent DatabaseIsClosedException
+   * during the leader failover window. If a database is closed, getDatabase() will
+   * reopen it.
+   */
+  private void ensureDatabasesAccessible() {
+    final Set<String> databaseNames = server.getDatabaseNames();
+    if (databaseNames.isEmpty()) {
+      LogManager.instance().log(this, Level.FINE, "No databases to verify accessibility");
+      return;
+    }
+
+    LogManager.instance().log(this, Level.INFO, "Verifying %d database(s) are accessible after becoming leader",
+        databaseNames.size());
+
+    for (final String dbName : databaseNames) {
+      try {
+        // Attempt to get the database - this will reopen it if closed
+        server.getDatabase(dbName);
+        LogManager.instance().log(this, Level.FINE, "Database '%s' is accessible", dbName);
+      } catch (final Exception e) {
+        // Log but don't fail - the database might not exist or have permissions issues
+        // These will be handled when actual operations are attempted
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not verify accessibility of database '%s' after becoming leader: %s",
+            dbName, e.getMessage());
+      }
+    }
+
+    LogManager.instance().log(this, Level.INFO, "Database accessibility verification complete");
   }
 
 }
