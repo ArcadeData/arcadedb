@@ -55,6 +55,18 @@ public class SQLGrammarRegressionTest {
     assertParses("SELECT rid FROM MyType");
     assertParses("SELECT add FROM MyType");
     assertParses("SELECT set FROM MyType");
+    assertParses("SELECT metadata FROM MyType");
+    assertParses("SELECT limit FROM MyType");
+    // Test VERTEX and EDGE as type names
+    assertParses("SELECT * FROM Vertex");
+    assertParses("SELECT * FROM Edge");
+  }
+
+  @Test
+  public void testLimitAsParameterName() {
+    // Test that 'limit' can be used as a named parameter (issue from RandomTestMultiThreadsTest)
+    assertParses("SELECT FROM Transaction LIMIT :limit");
+    assertParses("SELECT FROM MyType WHERE id = :limit");
   }
 
   @Test
@@ -352,6 +364,89 @@ public class SQLGrammarRegressionTest {
     final List<Statement> statements = parser.parseScript(script);
     assertEquals(1, statements.size());
     assertTrue(statements.get(0) instanceof LetStatement);
+  }
+
+  // ============================================================================
+  // LOCK Statement
+  // ============================================================================
+
+  @Test
+  public void testLockType() {
+    final Statement stmt = assertParses("LOCK TYPE Node");
+    assertTrue(stmt instanceof LockStatement);
+    final LockStatement lock = (LockStatement) stmt;
+    assertEquals("TYPE", lock.mode);
+    assertNotNull(lock.identifiers);
+    assertEquals(1, lock.identifiers.size());
+  }
+
+  @Test
+  public void testLockMultipleTypes() {
+    final Statement stmt = assertParses("LOCK TYPE Node, Node2, Node3");
+    assertTrue(stmt instanceof LockStatement);
+    final LockStatement lock = (LockStatement) stmt;
+    assertEquals("TYPE", lock.mode);
+    assertEquals(3, lock.identifiers.size());
+  }
+
+  @Test
+  public void testLockBucket() {
+    final Statement stmt = assertParses("LOCK BUCKET myBucket");
+    assertTrue(stmt instanceof LockStatement);
+    final LockStatement lock = (LockStatement) stmt;
+    assertEquals("BUCKET", lock.mode);
+    assertEquals(1, lock.identifiers.size());
+  }
+
+  @Test
+  public void testLockMultipleBuckets() {
+    final Statement stmt = assertParses("LOCK BUCKET bucket1, bucket2");
+    assertTrue(stmt instanceof LockStatement);
+    final LockStatement lock = (LockStatement) stmt;
+    assertEquals("BUCKET", lock.mode);
+    assertEquals(2, lock.identifiers.size());
+  }
+
+  // ============================================================================
+  // Record Attributes (@rid, @type, @in, @out)
+  // ============================================================================
+
+  @Test
+  public void testSelectWithRidAttribute() {
+    assertParses("SELECT @rid FROM MyType");
+    assertParses("SELECT @rid, name FROM MyType");
+    assertParses("SELECT * FROM MyType WHERE @rid = #1:0");
+  }
+
+  @Test
+  public void testSelectWithTypeAttribute() {
+    assertParses("SELECT @type FROM MyType");
+    assertParses("SELECT @type, @rid FROM MyType");
+  }
+
+  @Test
+  public void testSelectWithInOutAttributes() {
+    assertParses("SELECT @in FROM Edge");
+    assertParses("SELECT @out FROM Edge");
+    assertParses("SELECT @in, @out FROM Edge");
+  }
+
+  @Test
+  public void testUpdateWithRidFilter() {
+    assertParses("UPDATE MyType SET name = 'test' WHERE @rid = #1:0");
+    assertParses("UPDATE MyType SET id = id + 1 WHERE @rid = #10:5");
+  }
+
+  @Test
+  public void testDeleteWithRidFilter() {
+    assertParses("DELETE FROM MyType WHERE @rid = #1:0");
+  }
+
+  @Test
+  public void testWhereRidComparison() {
+    assertParses("SELECT * FROM MyType WHERE @rid > #1:0");
+    assertParses("SELECT * FROM MyType WHERE @rid < #1:100");
+    assertParses("SELECT * FROM MyType WHERE @rid IN [#1:0, #1:1, #1:2]");
   }
 
   // ============================================================================

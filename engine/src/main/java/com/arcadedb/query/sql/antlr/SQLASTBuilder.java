@@ -1723,11 +1723,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Build identifier chain
     if (CollectionUtils.isNotEmpty(ctx.identifier())) {
-      final Identifier firstId = (Identifier) visit(ctx.identifier(0));
+      final SQLParser.IdentifierContext firstIdCtx = ctx.identifier(0);
 
-      // Use BaseIdentifier constructor that automatically creates SuffixIdentifier
-      final BaseIdentifier baseId = new BaseIdentifier(firstId);
-      baseExpr.identifier = baseId;
+      // Check if the first identifier is a record attribute (@rid, @type, @in, @out)
+      if (firstIdCtx.RID_ATTR() != null || firstIdCtx.TYPE_ATTR() != null ||
+          firstIdCtx.IN_ATTR() != null || firstIdCtx.OUT_ATTR() != null) {
+        // Handle record attributes specially
+        final RecordAttribute attr = new RecordAttribute(-1);
+        attr.setName(firstIdCtx.getText());
+        final BaseIdentifier baseId = new BaseIdentifier(attr);
+        baseExpr.identifier = baseId;
+      } else {
+        // Regular identifier
+        final Identifier firstId = (Identifier) visit(firstIdCtx);
+        // Use BaseIdentifier constructor that automatically creates SuffixIdentifier
+        final BaseIdentifier baseId = new BaseIdentifier(firstId);
+        baseExpr.identifier = baseId;
+      }
 
       // Build modifier chain from additional identifiers, methodCalls, arraySelectors and modifiers
       Modifier firstModifier = null;
@@ -2004,6 +2016,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       return id;
     } else {
       // Handle keywords used as identifiers (NAME, VALUE, TYPE, etc.)
+      // Note: Record attributes (@rid, @type, @in, @out) are handled in visitIdentifierChain
       return new Identifier(ctx.getText());
     }
   }
@@ -3747,6 +3760,31 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.ProfileStatementContext profileCtx = ctx.profileStatement();
 
     stmt.statement = (Statement) visit(profileCtx.statement());
+
+    return stmt;
+  }
+
+  /**
+   * Visit LOCK statement.
+   * Grammar: LOCK (TYPE | BUCKET) identifier (COMMA identifier)*
+   */
+  @Override
+  public LockStatement visitLockStmt(final SQLParser.LockStmtContext ctx) {
+    final LockStatement stmt = new LockStatement(-1);
+    final SQLParser.LockStatementContext lockCtx = ctx.lockStatement();
+
+    // MODE: TYPE or BUCKET
+    if (lockCtx.TYPE() != null) {
+      stmt.mode = "TYPE";
+    } else if (lockCtx.BUCKET() != null) {
+      stmt.mode = "BUCKET";
+    }
+
+    // IDENTIFIERS: List of types or buckets to lock
+    stmt.identifiers = new ArrayList<>();
+    for (final SQLParser.IdentifierContext idCtx : lockCtx.identifier()) {
+      stmt.identifiers.add((Identifier) visit(idCtx));
+    }
 
     return stmt;
   }

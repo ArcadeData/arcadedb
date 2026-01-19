@@ -641,8 +641,13 @@ profileStatement
     : PROFILE statement
     ;
 
+/**
+ * LOCK statement
+ * LOCK TYPE type1, type2, ...
+ * LOCK BUCKET bucket1, bucket2, ...
+ */
 lockStatement
-    : LOCK identifier
+    : LOCK (TYPE | BUCKET) identifier (COMMA identifier)*
     ;
 
 sleepStatement
@@ -1041,4 +1046,8 @@ identifier
     | ADD
     | SET
     | IF
+    | METADATA
+    | VERTEX
+    | EDGE
+    | LIMIT
     ;
