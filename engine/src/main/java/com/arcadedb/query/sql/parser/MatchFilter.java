@@ -27,7 +27,7 @@ import java.util.stream.*;
 
 public class MatchFilter extends SimpleNode {
   // TODO transform in a map
-  protected List<MatchFilterItem> items = new ArrayList<MatchFilterItem>();
+  public List<MatchFilterItem> items = new ArrayList<MatchFilterItem>();
 
   public MatchFilter(final int id) {
     super(id);

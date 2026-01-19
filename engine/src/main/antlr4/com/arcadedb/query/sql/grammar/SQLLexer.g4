@@ -303,6 +303,10 @@ HOOK: '?';
 RANGE: '..';
 ELLIPSIS: '...';
 
+// Graph/MATCH Arrow Operators (order matters - longer tokens first)
+ARROW_RIGHT: '->';
+ARROW_LEFT: '<-';
+
 // ============================================================================
 // SEPARATORS
 // ============================================================================

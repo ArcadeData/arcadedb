@@ -23,19 +23,19 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class MatchFilterItem extends SimpleNode {
-  protected Expression         typeName;
-  protected Expression         typeNames;
-  protected Identifier         bucketName;
-  protected PInteger           bucketId;
-  protected Rid                rid;
-  protected Identifier         alias;
-  protected WhereClause        filter;
-  protected WhereClause        whileCondition;
-  protected ArrayRangeSelector depth;
-  protected PInteger           maxDepth;
-  protected Boolean            optional;
-  protected Identifier         depthAlias;
-  protected Identifier         pathAlias;
+  public Expression         typeName;
+  public Expression         typeNames;
+  public Identifier         bucketName;
+  public PInteger           bucketId;
+  public Rid                rid;
+  public Identifier         alias;
+  public WhereClause        filter;
+  public WhereClause        whileCondition;
+  public ArrayRangeSelector depth;
+  public PInteger           maxDepth;
+  public Boolean            optional;
+  public Identifier         depthAlias;
+  public Identifier         pathAlias;
 
   public MatchFilterItem(final int id) {
     super(id);

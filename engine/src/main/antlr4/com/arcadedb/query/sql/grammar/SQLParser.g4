@@ -215,7 +215,12 @@ matchExpression
 
 matchPathItem
     : matchFilter?
-      (DOT matchFilter)*
+      (matchMethod)*
+    ;
+
+matchMethod
+    : DOT matchFilter                                                      // .out('Friend')
+    | (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchFilter?  // -Friend-> or <-Friend- or -Friend-
     ;
 
 matchFilter

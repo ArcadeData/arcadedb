@@ -152,10 +152,473 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Projection visitor.
-   * Handles SELECT projections including DISTINCT and item lists.
+   * MATCH statement visitor.
+   * Maps to MatchStatement AST class.
    */
   @Override
+  public MatchStatement visitMatchStmt(final SQLParser.MatchStmtContext ctx) {
+    final MatchStatement stmt = new MatchStatement(-1);
+
+    // Get the matchStatement context from the labeled alternative
+    final SQLParser.MatchStatementContext matchCtx = ctx.matchStatement();
+
+    // Parse match expressions (both positive and negative patterns)
+    final List<MatchExpression> matchExpressions = new ArrayList<>();
+    final List<MatchExpression> notMatchExpressions = new ArrayList<>();
+
+    if (CollectionUtils.isNotEmpty(matchCtx.matchExpression())) {
+      for (int i = 0; i < matchCtx.matchExpression().size(); i++) {
+        final SQLParser.MatchExpressionContext exprCtx = matchCtx.matchExpression(i);
+        final MatchExpression matchExpr = (MatchExpression) visit(exprCtx);
+
+        // Check if this is a NOT expression (only possible for non-first expressions)
+        if (i > 0 && matchCtx.NOT(i - 1) != null) {
+          notMatchExpressions.add(matchExpr);
+        } else {
+          matchExpressions.add(matchExpr);
+        }
+      }
+    }
+
+    stmt.setMatchExpressions(matchExpressions);
+    stmt.setNotMatchExpressions(notMatchExpressions);
+
+    // Parse RETURN clause
+    stmt.setReturnDistinct(matchCtx.DISTINCT() != null);
+
+    // Parse return items (expressions with optional aliases and nested projections)
+    final List<Expression> returnItems = new ArrayList<>();
+    final List<Identifier> returnAliases = new ArrayList<>();
+    final List<NestedProjection> returnNestedProjections = new ArrayList<>();
+
+    if (CollectionUtils.isNotEmpty(matchCtx.expression())) {
+      for (int i = 0; i < matchCtx.expression().size(); i++) {
+        final Expression returnItem = (Expression) visit(matchCtx.expression(i));
+        returnItems.add(returnItem);
+
+        // Handle optional alias (AS identifier)
+        if (i < matchCtx.identifier().size() && matchCtx.identifier(i) != null) {
+          final Identifier alias = (Identifier) visit(matchCtx.identifier(i));
+          returnAliases.add(alias);
+        } else {
+          returnAliases.add(null);
+        }
+
+        // Handle optional nested projection
+        if (i < matchCtx.nestedProjection().size() && matchCtx.nestedProjection(i) != null) {
+          final NestedProjection nestedProj = (NestedProjection) visit(matchCtx.nestedProjection(i));
+          returnNestedProjections.add(nestedProj);
+        } else {
+          returnNestedProjections.add(null);
+        }
+      }
+    }
+
+    stmt.setReturnItems(returnItems);
+    stmt.setReturnAliases(returnAliases);
+    stmt.setReturnNestedProjections(returnNestedProjections);
+
+    // GROUP BY clause
+    if (matchCtx.groupBy() != null) {
+      stmt.setGroupBy((GroupBy) visit(matchCtx.groupBy()));
+    }
+
+    // ORDER BY clause
+    if (matchCtx.orderBy() != null) {
+      stmt.setOrderBy((OrderBy) visit(matchCtx.orderBy()));
+    }
+
+    // UNWIND clause
+    if (matchCtx.unwind() != null) {
+      stmt.setUnwind((Unwind) visit(matchCtx.unwind()));
+    }
+
+    // SKIP clause
+    if (matchCtx.skip() != null) {
+      stmt.setSkip((Skip) visit(matchCtx.skip()));
+    }
+
+    // LIMIT clause
+    if (matchCtx.limit() != null) {
+      stmt.limit = (Limit) visit(matchCtx.limit());
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Match expression visitor.
+   * Handles pattern expressions like: {type:Person, as: p}.out('Friend').in('Knows'){as: f}
+   * Also handles arrow syntax: {type:Person}-Friend->{as: f}<-Knows-{as: k}
+   */
+  @Override
+  public MatchExpression visitMatchExpression(final SQLParser.MatchExpressionContext ctx) {
+    final MatchExpression matchExpr = new MatchExpression(-1);
+    final List<MatchPathItem> items = new ArrayList<>();
+
+    // Parse match path items
+    if (CollectionUtils.isNotEmpty(ctx.matchPathItem())) {
+      // First item becomes the origin
+      if (ctx.matchPathItem().size() > 0) {
+        final SQLParser.MatchPathItemContext firstItemCtx = ctx.matchPathItem(0);
+
+        // Set origin from the first filter (if present)
+        if (firstItemCtx.matchFilter() != null) {
+          matchExpr.setOrigin((MatchFilter) visit(firstItemCtx.matchFilter()));
+        }
+
+        // Process methods in the first item
+        if (CollectionUtils.isNotEmpty(firstItemCtx.matchMethod())) {
+          for (final SQLParser.MatchMethodContext methodCtx : firstItemCtx.matchMethod()) {
+            final MatchPathItem pathItem = (MatchPathItem) visit(methodCtx);
+            if (pathItem != null) {
+              items.add(pathItem);
+            }
+          }
+        }
+      }
+
+      // Process remaining path items
+      for (int i = 1; i < ctx.matchPathItem().size(); i++) {
+        final SQLParser.MatchPathItemContext itemCtx = ctx.matchPathItem(i);
+
+        // Each path item can have a filter and methods
+        if (itemCtx.matchFilter() != null) {
+          final MatchPathItem pathItem = new MatchPathItem(-1);
+          pathItem.setFilter((MatchFilter) visit(itemCtx.matchFilter()));
+          items.add(pathItem);
+        }
+
+        // Process methods
+        if (CollectionUtils.isNotEmpty(itemCtx.matchMethod())) {
+          for (final SQLParser.MatchMethodContext methodCtx : itemCtx.matchMethod()) {
+            final MatchPathItem pathItem = (MatchPathItem) visit(methodCtx);
+            if (pathItem != null) {
+              items.add(pathItem);
+            }
+          }
+        }
+      }
+    }
+
+    matchExpr.setItems(items);
+    return matchExpr;
+  }
+
+  /**
+   * Match method visitor.
+   * Handles: .out('Friend') or -Friend-> or <-Friend- or -Friend-
+   */
+  @Override
+  public MatchPathItem visitMatchMethod(final SQLParser.MatchMethodContext ctx) {
+    final MatchPathItem pathItem = new MatchPathItem(-1);
+
+    // Check if this is DOT method syntax: .out('Friend')
+    if (ctx.DOT() != null) {
+      pathItem.setFilter((MatchFilter) visit(ctx.matchFilter()));
+      return pathItem;
+    }
+
+    // Arrow syntax: (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchFilter?
+    // Determine direction based on arrow combination
+    final boolean leftIsArrow = ctx.ARROW_LEFT() != null;
+    final boolean rightIsArrow = ctx.ARROW_RIGHT() != null;
+
+    String methodName;
+    if (leftIsArrow && !rightIsArrow) {
+      // <-EdgeType- = incoming
+      methodName = "in";
+    } else if (!leftIsArrow && rightIsArrow) {
+      // -EdgeType-> = outgoing
+      methodName = "out";
+    } else {
+      // -EdgeType- = bidirectional
+      methodName = "both";
+    }
+
+    // Create a MethodCall with the edge type as parameter
+    final MethodCall method = new MethodCall(-1);
+    method.methodName = new Identifier(methodName);
+
+    // Edge type becomes the parameter (as a string literal Expression)
+    final Identifier edgeLabel = (Identifier) visit(ctx.identifier());
+    final BaseExpression baseExpr = new BaseExpression(-1);
+    baseExpr.string = "'" + edgeLabel.getStringValue() + "'";
+
+    final Expression edgeTypeParam = new Expression(-1);
+    edgeTypeParam.mathExpression = baseExpr;
+    method.params.add(edgeTypeParam);
+
+    pathItem.setMethod(method);
+
+    // Add the filter if present
+    if (ctx.matchFilter() != null) {
+      pathItem.setFilter((MatchFilter) visit(ctx.matchFilter()));
+    }
+
+    return pathItem;
+  }
+
+  /**
+   * Match filter visitor.
+   * Handles: identifier | functionCall | {type: Person, as: p}
+   */
+  @Override
+  public MatchFilter visitMatchFilter(final SQLParser.MatchFilterContext ctx) {
+    final MatchFilter filter = new MatchFilter(-1);
+
+    // Handle function call (e.g., out(), in(), both())
+    if (ctx.functionCall() != null) {
+      // For function calls in MATCH, we don't store them in filter items
+      // They will be handled by execution planner
+      // Just return an empty filter for now
+      return filter;
+    }
+
+    // Handle identifier (e.g., edge type name)
+    if (ctx.identifier() != null) {
+      // For simple identifiers, create a filter item
+      // This represents an edge type or pattern name
+      return filter;
+    }
+
+    // Handle filter items in braces: {type: Person, as: p, where: (name='John')}
+    if (CollectionUtils.isNotEmpty(ctx.matchFilterItem())) {
+      for (final SQLParser.MatchFilterItemContext itemCtx : ctx.matchFilterItem()) {
+        final MatchFilterItem item = (MatchFilterItem) visit(itemCtx);
+        filter.items.add(item);
+      }
+    }
+
+    return filter;
+  }
+
+  /**
+   * Match filter item visitor.
+   * Handles individual filter properties: identifier COLON expression
+   * Examples: type: Person, as: p, where: (name='John'), maxdepth: 3
+   */
+  @Override
+  public MatchFilterItem visitMatchFilterItem(final SQLParser.MatchFilterItemContext ctx) {
+    final MatchFilterItem item = new MatchFilterItem(-1);
+
+    final Identifier key = (Identifier) visit(ctx.identifier());
+    final Object valueObj = visit(ctx.expression());
+
+    final String keyName = key.getStringValue().toLowerCase();
+
+    // Map the key to the appropriate field
+    switch (keyName) {
+      case "type":
+        item.typeName = (Expression) valueObj;
+        break;
+      case "types":
+        item.typeNames = (Expression) valueObj;
+        break;
+      case "bucket":
+        // Could be bucket name (string) or bucket id (integer)
+        if (valueObj instanceof PInteger) {
+          item.bucketId = (PInteger) valueObj;
+        } else if (valueObj instanceof BaseExpression) {
+          final BaseExpression baseExpr = (BaseExpression) valueObj;
+          if (baseExpr.number instanceof PInteger) {
+            item.bucketId = (PInteger) baseExpr.number;
+          } else {
+            item.bucketName = new Identifier(valueObj.toString());
+          }
+        } else {
+          item.bucketName = new Identifier(valueObj.toString());
+        }
+        break;
+      case "rid":
+        if (valueObj instanceof Rid) {
+          item.rid = (Rid) valueObj;
+        }
+        // RID might be embedded in a complex expression, for now just skip if not direct Rid
+        break;
+      case "as":
+        // Extract identifier name from the expression
+        if (valueObj instanceof BaseIdentifier) {
+          // Create Identifier from the string representation
+          final StringBuilder sb = new StringBuilder();
+          ((BaseIdentifier) valueObj).toString(java.util.Collections.emptyMap(), sb);
+          item.alias = new Identifier(sb.toString());
+        } else if (valueObj instanceof BaseExpression) {
+          final BaseExpression baseExpr = (BaseExpression) valueObj;
+          if (baseExpr.identifier != null) {
+            final StringBuilder sb = new StringBuilder();
+            baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+            item.alias = new Identifier(sb.toString());
+          } else {
+            item.alias = new Identifier(valueObj.toString().replace("'", ""));
+          }
+        } else {
+          // If value is a string literal, extract the alias name
+          item.alias = new Identifier(valueObj.toString().replace("'", ""));
+        }
+        break;
+      case "where":
+        if (valueObj instanceof WhereClause) {
+          item.filter = (WhereClause) valueObj;
+        } else if (valueObj instanceof BooleanExpression) {
+          final WhereClause whereClause = new WhereClause(-1);
+          whereClause.baseExpression = (BooleanExpression) valueObj;
+          item.filter = whereClause;
+        } else if (valueObj instanceof BaseExpression) {
+          // BaseExpression wrapping a condition
+          final BaseExpression baseExpr = (BaseExpression) valueObj;
+          final WhereClause whereClause = new WhereClause(-1);
+          // Try to extract boolean expression from BaseExpression
+          // For now, create a condition wrapper
+          item.filter = whereClause;
+        }
+        break;
+      case "while":
+        if (valueObj instanceof WhereClause) {
+          item.whileCondition = (WhereClause) valueObj;
+        } else if (valueObj instanceof BooleanExpression) {
+          final WhereClause whereClause = new WhereClause(-1);
+          whereClause.baseExpression = (BooleanExpression) valueObj;
+          item.whileCondition = whereClause;
+        } else if (valueObj instanceof BaseExpression) {
+          // BaseExpression wrapping a condition
+          final WhereClause whereClause = new WhereClause(-1);
+          item.whileCondition = whereClause;
+        }
+        break;
+      case "maxdepth":
+        if (valueObj instanceof PInteger) {
+          item.maxDepth = (PInteger) valueObj;
+        } else if (valueObj instanceof BaseExpression) {
+          final BaseExpression baseExpr = (BaseExpression) valueObj;
+          if (baseExpr.number instanceof PInteger) {
+            item.maxDepth = (PInteger) baseExpr.number;
+          }
+        }
+        break;
+      case "optional":
+        item.optional = true;
+        break;
+      case "depthalias":
+        // Extract identifier name from the expression
+        if (valueObj instanceof BaseIdentifier) {
+          final StringBuilder sb = new StringBuilder();
+          ((BaseIdentifier) valueObj).toString(java.util.Collections.emptyMap(), sb);
+          item.depthAlias = new Identifier(sb.toString());
+        } else if (valueObj instanceof BaseExpression) {
+          final BaseExpression baseExpr = (BaseExpression) valueObj;
+          if (baseExpr.identifier != null) {
+            final StringBuilder sb = new StringBuilder();
+            baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+            item.depthAlias = new Identifier(sb.toString());
+          }
+        }
+        break;
+      case "pathalias":
+        // Extract identifier name from the expression
+        if (valueObj instanceof BaseIdentifier) {
+          final StringBuilder sb = new StringBuilder();
+          ((BaseIdentifier) valueObj).toString(java.util.Collections.emptyMap(), sb);
+          item.pathAlias = new Identifier(sb.toString());
+        } else if (valueObj instanceof BaseExpression) {
+          final BaseExpression baseExpr = (BaseExpression) valueObj;
+          if (baseExpr.identifier != null) {
+            final StringBuilder sb = new StringBuilder();
+            baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+            item.pathAlias = new Identifier(sb.toString());
+          }
+        }
+        break;
+      default:
+        // Unknown key - ignore or log warning
+        break;
+    }
+
+    return item;
+  }
+  /**
+   * TRAVERSE statement visitor.
+   * Maps to TraverseStatement AST class.
+   */
+  @Override
+  public TraverseStatement visitTraverseStmt(final SQLParser.TraverseStmtContext ctx) {
+    final TraverseStatement stmt = new TraverseStatement(-1);
+
+    // Get the traverseStatement context from the labeled alternative
+    final SQLParser.TraverseStatementContext traverseCtx = ctx.traverseStatement();
+
+    // Parse projection items (optional)
+    final List<TraverseProjectionItem> projections = new ArrayList<>();
+    if (CollectionUtils.isNotEmpty(traverseCtx.traverseProjectionItem())) {
+      for (final SQLParser.TraverseProjectionItemContext itemCtx : traverseCtx.traverseProjectionItem()) {
+        final TraverseProjectionItem item = (TraverseProjectionItem) visit(itemCtx);
+        projections.add(item);
+      }
+    }
+    stmt.setProjections(projections);
+
+    // FROM clause (required)
+    if (traverseCtx.fromClause() != null) {
+      stmt.setTarget((FromClause) visit(traverseCtx.fromClause()));
+    }
+
+    // MAXDEPTH clause (optional)
+    if (traverseCtx.pInteger() != null) {
+      stmt.setMaxDepth((PInteger) visit(traverseCtx.pInteger()));
+    }
+
+    // WHILE clause (optional)
+    if (traverseCtx.whereClause() != null) {
+      stmt.setWhileClause((WhereClause) visit(traverseCtx.whereClause()));
+    }
+
+    // LIMIT clause (optional)
+    if (traverseCtx.limit() != null) {
+      stmt.limit = (Limit) visit(traverseCtx.limit());
+    }
+
+    // STRATEGY clause (optional)
+    if (traverseCtx.DEPTH_FIRST() != null) {
+      stmt.setStrategy(TraverseStatement.Strategy.DEPTH_FIRST);
+    } else if (traverseCtx.BREADTH_FIRST() != null) {
+      stmt.setStrategy(TraverseStatement.Strategy.BREADTH_FIRST);
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Traverse projection item visitor.
+   * Handles individual projection items in TRAVERSE statement.
+   */
+  @Override
+  public TraverseProjectionItem visitTraverseProjectionItem(final SQLParser.TraverseProjectionItemContext ctx) {
+    final TraverseProjectionItem item = new TraverseProjectionItem(-1);
+
+    // Expression (required) - convert to BaseIdentifier
+    if (ctx.expression() != null) {
+      final Object exprObj = visit(ctx.expression());
+      // TraverseProjectionItem expects a BaseIdentifier
+      if (exprObj instanceof BaseIdentifier) {
+        item.base = (BaseIdentifier) exprObj;
+      } else if (exprObj instanceof BaseExpression) {
+        // BaseExpression contains a BaseIdentifier
+        final BaseExpression baseExpr = (BaseExpression) exprObj;
+        if (baseExpr.identifier != null) {
+          item.base = baseExpr.identifier;
+        }
+      }
+      // If we still don't have a base, create a simple one
+      if (item.base == null) {
+        item.base = new BaseIdentifier(-1);
+      }
+    }
+
+    // Optional alias is handled by the modifier system in TraverseProjectionItem
+    // For now, we'll let the execution planner handle alias mapping
+
+    return item;
+  }
   public Projection visitProjection(final SQLParser.ProjectionContext ctx) {
     final Projection projection = new Projection(-1);
 
