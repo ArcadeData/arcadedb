@@ -94,6 +94,22 @@
                             <tarLongFileMode>gnu</tarLongFileMode>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>base</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <appendAssemblyId>true</appendAssemblyId>
+                            <finalName>arcadedb-${project.version}</finalName>
+                            <descriptors>
+                                <descriptor>./src/main/assembly/base.xml</descriptor>
+                            </descriptors>
+                            <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
+                            <tarLongFileMode>gnu</tarLongFileMode>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>
