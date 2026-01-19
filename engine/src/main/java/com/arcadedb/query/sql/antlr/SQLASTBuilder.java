@@ -1886,8 +1886,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit modifier (DOT identifier or array selector).
-   * Grammar: modifier: DOT identifier | arraySelector
+   * Visit modifier (DOT identifier with optional parentheses or array selector).
+   * Grammar: modifier: DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)? | arraySelector
+   *
+   * Handles both property access (.identifier) and method calls (.identifier(args))
    */
   @Override
   public Modifier visitModifier(final SQLParser.ModifierContext ctx) {
@@ -1895,10 +1897,26 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       if (ctx.identifier() != null) {
-        // DOT identifier modifier
-        final Identifier id = (Identifier) visit(ctx.identifier());
-        final SuffixIdentifier suffix = new SuffixIdentifier(id);
-        modifier.suffix = suffix;
+        // Check if this is a method call (has parentheses) or property access (no parentheses)
+        if (ctx.LPAREN() != null) {
+          // Method call: .identifier(args)
+          final MethodCall methodCall = new MethodCall(-1);
+          methodCall.methodName = (Identifier) visit(ctx.identifier());
+
+          // Add parameters if present
+          if (ctx.expression() != null) {
+            for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
+              methodCall.params.add((Expression) visit(exprCtx));
+            }
+          }
+
+          modifier.methodCall = methodCall;
+        } else {
+          // Property access: .identifier
+          final Identifier id = (Identifier) visit(ctx.identifier());
+          final SuffixIdentifier suffix = new SuffixIdentifier(id);
+          modifier.suffix = suffix;
+        }
       } else if (ctx.arraySelector() != null) {
         // Array selector modifier
         return createModifierForArraySelector(ctx.arraySelector());
@@ -2425,7 +2443,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // FROM SELECT clause
     if (insertCtx.selectStatement() != null) {
-      stmt.selectStatement = (SelectStatement) visit(insertCtx.selectStatement());
+      final Object visitResult = visit(insertCtx.selectStatement());
+      if (visitResult instanceof SelectStatement) {
+        stmt.selectStatement = (SelectStatement) visitResult;
+      } else if (visitResult instanceof FromClause) {
+        // Handle case where parser returns FromClause - wrap it in a SELECT
+        final SelectStatement select = new SelectStatement(-1);
+        select.target = (FromClause) visitResult;
+        stmt.selectStatement = select;
+      } else {
+        // Note: Complex SELECT statements (with WHERE, etc.) may not work without parentheses
+        // This is a known grammar limitation - use INSERT INTO dst (SELECT...) instead
+        throw new CommandSQLParsingException(
+            "INSERT...SELECT parsing incomplete: parser returned " +
+                (visitResult != null ? visitResult.getClass().getSimpleName() : "null") +
+                " instead of SelectStatement. Use parentheses: INSERT INTO dst (SELECT...)"
+        );
+      }
       stmt.selectWithFrom = insertCtx.FROM() != null;
       stmt.selectInParentheses = insertCtx.LPAREN() != null;
     }
@@ -2651,6 +2685,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Right side: expression
     item.right = (Expression) visit(ctx.expression());
+
+    return item;
+  }
+
+  /**
+   * Visit UPDATE REMOVE item (expression [= expression]).
+   * Grammar: updateRemoveItem : expression (EQ expression)?
+   */
+  @Override
+  public UpdateRemoveItem visitUpdateRemoveItem(final SQLParser.UpdateRemoveItemContext ctx) {
+    final UpdateRemoveItem item = new UpdateRemoveItem(-1);
+
+    // Left side: expression
+    item.left = (Expression) visit(ctx.expression(0));
+
+    // Right side: optional expression after EQ
+    if (ctx.EQ() != null && ctx.expression().size() > 1) {
+      item.right = (Expression) visit(ctx.expression(1));
+    }
 
     return item;
   }
@@ -2992,6 +3045,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
         } else if (CollectionUtils.isNotEmpty(fromItem.rids)) {
           leftExpr.rid = fromItem.rids.get(0);
+        } else if (CollectionUtils.isNotEmpty(fromItem.inputParams)) {
+          // Handle input parameters (e.g., CREATE EDGE FROM ? TO ?)
+          final BaseExpression baseExpr = new BaseExpression(-1);
+          baseExpr.inputParam = fromItem.inputParams.get(0);
+          leftExpr.mathExpression = baseExpr;
         }
         stmt.leftExpression = leftExpr;
       }
@@ -3005,6 +3063,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           rightExpr.mathExpression = new BaseExpression(toItem.identifier);
         } else if (CollectionUtils.isNotEmpty(toItem.rids)) {
           rightExpr.rid = toItem.rids.get(0);
+        } else if (CollectionUtils.isNotEmpty(toItem.inputParams)) {
+          // Handle input parameters (e.g., CREATE EDGE FROM ? TO ?)
+          final BaseExpression baseExpr = new BaseExpression(-1);
+          baseExpr.inputParam = toItem.inputParams.get(0);
+          rightExpr.mathExpression = baseExpr;
         }
         stmt.rightExpression = rightExpr;
       }
@@ -3070,68 +3133,21 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit property attribute (e.g., MANDATORY, READONLY true, MAX 5).
+   * Visit property attribute (e.g., MANDATORY, READONLY true, MAX 5, DEFAULT sysdate()).
+   * Grammar: identifier expression?
    */
   @Override
   public CreatePropertyAttributeStatement visitPropertyAttribute(final SQLParser.PropertyAttributeContext ctx) {
     final CreatePropertyAttributeStatement attr = new CreatePropertyAttributeStatement(-1);
 
     // Attribute name
-    attr.settingName = (Identifier) visit(ctx.identifier(0));
+    attr.settingName = (Identifier) visit(ctx.identifier());
 
-    // Attribute value (optional - if not present, it's a boolean flag set to true)
-    if (ctx.TRUE() != null) {
-      // Value is boolean true
-      final Identifier trueId = new Identifier("true");
-      final Expression expr = new Expression(-1);
-      expr.mathExpression = new BaseExpression(trueId);
-      attr.settingValue = expr;
-    } else if (ctx.FALSE() != null) {
-      // Value is boolean false
-      final Identifier falseId = new Identifier("false");
-      final Expression expr = new Expression(-1);
-      expr.mathExpression = new BaseExpression(falseId);
-      attr.settingValue = expr;
-    } else if (ctx.identifier().size() > 1) {
-      // Value is another identifier (e.g., MANDATORY true)
-      final Identifier valueId = (Identifier) visit(ctx.identifier(1));
-      final Expression expr = new Expression(-1);
-      expr.mathExpression = new BaseExpression(valueId);
-      attr.settingValue = expr;
-    } else if (ctx.INTEGER_LITERAL() != null) {
-      // Value is an integer (e.g., MAX 5)
-      final PInteger pInt = new PInteger(-1);
-      pInt.setValue((Number) Integer.parseInt(ctx.INTEGER_LITERAL().getText()));
-      final BaseExpression baseExpr = new BaseExpression(-1);
-      baseExpr.number = pInt;
-      final Expression expr = new Expression(-1);
-      expr.mathExpression = baseExpr;
-      attr.settingValue = expr;
-    } else if (ctx.FLOATING_POINT_LITERAL() != null) {
-      // Value is a float
-      final PNumber pNum = new PNumber(-1);
-      pNum.value = new java.math.BigDecimal(ctx.FLOATING_POINT_LITERAL().getText());
-      final BaseExpression baseExpr = new BaseExpression(-1);
-      baseExpr.number = pNum;
-      final Expression expr = new Expression(-1);
-      expr.mathExpression = baseExpr;
-      attr.settingValue = expr;
-    } else if (ctx.STRING_LITERAL() != null) {
-      // Value is a string (e.g., DEFAULT "value")
-      String strValue = ctx.STRING_LITERAL().getText();
-      // Remove quotes
-      if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
-        strValue = strValue.substring(1, strValue.length() - 1);
-      } else if (strValue.startsWith("'") && strValue.endsWith("'")) {
-        strValue = strValue.substring(1, strValue.length() - 1);
-      }
-      final BaseExpression baseExpr = new BaseExpression(-1);
-      baseExpr.string = "\"" + strValue + "\"";
-      final Expression expr = new Expression(-1);
-      expr.mathExpression = baseExpr;
-      attr.settingValue = expr;
+    // Attribute value (optional expression - if not present, it's a boolean flag set to true)
+    if (ctx.expression() != null) {
+      attr.settingValue = (Expression) visit(ctx.expression());
     }
-    // If no value, settingValue remains null (treated as boolean true)
+    // If no value specified, leave settingValue as null (implies true for boolean flags)
 
     return attr;
   }
@@ -3307,14 +3323,26 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     for (final SQLParser.AlterTypeItemContext itemCtx : bodyCtx.alterTypeItem()) {
       if (itemCtx.NAME() != null) {
         stmt.property = "name";
-        stmt.identifierValue = (Identifier) visit(itemCtx.identifier());
+        stmt.identifierValue = (Identifier) visit(itemCtx.identifier(0));
       } else if (itemCtx.SUPERTYPE() != null) {
         stmt.property = "supertype";
-        stmt.identifierListValue.add((Identifier) visit(itemCtx.identifier()));
+        stmt.identifierListValue.add((Identifier) visit(itemCtx.identifier(0)));
         stmt.identifierListAddRemove.add(true); // Always add for SUPERTYPE
       } else if (itemCtx.CUSTOM() != null) {
-        stmt.customKey = (Identifier) visit(itemCtx.identifier());
+        stmt.customKey = (Identifier) visit(itemCtx.identifier(0));
         stmt.customValue = (Expression) visit(itemCtx.expression());
+      } else if (itemCtx.ALIASES() != null) {
+        stmt.property = "aliases";
+        // Check if NULL (to clear aliases) or identifiers (to set aliases)
+        if (itemCtx.NULL() != null) {
+          // NULL means clear all aliases - leave identifierListValue empty
+        } else {
+          // Add all alias identifiers
+          for (final SQLParser.IdentifierContext aliasCtx : itemCtx.identifier()) {
+            stmt.identifierListValue.add((Identifier) visit(aliasCtx));
+            stmt.identifierListAddRemove.add(true); // Always add for ALIASES
+          }
+        }
       }
     }
 
@@ -3351,6 +3379,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (itemCtx.CUSTOM() != null) {
         stmt.customPropertyName = (Identifier) visit(itemCtx.identifier());
         stmt.customPropertyValue = (Expression) visit(itemCtx.expression());
+      } else if (itemCtx.identifier() != null) {
+        // Property attribute (MANDATORY, READONLY, REGEXP, etc.)
+        stmt.settingName = (Identifier) visit(itemCtx.identifier());
+        if (itemCtx.expression() != null) {
+          stmt.settingValue = (Expression) visit(itemCtx.expression());
+        }
       }
     }
 
@@ -3488,6 +3522,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Type name
     stmt.typeName = (Identifier) visit(bodyCtx.identifier());
+
+    // POLYMORPHIC
+    stmt.polymorphic = bodyCtx.POLYMORPHIC() != null;
 
     // UNSAFE
     stmt.unsafe = bodyCtx.UNSAFE() != null;
@@ -3627,6 +3664,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Visit BREAK statement (script-only).
+   * Grammar: BREAK
+   */
+  @Override
+  public BreakStatement visitBreakStmt(final SQLParser.BreakStmtContext ctx) {
+    return new BreakStatement(-1);
+  }
+
+  /**
    * Visit IF statement.
    * Grammar: IF LPAREN orBlock RPAREN LBRACE (scriptStatement SEMICOLON?)* RBRACE (ELSE LBRACE (scriptStatement SEMICOLON?)* RBRACE)?
    */
@@ -3713,7 +3759,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public BeginStatement visitBeginStmt(final SQLParser.BeginStmtContext ctx) {
     final BeginStatement stmt = new BeginStatement(-1);
-    // BEGIN has no parameters in the grammar (just the keyword)
+    final SQLParser.BeginStatementContext beginCtx = ctx.beginStatement();
+
+    // ISOLATION clause
+    if (beginCtx.identifier() != null) {
+      stmt.isolation = (Identifier) visit(beginCtx.identifier());
+    }
+
     return stmt;
   }
 
@@ -3723,7 +3775,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public CommitStatement visitCommitStmt(final SQLParser.CommitStmtContext ctx) {
     final CommitStatement stmt = new CommitStatement(-1);
-    // COMMIT has no parameters in the grammar (just the keyword)
+    final SQLParser.CommitStatementContext commitCtx = ctx.commitStatement();
+
+    // RETRY clause
+    if (commitCtx.INTEGER_LITERAL() != null) {
+      final PInteger retry = new PInteger(-1);
+      retry.value = Integer.parseInt(commitCtx.INTEGER_LITERAL().getText());
+      stmt.retry = retry;
+    }
+
     return stmt;
   }
 
@@ -3733,7 +3793,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public RollbackStatement visitRollbackStmt(final SQLParser.RollbackStmtContext ctx) {
     final RollbackStatement stmt = new RollbackStatement(-1);
-    // ROLLBACK has no parameters in the grammar (just the keyword)
+    // ROLLBACK has no parameters - just need to reference the rollbackStatement context
     return stmt;
   }
 

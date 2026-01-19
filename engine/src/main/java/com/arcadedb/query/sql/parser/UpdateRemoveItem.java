@@ -27,8 +27,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class UpdateRemoveItem extends SimpleNode {
-  Expression left;
-  Expression right;
+  public Expression left;
+  public Expression right;
 
   public UpdateRemoveItem(final int id) {
     super(id);

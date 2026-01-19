@@ -115,9 +115,9 @@ statement
     | rebuildIndexStatement                          # rebuildIndexStmt
 
     // Transaction Statements
-    | BEGIN                                          # beginStmt
-    | COMMIT                                         # commitStmt
-    | ROLLBACK                                       # rollbackStmt
+    | beginStatement                                 # beginStmt
+    | commitStatement                                # commitStmt
+    | rollbackStatement                              # rollbackStmt
 
     // Control Flow Statements
     | letStatement                                   # letStmt
@@ -145,12 +145,13 @@ statement
 /**
  * Script statement rule - includes all regular statements PLUS script-only control flow
  * This rule is ONLY used by parseScript, not by parse (regular SQL)
- * FOREACH and WHILE are script-only and NOT available in regular SQL
+ * FOREACH, WHILE, and BREAK are script-only and NOT available in regular SQL
  */
 scriptStatement
     : statement                                      # scriptRegularStmt
     | foreachStatement                               # foreachStmt
     | whileStatement                                 # whileStmt
+    | breakStatement                                 # breakStmt
     ;
 
 // ============================================================================
@@ -392,7 +393,7 @@ propertyAttributes
     ;
 
 propertyAttribute
-    : identifier (identifier | TRUE | FALSE | INTEGER_LITERAL | FLOATING_POINT_LITERAL | STRING_LITERAL)?
+    : identifier expression?
     ;
 
 /**
@@ -470,6 +471,7 @@ alterTypeItem
     : NAME identifier
     | SUPERTYPE identifier
     | CUSTOM identifier EQ expression
+    | ALIASES (identifier (COMMA identifier)* | NULL)
     ;
 
 alterPropertyBody
@@ -480,6 +482,7 @@ alterPropertyItem
     : NAME identifier
     | TYPE propertyType
     | CUSTOM identifier EQ expression
+    | identifier expression?  // Property attributes (MANDATORY, READONLY, REGEXP, etc.)
     ;
 
 alterBucketBody
@@ -524,7 +527,7 @@ dropBucketBody
 // ============================================================================
 
 truncateTypeBody
-    : identifier UNSAFE?
+    : identifier (POLYMORPHIC | UNSAFE)*
     ;
 
 truncateBucketBody
@@ -556,14 +559,14 @@ letStatement
     ;
 
 letItem
-    : identifier EQ (expression | LPAREN statement RPAREN)
+    : identifier EQ (expression | statement | LPAREN statement RPAREN)
     ;
 
 /**
  * RETURN statement
  */
 returnStatement
-    : RETURN expression
+    : RETURN expression?
     ;
 
 /**
@@ -589,6 +592,41 @@ foreachStatement
  */
 whileStatement
     : WHILE LPAREN orBlock RPAREN LBRACE (scriptStatement SEMICOLON?)* RBRACE
+    ;
+
+/**
+ * BREAK statement (script-only)
+ * Breaks out of a FOREACH or WHILE loop
+ */
+breakStatement
+    : BREAK
+    ;
+
+// ============================================================================
+// TRANSACTION STATEMENTS
+// ============================================================================
+
+/**
+ * BEGIN statement
+ * BEGIN [ISOLATION isolation_level]
+ */
+beginStatement
+    : BEGIN (ISOLATION identifier)?
+    ;
+
+/**
+ * COMMIT statement
+ * COMMIT [RETRY n]
+ */
+commitStatement
+    : COMMIT (RETRY INTEGER_LITERAL)?
+    ;
+
+/**
+ * ROLLBACK statement
+ */
+rollbackStatement
+    : ROLLBACK
     ;
 
 // ============================================================================
@@ -863,9 +901,9 @@ baseExpression
     | identifier (DOT identifier)* methodCall* arraySelector* modifier* # identifierChain
     | functionCall                                                      # functionCallExpr
     | inputParameter modifier*                                          # inputParam
-    | LPAREN (statement | expression) RPAREN                            # parenthesizedExpr
-    | arrayLiteral                                                      # arrayLit
-    | mapLiteral                                                        # mapLit
+    | LPAREN (statement | expression) RPAREN modifier*                  # parenthesizedExpr
+    | arrayLiteral modifier*                                            # arrayLit
+    | mapLiteral modifier*                                              # mapLit
     | LBRACKET expression FOR identifier IN expression (WHERE whereClause)? RBRACKET # listComprehension
     | NULL modifier*                                                    # nullBaseExpr
     ;
@@ -909,10 +947,11 @@ arraySelector
     ;
 
 /**
- * Expression modifier (e.g., .asString(), .size())
+ * Expression modifier (e.g., .asString(), .size(), .keys())
+ * Supports both property access (.identifier) and method calls (.identifier(args))
  */
 modifier
-    : DOT identifier
+    : DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)?
     | arraySelector
     ;
 
@@ -984,6 +1023,7 @@ identifier
     // Allow common keywords as identifiers
     | NAME
     | VALUE
+    | VALUES
     | TYPE
     | STATUS
     | COUNT
@@ -995,4 +1035,10 @@ identifier
     | FORMAT
     | CUSTOM
     | SKIP
+    | START
+    | CONTENT
+    | RID
+    | ADD
+    | SET
+    | IF
     ;
