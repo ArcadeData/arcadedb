@@ -39,9 +39,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.math.*;
-import java.util.*;
+import java.io.File;
+import java.io.PrintStream;
+import java.math.BigInteger;
+import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -427,6 +429,7 @@ class GremlinTest {
 
   // ISSUE: https://github.com/ArcadeData/arcadedb/issues/911
   // This test works only with Groovy engine, from v25.12.1 the default engine is Java
+  // Note: TinkerPop 3.8.0 changed behavior - now throws ArithmeticException on long overflow instead of promoting to BigInteger
   @Test
   void longOverflow() {
     GlobalConfiguration.GREMLIN_ENGINE.setValue("groovy");
@@ -435,9 +438,12 @@ class GremlinTest {
       Result value = graph.gremlin("g.inject(Long.MAX_VALUE, 0).sum()").execute().nextIfAvailable();
       assertThat((long) value.getProperty("result")).isEqualTo(Long.MAX_VALUE);
 
-      value = graph.gremlin("g.inject(Long.MAX_VALUE, 1).sum()").execute().nextIfAvailable();
-      assertThat((long) value.getProperty("result")).isEqualTo(Long.MAX_VALUE + 1);
+      // TinkerPop 3.8.0 throws ArithmeticException on long overflow
+      assertThatThrownBy(() -> graph.gremlin("g.inject(Long.MAX_VALUE, 1).sum()").execute().nextIfAvailable())
+          .isInstanceOf(ArithmeticException.class)
+          .hasMessageContaining("long overflow");
 
+      // Using BigInteger explicitly still works
       value = graph.gremlin("g.inject(BigInteger.valueOf(Long.MAX_VALUE), 1).sum()").execute().nextIfAvailable();
       assertThat((BigInteger) value.getProperty("result")).isEqualTo(
           BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.valueOf(1L)));
