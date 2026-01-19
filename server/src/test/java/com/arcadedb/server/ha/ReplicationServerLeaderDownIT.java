@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.query.sql.executor.Result;
@@ -60,6 +61,13 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
     return HAServer.ServerRole.ANY;
   }
 
+  @Override
+  @Disabled("Skipping parent's replication() test - we use testReplication() with RemoteDatabase instead")
+  public void replication() throws Exception {
+    // Parent test uses local database from server 0, but this test stops server 0
+    // So we override to disable the parent test and use our own testReplication() method
+  }
+
   @Test
 //  @Disabled
   @Timeout(value = 15, unit = TimeUnit.MINUTES)
@@ -72,51 +80,63 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
     final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]),
         getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    LogManager.instance()
-        .log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    try {
+      LogManager.instance()
+          .log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
-    long counter = 0;
+      long counter = 0;
 
-    for (int tx = 0; tx < getTxs(); ++tx) {
-      for (int i = 0; i < getVerticesPerTx(); ++i) {
-        final long currentId = ++counter;
+      for (int tx = 0; tx < getTxs(); ++tx) {
+        for (int i = 0; i < getVerticesPerTx(); ++i) {
+          final long currentId = ++counter;
 
-        // Use Awaitility to handle retry logic with proper timeout
-        await().atMost(Duration.ofSeconds(15))
-               .pollInterval(Duration.ofMillis(500))
-               .ignoreException(RemoteException.class)
-               .untilAsserted(() -> {
-                 final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?",
-                     currentId, "distributed-test");
+          // Use Awaitility to handle retry logic with proper timeout
+          // Longer timeout needed after leader failure to allow new leader election
+          await().atMost(Duration.ofMinutes(2))
+                 .pollInterval(Duration.ofMillis(500))
+                 .ignoreException(RemoteException.class)
+                 .ignoreException(NeedRetryException.class)
+                 .untilAsserted(() -> {
+                   final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?",
+                       currentId, "distributed-test");
 
-                 assertThat(resultSet.hasNext()).isTrue();
-                 final Result result = resultSet.next();
-                 assertThat(result).isNotNull();
-                 final Set<String> props = result.getPropertyNames();
-                 assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
-                 assertThat(result.<Long>getProperty("id")).isEqualTo(currentId);
-                 assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
-               });
+                   assertThat(resultSet.hasNext()).isTrue();
+                   final Result result = resultSet.next();
+                   assertThat(result).isNotNull();
+                   final Set<String> props = result.getPropertyNames();
+                   assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
+                   assertThat(result.<Long>getProperty("id")).isEqualTo(currentId);
+                   assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
+                 });
+        }
+
+        if (counter % 1000 == 0) {
+          LogManager.instance().log(this, Level.FINE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
+          if (isPrintingConfigurationAtEveryStep())
+            getLeaderServer().getHA().printClusterConfiguration();
+        }
       }
 
-      if (counter % 1000 == 0) {
-        LogManager.instance().log(this, Level.FINE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
-        if (isPrintingConfigurationAtEveryStep())
-          getLeaderServer().getHA().printClusterConfiguration();
+      LogManager.instance().log(this, Level.FINE, "Done");
+
+      // Wait for replication to complete instead of fixed sleep
+      for (final int s : getServerToCheck())
+        waitForReplicationIsCompleted(s);
+
+      // CHECK INDEXES ARE REPLICATED CORRECTLY
+      for (final int s : getServerToCheck())
+        checkEntriesOnServer(s);
+
+      onAfterTest();
+    } finally {
+      // Close the remote database connection before test cleanup
+      try {
+        db.close();
+      } catch (final Exception e) {
+        // Ignore exceptions during close - servers may already be stopped
+        LogManager.instance().log(this, Level.FINE, "Exception closing remote database: %s", null, e.getMessage());
       }
     }
-
-    LogManager.instance().log(this, Level.FINE, "Done");
-
-    // Wait for replication to complete instead of fixed sleep
-    for (final int s : getServerToCheck())
-      waitForReplicationIsCompleted(s);
-
-    // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (final int s : getServerToCheck())
-      checkEntriesOnServer(s);
-
-    onAfterTest();
   }
 
   @Override
