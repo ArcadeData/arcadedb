@@ -25,8 +25,6 @@ import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.utility.CollectionUtils;
-import org.antlr.v4.runtime.ParserRuleContext;
-import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,7 +33,7 @@ import java.util.List;
  * ANTLR4 visitor that builds ArcadeDB's internal AST from the SQL parse tree.
  * Transforms ANTLR's parse tree into Statement objects that are compatible
  * with the existing execution engine.
- *
+ * <p>
  * This visitor produces identical AST structures to the JavaCC parser,
  * ensuring 100% backward compatibility with existing execution planners
  * and executor steps.
@@ -43,7 +41,7 @@ import java.util.List;
 public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   private final Database database;
-  private int positionalParamCounter = 0;
+  private       int      positionalParamCounter = 0;
 
   public SQLASTBuilder(final Database database) {
     this.database = database;
@@ -222,10 +220,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public NestedProjection visitNestedProjection(final SQLParser.NestedProjectionContext ctx) {
     final NestedProjection nestedProjection = new NestedProjection(-1);
 
-    @SuppressWarnings("unchecked")
-    final List<NestedProjectionItem> includeItems = (List<NestedProjectionItem>) nestedProjection.includeItems;
-    @SuppressWarnings("unchecked")
-    final List<NestedProjectionItem> excludeItems = (List<NestedProjectionItem>) nestedProjection.excludeItems;
+    @SuppressWarnings("unchecked") final List<NestedProjectionItem> includeItems = (List<NestedProjectionItem>) nestedProjection.includeItems;
+    @SuppressWarnings("unchecked") final List<NestedProjectionItem> excludeItems = (List<NestedProjectionItem>) nestedProjection.excludeItems;
 
     for (final SQLParser.NestedProjectionItemContext itemCtx : ctx.nestedProjectionItem()) {
       final NestedProjectionItem item = (NestedProjectionItem) visit(itemCtx);
@@ -304,17 +300,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       fromItem.identifier = (Identifier) visit(ctx.identifier(0));
     }
 
-    // Handle modifiers if present
+    // Handle modifiers if present - chain them using modifier.next
     if (CollectionUtils.isNotEmpty(ctx.modifier())) {
-      // For now, just handle the first modifier
-      // TODO: Handle modifier chains properly
-      fromItem.modifier = (Modifier) visit(ctx.modifier(0));
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
+
+      fromItem.modifier = firstModifier;
     }
 
-    // TODO: Handle alias (second identifier after AS)
-    // if (ctx.identifier().size() > 1) {
-    //   alias = visit(ctx.identifier(1));
-    // }
+    // Handle alias (second identifier after AS)
+    if (ctx.identifier().size() > 1) {
+      fromItem.alias = (Identifier) visit(ctx.identifier(1));
+    }
 
     return fromItem;
   }
@@ -423,9 +432,29 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final FromItem fromItem = new FromItem(-1);
     fromItem.statement = (Statement) visit(ctx.statement());
 
-    // Handle modifiers if present
+    // Handle modifiers if present - chain them using modifier.next
     if (CollectionUtils.isNotEmpty(ctx.modifier())) {
-      fromItem.modifier = (Modifier) visit(ctx.modifier(0));
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
+
+      fromItem.modifier = firstModifier;
+    }
+
+    // Handle alias if present
+    if (ctx.identifier() != null) {
+      fromItem.alias = (Identifier) visit(ctx.identifier());
     }
 
     return fromItem;
@@ -680,21 +709,29 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * TRUE/FALSE/NULL condition literals - TODO: Implement when needed by tests.
+   * TRUE condition literal - WHERE TRUE.
    */
   @Override
   public BooleanExpression visitTrueCondition(final SQLParser.TrueConditionContext ctx) {
-    throw new UnsupportedOperationException("TRUE literal condition not yet implemented");
+    return BooleanExpression.TRUE;
   }
 
+  /**
+   * FALSE condition literal - WHERE FALSE.
+   */
   @Override
   public BooleanExpression visitFalseCondition(final SQLParser.FalseConditionContext ctx) {
-    throw new UnsupportedOperationException("FALSE literal condition not yet implemented");
+    return BooleanExpression.FALSE;
   }
 
+  /**
+   * NULL condition literal - WHERE NULL.
+   * In SQL, NULL in a boolean context is typically falsy.
+   */
   @Override
   public BooleanExpression visitNullCondition(final SQLParser.NullConditionContext ctx) {
-    throw new UnsupportedOperationException("NULL literal condition not yet implemented");
+    // NULL in boolean context evaluates to FALSE
+    return BooleanExpression.FALSE;
   }
 
   /**
@@ -1010,13 +1047,41 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Array concatenation expression (||).
+   * Grammar: expression SC_OR expression
    */
   @Override
   public Expression visitArrayConcat(final SQLParser.ArrayConcatContext ctx) {
-    final Expression expr = new Expression(-1);
-    // TODO: Implement ArrayConcatExpression properly
-    // For now, just parse as math expression fallback
-    return (Expression) visitChildren(ctx);
+    final ArrayConcatExpression concatExpr = new ArrayConcatExpression(-1);
+
+    // Visit left side
+    final Expression leftExpr = (Expression) visit(ctx.expression(0));
+    final ArrayConcatExpressionElement leftElement = new ArrayConcatExpressionElement(-1);
+    // Copy all fields from Expression to ArrayConcatExpressionElement
+    copyExpressionFields(leftExpr, leftElement);
+    concatExpr.getChildExpressions().add(leftElement);
+
+    // Visit right side
+    final Expression rightExpr = (Expression) visit(ctx.expression(1));
+    final ArrayConcatExpressionElement rightElement = new ArrayConcatExpressionElement(-1);
+    copyExpressionFields(rightExpr, rightElement);
+    concatExpr.getChildExpressions().add(rightElement);
+
+    // Wrap in Expression
+    final Expression result = new Expression(-1);
+    result.arrayConcatExpression = concatExpr;
+    return result;
+  }
+
+  /**
+   * Helper method to copy fields from Expression to ArrayConcatExpressionElement.
+   */
+  private void copyExpressionFields(final Expression from, final ArrayConcatExpressionElement to) {
+    to.mathExpression = from.mathExpression;
+    to.isNull = from.isNull;
+    to.booleanValue = from.booleanValue;
+    to.rid = from.rid;
+    to.whereCondition = from.whereCondition;
+    to.json = from.json;
   }
 
   /**
@@ -1101,6 +1166,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * JSON array visitor - handles [json, json, ...].
+   * Grammar: jsonArray : LBRACKET (json (COMMA json)*)? RBRACKET
+   * Used in INSERT/CREATE VERTEX CONTENT clauses.
+   */
+  @Override
+  public JsonArray visitJsonArray(final SQLParser.JsonArrayContext ctx) {
+    final JsonArray jsonArray = new JsonArray(-1);
+
+    if (ctx.json() != null) {
+      for (final SQLParser.JsonContext jsonCtx : ctx.json()) {
+        jsonArray.items.add((Json) visit(jsonCtx));
+      }
+    }
+
+    return jsonArray;
+  }
+
+  /**
    * Map literal as baseExpression alternative - handles {} in expressions.
    * Grammar: baseExpression : mapLiteral # mapLit
    */
@@ -1134,8 +1217,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       if (ctx.mapEntry() != null) {
         for (final SQLParser.MapEntryContext entryCtx : ctx.mapEntry()) {
-        final JsonItem item = (JsonItem) visit(entryCtx);
-        json.items.add(item);
+          final JsonItem item = (JsonItem) visit(entryCtx);
+          json.items.add(item);
         }
       }
 
@@ -1203,8 +1286,33 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MathExpression visitUnary(final SQLParser.UnaryContext ctx) {
-    // TODO: Implement unary operations when needed
-    throw new UnsupportedOperationException("Unary operations not yet implemented");
+    final MathExpression innerExpr = (MathExpression) visit(ctx.mathExpression());
+
+    if (ctx.PLUS() != null) {
+      // Unary plus: just return the expression as-is
+      return innerExpr;
+    } else if (ctx.MINUS() != null) {
+      // Unary minus: create 0 - expression
+      // Create a MathExpression with zero and the MINUS operator
+      final MathExpression result = new MathExpression(-1);
+
+      // Create zero expression (BaseExpression with PInteger(0))
+      final MathExpression zeroExpr = new MathExpression(-1);
+      final BaseExpression baseZero = new BaseExpression(-1);
+      final PInteger zero = new PInteger(-1);
+      zero.setValue(0);
+      baseZero.number = zero;
+      zeroExpr.childExpressions.add(baseZero);
+
+      // Add children and operator
+      result.childExpressions.add(zeroExpr);
+      result.childExpressions.add(innerExpr);
+      result.operators.add(MathExpression.Operator.MINUS);
+
+      return result;
+    }
+
+    throw new CommandSQLParsingException("Unknown unary operator");
   }
 
   /**
@@ -1560,7 +1668,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       funcCall.name = funcName;
 
       // Parameters (using reflection for protected field)
-            if (ctx.STAR() != null) {
+      if (ctx.STAR() != null) {
         // Handle COUNT(*), SUM(*), etc. - create a parameter representing *
         final List<Expression> params = new ArrayList<>();
         final Expression starExpr = new Expression(-1);
@@ -1688,7 +1796,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Create a Modifier for an array selector context.
-   *
+   * <p>
    * Note: visitArraySingleSelector can return ArraySelector OR ArrayRangeSelector
    * (when the selector contains INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE).
    */
@@ -1733,7 +1841,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Create a Modifier for a method call context.
    * Grammar: methodCall: DOT identifier LPAREN (expression (COMMA expression)*)? RPAREN
-   *
+   * <p>
    * Example: type.substring(0,1) creates a Modifier with a MethodCall
    */
   private Modifier createModifierForMethodCall(final SQLParser.MethodCallContext methodCtx) {
@@ -2477,17 +2585,34 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       ops.type = UpdateOperations.TYPE_MERGE;
       // MERGE uses json field for expression
       final Expression expr = (Expression) visit(ctx.expression());
-      // TODO: Need to convert expression to Json if it's a json literal
-      // For now, just store as json field
+
+      // Extract Json from expression
+      // JSON literals can be in expr.json directly OR nested in mathExpression
       if (expr.json != null) {
+        // Direct JSON literal from jsonLiteral alternative
         ops.json = expr.json;
+      } else if (expr.mathExpression instanceof BaseExpression) {
+        // JSON literal parsed as baseExpression mapLit alternative
+        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+        if (baseExpr.expression != null && baseExpr.expression.json != null) {
+          ops.json = baseExpr.expression.json;
+        }
       }
     } else if (ctx.CONTENT() != null) {
       ops.type = UpdateOperations.TYPE_CONTENT;
       // CONTENT also uses json field
       final Expression expr = (Expression) visit(ctx.expression());
+
+      // Extract Json from expression (same logic as MERGE)
       if (expr.json != null) {
+        // Direct JSON literal from jsonLiteral alternative
         ops.json = expr.json;
+      } else if (expr.mathExpression instanceof BaseExpression) {
+        // JSON literal parsed as baseExpression mapLit alternative
+        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+        if (baseExpr.expression != null && baseExpr.expression.json != null) {
+          ops.json = baseExpr.expression.json;
+        }
       }
     }
 
@@ -2656,14 +2781,82 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit CREATE VERTEX (instance) statement - TODO: Full implementation pending.
-   * For now returns a basic statement to prevent null pointer.
+   * Visit CREATE VERTEX (instance) statement.
+   * Grammar: CREATE VERTEX identifier? (VALUES | SET | CONTENT)?
    */
   @Override
   public CreateVertexStatement visitCreateVertexStmt(final SQLParser.CreateVertexStmtContext ctx) {
-    // Return basic statement - full implementation requires access to protected fields
-    // TODO: Use reflection or find proper API to set fields
     final CreateVertexStatement stmt = new CreateVertexStatement(-1);
+    final SQLParser.CreateVertexBodyContext bodyCtx = ctx.createVertexBody();
+
+    try {
+      // Set targetType (vertex type identifier) - first identifier in the body
+      if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()) {
+        // First identifier is the target type
+        stmt.targetType = (Identifier) visit(bodyCtx.identifier(0));
+      }
+
+      // Create InsertBody if we have VALUES, SET, or CONTENT clauses
+      if (bodyCtx.VALUES() != null || bodyCtx.SET() != null || bodyCtx.CONTENT() != null) {
+        final InsertBody body = new InsertBody(-1);
+
+        // Handle VALUES clause - (field1, field2) VALUES (val1, val2), (val3, val4)
+        if (bodyCtx.VALUES() != null) {
+          // Build identifier list from identifiers (skipping first if it's target type)
+          final int startIdx = (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty() && stmt.targetType != null) ? 1 : 0;
+          if (bodyCtx.identifier() != null && bodyCtx.identifier().size() > startIdx) {
+            body.identifierList = new ArrayList<>();
+            for (int i = startIdx; i < bodyCtx.identifier().size(); i++) {
+              body.identifierList.add((Identifier) visit(bodyCtx.identifier(i)));
+            }
+          }
+
+          // Build value expressions list
+          if (bodyCtx.expression() != null && !bodyCtx.expression().isEmpty()) {
+            body.valueExpressions = new ArrayList<>();
+
+            // Group expressions by VALUES rows
+            // Each row has same number of expressions as identifierList
+            final int colCount = body.identifierList != null ? body.identifierList.size() : 0;
+            if (colCount > 0) {
+              int exprIdx = 0;
+              while (exprIdx < bodyCtx.expression().size()) {
+                final List<Expression> row = new ArrayList<>();
+                for (int i = 0; i < colCount && exprIdx < bodyCtx.expression().size(); i++) {
+                  row.add((Expression) visit(bodyCtx.expression(exprIdx++)));
+                }
+                body.valueExpressions.add(row);
+              }
+            }
+          }
+        }
+        // Handle SET clause - list of updateItems
+        else if (bodyCtx.SET() != null && bodyCtx.updateItem() != null) {
+          body.setExpressions = new ArrayList<>();
+          for (final SQLParser.UpdateItemContext updateItemCtx : bodyCtx.updateItem()) {
+            // Create InsertSetExpression from updateItem
+            final InsertSetExpression setExpr = new InsertSetExpression();
+            setExpr.left = (Identifier) visit(updateItemCtx.identifier());
+            setExpr.right = (Expression) visit(updateItemCtx.expression());
+            body.setExpressions.add(setExpr);
+          }
+        }
+        // Handle CONTENT clause - direct json or jsonArray (same as INSERT)
+        else if (bodyCtx.CONTENT() != null) {
+          if (bodyCtx.json() != null) {
+            body.contentJson = (Json) visit(bodyCtx.json());
+          } else if (bodyCtx.jsonArray() != null) {
+            body.contentArray = (JsonArray) visit(bodyCtx.jsonArray());
+          }
+        }
+
+        stmt.insertBody = body;
+      }
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build CREATE VERTEX statement: " + e.getMessage(), e);
+    }
+
     return stmt;
   }
 
@@ -2775,11 +2968,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     for (final SQLParser.IndexPropertyContext propCtx : bodyCtx.indexProperty()) {
       final CreateIndexStatement.Property prop = new CreateIndexStatement.Property();
       prop.name = (Identifier) visit(propCtx.identifier());
-      // TODO: Handle BY KEY/VALUE if needed
+
+      // Handle BY KEY/VALUE syntax
+      if (propCtx.BY() != null) {
+        if (propCtx.KEY() != null) {
+          prop.byKey = true;
+        } else if (propCtx.VALUE() != null) {
+          prop.byValue = true;
+        }
+      }
+
       stmt.propertyList.add(prop);
     }
 
-    // Index type (UNIQUE, NOTUNIQUE, FULL_TEXT)
+    // Index type (UNIQUE, NOTUNIQUE, FULL_TEXT, LSM_VECTOR, or custom identifier)
     if (bodyCtx.indexType() != null) {
       if (bodyCtx.indexType().UNIQUE() != null) {
         stmt.type = new Identifier("UNIQUE");
@@ -2787,6 +2989,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.type = new Identifier("NOTUNIQUE");
       } else if (bodyCtx.indexType().FULL_TEXT() != null) {
         stmt.type = new Identifier("FULL_TEXT");
+      } else if (bodyCtx.indexType().identifier() != null) {
+        // Handle custom index types like LSM_VECTOR
+        stmt.type = (Identifier) visit(bodyCtx.indexType().identifier());
       }
     }
 
@@ -3157,50 +3362,128 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit CHECK DATABASE statement.
+   * Grammar: CHECK DATABASE (TYPE ident (COMMA ident)*)? (BUCKET (ident|int) (COMMA (ident|int))*)? (FIX)? (COMPRESS)?
    */
   @Override
   public CheckDatabaseStatement visitCheckDatabaseStmt(final SQLParser.CheckDatabaseStmtContext ctx) {
     final CheckDatabaseStatement stmt = new CheckDatabaseStatement(-1);
-    // CHECK DATABASE has no parameters in the simple grammar
-    // Extended syntax with FIX, COMPRESS, TYPE, BUCKET is TODO
+    final SQLParser.CheckDatabaseStatementContext checkCtx = ctx.checkDatabaseStatement();
+
+    // Parse TYPE clause - list of type identifiers
+    if (checkCtx.TYPE() != null) {
+      for (final SQLParser.IdentifierContext identCtx : checkCtx.identifier()) {
+        stmt.types.add((Identifier) visit(identCtx));
+      }
+    }
+
+    // Parse BUCKET clause - list of bucket identifiers or integers
+    if (checkCtx.BUCKET() != null) {
+      // Count how many identifiers we've consumed for TYPE
+      final int typeIdentCount = checkCtx.TYPE() != null ? checkCtx.identifier().size() : 0;
+
+      // BUCKET can be identifier or INTEGER_LITERAL
+      // If we have INTEGER_LITERAL tokens, use them
+      if (checkCtx.INTEGER_LITERAL() != null && !checkCtx.INTEGER_LITERAL().isEmpty()) {
+        for (final org.antlr.v4.runtime.tree.TerminalNode intNode : checkCtx.INTEGER_LITERAL()) {
+          final BucketIdentifier bucketId = new BucketIdentifier(-1);
+          final PInteger pInt = new PInteger(-1);
+          pInt.setValue(Integer.parseInt(intNode.getText()));
+          bucketId.bucketId = pInt;
+          stmt.buckets.add(bucketId);
+        }
+      }
+
+      // Also check for bucket identifiers (non-TYPE identifiers)
+      // All identifiers after TYPE count belong to BUCKET
+      final List<SQLParser.IdentifierContext> allIdents = checkCtx.identifier();
+      if (allIdents != null && allIdents.size() > typeIdentCount) {
+        for (int i = typeIdentCount; i < allIdents.size(); i++) {
+          final BucketIdentifier bucketId = new BucketIdentifier(-1);
+          bucketId.bucketName = (Identifier) visit(allIdents.get(i));
+          stmt.buckets.add(bucketId);
+        }
+      }
+    }
+
+    // Parse FIX flag
+    if (checkCtx.FIX() != null) {
+      stmt.fix = true;
+    }
+
+    // Parse COMPRESS flag
+    if (checkCtx.COMPRESS() != null) {
+      stmt.compress = true;
+    }
+
     return stmt;
   }
 
   /**
-   * Visit ALIGN DATABASE statement - TODO: Implement when needed.
+   * Visit ALIGN DATABASE statement.
+   * Grammar: ALIGN DATABASE
    */
   @Override
-  public Statement visitAlignDatabaseStmt(final SQLParser.AlignDatabaseStmtContext ctx) {
-    throw new UnsupportedOperationException("ALIGN DATABASE statement not yet implemented");
+  public AlignDatabaseStatement visitAlignDatabaseStmt(final SQLParser.AlignDatabaseStmtContext ctx) {
+    return new AlignDatabaseStatement(-1);
   }
 
   /**
-   * Visit IMPORT DATABASE statement - TODO: Implement when needed.
+   * Visit IMPORT DATABASE statement.
+   * Grammar: IMPORT DATABASE STRING_LITERAL
    */
   @Override
-  public Statement visitImportDatabaseStmt(final SQLParser.ImportDatabaseStmtContext ctx) {
-    throw new UnsupportedOperationException("IMPORT DATABASE statement not yet implemented");
+  public ImportDatabaseStatement visitImportDatabaseStmt(final SQLParser.ImportDatabaseStmtContext ctx) {
+    final ImportDatabaseStatement stmt = new ImportDatabaseStatement(-1);
+    final SQLParser.ImportDatabaseStatementContext importCtx = ctx.importDatabaseStatement();
+
+    // Parse URL from STRING_LITERAL
+    if (importCtx.STRING_LITERAL() != null) {
+      final String urlString = removeQuotes(importCtx.STRING_LITERAL().getText());
+      stmt.url = new Url(urlString);
+    }
+
+    return stmt;
   }
 
   /**
-   * Visit EXPORT DATABASE statement - TODO: Implement when needed.
+   * Visit EXPORT DATABASE statement.
+   * Grammar: EXPORT DATABASE STRING_LITERAL
    */
   @Override
-  public Statement visitExportDatabaseStmt(final SQLParser.ExportDatabaseStmtContext ctx) {
-    throw new UnsupportedOperationException("EXPORT DATABASE statement not yet implemented");
+  public ExportDatabaseStatement visitExportDatabaseStmt(final SQLParser.ExportDatabaseStmtContext ctx) {
+    final ExportDatabaseStatement stmt = new ExportDatabaseStatement(-1);
+    final SQLParser.ExportDatabaseStatementContext exportCtx = ctx.exportDatabaseStatement();
+
+    // Parse URL from STRING_LITERAL
+    if (exportCtx.STRING_LITERAL() != null) {
+      final String urlString = removeQuotes(exportCtx.STRING_LITERAL().getText());
+      stmt.url = new Url(urlString);
+    }
+
+    return stmt;
   }
 
   /**
-   * Visit BACKUP DATABASE statement - TODO: Implement when needed.
+   * Visit BACKUP DATABASE statement.
+   * Grammar: BACKUP DATABASE STRING_LITERAL
    */
   @Override
-  public Statement visitBackupDatabaseStmt(final SQLParser.BackupDatabaseStmtContext ctx) {
-    throw new UnsupportedOperationException("BACKUP DATABASE statement not yet implemented");
+  public BackupDatabaseStatement visitBackupDatabaseStmt(final SQLParser.BackupDatabaseStmtContext ctx) {
+    final BackupDatabaseStatement stmt = new BackupDatabaseStatement(-1);
+    final SQLParser.BackupDatabaseStatementContext backupCtx = ctx.backupDatabaseStatement();
+
+    // Parse URL from STRING_LITERAL
+    if (backupCtx.STRING_LITERAL() != null) {
+      final String urlString = removeQuotes(backupCtx.STRING_LITERAL().getText());
+      stmt.url = new Url(urlString);
+    }
+
+    return stmt;
   }
 
   /**
    * Visit array single selector: [0] or [expression] or [:param] or [#rid]
-   *
+   * <p>
    * Special handling: If expression is INTEGER_RANGE or ELLIPSIS_INTEGER_RANGE,
    * create ArrayRangeSelector instead (JavaCC compatibility).
    */
@@ -3224,23 +3507,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // These should create ArrayRangeSelector, not ArraySelector
         final SQLParser.ExpressionContext exprCtx = ctx.expression();
 
-        if (exprCtx instanceof SQLParser.MathExprContext) {
-          final SQLParser.MathExprContext mathCtx = (SQLParser.MathExprContext) exprCtx;
+        if (exprCtx instanceof final SQLParser.MathExprContext mathCtx) {
           final SQLParser.MathExpressionContext mathExprCtx = mathCtx.mathExpression();
 
-          if (mathExprCtx instanceof SQLParser.BaseContext) {
-            final SQLParser.BaseContext baseCtx = (SQLParser.BaseContext) mathExprCtx;
+          if (mathExprCtx instanceof final SQLParser.BaseContext baseCtx) {
             final SQLParser.BaseExpressionContext baseExprCtx = baseCtx.baseExpression();
 
             // Check for INTEGER_RANGE (0..3)
-            if (baseExprCtx instanceof SQLParser.IntegerRangeContext) {
-              final SQLParser.IntegerRangeContext rangeCtx = (SQLParser.IntegerRangeContext) baseExprCtx;
+            if (baseExprCtx instanceof final SQLParser.IntegerRangeContext rangeCtx) {
               return createRangeSelectorFromToken(rangeCtx.INTEGER_RANGE().getText(), false);
             }
 
             // Check for ELLIPSIS_INTEGER_RANGE (0...3)
-            if (baseExprCtx instanceof SQLParser.EllipsisIntegerRangeContext) {
-              final SQLParser.EllipsisIntegerRangeContext rangeCtx = (SQLParser.EllipsisIntegerRangeContext) baseExprCtx;
+            if (baseExprCtx instanceof final SQLParser.EllipsisIntegerRangeContext rangeCtx) {
               return createRangeSelectorFromToken(rangeCtx.ELLIPSIS_INTEGER_RANGE().getText(), true);
             }
           }
@@ -3289,7 +3568,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Array binary condition selector visitor - handles [expr LIKE expr], [expr IN expr], etc.
    * Grammar: LBRACKET expression comparisonOperator expression RBRACKET
-   *
+   * <p>
    * Note: This is different from arrayFilterSelector which is [operator expr].
    * This handles the full binary condition [leftExpr operator rightExpr] for operators like LIKE.
    */
@@ -3458,7 +3737,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       selector.included = false;
 
       // Handle FROM expression (optional)
-      if (ctx.expression().size() >= 1 && ctx.expression(0) != null) {
+      if (!ctx.expression().isEmpty() && ctx.expression(0) != null) {
         final Expression fromExpr = (Expression) visit(ctx.expression(0));
         final Integer fromInt = tryExtractIntegerLiteral(fromExpr);
         if (fromInt != null) {
@@ -3466,8 +3745,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           selector.from = fromInt;
         } else {
           // Complex expression - use fromSelector
-          final ArrayNumberSelector fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
-          selector.fromSelector = fromSelector;
+          selector.fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
         }
       }
 
@@ -3507,7 +3785,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       selector.included = true;
 
       // Handle FROM expression (optional)
-      if (ctx.expression().size() >= 1 && ctx.expression(0) != null) {
+      if (!ctx.expression().isEmpty() && ctx.expression(0) != null) {
         final Expression fromExpr = (Expression) visit(ctx.expression(0));
         final Integer fromInt = tryExtractIntegerLiteral(fromExpr);
         if (fromInt != null) {
@@ -3515,8 +3793,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           selector.from = fromInt;
         } else {
           // Complex expression - use fromSelector
-          final ArrayNumberSelector fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
-          selector.fromSelector = fromSelector;
+          selector.fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
         }
       }
 
@@ -3586,6 +3863,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return selector;
+  }
+
+  /**
+   * Helper method to remove quotes from string literals.
+   * Handles both single and double quotes.
+   */
+  private String removeQuotes(final String str) {
+    if (str == null || str.length() < 2) {
+      return str;
+    }
+
+    if ((str.startsWith("\"") && str.endsWith("\"")) || (str.startsWith("'") && str.endsWith("'"))) {
+      return str.substring(1, str.length() - 1);
+    }
+
+    return str;
   }
 
 }

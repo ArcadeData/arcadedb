@@ -387,7 +387,7 @@ indexProperty
     ;
 
 indexType
-    : UNIQUE | NOTUNIQUE | FULL_TEXT
+    : UNIQUE | NOTUNIQUE | FULL_TEXT | identifier
     ;
 
 /**
@@ -400,11 +400,16 @@ createBucketBody
 
 /**
  * CREATE VERTEX statement (instance creation)
+ * Supports VALUES, SET, and CONTENT clauses similar to INSERT
  */
 createVertexBody
     : identifier?
-      (SET updateItem (COMMA updateItem)*)?
-      (CONTENT expression)?
+      ( LPAREN identifier (COMMA identifier)* RPAREN
+        VALUES LPAREN expression (COMMA expression)* RPAREN
+        (COMMA LPAREN expression (COMMA expression)* RPAREN)*
+      | SET updateItem (COMMA updateItem)*
+      | CONTENT (json | jsonArray)
+      )?
     ;
 
 /**
@@ -579,6 +584,10 @@ backupDatabaseStatement
 
 checkDatabaseStatement
     : CHECK DATABASE
+      (TYPE identifier (COMMA identifier)*)?
+      (BUCKET (identifier | INTEGER_LITERAL) (COMMA (identifier | INTEGER_LITERAL))*)?
+      (FIX)?
+      (COMPRESS)?
     ;
 
 alignDatabaseStatement

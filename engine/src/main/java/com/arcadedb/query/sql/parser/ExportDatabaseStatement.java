@@ -35,7 +35,7 @@ import java.util.*;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
 
-  protected       Url                         url;
+  public          Url                         url;
   protected       Identifier                  format    = new Identifier("jsonl");
   protected       BooleanExpression           overwrite = BooleanExpression.FALSE;
   protected       Expression                  key;

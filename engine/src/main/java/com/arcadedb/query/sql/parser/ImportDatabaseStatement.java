@@ -32,7 +32,7 @@ import java.util.*;
 
 public class ImportDatabaseStatement extends SimpleExecStatement {
 
-  protected       Url                         url;
+  public          Url                         url;
   protected       Expression                  key;
   protected       Expression                  value;
   protected final Map<Expression, Expression> settings = new HashMap<>();

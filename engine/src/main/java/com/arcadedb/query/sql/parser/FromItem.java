@@ -40,6 +40,7 @@ public class FromItem extends SimpleNode {
   public Identifier           identifier;
   public FunctionCall         functionCall;
   public Modifier             modifier;
+  public Identifier           alias;
 
   public FromItem(final int id) {
     super(id);
@@ -110,6 +111,11 @@ public class FromItem extends SimpleNode {
 
     if (modifier != null)
       modifier.toString(params, builder);
+
+    if (alias != null) {
+      builder.append(" AS ");
+      alias.toString(params, builder);
+    }
   }
 
   public Identifier getIdentifier() {
@@ -160,6 +166,10 @@ public class FromItem extends SimpleNode {
     return modifier;
   }
 
+  public Identifier getAlias() {
+    return alias;
+  }
+
   public FromItem copy() {
     final FromItem result = new FromItem(-1);
     if (rids != null) {
@@ -177,6 +187,7 @@ public class FromItem extends SimpleNode {
     result.identifier = identifier == null ? null : identifier.copy();
     result.functionCall = functionCall == null ? null : functionCall.copy();
     result.modifier = modifier == null ? null : modifier.copy();
+    result.alias = alias == null ? null : alias.copy();
     result.resultSet = resultSet == null ? null : resultSet.copy();
 
     return result;
@@ -213,7 +224,9 @@ public class FromItem extends SimpleNode {
       return false;
     if (!Objects.equals(resultSet, oFromItem.resultSet))
       return false;
-    return Objects.equals(modifier, oFromItem.modifier);
+    if (!Objects.equals(modifier, oFromItem.modifier))
+      return false;
+    return Objects.equals(alias, oFromItem.alias);
   }
 
   @Override
@@ -230,6 +243,7 @@ public class FromItem extends SimpleNode {
     result = 31 * result + (functionCall != null ? functionCall.hashCode() : 0);
     result = 31 * result + (resultSet != null ? resultSet.hashCode() : 0);
     result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
+    result = 31 * result + (alias != null ? alias.hashCode() : 0);
     return result;
   }
 
@@ -271,6 +285,10 @@ public class FromItem extends SimpleNode {
 
   public void setModifier(final Modifier modifier) {
     this.modifier = modifier;
+  }
+
+  public void setAlias(final Identifier alias) {
+    this.alias = alias;
   }
 
   public void setInputParams(final List<InputParameter> inputParams) {
