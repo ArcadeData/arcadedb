@@ -341,7 +341,7 @@ createTypeBody
     : identifier
       (IF NOT EXISTS)?
       (EXTENDS identifier)?
-      (BUCKET INTEGER_LITERAL (COMMA INTEGER_LITERAL)*)?
+      (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
     ;
 
@@ -353,8 +353,18 @@ createEdgeTypeBody
       (IF NOT EXISTS)?
       (EXTENDS identifier)?
       UNIDIRECTIONAL?
-      (BUCKET INTEGER_LITERAL (COMMA INTEGER_LITERAL)*)?
+      (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
+    ;
+
+/**
+ * Bucket identifier - can be integer ID, bucket name, or BUCKET:name/BUCKET:id syntax
+ */
+bucketIdentifier
+    : INTEGER_LITERAL
+    | identifier
+    | BUCKET_IDENTIFIER
+    | BUCKET_NUMBER_IDENTIFIER
     ;
 
 /**
@@ -598,16 +608,13 @@ alignDatabaseStatement
 // ============================================================================
 
 defineFunctionStatement
-    : DEFINE FUNCTION identifier LPAREN parameterList? RPAREN LBRACE functionBody RBRACE
+    : DEFINE FUNCTION identifier DOT identifier STRING_LITERAL
+      (PARAMETERS LBRACKET parameterList RBRACKET)?
       (LANGUAGE identifier)?
     ;
 
 parameterList
     : identifier (COMMA identifier)*
-    ;
-
-functionBody
-    : statement*
     ;
 
 // ============================================================================
@@ -643,11 +650,6 @@ indexIdentifier
     | INDEXVALUES_IDENTIFIER
     | INDEXVALUESASC_IDENTIFIER
     | INDEXVALUESDESC_IDENTIFIER
-    ;
-
-bucketIdentifier
-    : BUCKET_IDENTIFIER
-    | BUCKET_NUMBER_IDENTIFIER
     ;
 
 schemaIdentifier
@@ -951,4 +953,5 @@ identifier
     | KEY
     | FORMAT
     | CUSTOM
+    | SKIP
     ;

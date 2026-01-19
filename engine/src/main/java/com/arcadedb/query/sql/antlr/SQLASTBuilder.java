@@ -2038,27 +2038,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit bucket identifier (bucket:name or bucket number).
-   */
-  @Override
-  public Bucket visitBucketIdentifier(final SQLParser.BucketIdentifierContext ctx) {
-    final Bucket bucket = new Bucket(-1);
-
-    if (ctx.BUCKET_IDENTIFIER() != null) {
-      // bucket:name format
-      final String text = ctx.BUCKET_IDENTIFIER().getText();
-      bucket.bucketName = text.substring("bucket:".length());
-    } else if (ctx.BUCKET_NUMBER_IDENTIFIER() != null) {
-      // bucket number format
-      final String text = ctx.BUCKET_NUMBER_IDENTIFIER().getText();
-      final String bucketNumberStr = text.substring("bucket:".length());
-      bucket.bucketNumber = Integer.parseInt(bucketNumberStr);
-    }
-
-    return bucket;
-  }
-
-  /**
    * Visit bucket list (bucket:[name1, name2, ...]).
    */
   @Override
@@ -2409,7 +2388,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.targetBucketName = (Identifier) visit(insertCtx.identifier(1));
       }
     } else if (insertCtx.bucketIdentifier() != null) {
-      stmt.targetBucket = (Bucket) visit(insertCtx.bucketIdentifier());
+      // Convert BucketIdentifier to Bucket
+      final BucketIdentifier bucketId = (BucketIdentifier) visit(insertCtx.bucketIdentifier());
+      final Bucket bucket = new Bucket(-1);
+      if (bucketId.bucketName != null) {
+        bucket.bucketName = bucketId.bucketName.getStringValue();
+      } else if (bucketId.bucketId != null) {
+        bucket.bucketNumber = bucketId.bucketId.getValue().intValue();
+      }
+      stmt.targetBucket = bucket;
     }
 
     // Insert body (VALUES, SET, or CONTENT)
@@ -2620,6 +2607,41 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Visit UPDATE item (identifier [modifier] operator expression).
+   * Grammar: updateItem : identifier modifier? (EQ | PLUSASSIGN | MINUSASSIGN | STARASSIGN | SLASHASSIGN) expression
+   */
+  @Override
+  public UpdateItem visitUpdateItem(final SQLParser.UpdateItemContext ctx) {
+    final UpdateItem item = new UpdateItem(-1);
+
+    // Left side: identifier
+    item.left = (Identifier) visit(ctx.identifier());
+
+    // Left modifier (optional)
+    if (ctx.modifier() != null) {
+      item.leftModifier = (Modifier) visit(ctx.modifier());
+    }
+
+    // Operator
+    if (ctx.EQ() != null) {
+      item.operator = UpdateItem.OPERATOR_EQ;
+    } else if (ctx.PLUSASSIGN() != null) {
+      item.operator = UpdateItem.OPERATOR_PLUSASSIGN;
+    } else if (ctx.MINUSASSIGN() != null) {
+      item.operator = UpdateItem.OPERATOR_MINUSASSIGN;
+    } else if (ctx.STARASSIGN() != null) {
+      item.operator = UpdateItem.OPERATOR_STARASSIGN;
+    } else if (ctx.SLASHASSIGN() != null) {
+      item.operator = UpdateItem.OPERATOR_SLASHASSIGN;
+    }
+
+    // Right side: expression
+    item.right = (Expression) visit(ctx.expression());
+
+    return item;
+  }
+
+  /**
    * Visit DELETE statement.
    */
   @Override
@@ -2652,6 +2674,39 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   // DDL STATEMENT VISITORS - CREATE
 
   /**
+   * Visit bucket identifier (integer ID, bucket name, or BUCKET:name/BUCKET:id syntax).
+   * Grammar: bucketIdentifier : INTEGER_LITERAL | identifier | BUCKET_IDENTIFIER | BUCKET_NUMBER_IDENTIFIER
+   */
+  @Override
+  public BucketIdentifier visitBucketIdentifier(final SQLParser.BucketIdentifierContext ctx) {
+    final BucketIdentifier bucketId = new BucketIdentifier(-1);
+
+    if (ctx.INTEGER_LITERAL() != null) {
+      // Bucket ID (integer)
+      final PInteger pInt = new PInteger(-1);
+      pInt.setValue(Integer.parseInt(ctx.INTEGER_LITERAL().getText()));
+      bucketId.bucketId = pInt;
+    } else if (ctx.identifier() != null) {
+      // Bucket name (identifier)
+      bucketId.bucketName = (Identifier) visit(ctx.identifier());
+    } else if (ctx.BUCKET_IDENTIFIER() != null) {
+      // BUCKET:name format
+      final String text = ctx.BUCKET_IDENTIFIER().getText();
+      final String bucketName = text.substring("bucket:".length());
+      bucketId.bucketName = new Identifier(bucketName);
+    } else if (ctx.BUCKET_NUMBER_IDENTIFIER() != null) {
+      // BUCKET:123 format
+      final String text = ctx.BUCKET_NUMBER_IDENTIFIER().getText();
+      final String bucketNumberStr = text.substring("bucket:".length());
+      final PInteger pInt = new PInteger(-1);
+      pInt.setValue(Integer.parseInt(bucketNumberStr));
+      bucketId.bucketId = pInt;
+    }
+
+    return bucketId;
+  }
+
+  /**
    * Visit CREATE DOCUMENT TYPE statement.
    */
   @Override
@@ -2671,23 +2726,36 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.supertypes.add((Identifier) visit(bodyCtx.identifier(1)));
     }
 
-    // BUCKET clause (list of bucket numbers)
-    if (bodyCtx.BUCKET() != null && bodyCtx.INTEGER_LITERAL() != null) {
+    // BUCKET clause (list of bucket identifiers)
+    if (bodyCtx.BUCKET() != null && !bodyCtx.bucketIdentifier().isEmpty()) {
       stmt.buckets = new ArrayList<>();
-      for (final org.antlr.v4.runtime.tree.TerminalNode bucketNode : bodyCtx.INTEGER_LITERAL()) {
-        final BucketIdentifier bucketIdentifier = new BucketIdentifier(-1);
-        final PInteger pInt = new PInteger(-1);
-        pInt.setValue(Integer.parseInt(bucketNode.getText()));
-        bucketIdentifier.bucketId = pInt;
-        stmt.buckets.add(bucketIdentifier);
+      for (final SQLParser.BucketIdentifierContext bucketCtx : bodyCtx.bucketIdentifier()) {
+        stmt.buckets.add((BucketIdentifier) visit(bucketCtx));
       }
     }
 
     // BUCKETS clause (total number)
-    if (bodyCtx.BUCKETS() != null && bodyCtx.INTEGER_LITERAL() != null) {
-      final PInteger pInt = new PInteger(-1);
-      pInt.setValue(Integer.parseInt(bodyCtx.INTEGER_LITERAL(0).getText()));
-      stmt.totalBucketNo = pInt;
+    if (bodyCtx.BUCKETS() != null) {
+      // Walk through all children to find INTEGER_LITERAL after BUCKETS token
+      boolean foundBuckets = false;
+      for (int i = 0; i < bodyCtx.getChildCount(); i++) {
+        final org.antlr.v4.runtime.tree.ParseTree child = bodyCtx.getChild(i);
+        if (foundBuckets && child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+            final PInteger pInt = new PInteger(-1);
+            pInt.setValue(Integer.parseInt(termNode.getText()));
+            stmt.totalBucketNo = pInt;
+            break;
+          }
+        }
+        if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
+            foundBuckets = true;
+          }
+        }
+      }
     }
 
     return stmt;
@@ -2713,23 +2781,36 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.supertypes.add((Identifier) visit(bodyCtx.identifier(1)));
     }
 
-    // BUCKET clause
-    if (bodyCtx.BUCKET() != null && bodyCtx.INTEGER_LITERAL() != null) {
+    // BUCKET clause (list of bucket identifiers)
+    if (bodyCtx.BUCKET() != null && !bodyCtx.bucketIdentifier().isEmpty()) {
       stmt.buckets = new ArrayList<>();
-      for (final org.antlr.v4.runtime.tree.TerminalNode bucketNode : bodyCtx.INTEGER_LITERAL()) {
-        final BucketIdentifier bucketIdentifier = new BucketIdentifier(-1);
-        final PInteger pInt = new PInteger(-1);
-        pInt.setValue(Integer.parseInt(bucketNode.getText()));
-        bucketIdentifier.bucketId = pInt;
-        stmt.buckets.add(bucketIdentifier);
+      for (final SQLParser.BucketIdentifierContext bucketCtx : bodyCtx.bucketIdentifier()) {
+        stmt.buckets.add((BucketIdentifier) visit(bucketCtx));
       }
     }
 
-    // BUCKETS clause
-    if (bodyCtx.BUCKETS() != null && bodyCtx.INTEGER_LITERAL() != null) {
-      final PInteger pInt = new PInteger(-1);
-      pInt.setValue(Integer.parseInt(bodyCtx.INTEGER_LITERAL(0).getText()));
-      stmt.totalBucketNo = pInt;
+    // BUCKETS clause (total number)
+    if (bodyCtx.BUCKETS() != null) {
+      // Walk through all children to find INTEGER_LITERAL after BUCKETS token
+      boolean foundBuckets = false;
+      for (int i = 0; i < bodyCtx.getChildCount(); i++) {
+        final org.antlr.v4.runtime.tree.ParseTree child = bodyCtx.getChild(i);
+        if (foundBuckets && child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+            final PInteger pInt = new PInteger(-1);
+            pInt.setValue(Integer.parseInt(termNode.getText()));
+            stmt.totalBucketNo = pInt;
+            break;
+          }
+        }
+        if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
+            foundBuckets = true;
+          }
+        }
+      }
     }
 
     return stmt;
@@ -2758,23 +2839,36 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // UNIDIRECTIONAL flag
     stmt.unidirectional = bodyCtx.UNIDIRECTIONAL() != null;
 
-    // BUCKET clause
-    if (bodyCtx.BUCKET() != null && bodyCtx.INTEGER_LITERAL() != null) {
+    // BUCKET clause (list of bucket identifiers)
+    if (bodyCtx.BUCKET() != null && !bodyCtx.bucketIdentifier().isEmpty()) {
       stmt.buckets = new ArrayList<>();
-      for (final org.antlr.v4.runtime.tree.TerminalNode bucketNode : bodyCtx.INTEGER_LITERAL()) {
-        final BucketIdentifier bucketIdentifier = new BucketIdentifier(-1);
-        final PInteger pInt = new PInteger(-1);
-        pInt.setValue(Integer.parseInt(bucketNode.getText()));
-        bucketIdentifier.bucketId = pInt;
-        stmt.buckets.add(bucketIdentifier);
+      for (final SQLParser.BucketIdentifierContext bucketCtx : bodyCtx.bucketIdentifier()) {
+        stmt.buckets.add((BucketIdentifier) visit(bucketCtx));
       }
     }
 
-    // BUCKETS clause
-    if (bodyCtx.BUCKETS() != null && bodyCtx.INTEGER_LITERAL() != null) {
-      final PInteger pInt = new PInteger(-1);
-      pInt.setValue(Integer.parseInt(bodyCtx.INTEGER_LITERAL(0).getText()));
-      stmt.totalBucketNo = pInt;
+    // BUCKETS clause (total number)
+    if (bodyCtx.BUCKETS() != null) {
+      // Walk through all children to find INTEGER_LITERAL after BUCKETS token
+      boolean foundBuckets = false;
+      for (int i = 0; i < bodyCtx.getChildCount(); i++) {
+        final org.antlr.v4.runtime.tree.ParseTree child = bodyCtx.getChild(i);
+        if (foundBuckets && child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+            final PInteger pInt = new PInteger(-1);
+            pInt.setValue(Integer.parseInt(termNode.getText()));
+            stmt.totalBucketNo = pInt;
+            break;
+          }
+        }
+        if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
+            foundBuckets = true;
+          }
+        }
+      }
     }
 
     return stmt;
@@ -3011,6 +3105,68 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.ENGINE() != null && bodyCtx.identifier().size() > 2) {
       // The engine identifier is the last one
       stmt.engine = (Identifier) visit(bodyCtx.identifier(bodyCtx.identifier().size() - 1));
+    }
+
+    return stmt;
+  }
+
+  /**
+   * Visit CREATE BUCKET statement.
+   * Grammar: CREATE BUCKET identifier (IF NOT EXISTS)?
+   */
+  @Override
+  public CreateBucketStatement visitCreateBucketStmt(final SQLParser.CreateBucketStmtContext ctx) {
+    final CreateBucketStatement stmt = new CreateBucketStatement(-1);
+    final SQLParser.CreateBucketBodyContext bodyCtx = ctx.createBucketBody();
+
+    // Bucket name
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+
+    // IF NOT EXISTS flag
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+
+    return stmt;
+  }
+
+  /**
+   * Visit DEFINE FUNCTION statement.
+   * Grammar: DEFINE FUNCTION identifier DOT identifier STRING_LITERAL (PARAMETERS LBRACKET parameterList RBRACKET)? (LANGUAGE identifier)?
+   */
+  @Override
+  public DefineFunctionStatement visitDefineFunctionStatement(final SQLParser.DefineFunctionStatementContext ctx) {
+    final DefineFunctionStatement stmt = new DefineFunctionStatement(-1);
+
+    // Library name (first identifier)
+    stmt.libraryName = (Identifier) visit(ctx.identifier(0));
+
+    // Function name (second identifier)
+    stmt.functionName = (Identifier) visit(ctx.identifier(1));
+
+    // Code (quoted string)
+    stmt.codeQuoted = ctx.STRING_LITERAL().getText();
+
+    // Code (unquoted - remove surrounding quotes)
+    String codeText = ctx.STRING_LITERAL().getText();
+    if (codeText.startsWith("\"") && codeText.endsWith("\"")) {
+      stmt.code = codeText.substring(1, codeText.length() - 1);
+    } else if (codeText.startsWith("'") && codeText.endsWith("'")) {
+      stmt.code = codeText.substring(1, codeText.length() - 1);
+    } else {
+      stmt.code = codeText;
+    }
+
+    // Parameters (optional)
+    if (ctx.parameterList() != null) {
+      stmt.parameters = new ArrayList<>();
+      for (final SQLParser.IdentifierContext idCtx : ctx.parameterList().identifier()) {
+        stmt.parameters.add((Identifier) visit(idCtx));
+      }
+    }
+
+    // Language (optional)
+    if (ctx.LANGUAGE() != null) {
+      // The identifier after LANGUAGE is at index 2 (after library and function names)
+      stmt.language = (Identifier) visit(ctx.identifier(2));
     }
 
     return stmt;

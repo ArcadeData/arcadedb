@@ -40,10 +40,10 @@ public class UpdateItem extends SimpleNode {
   public static final int OPERATOR_STARASSIGN  = 3;
   public static final int OPERATOR_SLASHASSIGN = 4;
 
-  protected Identifier left;
-  protected Modifier   leftModifier;
-  protected int        operator;
-  protected Expression right;
+  public Identifier left;
+  public Modifier   leftModifier;
+  public int        operator;
+  public Expression right;
 
   public UpdateItem(final int id) {
     super(id);
