@@ -73,9 +73,10 @@ public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationSer
       });
   }
 
+  @Override
   @Test
   @Timeout(value = 15, unit = TimeUnit.MINUTES)
-  void testReplication() throws Exception {
+  public void replication() throws Exception {
     assertThatThrownBy(super::replication)
         .isInstanceOf(QuorumNotReachedException.class);
   }

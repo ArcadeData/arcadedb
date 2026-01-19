@@ -124,8 +124,19 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     testLog("Done");
 
     // Wait for cluster to stabilize before verification
-    // This ensures all servers are online, replication queues are empty, and replicas are connected
-    waitForClusterStable(getServerCount());
+    // Count only servers that are currently online (some may have been stopped during test)
+    int onlineServerCount = 0;
+    for (int i = 0; i < getServerCount(); i++) {
+      final ArcadeDBServer server = getServer(i);
+      if (server != null && server.getStatus() == ArcadeDBServer.Status.ONLINE) {
+        onlineServerCount++;
+      }
+    }
+
+    // Only wait for cluster stabilization if we have online servers
+    if (onlineServerCount > 0) {
+      waitForClusterStable(onlineServerCount);
+    }
 
     assertThat(db.countType(VERTEX1_TYPE_NAME, true))
         .as("Check for vertex count for server" + 0)

@@ -60,14 +60,20 @@ public class HATestHelpers {
         .atMost(HATestTimeouts.CLUSTER_STABILIZATION_TIMEOUT)
         .pollInterval(Duration.ofMillis(500))  // Match original poll interval for performance
         .until(() -> {
-          // Check all servers are ONLINE
+          // Count only ONLINE servers (some may be intentionally stopped in quorum tests)
+          int onlineCount = 0;
           for (ArcadeDBServer server : servers) {
-            if (server == null || server.getStatus() != ArcadeDBServer.Status.ONLINE) {
-              return false;
+            if (server != null && server.getStatus() == ArcadeDBServer.Status.ONLINE) {
+              onlineCount++;
             }
           }
 
-          // Find leader
+          // If no servers are online, cluster cannot be stable
+          if (onlineCount == 0) {
+            return false;
+          }
+
+          // Find leader among online servers
           ArcadeDBServer leader = getLeader(servers);
           if (leader == null) {
             return false;
@@ -79,6 +85,7 @@ public class HATestHelpers {
           }
 
           // Check all expected replicas are connected
+          // expectedReplicaCount is the number of replicas (not including leader)
           return leader.getHA().getOnlineReplicas() >= expectedReplicaCount;
         });
   }
