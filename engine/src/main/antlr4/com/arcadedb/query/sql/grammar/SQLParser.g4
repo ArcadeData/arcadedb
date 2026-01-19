@@ -219,18 +219,51 @@ matchPathItem
     ;
 
 matchMethod
-    : DOT matchFilter                                                      // .out('Friend')
-    | (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchFilter?  // -Friend-> or <-Friend- or -Friend-
+    : DOT matchMethodCall matchProperties?                                     // .out('Friend'){as:x}
+    | DOT LPAREN nestedMatchPath RPAREN matchProperties?                       // .(out().in(){...}){as:x}
+    | (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchProperties?  // -Friend->{as:x}
+    | DECR GT matchProperties?                                                 // -->{as:x} anonymous outgoing
+    | ARROW_LEFT MINUS matchProperties?                                        // <--{as:x} anonymous incoming
+    | DECR matchProperties?                                                    // --{as:x} anonymous bidirectional
+    ;
+
+nestedMatchPath
+    : matchMethodCall (DOT matchMethodCall matchProperties?)+
+    ;
+
+matchMethodCall
+    : functionCall
+    | identifier
+    ;
+
+matchProperties
+    : LBRACE (matchFilterItem (COMMA matchFilterItem)*)? RBRACE
     ;
 
 matchFilter
     : functionCall
     | identifier
-    | LBRACE matchFilterItem (COMMA matchFilterItem)* RBRACE
+    | matchProperties
     ;
 
 matchFilterItem
-    : identifier COLON expression
+    : matchFilterItemKey COLON expression
+    ;
+
+matchFilterItemKey
+    : identifier
+    | TYPE        // type: Person
+    | TYPES       // types: [Person, Company]
+    | BUCKET      // bucket: bucketName
+    | AS          // as: alias
+    | WHERE       // where: (condition)
+    | WHILE       // while: (condition)
+    | MAXDEPTH    // maxdepth: 3
+    | OPTIONAL    // optional: true
+    | CLASS       // class: Person (legacy)
+    | RID         // rid: #1:1
+    | PATH_ALIAS  // pathAlias: varName
+    | DEPTH_ALIAS // depthAlias: varName
     ;
 
 traverseProjectionItem

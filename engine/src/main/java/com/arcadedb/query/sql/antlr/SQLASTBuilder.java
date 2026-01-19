@@ -313,13 +313,84 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public MatchPathItem visitMatchMethod(final SQLParser.MatchMethodContext ctx) {
     final MatchPathItem pathItem = new MatchPathItem(-1);
 
-    // Check if this is DOT method syntax: .out('Friend')
+    // Check if this is DOT method syntax: .out('Friend'){as:x} or .(chain){as:x}
     if (ctx.DOT() != null) {
-      pathItem.setFilter((MatchFilter) visit(ctx.matchFilter()));
+      // Check for .(method().method(){...}) syntax - nested match path
+      if (ctx.nestedMatchPath() != null) {
+        // This is .(methodChain) - a nested sequence of match methods
+        // We'll create a special MethodCall to represent this nested path
+        final MethodCall method = new MethodCall(-1);
+        method.methodName = new Identifier("$nestedPath");
+
+        // For now, mark this with the special method name
+        // The execution planner will need to handle this specially
+        pathItem.setMethod(method);
+        // TODO: Extract and store the nested method chain for execution planner
+
+        // Add properties if present (matchProperties appears only once at the end): {as:x, where:...}
+        if (ctx.matchProperties() != null) {
+          pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+        }
+        return pathItem;
+      }
+
+      // Standard .methodCall() syntax
+      final Object methodObj = visit(ctx.matchMethodCall());
+      final MethodCall method;
+
+      if (methodObj instanceof MethodCall) {
+        method = (MethodCall) methodObj;
+      } else if (methodObj instanceof FunctionCall) {
+        // Convert FunctionCall to MethodCall (they have the same structure)
+        final FunctionCall funcCall = (FunctionCall) methodObj;
+        method = new MethodCall(-1);
+        method.methodName = funcCall.name;
+        method.params.addAll(funcCall.params);
+      } else if (methodObj instanceof Identifier) {
+        // Convert identifier to method call
+        method = new MethodCall(-1);
+        method.methodName = (Identifier) methodObj;
+      } else {
+        throw new IllegalStateException("Unexpected method call type: " +
+            (methodObj != null ? methodObj.getClass().getName() : "null"));
+      }
+
+      pathItem.setMethod(method);
+
+      // Add properties if present: {as:x, where:...}
+      if (ctx.matchProperties() != null) {
+        pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+      }
       return pathItem;
     }
 
-    // Arrow syntax: (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchFilter?
+    // Handle anonymous arrow syntax: --> <-- --
+    if (ctx.DECR() != null || (ctx.ARROW_LEFT() != null && ctx.identifier() == null)) {
+      String methodName;
+      if (ctx.GT() != null || (ctx.MINUS() != null && ctx.ARROW_LEFT() == null)) {
+        // DECR GT = --> = outgoing
+        methodName = "out";
+      } else if (ctx.ARROW_LEFT() != null) {
+        // ARROW_LEFT MINUS = <-- = incoming
+        methodName = "in";
+      } else {
+        // DECR = -- = bidirectional
+        methodName = "both";
+      }
+
+      final MethodCall method = new MethodCall(-1);
+      method.methodName = new Identifier(methodName);
+      pathItem.setMethod(method);
+
+      // Add properties if present: {as:x, where:...}
+      if (ctx.matchProperties() != null) {
+        pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+      }
+
+      return pathItem;
+    }
+
+    // Arrow syntax with identifier: -EdgeType-> <-EdgeType- -EdgeType-
     // Determine direction based on arrow combination
     final boolean leftIsArrow = ctx.ARROW_LEFT() != null;
     final boolean rightIsArrow = ctx.ARROW_RIGHT() != null;
@@ -351,12 +422,46 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     pathItem.setMethod(method);
 
-    // Add the filter if present
-    if (ctx.matchFilter() != null) {
-      pathItem.setFilter((MatchFilter) visit(ctx.matchFilter()));
+    // Add properties if present: {as:x, where:...}
+    if (ctx.matchProperties() != null) {
+      pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
     }
 
     return pathItem;
+  }
+
+  /**
+   * Match method call visitor.
+   * Handles: functionCall | identifier (method name part of .out('Friend'))
+   */
+  @Override
+  public Object visitMatchMethodCall(final SQLParser.MatchMethodCallContext ctx) {
+    if (ctx.functionCall() != null) {
+      return visit(ctx.functionCall());
+    }
+    if (ctx.identifier() != null) {
+      return visit(ctx.identifier());
+    }
+    return null;
+  }
+
+  /**
+   * Match properties visitor.
+   * Handles: {type: Person, as: p, where: (name='John')}
+   */
+  @Override
+  public MatchFilter visitMatchProperties(final SQLParser.MatchPropertiesContext ctx) {
+    final MatchFilter filter = new MatchFilter(-1);
+
+    // Handle filter items in braces: {type: Person, as: p, where: (name='John')}
+    if (CollectionUtils.isNotEmpty(ctx.matchFilterItem())) {
+      for (final SQLParser.MatchFilterItemContext itemCtx : ctx.matchFilterItem()) {
+        final MatchFilterItem item = (MatchFilterItem) visit(itemCtx);
+        filter.items.add(item);
+      }
+    }
+
+    return filter;
   }
 
   /**
@@ -382,15 +487,55 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       return filter;
     }
 
-    // Handle filter items in braces: {type: Person, as: p, where: (name='John')}
-    if (CollectionUtils.isNotEmpty(ctx.matchFilterItem())) {
-      for (final SQLParser.MatchFilterItemContext itemCtx : ctx.matchFilterItem()) {
-        final MatchFilterItem item = (MatchFilterItem) visit(itemCtx);
-        filter.items.add(item);
-      }
+    // Handle properties: {type: Person, as: p, where: (name='John')}
+    if (ctx.matchProperties() != null) {
+      return (MatchFilter) visit(ctx.matchProperties());
     }
 
     return filter;
+  }
+
+  /**
+   * Match filter item key visitor.
+   * Handles property names in match filter items (including keywords).
+   */
+  @Override
+  public Identifier visitMatchFilterItemKey(final SQLParser.MatchFilterItemKeyContext ctx) {
+    if (ctx.identifier() != null) {
+      return (Identifier) visit(ctx.identifier());
+    }
+
+    // Handle keyword tokens as identifiers
+    final String keywordText;
+    if (ctx.TYPE() != null) {
+      keywordText = "type";
+    } else if (ctx.TYPES() != null) {
+      keywordText = "types";
+    } else if (ctx.BUCKET() != null) {
+      keywordText = "bucket";
+    } else if (ctx.AS() != null) {
+      keywordText = "as";
+    } else if (ctx.WHERE() != null) {
+      keywordText = "where";
+    } else if (ctx.WHILE() != null) {
+      keywordText = "while";
+    } else if (ctx.MAXDEPTH() != null) {
+      keywordText = "maxdepth";
+    } else if (ctx.OPTIONAL() != null) {
+      keywordText = "optional";
+    } else if (ctx.CLASS() != null) {
+      keywordText = "class";
+    } else if (ctx.RID() != null) {
+      keywordText = "rid";
+    } else if (ctx.PATH_ALIAS() != null) {
+      keywordText = "pathAlias";
+    } else if (ctx.DEPTH_ALIAS() != null) {
+      keywordText = "depthAlias";
+    } else {
+      throw new IllegalStateException("Unexpected matchFilterItemKey token");
+    }
+
+    return new Identifier(keywordText);
   }
 
   /**
@@ -402,7 +547,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public MatchFilterItem visitMatchFilterItem(final SQLParser.MatchFilterItemContext ctx) {
     final MatchFilterItem item = new MatchFilterItem(-1);
 
-    final Identifier key = (Identifier) visit(ctx.identifier());
+    // Get the key (could be identifier or keyword token)
+    final Identifier key;
+    final Object keyObj = visit(ctx.matchFilterItemKey());
+    if (keyObj instanceof Identifier) {
+      key = (Identifier) keyObj;
+    } else {
+      // Shouldn't happen with current grammar, but handle gracefully
+      throw new IllegalStateException("Unexpected matchFilterItemKey type: " +
+          (keyObj != null ? keyObj.getClass().getName() : "null"));
+    }
+
     final Object valueObj = visit(ctx.expression());
 
     final String keyName = key.getStringValue().toLowerCase();
