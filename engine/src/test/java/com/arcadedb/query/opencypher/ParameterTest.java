@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.opencypher;
+package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -58,11 +58,11 @@ class ParameterTest {
       int count = 0;
       while (result.hasNext()) {
         final Result row = result.next();
-        System.out.println("Found: " + row.getProperty("p.name") + ", age: " + row.getProperty("p.age"));
+        //System.out.println("Found: " + row.getProperty("p.name") + ", age: " + row.getProperty("p.age"));
         count++;
       }
 
-      System.out.println("Total count: " + count);
+      //System.out.println("Total count: " + count);
       assertThat(count).isEqualTo(2); // Alice and Charlie
 
     } finally {
@@ -93,10 +93,10 @@ class ParameterTest {
       int totalCount = 0;
       while (allResults.hasNext()) {
         final Result row = allResults.next();
-        System.out.println("Created: " + row.getProperty("p.name") + ", age: " + row.getProperty("p.age"));
+        //System.out.println("Created: " + row.getProperty("p.name") + ", age: " + row.getProperty("p.age"));
         totalCount++;
       }
-      System.out.println("Total created: " + totalCount);
+      //System.out.println("Total created: " + totalCount);
 
       // Test query with named parameter
       final ResultSet result = database.query("opencypher",
@@ -106,11 +106,11 @@ class ParameterTest {
       int count = 0;
       while (result.hasNext()) {
         final Result row = result.next();
-        System.out.println("Filtered: " + row.getProperty("p.name") + ", age: " + row.getProperty("p.age"));
+        //System.out.println("Filtered: " + row.getProperty("p.name") + ", age: " + row.getProperty("p.age"));
         count++;
       }
 
-      System.out.println("Filtered count: " + count);
+      //System.out.println("Filtered count: " + count);
       assertThat(count).isEqualTo(25); // Ages 25-49
 
     } finally {

@@ -361,8 +361,7 @@ createEdgeTypeBody
  * CREATE PROPERTY statement
  */
 createPropertyBody
-    : identifier DOT identifier propertyType
-      (IF NOT EXISTS)?
+    : identifier DOT identifier (IF NOT EXISTS)? propertyType
     ;
 
 propertyType
