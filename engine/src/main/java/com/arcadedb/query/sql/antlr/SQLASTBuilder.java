@@ -1346,7 +1346,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (text.endsWith("L") || text.endsWith("l")) {
         number.setValue(Long.parseLong(text.substring(0, text.length() - 1)));
       } else {
-        number.setValue(Integer.parseInt(text));
+        try {
+          number.setValue(Integer.parseInt(text));
+        } catch (final NumberFormatException e) {
+          // If it's too large for int, try long
+          number.setValue(Long.parseLong(text));
+        }
       }
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid integer: " + text);

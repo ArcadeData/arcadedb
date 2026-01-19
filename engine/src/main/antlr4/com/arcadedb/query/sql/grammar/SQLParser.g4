@@ -458,7 +458,7 @@ alterDatabaseBody
     ;
 
 alterDatabaseItem
-    : identifier EQ expression
+    : identifier expression
     ;
 
 // ============================================================================
