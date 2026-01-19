@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Requires bash 4.0+ for associative arrays
+# Requires bash 3.2+ for [[ ]] conditionals and local variables
 #
 # Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
 #
@@ -173,38 +173,72 @@ parse_args() {
                 exit 0
                 ;;
             *)
-                echo "Error: Unknown option: $1" >&2
-                echo "Use --help for usage information" >&2
-                exit 1
+                error_exit "Unknown option: $1. Use --help for usage information"
                 ;;
         esac
     done
 }
 
 #===============================================================================
+# Logging and Error Handling Functions
+#===============================================================================
+
+# Logging functions
+log_info() {
+    if [[ "$QUIET" != true ]]; then
+        echo "[INFO] $*"
+    fi
+}
+
+log_verbose() {
+    if [[ "$VERBOSE" == true ]]; then
+        echo "[DEBUG] $*"
+    fi
+}
+
+log_error() {
+    echo "[ERROR] $*" >&2
+}
+
+log_success() {
+    if [[ "$QUIET" != true ]]; then
+        echo "[SUCCESS] $*"
+    fi
+}
+
+# Error handler
+error_exit() {
+    log_error "$1"
+    cleanup
+    exit 1
+}
+
+# Cleanup function
+cleanup() {
+    if [[ -n "$TEMP_DIR" ]] && [[ -d "$TEMP_DIR" ]]; then
+        if [[ "$KEEP_TEMP" == true ]]; then
+            log_info "Keeping temporary directory: $TEMP_DIR"
+        else
+            log_verbose "Cleaning up temporary directory: $TEMP_DIR"
+            rm -rf "$TEMP_DIR"
+        fi
+    fi
+}
+
+# Trap errors and interrupts
+trap cleanup EXIT
+trap 'log_error "Script interrupted"; exit 130' INT TERM
+
+#===============================================================================
 # Main Entry Point
 #===============================================================================
 
 main() {
-    echo "ArcadeDB Modular Distribution Builder v${VERSION}"
-    echo "================================================"
-    echo ""
-
     parse_args "$@"
 
-    # Temporary: Print parsed arguments for testing
-    echo "Parsed arguments:"
-    echo "  Version: ${ARCADEDB_VERSION}"
-    echo "  Modules: ${SELECTED_MODULES}"
-    echo "  Output Name: ${OUTPUT_NAME}"
-    echo "  Output Dir: ${OUTPUT_DIR}"
-    echo "  Docker Tag: ${DOCKER_TAG}"
-    echo "  Skip Docker: ${SKIP_DOCKER}"
-    echo "  Dockerfile Only: ${DOCKERFILE_ONLY}"
-    echo "  Keep Temp: ${KEEP_TEMP}"
-    echo "  Dry Run: ${DRY_RUN}"
-    echo "  Verbose: ${VERBOSE}"
-    echo "  Quiet: ${QUIET}"
+    log_info "Starting modular distribution builder"
+    log_verbose "Verbose mode enabled"
+    log_success "Test successful"
 }
 
 # Run main function
