@@ -206,6 +206,12 @@ log_success() {
     fi
 }
 
+log_warning() {
+    if [[ "$QUIET" != true ]]; then
+        echo "[WARNING] $*" >&2
+    fi
+}
+
 # Error handler
 error_exit() {
     log_error "$1"
@@ -230,6 +236,76 @@ trap cleanup EXIT
 trap 'log_error "Script interrupted"; exit 130' INT TERM
 
 #===============================================================================
+# Prerequisites Validation
+#===============================================================================
+
+# Check prerequisites
+check_prerequisites() {
+    log_info "Checking prerequisites..."
+
+    local missing_tools=()
+
+    # Check for download tool
+    if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+        missing_tools+=("curl or wget")
+    fi
+
+    # Check for tar
+    if ! command -v tar &> /dev/null; then
+        missing_tools+=("tar")
+    fi
+
+    # Check for unzip
+    if ! command -v unzip &> /dev/null; then
+        missing_tools+=("unzip")
+    fi
+
+    # Check for checksum tool
+    if ! command -v sha256sum &> /dev/null && ! command -v shasum &> /dev/null; then
+        missing_tools+=("sha256sum or shasum")
+    fi
+
+    # Check for sha1sum (for Maven Central)
+    if ! command -v sha1sum &> /dev/null && ! command -v shasum &> /dev/null; then
+        missing_tools+=("sha1sum or shasum")
+    fi
+
+    # Check for Docker if needed
+    if [[ "$SKIP_DOCKER" != true ]] && [[ "$DOCKERFILE_ONLY" != true ]]; then
+        if ! command -v docker &> /dev/null; then
+            missing_tools+=("docker (or use --skip-docker/--dockerfile-only)")
+        fi
+    fi
+
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        error_exit "Missing required tools: ${missing_tools[*]}"
+    fi
+
+    # Check write permissions
+    # Ensure directory exists or can be created
+    if [[ ! -d "$OUTPUT_DIR" ]]; then
+        if ! mkdir -p "$OUTPUT_DIR" 2>/dev/null; then
+            error_exit "Cannot create output directory: $OUTPUT_DIR"
+        fi
+    fi
+
+    if [[ ! -w "$OUTPUT_DIR" ]]; then
+        error_exit "Output directory not writable: $OUTPUT_DIR"
+    fi
+
+    # Check disk space (warn if < 500MB)
+    local available_space
+    if command -v df &> /dev/null; then
+        available_space=$(df -k "$OUTPUT_DIR" | awk 'NR==2 {print $4}')
+        if [[ $available_space -lt 512000 ]]; then
+            log_warning "Less than 500MB available in $OUTPUT_DIR"
+        fi
+    fi
+
+    log_success "All prerequisites satisfied"
+}
+
+#===============================================================================
 # Main Entry Point
 #===============================================================================
 
@@ -237,8 +313,10 @@ main() {
     parse_args "$@"
 
     log_info "Starting modular distribution builder"
-    log_verbose "Verbose mode enabled"
-    log_success "Test successful"
+
+    check_prerequisites
+
+    log_success "Ready to build"
 }
 
 # Run main function
