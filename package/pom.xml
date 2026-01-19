@@ -112,6 +112,34 @@
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <groupId>net.nicoulaj.maven.plugins</groupId>
+                <artifactId>checksum-maven-plugin</artifactId>
+                <version>1.11</version>
+                <executions>
+                    <execution>
+                        <id>generate-checksums</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>files</goal>
+                        </goals>
+                        <configuration>
+                            <algorithms>
+                                <algorithm>SHA-256</algorithm>
+                            </algorithms>
+                            <fileSets>
+                                <fileSet>
+                                    <directory>${project.build.directory}</directory>
+                                    <includes>
+                                        <include>arcadedb-*.tar.gz</include>
+                                        <include>arcadedb-*.zip</include>
+                                    </includes>
+                                </fileSet>
+                            </fileSets>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
     <dependencies>
