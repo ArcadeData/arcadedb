@@ -104,7 +104,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
               final Set<String> props = result.getPropertyNames();
               assertThat(props.size()).as("Found the following properties " + props).isEqualTo(2);
               assertThat(props.contains("id")).isTrue();
-              assertThat((int) result.getProperty("id")).isEqualTo(counter);
+              assertThat(((Number) result.getProperty("id")).longValue()).isEqualTo(counter);
               assertThat(props.contains("name")).isTrue();
               assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
 
@@ -133,7 +133,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             LogManager.instance().log(this, Level.SEVERE, "Error: %s (IGNORE IT)", e.getMessage());
           } catch (final Exception e) {
             // IGNORE IT
-            LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", e.getMessage());
+            LogManager.instance().log(this, Level.SEVERE, "Generic Exception", e);
           }
         }
       }
@@ -176,16 +176,22 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             return;
 
           final String leaderName = server.getHA().getLeaderName();
+          final ArcadeDBServer leaderServer = getServer(leaderName);
+
+          if (leaderServer == null) {
+            LogManager.instance().log(this, Level.FINE, "TEST: Leader '%s' not found in server list, skipping", leaderName);
+            return;
+          }
 
           messagesInTotal.incrementAndGet();
           messagesPerRestart.incrementAndGet();
 
-          if (getServer(leaderName).isStarted() && messagesPerRestart.get() > getTxs() / (getServerCount() * 2)
+          if (leaderServer.isStarted() && messagesPerRestart.get() > getTxs() / (getServerCount() * 2)
               && restarts.get() < getServerCount()) {
             LogManager.instance()
-                .log(this, Level.FINE, "TEST: Found online replicas %d", null, getServer(leaderName).getHA().getOnlineReplicas());
+                .log(this, Level.FINE, "TEST: Found online replicas %d", null, leaderServer.getHA().getOnlineReplicas());
 
-            if (getServer(leaderName).getHA().getOnlineReplicas() < getServerCount() - 1) {
+            if (leaderServer.getHA().getOnlineReplicas() < getServerCount() - 1) {
               // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
               LogManager.instance().log(this, Level.FINE,
                   "TEST: Skip restart of the Leader %s because no all replicas are online yet (messages=%d txs=%d) ...", null,
@@ -200,12 +206,12 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             testLog("Stopping the Leader %s (messages=%d txs=%d restarts=%d) ...", leaderName, messagesInTotal.get(), getTxs(),
                 restarts.get());
 
-            getServer(leaderName).stop();
+            leaderServer.stop();
             restarts.incrementAndGet();
             messagesPerRestart.set(0);
 
             executeAsynchronously(() -> {
-              getServer(leaderName).start();
+              leaderServer.start();
               return null;
             });
           }
