@@ -801,6 +801,53 @@ build_docker_image() {
     fi
 }
 
+# Print final summary
+print_summary() {
+    echo ""
+    echo "========================================"
+    echo "Build Summary"
+    echo "========================================"
+    echo "Version:        $ARCADEDB_VERSION"
+    echo "Output Name:    $OUTPUT_NAME"
+    echo "Output Dir:     $OUTPUT_DIR"
+
+    if [[ -n "$SELECTED_MODULES" ]]; then
+        echo "Modules:        $SELECTED_MODULES"
+    else
+        echo "Modules:        (base only)"
+    fi
+
+    echo ""
+    echo "Generated Files:"
+
+    if [[ "$DRY_RUN" != true ]]; then
+        local zip_file="${OUTPUT_DIR}/${OUTPUT_NAME}.zip"
+        local targz_file="${OUTPUT_DIR}/${OUTPUT_NAME}.tar.gz"
+
+        if [[ -f "$zip_file" ]]; then
+            local zip_size=$(du -h "$zip_file" | cut -f1)
+            echo "  - $zip_file ($zip_size)"
+        fi
+
+        if [[ -f "$targz_file" ]]; then
+            local targz_size=$(du -h "$targz_file" | cut -f1)
+            echo "  - $targz_file ($targz_size)"
+        fi
+
+        if [[ "$SKIP_DOCKER" != true ]] && [[ "$DOCKERFILE_ONLY" != true ]]; then
+            echo "  - Docker image: $DOCKER_TAG"
+        elif [[ "$DOCKERFILE_ONLY" == true ]]; then
+            echo "  - ${OUTPUT_DIR}/${OUTPUT_NAME}-Dockerfile"
+        fi
+    else
+        echo "  [DRY RUN - no files created]"
+    fi
+
+    echo ""
+    echo "Build completed successfully!"
+    echo "========================================"
+}
+
 #===============================================================================
 # Main Entry Point
 #===============================================================================
@@ -852,7 +899,8 @@ main() {
     # Build Docker image
     build_docker_image
 
-    log_success "Build complete"
+    # Print summary
+    print_summary
 }
 
 # Run main function
