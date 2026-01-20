@@ -24,6 +24,12 @@ ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme pe
 - **Start server**: Use packaged scripts in `package/src/main/scripts/server.sh` (Unix) or `server.bat` (Windows)
 - **Console**: Use `package/src/main/scripts/console.sh` or `console.bat`
 
+### Modular Distribution Builder
+- **Build custom distribution**: `package/arcadedb-builder.sh --version=X.Y.Z --modules=mod1,mod2`
+- **Interactive mode**: `package/arcadedb-builder.sh`
+- **See options**: `package/arcadedb-builder.sh --help`
+- **Local testing**: `package/test-builder-local.sh`
+
 ### Testing Commands
 - **Run specific test class**: `mvn test -Dtest=ClassName`
 - **Run tests with specific pattern**: `mvn test -Dtest="*Pattern*"`
@@ -143,3 +149,4 @@ ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme pe
 - **Performance**: Always consider memory and CPU impact of changes
 - **Compatibility**: Maintain backward compatibility for API changes
 - **Licensing**: All code must comply with Apache 2.0 license
+- **Modular Builder**: Script to create custom distributions with selected modules (see `package/README-BUILDER.md`)
