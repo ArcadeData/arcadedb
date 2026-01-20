@@ -608,6 +608,61 @@ download_base_distribution() {
     log_success "Base distribution extracted"
 }
 
+# Download optional modules from Maven Central
+download_optional_modules() {
+    if [[ -z "$SELECTED_MODULES" ]]; then
+        log_info "No optional modules selected, skipping download"
+        return 0
+    fi
+
+    log_info "Downloading optional modules: $SELECTED_MODULES..."
+
+    local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}-base"
+    local lib_dir="${extracted_dir}/lib"
+
+    # Split modules by comma
+    IFS=',' read -ra modules <<< "$SELECTED_MODULES"
+
+    for module in "${modules[@]}"; do
+        module=$(echo "$module" | xargs) # trim whitespace
+
+        log_info "Downloading module: $module"
+
+        # Determine if shaded or regular JAR
+        local classifier=""
+        if [[ " $SHADED_MODULES " =~ " $module " ]]; then
+            classifier="-shaded"
+        fi
+
+        # Construct Maven Central URL
+        local artifact_id="arcadedb-${module}"
+        local jar_filename="${artifact_id}-${ARCADEDB_VERSION}${classifier}.jar"
+        local jar_url="${MAVEN_CENTRAL_BASE}/${artifact_id}/${ARCADEDB_VERSION}/${jar_filename}"
+        local checksum_url="${jar_url}.sha1"
+
+        local jar_file="${lib_dir}/${jar_filename}"
+        local checksum_file="${jar_file}.sha1"
+
+        # Download JAR
+        download_file "$jar_url" "$jar_file"
+
+        # Download checksum
+        download_file "$checksum_url" "$checksum_file"
+
+        # Verify checksum
+        verify_sha1 "$jar_file" "$checksum_file"
+
+        # Clean up checksum file
+        if [[ "$DRY_RUN" != true ]]; then
+            rm -f "$checksum_file"
+        fi
+
+        log_success "Module downloaded: $module"
+    done
+
+    log_success "All optional modules downloaded"
+}
+
 #===============================================================================
 # Main Entry Point
 #===============================================================================
@@ -644,6 +699,9 @@ main() {
 
     # Download base distribution
     download_base_distribution
+
+    # Download optional modules
+    download_optional_modules
 
     log_success "Build complete"
 }
