@@ -93,8 +93,16 @@ public class RecordAttribute extends SimpleNode {
         currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
       return currentRecord.getElement().get().asEdge().getOut();
     } else if (name.equalsIgnoreCase(THIS_PROPERTY)) {
-      // Return the entire current record
-      return currentRecord.getElement().orElse(null);
+      // Return the entire current record or value
+      // For element-based results, return the element
+      // For value-based results (like plain strings in CONTAINS conditions), return the value
+      if (currentRecord.getElement().isPresent()) {
+        return currentRecord.getElement().get();
+      } else if (currentRecord instanceof com.arcadedb.query.sql.executor.ResultInternal internal) {
+        // Try to get the raw value if no element is present
+        return internal.getValue();
+      }
+      return currentRecord;
     }
     return null;
   }

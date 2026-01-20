@@ -32,22 +32,22 @@ public class OrderByRidTest extends TestHelper {
       }
       rs.close();
 
-      System.out.println("Total results: " + rids.size());
+      //System.out.println("Total results: " + rids.size());
       assertThat(rids).hasSize(10);
 
       // Verify they're in descending order
       for (int i = 0; i < rids.size() - 1; i++) {
         RID current = rids.get(i);
         RID next = rids.get(i + 1);
-        System.out.println("RID[" + i + "]: " + current + " position=" + current.getPosition());
+        //System.out.println("RID[" + i + "]: " + current + " position=" + current.getPosition());
         assertThat(current.getPosition()).isGreaterThanOrEqualTo(next.getPosition());
       }
 
       // First result should have the highest position
       RID first = rids.get(0);
       RID last = rids.get(rids.size() - 1);
-      System.out.println("First RID: " + first + " position=" + first.getPosition());
-      System.out.println("Last RID: " + last + " position=" + last.getPosition());
+      //System.out.println("First RID: " + first + " position=" + first.getPosition());
+      //System.out.println("Last RID: " + last + " position=" + last.getPosition());
       assertThat(first.getPosition()).isGreaterThanOrEqualTo(last.getPosition());
     });
   }

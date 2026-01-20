@@ -91,7 +91,7 @@ class Issue3129Test {
         final Result r = rs.next();
         final String id = (String) r.getProperty("id");
 
-        System.out.println("Result " + (count + 1) + ": id=" + id);
+        //System.out.println("Result " + (count + 1) + ": id=" + id);
 
         // Issue #3129 Problem 1: Check that we get unique RIDs
         assertThat(id).isNotNull();
@@ -145,7 +145,7 @@ class Issue3129Test {
         final Result r = rs.next();
         final String id = (String) r.getProperty("id");
 
-        System.out.println("Result " + (count + 1) + ": id=" + id);
+        //System.out.println("Result " + (count + 1) + ": id=" + id);
         rids.add(id);
         count++;
       }

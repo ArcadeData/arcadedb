@@ -93,7 +93,7 @@ public class OpenCypherOptionalMatchTest {
     while (result.hasNext()) {
       final Result row = result.next();
       allResults.add(row);
-      System.out.println("DEBUG testMatchCharlieAlone: person=" + row.getProperty("person"));
+      //System.out.println("DEBUG testMatchCharlieAlone: person=" + row.getProperty("person"));
     }
     result.close();
 
@@ -114,7 +114,7 @@ public class OpenCypherOptionalMatchTest {
     while (result.hasNext()) {
       final Result row = result.next();
       allResults.add(row);
-      System.out.println("DEBUG testOptionalMatchWithoutRelationship: person=" + row.getProperty("person") + ", knows=" + row.getProperty("knows"));
+      //System.out.println("DEBUG testOptionalMatchWithoutRelationship: person=" + row.getProperty("person") + ", knows=" + row.getProperty("knows"));
     }
     result.close();
 

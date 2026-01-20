@@ -14,20 +14,20 @@ public class InsertReturnTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE TestDoc");
 
       ResultSet rs = database.command("sql", "INSERT INTO TestDoc SET name = 'test1' RETURN @this");
-      System.out.println("Has next: " + rs.hasNext());
+      //System.out.println("Has next: " + rs.hasNext());
 
       assertThat(rs.hasNext()).as("INSERT...RETURN should return results").isTrue();
 
       var result = rs.next();
       assertThat(result).isNotNull();
-      System.out.println("Result: " + result);
-      System.out.println("Result class: " + result.getClass().getName());
-      System.out.println("Properties: " + result.getPropertyNames());
-      System.out.println("Identity: " + result.getIdentity());
-      System.out.println("Element: " + result.getElement());
+      //System.out.println("Result: " + result);
+      //System.out.println("Result class: " + result.getClass().getName());
+      //System.out.println("Properties: " + result.getPropertyNames());
+      //System.out.println("Identity: " + result.getIdentity());
+      //System.out.println("Element: " + result.getElement());
       if (result.getElement().isPresent()) {
         var doc = result.getElement().get();
-        System.out.println("Element name property: " + doc.get("name"));
+        //System.out.println("Element name property: " + doc.get("name"));
       }
       assertThat((String)result.getProperty("name")).isEqualTo("test1");
 

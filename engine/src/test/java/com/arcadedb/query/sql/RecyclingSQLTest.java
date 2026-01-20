@@ -19,7 +19,7 @@ public class RecyclingSQLTest extends TestHelper {
       ResultSet rs = database.query("sql", "select from TestV order by @rid desc");
       assertThat(rs.hasNext()).isTrue();
       var first = rs.next();
-      System.out.println("First result: " + first);
+      //System.out.println("First result: " + first);
       assertThat(first).isNotNull();
       rs.close();
     });

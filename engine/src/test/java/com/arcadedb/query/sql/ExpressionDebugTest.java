@@ -19,17 +19,17 @@ public class ExpressionDebugTest extends TestHelper {
     com.arcadedb.query.sql.grammar.SQLParser sqlParser = new com.arcadedb.query.sql.grammar.SQLParser(tokens);
 
     var exprCtx = sqlParser.expression();
-    System.out.println("Expression context: " + exprCtx.getClass().getSimpleName());
-    System.out.println("Expression text: " + exprCtx.getText());
-    System.out.println("Expression children count: " + exprCtx.getChildCount());
+    //System.out.println("Expression context: " + exprCtx.getClass().getSimpleName());
+    //System.out.println("Expression text: " + exprCtx.getText());
+    //System.out.println("Expression children count: " + exprCtx.getChildCount());
 
     com.arcadedb.query.sql.antlr.SQLASTBuilder builder = new com.arcadedb.query.sql.antlr.SQLASTBuilder(database);
     Expression expr = (Expression) builder.visit(exprCtx);
 
-    System.out.println("Expression result: " + expr);
-    System.out.println("Expression mathExpression: " + expr.mathExpression);
+    //System.out.println("Expression result: " + expr);
+    //System.out.println("Expression mathExpression: " + expr.mathExpression);
     if (expr.mathExpression != null) {
-      System.out.println("MathExpression class: " + expr.mathExpression.getClass().getName());
+      //System.out.println("MathExpression class: " + expr.mathExpression.getClass().getName());
     }
   }
 }

@@ -28,10 +28,10 @@ public class ExpandParseTest extends TestHelper {
     for (final String query : queries) {
       try {
         final ResultSet rs = database.query("sql", query);
-        System.out.println("✓ " + query);
+        //System.out.println("✓ " + query);
         rs.close();
       } catch (final Exception e) {
-        System.out.println("✗ " + query + ": " + e.getMessage().split("\n")[0]);
+        //System.out.println("✗ " + query + ": " + e.getMessage().split("\n")[0]);
       }
     }
   }

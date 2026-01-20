@@ -17,13 +17,13 @@ public class CreateEdgeParametersTest extends TestHelper {
       final MutableVertex v1 = database.newVertex("V").save();
       final MutableVertex v2 = database.newVertex("V").save();
 
-      System.out.println("v1: " + v1);
-      System.out.println("v2: " + v2);
+//      System.out.println("v1: " + v1);
+//      System.out.println("v2: " + v2);
 
       final var result = database.command("sql", "create edge E from ? to ?", v1, v2);
       assertNotNull(result);
       assertTrue(result.hasNext());
-      System.out.println("Edge created successfully!");
+//      System.out.println("Edge created successfully!");
     });
   }
 }

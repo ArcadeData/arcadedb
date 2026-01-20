@@ -44,7 +44,7 @@ public class SQLAntlrParserTest {
     assertNotNull(select.projection, "Projection should not be null");
     assertNotNull(select.target, "FROM clause should not be null");
 
-    System.out.println("✓ Simple SELECT parsed successfully");
+    //System.out.println("✓ Simple SELECT parsed successfully");
   }
 
   @Test
@@ -62,7 +62,7 @@ public class SQLAntlrParserTest {
     assertNotNull(select.target, "FROM clause should not be null");
     assertNotNull(select.whereClause, "WHERE clause should not be null");
 
-    System.out.println("✓ SELECT with WHERE parsed successfully");
+    //System.out.println("✓ SELECT with WHERE parsed successfully");
   }
 
   @Test
@@ -78,7 +78,7 @@ public class SQLAntlrParserTest {
     final SelectStatement select = (SelectStatement) stmt;
     assertNotNull(select.limit, "LIMIT clause should not be null");
 
-    System.out.println("✓ SELECT with LIMIT parsed successfully");
+    //System.out.println("✓ SELECT with LIMIT parsed successfully");
   }
 
   @Test
@@ -91,6 +91,6 @@ public class SQLAntlrParserTest {
     assertNotNull(statements, "Statements list should not be null");
     assertEquals(2, statements.size(), "Should have 2 statements");
 
-    System.out.println("✓ Multiple statements parsed successfully");
+    //System.out.println("✓ Multiple statements parsed successfully");
   }
 }

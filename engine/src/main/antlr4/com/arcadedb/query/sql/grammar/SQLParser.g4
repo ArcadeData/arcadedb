@@ -833,7 +833,7 @@ conditionBlock
     ;
 
 comparisonOperator
-    : EQ | EQEQ | NE | NEQ | LT | GT | LE | GE
+    : EQ | EQEQ | NE | NEQ | LT | GT | LE | GE | NSEQ
     | NEAR | WITHIN
     ;
 

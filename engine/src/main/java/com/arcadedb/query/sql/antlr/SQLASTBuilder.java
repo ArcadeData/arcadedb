@@ -1478,7 +1478,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
         // Not a subquery - process normally
         final Expression right = (Expression) visit(exprCtx);
-        condition.right = right;
+
+        // Check if the expression is a parenthesized where clause (e.g., (@this ILIKE "C"))
+        // In this case, use the where condition as the CONTAINS condition
+        if (right.whereCondition != null) {
+          condition.condition = right.whereCondition.baseExpression;
+        } else {
+          condition.right = right;
+        }
       }
 
       return condition;
@@ -2177,6 +2184,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     baseExpr.string = "\"" + decoded + "\""; // BaseExpression expects quoted string
 
+    // Process modifiers (method calls like .prefix(), .toUpperCase(), etc.)
+    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
+
+      baseExpr.modifier = firstModifier;
+    }
+
     return baseExpr;
   }
 
@@ -2676,6 +2702,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       return new LeOperator(-1);
     } else if (ctx.GE() != null) {
       return new GeOperator(-1);
+    } else if (ctx.NSEQ() != null) {
+      return new NullSafeEqualsCompareOperator(-1);
     }
 
     throw new CommandSQLParsingException("Unknown comparison operator: " + ctx.getText());
@@ -2886,6 +2914,34 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return skip;
+  }
+
+  /**
+   * Visit TIMEOUT clause.
+   */
+  @Override
+  public Timeout visitTimeout(final SQLParser.TimeoutContext ctx) {
+    final Timeout timeout = new Timeout(-1);
+
+    // The timeout expression can be a number or an input parameter
+    final Expression expr = (Expression) visit(ctx.expression());
+
+    // Extract the number from the expression
+    try {
+      if (expr.mathExpression instanceof BaseExpression) {
+        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+
+        if (baseExpr.number instanceof PInteger) {
+          timeout.setValue(((PInteger) baseExpr.number).getValue().longValue());
+        } else if (baseExpr.number instanceof PNumber) {
+          timeout.setValue(((PNumber) baseExpr.number).getValue());
+        }
+      }
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build TIMEOUT clause: " + e.getMessage(), e);
+    }
+
+    return timeout;
   }
 
   /**
