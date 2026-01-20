@@ -875,8 +875,6 @@ main() {
 
     log_info "Starting modular distribution builder"
 
-    check_prerequisites
-
     # Interactive mode if version not specified
     if [[ -z "$ARCADEDB_VERSION" ]]; then
         echo ""
@@ -890,6 +888,24 @@ main() {
     if [[ "$SKIP_DOCKER" == true ]] && [[ "$DOCKERFILE_ONLY" == true ]]; then
         error_exit "Cannot use --skip-docker and --dockerfile-only together"
     fi
+
+    # Validate local repository path if provided
+    if [[ -n "$LOCAL_REPO" ]]; then
+        if [[ ! -d "$LOCAL_REPO" ]]; then
+            error_exit "Local repository directory does not exist: $LOCAL_REPO"
+        fi
+
+        # If it looks like a Maven repo, verify structure
+        if [[ -d "$LOCAL_REPO/com/arcadedb" ]]; then
+            log_info "Using Maven repository: $LOCAL_REPO"
+        else
+            log_info "Using custom JAR directory: $LOCAL_REPO"
+            log_warning "Custom directories should contain JARs with naming: arcadedb-{module}-{version}[-shaded].jar"
+        fi
+    fi
+
+    # Check prerequisites
+    check_prerequisites
 
     # Interactive module selection if not specified
     if [[ -z "$SELECTED_MODULES" ]] && [[ "$DRY_RUN" != true ]]; then
