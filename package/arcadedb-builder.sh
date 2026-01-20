@@ -305,6 +305,37 @@ check_prerequisites() {
     log_success "All prerequisites satisfied"
 }
 
+# Validate version format
+validate_version() {
+    if [[ -z "$ARCADEDB_VERSION" ]]; then
+        error_exit "Version not specified. Use --version=X.Y.Z or run in interactive mode"
+    fi
+
+    # Check version format (X.Y.Z or X.Y.Z-SNAPSHOT)
+    if ! [[ "$ARCADEDB_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-SNAPSHOT)?$ ]]; then
+        error_exit "Invalid version format: $ARCADEDB_VERSION. Expected format: X.Y.Z or X.Y.Z-SNAPSHOT"
+    fi
+
+    log_verbose "Version validated: $ARCADEDB_VERSION"
+}
+
+# Set default values based on inputs
+set_defaults() {
+    # Set default output name if not specified
+    if [[ -z "$OUTPUT_NAME" ]]; then
+        local timestamp=$(date +%Y%m%d-%H%M%S)
+        OUTPUT_NAME="arcadedb-${ARCADEDB_VERSION}-custom-${timestamp}"
+    fi
+
+    # Set default Docker tag if not specified
+    if [[ -z "$DOCKER_TAG" ]]; then
+        DOCKER_TAG="arcadedb-custom:${ARCADEDB_VERSION}"
+    fi
+
+    log_verbose "Output name: $OUTPUT_NAME"
+    log_verbose "Docker tag: $DOCKER_TAG"
+}
+
 #===============================================================================
 # Main Entry Point
 #===============================================================================
@@ -315,8 +346,10 @@ main() {
     log_info "Starting modular distribution builder"
 
     check_prerequisites
+    validate_version
+    set_defaults
 
-    log_success "Ready to build"
+    log_success "Configuration validated"
 }
 
 # Run main function
