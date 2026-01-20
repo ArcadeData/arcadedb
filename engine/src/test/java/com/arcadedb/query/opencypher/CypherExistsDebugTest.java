@@ -23,9 +23,12 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
 
 /**
  * Debug test for EXISTS() expression.
@@ -35,6 +38,7 @@ public class CypherExistsDebugTest {
 
   @BeforeEach
   public void setup() {
+    FileUtils.deleteRecursively(new File("./target/databases/cypherexistsdebug"));
     database = new DatabaseFactory("./target/databases/cypherexistsdebug").create();
 
     database.transaction(() -> {
@@ -67,7 +71,8 @@ public class CypherExistsDebugTest {
     //System.out.println("\n1. Basic MATCH query:");
     ResultSet results = database.query("opencypher", "MATCH (p:Person) RETURN p.name ORDER BY p.name");
     while (results.hasNext()) {
-      //System.out.println("  Person: " + results.next().getProperty("p.name"));
+      final Object name = results.next().getProperty("p.name");
+      //System.out.println("  Person: " +name  );
     }
 
     // Test WORKS_AT relationships
