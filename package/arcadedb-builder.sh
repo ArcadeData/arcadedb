@@ -663,14 +663,94 @@ find_local_jar() {
     return 1
 }
 
+# Download module from Maven Central
+download_remote_module() {
+    local module="$1"
+    local version="$2"
+    local classifier="$3"
+    local dest_jar="$4"
+
+    log_info "Downloading module: $module"
+
+    local artifact_id="arcadedb-${module}"
+    local jar_filename="${artifact_id}-${version}${classifier}.jar"
+    local jar_url="${MAVEN_CENTRAL_BASE}/${artifact_id}/${version}/${jar_filename}"
+    local checksum_url="${jar_url}.sha1"
+
+    local checksum_file="${dest_jar}.sha1"
+
+    # Download JAR
+    download_file "$jar_url" "$dest_jar"
+
+    # Download checksum
+    download_file "$checksum_url" "$checksum_file"
+
+    # Verify checksum
+    verify_sha1 "$dest_jar" "$checksum_file"
+
+    # Clean up checksum file
+    if [[ "$DRY_RUN" != true ]]; then
+        rm -f "$checksum_file"
+    fi
+}
+
+# Copy module from local repository
+copy_local_module() {
+    local module="$1"
+    local version="$2"
+    local classifier="$3"
+    local dest_jar="$4"
+
+    log_info "Locating local module: $module"
+
+    local source_jar
+    source_jar=$(find_local_jar "$module" "$version" "$classifier")
+
+    if [[ -z "$source_jar" ]]; then
+        error_exit "Module not found in local repository: $module (looking for arcadedb-${module}-${version}${classifier}.jar)"
+    fi
+
+    log_info "Found: $source_jar"
+
+    # Copy JAR file
+    if [[ "$DRY_RUN" != true ]]; then
+        if ! cp "$source_jar" "$dest_jar"; then
+            error_exit "Failed to copy module: $source_jar -> $dest_jar"
+        fi
+    else
+        log_info "[DRY RUN] Would copy: $source_jar -> $dest_jar"
+    fi
+
+    # Check for checksum file and verify if it exists
+    local source_checksum="${source_jar}.sha1"
+    if [[ -f "$source_checksum" ]]; then
+        log_info "Verifying checksum: ${source_checksum}"
+        local temp_checksum="${dest_jar}.sha1"
+
+        if [[ "$DRY_RUN" != true ]]; then
+            cp "$source_checksum" "$temp_checksum"
+            verify_sha1 "$dest_jar" "$temp_checksum"
+            rm -f "$temp_checksum"
+        else
+            log_info "[DRY RUN] Would verify checksum"
+        fi
+    else
+        log_warning "No checksum file found, skipping verification: ${source_checksum}"
+    fi
+}
+
 # Download optional modules from Maven Central
 download_optional_modules() {
     if [[ -z "$SELECTED_MODULES" ]]; then
-        log_info "No optional modules selected, skipping download"
+        log_info "No optional modules selected, skipping module download"
         return 0
     fi
 
-    log_info "Downloading optional modules: $SELECTED_MODULES..."
+    if [[ -n "$LOCAL_REPO" ]]; then
+        log_info "Using local modules from: $LOCAL_REPO"
+    else
+        log_info "Downloading optional modules: $SELECTED_MODULES..."
+    fi
 
     local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}-base"
     local lib_dir="${extracted_dir}/lib"
@@ -681,41 +761,28 @@ download_optional_modules() {
     for module in "${modules[@]}"; do
         module=$(echo "$module" | xargs) # trim whitespace
 
-        log_info "Downloading module: $module"
-
         # Determine if shaded or regular JAR
         local classifier=""
         if [[ " $SHADED_MODULES " =~ " $module " ]]; then
             classifier="-shaded"
         fi
 
-        # Construct Maven Central URL
         local artifact_id="arcadedb-${module}"
         local jar_filename="${artifact_id}-${ARCADEDB_VERSION}${classifier}.jar"
-        local jar_url="${MAVEN_CENTRAL_BASE}/${artifact_id}/${ARCADEDB_VERSION}/${jar_filename}"
-        local checksum_url="${jar_url}.sha1"
-
         local jar_file="${lib_dir}/${jar_filename}"
-        local checksum_file="${jar_file}.sha1"
 
-        # Download JAR
-        download_file "$jar_url" "$jar_file"
-
-        # Download checksum
-        download_file "$checksum_url" "$checksum_file"
-
-        # Verify checksum
-        verify_sha1 "$jar_file" "$checksum_file"
-
-        # Clean up checksum file
-        if [[ "$DRY_RUN" != true ]]; then
-            rm -f "$checksum_file"
+        if [[ -n "$LOCAL_REPO" ]]; then
+            # Local repository mode
+            copy_local_module "$module" "$ARCADEDB_VERSION" "$classifier" "$jar_file"
+        else
+            # Download mode
+            download_remote_module "$module" "$ARCADEDB_VERSION" "$classifier" "$jar_file"
         fi
 
-        log_success "Module downloaded: $module"
+        log_success "Module added: $module"
     done
 
-    log_success "All optional modules downloaded"
+    log_success "All optional modules processed"
 }
 
 # Create zip and tar.gz archives
