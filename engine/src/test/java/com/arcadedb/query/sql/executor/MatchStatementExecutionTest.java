@@ -68,23 +68,22 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.commit();
 
     database.begin();
-    // TEMPORARY: Comment out additional init to isolate the bug
-    // initOrgChart(database);
-    // database.commit();
+    initOrgChart(database);
+    database.commit();
 
-    // database.begin();
-    // initTriangleTest(database);
-    // database.commit();
+    database.begin();
+    initTriangleTest(database);
+    database.commit();
 
-    // database.begin();
-    // initEdgeIndexTest(database);
-    // database.commit();
+    database.begin();
+    initEdgeIndexTest(database);
+    database.commit();
 
-    // database.begin();
-    // initDiamondTest(database);
-    // database.commit();
+    database.begin();
+    initDiamondTest(database);
+    database.commit();
 
-    // database.begin();
+    database.begin();
   }
 
   private static void initEdgeIndexTest(final Database database) {

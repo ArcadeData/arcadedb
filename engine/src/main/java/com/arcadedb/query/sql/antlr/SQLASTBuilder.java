@@ -88,7 +88,66 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   // QUERY STATEMENTS
 
   /**
-   * SELECT statement visitor.
+   * SELECT statement rule visitor (for selectStatement grammar rule).
+   * This is called when visiting a selectStatement rule directly (e.g., from INSERT...SELECT).
+   */
+  @Override
+  public SelectStatement visitSelectStatement(final SQLParser.SelectStatementContext ctx) {
+    final SelectStatement stmt = new SelectStatement(-1);
+
+    // Projection
+    if (ctx.projection() != null) {
+      stmt.projection = (Projection) visit(ctx.projection());
+    }
+
+    // FROM clause
+    if (ctx.fromClause() != null) {
+      stmt.target = (FromClause) visit(ctx.fromClause());
+    }
+
+    // LET clause
+    if (ctx.letClause() != null) {
+      stmt.letClause = (LetClause) visit(ctx.letClause());
+    }
+
+    // WHERE clause
+    if (ctx.whereClause() != null) {
+      stmt.whereClause = (WhereClause) visit(ctx.whereClause());
+    }
+
+    // GROUP BY clause
+    if (ctx.groupBy() != null) {
+      stmt.groupBy = (GroupBy) visit(ctx.groupBy());
+    }
+
+    // ORDER BY clause
+    if (ctx.orderBy() != null) {
+      stmt.orderBy = (OrderBy) visit(ctx.orderBy());
+    }
+
+    // UNWIND clause
+    if (ctx.unwind() != null) {
+      stmt.unwind = (Unwind) visit(ctx.unwind());
+    }
+
+    // SKIP and LIMIT clauses
+    if (ctx.skip() != null) {
+      stmt.skip = (Skip) visit(ctx.skip());
+    }
+    if (ctx.limit() != null) {
+      stmt.limit = (Limit) visit(ctx.limit());
+    }
+
+    // TIMEOUT clause
+    if (ctx.timeout() != null) {
+      stmt.timeout = (Timeout) visit(ctx.timeout());
+    }
+
+    return stmt;
+  }
+
+  /**
+   * SELECT statement visitor (for selectStmt labeled alternative).
    * Maps to SelectStatement AST class.
    */
   @Override
@@ -152,7 +211,99 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * MATCH statement visitor.
+   * MATCH statement rule visitor (for matchStatement grammar rule).
+   * This is called when visiting a matchStatement rule directly (e.g., from subqueries).
+   */
+  @Override
+  public MatchStatement visitMatchStatement(final SQLParser.MatchStatementContext ctx) {
+    final MatchStatement stmt = new MatchStatement(-1);
+
+    // Parse match expressions (both positive and negative patterns)
+    final List<MatchExpression> matchExpressions = new ArrayList<>();
+    final List<MatchExpression> notMatchExpressions = new ArrayList<>();
+
+    if (CollectionUtils.isNotEmpty(ctx.matchExpression())) {
+      for (int i = 0; i < ctx.matchExpression().size(); i++) {
+        final SQLParser.MatchExpressionContext exprCtx = ctx.matchExpression(i);
+        final MatchExpression matchExpr = (MatchExpression) visit(exprCtx);
+
+        // Check if this is a NOT expression (only possible for non-first expressions)
+        if (i > 0 && ctx.NOT(i - 1) != null) {
+          notMatchExpressions.add(matchExpr);
+        } else {
+          matchExpressions.add(matchExpr);
+        }
+      }
+    }
+
+    stmt.setMatchExpressions(matchExpressions);
+    stmt.setNotMatchExpressions(notMatchExpressions);
+
+    // Parse RETURN clause
+    stmt.setReturnDistinct(ctx.DISTINCT() != null);
+
+    // Parse return items (expressions with optional aliases and nested projections)
+    final List<Expression> returnItems = new ArrayList<>();
+    final List<Identifier> returnAliases = new ArrayList<>();
+    final List<NestedProjection> returnNestedProjections = new ArrayList<>();
+
+    if (CollectionUtils.isNotEmpty(ctx.expression())) {
+      for (int i = 0; i < ctx.expression().size(); i++) {
+        final Expression returnItem = (Expression) visit(ctx.expression(i));
+        returnItems.add(returnItem);
+
+        // Handle optional alias (AS identifier)
+        if (i < ctx.identifier().size() && ctx.identifier(i) != null) {
+          final Identifier alias = (Identifier) visit(ctx.identifier(i));
+          returnAliases.add(alias);
+        } else {
+          returnAliases.add(null);
+        }
+
+        // Handle optional nested projection
+        if (i < ctx.nestedProjection().size() && ctx.nestedProjection(i) != null) {
+          final NestedProjection nestedProj = (NestedProjection) visit(ctx.nestedProjection(i));
+          returnNestedProjections.add(nestedProj);
+        } else {
+          returnNestedProjections.add(null);
+        }
+      }
+    }
+
+    stmt.setReturnItems(returnItems);
+    stmt.setReturnAliases(returnAliases);
+    stmt.setReturnNestedProjections(returnNestedProjections);
+
+    // Parse GROUP BY clause
+    if (ctx.groupBy() != null) {
+      stmt.setGroupBy((GroupBy) visit(ctx.groupBy()));
+    }
+
+    // Parse ORDER BY clause
+    if (ctx.orderBy() != null) {
+      stmt.setOrderBy((OrderBy) visit(ctx.orderBy()));
+    }
+
+    // Parse UNWIND clause
+    if (ctx.unwind() != null) {
+      stmt.setUnwind((Unwind) visit(ctx.unwind()));
+    }
+
+    // Parse SKIP clause
+    if (ctx.skip() != null) {
+      stmt.setSkip((Skip) visit(ctx.skip()));
+    }
+
+    // Parse LIMIT clause
+    if (ctx.limit() != null) {
+      stmt.setLimit((Limit) visit(ctx.limit()));
+    }
+
+    return stmt;
+  }
+
+  /**
+   * MATCH statement visitor (for matchStmt labeled alternative).
    * Maps to MatchStatement AST class.
    */
   @Override
@@ -320,56 +471,32 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final MultiMatchPathItem multiPathItem = new MultiMatchPathItem(-1);
         final SQLParser.NestedMatchPathContext nestedCtx = ctx.nestedMatchPath();
 
-        // nestedMatchPath : matchMethodCall (DOT matchMethodCall matchProperties?)+
-        // Process all matchMethodCall elements in the nested path
-        final List<SQLParser.MatchMethodCallContext> methodCalls = nestedCtx.matchMethodCall();
-        final List<SQLParser.MatchPropertiesContext> matchProps = nestedCtx.matchProperties();
+        // nestedMatchPath : nestedMatchMethod+
+        // Process all nestedMatchMethod elements in the nested path
+        final List<SQLParser.NestedMatchMethodContext> pathItems = nestedCtx.nestedMatchMethod();
 
-        for (int i = 0; i < methodCalls.size(); i++) {
-          final SQLParser.MatchMethodCallContext methodCallCtx = methodCalls.get(i);
-
-          if (i == 0) {
-            // First item should be MatchPathItemFirst with FunctionCall
-            final MatchPathItemFirst firstItem = new MatchPathItemFirst(-1);
-            final Object methodObj = visit(methodCallCtx);
-            if (methodObj instanceof FunctionCall) {
-              firstItem.setFunction((FunctionCall) methodObj);
-            } else if (methodObj instanceof Identifier) {
-              // Convert identifier to function call
-              final FunctionCall funcCall = new FunctionCall(-1);
-              funcCall.name = (Identifier) methodObj;
-              firstItem.setFunction(funcCall);
-            }
-            // No filter for first item in nested path (only intermediate items can have filters)
-            multiPathItem.getItems().add(firstItem);
-          } else {
-            // Subsequent items are regular MatchPathItem with MethodCall
-            final MatchPathItem item = new MatchPathItem(-1);
-            final Object methodObj = visit(methodCallCtx);
-            final MethodCall method;
-
-            if (methodObj instanceof MethodCall) {
-              method = (MethodCall) methodObj;
-            } else if (methodObj instanceof FunctionCall) {
-              final FunctionCall funcCall = (FunctionCall) methodObj;
-              method = new MethodCall(-1);
-              method.methodName = funcCall.name;
-              method.params.addAll(funcCall.params);
-            } else if (methodObj instanceof Identifier) {
-              method = new MethodCall(-1);
-              method.methodName = (Identifier) methodObj;
+        for (int i = 0; i < pathItems.size(); i++) {
+          final MatchPathItem pathItem = (MatchPathItem) visit(pathItems.get(i));
+          if (pathItem != null) {
+            if (i == 0) {
+              // First item should be MatchPathItemFirst
+              final MatchPathItemFirst firstItem = new MatchPathItemFirst(-1);
+              // Copy method and filter from the pathItem
+              firstItem.setFilter(pathItem.getFilter());
+              if (pathItem.getMethod() != null) {
+                // Convert MethodCall to FunctionCall for first item
+                final FunctionCall funcCall = new FunctionCall(-1);
+                funcCall.name = pathItem.getMethod().methodName;
+                if (pathItem.getMethod().params != null) {
+                  funcCall.params = new ArrayList<>(pathItem.getMethod().params);
+                }
+                firstItem.setFunction(funcCall);
+              }
+              multiPathItem.getItems().add(firstItem);
             } else {
-              throw new IllegalStateException("Unexpected method call type in nested path: " +
-                  (methodObj != null ? methodObj.getClass().getName() : "null"));
+              // Subsequent items are regular MatchPathItem
+              multiPathItem.getItems().add(pathItem);
             }
-            item.setMethod(method);
-
-            // Add matchProperties if present for this intermediate item
-            // matchProps has size = methodCalls.size() - 1 (no properties for first item)
-            if (i - 1 < matchProps.size() && matchProps.get(i - 1) != null) {
-              item.setFilter((MatchFilter) visit(matchProps.get(i - 1)));
-            }
-            multiPathItem.getItems().add(item);
           }
         }
 
@@ -529,6 +656,107 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Add properties if present: {as:x, where:...}
     if (ctx.matchProperties() != null) {
       pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+    }
+
+    return pathItem;
+  }
+
+  /**
+   * Nested match method visitor.
+   * Handles methods within .(chain) syntax including arrow notation.
+   * Grammar alternatives:
+   *   - identifier LPAREN ... RPAREN matchProperties? (function call without chains)
+   *   - DOT identifier LPAREN ... RPAREN matchProperties? (explicit dot prefix)
+   *   - identifier matchProperties? (simple method name)
+   *   - (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchProperties?
+   *   - DECR GT matchProperties?
+   *   - ARROW_LEFT MINUS matchProperties?
+   *   - DECR matchProperties?
+   */
+  @Override
+  public MatchPathItem visitNestedMatchMethod(final SQLParser.NestedMatchMethodContext ctx) {
+    final MatchPathItem pathItem = new MatchPathItem(-1);
+
+    // Check for function call syntax: identifier(...) or .identifier(...)
+    if (ctx.LPAREN() != null) {
+      final Identifier methodName = (Identifier) visit(ctx.identifier());
+      final MethodCall method = new MethodCall(-1);
+      method.methodName = methodName;
+
+      // Add parameters if present
+      if (CollectionUtils.isNotEmpty(ctx.expression())) {
+        for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
+          method.params.add((Expression) visit(exprCtx));
+        }
+      }
+
+      pathItem.setMethod(method);
+
+      // Add matchProperties if present
+      if (ctx.matchProperties() != null) {
+        pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+      }
+
+      return pathItem;
+    }
+
+    // Check for arrow syntax alternatives
+    if (ctx.MINUS() != null || ctx.ARROW_LEFT() != null || ctx.DECR() != null) {
+      // Determine method name based on arrow direction
+      String methodName;
+      if (ctx.ARROW_LEFT() != null && ctx.MINUS() != null && ctx.identifier() == null) {
+        // <-- : anonymous incoming edge
+        methodName = "in";
+      } else if (ctx.DECR() != null && ctx.GT() != null) {
+        // --> : anonymous outgoing edge
+        methodName = "out";
+      } else if (ctx.DECR() != null && ctx.GT() == null) {
+        // -- : anonymous bidirectional edge
+        methodName = "both";
+      } else if (ctx.ARROW_LEFT() != null && ctx.identifier() != null) {
+        // <-EdgeType- : incoming edge with type
+        methodName = "in";
+      } else {
+        // -EdgeType-> or -EdgeType- : outgoing or bidirectional edge with type
+        if (ctx.ARROW_RIGHT() != null) {
+          methodName = "out";
+        } else {
+          methodName = "both";
+        }
+      }
+
+      // Create a MethodCall
+      final MethodCall method = new MethodCall(-1);
+      method.methodName = new Identifier(methodName);
+
+      // Edge type becomes the parameter if identifier is present
+      if (ctx.identifier() != null) {
+        final Identifier edgeLabel = (Identifier) visit(ctx.identifier());
+        final BaseExpression baseExpr = new BaseExpression(-1);
+        baseExpr.string = "'" + edgeLabel.getStringValue() + "'";
+
+        final Expression edgeTypeParam = new Expression(-1);
+        edgeTypeParam.mathExpression = baseExpr;
+        method.params.add(edgeTypeParam);
+      }
+
+      pathItem.setMethod(method);
+
+      // Add properties if present
+      if (ctx.matchProperties() != null) {
+        pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+      }
+    } else if (ctx.identifier() != null) {
+      // Simple identifier without parentheses: methodName{...}
+      final Identifier methodName = (Identifier) visit(ctx.identifier());
+      final MethodCall method = new MethodCall(-1);
+      method.methodName = methodName;
+      pathItem.setMethod(method);
+
+      // Add matchProperties if present
+      if (ctx.matchProperties() != null) {
+        pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+      }
     }
 
     return pathItem;
@@ -2951,9 +3179,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (ctx.arraySelector() != null) {
         // Array selector modifier
         return createModifierForArraySelector(ctx.arraySelector());
-      } else if (ctx.nestedProjection() != null) {
-        // Nested projection modifier: :{fields}
-        modifier.nestedProjection = (NestedProjection) visit(ctx.nestedProjection());
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build modifier: " + e.getMessage(), e);
@@ -4396,17 +4621,59 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         if (contentExpr.json != null) {
           // Direct JSON literal like {'x':0}
           body.contentJson = contentExpr.json;
-        } else if (contentExpr.mathExpression instanceof ArrayLiteralExpression) {
-          // Array literal like [{'x':0}]
-          final ArrayLiteralExpression arrayLit = (ArrayLiteralExpression) contentExpr.mathExpression;
+        } else if (contentExpr.mathExpression instanceof BaseExpression) {
+          // BaseExpression wrapping an array literal, map literal, or input parameter
+          final BaseExpression baseExpr = (BaseExpression) contentExpr.mathExpression;
 
-          // For CREATE EDGE, if array has single element, extract it as contentJson
-          // If array has multiple elements, store as contentArray (executor will validate)
+          // Check if it contains an array literal
+          if (baseExpr.expression != null && baseExpr.expression.mathExpression instanceof ArrayLiteralExpression) {
+            final ArrayLiteralExpression arrayLit = (ArrayLiteralExpression) baseExpr.expression.mathExpression;
+
+            // For CREATE EDGE, if array has single element, extract it as contentJson
+            // If array has multiple elements, store as contentArray (executor will validate)
+            if (arrayLit.items.size() == 1) {
+              // Single element array [{'x':0}] - extract the json
+              final Expression firstItem = arrayLit.items.get(0);
+              Json itemJson = firstItem.json;
+
+              // If json is null, try unwrapping from BaseExpression
+              if (itemJson == null && firstItem.mathExpression instanceof BaseExpression) {
+                final BaseExpression itemBaseExpr = (BaseExpression) firstItem.mathExpression;
+                if (itemBaseExpr.expression != null && itemBaseExpr.expression.json != null) {
+                  itemJson = itemBaseExpr.expression.json;
+                }
+              }
+
+              if (itemJson != null) {
+                body.contentJson = itemJson;
+              }
+            } else {
+              // Multiple elements or non-json items - convert to JsonArray
+              final JsonArray jsonArray = new JsonArray(-1);
+              for (final Expression itemExpr : arrayLit.items) {
+                Json itemJson = itemExpr.json;
+                // If json is null, try unwrapping from BaseExpression
+                if (itemJson == null && itemExpr.mathExpression instanceof BaseExpression) {
+                  final BaseExpression itemBaseExpr = (BaseExpression) itemExpr.mathExpression;
+                  if (itemBaseExpr.expression != null && itemBaseExpr.expression.json != null) {
+                    itemJson = itemBaseExpr.expression.json;
+                  }
+                }
+                if (itemJson != null) {
+                  jsonArray.items.add(itemJson);
+                }
+              }
+              body.contentArray = jsonArray;
+            }
+          } else if (baseExpr.inputParam != null) {
+            body.contentInputParam = baseExpr.inputParam;
+          }
+        } else if (contentExpr.mathExpression instanceof ArrayLiteralExpression) {
+          // Direct ArrayLiteralExpression (shouldn't happen with current grammar, but handle it)
+          final ArrayLiteralExpression arrayLit = (ArrayLiteralExpression) contentExpr.mathExpression;
           if (arrayLit.items.size() == 1 && arrayLit.items.get(0).json != null) {
-            // Single element array [{'x':0}] - extract the json
             body.contentJson = arrayLit.items.get(0).json;
           } else {
-            // Multiple elements or non-json items - convert to JsonArray
             final JsonArray jsonArray = new JsonArray(-1);
             for (final Expression itemExpr : arrayLit.items) {
               if (itemExpr.json != null) {
@@ -4414,11 +4681,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               }
             }
             body.contentArray = jsonArray;
-          }
-        } else if (contentExpr.mathExpression instanceof BaseExpression) {
-          final BaseExpression baseExpr = (BaseExpression) contentExpr.mathExpression;
-          if (baseExpr.inputParam != null) {
-            body.contentInputParam = baseExpr.inputParam;
           }
         }
 
@@ -5559,6 +5821,34 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       return multiSelector;
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build multi-value array selector: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Array condition selector visitor - handles [whereClause].
+   * Grammar: LBRACKET whereClause RBRACKET
+   */
+  @Override
+  public Modifier visitArrayConditionSelector(final SQLParser.ArrayConditionSelectorContext ctx) {
+    try {
+      final WhereClause whereClause = (WhereClause) visit(ctx.whereClause());
+
+      // Convert whereClause to OrBlock for the condition field
+      final OrBlock orBlock = new OrBlock(-1);
+      if (whereClause.baseExpression != null) {
+        final AndBlock andBlock = new AndBlock(-1);
+        andBlock.subBlocks.add(whereClause.baseExpression);
+        orBlock.subBlocks.add(andBlock);
+      }
+
+      // Create Modifier with the condition
+      final Modifier modifier = new Modifier(-1);
+      modifier.squareBrackets = true;
+      modifier.condition = orBlock;
+
+      return modifier;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build array condition selector: " + e.getMessage(), e);
     }
   }
 

@@ -229,7 +229,17 @@ matchMethod
     ;
 
 nestedMatchPath
-    : matchMethodCall (DOT matchMethodCall matchProperties?)+
+    : nestedMatchMethod+
+    ;
+
+nestedMatchMethod
+    : identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN matchProperties?  // out('X'){...} without method chains
+    | DOT identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN matchProperties?  // .out('X'){...}
+    | identifier matchProperties?                                              // methodName{...}
+    | (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchProperties?  // -Friend->{as:x}
+    | DECR GT matchProperties?                                                 // -->{as:x}
+    | ARROW_LEFT MINUS matchProperties?                                        // <--{as:x}
+    | DECR matchProperties?                                                    // --{as:x}
     ;
 
 matchMethodCall
@@ -992,22 +1002,20 @@ arraySelector
     | LBRACKET expression? ELLIPSIS expression? RBRACKET                      # arrayEllipsisSelector
     | LBRACKET whereClause RBRACKET                                           # arrayConditionSelector
     | LBRACKET comparisonOperator expression RBRACKET                         # arrayFilterSelector
-    | LBRACKET expression comparisonOperator expression RBRACKET              # arrayBinaryCondSelector
     | LBRACKET LIKE expression RBRACKET                                       # arrayLikeSelector
     | LBRACKET ILIKE expression RBRACKET                                      # arrayIlikeSelector
     | LBRACKET IN expression RBRACKET                                         # arrayInSelector
+    | LBRACKET expression comparisonOperator expression RBRACKET              # arrayBinaryCondSelector
     | LBRACKET (expression | rid | inputParameter) RBRACKET                  # arraySingleSelector
     ;
 
 /**
  * Expression modifier (e.g., .asString(), .size(), .keys())
  * Supports both property access (.identifier) and method calls (.identifier(args))
- * Also supports nested projections (:{field})
  */
 modifier
     : DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)?
     | arraySelector
-    | nestedProjection
     ;
 
 /**
