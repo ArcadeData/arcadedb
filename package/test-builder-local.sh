@@ -47,21 +47,34 @@ echo ""
 echo "Test 2: PASSED"
 echo ""
 
-# Test 3: Help message
-echo "Test 3: Help message"
-./arcadedb-builder.sh --help | head -5
+# Test 3: Local repository mode (dry run)
+echo "Test 3: Local repository mode - dry run"
+./arcadedb-builder.sh \
+    --version=${PROJECT_VERSION} \
+    --modules=console,studio \
+    --local-repo=$HOME/.m2/repository \
+    --dry-run \
+    --skip-docker
 
 echo ""
 echo "Test 3: PASSED"
 echo ""
 
-# Test 4: Invalid version
-echo "Test 4: Invalid version (should fail)"
+# Test 4: Help message
+echo "Test 4: Help message"
+./arcadedb-builder.sh --help | head -5
+
+echo ""
+echo "Test 4: PASSED"
+echo ""
+
+# Test 5: Invalid version
+echo "Test 5: Invalid version (should fail)"
 if ./arcadedb-builder.sh --version=invalid 2>/dev/null; then
-    echo "Test 4: FAILED (should have rejected invalid version)"
+    echo "Test 5: FAILED (should have rejected invalid version)"
     exit 1
 else
-    echo "Test 4: PASSED"
+    echo "Test 5: PASSED"
 fi
 
 echo ""

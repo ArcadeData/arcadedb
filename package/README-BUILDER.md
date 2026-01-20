@@ -99,6 +99,58 @@ The script will prompt for:
   --dockerfile-only
 ```
 
+## Local Development Mode
+
+For offline development and testing, use `--local-repo` to load modules from your local Maven repository instead of downloading from Maven Central:
+
+### Using Default Maven Repository
+
+```bash
+./arcadedb-builder.sh \
+    --version=26.1.1-SNAPSHOT \
+    --modules=gremlin,studio \
+    --local-repo
+```
+
+The script will automatically use `~/.m2/repository` and look for JARs in Maven structure:
+```
+~/.m2/repository/com/arcadedb/arcadedb-{module}/{version}/arcadedb-{module}-{version}[-shaded].jar
+```
+
+### Using Custom JAR Directory
+
+```bash
+./arcadedb-builder.sh \
+    --version=26.1.1-SNAPSHOT \
+    --modules=console \
+    --local-repo=/path/to/custom/jars
+```
+
+Custom directories should contain JARs with naming: `arcadedb-{module}-{version}[-shaded].jar`
+
+### Building Local Modules First
+
+Before using local repository mode, build the modules you need:
+
+```bash
+# Build all modules
+cd /path/to/arcadedb
+mvn clean install -DskipTests
+
+# Then build custom distribution
+cd package
+./arcadedb-builder.sh \
+    --version=$(mvn -f ../pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout) \
+    --modules=gremlin,studio \
+    --local-repo
+```
+
+**Benefits:**
+- ✅ Offline builds (no internet required)
+- ✅ Faster iteration (no download time)
+- ✅ Test local changes before publishing
+- ✅ Reproducible builds with fixed dependencies
+
 ## Command-Line Options
 
 ### Required (non-interactive mode)
@@ -108,6 +160,7 @@ The script will prompt for:
 ### Optional
 
 - `--modules=mod1,mod2,...` - Comma-separated list of optional modules
+- `--local-repo[=PATH]` - Use local Maven repository (default: ~/.m2/repository) or custom directory
 - `--output-name=NAME` - Custom output name (default: arcadedb-{version}-custom-{timestamp})
 - `--output-dir=PATH` - Output directory (default: current directory)
 - `--docker-tag=TAG` - Docker image tag (default: arcadedb-custom:{version})
@@ -145,7 +198,7 @@ arcadedb-{version}-custom-{timestamp}/
 
 1. **Download Base**: Fetches base distribution from GitHub releases
 2. **Verify Checksums**: Validates SHA-256 checksum for base
-3. **Add Modules**: Downloads selected modules from Maven Central
+3. **Add Modules**: Downloads selected modules from Maven Central (or copies from local repository)
 4. **Verify Modules**: Validates SHA-1 checksums for each module
 5. **Create Archives**: Generates zip and tar.gz files
 6. **Build Docker**: Optionally creates Docker image

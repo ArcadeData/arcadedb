@@ -24,11 +24,36 @@ ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme pe
 - **Start server**: Use packaged scripts in `package/src/main/scripts/server.sh` (Unix) or `server.bat` (Windows)
 - **Console**: Use `package/src/main/scripts/console.sh` or `console.bat`
 
-### Modular Distribution Builder
-- **Build custom distribution**: `package/arcadedb-builder.sh --version=X.Y.Z --modules=mod1,mod2`
-- **Interactive mode**: `package/arcadedb-builder.sh`
-- **See options**: `package/arcadedb-builder.sh --help`
-- **Local testing**: `package/test-builder-local.sh`
+### Distribution Builder
+
+The modular distribution builder (`package/arcadedb-builder.sh`) creates custom ArcadeDB distributions:
+
+**Production builds** (download from releases):
+```bash
+cd package
+./arcadedb-builder.sh --version=26.1.0 --modules=gremlin,studio
+```
+
+**Development builds** (use local Maven repository):
+```bash
+# Build modules first
+mvn clean install -DskipTests
+
+# Create distribution with local modules
+cd package
+VERSION=$(mvn -f ../pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
+./arcadedb-builder.sh \
+    --version=$VERSION \
+    --modules=console,gremlin,studio \
+    --local-repo \
+    --skip-docker
+```
+
+**Testing the builder**:
+```bash
+cd package
+./test-builder-local.sh
+```
 
 ### Testing Commands
 - **Run specific test class**: `mvn test -Dtest=ClassName`
