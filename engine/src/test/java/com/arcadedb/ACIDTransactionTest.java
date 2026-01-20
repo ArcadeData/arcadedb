@@ -18,11 +18,7 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.*;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.WALException;
 import com.arcadedb.engine.WALFile;
@@ -36,8 +32,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.awaitility.Awaitility;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -47,13 +41,7 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
@@ -61,7 +49,6 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-@Disabled
 class ACIDTransactionTest extends TestHelper {
   @Test
   void asyncTX() {
