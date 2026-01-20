@@ -29,14 +29,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class Statement extends SimpleNode {
-
-  //only for internal use!!! (caching)
+  // Only for internal use!!! (caching)
   public Statement originalStatement;
   public String    originalStatementAsString;
   public Limit     limit   = null;
   public Timeout   timeout = null;
-
-  public static final String CUSTOM_STRICT_SQL = "strictSql";
 
   public Statement(final int id) {
     super(id);

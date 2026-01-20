@@ -88,6 +88,7 @@ public class MatchExpression extends SimpleNode {
    *
    * @return Map representing the AST structure in JSON format
    */
+  @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = new LinkedHashMap<>();
     json.put("@class", "MatchExpression");
