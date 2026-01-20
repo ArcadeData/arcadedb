@@ -23,24 +23,12 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.RangeIndex;
-import com.arcadedb.query.sql.parser.Bucket;
-import com.arcadedb.query.sql.parser.FromClause;
-import com.arcadedb.query.sql.parser.FromItem;
-import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.IndexIdentifier;
-import com.arcadedb.query.sql.parser.InputParameter;
-import com.arcadedb.query.sql.parser.Limit;
-import com.arcadedb.query.sql.parser.PInteger;
-import com.arcadedb.query.sql.parser.Rid;
-import com.arcadedb.query.sql.parser.Skip;
-import com.arcadedb.query.sql.parser.Statement;
-import com.arcadedb.query.sql.parser.TraverseProjectionItem;
-import com.arcadedb.query.sql.parser.TraverseStatement;
-import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.schema.LocalDocumentType;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -89,12 +77,12 @@ public class TraverseExecutionPlanner {
 
   private void handleTraversal(final SelectExecutionPlan result, final CommandContext context) {
     switch (strategy) {
-    case BREADTH_FIRST:
-      result.chain(new BreadthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context));
-      break;
-    case DEPTH_FIRST:
-      result.chain(new DepthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context));
-      break;
+      case BREADTH_FIRST:
+        result.chain(new BreadthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context));
+        break;
+      case DEPTH_FIRST:
+        result.chain(new DepthFirstTraverseStep(this.projections, this.whileClause, maxDepth, context));
+        break;
     }
     //TODO
   }
@@ -124,12 +112,12 @@ public class TraverseExecutionPlanner {
     } else if (target.getResultSet() != null) {
       result.chain(new FetchFromResultsetStep(target.getResultSet(), context));
     } else {
-      throw new UnsupportedOperationException();
+      throw new UnsupportedOperationException("Target '" + target + "'");
     }
   }
 
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final InputParameter inputParam,
-      final CommandContext context) {
+                                        final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
 
     if (paramValue instanceof String string && RID.is(paramValue))
@@ -191,7 +179,7 @@ public class TraverseExecutionPlanner {
   }
 
   private void handleIndexAsTarget(final SelectExecutionPlan result, final IndexIdentifier indexIdentifier,
-      final CommandContext context) {
+                                   final CommandContext context) {
     final String indexName = indexIdentifier.getIndexName();
     final RangeIndex index = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
@@ -199,28 +187,28 @@ public class TraverseExecutionPlanner {
     }
 
     switch (indexIdentifier.getType()) {
-    case INDEX:
-      if (!index.supportsOrderedIterations()) {
-        throw new CommandExecutionException("Index " + indexName + " does not allow iteration without a condition");
-      }
-      result.chain(new FetchFromIndexStep(index, null, null, context));
-      result.chain(new GetValueFromIndexEntryStep(context, null));
-      break;
-    case VALUES:
-    case VALUESASC:
-      if (!index.supportsOrderedIterations()) {
-        throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
-      }
-      result.chain(new FetchFromIndexValuesStep(index, true, context));
-      result.chain(new GetValueFromIndexEntryStep(context, null));
-      break;
-    case VALUESDESC:
-      if (!index.supportsOrderedIterations()) {
-        throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
-      }
-      result.chain(new FetchFromIndexValuesStep(index, false, context));
-      result.chain(new GetValueFromIndexEntryStep(context, null));
-      break;
+      case INDEX:
+        if (!index.supportsOrderedIterations()) {
+          throw new CommandExecutionException("Index " + indexName + " does not allow iteration without a condition");
+        }
+        result.chain(new FetchFromIndexStep(index, null, null, context));
+        result.chain(new GetValueFromIndexEntryStep(context, null));
+        break;
+      case VALUES:
+      case VALUESASC:
+        if (!index.supportsOrderedIterations()) {
+          throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
+        }
+        result.chain(new FetchFromIndexValuesStep(index, true, context));
+        result.chain(new GetValueFromIndexEntryStep(context, null));
+        break;
+      case VALUESDESC:
+        if (!index.supportsOrderedIterations()) {
+          throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
+        }
+        result.chain(new FetchFromIndexValuesStep(index, false, context));
+        result.chain(new GetValueFromIndexEntryStep(context, null));
+        break;
     }
   }
 

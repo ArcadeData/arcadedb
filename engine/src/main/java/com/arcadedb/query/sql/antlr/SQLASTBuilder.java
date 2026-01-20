@@ -311,30 +311,77 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public MatchPathItem visitMatchMethod(final SQLParser.MatchMethodContext ctx) {
-    final MatchPathItem pathItem = new MatchPathItem(-1);
-
     // Check if this is DOT method syntax: .out('Friend'){as:x} or .(chain){as:x}
     if (ctx.DOT() != null) {
       // Check for .(method().method(){...}) syntax - nested match path
       if (ctx.nestedMatchPath() != null) {
         // This is .(methodChain) - a nested sequence of match methods
-        // We'll create a special MethodCall to represent this nested path
-        final MethodCall method = new MethodCall(-1);
-        method.methodName = new Identifier("$nestedPath");
+        // Create a MultiMatchPathItem to hold the nested method chain
+        final MultiMatchPathItem multiPathItem = new MultiMatchPathItem(-1);
+        final SQLParser.NestedMatchPathContext nestedCtx = ctx.nestedMatchPath();
 
-        // For now, mark this with the special method name
-        // The execution planner will need to handle this specially
-        pathItem.setMethod(method);
-        // TODO: Extract and store the nested method chain for execution planner
+        // nestedMatchPath : matchMethodCall (DOT matchMethodCall matchProperties?)+
+        // Process all matchMethodCall elements in the nested path
+        final List<SQLParser.MatchMethodCallContext> methodCalls = nestedCtx.matchMethodCall();
+        final List<SQLParser.MatchPropertiesContext> matchProps = nestedCtx.matchProperties();
 
-        // Add properties if present (matchProperties appears only once at the end): {as:x, where:...}
-        if (ctx.matchProperties() != null) {
-          pathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+        for (int i = 0; i < methodCalls.size(); i++) {
+          final SQLParser.MatchMethodCallContext methodCallCtx = methodCalls.get(i);
+
+          if (i == 0) {
+            // First item should be MatchPathItemFirst with FunctionCall
+            final MatchPathItemFirst firstItem = new MatchPathItemFirst(-1);
+            final Object methodObj = visit(methodCallCtx);
+            if (methodObj instanceof FunctionCall) {
+              firstItem.setFunction((FunctionCall) methodObj);
+            } else if (methodObj instanceof Identifier) {
+              // Convert identifier to function call
+              final FunctionCall funcCall = new FunctionCall(-1);
+              funcCall.name = (Identifier) methodObj;
+              firstItem.setFunction(funcCall);
+            }
+            // No filter for first item in nested path (only intermediate items can have filters)
+            multiPathItem.getItems().add(firstItem);
+          } else {
+            // Subsequent items are regular MatchPathItem with MethodCall
+            final MatchPathItem item = new MatchPathItem(-1);
+            final Object methodObj = visit(methodCallCtx);
+            final MethodCall method;
+
+            if (methodObj instanceof MethodCall) {
+              method = (MethodCall) methodObj;
+            } else if (methodObj instanceof FunctionCall) {
+              final FunctionCall funcCall = (FunctionCall) methodObj;
+              method = new MethodCall(-1);
+              method.methodName = funcCall.name;
+              method.params.addAll(funcCall.params);
+            } else if (methodObj instanceof Identifier) {
+              method = new MethodCall(-1);
+              method.methodName = (Identifier) methodObj;
+            } else {
+              throw new IllegalStateException("Unexpected method call type in nested path: " +
+                  (methodObj != null ? methodObj.getClass().getName() : "null"));
+            }
+            item.setMethod(method);
+
+            // Add matchProperties if present for this intermediate item
+            // matchProps has size = methodCalls.size() - 1 (no properties for first item)
+            if (i - 1 < matchProps.size() && matchProps.get(i - 1) != null) {
+              item.setFilter((MatchFilter) visit(matchProps.get(i - 1)));
+            }
+            multiPathItem.getItems().add(item);
+          }
         }
-        return pathItem;
+
+        // Add properties if present at the end (matchProperties for the whole nested path): {as:x, where:...}
+        if (ctx.matchProperties() != null) {
+          multiPathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+        }
+        return multiPathItem;
       }
 
       // Standard .methodCall() syntax
+      final MatchPathItem pathItem = new MatchPathItem(-1);
       final Object methodObj = visit(ctx.matchMethodCall());
       final MethodCall method;
 
@@ -366,6 +413,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Handle anonymous arrow syntax: --> <-- --
     if (ctx.DECR() != null || (ctx.ARROW_LEFT() != null && ctx.identifier() == null)) {
+      final MatchPathItem pathItem = new MatchPathItem(-1);
       String methodName;
       if (ctx.GT() != null || (ctx.MINUS() != null && ctx.ARROW_LEFT() == null)) {
         // DECR GT = --> = outgoing
@@ -392,6 +440,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Arrow syntax with identifier: -EdgeType-> <-EdgeType- -EdgeType-
     // Determine direction based on arrow combination
+    final MatchPathItem pathItem = new MatchPathItem(-1);
     final boolean leftIsArrow = ctx.ARROW_LEFT() != null;
     final boolean rightIsArrow = ctx.ARROW_RIGHT() != null;
 
@@ -787,11 +836,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // TraverseProjectionItem expects a BaseIdentifier
       if (exprObj instanceof BaseIdentifier) {
         item.base = (BaseIdentifier) exprObj;
-      } else if (exprObj instanceof BaseExpression) {
-        // BaseExpression contains a BaseIdentifier
-        final BaseExpression baseExpr = (BaseExpression) exprObj;
+      } else if (exprObj instanceof Expression expr) {
+        // Expression.mathExpression contains the actual expression data
+        if (expr.mathExpression instanceof BaseExpression baseExpr) {
+          if (baseExpr.identifier != null) {
+            item.base = baseExpr.identifier;
+            // Also carry over any modifier from the BaseExpression
+            item.modifier = baseExpr.modifier;
+          }
+        }
+      } else if (exprObj instanceof BaseExpression baseExpr) {
+        // Direct BaseExpression (shouldn't happen, but handle it)
         if (baseExpr.identifier != null) {
           item.base = baseExpr.identifier;
+          item.modifier = baseExpr.modifier;
         }
       }
       // If we still don't have a base, create a simple one
@@ -1023,13 +1081,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * FROM single parameter visitor (e.g., FROM ?).
+   * FROM single parameter visitor (e.g., FROM :rid or FROM ?).
    */
   @Override
   public FromItem visitFromParam(final SQLParser.FromParamContext ctx) {
     final FromItem fromItem = new FromItem(-1);
-    fromItem.inputParams = new ArrayList<>();
-    fromItem.inputParams.add((InputParameter) visit(ctx.inputParameter()));
+    // Use inputParam (singular) for single parameter - this is what TraverseExecutionPlanner expects
+    fromItem.inputParam = (InputParameter) visit(ctx.inputParameter());
     return fromItem;
   }
 
@@ -1389,12 +1447,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * NULL condition literal - WHERE NULL.
-   * In SQL, NULL in a boolean context is typically falsy.
+   * In SQL three-valued logic, NULL represents an unknown value.
    */
   @Override
   public BooleanExpression visitNullCondition(final SQLParser.NullConditionContext ctx) {
-    // NULL in boolean context evaluates to FALSE
-    return BooleanExpression.FALSE;
+    // NULL in boolean context evaluates to NULL (unknown) - proper SQL three-valued logic
+    return BooleanExpression.NULL;
   }
 
   /**
@@ -2638,6 +2696,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (ctx.arraySelector() != null) {
         // Array selector modifier
         return createModifierForArraySelector(ctx.arraySelector());
+      } else if (ctx.nestedProjection() != null) {
+        // Nested projection modifier: :{fields}
+        modifier.nestedProjection = (NestedProjection) visit(ctx.nestedProjection());
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build modifier: " + e.getMessage(), e);
@@ -2876,12 +2937,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final Expression expr = (Expression) visit(ctx.expression());
 
     // Extract the number or parameter from the expression
-    if (expr.mathExpression instanceof BaseExpression) {
-      final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+    if (expr.mathExpression instanceof BaseExpression baseExpr) {
       if (baseExpr.number instanceof PInteger) {
         limit.num = (PInteger) baseExpr.number;
       } else if (baseExpr.inputParam != null) {
         limit.inputParam = baseExpr.inputParam;
+      }
+    } else {
+      // Handle other expressions like -1 (negative numbers)
+      // Try to evaluate the expression as a constant
+      try {
+        final Object value = expr.execute((com.arcadedb.query.sql.executor.Result) null, null);
+        if (value instanceof Number number) {
+          limit.setValue(number.intValue());
+        }
+      } catch (final Exception ignored) {
+        // Expression needs runtime context, leave limit empty for now
       }
     }
 
@@ -2900,13 +2971,21 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Extract the number or parameter from the expression
     try {
-      if (expr.mathExpression instanceof BaseExpression) {
-        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
-
+      if (expr.mathExpression instanceof BaseExpression baseExpr) {
         if (baseExpr.number instanceof PInteger) {
           skip.num = (PInteger) baseExpr.number;
         } else if (baseExpr.inputParam != null) {
           skip.inputParam = baseExpr.inputParam;
+        }
+      } else {
+        // Handle other expressions like negative numbers
+        try {
+          final Object value = expr.execute((com.arcadedb.query.sql.executor.Result) null, null);
+          if (value instanceof Number number) {
+            skip.num = new PInteger(-1).setValue(number.intValue());
+          }
+        } catch (final Exception ignored) {
+          // Expression needs runtime context, leave skip empty for now
         }
       }
     } catch (final Exception e) {
@@ -3823,8 +3902,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
         } else if (CollectionUtils.isNotEmpty(fromItem.rids)) {
           leftExpr.rid = fromItem.rids.get(0);
+        } else if (fromItem.inputParam != null) {
+          // Handle single input parameter (e.g., CREATE EDGE FROM :rid TO ...)
+          final BaseExpression baseExpr = new BaseExpression(-1);
+          baseExpr.inputParam = fromItem.inputParam;
+          leftExpr.mathExpression = baseExpr;
         } else if (CollectionUtils.isNotEmpty(fromItem.inputParams)) {
-          // Handle input parameters (e.g., CREATE EDGE FROM ? TO ?)
+          // Handle input parameters list (e.g., CREATE EDGE FROM [?, ?] TO ?)
           final BaseExpression baseExpr = new BaseExpression(-1);
           baseExpr.inputParam = fromItem.inputParams.get(0);
           leftExpr.mathExpression = baseExpr;
@@ -3846,8 +3930,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           rightExpr.mathExpression = new BaseExpression(toItem.identifier);
         } else if (CollectionUtils.isNotEmpty(toItem.rids)) {
           rightExpr.rid = toItem.rids.get(0);
+        } else if (toItem.inputParam != null) {
+          // Handle single input parameter (e.g., CREATE EDGE FROM ... TO :rid)
+          final BaseExpression baseExpr = new BaseExpression(-1);
+          baseExpr.inputParam = toItem.inputParam;
+          rightExpr.mathExpression = baseExpr;
         } else if (CollectionUtils.isNotEmpty(toItem.inputParams)) {
-          // Handle input parameters (e.g., CREATE EDGE FROM ? TO ?)
+          // Handle input parameters list (e.g., CREATE EDGE FROM ? TO [?, ?])
           final BaseExpression baseExpr = new BaseExpression(-1);
           baseExpr.inputParam = toItem.inputParams.get(0);
           rightExpr.mathExpression = baseExpr;
@@ -4330,8 +4419,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final DropTypeStatement stmt = new DropTypeStatement(-1);
     final SQLParser.DropTypeBodyContext bodyCtx = ctx.dropTypeBody();
 
-    // Type name
-    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    // Type name - can be either identifier or input parameter
+    if (bodyCtx.identifier() != null) {
+      stmt.name = (Identifier) visit(bodyCtx.identifier());
+    } else if (bodyCtx.inputParameter() != null) {
+      stmt.nameParam = (InputParameter) visit(bodyCtx.inputParameter());
+    }
 
     // IF EXISTS
     stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;

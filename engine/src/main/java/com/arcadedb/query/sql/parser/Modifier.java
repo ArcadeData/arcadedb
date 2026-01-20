@@ -38,6 +38,7 @@ public class Modifier extends SimpleNode {
   public RightBinaryCondition      rightBinaryCondition;
   public MethodCall                methodCall;
   public SuffixIdentifier          suffix;
+  public NestedProjection          nestedProjection;
   public Modifier                  next;
 
   public Modifier(final int id) {
@@ -63,6 +64,8 @@ public class Modifier extends SimpleNode {
     else if (suffix != null) {
       builder.append(".");
       suffix.toString(params, builder);
+    } else if (nestedProjection != null) {
+      nestedProjection.toString(params, builder);
     }
     if (next != null)
       next.toString(params, builder);
@@ -81,6 +84,8 @@ public class Modifier extends SimpleNode {
       result = arraySingleValues.execute(currentRecord, result, context);
     else if (rightBinaryCondition != null)
       result = rightBinaryCondition.execute(currentRecord, result, context);
+    else if (nestedProjection != null)
+      result = nestedProjection.apply(null, result, context);
 
     if (next != null)
       result = next.execute(currentRecord, result, context);
@@ -101,6 +106,8 @@ public class Modifier extends SimpleNode {
       result = arraySingleValues.execute(currentRecord, result, context);
     else if (rightBinaryCondition != null)
       result = rightBinaryCondition.execute(currentRecord, result, context);
+    else if (nestedProjection != null)
+      result = nestedProjection.apply(null, result, context);
 
     if (next != null)
       result = next.execute(currentRecord, result, context);
@@ -146,6 +153,7 @@ public class Modifier extends SimpleNode {
     result.rightBinaryCondition = rightBinaryCondition == null ? null : rightBinaryCondition.copy();
     result.methodCall = methodCall == null ? null : methodCall.copy();
     result.suffix = suffix == null ? null : suffix.copy();
+    result.nestedProjection = nestedProjection == null ? null : nestedProjection.copy();
     result.next = next == null ? null : next.copy();
 
     return result;
@@ -154,7 +162,7 @@ public class Modifier extends SimpleNode {
   @Override
   protected Object[] getIdentityElements() {
     return new Object[] { squareBrackets, arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix,
-        next };
+        nestedProjection, next };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
@@ -176,13 +184,15 @@ public class Modifier extends SimpleNode {
     if (suffix != null)
       suffix.extractSubQueries(collector);
 
+    // nestedProjection doesn't have extractSubQueries - nested projections handle their own subqueries
+
     if (next != null)
       next.extractSubQueries(collector);
   }
 
   @Override
   protected SimpleNode[] getCacheableElements() {
-    return new SimpleNode[] { arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix };
+    return new SimpleNode[] { arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix, nestedProjection };
   }
 
   protected void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {

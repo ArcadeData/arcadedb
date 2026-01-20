@@ -551,7 +551,7 @@ alterDatabaseItem
 // ============================================================================
 
 dropTypeBody
-    : identifier (IF EXISTS)? UNSAFE?
+    : (identifier | inputParameter) (IF EXISTS)? UNSAFE?
     ;
 
 dropPropertyBody
@@ -999,10 +999,12 @@ arraySelector
 /**
  * Expression modifier (e.g., .asString(), .size(), .keys())
  * Supports both property access (.identifier) and method calls (.identifier(args))
+ * Also supports nested projections (:{field})
  */
 modifier
     : DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)?
     | arraySelector
+    | nestedProjection
     ;
 
 /**

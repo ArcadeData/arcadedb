@@ -68,8 +68,8 @@ class Issue3128BasicTest {
     result = database.query("opencypher", "MATCH (n:Node) WHERE n.name = 'Node2' RETURN ID(n) AS id");
     String node2Id = (String) result.next().getProperty("id");
 
-    System.out.println("Node1 ID: " + node1Id);
-    System.out.println("Node2 ID: " + node2Id);
+    //System.out.println("Node1 ID: " + node1Id);
+    //System.out.println("Node2 ID: " + node2Id);
 
     // Test ID() function in WHERE clause with parameter - THIS WAS THE ORIGINAL ISSUE
     result = database.query("opencypher",
@@ -80,7 +80,7 @@ class Issue3128BasicTest {
     while (result.hasNext()) {
       Result r = result.next();
       Vertex v = (Vertex) r.getProperty("a");
-      System.out.println("Matched: " + v.get("name"));
+      //System.out.println("Matched: " + v.get("name"));
       count++;
     }
 
@@ -95,7 +95,7 @@ class Issue3128BasicTest {
     while (result.hasNext()) {
       Result r = result.next();
       Vertex v = (Vertex) r.getProperty("b");
-      System.out.println("Matched: " + v.get("name"));
+      //System.out.println("Matched: " + v.get("name"));
       count++;
     }
 
