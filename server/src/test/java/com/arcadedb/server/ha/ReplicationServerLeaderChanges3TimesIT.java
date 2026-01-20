@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha;
 
+import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -176,35 +177,52 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             return;
 
           final String leaderName = server.getHA().getLeaderName();
-          final ArcadeDBServer leaderServer = getServer(leaderName);
-
-          if (leaderServer == null) {
-            LogManager.instance().log(this, Level.FINE, "TEST: Leader '%s' not found in server list, skipping", leaderName);
-            return;
-          }
 
           messagesInTotal.incrementAndGet();
           messagesPerRestart.incrementAndGet();
 
-          if (leaderServer.isStarted() && messagesPerRestart.get() > getTxs() / (getServerCount() * 2)
-              && restarts.get() < getServerCount()) {
-            LogManager.instance()
-                .log(this, Level.FINE, "TEST: Found online replicas %d", null, leaderServer.getHA().getOnlineReplicas());
+          // Log every 500 messages to track progress
+          if (messagesInTotal.get() % 500 == 0) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "TEST: Progress - totalMsgs=%d, msgsThisRestart=%d, restarts=%d/%d, threshold=%d, leader=%s",
+                messagesInTotal.get(), messagesPerRestart.get(), restarts.get(), getServerCount(),
+                getTxs() / (getServerCount() * 2), leaderName);
+          }
 
-            if (leaderServer.getHA().getOnlineReplicas() < getServerCount() - 1) {
-              // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-              LogManager.instance().log(this, Level.FINE,
-                  "TEST: Skip restart of the Leader %s because no all replicas are online yet (messages=%d txs=%d) ...", null,
-                  leaderName, messagesInTotal.get(), getTxs());
+          // Check if we should trigger a restart
+          if (messagesPerRestart.get() > getTxs() / (getServerCount() * 2) && restarts.get() < getServerCount()) {
+            // Re-fetch leader server on each check to get current instance after async restarts
+            final ArcadeDBServer leaderServer = getServer(leaderName);
+
+            if (leaderServer == null) {
+              LogManager.instance().log(this, Level.FINE, "TEST: Leader '%s' not found in server list, skipping restart check",
+                  leaderName);
               return;
             }
 
-            if (semaphore.putIfAbsent(restarts.get(), true) != null)
+            if (!leaderServer.isStarted()) {
+              LogManager.instance().log(this, Level.FINE,
+                  "TEST: Leader '%s' not started yet, skipping restart check (probably restarting)", leaderName);
+              return;
+            }
+
+            final int onlineReplicas = leaderServer.getHA().getOnlineReplicas();
+            if (onlineReplicas < getServerCount() - 1) {
+              // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
+              LogManager.instance().log(this, Level.FINE,
+                  "TEST: Skip restart of the Leader %s because not all replicas are online yet (online=%d, need=%d, messages=%d)",
+                  null, leaderName, onlineReplicas, getServerCount() - 1, messagesInTotal.get());
+              return;
+            }
+
+            // Use semaphore to ensure only one thread triggers the restart
+            if (semaphore.putIfAbsent(restarts.get(), true) != null) {
               // ANOTHER REPLICA JUST DID IT
               return;
+            }
 
-            testLog("Stopping the Leader %s (messages=%d txs=%d restarts=%d) ...", leaderName, messagesInTotal.get(), getTxs(),
-                restarts.get());
+            testLog("Stopping the Leader %s (messages=%d txs=%d restarts=%d onlineReplicas=%d) ...", leaderName,
+                messagesInTotal.get(), getTxs(), restarts.get(), onlineReplicas);
 
             leaderServer.stop();
             restarts.incrementAndGet();
@@ -218,6 +236,23 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
         }
       }
     });
+  }
+
+  @Override
+  protected String getServerAddresses() {
+    // Override to include server aliases that match SERVER_NAME configuration.
+    // This ensures getServer(leaderName) can find servers by their alias.
+    // Without aliases, all servers get alias="localhost" which doesn't match "ArcadeDB_N" server names.
+    int port = 2424;
+    final StringBuilder serverURLs = new StringBuilder();
+    for (int i = 0; i < getServerCount(); ++i) {
+      if (i > 0)
+        serverURLs.append(",");
+
+      serverURLs.append("{").append(Constants.PRODUCT).append("_").append(i).append("}");
+      serverURLs.append("localhost:").append(port++);
+    }
+    return serverURLs.toString();
   }
 
   @Override
