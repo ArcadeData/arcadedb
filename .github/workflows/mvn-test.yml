@@ -222,7 +222,7 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Build packages for Builder Tests
-        run: ./mvnw clean package --batch-mode --errors  --show-version
+        run: ./mvnw clean package -DskipTests --batch-mode --errors  --show-version
 
       - name: Run Builder Tests
         working-directory: package
