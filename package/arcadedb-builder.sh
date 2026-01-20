@@ -160,15 +160,15 @@ parse_args() {
                 DRY_RUN=true
                 shift
                 ;;
-            -v|--verbose)
+            -v | --verbose)
                 VERBOSE=true
                 shift
                 ;;
-            -q|--quiet)
+            -q | --quiet)
                 QUIET=true
                 shift
                 ;;
-            -h|--help)
+            -h | --help)
                 show_help
                 exit 0
                 ;;
@@ -284,7 +284,7 @@ check_prerequisites() {
     # Check write permissions
     # Ensure directory exists or can be created
     if [[ ! -d "$OUTPUT_DIR" ]]; then
-        if ! mkdir -p "$OUTPUT_DIR" 2>/dev/null; then
+        if ! mkdir -p "$OUTPUT_DIR" 2> /dev/null; then
             error_exit "Cannot create output directory: $OUTPUT_DIR"
         fi
     fi
@@ -336,6 +336,61 @@ set_defaults() {
     log_verbose "Docker tag: $DOCKER_TAG"
 }
 
+# Interactive module selection
+# Note: Uses indexed arrays for bash 3.2+ compatibility (no associative arrays)
+interactive_select_modules() {
+    echo ""
+    echo "Select optional modules (space-separated numbers, e.g., 1 3 5):"
+    echo "Press Enter without input to skip all optional modules"
+    echo ""
+
+    # Build combined module list
+    local all_modules=($SHADED_MODULES $REGULAR_MODULES)
+    local counter=1
+
+    # Store modules in indexed array for lookup
+    local module_list=()
+
+    for module in "${all_modules[@]}"; do
+        printf "%2d. %-12s - %s\n" "$counter" "$module" "$(get_module_description "$module")"
+        module_list+=("$module")
+        ((counter++))
+    done
+
+    echo ""
+    read -p "Enter module numbers: " -r selections
+
+    # Parse selections
+    local selected=()
+    for num in $selections; do
+        # Validate number is in range (1 to array length)
+        if [[ "$num" =~ ^[0-9]+$ ]] && [[ "$num" -ge 1 ]] && [[ "$num" -le "${#module_list[@]}" ]]; then
+            # Convert 1-based to 0-based index
+            local index=$((num - 1))
+            selected+=("${module_list[$index]}")
+        else
+            log_error "Invalid selection: $num"
+        fi
+    done
+
+    # Convert to comma-separated string
+    # Handle empty array case for set -u compatibility
+    if [[ ${#selected[@]} -gt 0 ]]; then
+        SELECTED_MODULES=$(
+            IFS=,
+            echo "${selected[*]}"
+        )
+    else
+        SELECTED_MODULES=""
+    fi
+
+    if [[ -z "$SELECTED_MODULES" ]]; then
+        log_info "No optional modules selected. Building base distribution only."
+    else
+        log_info "Selected modules: $SELECTED_MODULES"
+    fi
+}
+
 #===============================================================================
 # Main Entry Point
 #===============================================================================
@@ -346,10 +401,22 @@ main() {
     log_info "Starting modular distribution builder"
 
     check_prerequisites
+
+    # Interactive mode if version not specified
+    if [[ -z "$ARCADEDB_VERSION" ]]; then
+        echo ""
+        read -p "Enter ArcadeDB version (e.g., 26.1.0): " ARCADEDB_VERSION
+    fi
+
     validate_version
     set_defaults
 
-    log_success "Configuration validated"
+    # Interactive module selection if not specified
+    if [[ -z "$SELECTED_MODULES" ]] && [[ "$DRY_RUN" != true ]]; then
+        interactive_select_modules
+    fi
+
+    log_success "Configuration complete"
 }
 
 # Run main function
