@@ -547,6 +547,28 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public MatchFilterItem visitMatchFilterItem(final SQLParser.MatchFilterItemContext ctx) {
     final MatchFilterItem item = new MatchFilterItem(-1);
 
+    // Handle special case for BUCKET_IDENTIFIER (bucket:name) and BUCKET_NUMBER_IDENTIFIER (bucket:123)
+    if (ctx.BUCKET_IDENTIFIER() != null) {
+      // Extract the bucket name from the token (after the colon)
+      final String tokenText = ctx.BUCKET_IDENTIFIER().getText();
+      final String bucketName = tokenText.substring(7); // Remove "bucket:" prefix
+      item.bucketName = new Identifier(bucketName);
+
+      // Expression is optional for these special tokens
+      if (ctx.expression() != null) {
+        // This shouldn't normally happen for bucket identifier, but handle it
+      }
+      return item;
+    }
+
+    if (ctx.BUCKET_NUMBER_IDENTIFIER() != null) {
+      // Extract the bucket number from the token (after the colon)
+      final String tokenText = ctx.BUCKET_NUMBER_IDENTIFIER().getText();
+      final String bucketNumStr = tokenText.substring(7); // Remove "bucket:" prefix
+      item.bucketId = new PInteger(Integer.parseInt(bucketNumStr));
+      return item;
+    }
+
     // Get the key (could be identifier or keyword token)
     final Identifier key;
     final Object keyObj = visit(ctx.matchFilterItemKey());
@@ -649,6 +671,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           if (baseExpr.number instanceof PInteger) {
             item.maxDepth = (PInteger) baseExpr.number;
           }
+        }
+        break;
+      case "depth":
+        // depth can be an ArrayRangeSelector like depth: [0..3]
+        if (valueObj instanceof ArrayRangeSelector) {
+          item.depth = (ArrayRangeSelector) valueObj;
+        } else if (valueObj instanceof BaseExpression) {
+          // Try to extract range from expression
+          // For now, just skip if it's not already an ArrayRangeSelector
         }
         break;
       case "optional":
@@ -2264,7 +2295,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Array literal visitor - handles [expr1, expr2, ...] syntax.
+   * Array literal visitor - handles [expr1, expr2, ...] syntax with optional modifiers.
    */
   @Override
   public BaseExpression visitArrayLit(final SQLParser.ArrayLitContext ctx) {
@@ -2295,6 +2326,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     final BaseExpression baseExpr = new BaseExpression(-1);
     baseExpr.expression = expression;
+
+    // Process modifiers (method calls like .keys(), .values(), etc.)
+    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
+      baseExpr.modifier = firstModifier;
+    }
 
     return baseExpr;
   }
@@ -2578,22 +2626,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public BaseExpression visitParenthesizedExpr(final SQLParser.ParenthesizedExprContext ctx) {
-    final BaseExpression baseExpr = new BaseExpression(-1);
-
     if (ctx.expression() != null) {
       // Regular parenthesized expression
+      final BaseExpression baseExpr = new BaseExpression(-1);
       baseExpr.expression = (Expression) visit(ctx.expression());
+      return baseExpr;
     } else if (ctx.statement() != null) {
       // Parenthesized statement (subquery)
-      // This case is typically handled at a higher level (e.g., visitLetItem checks for this pattern)
-      // For cases where it isn't handled higher up, we need to gracefully handle it here
-      // NOTE: Statements in expressions are not directly supported in all contexts
-      // The calling code should detect this pattern and handle it appropriately
-      // For now, create an empty BaseExpression - this will be detected as a parsing issue if used
-      baseExpr.expression = null;
+      final Statement stmt = (Statement) visit(ctx.statement());
+      if (stmt instanceof SelectStatement) {
+        // Return a SubqueryExpression that wraps the SELECT statement
+        return new SubqueryExpression((SelectStatement) stmt);
+      }
+      // For non-SELECT statements, throw a parsing error as they can't be used as expressions
+      throw new CommandSQLParsingException("Only SELECT statements can be used as subquery expressions");
     }
 
-    return baseExpr;
+    return new BaseExpression(-1);
   }
 
   // HELPER METHODS
@@ -3168,12 +3217,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         body.setExpressions.add(setExpr);
       }
     }
-    // CONTENT clause: CONTENT {...} or CONTENT [...]
+    // CONTENT clause: CONTENT {...} or CONTENT [...] or CONTENT :param
     else if (ctx.CONTENT() != null) {
       if (ctx.json() != null) {
         body.contentJson = (Json) visit(ctx.json());
       } else if (ctx.jsonArray() != null) {
         body.contentArray = (JsonArray) visit(ctx.jsonArray());
+      } else if (ctx.inputParameter() != null) {
+        body.contentInputParam = (InputParameter) visit(ctx.inputParameter());
       }
     }
 
@@ -3442,10 +3493,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // IF NOT EXISTS
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
-    // EXTENDS clause
+    // EXTENDS clause - supports multiple parent types (EXTENDS bar, baz)
     if (bodyCtx.EXTENDS() != null && bodyCtx.identifier().size() > 1) {
       stmt.supertypes = new ArrayList<>();
-      stmt.supertypes.add((Identifier) visit(bodyCtx.identifier(1)));
+      // All identifiers after the first one (type name) are supertypes
+      for (int i = 1; i < bodyCtx.identifier().size(); i++) {
+        stmt.supertypes.add((Identifier) visit(bodyCtx.identifier(i)));
+      }
     }
 
     // BUCKET clause (list of bucket identifiers)
@@ -3497,10 +3551,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // IF NOT EXISTS
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
-    // EXTENDS clause
+    // EXTENDS clause - supports multiple parent types (EXTENDS bar, baz)
     if (bodyCtx.EXTENDS() != null && bodyCtx.identifier().size() > 1) {
       stmt.supertypes = new ArrayList<>();
-      stmt.supertypes.add((Identifier) visit(bodyCtx.identifier(1)));
+      // All identifiers after the first one (type name) are supertypes
+      for (int i = 1; i < bodyCtx.identifier().size(); i++) {
+        stmt.supertypes.add((Identifier) visit(bodyCtx.identifier(i)));
+      }
     }
 
     // BUCKET clause (list of bucket identifiers)
@@ -3552,10 +3609,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // IF NOT EXISTS
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
-    // EXTENDS clause
+    // EXTENDS clause - supports multiple parent types (EXTENDS bar, baz)
     if (bodyCtx.EXTENDS() != null && bodyCtx.identifier().size() > 1) {
       stmt.supertypes = new ArrayList<>();
-      stmt.supertypes.add((Identifier) visit(bodyCtx.identifier(1)));
+      // All identifiers after the first one (type name) are supertypes
+      for (int i = 1; i < bodyCtx.identifier().size(); i++) {
+        stmt.supertypes.add((Identifier) visit(bodyCtx.identifier(i)));
+      }
     }
 
     // UNIDIRECTIONAL flag
@@ -3657,12 +3717,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             body.setExpressions.add(setExpr);
           }
         }
-        // Handle CONTENT clause - direct json or jsonArray (same as INSERT)
+        // Handle CONTENT clause - direct json, jsonArray, or inputParameter (same as INSERT)
         else if (bodyCtx.CONTENT() != null) {
           if (bodyCtx.json() != null) {
             body.contentJson = (Json) visit(bodyCtx.json());
           } else if (bodyCtx.jsonArray() != null) {
             body.contentArray = (JsonArray) visit(bodyCtx.jsonArray());
+          } else if (bodyCtx.inputParameter() != null) {
+            body.contentInputParam = (InputParameter) visit(bodyCtx.inputParameter());
           }
         }
 
@@ -4055,8 +4117,46 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.identifierValue = (Identifier) visit(itemCtx.identifier(0));
       } else if (itemCtx.SUPERTYPE() != null) {
         stmt.property = "supertype";
-        stmt.identifierListValue.add((Identifier) visit(itemCtx.identifier(0)));
-        stmt.identifierListAddRemove.add(true); // Always add for SUPERTYPE
+        // Process SUPERTYPE with optional +/- prefixes for each identifier
+        // Grammar: SUPERTYPE ((PLUS | MINUS)? identifier (COMMA (PLUS | MINUS)? identifier)*)
+        boolean nextIsAdd = true; // Default is add if no +/- specified
+        int identifierIndex = 0;
+        for (int i = 0; i < itemCtx.getChildCount(); i++) {
+          final var child = itemCtx.getChild(i);
+          if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+            final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) child;
+            if (terminal.getSymbol().getType() == SQLParser.PLUS) {
+              nextIsAdd = true;
+            } else if (terminal.getSymbol().getType() == SQLParser.MINUS) {
+              nextIsAdd = false;
+            }
+          } else if (child instanceof SQLParser.IdentifierContext) {
+            stmt.identifierListValue.add((Identifier) visit(itemCtx.identifier(identifierIndex++)));
+            stmt.identifierListAddRemove.add(nextIsAdd);
+            nextIsAdd = true; // Reset to default for next identifier
+          }
+        }
+      } else if (itemCtx.BUCKETSELECTIONSTRATEGY() != null) {
+        stmt.property = "bucketselectionstrategy";
+        stmt.identifierValue = (Identifier) visit(itemCtx.identifier(0));
+      } else if (itemCtx.BUCKET() != null) {
+        stmt.property = "bucket";
+        // Process BUCKET with +/- identifiers
+        // Grammar: BUCKET ((PLUS | MINUS) identifier)+
+        int identifierIndex = 0;
+        for (int i = 0; i < itemCtx.getChildCount(); i++) {
+          final var child = itemCtx.getChild(i);
+          if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+            final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) child;
+            if (terminal.getSymbol().getType() == SQLParser.PLUS) {
+              stmt.identifierListAddRemove.add(true);
+            } else if (terminal.getSymbol().getType() == SQLParser.MINUS) {
+              stmt.identifierListAddRemove.add(false);
+            }
+          } else if (child instanceof SQLParser.IdentifierContext) {
+            stmt.identifierListValue.add((Identifier) visit(itemCtx.identifier(identifierIndex++)));
+          }
+        }
       } else if (itemCtx.CUSTOM() != null) {
         stmt.customKey = (Identifier) visit(itemCtx.identifier(0));
         stmt.customValue = (Expression) visit(itemCtx.expression());
@@ -4213,8 +4313,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final DropIndexStatement stmt = new DropIndexStatement(-1);
     final SQLParser.DropIndexBodyContext bodyCtx = ctx.dropIndexBody();
 
-    // Index name
-    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    // Index name or STAR (*)
+    if (bodyCtx.STAR() != null) {
+      stmt.all = true;
+    } else if (bodyCtx.identifier() != null) {
+      stmt.name = (Identifier) visit(bodyCtx.identifier());
+    }
 
     // IF EXISTS
     stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
@@ -4271,6 +4375,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Bucket name
     stmt.bucketName = (Identifier) visit(bodyCtx.identifier());
+
+    // UNSAFE
+    stmt.unsafe = bodyCtx.UNSAFE() != null;
 
     return stmt;
   }
@@ -4476,6 +4583,39 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.ProfileStatementContext profileCtx = ctx.profileStatement();
 
     stmt.statement = (Statement) visit(profileCtx.statement());
+
+    return stmt;
+  }
+
+  /**
+   * Visit SLEEP statement.
+   * Grammar: SLEEP expression
+   */
+  @Override
+  public SleepStatement visitSleepStmt(final SQLParser.SleepStmtContext ctx) {
+    final SleepStatement stmt = new SleepStatement(-1);
+    final SQLParser.SleepStatementContext sleepCtx = ctx.sleepStatement();
+
+    // EXPRESSION: duration in milliseconds
+    stmt.expression = (Expression) visit(sleepCtx.expression());
+
+    return stmt;
+  }
+
+  /**
+   * Visit CONSOLE statement.
+   * Grammar: CONSOLE DOT identifier expression
+   */
+  @Override
+  public ConsoleStatement visitConsoleStmt(final SQLParser.ConsoleStmtContext ctx) {
+    final ConsoleStatement stmt = new ConsoleStatement(-1);
+    final SQLParser.ConsoleStatementContext consoleCtx = ctx.consoleStatement();
+
+    // LOG LEVEL: log, output, error, warn, debug
+    stmt.logLevel = (Identifier) visit(consoleCtx.identifier());
+
+    // MESSAGE: expression to log
+    stmt.message = (Expression) visit(consoleCtx.expression());
 
     return stmt;
   }
@@ -4728,6 +4868,36 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return new ArraySelector(-1);
+  }
+
+  /**
+   * Array multi selector visitor - handles [0,1,2] or [expr1,expr2]
+   * Grammar: LBRACKET (expression | rid | inputParameter) (COMMA (expression | rid | inputParameter))+ RBRACKET
+   */
+  @Override
+  public ArraySingleValuesSelector visitArrayMultiSelector(final SQLParser.ArrayMultiSelectorContext ctx) {
+    try {
+      final ArraySingleValuesSelector multiSelector = new ArraySingleValuesSelector(-1);
+
+      // Add all selectors (first one plus the ones after commas)
+      for (int i = 0; i < ctx.expression().size(); i++) {
+        final ArraySelector selector = new ArraySelector(-1);
+
+        if (ctx.expression(i) != null) {
+          selector.expression = (Expression) visit(ctx.expression(i));
+        } else if (ctx.rid(i) != null) {
+          selector.rid = (Rid) visit(ctx.rid(i));
+        } else if (ctx.inputParameter(i) != null) {
+          selector.inputParam = (InputParameter) visit(ctx.inputParameter(i));
+        }
+
+        multiSelector.items.add(selector);
+      }
+
+      return multiSelector;
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build multi-value array selector: " + e.getMessage(), e);
+    }
   }
 
   /**

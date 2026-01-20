@@ -248,6 +248,8 @@ matchFilter
 
 matchFilterItem
     : matchFilterItemKey COLON expression
+    | BUCKET_IDENTIFIER              // bucket:name (complete token)
+    | BUCKET_NUMBER_IDENTIFIER        // bucket:123 (complete token)
     ;
 
 matchFilterItemKey
@@ -300,7 +302,7 @@ insertBody
       VALUES LPAREN expression (COMMA expression)* RPAREN
       (COMMA LPAREN expression (COMMA expression)* RPAREN)*
     | SET insertSetItem (COMMA insertSetItem)*
-    | CONTENT (json | jsonArray)
+    | CONTENT (json | jsonArray | inputParameter)
     ;
 
 insertSetItem
@@ -392,7 +394,7 @@ moveVertexStatement
 createTypeBody
     : identifier
       (IF NOT EXISTS)?
-      (EXTENDS identifier)?
+      (EXTENDS identifier (COMMA identifier)*)?
       (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
     ;
@@ -403,7 +405,7 @@ createTypeBody
 createEdgeTypeBody
     : identifier
       (IF NOT EXISTS)?
-      (EXTENDS identifier)?
+      (EXTENDS identifier (COMMA identifier)*)?
       UNIDIRECTIONAL?
       (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
@@ -481,7 +483,7 @@ createVertexBody
         VALUES LPAREN expression (COMMA expression)* RPAREN
         (COMMA LPAREN expression (COMMA expression)* RPAREN)*
       | SET updateItem (COMMA updateItem)*
-      | CONTENT (json | jsonArray)
+      | CONTENT (json | jsonArray | inputParameter)
       )?
     ;
 
@@ -509,8 +511,9 @@ alterTypeBody
 
 alterTypeItem
     : NAME identifier
-    | SUPERTYPE identifier
+    | SUPERTYPE ((PLUS | MINUS)? identifier (COMMA (PLUS | MINUS)? identifier)*)
     | BUCKETSELECTIONSTRATEGY identifier
+    | BUCKET ((PLUS | MINUS) identifier)+
     | CUSTOM identifier EQ expression
     | ALIASES (identifier (COMMA identifier)* | NULL)
     ;
@@ -556,7 +559,7 @@ dropPropertyBody
     ;
 
 dropIndexBody
-    : identifier (IF EXISTS)?
+    : (identifier | STAR) (IF EXISTS)?
     ;
 
 dropBucketBody
@@ -572,7 +575,7 @@ truncateTypeBody
     ;
 
 truncateBucketBody
-    : identifier
+    : identifier UNSAFE?
     ;
 
 truncateRecordBody
@@ -692,11 +695,11 @@ lockStatement
     ;
 
 sleepStatement
-    : SLEEP INTEGER_LITERAL
+    : SLEEP expression
     ;
 
 consoleStatement
-    : CONSOLE DOT identifier LPAREN expression? RPAREN
+    : CONSOLE DOT identifier expression
     ;
 
 // ============================================================================
@@ -981,7 +984,8 @@ methodCall
  * - RID: [#12:0]
  */
 arraySelector
-    : LBRACKET (expression | rid | inputParameter) RBRACKET                  # arraySingleSelector
+    : LBRACKET (expression | rid | inputParameter) (COMMA (expression | rid | inputParameter))+ RBRACKET  # arrayMultiSelector
+    | LBRACKET (expression | rid | inputParameter) RBRACKET                  # arraySingleSelector
     | LBRACKET expression? RANGE expression? RBRACKET                         # arrayRangeSelector
     | LBRACKET expression? ELLIPSIS expression? RBRACKET                      # arrayEllipsisSelector
     | LBRACKET whereClause RBRACKET                                           # arrayConditionSelector
