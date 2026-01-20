@@ -201,5 +201,24 @@ public class MatchPathItem extends SimpleNode {
   public void setFilter(final MatchFilter filter) {
     this.filter = filter;
   }
+
+  /**
+   * Exports this MatchPathItem as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", getClass().getSimpleName());
+
+    if (method != null) {
+      json.put("method", method.toJSON());
+    }
+    if (filter != null) {
+      json.put("filter", filter.toJSON());
+    }
+
+    return json;
+  }
 }
 /* JavaCC - OriginalChecksum=ffe8e0ffde583d7b21c9084eff6a8944 (do not edit this line) */

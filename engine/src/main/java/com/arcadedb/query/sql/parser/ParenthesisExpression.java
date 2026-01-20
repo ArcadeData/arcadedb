@@ -32,7 +32,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class ParenthesisExpression extends MathExpression {
-  protected Expression            expression;
+  public    Expression            expression;
   protected Statement             statement;
   private   InternalExecutionPlan executionPlan;
 

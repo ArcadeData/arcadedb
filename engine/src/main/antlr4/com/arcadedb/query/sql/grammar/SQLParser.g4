@@ -82,7 +82,8 @@ statement
     | updateStatement                                # updateStmt
     | deleteStatement                                # deleteStmt
     | deleteFunctionStatement                        # deleteFunctionStmt
-    | moveVertexStatement                            # moveVertexStmt
+    // TODO: Complete MOVE VERTEX visitor implementation
+    // | moveVertexStatement                            # moveVertexStmt
 
     // DDL Statements - CREATE variants
     | CREATE DOCUMENT TYPE createTypeBody            # createDocumentTypeStmt
@@ -145,13 +146,14 @@ statement
 /**
  * Script statement rule - includes all regular statements PLUS script-only control flow
  * This rule is ONLY used by parseScript, not by parse (regular SQL)
- * FOREACH, WHILE, and BREAK are script-only and NOT available in regular SQL
+ * FOREACH, WHILE, BREAK, and function calls are script-only and NOT available in regular SQL
  */
 scriptStatement
     : statement                                      # scriptRegularStmt
     | foreachStatement                               # foreachStmt
     | whileStatement                                 # whileStmt
     | breakStatement                                 # breakStmt
+    | functionCall                                   # functionStmt
     ;
 
 // ============================================================================
@@ -377,11 +379,13 @@ deleteFunctionStatement
 /**
  * MOVE VERTEX statement
  * MOVE VERTEX source TO target [SET ...] [MERGE ...]
+ * Supports: MOVE VERTEX expr TO type:TypeName or TO TypeName or TO BUCKET:name
  */
 moveVertexStatement
-    : MOVE VERTEX expression TO identifier
+    : MOVE VERTEX expression TO (TYPE COLON identifier | BUCKET COLON identifier | identifier)
       (SET updateItem (COMMA updateItem)*)?
       (MERGE expression)?
+      (BATCH expression)?
     ;
 
 // ============================================================================
@@ -1047,11 +1051,12 @@ json
 
 /**
  * Record ID: #bucket:position or {rid: expression}
+ * Supports negative cluster IDs: #-1:-1
  */
 rid
     : LBRACE (RID_ATTR | RID_STRING) COLON expression RBRACE
-    | pInteger COLON pInteger
-    | HASH pInteger COLON pInteger
+    | integer COLON integer
+    | HASH integer COLON integer
     ;
 
 /**
@@ -1059,6 +1064,13 @@ rid
  */
 pInteger
     : INTEGER_LITERAL
+    ;
+
+/**
+ * Integer (positive or negative)
+ */
+integer
+    : MINUS? INTEGER_LITERAL
     ;
 
 /**

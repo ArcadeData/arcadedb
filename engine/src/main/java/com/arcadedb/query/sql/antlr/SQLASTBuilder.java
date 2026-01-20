@@ -381,8 +381,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       // Standard .methodCall() syntax
-      final MatchPathItem pathItem = new MatchPathItem(-1);
       final Object methodObj = visit(ctx.matchMethodCall());
+
+      // Check if this is a field access (.identifier) or a method call (.method())
+      if (methodObj instanceof Identifier) {
+        // This is .identifier (field access) - create FieldMatchPathItem
+        final FieldMatchPathItem fieldPathItem = new FieldMatchPathItem(-1);
+        fieldPathItem.field = (Identifier) methodObj;
+
+        // Add properties if present: {as:x, where:...}
+        if (ctx.matchProperties() != null) {
+          fieldPathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+        }
+        return fieldPathItem;
+      }
+
+      // This is a method call (.method() or .function(...))
+      final MatchPathItem pathItem = new MatchPathItem(-1);
       final MethodCall method;
 
       if (methodObj instanceof MethodCall) {
@@ -393,10 +408,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         method = new MethodCall(-1);
         method.methodName = funcCall.name;
         method.params.addAll(funcCall.params);
-      } else if (methodObj instanceof Identifier) {
-        // Convert identifier to method call
-        method = new MethodCall(-1);
-        method.methodName = (Identifier) methodObj;
       } else {
         throw new IllegalStateException("Unexpected method call type: " +
             (methodObj != null ? methodObj.getClass().getName() : "null"));
@@ -690,13 +701,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final WhereClause whereClause = new WhereClause(-1);
           whereClause.baseExpression = (BooleanExpression) valueObj;
           item.filter = whereClause;
-        } else if (valueObj instanceof BaseExpression) {
-          // BaseExpression wrapping a condition
-          final BaseExpression baseExpr = (BaseExpression) valueObj;
-          final WhereClause whereClause = new WhereClause(-1);
-          // Try to extract boolean expression from BaseExpression
-          // For now, create a condition wrapper
-          item.filter = whereClause;
+        } else if (valueObj instanceof Expression) {
+          // Expression containing the WHERE condition: where:(name = 'n1')
+          final Expression expr = (Expression) valueObj;
+          // For parenthesized conditions like (name = 'n1'), mathExpression is a ParenthesisExpression
+          if (expr.mathExpression instanceof ParenthesisExpression) {
+            final ParenthesisExpression parenExpr = (ParenthesisExpression) expr.mathExpression;
+            // Extract the inner expression's whereCondition from the parentheses
+            if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
+              item.filter = parenExpr.expression.whereCondition;
+            }
+          } else if (expr.whereCondition != null) {
+            // Direct WHERE clause
+            item.filter = expr.whereCondition;
+          }
         }
         break;
       case "while":
@@ -706,10 +724,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final WhereClause whereClause = new WhereClause(-1);
           whereClause.baseExpression = (BooleanExpression) valueObj;
           item.whileCondition = whereClause;
-        } else if (valueObj instanceof BaseExpression) {
-          // BaseExpression wrapping a condition
-          final WhereClause whereClause = new WhereClause(-1);
-          item.whileCondition = whereClause;
+        } else if (valueObj instanceof Expression) {
+          // Expression containing the WHILE condition
+          final Expression expr = (Expression) valueObj;
+          // For parenthesized conditions, mathExpression is a ParenthesisExpression
+          if (expr.mathExpression instanceof ParenthesisExpression) {
+            final ParenthesisExpression parenExpr = (ParenthesisExpression) expr.mathExpression;
+            // Extract the inner expression's whereCondition from the parentheses
+            if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
+              item.whileCondition = parenExpr.expression.whereCondition;
+            }
+          } else if (expr.whereCondition != null) {
+            // Direct WHERE clause (used for WHILE)
+            item.whileCondition = expr.whereCondition;
+          }
         }
         break;
       case "maxdepth":
@@ -2793,6 +2821,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit rid (record ID).
+   * Supports negative cluster IDs: #-1:-1
    */
   @Override
   public Rid visitRid(final SQLParser.RidContext ctx) {
@@ -2803,8 +2832,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       rid.expression = (Expression) visit(ctx.expression());
       rid.legacy = false;
     } else {
-      // Legacy format: #bucket:position or bucket:position
-      final List<SQLParser.PIntegerContext> integers = ctx.pInteger();
+      // Legacy format: #bucket:position or bucket:position (supports negative numbers)
+      final List<SQLParser.IntegerContext> integers = ctx.integer();
       if (integers.size() == 2) {
         rid.bucket = (PInteger) visit(integers.get(0));
         rid.position = (PInteger) visit(integers.get(1));
@@ -2915,6 +2944,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public PInteger visitPInteger(final SQLParser.PIntegerContext ctx) {
     final PInteger pInt = new PInteger(-1);
     final String text = ctx.INTEGER_LITERAL().getText();
+
+    try {
+      pInt.setValue(Integer.parseInt(text));
+    } catch (final NumberFormatException e) {
+      // If it's too large for int, try long
+      pInt.setValue(Long.parseLong(text));
+    }
+
+    return pInt;
+  }
+
+  /**
+   * Visit integer (positive or negative integer for RIDs).
+   */
+  @Override
+  public PInteger visitInteger(final SQLParser.IntegerContext ctx) {
+    final PInteger pInt = new PInteger(-1);
+    final String text = ctx.getText();  // Includes optional MINUS sign
 
     try {
       pInt.setValue(Integer.parseInt(text));
@@ -3578,6 +3625,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     return stmt;
   }
+
+  // TODO: Complete MOVE VERTEX visitor implementation - temporarily disabled
+  // /**
+  //  * Visit MOVE VERTEX statement.
+  //  * Supports: MOVE VERTEX expr TO type:TypeName or TO TypeName or TO bucket:name
+  //  */
+  // @Override
+  // public MoveVertexStatement visitMoveVertexStmt(final SQLParser.MoveVertexStmtContext ctx) {
+  //   // Implementation incomplete - needs proper FromItem handling for source expression
+  //   throw new CommandSQLParsingException("MOVE VERTEX statement is not yet supported with the new SQL parser");
+  // }
 
   // DDL STATEMENT VISITORS - CREATE
 

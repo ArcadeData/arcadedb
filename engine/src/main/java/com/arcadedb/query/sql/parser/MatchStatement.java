@@ -542,5 +542,68 @@ public class MatchStatement extends Statement {
       setTimeout(new Timeout(JJTTIMEOUT).setValue((int) profiledTimeout));
   }
 
+  /**
+   * Exports this MatchStatement as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "MatchStatement");
+
+    // Match expressions
+    if (!matchExpressions.isEmpty()) {
+      final List<Object> exprs = new ArrayList<>();
+      for (final MatchExpression expr : matchExpressions) {
+        exprs.add(expr.toJSON());
+      }
+      json.put("matchExpressions", exprs);
+    }
+
+    // NOT match expressions
+    if (!notMatchExpressions.isEmpty()) {
+      final List<Object> exprs = new ArrayList<>();
+      for (final MatchExpression expr : notMatchExpressions) {
+        exprs.add(expr.toJSON());
+      }
+      json.put("notMatchExpressions", exprs);
+    }
+
+    // Return items
+    if (!returnItems.isEmpty()) {
+      final List<Object> items = new ArrayList<>();
+      for (final Expression item : returnItems) {
+        items.add(item.toJSON());
+      }
+      json.put("returnItems", items);
+    }
+
+    // Return aliases
+    if (!returnAliases.isEmpty()) {
+      final List<String> aliases = new ArrayList<>();
+      for (final Identifier alias : returnAliases) {
+        aliases.add(alias != null ? alias.getStringValue() : null);
+      }
+      json.put("returnAliases", aliases);
+    }
+
+    json.put("returnDistinct", returnDistinct);
+
+    if (groupBy != null) {
+      json.put("groupBy", groupBy.toString());
+    }
+    if (orderBy != null) {
+      json.put("orderBy", orderBy.toString());
+    }
+    if (skip != null) {
+      json.put("skip", skip.toString());
+    }
+    if (limit != null) {
+      json.put("limit", limit.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=6ff0afbe9d31f08b72159fcf24070c9f (do not edit this line) */

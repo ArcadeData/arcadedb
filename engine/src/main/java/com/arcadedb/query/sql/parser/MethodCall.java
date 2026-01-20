@@ -195,5 +195,29 @@ public class MethodCall extends SimpleNode {
 
     return calculatedIsGraph;
   }
+
+  /**
+   * Exports this MethodCall as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "MethodCall");
+
+    if (methodName != null) {
+      json.put("methodName", methodName.getStringValue());
+    }
+
+    if (!params.isEmpty()) {
+      final List<String> paramStrings = new ArrayList<>();
+      for (final Expression param : params) {
+        paramStrings.add(param.toString());
+      }
+      json.put("params", paramStrings);
+    }
+
+    return json;
+  }
 }
 /* JavaCC - OriginalChecksum=da95662da21ceb8dee3ad88c0d980413 (do not edit this line) */

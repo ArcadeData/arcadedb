@@ -30,7 +30,7 @@ import java.util.Objects;
 import java.util.Set;
 
 public class FieldMatchPathItem extends MatchPathItem {
-  protected Identifier       field;
+  public    Identifier       field;
   private   SuffixIdentifier exp;
 
   public FieldMatchPathItem(final int id) {
@@ -117,6 +117,23 @@ public class FieldMatchPathItem extends MatchPathItem {
       exp = new SuffixIdentifier(field);
     }
     return exp;
+  }
+
+  /**
+   * Exports this FieldMatchPathItem as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+    json.put("@class", "FieldMatchPathItem");
+
+    if (field != null) {
+      json.put("field", field.getStringValue());
+    }
+
+    return json;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=6af5afb400b4cc27055de525bc06ca68 (do not edit this line) */

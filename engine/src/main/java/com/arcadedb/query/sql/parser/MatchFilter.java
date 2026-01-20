@@ -208,5 +208,29 @@ public class MatchFilter extends SimpleNode {
     return items != null ? items.hashCode() : 0;
   }
 
+  /**
+   * Exports this MatchFilter as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "MatchFilter");
+
+    if (getAlias() != null) {
+      json.put("alias", getAlias());
+    }
+
+    if (!items.isEmpty()) {
+      final List<Object> filterItems = new ArrayList<>();
+      for (final MatchFilterItem item : items) {
+        filterItems.add(item.toJSON());
+      }
+      json.put("items", filterItems);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=6b099371c69e0d0c1c106fc96b3072de (do not edit this line) */

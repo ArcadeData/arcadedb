@@ -493,5 +493,41 @@ public class Expression extends SimpleNode {
   public void setNull(final boolean isNull) {
     this.isNull = isNull;
   }
+
+  /**
+   * Exports this Expression as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "Expression");
+
+    if (isNull) {
+      json.put("value", "null");
+    } else if (rid != null) {
+      json.put("rid", rid.toString());
+    } else if (whereCondition != null) {
+      json.put("whereCondition", whereCondition.toJSON());
+    } else if (mathExpression != null) {
+      json.put("mathExpression", mathExpression.toString());
+    } else if (arrayConcatExpression != null) {
+      json.put("arrayConcatExpression", arrayConcatExpression.toString());
+    } else if (this.json != null) {
+      json.put("json", this.json.toString());
+    } else if (booleanValue != null) {
+      json.put("booleanValue", booleanValue);
+    } else if (value != null) {
+      json.put("value", value.toString());
+    }
+
+    if (singleQuotes) {
+      json.put("quotes", "single");
+    } else if (doubleQuotes) {
+      json.put("quotes", "double");
+    }
+
+    return json;
+  }
 }
 /* JavaCC - OriginalChecksum=9c860224b121acdc89522ae97010be01 (do not edit this line) */

@@ -212,5 +212,21 @@ public class WhereClause extends SimpleNode {
   public static Object convert(final Object o, final Type oType) {
     return Type.convert(null, o, oType.getDefaultJavaType());
   }
+
+  /**
+   * Exports this WhereClause as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "WhereClause");
+
+    if (baseExpression != null) {
+      json.put("condition", baseExpression.toString());
+    }
+
+    return json;
+  }
 }
 /* JavaCC - OriginalChecksum=e8015d01ce1ab2bc337062e9e3f2603e (do not edit this line) */

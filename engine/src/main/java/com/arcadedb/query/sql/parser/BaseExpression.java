@@ -72,8 +72,8 @@ public class BaseExpression extends MathExpression {
 
   public void setModifier(final Modifier modifier) {
     this.modifier = modifier;
-    if (identifier != null && modifier != null && identifier.isExpand())
-      throw new CommandSQLParsingException("Invalid modifier after special function expand()");
+    // Note: Nested projections after expand() are now allowed (e.g., expand([...]):{fields})
+    // This enables issue #2965 fix - nested projection on expanded results
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
