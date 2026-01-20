@@ -392,6 +392,170 @@ interactive_select_modules() {
 }
 
 #===============================================================================
+# Download and Verification Functions
+#===============================================================================
+
+# Download file with curl or wget
+download_file() {
+    local url="$1"
+    local output="$2"
+
+    # Validate URL protocol
+    if [[ ! "$url" =~ ^https?:// ]]; then
+        error_exit "Invalid URL protocol: $url (only http:// and https:// allowed)"
+    fi
+
+    # Validate output path (prevent path traversal)
+    if [[ "$output" =~ \.\. ]]; then
+        error_exit "Invalid output path (path traversal detected): $output"
+    fi
+
+    # Ensure output directory exists
+    local output_dir
+    output_dir="$(dirname "$output")"
+    if [[ ! -d "$output_dir" ]]; then
+        error_exit "Output directory does not exist: $output_dir"
+    fi
+
+    log_verbose "Downloading: $url"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_info "[DRY RUN] Would download: $url"
+        return 0
+    fi
+
+    if command -v curl &> /dev/null; then
+        if [[ "$VERBOSE" == true ]]; then
+            curl -fL --progress-bar --max-time 300 --connect-timeout 30 "$url" -o "$output"
+        else
+            curl -fsSL --max-time 300 --connect-timeout 30 "$url" -o "$output"
+        fi
+    elif command -v wget &> /dev/null; then
+        local wget_flags="--tries=3 --timeout=300"
+        if [[ "$QUIET" == true ]]; then
+            wget_flags="$wget_flags -q"
+        fi
+        wget $wget_flags -O "$output" "$url"
+    else
+        error_exit "No download tool available (curl or wget)"
+    fi
+
+    if [[ ! -f "$output" ]]; then
+        error_exit "Failed to download: $url"
+    fi
+
+    log_verbose "Downloaded to: $output"
+}
+
+# Verify SHA-256 checksum
+verify_sha256() {
+    local file="$1"
+    local checksum_file="$2"
+
+    # Validate file exists
+    if [[ ! -f "$file" ]]; then
+        error_exit "File to verify not found: $file"
+    fi
+
+    # Validate checksum file exists
+    if [[ ! -f "$checksum_file" ]]; then
+        error_exit "Checksum file not found: $checksum_file"
+    fi
+
+    # Validate checksum file size (prevent reading large files)
+    local checksum_size
+    checksum_size=$(wc -c < "$checksum_file" 2>/dev/null || echo "0")
+    if [[ "$checksum_size" -gt 1024 ]]; then
+        error_exit "Checksum file suspiciously large: $checksum_file ($checksum_size bytes)"
+    fi
+
+    log_verbose "Verifying SHA-256 checksum for: $file"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_info "[DRY RUN] Would verify checksum: $file"
+        return 0
+    fi
+
+    # Read expected checksum (fix UUOC)
+    local expected_checksum
+    expected_checksum=$(awk '{print $1}' "$checksum_file")
+
+    # Calculate actual checksum
+    local actual_checksum
+    if command -v sha256sum &> /dev/null; then
+        actual_checksum=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum &> /dev/null; then
+        actual_checksum=$(shasum -a 256 "$file" | awk '{print $1}')
+    else
+        error_exit "No SHA-256 tool available"
+    fi
+
+    # Normalize checksums to lowercase for comparison (bash 3.2 compatible)
+    expected_checksum=$(echo "$expected_checksum" | tr '[:upper:]' '[:lower:]')
+    actual_checksum=$(echo "$actual_checksum" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$expected_checksum" != "$actual_checksum" ]]; then
+        error_exit "Checksum verification failed for $file. Expected: $expected_checksum, Got: $actual_checksum"
+    fi
+
+    log_verbose "Checksum verified successfully"
+}
+
+# Verify SHA-1 checksum (for Maven Central)
+verify_sha1() {
+    local file="$1"
+    local checksum_file="$2"
+
+    # Validate file exists
+    if [[ ! -f "$file" ]]; then
+        error_exit "File to verify not found: $file"
+    fi
+
+    # Validate checksum file exists
+    if [[ ! -f "$checksum_file" ]]; then
+        error_exit "Checksum file not found: $checksum_file"
+    fi
+
+    # Validate checksum file size
+    local checksum_size
+    checksum_size=$(wc -c < "$checksum_file" 2>/dev/null || echo "0")
+    if [[ "$checksum_size" -gt 1024 ]]; then
+        error_exit "Checksum file suspiciously large: $checksum_file ($checksum_size bytes)"
+    fi
+
+    log_verbose "Verifying SHA-1 checksum for: $file"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_info "[DRY RUN] Would verify checksum: $file"
+        return 0
+    fi
+
+    # Read expected checksum (fix UUOC)
+    local expected_checksum
+    expected_checksum=$(awk '{print $1}' "$checksum_file")
+
+    # Calculate actual checksum
+    local actual_checksum
+    if command -v sha1sum &> /dev/null; then
+        actual_checksum=$(sha1sum "$file" | awk '{print $1}')
+    elif command -v shasum &> /dev/null; then
+        actual_checksum=$(shasum -a 1 "$file" | awk '{print $1}')
+    else
+        error_exit "No SHA-1 tool available"
+    fi
+
+    # Normalize checksums to lowercase for comparison
+    expected_checksum=$(echo "$expected_checksum" | tr '[:upper:]' '[:lower:]')
+    actual_checksum=$(echo "$actual_checksum" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$expected_checksum" != "$actual_checksum" ]]; then
+        error_exit "Checksum verification failed for $file. Expected: $expected_checksum, Got: $actual_checksum"
+    fi
+
+    log_verbose "Checksum verified successfully"
+}
+
+#===============================================================================
 # Main Entry Point
 #===============================================================================
 
