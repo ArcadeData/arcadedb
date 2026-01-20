@@ -260,6 +260,11 @@ check_prerequisites() {
         missing_tools+=("unzip")
     fi
 
+    # Check for mktemp
+    if ! command -v mktemp &> /dev/null; then
+        missing_tools+=("mktemp")
+    fi
+
     # Check for checksum tool
     if ! command -v sha256sum &> /dev/null && ! command -v shasum &> /dev/null; then
         missing_tools+=("sha256sum or shasum")
@@ -410,18 +415,18 @@ download_file() {
         error_exit "Invalid output path (path traversal detected): $output"
     fi
 
-    # Ensure output directory exists
-    local output_dir
-    output_dir="$(dirname "$output")"
-    if [[ ! -d "$output_dir" ]]; then
-        error_exit "Output directory does not exist: $output_dir"
-    fi
-
     log_verbose "Downloading: $url"
 
     if [[ "$DRY_RUN" == true ]]; then
         log_info "[DRY RUN] Would download: $url"
         return 0
+    fi
+
+    # Ensure output directory exists
+    local output_dir
+    output_dir="$(dirname "$output")"
+    if [[ ! -d "$output_dir" ]]; then
+        error_exit "Output directory does not exist: $output_dir"
     fi
 
     if command -v curl &> /dev/null; then
@@ -452,6 +457,13 @@ verify_sha256() {
     local file="$1"
     local checksum_file="$2"
 
+    log_verbose "Verifying SHA-256 checksum for: $file"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_info "[DRY RUN] Would verify checksum: $file"
+        return 0
+    fi
+
     # Validate file exists
     if [[ ! -f "$file" ]]; then
         error_exit "File to verify not found: $file"
@@ -467,13 +479,6 @@ verify_sha256() {
     checksum_size=$(wc -c < "$checksum_file" 2>/dev/null || echo "0")
     if [[ "$checksum_size" -gt 1024 ]]; then
         error_exit "Checksum file suspiciously large: $checksum_file ($checksum_size bytes)"
-    fi
-
-    log_verbose "Verifying SHA-256 checksum for: $file"
-
-    if [[ "$DRY_RUN" == true ]]; then
-        log_info "[DRY RUN] Would verify checksum: $file"
-        return 0
     fi
 
     # Read expected checksum (fix UUOC)
@@ -506,6 +511,13 @@ verify_sha1() {
     local file="$1"
     local checksum_file="$2"
 
+    log_verbose "Verifying SHA-1 checksum for: $file"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_info "[DRY RUN] Would verify checksum: $file"
+        return 0
+    fi
+
     # Validate file exists
     if [[ ! -f "$file" ]]; then
         error_exit "File to verify not found: $file"
@@ -521,13 +533,6 @@ verify_sha1() {
     checksum_size=$(wc -c < "$checksum_file" 2>/dev/null || echo "0")
     if [[ "$checksum_size" -gt 1024 ]]; then
         error_exit "Checksum file suspiciously large: $checksum_file ($checksum_size bytes)"
-    fi
-
-    log_verbose "Verifying SHA-1 checksum for: $file"
-
-    if [[ "$DRY_RUN" == true ]]; then
-        log_info "[DRY RUN] Would verify checksum: $file"
-        return 0
     fi
 
     # Read expected checksum (fix UUOC)
@@ -555,6 +560,54 @@ verify_sha1() {
     log_verbose "Checksum verified successfully"
 }
 
+# Download and extract base distribution
+download_base_distribution() {
+    log_info "Downloading base distribution for version $ARCADEDB_VERSION..."
+
+    local base_filename="arcadedb-${ARCADEDB_VERSION}-base.tar.gz"
+    local base_url="${GITHUB_RELEASES_BASE}/${ARCADEDB_VERSION}/${base_filename}"
+    local checksum_url="${base_url}.sha256"
+
+    local base_file="$TEMP_DIR/$base_filename"
+    local checksum_file="${base_file}.sha256"
+
+    # Download base distribution
+    download_file "$base_url" "$base_file"
+
+    # Download checksum
+    download_file "$checksum_url" "$checksum_file"
+
+    # Verify checksum
+    verify_sha256 "$base_file" "$checksum_file"
+
+    log_success "Base distribution downloaded and verified"
+
+    # Extract base distribution
+    log_info "Extracting base distribution..."
+
+    if [[ "$DRY_RUN" != true ]]; then
+        # Try with security flag, fall back if not supported
+        if ! tar -xzf "$base_file" -C "$TEMP_DIR" --no-absolute-filenames 2>/dev/null; then
+            # BSD tar (macOS) doesn't support this flag but strips absolute paths by default
+            if ! tar -xzf "$base_file" -C "$TEMP_DIR"; then
+                error_exit "Failed to extract base distribution: $base_file"
+            fi
+        fi
+
+        # Find the extracted directory
+        local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}-base"
+        if [[ ! -d "$extracted_dir" ]]; then
+            error_exit "Extracted directory not found: $extracted_dir"
+        fi
+
+        log_verbose "Extracted to: $extracted_dir"
+    else
+        log_info "[DRY RUN] Would extract: $base_file"
+    fi
+
+    log_success "Base distribution extracted"
+}
+
 #===============================================================================
 # Main Entry Point
 #===============================================================================
@@ -580,7 +633,19 @@ main() {
         interactive_select_modules
     fi
 
-    log_success "Configuration complete"
+    # Create temp directory
+    if [[ "$DRY_RUN" != true ]]; then
+        TEMP_DIR=$(mktemp -d)
+        log_verbose "Created temporary directory: $TEMP_DIR"
+    else
+        TEMP_DIR="/tmp/arcadedb-builder-DRYRUN-$$"
+        log_info "[DRY RUN] Would create temporary directory"
+    fi
+
+    # Download base distribution
+    download_base_distribution
+
+    log_success "Build complete"
 }
 
 # Run main function
