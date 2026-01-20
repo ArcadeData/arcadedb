@@ -717,6 +717,90 @@ create_archives() {
     log_success "Archives created successfully"
 }
 
+# Generate Dockerfile
+generate_dockerfile() {
+    local dist_dir="$1"
+    local dockerfile="${dist_dir}/Dockerfile"
+
+    log_info "Generating Dockerfile..."
+
+    if [[ "$DRY_RUN" != true ]]; then
+        cat > "$dockerfile" << 'EOF'
+FROM eclipse-temurin:21-jre-alpine
+
+ARG ARCADEDB_USER=arcadedb
+ARG ARCADEDB_HOME=/home/arcadedb
+
+ENV JAVA_OPTS="-Xms1G -Xmx4G"
+
+RUN addgroup -S ${ARCADEDB_USER} && adduser -S ${ARCADEDB_USER} -G ${ARCADEDB_USER}
+
+WORKDIR ${ARCADEDB_HOME}
+
+COPY --chown=${ARCADEDB_USER}:${ARCADEDB_USER} . ${ARCADEDB_HOME}
+
+RUN chmod +x ${ARCADEDB_HOME}/bin/*.sh
+
+USER ${ARCADEDB_USER}
+
+EXPOSE 2480 2424
+
+VOLUME ["${ARCADEDB_HOME}/databases", "${ARCADEDB_HOME}/backups", "${ARCADEDB_HOME}/log"]
+
+CMD ["./bin/server.sh"]
+EOF
+        log_success "Dockerfile generated: $dockerfile"
+    else
+        log_info "[DRY RUN] Would generate Dockerfile"
+    fi
+}
+
+# Build Docker image
+build_docker_image() {
+    if [[ "$SKIP_DOCKER" == true ]]; then
+        log_info "Skipping Docker image generation (--skip-docker)"
+        return 0
+    fi
+
+    local final_dir="$TEMP_DIR/$OUTPUT_NAME"
+
+    # Generate Dockerfile
+    generate_dockerfile "$final_dir"
+
+    if [[ "$DOCKERFILE_ONLY" == true ]]; then
+        log_info "Dockerfile generated. Skipping image build (--dockerfile-only)"
+        # Copy Dockerfile to output directory
+        if [[ "$DRY_RUN" != true ]]; then
+            cp "${final_dir}/Dockerfile" "${OUTPUT_DIR}/${OUTPUT_NAME}-Dockerfile"
+            log_success "Dockerfile saved to: ${OUTPUT_DIR}/${OUTPUT_NAME}-Dockerfile"
+        fi
+        return 0
+    fi
+
+    # Check Docker availability
+    if ! command -v docker &> /dev/null; then
+        error_exit "Docker not found. Install Docker or use --skip-docker"
+    fi
+
+    # Check if Docker daemon is running
+    if ! docker info &> /dev/null; then
+        error_exit "Docker daemon not running. Start Docker or use --skip-docker"
+    fi
+
+    log_info "Building Docker image: $DOCKER_TAG"
+
+    if [[ "$DRY_RUN" != true ]]; then
+        if [[ "$VERBOSE" == true ]]; then
+            docker build -t "$DOCKER_TAG" "$final_dir"
+        else
+            docker build -t "$DOCKER_TAG" "$final_dir" > /dev/null
+        fi
+        log_success "Docker image built: $DOCKER_TAG"
+    else
+        log_info "[DRY RUN] Would build Docker image: $DOCKER_TAG"
+    fi
+}
+
 #===============================================================================
 # Main Entry Point
 #===============================================================================
@@ -759,6 +843,9 @@ main() {
 
     # Create archives
     create_archives
+
+    # Build Docker image
+    build_docker_image
 
     log_success "Build complete"
 }
