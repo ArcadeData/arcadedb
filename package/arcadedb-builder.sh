@@ -61,6 +61,7 @@ KEEP_TEMP=false
 DRY_RUN=false
 VERBOSE=false
 QUIET=false
+LOCAL_REPO=""  # Path to local Maven repository or custom JAR directory
 
 # Temp directory
 TEMP_DIR=""
@@ -79,6 +80,8 @@ OPTIONS:
     --version=VERSION       ArcadeDB version to build (required for non-interactive mode)
     --modules=MODULES       Comma-separated list of modules. If not provided, will be asked interactively.
                            Options: console,gremlin,studio,redisw,mongodbw,postgresw,grpcw,graphql,metrics
+    --local-repo[=PATH]    Use local Maven repository or directory instead of downloading from Maven Central.
+                           If PATH is not provided, defaults to ~/.m2/repository
     --output-name=NAME      Custom name for distribution (default: arcadedb-<version>-<modules>)
     --output-dir=DIR        Output directory (default: current directory)
     --docker-tag=TAG        Build Docker image with specified tag
@@ -114,6 +117,12 @@ EXAMPLES:
     # Dry run to see what would be built
     ${SCRIPT_NAME} --version=26.1.0 --modules=gremlin,studio --dry-run
 
+    # Build using local Maven repository (offline mode)
+    ${SCRIPT_NAME} --version=26.1.1-SNAPSHOT --modules=gremlin,studio --local-repo
+
+    # Build using custom JAR directory
+    ${SCRIPT_NAME} --version=26.1.1-SNAPSHOT --modules=console --local-repo=/path/to/jars
+
 EOF
 }
 
@@ -142,6 +151,15 @@ parse_args() {
                 ;;
             --docker-tag=*)
                 DOCKER_TAG="${1#*=}"
+                shift
+                ;;
+            --local-repo=*)
+                LOCAL_REPO="${1#*=}"
+                shift
+                ;;
+            --local-repo)
+                # No value provided, use default Maven local repo
+                LOCAL_REPO="${HOME}/.m2/repository"
                 shift
                 ;;
             --skip-docker)
