@@ -631,6 +631,38 @@ download_base_distribution() {
     log_success "Base distribution extracted"
 }
 
+# Find JAR file in local repository
+# Args: module name, version, classifier (optional)
+# Returns: absolute path to JAR file, or empty string if not found
+find_local_jar() {
+    local module="$1"
+    local version="$2"
+    local classifier="$3"
+
+    local artifact_id="arcadedb-${module}"
+    local jar_filename="${artifact_id}-${version}${classifier}.jar"
+
+    # Try Maven repository structure first
+    if [[ -d "$LOCAL_REPO/com/arcadedb" ]]; then
+        local maven_path="$LOCAL_REPO/com/arcadedb/${artifact_id}/${version}/${jar_filename}"
+        if [[ -f "$maven_path" ]]; then
+            echo "$maven_path"
+            return 0
+        fi
+    fi
+
+    # Try custom directory (flat structure)
+    local custom_path="$LOCAL_REPO/${jar_filename}"
+    if [[ -f "$custom_path" ]]; then
+        echo "$custom_path"
+        return 0
+    fi
+
+    # Not found
+    echo ""
+    return 1
+}
+
 # Download optional modules from Maven Central
 download_optional_modules() {
     if [[ -z "$SELECTED_MODULES" ]]; then
