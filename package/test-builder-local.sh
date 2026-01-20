@@ -6,12 +6,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Dynamically get version from pom.xml
+PROJECT_VERSION=$(mvn -f ../pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
+
 echo "Local Builder Testing"
 echo "===================="
 echo ""
 
 # Check if base distribution exists
-BASE_DIST="${SCRIPT_DIR}/target/arcadedb-26.1.1-SNAPSHOT-base.tar.gz"
+BASE_DIST="${SCRIPT_DIR}/target/arcadedb-${PROJECT_VERSION}-base.tar.gz"
 if [[ ! -f "$BASE_DIST" ]]; then
     echo "Error: Base distribution not found"
     echo "Run: mvn clean package -DskipTests"
@@ -24,7 +27,7 @@ echo ""
 # Test 1: Dry run with no modules
 echo "Test 1: Dry run - base only"
 ./arcadedb-builder.sh \
-    --version=26.1.1-SNAPSHOT \
+    --version=${PROJECT_VERSION} \
     --dry-run \
     --output-dir=/tmp
 
@@ -35,7 +38,7 @@ echo ""
 # Test 2: Dry run with modules
 echo "Test 2: Dry run - with modules"
 ./arcadedb-builder.sh \
-    --version=26.1.1-SNAPSHOT \
+    --version=${PROJECT_VERSION} \
     --modules=console,studio \
     --dry-run \
     --skip-docker
