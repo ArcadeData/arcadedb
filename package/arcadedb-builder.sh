@@ -704,7 +704,7 @@ copy_local_module() {
     log_info "Locating local module: $module"
 
     local source_jar
-    source_jar=$(find_local_jar "$module" "$version" "$classifier")
+    source_jar=$(find_local_jar "$module" "$version" "$classifier" || true)
 
     if [[ -z "$source_jar" ]]; then
         error_exit "Module not found in local repository: $module (looking for arcadedb-${module}-${version}${classifier}.jar)"
