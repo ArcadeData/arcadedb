@@ -36,24 +36,14 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("slow")
 class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "V";
@@ -70,7 +60,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT; ++i) {
         final List<Integer> results = new ArrayList<>();
         for (final Index index : indexes) {
-          final IndexCursor value = index.get(new Object[] { i });
+          final IndexCursor value = index.get(new Object[]{i});
           if (value.hasNext())
             results.add((Integer) ((Document) value.next().getRecord()).get("id"));
         }
@@ -100,7 +90,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         for (final RangeIndex index : indexes) {
           assertThat(index).isNotNull();
 
-          final IndexCursor iterator = index.range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
+          final IndexCursor iterator = index.range(true, new Object[]{i}, true, new Object[]{i + 1}, true);
           assertThat((Iterator<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
@@ -135,7 +125,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
           assertThat(index).isNotNull();
 
           final IndexCursor iterator;
-          iterator = ((RangeIndex) index).range(false, new Object[] { i }, true, new Object[] { i - 1 }, true);
+          iterator = ((RangeIndex) index).range(false, new Object[]{i}, true, new Object[]{i - 1}, true);
           assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
           while (iterator.hasNext()) {
@@ -286,7 +276,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.iterator(true, new Object[] { 10 }, true);
+        iterator = index.iterator(true, new Object[]{10}, true);
 
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
@@ -315,7 +305,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.iterator(true, new Object[] { 10 }, false);
+        iterator = index.iterator(true, new Object[]{10}, false);
 
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
@@ -344,7 +334,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.iterator(false, new Object[] { 9 }, true);
+        iterator = index.iterator(false, new Object[]{9}, true);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {
@@ -372,7 +362,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.iterator(false, new Object[] { 9 }, false);
+        iterator = index.iterator(false, new Object[]{9}, false);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {
@@ -400,7 +390,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
+        iterator = index.range(true, new Object[]{10}, true, new Object[]{19}, true);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {
@@ -433,7 +423,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
+        iterator = index.range(true, new Object[]{10}, true, new Object[]{19}, false);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {
@@ -466,7 +456,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
+        iterator = index.range(true, new Object[]{10}, false, new Object[]{19}, true);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {
@@ -499,7 +489,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.range(false, new Object[] { 19 }, false, new Object[] { 10 }, true);
+        iterator = index.range(false, new Object[]{19}, false, new Object[]{10}, true);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {
@@ -532,7 +522,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
+        iterator = index.range(true, new Object[]{10}, false, new Object[]{19}, false);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {
@@ -565,7 +555,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.range(false, new Object[] { 19 }, false, new Object[] { 10 }, false);
+        iterator = index.range(false, new Object[]{19}, false, new Object[]{10}, false);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {
@@ -752,8 +742,8 @@ class TypeLSMTreeIndexTest extends TestHelper {
 
     assertThat(typeIndexAfter.getName()).isEqualTo(typeIndexBefore.getName());
 
-    assertThat(typeIndexAfter.get(new Object[] { 0 }).hasNext()).isTrue();
-    assertThat(typeIndexAfter.get(new Object[] { 0 }).next().asDocument().getInteger("id")).isEqualTo(0);
+    assertThat(typeIndexAfter.get(new Object[]{0}).hasNext()).isTrue();
+    assertThat(typeIndexAfter.get(new Object[]{0}).next().asDocument().getInteger("id")).isEqualTo(0);
   }
 
   @Test
@@ -817,7 +807,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
       final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
       type.createProperty("id", Integer.class);
       final TypeIndex typeIndex = database.getSchema()
-          .buildTypeIndex(TYPE_NAME, new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+          .buildTypeIndex(TYPE_NAME, new String[]{"id"}).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
           .withPageSize(PAGE_SIZE).create();
 
       for (int i = 0; i < TOT; ++i) {
@@ -849,7 +839,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
         assertThat(index).isNotNull();
 
         final IndexCursor iterator;
-        iterator = index.range(true, new Object[] { i }, true, new Object[] { i }, true);
+        iterator = index.range(true, new Object[]{i}, true, new Object[]{i}, true);
         assertThat((Iterable<? extends Identifiable>) iterator).isNotNull();
 
         while (iterator.hasNext()) {

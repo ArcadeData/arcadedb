@@ -26,12 +26,14 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("slow")
 class InsertGraphIndexTest extends TestHelper {
   private static final int    VERTICES         = 1_000;
   private static final int    EDGES_PER_VERTEX = 1_000;

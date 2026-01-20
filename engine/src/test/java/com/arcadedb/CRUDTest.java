@@ -38,6 +38,7 @@ import org.assertj.core.api.Assertions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("slow")
 class CRUDTest extends TestHelper {
   private static final int TOT = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 2;
 

@@ -31,6 +31,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.utility.Pair;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -54,6 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 class LSMVectorIndexTest extends TestHelper {
 
   private static final int DIMENSIONS = 1024;
