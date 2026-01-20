@@ -30,7 +30,7 @@ import java.util.*;
  */
 public class ArrayLiteralExpression extends MathExpression {
 
-  protected List<Expression> items = new ArrayList<>();
+  public List<Expression> items = new ArrayList<>();
 
   public ArrayLiteralExpression(final int id) {
     super(id);

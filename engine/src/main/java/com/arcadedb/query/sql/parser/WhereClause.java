@@ -46,14 +46,16 @@ public class WhereClause extends SimpleNode {
     if (baseExpression == null)
       return true;
 
-    return baseExpression.evaluate(currentRecord, context);
+    final Boolean result = baseExpression.evaluate(currentRecord, context);
+    return result != null ? result : false;
   }
 
   public Boolean matchesFilters(final Result currentRecord, final CommandContext context) {
     if (baseExpression == null)
       return true;
 
-    return baseExpression.evaluate(currentRecord, context);
+    final Boolean result = baseExpression.evaluate(currentRecord, context);
+    return result != null ? result : false;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

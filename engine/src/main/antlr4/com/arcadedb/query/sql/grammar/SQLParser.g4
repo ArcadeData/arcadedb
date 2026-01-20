@@ -666,7 +666,7 @@ beginStatement
  * COMMIT [RETRY n [ELSE {statements} [AND] (FAIL|CONTINUE)]]
  */
 commitStatement
-    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE (scriptStatement SEMICOLON?)* RBRACE)? AND? (FAIL | CONTINUE))?)?
+    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE (scriptStatement SEMICOLON?)* RBRACE)? (AND? (FAIL | CONTINUE))?)?)?
     ;
 
 /**

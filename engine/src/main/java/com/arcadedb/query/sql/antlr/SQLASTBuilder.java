@@ -2463,7 +2463,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (text.endsWith("D") || text.endsWith("d")) {
         number.value = Double.parseDouble(text.substring(0, text.length() - 1));
       } else {
-        number.value = Double.parseDouble(text);
+        // Default to Float for compatibility with JavaCC parser
+        number.value = Float.parseFloat(text);
       }
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid floating point: " + text);
@@ -2860,6 +2861,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (selector instanceof ArrayRangeSelector) {
         // Range selector [0..3] or [0...3] or INTEGER_RANGE from arraySingleSelector
         modifier.arrayRange = (ArrayRangeSelector) selector;
+      } else if (selector instanceof ArraySingleValuesSelector) {
+        // Multi-value selector [0, 1, 3] from arrayMultiSelector
+        modifier.arraySingleValues = (ArraySingleValuesSelector) selector;
       } else if (selector instanceof ArraySelector) {
         // Single selector - wrap in ArraySingleValuesSelector
         final ArraySingleValuesSelector singleValues = new ArraySingleValuesSelector(-1);
@@ -4280,7 +4284,21 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         } else if (fromItem.identifier != null) {
           leftExpr.mathExpression = new BaseExpression(fromItem.identifier);
         } else if (CollectionUtils.isNotEmpty(fromItem.rids)) {
-          leftExpr.rid = fromItem.rids.get(0);
+          // Handle RID or array of RIDs
+          if (fromItem.rids.size() == 1) {
+            leftExpr.rid = fromItem.rids.get(0);
+          } else {
+            // Multiple RIDs - create array literal
+            final List<Expression> ridExprs = new ArrayList<>();
+            for (final Rid rid : fromItem.rids) {
+              final Expression ridExpr = new Expression(-1);
+              ridExpr.rid = rid;
+              ridExprs.add(ridExpr);
+            }
+            final ArrayLiteralExpression arrayLit = new ArrayLiteralExpression(-1);
+            arrayLit.items = ridExprs;
+            leftExpr.mathExpression = arrayLit;
+          }
         } else if (fromItem.inputParam != null) {
           // Handle single input parameter (e.g., CREATE EDGE FROM :rid TO ...)
           final BaseExpression baseExpr = new BaseExpression(-1);
@@ -4288,9 +4306,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           leftExpr.mathExpression = baseExpr;
         } else if (CollectionUtils.isNotEmpty(fromItem.inputParams)) {
           // Handle input parameters list (e.g., CREATE EDGE FROM [?, ?] TO ?)
-          final BaseExpression baseExpr = new BaseExpression(-1);
-          baseExpr.inputParam = fromItem.inputParams.get(0);
-          leftExpr.mathExpression = baseExpr;
+          final List<Expression> paramExprs = new ArrayList<>();
+          for (final InputParameter param : fromItem.inputParams) {
+            final Expression paramExpr = new Expression(-1);
+            final BaseExpression baseExpr = new BaseExpression(-1);
+            baseExpr.inputParam = param;
+            paramExpr.mathExpression = baseExpr;
+            paramExprs.add(paramExpr);
+          }
+          final ArrayLiteralExpression arrayLit = new ArrayLiteralExpression(-1);
+          arrayLit.items = paramExprs;
+          leftExpr.mathExpression = arrayLit;
         }
         stmt.leftExpression = leftExpr;
       }
@@ -4308,7 +4334,21 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         } else if (toItem.identifier != null) {
           rightExpr.mathExpression = new BaseExpression(toItem.identifier);
         } else if (CollectionUtils.isNotEmpty(toItem.rids)) {
-          rightExpr.rid = toItem.rids.get(0);
+          // Handle RID or array of RIDs
+          if (toItem.rids.size() == 1) {
+            rightExpr.rid = toItem.rids.get(0);
+          } else {
+            // Multiple RIDs - create array literal
+            final List<Expression> ridExprs = new ArrayList<>();
+            for (final Rid rid : toItem.rids) {
+              final Expression ridExpr = new Expression(-1);
+              ridExpr.rid = rid;
+              ridExprs.add(ridExpr);
+            }
+            final ArrayLiteralExpression arrayLit = new ArrayLiteralExpression(-1);
+            arrayLit.items = ridExprs;
+            rightExpr.mathExpression = arrayLit;
+          }
         } else if (toItem.inputParam != null) {
           // Handle single input parameter (e.g., CREATE EDGE FROM ... TO :rid)
           final BaseExpression baseExpr = new BaseExpression(-1);
@@ -4316,9 +4356,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           rightExpr.mathExpression = baseExpr;
         } else if (CollectionUtils.isNotEmpty(toItem.inputParams)) {
           // Handle input parameters list (e.g., CREATE EDGE FROM ? TO [?, ?])
-          final BaseExpression baseExpr = new BaseExpression(-1);
-          baseExpr.inputParam = toItem.inputParams.get(0);
-          rightExpr.mathExpression = baseExpr;
+          final List<Expression> paramExprs = new ArrayList<>();
+          for (final InputParameter param : toItem.inputParams) {
+            final Expression paramExpr = new Expression(-1);
+            final BaseExpression baseExpr = new BaseExpression(-1);
+            baseExpr.inputParam = param;
+            paramExpr.mathExpression = baseExpr;
+            paramExprs.add(paramExpr);
+          }
+          final ArrayLiteralExpression arrayLit = new ArrayLiteralExpression(-1);
+          arrayLit.items = paramExprs;
+          rightExpr.mathExpression = arrayLit;
         }
         stmt.rightExpression = rightExpr;
       }
@@ -4334,6 +4382,46 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           setExpr.right = (Expression) visit(updateItemCtx.expression());
           body.setExpressions.add(setExpr);
         }
+        stmt.body = body;
+      }
+
+      // Set CONTENT clause if present
+      // Note: CREATE EDGE CONTENT takes an expression (unlike INSERT/CREATE VERTEX which take json|jsonArray directly)
+      // The expression is typically an array literal like [{'x':0}] or a map literal like {'x':0}
+      if (bodyCtx.CONTENT() != null && bodyCtx.expression() != null) {
+        final InsertBody body = stmt.body != null ? stmt.body : new InsertBody(-1);
+        final Expression contentExpr = (Expression) visit(bodyCtx.expression());
+
+        // Try to extract json or jsonArray from the expression
+        if (contentExpr.json != null) {
+          // Direct JSON literal like {'x':0}
+          body.contentJson = contentExpr.json;
+        } else if (contentExpr.mathExpression instanceof ArrayLiteralExpression) {
+          // Array literal like [{'x':0}]
+          final ArrayLiteralExpression arrayLit = (ArrayLiteralExpression) contentExpr.mathExpression;
+
+          // For CREATE EDGE, if array has single element, extract it as contentJson
+          // If array has multiple elements, store as contentArray (executor will validate)
+          if (arrayLit.items.size() == 1 && arrayLit.items.get(0).json != null) {
+            // Single element array [{'x':0}] - extract the json
+            body.contentJson = arrayLit.items.get(0).json;
+          } else {
+            // Multiple elements or non-json items - convert to JsonArray
+            final JsonArray jsonArray = new JsonArray(-1);
+            for (final Expression itemExpr : arrayLit.items) {
+              if (itemExpr.json != null) {
+                jsonArray.items.add(itemExpr.json);
+              }
+            }
+            body.contentArray = jsonArray;
+          }
+        } else if (contentExpr.mathExpression instanceof BaseExpression) {
+          final BaseExpression baseExpr = (BaseExpression) contentExpr.mathExpression;
+          if (baseExpr.inputParam != null) {
+            body.contentInputParam = baseExpr.inputParam;
+          }
+        }
+
         stmt.body = body;
       }
 
@@ -5035,6 +5123,33 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public BreakStatement visitBreakStmt(final SQLParser.BreakStmtContext ctx) {
     return new BreakStatement(-1);
+  }
+
+  /**
+   * Visit function call as statement (script-only).
+   * Grammar: functionCall
+   * Wraps the FunctionCall in an ExpressionStatement for script execution.
+   */
+  @Override
+  public ExpressionStatement visitFunctionStmt(final SQLParser.FunctionStmtContext ctx) {
+    final ExpressionStatement stmt = new ExpressionStatement(-1);
+
+    // Get the function call
+    final FunctionCall funcCall = (FunctionCall) visit(ctx.functionCall());
+
+    // Wrap it in an Expression (like visitFunctionCallExpr does)
+    final BaseExpression baseExpr = new BaseExpression(-1);
+    final LevelZeroIdentifier levelZero = new LevelZeroIdentifier(-1);
+    levelZero.functionCall = funcCall;
+    final BaseIdentifier baseId = new BaseIdentifier(-1);
+    baseId.levelZero = levelZero;
+    baseExpr.identifier = baseId;
+
+    final Expression expr = new Expression(-1);
+    expr.mathExpression = baseExpr;
+
+    stmt.expression = expr;
+    return stmt;
   }
 
   /**
