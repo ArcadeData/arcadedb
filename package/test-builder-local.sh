@@ -60,6 +60,20 @@ echo ""
 echo "Test 3: PASSED"
 echo ""
 
+# Test 3.5: Full local mode with local base (dry run)
+echo "Test 3.5: Full local mode - local base + local repo"
+./arcadedb-builder.sh \
+    --version=${PROJECT_VERSION} \
+    --modules=console,studio \
+    --local-base=${SCRIPT_DIR}/target/arcadedb-${PROJECT_VERSION}-base.tar.gz \
+    --local-repo=$HOME/.m2/repository \
+    --dry-run \
+    --skip-docker
+
+echo ""
+echo "Test 3.5: PASSED"
+echo ""
+
 # Test 4: Help message
 echo "Test 4: Help message"
 ./arcadedb-builder.sh --help | head -5

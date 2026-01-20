@@ -92,18 +92,20 @@ Upload these along with the base distribution to GitHub releases.
 
 ### Local Testing Without Publishing
 
-When developing new modules or testing changes, use local repository mode to avoid publishing to Maven Central:
+When developing new modules or testing changes, use `--local-base` and `--local-repo` for fully offline builds:
 
-#### Step 1: Build Modules Locally
+#### Step 1: Build Base Distribution and Modules
 
 ```bash
 cd /path/to/arcadedb
-mvn clean install -DskipTests
+mvn clean package -DskipTests
 ```
 
-This installs JARs to your local Maven repository (`~/.m2/repository`).
+This:
+- Installs module JARs to your local Maven repository (`~/.m2/repository`)
+- Creates base distribution in `package/target/arcadedb-*-base.tar.gz`
 
-#### Step 2: Build Custom Distribution
+#### Step 2: Build Custom Distribution (Fully Offline)
 
 ```bash
 cd package
@@ -111,13 +113,16 @@ cd package
 # Get current version dynamically
 VERSION=$(mvn -f ../pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
 
-# Build with local modules
+# Build with local base and local modules (no internet required)
 ./arcadedb-builder.sh \
     --version=$VERSION \
     --modules=gremlin,studio,postgresw \
+    --local-base=target/arcadedb-$VERSION-base.tar.gz \
     --local-repo \
     --skip-docker
 ```
+
+This mode downloads nothing from the internet - it uses only local files.
 
 #### Step 3: Test the Distribution
 

@@ -101,13 +101,37 @@ The script will prompt for:
 
 ## Local Development Mode
 
-For offline development and testing, use `--local-repo` to load modules from your local Maven repository instead of downloading from Maven Central:
+For offline development and testing, use `--local-base` and `--local-repo` to build distributions entirely from local files.
 
-### Using Default Maven Repository
+### Full Offline Mode (Recommended for Development)
+
+```bash
+# Build base distribution and modules first
+cd /path/to/arcadedb
+mvn clean package -DskipTests
+
+# Create custom distribution using local files
+cd package
+./arcadedb-builder.sh \
+    --version=$(mvn -f ../pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout) \
+    --modules=gremlin,studio \
+    --local-base=target/arcadedb-*-base.tar.gz \
+    --local-repo
+```
+
+This mode:
+- ✅ Uses base distribution from `package/target/` (no GitHub download)
+- ✅ Uses modules from `~/.m2/repository` (no Maven Central download)
+- ✅ Works completely offline
+- ✅ Perfect for testing local changes
+
+### Using Default Maven Repository (Modules Only)
+
+If you only want to use local modules but download the base from GitHub:
 
 ```bash
 ./arcadedb-builder.sh \
-    --version=26.1.1-SNAPSHOT \
+    --version=26.1.0 \
     --modules=gremlin,studio \
     --local-repo
 ```
@@ -123,27 +147,11 @@ The script will automatically use `~/.m2/repository` and look for JARs in Maven 
 ./arcadedb-builder.sh \
     --version=26.1.1-SNAPSHOT \
     --modules=console \
-    --local-repo=/path/to/custom/jars
+    --local-repo=/path/to/custom/jars \
+    --local-base=/path/to/base.tar.gz
 ```
 
 Custom directories should contain JARs with naming: `arcadedb-{module}-{version}[-shaded].jar`
-
-### Building Local Modules First
-
-Before using local repository mode, build the modules you need:
-
-```bash
-# Build all modules
-cd /path/to/arcadedb
-mvn clean install -DskipTests
-
-# Then build custom distribution
-cd package
-./arcadedb-builder.sh \
-    --version=$(mvn -f ../pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout) \
-    --modules=gremlin,studio \
-    --local-repo
-```
 
 **Benefits:**
 - ✅ Offline builds (no internet required)
