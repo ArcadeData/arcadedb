@@ -260,6 +260,11 @@ check_prerequisites() {
         missing_tools+=("unzip")
     fi
 
+    # Check for zip
+    if ! command -v zip &> /dev/null; then
+        missing_tools+=("zip")
+    fi
+
     # Check for mktemp
     if ! command -v mktemp &> /dev/null; then
         missing_tools+=("mktemp")
@@ -663,6 +668,55 @@ download_optional_modules() {
     log_success "All optional modules downloaded"
 }
 
+# Create zip and tar.gz archives
+create_archives() {
+    log_info "Creating distribution archives..."
+
+    local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}-base"
+    local final_dir="$TEMP_DIR/$OUTPUT_NAME"
+
+    # Validate extracted directory exists
+    if [[ "$DRY_RUN" != true ]]; then
+        if [[ ! -d "$extracted_dir" ]]; then
+            error_exit "Extracted directory not found: $extracted_dir"
+        fi
+    fi
+
+    # Rename extracted directory to final name
+    if [[ "$DRY_RUN" != true ]]; then
+        mv "$extracted_dir" "$final_dir"
+    else
+        log_info "[DRY RUN] Would rename: $extracted_dir -> $final_dir"
+    fi
+
+    local zip_file="${OUTPUT_DIR}/${OUTPUT_NAME}.zip"
+    local targz_file="${OUTPUT_DIR}/${OUTPUT_NAME}.tar.gz"
+
+    # Create tar.gz
+    log_info "Creating tar.gz archive..."
+    if [[ "$DRY_RUN" != true ]]; then
+        if ! tar -czf "$targz_file" -C "$TEMP_DIR" "$OUTPUT_NAME"; then
+            error_exit "Failed to create tar.gz archive: $targz_file"
+        fi
+        log_success "Created: $targz_file"
+    else
+        log_info "[DRY RUN] Would create: $targz_file"
+    fi
+
+    # Create zip
+    log_info "Creating zip archive..."
+    if [[ "$DRY_RUN" != true ]]; then
+        if ! (cd "$TEMP_DIR" && zip -r -q "$zip_file" "$OUTPUT_NAME"); then
+            error_exit "Failed to create zip archive: $zip_file"
+        fi
+        log_success "Created: $zip_file"
+    else
+        log_info "[DRY RUN] Would create: $zip_file"
+    fi
+
+    log_success "Archives created successfully"
+}
+
 #===============================================================================
 # Main Entry Point
 #===============================================================================
@@ -702,6 +756,9 @@ main() {
 
     # Download optional modules
     download_optional_modules
+
+    # Create archives
+    create_archives
 
     log_success "Build complete"
 }
