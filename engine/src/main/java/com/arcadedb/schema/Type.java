@@ -594,6 +594,9 @@ public enum Type {
           for (final Object o : MultiValue.getMultiValueIterable(value)) {
             if (o instanceof Identifiable identifiable) {
               result.add(identifiable);
+            } else if (o instanceof com.arcadedb.query.sql.executor.Result resultObj && resultObj.isElement()) {
+              // Extract the document from Result object
+              result.add((Identifiable) resultObj.getElement().get());
             } else if (o instanceof String) {
               try {
                 result.add(new RID(database, value.toString()));
@@ -602,6 +605,10 @@ public enum Type {
                     .log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
               }
             }
+          }
+          // If the property type is LINK (not LIST) and we have a single-element list, unwrap it
+          if (property != null && property.getType() == LINK && result.size() == 1) {
+            return result.get(0);
           }
           return result;
         } else if (value instanceof String string) {

@@ -71,6 +71,24 @@ public class BaseExpression extends MathExpression {
   }
 
   public void setModifier(final Modifier modifier) {
+    // Validate: expand() should not allow method calls or suffix identifiers
+    // Only nested projections are allowed (e.g., expand([...]):{fields})
+    if (isExpand() && modifier != null) {
+      // Walk through the modifier chain to check if any disallowed modifiers exist
+      Modifier current = modifier;
+      while (current != null) {
+        if (current.methodCall != null) {
+          throw new CommandSQLParsingException(
+              "Cannot use method calls (e.g., .asString()) after expand() function");
+        }
+        if (current.suffix != null) {
+          throw new CommandSQLParsingException(
+              "Cannot use property access (e.g., .name) after expand() function");
+        }
+        // Nested projections are OK (e.g., expand([...]):{fields})
+        current = current.next;
+      }
+    }
     this.modifier = modifier;
     // Note: Nested projections after expand() are now allowed (e.g., expand([...]):{fields})
     // This enables issue #2965 fix - nested projection on expanded results

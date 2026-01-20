@@ -113,7 +113,7 @@ public class RightBinaryCondition extends SimpleNode {
 
   private boolean matchesFilters(final Identifiable currentRecord, final Object element, final CommandContext context) {
     if (operator != null) {
-      operator.execute(context.getDatabase(), element, right.execute(currentRecord, context));
+      return operator.execute(context.getDatabase(), element, right.execute(currentRecord, context));
     } else if (inOperator != null) {
 
       final Object rightVal = evaluateRight(currentRecord, context);

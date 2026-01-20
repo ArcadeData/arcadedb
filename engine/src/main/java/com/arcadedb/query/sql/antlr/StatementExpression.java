@@ -23,57 +23,45 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.BaseExpression;
-import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Expression wrapper that executes a SELECT subquery when evaluated.
- * Used for left-side subqueries in IN conditions: (SELECT ...) IN collection
+ * Expression wrapper that executes a DML statement (INSERT, UPDATE, DELETE, etc.) when evaluated.
+ * Used for nested statements in expressions: INSERT INTO foo SET x = (INSERT INTO bar SET y = 1)
  */
-public class SubqueryExpression extends BaseExpression {
-  private final SelectStatement statement;
+public class StatementExpression extends BaseExpression {
+  private final Statement statement;
 
-  public SubqueryExpression(final SelectStatement statement) {
+  public StatementExpression(final Statement statement) {
     super(-1);
     this.statement = statement;
   }
 
-  public SelectStatement getStatement() {
-    return statement;
-  }
-
   @Override
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
-    return executeSubquery(context);
+    return executeStatement(context);
   }
 
   @Override
   public Object execute(final Result currentRecord, final CommandContext context) {
-    return executeSubquery(context);
+    return executeStatement(context);
   }
 
-  private Object executeSubquery(final CommandContext context) {
+  private Object executeStatement(final CommandContext context) {
     final ResultSet rs = statement.execute(context.getDatabase(), context.getInputParameters());
     final List<Object> values = new ArrayList<>();
 
     while (rs.hasNext()) {
       final Result result = rs.next();
-      // If result is a document (not a projection), add the full result
-      if (result.isElement()) {
-        values.add(result);
-      } else if (result.getPropertyNames().size() == 1) {
-        // For projections with a single value, extract that value
-        values.add(result.getProperty(result.getPropertyNames().iterator().next()));
-      } else {
-        values.add(result);
-      }
+      values.add(result);
     }
 
+    rs.close();
+
     // Always return the list to match JavaCC behavior
-    // Note: This is used in INSERT SET field = (SELECT ...) contexts where
-    // the list is expected even for single results
     return values;
   }
 
@@ -83,7 +71,7 @@ public class SubqueryExpression extends BaseExpression {
   }
 
   @Override
-  public SubqueryExpression copy() {
-    return new SubqueryExpression(statement);
+  public StatementExpression copy() {
+    return new StatementExpression(statement);
   }
 }

@@ -44,11 +44,20 @@ public class SQLErrorListener extends BaseErrorListener {
       final String msg,
       final RecognitionException e
   ) {
+    // Check for specific error patterns and provide user-friendly messages
+    String customMessage = detectCommonErrors(msg, charPositionInLine);
+
     // Build a user-friendly error message
     final StringBuilder errorMessage = new StringBuilder();
     errorMessage.append("SQL syntax error at line ").append(line);
     errorMessage.append(", column ").append(charPositionInLine);
-    errorMessage.append(": ").append(msg);
+    errorMessage.append(": ");
+
+    if (customMessage != null) {
+      errorMessage.append(customMessage);
+    } else {
+      errorMessage.append(msg);
+    }
 
     // Add a snippet of the SQL text showing where the error occurred
     if (sqlText != null && !sqlText.isEmpty()) {
@@ -68,5 +77,48 @@ public class SQLErrorListener extends BaseErrorListener {
     }
 
     throw new CommandSQLParsingException(errorMessage.toString());
+  }
+
+  /**
+   * Detects common SQL errors and provides user-friendly messages.
+   * Returns null if no specific pattern is detected.
+   */
+  private String detectCommonErrors(final String msg, final int charPositionInLine) {
+    if (msg == null || sqlText == null) {
+      return null;
+    }
+
+    // Detect "AND and" or "OR and" patterns (duplicate operators)
+    if (msg.contains("extraneous input 'and'") || msg.contains("extraneous input 'AND'")) {
+      // Look at the context around the error position
+      if (charPositionInLine > 0 && charPositionInLine < sqlText.length()) {
+        final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), charPositionInLine).toUpperCase();
+        if (before.contains("AND")) {
+          return "AND operator must be followed by a condition";
+        } else if (before.contains("OR")) {
+          return "OR operator must be followed by a condition";
+        }
+      }
+      return "AND operator must be followed by a condition";
+    }
+
+    // Detect "OR AND" pattern
+    if (msg.contains("extraneous input 'AND'") && sqlText.toUpperCase().contains("OR AND")) {
+      return "OR operator must be followed by a condition";
+    }
+
+    // Detect missing condition after AND/OR
+    if (msg.contains("missing") || msg.contains("expecting")) {
+      if (charPositionInLine > 0 && charPositionInLine <= sqlText.length()) {
+        final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), Math.min(sqlText.length(), charPositionInLine)).toUpperCase().trim();
+        if (before.endsWith("AND")) {
+          return "AND operator must be followed by a condition";
+        } else if (before.endsWith("OR")) {
+          return "OR operator must be followed by a condition";
+        }
+      }
+    }
+
+    return null;
   }
 }

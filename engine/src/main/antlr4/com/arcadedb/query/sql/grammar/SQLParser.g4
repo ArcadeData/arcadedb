@@ -82,8 +82,7 @@ statement
     | updateStatement                                # updateStmt
     | deleteStatement                                # deleteStmt
     | deleteFunctionStatement                        # deleteFunctionStmt
-    // TODO: Complete MOVE VERTEX visitor implementation
-    // | moveVertexStatement                            # moveVertexStmt
+    | moveVertexStatement                            # moveVertexStmt
 
     // DDL Statements - CREATE variants
     | CREATE DOCUMENT TYPE createTypeBody            # createDocumentTypeStmt
@@ -664,10 +663,10 @@ beginStatement
 
 /**
  * COMMIT statement
- * COMMIT [RETRY n]
+ * COMMIT [RETRY n [ELSE {statements} [AND] (FAIL|CONTINUE)]]
  */
 commitStatement
-    : COMMIT (RETRY INTEGER_LITERAL)?
+    : COMMIT (RETRY INTEGER_LITERAL (ELSE (LBRACE (scriptStatement SEMICOLON?)* RBRACE)? AND? (FAIL | CONTINUE))?)?
     ;
 
 /**
@@ -989,7 +988,6 @@ methodCall
  */
 arraySelector
     : LBRACKET (expression | rid | inputParameter) (COMMA (expression | rid | inputParameter))+ RBRACKET  # arrayMultiSelector
-    | LBRACKET (expression | rid | inputParameter) RBRACKET                  # arraySingleSelector
     | LBRACKET expression? RANGE expression? RBRACKET                         # arrayRangeSelector
     | LBRACKET expression? ELLIPSIS expression? RBRACKET                      # arrayEllipsisSelector
     | LBRACKET whereClause RBRACKET                                           # arrayConditionSelector
@@ -998,6 +996,7 @@ arraySelector
     | LBRACKET LIKE expression RBRACKET                                       # arrayLikeSelector
     | LBRACKET ILIKE expression RBRACKET                                      # arrayIlikeSelector
     | LBRACKET IN expression RBRACKET                                         # arrayInSelector
+    | LBRACKET (expression | rid | inputParameter) RBRACKET                  # arraySingleSelector
     ;
 
 /**

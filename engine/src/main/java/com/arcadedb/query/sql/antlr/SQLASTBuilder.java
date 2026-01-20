@@ -1056,14 +1056,115 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     item.expression = (Expression) visit(ctx.expression());
 
     // Nested projection (e.g., {field1, field2})
-    if (ctx.nestedProjection() != null)
+    if (ctx.nestedProjection() != null) {
       item.nestedProjection = (NestedProjection) visit(ctx.nestedProjection());
+    } else {
+      // The nested projection might have been parsed as a modifier on the expression
+      // (e.g., elem1:{*} where :{*} becomes a modifier). Extract it and remove from
+      // the modifier chain so it doesn't appear in the expression's toString().
+      item.nestedProjection = extractNestedProjectionFromExpression(item.expression);
+    }
+    // Note: For array concat expressions (||), nested projections are handled directly
+    // on the ArrayConcatExpressionElement objects in visitArrayConcat, not here.
 
     // Alias (AS identifier)
     if (ctx.identifier() != null)
       item.alias = (Identifier) visit(ctx.identifier());
 
     return item;
+  }
+
+  /**
+   * Extracts nested projection from expression's modifier chain if present.
+   * Nested projections can be parsed as modifiers when they appear after function calls,
+   * e.g., list({'x':1}):{x} where :{x} becomes a modifier instead of a separate nested projection.
+   * Also handles binary operations like list({'x':1}):{x} || [] where the nested projection
+   * is on the left operand.
+   */
+  private NestedProjection extractNestedProjectionFromExpression(final Expression expression) {
+    if (expression == null) {
+      return null;
+    }
+
+    // Try to extract from mathExpression if it's a BaseExpression
+    if (expression.mathExpression instanceof BaseExpression baseExpr) {
+      final NestedProjection result = extractNestedProjectionFromBaseExpression(baseExpr);
+      if (result != null) {
+        return result;
+      }
+    }
+
+    // Try to extract from arrayConcatExpression (|| operator)
+    if (expression.arrayConcatExpression != null) {
+      final ArrayConcatExpression arrayConcat = expression.arrayConcatExpression;
+      final List<ArrayConcatExpressionElement> children = arrayConcat.getChildExpressions();
+      if (children != null && !children.isEmpty()) {
+        // Check the first child expression
+        final ArrayConcatExpressionElement firstElement = children.get(0);
+        // Recursively extract from the first element
+        final NestedProjection result = extractNestedProjectionFromExpression(firstElement);
+        if (result != null) {
+          return result;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Extracts nested projection from an Expression's modifier chain.
+   * Overloaded version that handles Expression wrappers.
+   */
+  private NestedProjection extractNestedProjectionFromBaseExpression(final Expression expression) {
+    if (expression == null || expression.mathExpression == null) {
+      return null;
+    }
+
+    if (expression.mathExpression instanceof BaseExpression baseExpr) {
+      return extractNestedProjectionFromBaseExpression(baseExpr);
+    }
+
+    return null;
+  }
+
+  /**
+   * Extracts nested projection from a BaseExpression's modifier chain.
+   */
+  private NestedProjection extractNestedProjectionFromBaseExpression(final BaseExpression baseExpr) {
+    if (baseExpr == null || baseExpr.modifier == null) {
+      return null;
+    }
+
+    // Find the last modifier with nestedProjection
+    Modifier prev = null;
+    Modifier current = baseExpr.modifier;
+    Modifier lastNested = null;
+    Modifier prevNested = null;
+
+    while (current != null) {
+      if (current.nestedProjection != null) {
+        lastNested = current;
+        prevNested = prev;
+      }
+      prev = current;
+      current = current.next;
+    }
+
+    // If we found a nested projection modifier, extract it
+    if (lastNested != null) {
+      // Remove it from the chain
+      if (prevNested != null) {
+        prevNested.next = lastNested.next;
+      } else {
+        // It's the first modifier
+        baseExpr.modifier = lastNested.next;
+      }
+
+      return lastNested.nestedProjection;
+    }
+
+    return null;
   }
 
   /**
@@ -1932,12 +2033,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final ArrayConcatExpressionElement leftElement = new ArrayConcatExpressionElement(-1);
     // Copy all fields from Expression to ArrayConcatExpressionElement
     copyExpressionFields(leftExpr, leftElement);
+    // Extract and set nested projection if present in modifier chain
+    leftElement.nestedProjection = extractNestedProjectionFromBaseExpression(leftExpr);
     concatExpr.getChildExpressions().add(leftElement);
 
     // Visit right side
     final Expression rightExpr = (Expression) visit(ctx.expression(1));
     final ArrayConcatExpressionElement rightElement = new ArrayConcatExpressionElement(-1);
     copyExpressionFields(rightExpr, rightElement);
+    // Extract and set nested projection if present in modifier chain
+    rightElement.nestedProjection = extractNestedProjectionFromBaseExpression(rightExpr);
     concatExpr.getChildExpressions().add(rightElement);
 
     // Wrap in Expression
@@ -2865,14 +2970,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       baseExpr.expression = (Expression) visit(ctx.expression());
       return baseExpr;
     } else if (ctx.statement() != null) {
-      // Parenthesized statement (subquery)
+      // Parenthesized statement (subquery or nested statement)
       final Statement stmt = (Statement) visit(ctx.statement());
       if (stmt instanceof SelectStatement) {
         // Return a SubqueryExpression that wraps the SELECT statement
         return new SubqueryExpression((SelectStatement) stmt);
+      } else {
+        // For other statements (INSERT, UPDATE, DELETE, etc.), wrap them in a StatementExpression
+        // This allows statements like: INSERT INTO foo SET x = (INSERT INTO bar SET y = 1)
+        return new StatementExpression(stmt);
       }
-      // For non-SELECT statements, throw a parsing error as they can't be used as expressions
-      throw new CommandSQLParsingException("Only SELECT statements can be used as subquery expressions");
     }
 
     return new BaseExpression(-1);
@@ -3766,11 +3873,90 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   //  * Visit MOVE VERTEX statement.
   //  * Supports: MOVE VERTEX expr TO type:TypeName or TO TypeName or TO bucket:name
   //  */
-  // @Override
-  // public MoveVertexStatement visitMoveVertexStmt(final SQLParser.MoveVertexStmtContext ctx) {
-  //   // Implementation incomplete - needs proper FromItem handling for source expression
-  //   throw new CommandSQLParsingException("MOVE VERTEX statement is not yet supported with the new SQL parser");
-  // }
+  @Override
+  public MoveVertexStatement visitMoveVertexStmt(final SQLParser.MoveVertexStmtContext ctx) {
+    final MoveVertexStatement stmt = new MoveVertexStatement(-1);
+    final SQLParser.MoveVertexStatementContext moveCtx = ctx.moveVertexStatement();
+
+    // Source: expression (typically a subquery like "(SELECT FROM ...)")
+    final Object sourceObj = visit(moveCtx.expression(0));
+    final FromItem fromItem = new FromItem(-1);
+
+    // The expression could be a subquery (SELECT statement) or other expression
+    if (sourceObj instanceof SelectStatement) {
+      fromItem.statement = (SelectStatement) sourceObj;
+    } else if (sourceObj instanceof SubqueryExpression) {
+      // Parenthesized SELECT statement wrapped in SubqueryExpression
+      fromItem.statement = ((SubqueryExpression) sourceObj).getStatement();
+    } else if (sourceObj instanceof com.arcadedb.query.sql.parser.Expression) {
+      // Expression that contains a subquery - try to extract the SelectStatement
+      final com.arcadedb.query.sql.parser.Expression expr = (com.arcadedb.query.sql.parser.Expression) sourceObj;
+
+      // Try to find SELECT statement in the expression tree
+      SelectStatement selectStmt = null;
+      if (expr.mathExpression != null && expr.mathExpression.childExpressions != null) {
+        for (final MathExpression child : expr.mathExpression.childExpressions) {
+          if (child instanceof BaseExpression) {
+            final BaseExpression baseChild = (BaseExpression) child;
+            // Check if this BaseExpression wraps an expression with a SELECT
+            if (baseChild.expression != null && baseChild.expression.mathExpression != null &&
+                !baseChild.expression.mathExpression.childExpressions.isEmpty()) {
+              // Iterate through to find a statement
+              for (final MathExpression grandchild : baseChild.expression.mathExpression.childExpressions) {
+                if (grandchild instanceof BaseExpression) {
+                  final BaseExpression bgrandchild = (BaseExpression) grandchild;
+                  // Keep navigating - for now just fall back to using the Expression itself as identifier
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Fallback: Try to use the expression itself as the source (JavaCC might handle it)
+      fromItem.identifier = new Identifier("(" + expr.toString(null) + ")");
+    } else {
+      // For other expressions, throw error
+      throw new CommandSQLParsingException("MOVE VERTEX source must be a SELECT subquery, got: " + sourceObj.getClass().getName());
+    }
+    stmt.source = fromItem;
+
+    // Target: TYPE:identifier or BUCKET:identifier or identifier (bucket name)
+    if (moveCtx.TYPE() != null) {
+      // TO TYPE:typename
+      stmt.targetType = (Identifier) visit(moveCtx.identifier());
+    } else if (moveCtx.BUCKET() != null) {
+      // TO BUCKET:bucketname
+      final Identifier bucketId = (Identifier) visit(moveCtx.identifier());
+      stmt.targetBucket = new Bucket(bucketId.getStringValue());
+    } else {
+      // TO bucketname (without BUCKET: prefix)
+      final Identifier bucketId = (Identifier) visit(moveCtx.identifier());
+      stmt.targetBucket = new Bucket(bucketId.getStringValue());
+    }
+
+    // SET clause (updateItems)
+    if (moveCtx.SET() != null) {
+      final UpdateOperations updateOps = new UpdateOperations(-1);
+      updateOps.type = UpdateOperations.TYPE_SET;
+      for (final SQLParser.UpdateItemContext itemCtx : moveCtx.updateItem()) {
+        final UpdateItem item = (UpdateItem) visit(itemCtx);
+        updateOps.updateItems.add(item);
+      }
+      stmt.updateOperations = updateOps;
+    }
+
+    // BATCH clause
+    if (moveCtx.BATCH() != null) {
+      final Batch batch = new Batch(-1);
+      // BATCH expression - get the last expression (index 1 if there was a source expression)
+      final int batchExprIndex = moveCtx.expression().size() - 1;
+      batch.value = (Expression) visit(moveCtx.expression(batchExprIndex));
+      stmt.batch = batch;
+    }
+
+    return stmt;
+  }
 
   // DDL STATEMENT VISITORS - CREATE
 
@@ -4698,11 +4884,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Type name
     stmt.typeName = (Identifier) visit(bodyCtx.identifier());
 
-    // POLYMORPHIC
-    stmt.polymorphic = bodyCtx.POLYMORPHIC() != null;
+    // POLYMORPHIC - check if POLYMORPHIC keyword is present
+    // Grammar uses (POLYMORPHIC | UNSAFE)* which returns a list, not a single token
+    stmt.polymorphic = bodyCtx.POLYMORPHIC() != null && !bodyCtx.POLYMORPHIC().isEmpty();
 
-    // UNSAFE
-    stmt.unsafe = bodyCtx.UNSAFE() != null;
+    // UNSAFE - check if UNSAFE keyword is present
+    stmt.unsafe = bodyCtx.UNSAFE() != null && !bodyCtx.UNSAFE().isEmpty();
 
     return stmt;
   }
@@ -5018,6 +5205,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final PInteger retry = new PInteger(-1);
       retry.value = Integer.parseInt(commitCtx.INTEGER_LITERAL().getText());
       stmt.retry = retry;
+
+      // ELSE clause
+      if (commitCtx.ELSE() != null) {
+        // ELSE {statements}
+        if (commitCtx.LBRACE() != null) {
+          for (final SQLParser.ScriptStatementContext stmtCtx : commitCtx.scriptStatement()) {
+            final Statement elseStmt = (Statement) visit(stmtCtx);
+            stmt.addElse(elseStmt);
+          }
+        }
+
+        // FAIL or CONTINUE
+        if (commitCtx.FAIL() != null) {
+          stmt.elseFail = true;
+        } else if (commitCtx.CONTINUE() != null) {
+          stmt.elseFail = false;
+        }
+      }
     }
 
     return stmt;
