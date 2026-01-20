@@ -821,6 +821,11 @@ main() {
     validate_version
     set_defaults
 
+    # Validate flag combinations
+    if [[ "$SKIP_DOCKER" == true ]] && [[ "$DOCKERFILE_ONLY" == true ]]; then
+        error_exit "Cannot use --skip-docker and --dockerfile-only together"
+    fi
+
     # Interactive module selection if not specified
     if [[ -z "$SELECTED_MODULES" ]] && [[ "$DRY_RUN" != true ]]; then
         interactive_select_modules
