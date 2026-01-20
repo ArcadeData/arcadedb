@@ -76,12 +76,12 @@ Usage: ${SCRIPT_NAME} [OPTIONS]
 Build custom ArcadeDB distributions with only the modules you need.
 
 OPTIONS:
-    --version VERSION       ArcadeDB version to build (required)
-    --modules MODULES       Comma-separated list of modules (required)
+    --version=VERSION       ArcadeDB version to build (required for non-interactive mode)
+    --modules=MODULES       Comma-separated list of modules. If not provided, will be asked interactively.
                            Options: console,gremlin,studio,redisw,mongodbw,postgresw,grpcw,graphql,metrics
-    --output-name NAME      Custom name for distribution (default: arcadedb-<version>-<modules>)
-    --output-dir DIR        Output directory (default: current directory)
-    --docker-tag TAG        Build Docker image with specified tag
+    --output-name=NAME      Custom name for distribution (default: arcadedb-<version>-<modules>)
+    --output-dir=DIR        Output directory (default: current directory)
+    --docker-tag=TAG        Build Docker image with specified tag
     --skip-docker          Skip Docker image build
     --dockerfile-only      Only generate Dockerfile, don't build image
     --keep-temp            Keep temporary build directory
