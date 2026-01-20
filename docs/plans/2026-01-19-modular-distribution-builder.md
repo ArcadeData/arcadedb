@@ -1212,8 +1212,7 @@ download_optional_modules() {
         # Construct Maven Central URL
         local artifact_id="arcadedb-${module}"
         local jar_filename="${artifact_id}-${ARCADEDB_VERSION}${classifier}.jar"
-        local maven_path="com/arcadedb/${artifact_id}/${ARCADEDB_VERSION}"
-        local jar_url="${MAVEN_CENTRAL_BASE}/${module}/${ARCADEDB_VERSION}/${jar_filename}"
+        local jar_url="${MAVEN_CENTRAL_BASE}/${artifact_id}/${ARCADEDB_VERSION}/${jar_filename}"
         local checksum_url="${jar_url}.sha1"
 
         local jar_file="${lib_dir}/${jar_filename}"
