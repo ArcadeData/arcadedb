@@ -383,6 +383,50 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Standard .methodCall() syntax
       final Object methodObj = visit(ctx.matchMethodCall());
 
+      // Check if the matchMethodCall is a functionCall with chained methodCalls
+      // Grammar: functionCall : identifier LPAREN ... RPAREN methodCall* ...
+      // If we have .out('Friend').out('Friend'), the second .out() is a methodCall chain
+      if (ctx.matchMethodCall().functionCall() != null) {
+        final SQLParser.FunctionCallContext funcCtx = ctx.matchMethodCall().functionCall();
+        if (CollectionUtils.isNotEmpty(funcCtx.methodCall())) {
+          // We have chained method calls - create MultiMatchPathItem
+          final MultiMatchPathItem multiPathItem = new MultiMatchPathItem(-1);
+
+          // First item from the function call
+          final MatchPathItemFirst firstItem = new MatchPathItemFirst(-1);
+          if (methodObj instanceof FunctionCall) {
+            firstItem.setFunction((FunctionCall) methodObj);
+          }
+          multiPathItem.getItems().add(firstItem);
+
+          // Additional items from methodCall chains
+          for (final SQLParser.MethodCallContext methodCallCtx : funcCtx.methodCall()) {
+            final MatchPathItem item = new MatchPathItem(-1);
+
+            // Extract method name and params from methodCall
+            // methodCall: DOT identifier LPAREN (expression (COMMA expression)*)? RPAREN
+            final Identifier methodName = (Identifier) visit(methodCallCtx.identifier());
+            final MethodCall method = new MethodCall(-1);
+            method.methodName = methodName;
+
+            if (CollectionUtils.isNotEmpty(methodCallCtx.expression())) {
+              for (final SQLParser.ExpressionContext exprCtx : methodCallCtx.expression()) {
+                method.params.add((Expression) visit(exprCtx));
+              }
+            }
+
+            item.setMethod(method);
+            multiPathItem.getItems().add(item);
+          }
+
+          // Add properties if present at the end
+          if (ctx.matchProperties() != null) {
+            multiPathItem.setFilter((MatchFilter) visit(ctx.matchProperties()));
+          }
+          return multiPathItem;
+        }
+      }
+
       // Check if this is a field access (.identifier) or a method call (.method())
       if (methodObj instanceof Identifier) {
         // This is .identifier (field access) - create FieldMatchPathItem
@@ -704,16 +748,39 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         } else if (valueObj instanceof Expression) {
           // Expression containing the WHERE condition: where:(name = 'n1')
           final Expression expr = (Expression) valueObj;
+          // Check if it's a BaseExpression containing a boolean value like (true) or (false)
+          if (expr.mathExpression instanceof BaseExpression) {
+            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+            if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
+              // Handle boolean literals wrapped in BaseExpression: where: (true)
+              final WhereClause whereClause = new WhereClause(-1);
+              final BooleanExpression boolExpr = createBooleanLiteral(baseExpr.expression.booleanValue);
+              whereClause.baseExpression = boolExpr;
+              item.filter = whereClause;
+            }
+          }
           // For parenthesized conditions like (name = 'n1'), mathExpression is a ParenthesisExpression
-          if (expr.mathExpression instanceof ParenthesisExpression) {
+          else if (expr.mathExpression instanceof ParenthesisExpression) {
             final ParenthesisExpression parenExpr = (ParenthesisExpression) expr.mathExpression;
             // Extract the inner expression's whereCondition from the parentheses
             if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
               item.filter = parenExpr.expression.whereCondition;
+            } else if (parenExpr.expression != null && parenExpr.expression.booleanValue != null) {
+              // Handle boolean literals like (true) or (false)
+              final WhereClause whereClause = new WhereClause(-1);
+              final BooleanExpression boolExpr = createBooleanLiteral(parenExpr.expression.booleanValue);
+              whereClause.baseExpression = boolExpr;
+              item.filter = whereClause;
             }
           } else if (expr.whereCondition != null) {
             // Direct WHERE clause
             item.filter = expr.whereCondition;
+          } else if (expr.booleanValue != null) {
+            // Direct boolean literal
+            final WhereClause whereClause = new WhereClause(-1);
+            final BooleanExpression boolExpr = createBooleanLiteral(expr.booleanValue);
+            whereClause.baseExpression = boolExpr;
+            item.filter = whereClause;
           }
         }
         break;
@@ -727,16 +794,39 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         } else if (valueObj instanceof Expression) {
           // Expression containing the WHILE condition
           final Expression expr = (Expression) valueObj;
+          // Check if it's a BaseExpression containing a boolean value like (true) or (false)
+          if (expr.mathExpression instanceof BaseExpression) {
+            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+            if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
+              // Handle boolean literals wrapped in BaseExpression: while: (true)
+              final WhereClause whereClause = new WhereClause(-1);
+              final BooleanExpression boolExpr = createBooleanLiteral(baseExpr.expression.booleanValue);
+              whereClause.baseExpression = boolExpr;
+              item.whileCondition = whereClause;
+            }
+          }
           // For parenthesized conditions, mathExpression is a ParenthesisExpression
-          if (expr.mathExpression instanceof ParenthesisExpression) {
+          else if (expr.mathExpression instanceof ParenthesisExpression) {
             final ParenthesisExpression parenExpr = (ParenthesisExpression) expr.mathExpression;
             // Extract the inner expression's whereCondition from the parentheses
             if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
               item.whileCondition = parenExpr.expression.whereCondition;
+            } else if (parenExpr.expression != null && parenExpr.expression.booleanValue != null) {
+              // Handle boolean literals like (true) or (false)
+              final WhereClause whereClause = new WhereClause(-1);
+              final BooleanExpression boolExpr = createBooleanLiteral(parenExpr.expression.booleanValue);
+              whereClause.baseExpression = boolExpr;
+              item.whileCondition = whereClause;
             }
           } else if (expr.whereCondition != null) {
             // Direct WHERE clause (used for WHILE)
             item.whileCondition = expr.whereCondition;
+          } else if (expr.booleanValue != null) {
+            // Direct boolean literal
+            final WhereClause whereClause = new WhereClause(-1);
+            final BooleanExpression boolExpr = createBooleanLiteral(expr.booleanValue);
+            whereClause.baseExpression = boolExpr;
+            item.whileCondition = whereClause;
           }
         }
         break;
@@ -747,6 +837,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final BaseExpression baseExpr = (BaseExpression) valueObj;
           if (baseExpr.number instanceof PInteger) {
             item.maxDepth = (PInteger) baseExpr.number;
+          }
+        } else if (valueObj instanceof Expression) {
+          final Expression expr = (Expression) valueObj;
+          if (expr.mathExpression instanceof BaseExpression) {
+            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+            if (baseExpr.number instanceof PInteger) {
+              item.maxDepth = (PInteger) baseExpr.number;
+            }
           }
         }
         break;
@@ -775,6 +873,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
             item.depthAlias = new Identifier(sb.toString());
           }
+        } else if (valueObj instanceof Expression) {
+          final Expression expr = (Expression) valueObj;
+          if (expr.mathExpression instanceof BaseExpression) {
+            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+            if (baseExpr.identifier != null) {
+              final StringBuilder sb = new StringBuilder();
+              baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+              item.depthAlias = new Identifier(sb.toString());
+            }
+          }
         }
         break;
       case "pathalias":
@@ -789,6 +897,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             final StringBuilder sb = new StringBuilder();
             baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
             item.pathAlias = new Identifier(sb.toString());
+          }
+        } else if (valueObj instanceof Expression) {
+          final Expression expr = (Expression) valueObj;
+          if (expr.mathExpression instanceof BaseExpression) {
+            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+            if (baseExpr.identifier != null) {
+              final StringBuilder sb = new StringBuilder();
+              baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+              item.pathAlias = new Identifier(sb.toString());
+            }
           }
         }
         break;
@@ -3124,41 +3242,58 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (expr.mathExpression instanceof BaseExpression) {
         final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
 
-        // Use direct field access
-        final SuffixIdentifier suffix = (SuffixIdentifier) baseExpr.identifier.suffix;
-
-        if (suffix != null) {
-          final Identifier id = suffix.identifier;
-
-          if (id != null) {
-            // Simple identifier case
-            final String identifierValue = id.getValue();
-
-            // For system attributes like @rid, @type, etc., use recordAttr instead of alias
-            if (identifierValue != null && identifierValue.startsWith("@")) {
-              item.recordAttr = identifierValue;
-            } else {
-              item.setAlias(identifierValue);
-            }
+        // Check if there's a modifier chain (like .num2 in a.num2)
+        if (baseExpr.modifier != null) {
+          // Complex expression with modifiers - set base alias and modifier chain
+          // Extract base identifier
+          if (baseExpr.identifier != null && baseExpr.identifier.suffix != null &&
+              baseExpr.identifier.suffix.identifier != null) {
+            item.setAlias(baseExpr.identifier.suffix.identifier.getValue());
+            // Set the modifier chain
+            item.modifier = baseExpr.modifier;
           } else {
-            // Check for RecordAttribute (e.g., @rid, @type, @this)
-            // Use toString to get the record attribute name
+            // Fallback: use string representation
             final StringBuilder sb = new StringBuilder();
-            suffix.toString(java.util.Collections.emptyMap(), sb);
-            final String suffixStr = sb.toString();
-            if (suffixStr != null && suffixStr.startsWith("@")) {
-              item.recordAttr = suffixStr;
+            baseExpr.toString(java.util.Collections.emptyMap(), sb);
+            item.setAlias(sb.toString());
+          }
+        } else {
+          // No modifiers - try simple identifier extraction
+          final SuffixIdentifier suffix = (SuffixIdentifier) baseExpr.identifier.suffix;
+
+          if (suffix != null) {
+            final Identifier id = suffix.identifier;
+
+            if (id != null) {
+              // Simple identifier case
+              final String identifierValue = id.getValue();
+
+              // For system attributes like @rid, @type, etc., use recordAttr instead of alias
+              if (identifierValue != null && identifierValue.startsWith("@")) {
+                item.recordAttr = identifierValue;
+              } else {
+                item.setAlias(identifierValue);
+              }
+            } else {
+              // Check for RecordAttribute (e.g., @rid, @type, @this)
+              // Use toString to get the record attribute name
+              final StringBuilder sb = new StringBuilder();
+              suffix.toString(java.util.Collections.emptyMap(), sb);
+              final String suffixStr = sb.toString();
+              if (suffixStr != null && suffixStr.startsWith("@")) {
+                item.recordAttr = suffixStr;
+              }
             }
           }
         }
       }
 
-      // If we couldn't extract a simple alias or recordAttr, create a modifier
-      if (item.getAlias() == null && item.getRecordAttr() == null) {
-        final Modifier modifier = new Modifier(-1);
-        // Use the expression by wrapping it in a method call or similar
-        // For now, just store in the recordAttr field as a fallback
-        item.modifier = modifier;
+      // If we couldn't extract anything, use the full expression as alias
+      if (item.getAlias() == null && item.getRecordAttr() == null && item.modifier == null) {
+        // Use toString to get the expression text
+        final StringBuilder sb = new StringBuilder();
+        expr.toString(java.util.Collections.emptyMap(), sb);
+        item.setAlias(sb.toString());
       }
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build ORDER BY item: " + e.getMessage(), e);
@@ -5449,6 +5584,47 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return str;
+  }
+
+  /**
+   * Helper method to create a BooleanExpression from a boolean literal value.
+   * This is used for WHILE clauses like "while: (true)" or "while: (false)".
+   */
+  private BooleanExpression createBooleanLiteral(final Boolean boolValue) {
+    // Create an anonymous BooleanExpression that returns the literal value
+    final boolean val = boolValue != null && boolValue;  // Convert to primitive to avoid closure issues
+    return new BooleanExpression(-1) {
+      @Override
+      public Boolean evaluate(final com.arcadedb.database.Identifiable currentRecord, final com.arcadedb.query.sql.executor.CommandContext ctx) {
+        return val;
+      }
+
+      @Override
+      public Boolean evaluate(final com.arcadedb.query.sql.executor.Result currentRecord, final com.arcadedb.query.sql.executor.CommandContext ctx) {
+        return val;
+      }
+
+      @Override
+      public void toString(final java.util.Map<String, Object> params, final StringBuilder builder) {
+        builder.append(val);
+      }
+
+      @Override
+      public BooleanExpression copy() {
+        return createBooleanLiteral(val);
+      }
+
+      @Override
+      public void extractSubQueries(final com.arcadedb.query.sql.parser.SubQueryCollector collector) {
+        // No subqueries in a boolean literal
+      }
+
+      @Override
+      public java.util.List<String> getMatchPatternInvolvedAliases() {
+        // No aliases involved in a boolean literal
+        return java.util.Collections.emptyList();
+      }
+    };
   }
 
 }
