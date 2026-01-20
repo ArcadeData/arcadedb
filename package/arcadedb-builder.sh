@@ -662,7 +662,7 @@ download_base_distribution() {
         fi
 
         # Find the extracted directory
-        local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}-base"
+        local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}"
         if [[ ! -d "$extracted_dir" ]]; then
             error_exit "Extracted directory not found: $extracted_dir"
         fi
@@ -796,7 +796,7 @@ download_optional_modules() {
         log_info "Downloading optional modules: $SELECTED_MODULES..."
     fi
 
-    local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}-base"
+    local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}"
     local lib_dir="${extracted_dir}/lib"
 
     # Split modules by comma
@@ -833,7 +833,7 @@ download_optional_modules() {
 create_archives() {
     log_info "Creating distribution archives..."
 
-    local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}-base"
+    local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}"
     local final_dir="$TEMP_DIR/$OUTPUT_NAME"
 
     # Validate extracted directory exists
