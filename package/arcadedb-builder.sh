@@ -62,6 +62,7 @@ DRY_RUN=false
 VERBOSE=false
 QUIET=false
 LOCAL_REPO=""  # Path to local Maven repository or custom JAR directory
+LOCAL_BASE=""  # Path to local base distribution file
 
 # Temp directory
 TEMP_DIR=""
@@ -82,6 +83,8 @@ OPTIONS:
                            Options: console,gremlin,studio,redisw,mongodbw,postgresw,grpcw,graphql,metrics
     --local-repo[=PATH]    Use local Maven repository or directory instead of downloading from Maven Central.
                            If PATH is not provided, defaults to ~/.m2/repository
+    --local-base=FILE      Use local base distribution file instead of downloading from GitHub.
+                           Useful for testing locally built base distributions.
     --output-name=NAME      Custom name for distribution (default: arcadedb-<version>-<modules>)
     --output-dir=DIR        Output directory (default: current directory)
     --docker-tag=TAG        Build Docker image with specified tag
@@ -123,6 +126,9 @@ EXAMPLES:
     # Build using custom JAR directory
     ${SCRIPT_NAME} --version=26.1.1-SNAPSHOT --modules=console --local-repo=/path/to/jars
 
+    # Build using locally built base distribution (for testing)
+    ${SCRIPT_NAME} --version=26.1.1-SNAPSHOT --modules=gremlin,studio --local-base=target/arcadedb-26.1.1-SNAPSHOT-base.tar.gz --local-repo
+
 EOF
 }
 
@@ -160,6 +166,10 @@ parse_args() {
             --local-repo)
                 # No value provided, use default Maven local repo
                 LOCAL_REPO="${HOME}/.m2/repository"
+                shift
+                ;;
+            --local-base=*)
+                LOCAL_BASE="${1#*=}"
                 shift
                 ;;
             --skip-docker)
@@ -585,25 +595,59 @@ verify_sha1() {
 
 # Download and extract base distribution
 download_base_distribution() {
-    log_info "Downloading base distribution for version $ARCADEDB_VERSION..."
-
     local base_filename="arcadedb-${ARCADEDB_VERSION}-base.tar.gz"
-    local base_url="${GITHUB_RELEASES_BASE}/${ARCADEDB_VERSION}/${base_filename}"
-    local checksum_url="${base_url}.sha256"
-
     local base_file="$TEMP_DIR/$base_filename"
     local checksum_file="${base_file}.sha256"
 
-    # Download base distribution
-    download_file "$base_url" "$base_file"
+    if [[ -n "$LOCAL_BASE" ]]; then
+        # Use local base distribution
+        log_info "Using local base distribution: $LOCAL_BASE"
 
-    # Download checksum
-    download_file "$checksum_url" "$checksum_file"
+        if [[ ! -f "$LOCAL_BASE" ]]; then
+            error_exit "Local base distribution file not found: $LOCAL_BASE"
+        fi
 
-    # Verify checksum
-    verify_sha256 "$base_file" "$checksum_file"
+        if [[ "$DRY_RUN" != true ]]; then
+            if ! cp "$LOCAL_BASE" "$base_file"; then
+                error_exit "Failed to copy local base distribution: $LOCAL_BASE"
+            fi
+        else
+            log_info "[DRY RUN] Would copy: $LOCAL_BASE -> $base_file"
+        fi
 
-    log_success "Base distribution downloaded and verified"
+        # Check for checksum file
+        local source_checksum="${LOCAL_BASE}.sha256"
+        if [[ -f "$source_checksum" ]]; then
+            log_info "Verifying checksum: ${source_checksum}"
+            if [[ "$DRY_RUN" != true ]]; then
+                cp "$source_checksum" "$checksum_file"
+                verify_sha256 "$base_file" "$checksum_file"
+            else
+                log_info "[DRY RUN] Would verify checksum"
+            fi
+        else
+            log_warning "No checksum file found, skipping verification: ${source_checksum}"
+        fi
+
+        log_success "Local base distribution ready"
+    else
+        # Download from GitHub
+        log_info "Downloading base distribution for version $ARCADEDB_VERSION..."
+
+        local base_url="${GITHUB_RELEASES_BASE}/${ARCADEDB_VERSION}/${base_filename}"
+        local checksum_url="${base_url}.sha256"
+
+        # Download base distribution
+        download_file "$base_url" "$base_file"
+
+        # Download checksum
+        download_file "$checksum_url" "$checksum_file"
+
+        # Verify checksum
+        verify_sha256 "$base_file" "$checksum_file"
+
+        log_success "Base distribution downloaded and verified"
+    fi
 
     # Extract base distribution
     log_info "Extracting base distribution..."
