@@ -29,6 +29,8 @@ import java.util.stream.*;
 
 public class MultiMatchPathItem extends MatchPathItem {
   protected List<MatchPathItem> items = new ArrayList<MatchPathItem>();
+  // Flag to indicate if this is from .(nested) syntax (true) or chained function calls (false)
+  protected boolean isNestedPath = false;
 
   public MultiMatchPathItem(final int id) {
     super(id);
@@ -86,6 +88,7 @@ public class MultiMatchPathItem extends MatchPathItem {
   public MultiMatchPathItem copy() {
     final MultiMatchPathItem result = (MultiMatchPathItem) super.copy();
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.isNestedPath = this.isNestedPath;
     return result;
   }
 
@@ -116,6 +119,29 @@ public class MultiMatchPathItem extends MatchPathItem {
 
   public void setItems(final List<MatchPathItem> items) {
     this.items = items;
+  }
+
+  public boolean isNestedPath() {
+    return isNestedPath;
+  }
+
+  public void setNestedPath(final boolean nestedPath) {
+    this.isNestedPath = nestedPath;
+  }
+
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (items != null && !items.isEmpty()) {
+      final List<Map<String, Object>> itemsJson = new ArrayList<>();
+      for (final MatchPathItem item : items) {
+        itemsJson.add(item.toJSON());
+      }
+      json.put("items", itemsJson);
+    }
+
+    return json;
   }
 }
 /* JavaCC - OriginalChecksum=f18f107768de80b8941f166d7fafb3c0 (do not edit this line) */

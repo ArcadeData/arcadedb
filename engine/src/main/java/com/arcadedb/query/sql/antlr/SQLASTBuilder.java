@@ -423,7 +423,37 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           for (final SQLParser.MatchMethodContext methodCtx : firstItemCtx.matchMethod()) {
             final MatchPathItem pathItem = (MatchPathItem) visit(methodCtx);
             if (pathItem != null) {
-              items.add(pathItem);
+              // If this is a MultiMatchPathItem from chained method calls (not nested syntax), flatten it
+              if (pathItem instanceof MultiMatchPathItem && !((MultiMatchPathItem) pathItem).isNestedPath()) {
+                final MultiMatchPathItem multiItem = (MultiMatchPathItem) pathItem;
+                // Add each sub-item as a separate path item
+                if (multiItem.getItems() != null) {
+                  for (final MatchPathItem subItem : multiItem.getItems()) {
+                    // For MatchPathItemFirst, convert to regular MatchPathItem
+                    if (subItem instanceof MatchPathItemFirst) {
+                      final MatchPathItemFirst firstSubItem = (MatchPathItemFirst) subItem;
+                      final MatchPathItem regularItem = new MatchPathItem(-1);
+                      // Convert function to method
+                      if (firstSubItem.getFunction() != null) {
+                        final MethodCall method = new MethodCall(-1);
+                        method.methodName = firstSubItem.getFunction().name;
+                        method.params = new ArrayList<>(firstSubItem.getFunction().params);
+                        regularItem.setMethod(method);
+                      }
+                      regularItem.setFilter(firstSubItem.getFilter());
+                      items.add(regularItem);
+                    } else {
+                      items.add(subItem);
+                    }
+                  }
+                  // The filter on the MultiMatchPathItem should go on the LAST item
+                  if (multiItem.getFilter() != null && !items.isEmpty()) {
+                    items.get(items.size() - 1).setFilter(multiItem.getFilter());
+                  }
+                }
+              } else {
+                items.add(pathItem);
+              }
             }
           }
         }
@@ -445,7 +475,37 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           for (final SQLParser.MatchMethodContext methodCtx : itemCtx.matchMethod()) {
             final MatchPathItem pathItem = (MatchPathItem) visit(methodCtx);
             if (pathItem != null) {
-              items.add(pathItem);
+              // If this is a MultiMatchPathItem from chained method calls (not nested syntax), flatten it
+              if (pathItem instanceof MultiMatchPathItem && !((MultiMatchPathItem) pathItem).isNestedPath()) {
+                final MultiMatchPathItem multiItem = (MultiMatchPathItem) pathItem;
+                // Add each sub-item as a separate path item
+                if (multiItem.getItems() != null) {
+                  for (final MatchPathItem subItem : multiItem.getItems()) {
+                    // For MatchPathItemFirst, convert to regular MatchPathItem
+                    if (subItem instanceof MatchPathItemFirst) {
+                      final MatchPathItemFirst firstSubItem = (MatchPathItemFirst) subItem;
+                      final MatchPathItem regularItem = new MatchPathItem(-1);
+                      // Convert function to method
+                      if (firstSubItem.getFunction() != null) {
+                        final MethodCall method = new MethodCall(-1);
+                        method.methodName = firstSubItem.getFunction().name;
+                        method.params = new ArrayList<>(firstSubItem.getFunction().params);
+                        regularItem.setMethod(method);
+                      }
+                      regularItem.setFilter(firstSubItem.getFilter());
+                      items.add(regularItem);
+                    } else {
+                      items.add(subItem);
+                    }
+                  }
+                  // The filter on the MultiMatchPathItem should go on the LAST item
+                  if (multiItem.getFilter() != null && !items.isEmpty()) {
+                    items.get(items.size() - 1).setFilter(multiItem.getFilter());
+                  }
+                }
+              } else {
+                items.add(pathItem);
+              }
             }
           }
         }
@@ -469,6 +529,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // This is .(methodChain) - a nested sequence of match methods
         // Create a MultiMatchPathItem to hold the nested method chain
         final MultiMatchPathItem multiPathItem = new MultiMatchPathItem(-1);
+        multiPathItem.setNestedPath(true); // Mark as nested path - should NOT be flattened
         final SQLParser.NestedMatchPathContext nestedCtx = ctx.nestedMatchPath();
 
         // nestedMatchPath : nestedMatchMethod+
