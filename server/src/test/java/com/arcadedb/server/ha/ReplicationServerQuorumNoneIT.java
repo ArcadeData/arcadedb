@@ -19,7 +19,6 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.utility.CodeUtils;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -65,7 +64,22 @@ public class ReplicationServerQuorumNoneIT extends ReplicationServerIT {
   @AfterEach
   @Override
   public void endTest() {
-    CodeUtils.sleep(5000);
+    // Wait for all async replication queues to drain before cleanup
+    // With QUORUM=NONE, messages are processed asynchronously and may still be in flight
+    Awaitility.await("async replication queues drain before cleanup")
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(500, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          // Check all servers' replication queues are empty
+          for (int i = 0; i < getServerCount(); i++) {
+            if (getServer(i) != null && getServer(i).getHA() != null) {
+              if (getServer(i).getHA().getMessagesInQueue() > 0) {
+                return false;
+              }
+            }
+          }
+          return true;
+        });
     super.endTest();
     GlobalConfiguration.HA_QUORUM.setValue("MAJORITY");
   }
