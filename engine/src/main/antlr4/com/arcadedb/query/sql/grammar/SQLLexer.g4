@@ -98,6 +98,10 @@ WHILE_KW: W H I L E;
 BREAK: B R E A K;
 CONTINUE: C O N T I N U E;
 RETURN: R E T U R N;
+CASE: C A S E;
+WHEN: W H E N;
+THEN: T H E N;
+END: E N D;
 
 // DDL Keywords
 ALTER: A L T E R;

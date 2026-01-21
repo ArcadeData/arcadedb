@@ -967,7 +967,33 @@ baseExpression
     | arrayLiteral modifier*                                            # arrayLit
     | mapLiteral modifier*                                              # mapLit
     | LBRACKET expression FOR identifier IN expression (WHERE whereClause)? RBRACKET # listComprehension
+    | caseExpression modifier*                                          # caseExpr
+    | extendedCaseExpression modifier*                                  # extendedCaseExpr
     | NULL modifier*                                                    # nullBaseExpr
+    ;
+
+/**
+ * Simple CASE expression
+ * CASE WHEN condition THEN result [WHEN condition THEN result]* [ELSE result] END
+ */
+caseExpression
+    : CASE caseAlternative+ (ELSE expression)? END
+    ;
+
+caseAlternative
+    : WHEN whereClause THEN expression
+    ;
+
+/**
+ * Extended CASE expression (with test expression)
+ * CASE expression WHEN value THEN result [WHEN value THEN result]* [ELSE result] END
+ */
+extendedCaseExpression
+    : CASE expression extendedCaseAlternative+ (ELSE expression)? END
+    ;
+
+extendedCaseAlternative
+    : WHEN expression THEN expression
     ;
 
 /**

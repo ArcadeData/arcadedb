@@ -248,24 +248,61 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final List<NestedProjection> returnNestedProjections = new ArrayList<>();
 
     if (CollectionUtils.isNotEmpty(ctx.expression())) {
-      for (int i = 0; i < ctx.expression().size(); i++) {
-        final Expression returnItem = (Expression) visit(ctx.expression(i));
-        returnItems.add(returnItem);
+      // Walk through the parse tree children to find expressions, AS keywords, and identifiers in order
+      // This is more reliable than using ctx.identifier() which returns all identifiers unordered
+      final List<org.antlr.v4.runtime.tree.ParseTree> children = ctx.children;
+      boolean inReturnClause = false;
+      int exprIndex = 0;
 
-        // Handle optional alias (AS identifier)
-        if (i < ctx.identifier().size() && ctx.identifier(i) != null) {
-          final Identifier alias = (Identifier) visit(ctx.identifier(i));
-          returnAliases.add(alias);
-        } else {
-          returnAliases.add(null);
+      for (int i = 0; i < children.size(); i++) {
+        final org.antlr.v4.runtime.tree.ParseTree child = children.get(i);
+
+        if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+          final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (terminal.getSymbol().getType() == SQLParser.RETURN) {
+            inReturnClause = true;
+            continue;
+          }
         }
 
-        // Handle optional nested projection
-        if (i < ctx.nestedProjection().size() && ctx.nestedProjection(i) != null) {
-          final NestedProjection nestedProj = (NestedProjection) visit(ctx.nestedProjection(i));
-          returnNestedProjections.add(nestedProj);
-        } else {
-          returnNestedProjections.add(null);
+        if (!inReturnClause) {
+          continue;
+        }
+
+        // Process expressions in RETURN clause
+        if (child instanceof SQLParser.ExpressionContext && exprIndex < ctx.expression().size()) {
+          final Expression returnItem = (Expression) visit(child);
+          returnItems.add(returnItem);
+
+          // Check if the next non-whitespace token is AS
+          boolean hasAlias = false;
+          Identifier alias = null;
+
+          if (i + 1 < children.size()) {
+            final org.antlr.v4.runtime.tree.ParseTree nextChild = children.get(i + 1);
+            if (nextChild instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+              final org.antlr.v4.runtime.tree.TerminalNode nextTerminal = (org.antlr.v4.runtime.tree.TerminalNode) nextChild;
+              if (nextTerminal.getSymbol().getType() == SQLParser.AS) {
+                hasAlias = true;
+                // The identifier should be right after AS
+                if (i + 2 < children.size() && children.get(i + 2) instanceof SQLParser.IdentifierContext) {
+                  alias = (Identifier) visit(children.get(i + 2));
+                }
+              }
+            }
+          }
+
+          returnAliases.add(alias);
+
+          // Handle optional nested projection
+          if (exprIndex < ctx.nestedProjection().size() && ctx.nestedProjection(exprIndex) != null) {
+            final NestedProjection nestedProj = (NestedProjection) visit(ctx.nestedProjection(exprIndex));
+            returnNestedProjections.add(nestedProj);
+          } else {
+            returnNestedProjections.add(null);
+          }
+
+          exprIndex++;
         }
       }
     }
@@ -3283,6 +3320,117 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return new BaseExpression(-1);
   }
 
+  /**
+   * Simple CASE expression visitor.
+   * Grammar: caseExpression : CASE caseAlternative+ (ELSE expression)? END
+   * Grammar: caseAlternative : WHEN whereClause THEN expression
+   */
+  public BaseExpression visitCaseExpr(final SQLParser.CaseExprContext ctx) {
+    final SQLParser.CaseExpressionContext caseCtx = ctx.caseExpression();
+
+    // Build list of alternatives
+    final List<CaseAlternative> alternatives = new ArrayList<>();
+    for (final SQLParser.CaseAlternativeContext altCtx : caseCtx.caseAlternative()) {
+      // WHEN clause is a whereClause (boolean condition), THEN clause is an expression
+      final WhereClause whereClause = (WhereClause) visit(altCtx.whereClause());
+      final Expression thenExpression = (Expression) visit(altCtx.expression());
+
+      alternatives.add(new CaseAlternative(whereClause, thenExpression));
+    }
+
+    // Handle ELSE clause (may be null)
+    Expression elseExpression = null;
+    if (caseCtx.ELSE() != null && caseCtx.expression() != null)
+      elseExpression = (Expression) visit(caseCtx.expression());
+
+    // Create CaseExpression (simple form - no case expression)
+    final CaseExpression caseExpression = new CaseExpression(alternatives, elseExpression);
+
+    // Wrap in Expression, then in BaseExpression
+    final Expression wrapperExpression = new Expression(-1);
+    wrapperExpression.mathExpression = caseExpression;
+
+    final BaseExpression result = new BaseExpression(-1);
+    result.expression = wrapperExpression;
+
+    // Process modifiers if any
+    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
+      result.modifier = firstModifier;
+    }
+
+    return result;
+  }
+
+  /**
+   * Extended CASE expression visitor.
+   * Grammar: extendedCaseExpression : CASE expression extendedCaseAlternative+ (ELSE expression)? END
+   * Grammar: extendedCaseAlternative : WHEN expression THEN expression
+   */
+  public BaseExpression visitExtendedCaseExpr(final SQLParser.ExtendedCaseExprContext ctx) {
+    final SQLParser.ExtendedCaseExpressionContext caseCtx = ctx.extendedCaseExpression();
+
+    // Get the case expression (the value being tested) - first expression in the list
+    final List<SQLParser.ExpressionContext> exprList = caseCtx.expression();
+    final Expression testExpression = (Expression) visit(exprList.get(0));
+
+    // Build list of alternatives
+    final List<CaseAlternative> alternatives = new ArrayList<>();
+    for (final SQLParser.ExtendedCaseAlternativeContext altCtx : caseCtx.extendedCaseAlternative()) {
+      // Each alternative has 2 expressions: WHEN expression THEN expression
+      final List<SQLParser.ExpressionContext> exprs = altCtx.expression();
+      final Expression whenExpression = (Expression) visit(exprs.get(0));
+      final Expression thenExpression = (Expression) visit(exprs.get(1));
+      alternatives.add(new CaseAlternative(whenExpression, thenExpression));
+    }
+
+    // Handle ELSE clause (may be null)
+    // ELSE expression is the last expression in the list (if ELSE exists)
+    Expression elseExpression = null;
+    if (caseCtx.ELSE() != null && exprList.size() > 1)
+      elseExpression = (Expression) visit(exprList.get(exprList.size() - 1));
+
+    // Create CaseExpression (extended form - with case expression)
+    final CaseExpression caseExpression = new CaseExpression(testExpression, alternatives, elseExpression);
+
+    // Wrap in Expression, then in BaseExpression
+    final Expression wrapperExpression = new Expression(-1);
+    wrapperExpression.mathExpression = caseExpression;
+
+    final BaseExpression result = new BaseExpression(-1);
+    result.expression = wrapperExpression;
+
+    // Process modifiers if any
+    if (ctx.modifier() != null && !ctx.modifier().isEmpty()) {
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
+      result.modifier = firstModifier;
+    }
+
+    return result;
+  }
+
   // HELPER METHODS
 
   /**
@@ -3294,6 +3442,55 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final Expression expr = new Expression(-1);
     expr.mathExpression = new SubqueryExpression(statement);
     return expr;
+  }
+
+  /**
+   * Convert a SQL Expression to an OpenCypher Expression for use in CASE statements.
+   * Creates a wrapper that delegates to the SQL Expression's execute method.
+   */
+  private com.arcadedb.query.opencypher.ast.Expression convertToOpenCypherExpression(final Expression sqlExpression) {
+    return new com.arcadedb.query.opencypher.ast.Expression() {
+      @Override
+      public Object evaluate(final com.arcadedb.query.sql.executor.Result result, final com.arcadedb.query.sql.executor.CommandContext context) {
+        return sqlExpression.execute(result, context);
+      }
+
+      @Override
+      public boolean isAggregation() {
+        // Check if expression is aggregate - pass null context as it's typically not needed for this check
+        return sqlExpression.isAggregate(null);
+      }
+
+      @Override
+      public String getText() {
+        return sqlExpression.toString();
+      }
+    };
+  }
+
+  /**
+   * Convert a SQL WhereClause to an OpenCypher Expression that evaluates to boolean.
+   * Creates a wrapper that delegates to the WhereClause's evaluateExpression method.
+   */
+  private com.arcadedb.query.opencypher.ast.Expression convertWhereClauseToExpression(final WhereClause whereClause) {
+    return new com.arcadedb.query.opencypher.ast.Expression() {
+      @Override
+      public Object evaluate(final com.arcadedb.query.sql.executor.Result result, final com.arcadedb.query.sql.executor.CommandContext context) {
+        return whereClause.evaluateExpression(result, context);
+      }
+
+      @Override
+      public boolean isAggregation() {
+        // WHERE clauses in CASE typically don't contain aggregate functions
+        // If they did, it would be handled by the underlying OrBlock
+        return false;
+      }
+
+      @Override
+      public String getText() {
+        return whereClause.toString();
+      }
+    };
   }
 
   /**
