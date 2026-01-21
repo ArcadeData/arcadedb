@@ -32,7 +32,6 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.utility.CodeUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -266,9 +265,15 @@ public class HARandomCrashIT extends ReplicationServerIT {
         counter = lastGoodCounter + getVerticesPerTx();
         consecutiveFailures = 0;  // Reset on success
 
-        // Intentional delay to pace writes during chaos scenario
+        // Intentional pacing delay in hot loop - using TimeUnit.sleep for performance
+        // Awaitility adds too much overhead when called thousands of times in succession
         long pacingDelay = Math.min(100 + delay / 10, 500);  // Adapt pacing to current conditions
-        CodeUtils.sleep(pacingDelay);
+        try {
+          TimeUnit.MILLISECONDS.sleep(pacingDelay);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new RuntimeException("Interrupted during pacing delay", ie);
+        }
 
       } catch (final DuplicatedKeyException e) {
         // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
