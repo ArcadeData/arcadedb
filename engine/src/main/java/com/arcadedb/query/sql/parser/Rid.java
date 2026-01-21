@@ -179,5 +179,23 @@ public class Rid extends SimpleNode {
     }
     return position;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (bucket != null) {
+      json.put("bucket", bucket.toString());
+    }
+    if (position != null) {
+      json.put("position", position.toString());
+    }
+    if (expression != null) {
+      json.put("expression", expression.toJSON());
+    }
+    json.put("legacy", legacy);
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=c2c6d67d7722e29212e438574698d7cd (do not edit this line) */

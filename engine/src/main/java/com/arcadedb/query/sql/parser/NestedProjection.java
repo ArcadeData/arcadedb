@@ -247,5 +247,22 @@ public class NestedProjection extends SimpleNode {
     return result;
   }
 
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (includeItems != null) {
+      json.put("includeItems", includeItems);
+    }
+    if (excludeItems != null) {
+      json.put("excludeItems", excludeItems);
+    }
+    if (starItem != null) {
+      json.put("starItem", starItem.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=a7faf9beb3c058e28999b17cb43b26f6 (do not edit this line) */

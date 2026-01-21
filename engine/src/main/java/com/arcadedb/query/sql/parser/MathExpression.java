@@ -1058,5 +1058,27 @@ public class MathExpression extends SimpleNode {
 
     childExpressions.getFirst().applyRemove(result, context);
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (childExpressions != null) {
+      final java.util.List<Object> childExpressionsJson = new java.util.ArrayList<>();
+      for (Object item : childExpressions) {
+        if (item instanceof SimpleNode) {
+          childExpressionsJson.add(((SimpleNode) item).toJSON());
+        } else {
+          childExpressionsJson.add(item);
+        }
+      }
+      json.put("childExpressions", childExpressionsJson);
+    }
+    if (operators != null) {
+      json.put("operators", operators);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=c255bea24e12493e1005ba2a4d1dbb9d (do not edit this line) */

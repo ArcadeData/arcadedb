@@ -68,5 +68,19 @@ public class Bucket extends SimpleNode {
     return new Object[] { bucketName, bucketNumber };
   }
 
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (bucketName != null) {
+      json.put("bucketName", bucketName);
+    }
+    if (bucketNumber != null) {
+      json.put("bucketNumber", bucketNumber);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=d27abf009fe7db482fbcaac9d52ba192 (do not edit this line) */

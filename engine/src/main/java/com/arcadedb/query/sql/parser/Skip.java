@@ -69,5 +69,19 @@ public class Skip extends SimpleNode {
   protected Object[] getIdentityElements() {
     return new Object[] { num, inputParam };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (num != null) {
+      json.put("num", num.toString());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=8e13ca184705a8fc1b5939ecefe56a60 (do not edit this line) */

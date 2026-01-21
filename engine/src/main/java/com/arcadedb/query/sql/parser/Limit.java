@@ -91,5 +91,19 @@ public class Limit extends SimpleNode {
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (num != null) {
+      json.put("num", num.toString());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=1063b9489290bb08de6048ba55013171 (do not edit this line) */

@@ -106,5 +106,16 @@ public class RecordAttribute extends SimpleNode {
     }
     return null;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (name != null) {
+      json.put("name", name);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=45ce3cd16399dec7d7ef89f8920d02ae (do not edit this line) */

@@ -323,5 +323,27 @@ public class ArrayRangeSelector extends SimpleNode {
       throw new CommandExecutionException("Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
     }
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (from != null) {
+      json.put("from", from);
+    }
+    if (to != null) {
+      json.put("to", to);
+    }
+    json.put("newRange", newRange);
+    json.put("included", included);
+    if (fromSelector != null) {
+      json.put("fromSelector", fromSelector.toString());
+    }
+    if (toSelector != null) {
+      json.put("toSelector", toSelector.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=594a372e31fcbcd3ed962c2260e76468 (do not edit this line) */

@@ -81,5 +81,19 @@ public class UpdateRemoveItem extends SimpleNode {
       left.applyRemove(result, context);
     }
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (left != null) {
+      json.put("left", left.toJSON());
+    }
+    if (right != null) {
+      json.put("right", right.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=72e240d3dc1196fdea69e8fdc2bd69ca (do not edit this line) */

@@ -261,5 +261,22 @@ public class LevelZeroIdentifier extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { functionCall, collection };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (functionCall != null) {
+      json.put("functionCall", functionCall.toString());
+    }
+    if (self != null) {
+      json.put("self", self);
+    }
+    if (collection != null) {
+      json.put("collection", collection.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=0305fcf120ba9395b4c975f85cdade72 (do not edit this line) */

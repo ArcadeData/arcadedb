@@ -177,5 +177,25 @@ public class ArraySelector extends SimpleNode {
       Array.set(target, idx, value);
     }
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (rid != null) {
+      json.put("rid", rid.toString());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toString());
+    }
+    if (expression != null) {
+      json.put("expression", expression.toJSON());
+    }
+    if (integer != null) {
+      json.put("integer", integer.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=f87a5543b1dad0fb5f6828a0663a7c9e (do not edit this line) */

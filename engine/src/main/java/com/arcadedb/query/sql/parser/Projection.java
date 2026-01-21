@@ -250,5 +250,17 @@ public class Projection extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return items.toArray(new ProjectionItem[items.size()]);
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("distinct", distinct);
+    if (items != null) {
+      json.put("items", items);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=3a650307b53bae626dc063c4b35e62c3 (do not edit this line) */

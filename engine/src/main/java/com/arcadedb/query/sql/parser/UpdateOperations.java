@@ -176,5 +176,29 @@ public class UpdateOperations extends SimpleNode {
   public List<UpdateRemoveItem> getUpdateRemoveItems() {
     return updateRemoveItems;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("type", type);
+    if (updateItems != null) {
+      json.put("updateItems", updateItems);
+    }
+    if (updatePutItems != null) {
+      json.put("updatePutItems", updatePutItems);
+    }
+    if (json != null) {
+      json.put("json", json.toString());
+    }
+    if (updateIncrementItems != null) {
+      json.put("updateIncrementItems", updateIncrementItems);
+    }
+    if (updateRemoveItems != null) {
+      json.put("updateRemoveItems", updateRemoveItems);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=0eca3b3e4e3d96c42db57b7cd89cf755 (do not edit this line) */

@@ -107,5 +107,22 @@ public class ArrayNumberSelector extends SimpleNode {
     return new Object[] { inputValue, expressionValue, integer };
   }
 
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (inputValue != null) {
+      json.put("inputValue", inputValue.toString());
+    }
+    if (expressionValue != null) {
+      json.put("expressionValue", expressionValue.toJSON());
+    }
+    if (integer != null) {
+      json.put("integer", integer);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=5b2e495391ede3ccdc6c25aa63c8e591 (do not edit this line) */

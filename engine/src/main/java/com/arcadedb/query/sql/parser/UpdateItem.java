@@ -238,5 +238,23 @@ public class UpdateItem extends SimpleNode {
   public void setRight(final Expression right) {
     this.right = right;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (left != null) {
+      json.put("left", left.toJSON());
+    }
+    if (leftModifier != null) {
+      json.put("leftModifier", leftModifier.toString());
+    }
+    json.put("operator", operator);
+    if (right != null) {
+      json.put("right", right.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=df7444be87bba741316df8df0d653600 (do not edit this line) */

@@ -54,5 +54,19 @@ public class BucketIdentifier extends SimpleNode {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(getValue());
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (bucketId != null) {
+      json.put("bucketId", bucketId.toString());
+    }
+    if (bucketName != null) {
+      json.put("bucketName", bucketName.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* ParserGeneratorCC - OriginalChecksum=2df38a8c1ac60c28421dc4665da4a817 (do not edit this line) */

@@ -85,5 +85,16 @@ public class OrderBy extends SimpleNode {
       }
     }
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (items != null) {
+      json.put("items", items);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=d5529400217169f15e556e5dc6fe4f5b (do not edit this line) */

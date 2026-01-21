@@ -74,5 +74,20 @@ public class ResourcePathItem extends SimpleNode {
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("star", star);
+    if (identifier != null) {
+      json.put("identifier", identifier.toJSON());
+    }
+    if (name != null) {
+      json.put("name", name);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=b90ccdd61b6adcd40cde2adee353e89f (do not edit this line) */

@@ -267,5 +267,27 @@ public class ProjectionItem extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { expression };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("exclude", exclude);
+    json.put("all", all);
+    if (alias != null) {
+      json.put("alias", alias.toJSON());
+    }
+    if (expression != null) {
+      json.put("expression", expression.toJSON());
+    }
+    if (aggregate != null) {
+      json.put("aggregate", aggregate);
+    }
+    if (nestedProjection != null) {
+      json.put("nestedProjection", nestedProjection.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=6d6010734c7434a6f516e2eac308e9ce (do not edit this line) */

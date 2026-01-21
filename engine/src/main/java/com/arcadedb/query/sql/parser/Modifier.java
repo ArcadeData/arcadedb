@@ -273,5 +273,38 @@ public class Modifier extends SimpleNode {
         throw new CommandExecutionException("cannot apply REMOVE " + this);
     }
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("squareBrackets", squareBrackets);
+    if (arrayRange != null) {
+      json.put("arrayRange", arrayRange.toString());
+    }
+    if (condition != null) {
+      json.put("condition", condition.toString());
+    }
+    if (arraySingleValues != null) {
+      json.put("arraySingleValues", arraySingleValues.toString());
+    }
+    if (rightBinaryCondition != null) {
+      json.put("rightBinaryCondition", rightBinaryCondition.toString());
+    }
+    if (methodCall != null) {
+      json.put("methodCall", methodCall.toString());
+    }
+    if (suffix != null) {
+      json.put("suffix", suffix.toString());
+    }
+    if (nestedProjection != null) {
+      json.put("nestedProjection", nestedProjection.toString());
+    }
+    if (next != null) {
+      json.put("next", next.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=39c21495d02f9b5007b4a2d6915496e1 (do not edit this line) */

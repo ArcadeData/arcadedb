@@ -263,5 +263,19 @@ public class BaseIdentifier extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { levelZero, suffix };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (levelZero != null) {
+      json.put("levelZero", levelZero.toString());
+    }
+    if (suffix != null) {
+      json.put("suffix", suffix.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=ed89af10d8be41a83428c5608a4834f6 (do not edit this line) */

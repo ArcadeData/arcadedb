@@ -71,5 +71,19 @@ public class UpdatePutItem extends SimpleNode {
     result = 31 * result + (value != null ? value.hashCode() : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (left != null) {
+      json.put("left", left.toJSON());
+    }
+    if (key != null) {
+      json.put("key", key.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=a38339c33ebf0a8b21e76ddb278f4958 (do not edit this line) */

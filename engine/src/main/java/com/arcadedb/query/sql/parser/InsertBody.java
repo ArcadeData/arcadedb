@@ -165,5 +165,55 @@ public class InsertBody extends SimpleNode {
   public InputParameter getContentInputParam() {
     return contentInputParam;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (identifierList != null) {
+      final java.util.List<Object> identifierListJson = new java.util.ArrayList<>();
+      for (Object item : identifierList) {
+        if (item instanceof SimpleNode) {
+          identifierListJson.add(((SimpleNode) item).toJSON());
+        } else {
+          identifierListJson.add(item);
+        }
+      }
+      json.put("identifierList", identifierListJson);
+    }
+    if (valueExpressions != null) {
+      final java.util.List<Object> valueExpressionsJson = new java.util.ArrayList<>();
+      for (Object item : valueExpressions) {
+        if (item instanceof SimpleNode) {
+          valueExpressionsJson.add(((SimpleNode) item).toJSON());
+        } else {
+          valueExpressionsJson.add(item);
+        }
+      }
+      json.put("valueExpressions", valueExpressionsJson);
+    }
+    if (setExpressions != null) {
+      final java.util.List<Object> setExpressionsJson = new java.util.ArrayList<>();
+      for (Object item : setExpressions) {
+        if (item instanceof SimpleNode) {
+          setExpressionsJson.add(((SimpleNode) item).toJSON());
+        } else {
+          setExpressionsJson.add(item);
+        }
+      }
+      json.put("setExpressions", setExpressionsJson);
+    }
+    if (contentJson != null) {
+      json.put("contentJson", contentJson.toString());
+    }
+    if (contentArray != null) {
+      json.put("contentArray", contentArray.toString());
+    }
+    if (contentInputParam != null) {
+      json.put("contentInputParam", contentInputParam.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=7d2079a41a1fc63a812cb679e729b23a (do not edit this line) */

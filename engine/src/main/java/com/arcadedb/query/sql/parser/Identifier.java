@@ -153,5 +153,15 @@ public class Identifier extends SimpleNode {
     result = 31 * result + (internalAlias ? 1 : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("quoted", quoted);
+    json.put("internalAlias", internalAlias);
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=691a2eb5096f7b5e634b2ca8ac2ded3a (do not edit this line) */

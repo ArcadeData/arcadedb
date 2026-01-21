@@ -170,5 +170,23 @@ public class RightBinaryCondition extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { right };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (operator != null) {
+      json.put("operator", operator.toString());
+    }
+    json.put("not", not);
+    if (inOperator != null) {
+      json.put("inOperator", inOperator.toString());
+    }
+    if (right != null) {
+      json.put("right", right.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=29d59ae04778eb611547292a27863da4 (do not edit this line) */

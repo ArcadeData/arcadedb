@@ -340,5 +340,52 @@ public class FromItem extends SimpleNode {
         setValue(r.toMap());
     }
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (rids != null) {
+      json.put("rids", rids);
+    }
+    if (inputParams != null) {
+      json.put("inputParams", inputParams);
+    }
+    if (resultSet != null) {
+      json.put("resultSet", resultSet.toString());
+    }
+    if (bucket != null) {
+      json.put("bucket", bucket.toString());
+    }
+    if (bucketList != null) {
+      json.put("bucketList", bucketList.toString());
+    }
+    if (index != null) {
+      json.put("index", index.toString());
+    }
+    if (schema != null) {
+      json.put("schema", schema.toString());
+    }
+    if (statement != null) {
+      json.put("statement", statement.toJSON());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toString());
+    }
+    if (identifier != null) {
+      json.put("identifier", identifier.toJSON());
+    }
+    if (functionCall != null) {
+      json.put("functionCall", functionCall.toString());
+    }
+    if (modifier != null) {
+      json.put("modifier", modifier.toString());
+    }
+    if (alias != null) {
+      json.put("alias", alias.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=f64e3b4d2a2627a1b5d04a7dcb95fa94 (do not edit this line) */

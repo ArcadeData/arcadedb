@@ -424,5 +424,27 @@ public class FunctionCall extends SimpleNode {
 
     return cachedFunction;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (name != null) {
+      json.put("name", name.toJSON());
+    }
+    if (params != null) {
+      final java.util.List<Object> paramsJson = new java.util.ArrayList<>();
+      for (Object item : params) {
+        if (item instanceof SimpleNode) {
+          paramsJson.add(((SimpleNode) item).toJSON());
+        } else {
+          paramsJson.add(item);
+        }
+      }
+      json.put("params", paramsJson);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=290d4e1a3f663299452e05f8db718419 (do not edit this line) */

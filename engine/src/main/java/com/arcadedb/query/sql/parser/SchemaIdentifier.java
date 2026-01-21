@@ -60,5 +60,16 @@ public class SchemaIdentifier extends SimpleNode {
   public int hashCode() {
     return name != null ? name.hashCode() : 0;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (name != null) {
+      json.put("name", name);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=ef4081789ce8f5ab15ca3ac3fdcbe748 (do not edit this line) */
