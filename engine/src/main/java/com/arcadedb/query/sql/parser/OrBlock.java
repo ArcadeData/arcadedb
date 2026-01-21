@@ -42,12 +42,17 @@ public class OrBlock extends BooleanExpression {
       return true;
     }
 
+    Boolean hasNull = false;
     for (final BooleanExpression block : subBlocks) {
-      if (block.evaluate(currentRecord, context)) {
+      final Boolean result = block.evaluate(currentRecord, context);
+      if (result == null) {
+        hasNull = true;
+      } else if (result) {
         return true;
       }
     }
-    return false;
+    // If any operand was null and none were true, return null (SQL three-valued logic)
+    return hasNull ? null : false;
   }
 
   @Override
@@ -55,14 +60,17 @@ public class OrBlock extends BooleanExpression {
     if (getSubBlocks() == null)
       return true;
 
+    Boolean hasNull = false;
     for (final BooleanExpression block : subBlocks) {
       final Boolean result = block.evaluate(currentRecord, context);
-      if (result == null)
-        return null;
-      else if (result)
+      if (result == null) {
+        hasNull = true;
+      } else if (result) {
         return true;
+      }
     }
-    return false;
+    // If any operand was null and none were true, return null (SQL three-valued logic)
+    return hasNull ? null : false;
   }
 
   public Boolean evaluate(final Object currentRecord, final CommandContext context) {

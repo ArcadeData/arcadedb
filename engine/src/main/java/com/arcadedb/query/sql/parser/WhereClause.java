@@ -47,6 +47,7 @@ public class WhereClause extends SimpleNode {
       return true;
 
     final Boolean result = baseExpression.evaluate(currentRecord, context);
+    // In WHERE clause filtering context, treat null as false
     return result != null ? result : false;
   }
 
@@ -55,7 +56,30 @@ public class WhereClause extends SimpleNode {
       return true;
 
     final Boolean result = baseExpression.evaluate(currentRecord, context);
+    // In WHERE clause filtering context, treat null as false
     return result != null ? result : false;
+  }
+
+  /**
+   * Evaluates the boolean expression and preserves null values (SQL three-valued logic).
+   * Use this method for expression evaluation in SELECT clauses.
+   */
+  public Boolean evaluateExpression(final Identifiable currentRecord, final CommandContext context) {
+    if (baseExpression == null)
+      return true;
+
+    return baseExpression.evaluate(currentRecord, context);
+  }
+
+  /**
+   * Evaluates the boolean expression and preserves null values (SQL three-valued logic).
+   * Use this method for expression evaluation in SELECT clauses.
+   */
+  public Boolean evaluateExpression(final Result currentRecord, final CommandContext context) {
+    if (baseExpression == null)
+      return true;
+
+    return baseExpression.evaluate(currentRecord, context);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

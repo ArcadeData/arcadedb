@@ -41,7 +41,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   public          Url                         url;
   protected       Expression                  key;
   protected       Expression                  value;
-  protected final Map<Expression, Expression> settings = new HashMap<>();
+  public final    Map<Expression, Expression> settings = new HashMap<>();
 
   public BackupDatabaseStatement(final int id) {
     super(id);

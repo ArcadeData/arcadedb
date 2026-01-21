@@ -355,7 +355,7 @@ FILE_URL: 'file://' URL_CHAR+;
 CLASSPATH_URL: 'classpath://' URL_CHAR+;
 
 fragment URL_CHAR
-    : ~["\t\r\n;]
+    : ~[" \t\r\n;]  // Exclude spaces in addition to quotes, tabs, newlines, semicolons
     | ESCAPE_SEQUENCE
     ;
 

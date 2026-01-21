@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -40,7 +41,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   protected       BooleanExpression           overwrite = BooleanExpression.FALSE;
   protected       Expression                  key;
   protected       Expression                  value;
-  protected final Map<Expression, Expression> settings  = new HashMap<>();
+  public final    Map<Expression, Expression> settings  = new HashMap<>();
 
   public ExportDatabaseStatement(final int id) {
     super(id);
@@ -84,7 +85,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
       // TRANSFORM SETTINGS
       final Map<String, String> settingsToString = new HashMap<>();
       for (final Map.Entry<Expression, Expression> entry : settings.entrySet())
-        settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
+        settingsToString.put(entry.getKey().value.toString(), entry.getValue().execute((Identifiable) null, context).toString());
       clazz.getMethod("setSettings", Map.class).invoke(exporter, settingsToString);
 
       if (context.getDatabase().isTransactionActive())

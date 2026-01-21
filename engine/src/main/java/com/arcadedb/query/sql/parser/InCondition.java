@@ -56,7 +56,8 @@ public class InCondition extends BooleanExpression {
     if (rightVal == null)
       return false;
 
-    return evaluateExpression(leftVal, rightVal);
+    final boolean result = evaluateExpression(leftVal, rightVal);
+    return not ? !result : result;
   }
 
   public Object evaluateRight(final Identifiable currentRecord, final CommandContext context) {
@@ -67,6 +68,19 @@ public class InCondition extends BooleanExpression {
       rightVal = rightParam.getValue(context.getInputParameters());
     else if (rightMathExpression != null)
       rightVal = rightMathExpression.execute(currentRecord, context);
+    else if (right instanceof List<?> list) {
+      // Handle IN (expr1, expr2, ...) - evaluate each expression
+      final List<Object> values = new ArrayList<>();
+      for (final Object item : list) {
+        if (item instanceof Expression expr) {
+          values.add(expr.execute(currentRecord, context));
+        } else {
+          values.add(item);
+        }
+      }
+      rightVal = values;
+    } else if (right != null)
+      rightVal = right;
 
     return rightVal;
   }
@@ -82,7 +96,8 @@ public class InCondition extends BooleanExpression {
     if (rightVal == null)
       return false;
 
-    return evaluateExpression(leftVal, rightVal);
+    final boolean result = evaluateExpression(leftVal, rightVal);
+    return not ? !result : result;
   }
 
   public Object evaluateRight(final Result currentRecord, final CommandContext context) {
@@ -93,6 +108,19 @@ public class InCondition extends BooleanExpression {
       rightVal = rightParam.getValue(context.getInputParameters());
     else if (rightMathExpression != null)
       rightVal = rightMathExpression.execute(currentRecord, context);
+    else if (right instanceof List<?> list) {
+      // Handle IN (expr1, expr2, ...) - evaluate each expression
+      final List<Object> values = new ArrayList<>();
+      for (final Object item : list) {
+        if (item instanceof Expression expr) {
+          values.add(expr.execute(currentRecord, context));
+        } else {
+          values.add(item);
+        }
+      }
+      rightVal = values;
+    } else if (right != null)
+      rightVal = right;
 
     return rightVal;
   }
@@ -174,6 +202,7 @@ public class InCondition extends BooleanExpression {
     result.rightStatement = rightStatement == null ? null : rightStatement.copy();
     result.rightParam = rightParam == null ? null : rightParam.copy();
     result.right = right;
+    result.not = not;
     return result;
   }
 

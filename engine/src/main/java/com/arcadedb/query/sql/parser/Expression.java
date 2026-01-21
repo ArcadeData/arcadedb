@@ -65,7 +65,7 @@ public class Expression extends SimpleNode {
     else if (mathExpression != null)
       return mathExpression.execute(currentRecord, context);
     else if (whereCondition != null)
-      return whereCondition.matchesFilters(currentRecord, context);
+      return whereCondition.evaluateExpression(currentRecord, context);
     else if (arrayConcatExpression != null)
       return arrayConcatExpression.execute(currentRecord, context);
     else if (json != null)
@@ -86,7 +86,7 @@ public class Expression extends SimpleNode {
     else if (mathExpression != null)
       return mathExpression.execute(currentRecord, context);
     else if (whereCondition != null)
-      return whereCondition.matchesFilters(currentRecord, context);
+      return whereCondition.evaluateExpression(currentRecord, context);
     else if (arrayConcatExpression != null)
       return arrayConcatExpression.execute(currentRecord, context);
     else if (json != null)

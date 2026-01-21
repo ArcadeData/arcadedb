@@ -49,12 +49,17 @@ public class AndBlock extends BooleanExpression {
     if (getSubBlocks() == null)
       return true;
 
+    Boolean hasNull = false;
     for (final BooleanExpression block : subBlocks) {
-      if (!block.evaluate(currentRecord, context)) {
+      final Boolean result = block.evaluate(currentRecord, context);
+      if (result == null) {
+        hasNull = true;
+      } else if (!result) {
         return false;
       }
     }
-    return true;
+    // If any operand was null and none were false, return null (SQL three-valued logic)
+    return hasNull ? null : true;
   }
 
   @Override

@@ -2771,17 +2771,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final BaseExpression baseExpr = new BaseExpression(-1);
 
     final String text = ctx.STRING_LITERAL().getText();
-    // Remove quotes and handle escape sequences
-    final String unquoted = text.substring(1, text.length() - 1);
-    final String decoded = unquoted
-        .replace("\\n", "\n")
-        .replace("\\t", "\t")
-        .replace("\\r", "\r")
-        .replace("\\\\", "\\")
-        .replace("\\'", "'")
-        .replace("\\\"", "\"");
-
-    baseExpr.string = "\"" + decoded + "\""; // BaseExpression expects quoted string
+    // Store the string literal as-is (including quotes)
+    // BaseExpression.execute() will handle unquoting and escape sequence decoding
+    baseExpr.string = text;
 
     // Process modifiers (method calls like .prefix(), .toUpperCase(), etc.)
     if (CollectionUtils.isNotEmpty(ctx.modifier())) {
@@ -5754,10 +5746,26 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final ImportDatabaseStatement stmt = new ImportDatabaseStatement(-1);
     final SQLParser.ImportDatabaseStatementContext importCtx = ctx.importDatabaseStatement();
 
-    // Parse URL from STRING_LITERAL
-    if (importCtx.STRING_LITERAL() != null) {
-      final String urlString = removeQuotes(importCtx.STRING_LITERAL().getText());
-      stmt.url = new Url(urlString);
+    // Parse URL (optional)
+    if (importCtx.url() != null) {
+      final Url url = (Url) visit(importCtx.url());
+      stmt.url = url;
+    }
+    // If no URL, it's null - this is valid for CSV imports with vertices/edges settings
+
+    // Parse WITH settings
+    if (importCtx.settingList() != null) {
+      for (final SQLParser.SettingContext settingCtx : importCtx.settingList().setting()) {
+        final Identifier key = (Identifier) visit(settingCtx.identifier());
+        final Expression value = (Expression) visit(settingCtx.expression());
+
+        // Store as Expression with key/value
+        // ImportDatabaseStatement uses .execute() on the value Expression
+        final Expression keyExpr = new Expression(-1);
+        keyExpr.value = key.getStringValue();
+
+        stmt.settings.put(keyExpr, value);
+      }
     }
 
     return stmt;
@@ -5772,28 +5780,81 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final ExportDatabaseStatement stmt = new ExportDatabaseStatement(-1);
     final SQLParser.ExportDatabaseStatementContext exportCtx = ctx.exportDatabaseStatement();
 
-    // Parse URL from STRING_LITERAL
-    if (exportCtx.STRING_LITERAL() != null) {
-      final String urlString = removeQuotes(exportCtx.STRING_LITERAL().getText());
-      stmt.url = new Url(urlString);
+    // Parse URL
+    if (exportCtx.url() != null) {
+      final Url url = (Url) visit(exportCtx.url());
+      stmt.url = url;
+    }
+
+    // Parse WITH settings
+    if (exportCtx.settingList() != null) {
+      for (final SQLParser.SettingContext settingCtx : exportCtx.settingList().setting()) {
+        final Identifier key = (Identifier) visit(settingCtx.identifier());
+        final Expression value = (Expression) visit(settingCtx.expression());
+
+        // Store as Expression with key/value
+        // ExportDatabaseStatement uses .execute() on the value Expression
+        final Expression keyExpr = new Expression(-1);
+        keyExpr.value = key.getStringValue();
+
+        stmt.settings.put(keyExpr, value);
+      }
     }
 
     return stmt;
   }
 
   /**
+   * Visit url rule
+   * Grammar: FILE_URL | HTTP_URL | HTTPS_URL | CLASSPATH_URL | STRING_LITERAL
+   */
+  @Override
+  public Url visitUrl(final SQLParser.UrlContext ctx) {
+    String urlString = null;
+
+    if (ctx.FILE_URL() != null) {
+      urlString = ctx.FILE_URL().getText();
+    } else if (ctx.HTTP_URL() != null) {
+      urlString = ctx.HTTP_URL().getText();
+    } else if (ctx.HTTPS_URL() != null) {
+      urlString = ctx.HTTPS_URL().getText();
+    } else if (ctx.CLASSPATH_URL() != null) {
+      urlString = ctx.CLASSPATH_URL().getText();
+    } else if (ctx.STRING_LITERAL() != null) {
+      urlString = removeQuotes(ctx.STRING_LITERAL().getText());
+    }
+
+    return new Url(urlString);
+  }
+
+  /**
    * Visit BACKUP DATABASE statement.
-   * Grammar: BACKUP DATABASE STRING_LITERAL
+   * Grammar: BACKUP DATABASE url (WITH settingList)?
    */
   @Override
   public BackupDatabaseStatement visitBackupDatabaseStmt(final SQLParser.BackupDatabaseStmtContext ctx) {
     final BackupDatabaseStatement stmt = new BackupDatabaseStatement(-1);
     final SQLParser.BackupDatabaseStatementContext backupCtx = ctx.backupDatabaseStatement();
 
-    // Parse URL from STRING_LITERAL
-    if (backupCtx.STRING_LITERAL() != null) {
-      final String urlString = removeQuotes(backupCtx.STRING_LITERAL().getText());
-      stmt.url = new Url(urlString);
+    // Parse URL
+    if (backupCtx.url() != null) {
+      final Url url = (Url) visit(backupCtx.url());
+      stmt.url = url;
+    }
+
+    // Parse WITH settings
+    if (backupCtx.settingList() != null) {
+      for (final SQLParser.SettingContext settingCtx : backupCtx.settingList().setting()) {
+        final Identifier key = (Identifier) visit(settingCtx.identifier());
+        final Expression value = (Expression) visit(settingCtx.expression());
+
+        // Store as Expression with key/value
+        // BackupDatabaseStatement uses .execute() on the value Expression, so no need to extract .value
+        final Expression keyExpr = new Expression(-1);
+        keyExpr.value = key.getStringValue();
+
+        stmt.settings.put(keyExpr, value);
+      }
     }
 
     return stmt;

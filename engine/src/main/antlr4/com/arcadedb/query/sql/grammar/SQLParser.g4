@@ -720,15 +720,15 @@ consoleStatement
 // ============================================================================
 
 importDatabaseStatement
-    : IMPORT DATABASE STRING_LITERAL
+    : IMPORT DATABASE (url)? (WITH settingList)?
     ;
 
 exportDatabaseStatement
-    : EXPORT DATABASE STRING_LITERAL
+    : EXPORT DATABASE url (WITH settingList)?
     ;
 
 backupDatabaseStatement
-    : BACKUP DATABASE STRING_LITERAL
+    : BACKUP DATABASE url (WITH settingList)?
     ;
 
 checkDatabaseStatement
@@ -1082,6 +1082,28 @@ integer
     ;
 
 /**
+ * URL - file://, http://, https://, or classpath:// URLs
+ */
+url
+    : FILE_URL
+    | HTTP_URL
+    | HTTPS_URL
+    | CLASSPATH_URL
+    | STRING_LITERAL  // Also allow quoted strings as URLs for backward compatibility
+    ;
+
+/**
+ * Setting list for WITH clause (e.g., WITH key1 = value1, key2 = value2)
+ */
+settingList
+    : setting (COMMA setting)*
+    ;
+
+setting
+    : identifier EQ expression
+    ;
+
+/**
  * Identifier - plain or quoted
  */
 identifier
@@ -1127,4 +1149,5 @@ identifier
     | AS
     | WHERE
     | WHILE
+    | INDEX
     ;
