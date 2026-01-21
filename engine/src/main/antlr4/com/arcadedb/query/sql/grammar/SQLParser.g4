@@ -976,9 +976,10 @@ baseExpression
  * Supports method call chains: out('Follows').out('Follows')
  * Supports array selectors: someFunc()[0]
  * Supports modifiers: someFunc().asString()
+ * Supports nested projections: list({x:1}):{x} (processed before methodCall/arraySelector/modifier)
  */
 functionCall
-    : identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN methodCall* arraySelector* modifier*
+    : identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN nestedProjection* methodCall* arraySelector* modifier*
     ;
 
 /**

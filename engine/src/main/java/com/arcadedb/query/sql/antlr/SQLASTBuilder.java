@@ -2857,13 +2857,29 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       baseExpr.identifier = baseId;
 
-      // Handle method calls, array selectors, and modifiers on function call
-      // Grammar: functionCall: identifier LPAREN ... RPAREN methodCall* arraySelector* modifier*
+      // Handle nested projections, method calls, array selectors, and modifiers on function call
+      // Grammar: functionCall: identifier LPAREN ... RPAREN nestedProjection* methodCall* arraySelector* modifier*
       final SQLParser.FunctionCallContext funcCtx = ctx.functionCall();
 
       Modifier firstModifier = null;
       Modifier currentModifier = null;
 
+      // Process nested projections (:{x}, :{x,y}, etc.) - these come FIRST
+      if (funcCtx.nestedProjection() != null) {
+        for (final SQLParser.NestedProjectionContext projCtx : funcCtx.nestedProjection()) {
+          final NestedProjection nestedProj = (NestedProjection) visit(projCtx);
+          // Convert to a Modifier for the AST structure
+          final Modifier modifier = new Modifier(-1);
+          modifier.nestedProjection = nestedProj;
+          if (firstModifier == null) {
+            firstModifier = modifier;
+            currentModifier = modifier;
+          } else {
+            currentModifier.next = modifier;
+            currentModifier = modifier;
+          }
+        }
+      }
 
       // Process method calls (.out('Follows'), etc.)
       if (funcCtx.methodCall() != null) {
@@ -4182,29 +4198,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Expression that contains a subquery - try to extract the SelectStatement
       final com.arcadedb.query.sql.parser.Expression expr = (com.arcadedb.query.sql.parser.Expression) sourceObj;
 
-      // Try to find SELECT statement in the expression tree
-      SelectStatement selectStmt = null;
-      if (expr.mathExpression != null && expr.mathExpression.childExpressions != null) {
-        for (final MathExpression child : expr.mathExpression.childExpressions) {
-          if (child instanceof BaseExpression) {
-            final BaseExpression baseChild = (BaseExpression) child;
-            // Check if this BaseExpression wraps an expression with a SELECT
-            if (baseChild.expression != null && baseChild.expression.mathExpression != null &&
-                !baseChild.expression.mathExpression.childExpressions.isEmpty()) {
-              // Iterate through to find a statement
-              for (final MathExpression grandchild : baseChild.expression.mathExpression.childExpressions) {
-                if (grandchild instanceof BaseExpression) {
-                  final BaseExpression bgrandchild = (BaseExpression) grandchild;
-                  // Keep navigating - for now just fall back to using the Expression itself as identifier
-                }
-              }
-            }
-          }
-        }
+      // Check if the mathExpression is a SubqueryExpression
+      if (expr.mathExpression instanceof SubqueryExpression) {
+        fromItem.statement = ((SubqueryExpression) expr.mathExpression).getStatement();
+      } else {
+        // Fallback: use the expression itself as identifier
+        fromItem.identifier = new Identifier("(" + expr.toString(null) + ")");
       }
-
-      // Fallback: Try to use the expression itself as the source (JavaCC might handle it)
-      fromItem.identifier = new Identifier("(" + expr.toString(null) + ")");
     } else {
       // For other expressions, throw error
       throw new CommandSQLParsingException("MOVE VERTEX source must be a SELECT subquery, got: " + sourceObj.getClass().getName());
