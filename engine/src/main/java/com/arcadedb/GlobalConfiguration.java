@@ -597,6 +597,18 @@ public enum GlobalConfiguration {
   HA_UNKNOWN_ERROR_BASE_DELAY_MS("arcadedb.ha.unknownError.baseDelayMs", SCOPE.SERVER,
       "Base delay in milliseconds for exponential backoff when retrying unknown errors. Default is 2000ms (2 seconds)", Long.class, 2000L),
 
+  HA_CIRCUIT_BREAKER_ENABLED("arcadedb.ha.circuitBreaker.enabled", SCOPE.SERVER,
+      "Enable circuit breaker for replica connections to prevent cascading failures. When enabled, replicas with consecutive failures are temporarily excluded. Default is false", Boolean.class, false),
+
+  HA_CIRCUIT_BREAKER_FAILURE_THRESHOLD("arcadedb.ha.circuitBreaker.failureThreshold", SCOPE.SERVER,
+      "Number of consecutive failures before opening the circuit breaker. Default is 5", Integer.class, 5),
+
+  HA_CIRCUIT_BREAKER_SUCCESS_THRESHOLD("arcadedb.ha.circuitBreaker.successThreshold", SCOPE.SERVER,
+      "Number of consecutive successes in HALF_OPEN state before closing the circuit breaker. Default is 3", Integer.class, 3),
+
+  HA_CIRCUIT_BREAKER_RETRY_TIMEOUT_MS("arcadedb.ha.circuitBreaker.retryTimeoutMs", SCOPE.SERVER,
+      "Timeout in milliseconds before transitioning from OPEN to HALF_OPEN state to test replica recovery. Default is 30000ms (30 seconds)", Long.class, 30000L),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 

@@ -90,6 +90,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private          STATUS                                             status                = STATUS.JOINING;
   private volatile boolean                                            shutdownCommunication = false;
   private final    ReplicaConnectionMetrics                           metrics               = new ReplicaConnectionMetrics();
+  private final    ReplicaCircuitBreaker                              circuitBreaker;
 
   // STATS
   private long totalMessages;
@@ -110,6 +111,12 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
     final ContextConfiguration cfg = ha.getServer().getConfiguration();
     final int queueSize = cfg.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE);
+
+    // Initialize circuit breaker
+    final int failureThreshold = cfg.getValueAsInteger(GlobalConfiguration.HA_CIRCUIT_BREAKER_FAILURE_THRESHOLD);
+    final int successThreshold = cfg.getValueAsInteger(GlobalConfiguration.HA_CIRCUIT_BREAKER_SUCCESS_THRESHOLD);
+    final long retryTimeoutMs = cfg.getValueAsLong(GlobalConfiguration.HA_CIRCUIT_BREAKER_RETRY_TIMEOUT_MS);
+    this.circuitBreaker = new ReplicaCircuitBreaker(failureThreshold, successThreshold, retryTimeoutMs, remoteServer.toString());
 
     final String cfgQueueImpl = cfg.getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL);
     if ("fast".equalsIgnoreCase(cfgQueueImpl)) {
@@ -444,6 +451,15 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     return metrics;
   }
 
+  /**
+   * Returns the current circuit breaker state.
+   *
+   * @return circuit breaker state
+   */
+  public ReplicaCircuitBreaker.State getCircuitBreakerState() {
+    return circuitBreaker.getState();
+  }
+
   private void executeMessage(final Binary buffer, final Pair<ReplicationMessage, HACommand> request) throws IOException {
     final ReplicationMessage message = request.getFirst();
 
@@ -696,18 +712,43 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   public void sendMessage(final Binary msg) throws IOException {
+    // Check circuit breaker if enabled
+    if (server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED)) {
+      if (!circuitBreaker.shouldAttempt()) {
+        throw new com.arcadedb.server.ha.exception.ReplicationTransientException(
+            "Circuit breaker is OPEN for replica " + remoteServer + " - temporarily excluding from replication");
+      }
+    }
+
     synchronized (channelOutputLock) {
       final ChannelBinaryServer c = channel;
       if (c == null) {
+        // Record failure if circuit breaker is enabled
+        if (server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED)) {
+          circuitBreaker.recordFailure();
+        }
         close();
         throw new IOException("Channel closed");
       }
 
-      c.writeVarLengthBytes(msg.getContent(), msg.size());
-      c.flush();
+      try {
+        c.writeVarLengthBytes(msg.getContent(), msg.size());
+        c.flush();
 
-      // Update activity timestamp on successful send
-      lastActivityTimestamp = System.currentTimeMillis();
+        // Update activity timestamp on successful send
+        lastActivityTimestamp = System.currentTimeMillis();
+
+        // Record success if circuit breaker is enabled
+        if (server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED)) {
+          circuitBreaker.recordSuccess();
+        }
+      } catch (final IOException e) {
+        // Record failure if circuit breaker is enabled
+        if (server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED)) {
+          circuitBreaker.recordFailure();
+        }
+        throw e;
+      }
     }
   }
 
