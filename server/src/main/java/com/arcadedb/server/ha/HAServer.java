@@ -516,6 +516,20 @@ public class HAServer implements ServerPlugin {
   }
 
   /**
+   * Get all replica connections for health monitoring.
+   * Returns a defensive copy to prevent external modification.
+   *
+   * @return map of replica name to network executor
+   */
+  public Map<String, Leader2ReplicaNetworkExecutor> getReplicaConnections() {
+    if (!isLeader()) {
+      return java.util.Collections.emptyMap();
+    }
+    // Return defensive copy
+    return new HashMap<>(replicaConnections);
+  }
+
+  /**
    * Gets a replica connection by server name (alias).
    * This is the primary method for accessing replica connections.
    *

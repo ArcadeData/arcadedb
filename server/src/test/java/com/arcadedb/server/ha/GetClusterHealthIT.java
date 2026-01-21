@@ -53,7 +53,7 @@ class GetClusterHealthIT extends BaseGraphServerTest {
         final HttpURLConnection conn = (HttpURLConnection) new URL(healthUrl).openConnection();
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Authorization",
-            "Basic " + java.util.Base64.getEncoder().encodeToString("root:".getBytes()));
+            "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
 
         final int responseCode = conn.getResponseCode();
         assertThat(responseCode).isEqualTo(200);
@@ -88,6 +88,64 @@ class GetClusterHealthIT extends BaseGraphServerTest {
         if (health.getString("role").equals("Leader")) {
           assertThat(health.has("replicaStatuses")).isTrue();
         }
+
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    });
+  }
+
+  @Test
+  void testClusterHealthReturnsReplicaMetrics() throws Exception {
+    testEachServer((serverIndex) -> {
+      try {
+        // Only test on leader
+        if (!getServer(serverIndex).getHA().isLeader()) {
+          return;
+        }
+
+        final String url = "http://127.0.0.1:248" + serverIndex + "/api/v1/cluster/health";
+        final HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        connection.setRequestMethod("GET");
+        // Note: health endpoint does not require authentication (isRequireAuthentication() returns false)
+        // but we set it anyway for consistency with other tests
+        connection.setRequestProperty("Authorization",
+            "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+
+        final int responseCode = connection.getResponseCode();
+        assertThat(responseCode).as("Health endpoint should return 200").isEqualTo(200);
+
+        // Read response
+        final Scanner scanner = new Scanner(connection.getInputStream());
+        final StringBuilder responseText = new StringBuilder();
+        while (scanner.hasNextLine()) {
+          responseText.append(scanner.nextLine());
+        }
+        scanner.close();
+
+        final JSONObject json = new JSONObject(responseText.toString());
+
+        // Basic cluster info
+        assertThat(json.getString("status")).isIn("HEALTHY", "DEGRADED", "UNHEALTHY");
+        assertThat(json.getBoolean("isLeader")).isTrue();
+        assertThat(json.getInt("onlineReplicas")).isGreaterThanOrEqualTo(0);
+
+        // Replica metrics must be present
+        assertThat(json.has("replicas")).isTrue();
+        final JSONObject replicas = json.getJSONObject("replicas");
+
+        // Should have entries for each replica (at least 2 in a 3-server cluster)
+        assertThat(replicas.length()).isGreaterThan(0);
+
+        // Each replica should have metrics
+        for (String replicaName : replicas.keySet()) {
+          JSONObject replica = replicas.getJSONObject(replicaName);
+          assertThat(replica.has("status")).isTrue();
+          assertThat(replica.has("queueSize")).isTrue();
+          assertThat(replica.has("consecutiveFailures")).isTrue();
+        }
+
+        connection.disconnect();
 
       } catch (IOException e) {
         throw new RuntimeException(e);
