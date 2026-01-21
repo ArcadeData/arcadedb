@@ -609,6 +609,21 @@ public enum GlobalConfiguration {
   HA_CIRCUIT_BREAKER_RETRY_TIMEOUT_MS("arcadedb.ha.circuitBreaker.retryTimeoutMs", SCOPE.SERVER,
       "Timeout in milliseconds before transitioning from OPEN to HALF_OPEN state to test replica recovery. Default is 30000ms (30 seconds)", Long.class, 30000L),
 
+  HA_CONSISTENCY_CHECK_ENABLED("arcadedb.ha.consistencyCheck.enabled", SCOPE.SERVER,
+      "Enable background consistency monitoring to detect data drift across replicas. Default is false", Boolean.class, false),
+
+  HA_CONSISTENCY_CHECK_INTERVAL_MS("arcadedb.ha.consistencyCheck.intervalMs", SCOPE.SERVER,
+      "Interval in milliseconds between consistency checks. Default is 3600000ms (1 hour)", Long.class, 3600000L),
+
+  HA_CONSISTENCY_SAMPLE_SIZE("arcadedb.ha.consistencyCheck.sampleSize", SCOPE.SERVER,
+      "Number of records to sample per database during consistency checks. Default is 1000", Integer.class, 1000),
+
+  HA_CONSISTENCY_DRIFT_THRESHOLD("arcadedb.ha.consistencyCheck.driftThreshold", SCOPE.SERVER,
+      "Number of inconsistent records that triggers automatic alignment (if enabled). Default is 10", Integer.class, 10),
+
+  HA_CONSISTENCY_AUTO_ALIGN("arcadedb.ha.consistencyCheck.autoAlign", SCOPE.SERVER,
+      "Automatically trigger ALIGN DATABASE when drift exceeds threshold. Default is false", Boolean.class, false),
+
   // KUBERNETES
   HA_K8S("arcadedb.ha.k8s", SCOPE.SERVER, "The server is running inside Kubernetes", Boolean.class, false),
 
