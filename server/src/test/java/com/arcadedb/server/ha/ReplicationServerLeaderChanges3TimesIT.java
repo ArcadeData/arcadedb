@@ -33,8 +33,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
 import com.arcadedb.server.ha.message.TxRequest;
-import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.Pair;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -123,11 +123,15 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
               if (++timeouts > 3)
                 throw e;
             }
-            // IGNORE IT
+            // Retry with backoff - intentional delay before retrying transaction
             LogManager.instance()
                 .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d): %s", counter, retry, maxRetry,
                     e.getMessage());
-            CodeUtils.sleep(500);
+            // Intentional delay for retry backoff (500ms) before next retry attempt
+            Awaitility.await("retry backoff delay")
+                .pollDelay(500, TimeUnit.MILLISECONDS)
+                .atMost(550, TimeUnit.MILLISECONDS)
+                .until(() -> true);
 
           } catch (final DuplicatedKeyException e) {
             // THIS MEANS THE ENTRY WAS INSERTED BEFORE THE CRASH
