@@ -28,7 +28,7 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ReplicationCallback;
-import com.arcadedb.utility.CodeUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -92,10 +92,14 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
             assertThat(result.<String>getProperty("name")).isEqualTo("distributed-test");
             break;
           } catch (final RemoteException e) {
-            // IGNORE IT
+            // Retry with backoff - intentional delay before retrying transaction
             LogManager.instance()
                 .log(this, Level.SEVERE, "Error on creating vertex %d, retrying (retry=%d/%d)...", e, counter, retry, maxRetry);
-            CodeUtils.sleep(500);
+            // Intentional delay for retry backoff (500ms) before next retry attempt
+            Awaitility.await("retry backoff delay")
+                .pollDelay(500, TimeUnit.MILLISECONDS)
+                .atMost(550, TimeUnit.MILLISECONDS)
+                .until(() -> true);
           }
         }
       }
@@ -109,7 +113,16 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
 
     LogManager.instance().log(this, Level.FINE, "Done");
 
-    CodeUtils.sleep(1000);
+    // Wait for replication to complete before checking entries
+    // Ensure all servers have processed and replicated the data
+    for (final int s : getServerToCheck()) {
+      if (getServer(s) != null && getServer(s).getHA() != null) {
+        Awaitility.await("replication queue drain on server " + s)
+            .atMost(30, TimeUnit.SECONDS)
+            .pollInterval(500, TimeUnit.MILLISECONDS)
+            .until(() -> getServer(s).getHA().getMessagesInQueue() == 0);
+      }
+    }
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
     for (final int s : getServerToCheck())
