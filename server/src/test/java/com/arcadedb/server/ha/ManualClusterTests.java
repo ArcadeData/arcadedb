@@ -19,7 +19,10 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.server.BaseGraphServerTest;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
+
+import java.util.concurrent.TimeUnit;
 
 @Tag("ha")
 public class ManualClusterTests extends BaseGraphServerTest {
@@ -31,7 +34,14 @@ public class ManualClusterTests extends BaseGraphServerTest {
   public static void main(String[] args) throws Exception {
     ManualClusterTests test = new ManualClusterTests();
     test.beginTest();
-    Thread.sleep(1000000);
+
+    // Keep cluster running for manual testing/observation
+    System.out.println("Cluster running. Press Ctrl+C to stop.");
+    Awaitility.await("manual test running")
+        .pollDelay(1000, TimeUnit.SECONDS)
+        .atMost(1001, TimeUnit.SECONDS)
+        .until(() -> true);
+
     test.endTest();
   }
 }
