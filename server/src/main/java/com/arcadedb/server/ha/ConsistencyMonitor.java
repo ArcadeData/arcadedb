@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -242,23 +243,30 @@ public class ConsistencyMonitor extends Thread {
 
     for (final String typeName : typeNames) {
       try {
+        // Validate type name to prevent SQL injection
+        if (!typeName.matches("^[a-zA-Z0-9_]+$")) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Skipping type with invalid name: %s", typeName);
+          continue;
+        }
+
         // Use SQL to get random records
         // Simple approach: scan and randomly select
         final String sql = "SELECT FROM " + typeName + " LIMIT " + (samplesPerType * 2);
-        final ResultSet resultSet = db.query("sql", sql);
 
-        int sampled = 0;
-        while (resultSet.hasNext() && sampled < samplesPerType) {
-          final Result result = resultSet.next();
-          if (result.isElement()) {
-            // Randomly decide whether to include this record (50% chance)
-            if (random.nextBoolean()) {
-              rids.add(result.getElement().get().getIdentity());
-              sampled++;
+        try (final ResultSet resultSet = db.query("sql", sql)) {
+          int sampled = 0;
+          while (resultSet.hasNext() && sampled < samplesPerType) {
+            final Result result = resultSet.next();
+            if (result.isElement()) {
+              // Randomly decide whether to include this record (50% chance)
+              if (random.nextBoolean()) {
+                rids.add(result.getElement().get().getIdentity());
+                sampled++;
+              }
             }
           }
         }
-        resultSet.close();
 
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
@@ -328,7 +336,7 @@ public class ConsistencyMonitor extends Thread {
     try {
       final MessageDigest md5 = MessageDigest.getInstance("MD5");
       final String json = record.toJSON().toString();
-      return md5.digest(json.getBytes());
+      return md5.digest(json.getBytes(StandardCharsets.UTF_8));
     } catch (final NoSuchAlgorithmException e) {
       throw new RuntimeException("MD5 algorithm not available", e);
     }
