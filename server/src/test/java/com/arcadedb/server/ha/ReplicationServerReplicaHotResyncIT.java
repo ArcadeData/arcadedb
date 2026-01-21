@@ -92,18 +92,17 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
             return;
 
           if (slowDown) {
-            // SLOW DOWN A SERVER AFTER 5TH MESSAGE
+            // SLOW DOWN A SERVER AFTER 5TH MESSAGE - intentionally inject latency to fill replication queue
             final long msgCount = totalMessages.incrementAndGet();
             if (msgCount > 5 && msgCount < 10) {
               LogManager.instance()
                   .log(this, Level.INFO, "TEST: Slowing down response from replica server 2... - total messages %d",
                       msgCount);
-              try {
-                // Still need some delay to trigger the hot resync
-                Thread.sleep(1_000);
-              } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-              }
+              // Intentional 1s delay to trigger hot resync condition
+              Awaitility.await("intentional latency to trigger hot resync")
+                  .pollDelay(1, TimeUnit.SECONDS)
+                  .atMost(2, TimeUnit.SECONDS)
+                  .until(() -> true);
             }
 
             // After slowdown, trigger reconnection to test hot resync
@@ -114,8 +113,11 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
 
               executeAsynchronously(() -> {
                 try {
-                  // Wait a bit for current message to finish processing
-                  Thread.sleep(1000);
+                  // Wait for current message to finish processing before closing channel
+                  Awaitility.await("current message processing")
+                      .pollDelay(1, TimeUnit.SECONDS)
+                      .atMost(2, TimeUnit.SECONDS)
+                      .until(() -> true);
 
                   final ArcadeDBServer server2 = getServer(2);
                   if (server2 != null && server2.getHA() != null && server2.getHA().getLeader() != null) {
