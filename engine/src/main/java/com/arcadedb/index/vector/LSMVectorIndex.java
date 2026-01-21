@@ -623,7 +623,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 "PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal consistency: %s",
                 indexName);
       }
-      if (graphFile != null && graphFile.hasPersistedGraph() && !needsGraphRebuildForPQ) {
+
+      // CRITICAL FIX FOR #3135: Check if vectorIndex contains deleted entries
+      // If vectors were updated/deleted, the persisted graph's ordinal mappings are stale.
+      // The graph was built with ordinals based on the old vector set, but after filtering
+      // deleted vectors, the new ordinalToVectorId array will have different indices.
+      // This causes NPE when JVector tries to access vectors using stale ordinals.
+      // Solution: Rebuild graph from scratch if any deleted entries exist.
+      final boolean hasDeletedVectors = vectorIndex.getAllVectorIds().anyMatch(id -> {
+        final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
+        return loc != null && loc.deleted;
+      });
+      if (hasDeletedVectors) {
+        LogManager.instance().log(this, Level.INFO,
+                "Deleted vectors detected in index %s - rebuilding graph from scratch to ensure ordinal consistency " +
+                        "(fixes issue #3135: stale ordinal mappings after vector updates)",
+                indexName);
+      }
+
+      if (graphFile != null && graphFile.hasPersistedGraph() && !needsGraphRebuildForPQ && !hasDeletedVectors) {
         try {
           this.graphIndex = graphFile.loadGraph();
           this.graphState = GraphState.IMMUTABLE;
