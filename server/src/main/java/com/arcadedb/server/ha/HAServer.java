@@ -111,6 +111,7 @@ public class HAServer implements ServerPlugin {
   protected        Pair<Long, String>    lastElectionVote;
   private final    LeaderFence           leaderFence;
   private volatile long                  lastElectionStartTime       = 0;
+  private          ConsistencyMonitor    consistencyMonitor;
 
   public record ServerInfo(String host, int port, String alias, String actualHost, Integer actualPort) {
 
@@ -332,6 +333,13 @@ public class HAServer implements ServerPlugin {
 
     configureCluster();
 
+    // Start consistency monitor if enabled
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_CONSISTENCY_CHECK_ENABLED)) {
+      consistencyMonitor = new ConsistencyMonitor(this);
+      consistencyMonitor.start();
+      LogManager.instance().log(this, Level.INFO, "Consistency monitor started");
+    }
+
     if (leaderConnection.get() == null && serverRole != ServerRole.REPLICA) {
       startElection(false);
     }
@@ -417,6 +425,19 @@ public class HAServer implements ServerPlugin {
   @Override
   public void stopService() {
     started = false;
+
+    // Stop consistency monitor if running
+    if (consistencyMonitor != null) {
+      consistencyMonitor.shutdown();
+      try {
+        consistencyMonitor.join(5000); // Wait up to 5 seconds for clean shutdown
+      } catch (final InterruptedException e) {
+        LogManager.instance().log(this, Level.WARNING, "Interrupted while waiting for consistency monitor shutdown");
+        Thread.currentThread().interrupt();
+      }
+      consistencyMonitor = null;
+    }
+
     if (listener != null)
       listener.close();
 
