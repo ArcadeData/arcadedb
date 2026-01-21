@@ -126,6 +126,7 @@ public class GetClusterHealthHandler extends AbstractServerHttpHandler {
         replicaJson.put("totalReconnections", metrics.getTotalReconnections());
         replicaJson.put("transientFailures", metrics.getTransientNetworkFailures());
         replicaJson.put("leadershipChanges", metrics.getLeadershipChanges());
+        replicaJson.put("circuitBreakerState", executor.getCircuitBreakerState().toString());
 
         replicasJson.put(replicaName, replicaJson);
         replicaStatusesJson.put(replicaName, executor.getStatus().toString());
