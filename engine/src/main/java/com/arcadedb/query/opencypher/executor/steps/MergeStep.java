@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
@@ -40,6 +41,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -376,7 +378,7 @@ public class MergeStep extends AbstractExecutionStep {
    * @param properties expected properties
    * @return true if all properties match
    */
-  private boolean matchesProperties(final com.arcadedb.database.Document doc, final Map<String, Object> properties) {
+  private boolean matchesProperties(final Document doc, final Map<String, Object> properties) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String key = entry.getKey();
       Object expectedValue = entry.getValue();
@@ -484,7 +486,7 @@ public class MergeStep extends AbstractExecutionStep {
    * @return evaluated property map with actual values
    */
   private Map<String, Object> evaluateProperties(final Map<String, Object> properties, final Result result) {
-    final Map<String, Object> evaluated = new java.util.HashMap<>();
+    final Map<String, Object> evaluated = new HashMap<>();
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String key = entry.getKey();
@@ -508,8 +510,8 @@ public class MergeStep extends AbstractExecutionStep {
               // If it's a map (like unwound data), get the property
               if (obj instanceof Map) {
                 value = ((Map<?, ?>) obj).get(property);
-              } else if (obj instanceof com.arcadedb.database.Document) {
-                value = ((com.arcadedb.database.Document) obj).get(property);
+              } else if (obj instanceof Document) {
+                value = ((Document) obj).get(property);
               }
             }
           }
@@ -551,15 +553,15 @@ public class MergeStep extends AbstractExecutionStep {
         continue;
       }
 
-      if (!(obj instanceof com.arcadedb.database.Document)) {
+      if (!(obj instanceof Document)) {
         // Not a document - skip
         continue;
       }
 
-      final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) obj;
+      final Document doc = (Document) obj;
 
       // Make document mutable
-      final com.arcadedb.database.MutableDocument mutableDoc = doc.modify();
+      final MutableDocument mutableDoc = doc.modify();
 
       // Evaluate the value expression and set the property
       final Object value = evaluator.evaluate(valueExpression, result, context);

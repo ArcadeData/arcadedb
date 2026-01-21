@@ -20,9 +20,12 @@ package com.arcadedb.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -162,7 +165,7 @@ public class OpenCypherMergeActionsTest {
     assertThat(person.get("name")).isEqualTo("Frank");
     assertThat(person.get("stringProp")).isEqualTo("hello");
     assertThat(((Number) person.get("intProp")).intValue()).isEqualTo(42);
-    assertThat(((Number) person.get("floatProp")).doubleValue()).isCloseTo(3.14, org.assertj.core.data.Offset.offset(0.01));
+    assertThat(((Number) person.get("floatProp")).doubleValue()).isCloseTo(3.14, Offset.offset(0.01));
     assertThat((Boolean) person.get("boolProp")).isTrue();
     assertThat(person.get("nullProp")).isNull();
   }
@@ -202,7 +205,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN r");
 
     assertThat(result.hasNext()).isTrue();
-    final com.arcadedb.graph.Edge edge = (com.arcadedb.graph.Edge) result.next().getProperty("r");
+    final Edge edge = (Edge) result.next().getProperty("r");
     assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2020);
     assertThat(edge.get("role")).isEqualTo("Engineer");
   }
@@ -221,7 +224,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN r");
 
     assertThat(result.hasNext()).isTrue();
-    final com.arcadedb.graph.Edge edge = (com.arcadedb.graph.Edge) result.next().getProperty("r");
+    final Edge edge = (Edge) result.next().getProperty("r");
     assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2021);
     assertThat((Boolean) edge.get("promoted")).isTrue();
   }

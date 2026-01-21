@@ -18,8 +18,15 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
 
 /**
  * Expression representing EXISTS predicate.
@@ -45,11 +52,11 @@ public class ExistsExpression implements Expression {
 
     try {
       // Build parameter map and modify subquery to bind variables
-      final java.util.Map<String, Object> params = new java.util.HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       String modifiedSubquery = subquery;
 
       if (result != null) {
-        final java.util.List<String> whereConditions = new java.util.ArrayList<>();
+        final List<String> whereConditions = new ArrayList<>();
 
         // Extract variables from the result
         for (final String propertyName : result.getPropertyNames()) {
@@ -57,9 +64,9 @@ public class ExistsExpression implements Expression {
           params.put(propertyName, value);
 
           // If it's a vertex or edge, add a WHERE condition to bind it using id()
-          if (value instanceof com.arcadedb.database.Identifiable) {
+          if (value instanceof Identifiable) {
             // Use id() function to compare by RID: id(varName) = 'rid'
-            final String rid = ((com.arcadedb.database.Identifiable) value).getIdentity().toString();
+            final String rid = ((Identifiable) value).getIdentity().toString();
             whereConditions.add("id(" + propertyName + ") = '" + rid + "'");
           }
         }
@@ -81,10 +88,10 @@ public class ExistsExpression implements Expression {
             // WHERE clause exists, add conditions with AND
             // Insert right after the WHERE keyword
             modifiedSubquery = modifiedSubquery.replaceFirst("(?i)\\bWHERE\\s+",
-                java.util.regex.Matcher.quoteReplacement("WHERE " + conditionsStr + " AND "));
+                Matcher.quoteReplacement("WHERE " + conditionsStr + " AND "));
           } else if (modifiedSubquery.matches("(?i).*\\bRETURN\\b.*")) {
             modifiedSubquery = modifiedSubquery.replaceFirst("(?i)\\bRETURN\\b",
-                java.util.regex.Matcher.quoteReplacement(whereClause + " RETURN"));
+                Matcher.quoteReplacement(whereClause + " RETURN"));
           } else {
             // No RETURN clause, append WHERE at the end
             modifiedSubquery = modifiedSubquery + whereClause;

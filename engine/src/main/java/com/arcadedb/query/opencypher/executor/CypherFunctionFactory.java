@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Edge;
@@ -27,6 +28,7 @@ import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 
 import java.util.*;
+import java.util.regex.Pattern;
 
 /**
  * Factory for Cypher functions.
@@ -268,8 +270,8 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("keys() requires exactly one argument");
       }
-      if (args[0] instanceof com.arcadedb.database.Document) {
-        final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) args[0];
+      if (args[0] instanceof Document) {
+        final Document doc = (Document) args[0];
         return new ArrayList<>(doc.getPropertyNames());
       }
       return Collections.emptyList();
@@ -290,8 +292,8 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("properties() requires exactly one argument");
       }
-      if (args[0] instanceof com.arcadedb.database.Document) {
-        final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) args[0];
+      if (args[0] instanceof Document) {
+        final Document doc = (Document) args[0];
         final Map<String, Object> props = new HashMap<>();
         for (final String propName : doc.getPropertyNames()) {
           props.put(propName, doc.get(propName));
@@ -665,7 +667,7 @@ public class CypherFunctionFactory {
       }
       final String str = args[0].toString();
       final String delimiter = args[1].toString();
-      return List.of(str.split(java.util.regex.Pattern.quote(delimiter)));
+      return List.of(str.split(Pattern.quote(delimiter)));
     }
 
     @Override

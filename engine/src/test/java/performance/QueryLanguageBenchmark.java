@@ -21,8 +21,11 @@ package performance;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -35,6 +38,7 @@ import org.junit.jupiter.api.TestInstance;
 
 import java.io.File;
 import java.util.*;
+import java.util.function.Function;
 
 /**
  * Comprehensive benchmark comparing query language performance in ArcadeDB.
@@ -163,8 +167,8 @@ public class QueryLanguageBenchmark {
       final long toId = vertexIds.get(random.nextInt(NUM_VERTICES));
 
       // Lookup vertices by ID using Java Native API (much faster than SQL)
-      final com.arcadedb.index.IndexCursor fromResult = database.lookupByKey("Account", "id", fromId);
-      final com.arcadedb.index.IndexCursor toResult = database.lookupByKey("Account", "id", toId);
+      final IndexCursor fromResult = database.lookupByKey("Account", "id", fromId);
+      final IndexCursor toResult = database.lookupByKey("Account", "id", toId);
 
       if (fromResult.hasNext() && toResult.hasNext()) {
         final Vertex from = fromResult.next().asVertex();
@@ -297,9 +301,9 @@ public class QueryLanguageBenchmark {
       long sum = 0;
       long count = 0;
 
-      final Iterator<com.arcadedb.database.Record> iterator = database.iterateType("Account", true);
+      final Iterator<Record> iterator = database.iterateType("Account", true);
       while (iterator.hasNext()) {
-        final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) iterator.next();
+        final Document doc = (Document) iterator.next();
         sum += doc.getInteger("age");
         count++;
       }
@@ -332,7 +336,7 @@ public class QueryLanguageBenchmark {
   private Object executeJavaIndexLookup(final long id) {
     database.begin();
     try {
-      final com.arcadedb.index.IndexCursor result = database.lookupByKey("Account", "id", id);
+      final IndexCursor result = database.lookupByKey("Account", "id", id);
       if (result.hasNext())
         return result.next();
       return null;
@@ -363,9 +367,9 @@ public class QueryLanguageBenchmark {
     database.begin();
     try {
       int count = 0;
-      final Iterator<com.arcadedb.database.Record> iterator = database.iterateType("Account", true);
+      final Iterator<Record> iterator = database.iterateType("Account", true);
       while (iterator.hasNext()) {
-        final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) iterator.next();
+        final Document doc = (Document) iterator.next();
         if (doc.getInteger("age") > 30)
           count++;
       }
@@ -424,7 +428,7 @@ public class QueryLanguageBenchmark {
   private int executeJavaTraversal(final long startId, final int depth) {
     database.begin();
     try {
-      final com.arcadedb.index.IndexCursor startResult = database.lookupByKey("Account", "id", startId);
+      final IndexCursor startResult = database.lookupByKey("Account", "id", startId);
       if (!startResult.hasNext())
         return 0;
 
@@ -857,7 +861,7 @@ public class QueryLanguageBenchmark {
     System.out.println();
   }
 
-  private void printMetricRow(final String metricName, final String queryType, final java.util.function.Function<BenchmarkResult, String> extractor) {
+  private void printMetricRow(final String metricName, final String queryType, final Function<BenchmarkResult, String> extractor) {
     final StringBuilder row = new StringBuilder("║ " + padRight(metricName, 28) + " │");
     for (final Map<String, BenchmarkResult> langResults : benchmarkResults.values()) {
       final BenchmarkResult result = langResults.get(queryType);

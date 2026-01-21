@@ -39,6 +39,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Cypher Expression builder. Transform a cypher expression into Gremlin.
@@ -172,12 +174,12 @@ public class ArcadeCypher extends ArcadeGremlin {
 
     // Pattern: ALL(variableName IN keys($paramName) WHERE nodeVar[variableName] = $paramName[variableName])
     // We need to match this pattern and expand it
-    java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+    Pattern pattern = Pattern.compile(
         "ALL\\s*\\(\\s*(\\w+)\\s+IN\\s+keys\\s*\\(\\s*\\$([\\w]+)\\s*\\)\\s+WHERE\\s+(\\w+)\\s*\\[\\s*\\1\\s*\\]\\s*=\\s*\\$\\2\\s*\\[\\s*\\1\\s*\\]\\s*\\)",
-        java.util.regex.Pattern.CASE_INSENSITIVE
+        Pattern.CASE_INSENSITIVE
     );
 
-    java.util.regex.Matcher matcher = pattern.matcher(query);
+    Matcher matcher = pattern.matcher(query);
     StringBuilder result = new StringBuilder();
     int lastEnd = 0;
 

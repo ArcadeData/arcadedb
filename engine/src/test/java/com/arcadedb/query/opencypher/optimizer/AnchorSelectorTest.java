@@ -24,6 +24,8 @@ import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
+import com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -336,12 +338,12 @@ class AnchorSelectorTest {
     }
 
     @Override
-    public com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics getTypeStatistics(final String typeName) {
+    public TypeStatistics getTypeStatistics(final String typeName) {
       final long cardinality = cardinalities.getOrDefault(typeName, 0L);
       if (cardinality == 0) {
         return null;
       }
-      return new com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics(typeName, cardinality, true);
+      return new TypeStatistics(typeName, cardinality, true);
     }
 
     @Override

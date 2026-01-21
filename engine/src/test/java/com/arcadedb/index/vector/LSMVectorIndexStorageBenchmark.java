@@ -36,6 +36,7 @@ import org.junit.jupiter.api.TestInstance;
 
 import java.io.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Microbenchmark comparing search performance with and without storeVectorsInGraph.
@@ -527,8 +528,8 @@ public class LSMVectorIndexStorageBenchmark {
           if (!approxResults.isEmpty())
             System.out.println("  Approx top result: RID=" + approxResults.get(0).getFirst() + ", dist=" + approxResults.get(0).getSecond());
           // Check overlap
-          final var exactRIDs = exactResults.stream().map(p -> p.getFirst().toString()).collect(java.util.stream.Collectors.toSet());
-          final var approxRIDs = approxResults.stream().map(p -> p.getFirst().toString()).collect(java.util.stream.Collectors.toSet());
+          final var exactRIDs = exactResults.stream().map(p -> p.getFirst().toString()).collect(Collectors.toSet());
+          final var approxRIDs = approxResults.stream().map(p -> p.getFirst().toString()).collect(Collectors.toSet());
           exactRIDs.retainAll(approxRIDs);
           System.out.println("  Overlap (exact vs approx): " + exactRIDs.size() + "/" + Math.min(exactResults.size(), approxResults.size()));
         }
@@ -746,7 +747,7 @@ public class LSMVectorIndexStorageBenchmark {
       final Set<RID> groundTruthSet = new HashSet<>(groundTruthRIDs);
       final Set<RID> approximateSet = approximateResult.stream()
           .map(Pair::getFirst)
-          .collect(java.util.stream.Collectors.toSet());
+          .collect(Collectors.toSet());
 
       int matches = 0;
       for (final RID rid : approximateSet) {
