@@ -368,8 +368,26 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
   private void handleIOException(IOException e) throws Exception {
     if (server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENHANCED_RECONNECTION)) {
-      // New enhanced reconnection logic with exception classification
-      handleConnectionFailure(e);
+      // New enhanced reconnection logic with typed exception handling
+      try {
+        handleConnectionFailure(e);
+      } catch (com.arcadedb.server.ha.exception.ReplicationTransientException transientEx) {
+        LogManager.instance().log(this, Level.INFO,
+            "Transient failure with replica %s: %s - attempting recovery",
+            remoteServer, transientEx.getMessage());
+        recoverFromTransientFailure(transientEx);
+      } catch (com.arcadedb.server.ha.exception.LeadershipChangeException leadershipEx) {
+        LogManager.instance().log(this, Level.INFO,
+            "Leadership changed from %s to %s - finding new leader",
+            leadershipEx.getFormerLeader(), leadershipEx.getNewLeader());
+        recoverFromLeadershipChange(leadershipEx);
+      } catch (com.arcadedb.server.ha.exception.ReplicationPermanentException permanentEx) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Permanent replication error with %s: %s - marking as FAILED",
+            permanentEx, remoteServer, permanentEx.getMessage());
+        transitionTo(STATUS.FAILED, "Permanent error: " + permanentEx.getMessage());
+        server.setReplicaStatus(remoteServer, false);
+      }
     } else {
       // Legacy reconnection logic
       if (e instanceof EOFException) {
@@ -385,8 +403,26 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
   private void handleGenericException(Exception e) throws Exception {
     if (server.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENHANCED_RECONNECTION)) {
-      // New enhanced reconnection logic with exception classification
-      handleConnectionFailure(e);
+      // New enhanced reconnection logic with typed exception handling
+      try {
+        handleConnectionFailure(e);
+      } catch (com.arcadedb.server.ha.exception.ReplicationTransientException transientEx) {
+        LogManager.instance().log(this, Level.INFO,
+            "Transient failure with replica %s: %s - attempting recovery",
+            remoteServer, transientEx.getMessage());
+        recoverFromTransientFailure(transientEx);
+      } catch (com.arcadedb.server.ha.exception.LeadershipChangeException leadershipEx) {
+        LogManager.instance().log(this, Level.INFO,
+            "Leadership changed from %s to %s - finding new leader",
+            leadershipEx.getFormerLeader(), leadershipEx.getNewLeader());
+        recoverFromLeadershipChange(leadershipEx);
+      } catch (com.arcadedb.server.ha.exception.ReplicationPermanentException permanentEx) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Permanent replication error with %s: %s - marking as FAILED",
+            permanentEx, remoteServer, permanentEx.getMessage());
+        transitionTo(STATUS.FAILED, "Permanent error: " + permanentEx.getMessage());
+        server.setReplicaStatus(remoteServer, false);
+      }
     } else {
       // Legacy generic exception handling
       LogManager.instance().log(this, Level.SEVERE, "Generic error during applying of request from Leader (cause=%s)", e.toString());
@@ -587,6 +623,31 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
     if (server.getServer().isStarted())
       server.printClusterConfiguration();
+  }
+
+  /**
+   * Transitions the replica to a new status with validation and logging.
+   *
+   * @param newStatus the target status
+   * @param reason reason for the transition
+   */
+  private void transitionTo(STATUS newStatus, String reason) {
+    synchronized (lock) {
+      if (!status.canTransitionTo(newStatus)) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Invalid state transition: %s -> %s (reason: %s)",
+            status, newStatus, reason);
+        return;
+      }
+
+      STATUS oldStatus = this.status;
+      this.status = newStatus;
+      metrics.recordStateChange(oldStatus, newStatus);
+
+      LogManager.instance().log(this, Level.INFO,
+          "Replica '%s' state: %s -> %s (%s)",
+          remoteServer, oldStatus, newStatus, reason);
+    }
   }
 
   public HAServer.ServerInfo getRemoteServerName() {
@@ -888,9 +949,12 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   /**
-   * Handles connection failure by categorizing and applying appropriate recovery.
+   * Handles connection failure by categorizing and throwing typed exceptions.
    *
    * @param e the exception that caused the failure
+   * @throws ReplicationTransientException for transient network failures
+   * @throws LeadershipChangeException for leadership changes
+   * @throws ReplicationPermanentException for protocol errors
    */
   private void handleConnectionFailure(final Exception e) throws Exception {
     // Check for shutdown first
@@ -899,44 +963,29 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     }
 
     // Categorize the exception
-    final ExceptionCategory category = categorizeException(e);
-
-    // Update metrics
-    switch (category) {
-      case TRANSIENT_NETWORK:
-        metrics.transientNetworkFailuresCounter().incrementAndGet();
-        break;
-      case LEADERSHIP_CHANGE:
-        metrics.leadershipChangesCounter().incrementAndGet();
-        break;
-      case PROTOCOL_ERROR:
-        metrics.protocolErrorsCounter().incrementAndGet();
-        break;
-      case UNKNOWN:
-        metrics.unknownErrorsCounter().incrementAndGet();
-        break;
-    }
-
-    // Emit categorization event
-    server.getServer().lifecycleEvent(
-        com.arcadedb.server.ReplicationCallback.Type.REPLICA_FAILURE_CATEGORIZED,
-        new Object[] { remoteServer.toString(), e, category }
-    );
-
-    // Apply category-specific recovery strategy
-    switch (category) {
-      case TRANSIENT_NETWORK:
-        recoverFromTransientFailure(e);
-        break;
-      case LEADERSHIP_CHANGE:
-        recoverFromLeadershipChange(e);
-        break;
-      case PROTOCOL_ERROR:
-        failFromProtocolError(e);
-        break;
-      case UNKNOWN:
-        recoverFromUnknownError(e);
-        break;
+    if (isTransientNetworkFailure(e)) {
+      metrics.transientNetworkFailuresCounter().incrementAndGet();
+      throw new com.arcadedb.server.ha.exception.ReplicationTransientException(
+          "Transient network failure with replica " + remoteServer, e);
+    } else if (isLeadershipChange(e)) {
+      metrics.leadershipChangesCounter().incrementAndGet();
+      // Extract leader info if available
+      String formerLeader = server.getServerName();
+      String newLeader = "unknown";
+      if (e instanceof ServerIsNotTheLeaderException) {
+        newLeader = ((ServerIsNotTheLeaderException) e).getLeaderAddress();
+      }
+      throw new com.arcadedb.server.ha.exception.LeadershipChangeException(
+          "Leadership changed", formerLeader, newLeader);
+    } else if (isProtocolError(e)) {
+      metrics.protocolErrorsCounter().incrementAndGet();
+      throw new com.arcadedb.server.ha.exception.ReplicationPermanentException(
+          "Protocol error with replica " + remoteServer, e);
+    } else {
+      // Unknown errors - treat conservatively as transient
+      metrics.unknownErrorsCounter().incrementAndGet();
+      throw new com.arcadedb.server.ha.exception.ReplicationTransientException(
+          "Unknown error with replica " + remoteServer + ", treating as transient", e);
     }
   }
 }
