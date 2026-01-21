@@ -151,6 +151,10 @@ public class ParenthesisExpression extends MathExpression {
     this.statement = statement;
   }
 
+  public Statement getStatement() {
+    return statement;
+  }
+
   public void extractSubQueries(final SubQueryCollector collector) {
     if (expression != null) {
       expression.extractSubQueries(collector);

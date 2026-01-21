@@ -29,6 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
 class ExplainStatementExecutionTest extends TestHelper {
+  public ExplainStatementExecutionTest() {
+    autoStartTx = true;
+  }
+
   @Test
   void explainSelectNoTarget() {
     final ResultSet result = database.query("sql", "explain select 1 as one, 2 as two, 2+3");
@@ -40,6 +44,37 @@ class ExplainStatementExecutionTest extends TestHelper {
     final Optional<ExecutionPlan> plan = result.getExecutionPlan();
     assertThat(plan.isPresent()).isTrue();
     assertThat(plan.get() instanceof SelectExecutionPlan).isTrue();
+
+    result.close();
+  }
+
+  @Test
+  void testRegression_Issue1488_ExplainSubqueryRecursion() {
+    // Test for issue #1488: EXPLAIN should recursively resolve subqueries
+    database.getSchema().createVertexType("vec", 1);
+
+    // Insert test data
+    database.command("sql", "INSERT INTO vec SET x = 1");
+    database.command("sql", "INSERT INTO vec SET x = 2");
+    database.getSchema().createEdgeType("vecEdge", 1);
+
+    // Execute EXPLAIN on CREATE EDGE with subquery
+    final ResultSet result = database.query("sql", "EXPLAIN CREATE EDGE vecEdge FROM (SELECT FROM vec WHERE x = 1) TO (SELECT FROM vec WHERE x = 2)");
+    assertThat(result.hasNext()).isTrue();
+
+    final Result next = result.next();
+    final String executionPlanAsString = next.getProperty("executionPlanAsString");
+
+    assertThat(executionPlanAsString).isNotNull();
+
+    // The execution plan should contain details about the subqueries, not just the raw SQL
+    // It should show steps like "FETCH FROM TYPE" for the SELECT queries
+    // and not just "(SELECT FROM vec WHERE x = 1)"
+    assertThat(executionPlanAsString).contains("FETCH FROM TYPE vec");
+    assertThat(executionPlanAsString).contains("FILTER ITEMS WHERE");
+
+    // Should NOT contain the raw SQL subquery text
+    assertThat(executionPlanAsString).doesNotContain("(SELECT FROM vec WHERE x = 1)");
 
     result.close();
   }

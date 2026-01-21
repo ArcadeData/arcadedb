@@ -51,6 +51,7 @@ public class ExplainStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(args);
+    context.setProfiling(true);
 
     final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
 
@@ -66,6 +67,7 @@ public class ExplainStatement extends Statement {
     }
     context.setDatabase(db);
     context.setInputParameters(params);
+    context.setProfiling(true);
 
     final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
 

@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.ParenthesisExpression;
+import com.arcadedb.query.sql.parser.Statement;
 
 /**
  * Created by luigidellaquila on 03/08/16.
@@ -70,8 +72,29 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
     if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
 
-    result.append("\n").append(spaces).append("  + ").append(varname).append(" = ")
-        .append(expression.prettyPrint(depth, indent + 2));
+    result.append("\n").append(spaces).append("  + ").append(varname).append(" = ");
+
+    // Check if the expression contains a ParenthesisExpression with a subquery
+    if (expression.mathExpression instanceof ParenthesisExpression) {
+      final ParenthesisExpression parenthesisExpr = (ParenthesisExpression) expression.mathExpression;
+
+      // First check if there's an already executed plan
+      InternalExecutionPlan executionPlan = parenthesisExpr.getExecutionPlan();
+
+      // If no executed plan, check if there's a statement (subquery) and create its plan
+      if (executionPlan == null) {
+        final Statement statement = parenthesisExpr.getStatement();
+        if (statement != null)
+          executionPlan = statement.createExecutionPlan(context);
+      }
+
+      if (executionPlan != null) {
+        // Recursively print the subquery execution plan
+        result.append("\n").append(executionPlan.prettyPrint(depth + 1, indent + 2));
+      } else
+        result.append(expression.prettyPrint(depth, indent + 2));
+    } else
+      result.append(expression.prettyPrint(depth, indent + 2));
 
     return result.toString();
   }
