@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Timeout;
 
@@ -62,16 +63,14 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
             return;
 
           if (slowDown) {
-            // SLOW DOWN A SERVER AFTER 5TH MESSAGE
+            // SLOW DOWN A SERVER AFTER 5TH MESSAGE - intentionally inject latency to fill replication queue
             if (totalMessages.incrementAndGet() > 5) {
-              try {
-                LogManager.instance().log(this, getErrorLevel(), "TEST: Slowing down response from replica server 2...");
-                Thread.sleep(10_000);
-              } catch (final InterruptedException e) {
-                // IGNORE IT
-                LogManager.instance().log(this, Level.SEVERE, "TEST: ArcadeDB_2 HA event listener thread interrupted");
-                Thread.currentThread().interrupt();
-              }
+              LogManager.instance().log(this, getErrorLevel(), "TEST: Slowing down response from replica server 2...");
+              // Intentional 10s delay to simulate slow replica and force replication queue overflow
+              Awaitility.await("intentional latency injection")
+                  .pollDelay(10, TimeUnit.SECONDS)
+                  .atMost(11, TimeUnit.SECONDS)
+                  .until(() -> true);
             }
           } else {
 
