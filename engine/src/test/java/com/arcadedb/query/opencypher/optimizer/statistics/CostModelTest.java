@@ -18,13 +18,11 @@
  */
 package com.arcadedb.query.opencypher.optimizer.statistics;
 
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -137,7 +135,7 @@ class CostModelTest {
   @Test
   void testCombineSelectivitiesAnd() {
     final double combined = costModel.combineSelectivitiesAnd(0.1, 0.5, 0.2);
-    assertThat(combined).isCloseTo(0.01, org.assertj.core.data.Offset.offset(0.0001)); // 0.1 * 0.5 * 0.2
+    assertThat(combined).isCloseTo(0.01, Offset.offset(0.0001)); // 0.1 * 0.5 * 0.2
   }
 
   @Test
@@ -145,7 +143,7 @@ class CostModelTest {
     final double combined = costModel.combineSelectivitiesOr(0.1, 0.2);
 
     // 1 - (1 - 0.1) * (1 - 0.2) = 1 - (0.9 * 0.8) = 1 - 0.72 = 0.28
-    assertThat(combined).isCloseTo(0.28, org.assertj.core.data.Offset.offset(0.0001));
+    assertThat(combined).isCloseTo(0.28, Offset.offset(0.0001));
   }
 
   @Test
@@ -195,7 +193,7 @@ class CostModelTest {
     }
 
     public void addIndex(final IndexStatistics index) {
-      indexes.computeIfAbsent(index.getTypeName(), k -> new java.util.ArrayList<>())
+      indexes.computeIfAbsent(index.getTypeName(), k -> new ArrayList<>())
              .add(index);
     }
 

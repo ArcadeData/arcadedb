@@ -62,6 +62,8 @@ import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.query.opencypher.query.CypherPlanCache;
+import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
@@ -134,8 +136,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
   private final        StatementCache                            statementCache;
   private final        ExecutionPlanCache                        executionPlanCache;
-  private final        com.arcadedb.query.opencypher.query.CypherStatementCache cypherStatementCache;
-  private final        com.arcadedb.query.opencypher.query.CypherPlanCache      cypherPlanCache;
+  private final        CypherStatementCache cypherStatementCache;
+  private final        CypherPlanCache      cypherPlanCache;
   private final        File                                      configurationFile;
   private              DatabaseInternal                          wrappedDatabaseInstance              = this;
   private              int                                       edgeListSize                         = EDGE_LIST_INITIAL_CHUNK_SIZE;
@@ -165,9 +167,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
-      this.cypherStatementCache = new com.arcadedb.query.opencypher.query.CypherStatementCache(this,
+      this.cypherStatementCache = new CypherStatementCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
-      this.cypherPlanCache = new com.arcadedb.query.opencypher.query.CypherPlanCache(this,
+      this.cypherPlanCache = new CypherPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_PLAN_CACHE));
 
       if (path.endsWith(File.separator))
@@ -1547,11 +1549,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return executionPlanCache;
   }
 
-  public com.arcadedb.query.opencypher.query.CypherStatementCache getCypherStatementCache() {
+  public CypherStatementCache getCypherStatementCache() {
     return cypherStatementCache;
   }
 
-  public com.arcadedb.query.opencypher.query.CypherPlanCache getCypherPlanCache() {
+  public CypherPlanCache getCypherPlanCache() {
     return cypherPlanCache;
   }
 

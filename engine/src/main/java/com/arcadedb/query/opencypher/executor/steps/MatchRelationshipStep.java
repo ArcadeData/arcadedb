@@ -23,6 +23,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -153,8 +154,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             // Add path binding if path variable is specified (e.g., p = (a)-[r]->(b))
             if (pathVariable != null && !pathVariable.isEmpty()) {
               // Create a TraversalPath with source vertex, edge, and target vertex
-              final com.arcadedb.query.opencypher.traversal.TraversalPath path =
-                  new com.arcadedb.query.opencypher.traversal.TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
+              final TraversalPath path =
+                  new TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
               path.addStep(edge, targetVertex);
               result.setProperty(pathVariable, path);
             }

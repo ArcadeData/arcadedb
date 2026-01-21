@@ -21,6 +21,8 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -133,7 +135,7 @@ class ErrorResponseNestedExceptionTest {
     }
 
     @Override
-    protected ExecutionResponse execute(final HttpServerExchange exchange, final com.arcadedb.server.security.ServerSecurityUser user,
+    protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
         final JSONObject payload) {
       return null;
     }

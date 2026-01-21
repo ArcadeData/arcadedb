@@ -27,7 +27,7 @@ public class SqlParser/*@bgen(jjtree)*/implements SqlParserTreeConstants, SqlPar
     this.database = database;
   }
 
-  public SqlParser(final Database database, InputStream stream, String charset) throws java.io.UnsupportedEncodingException {
+  public SqlParser(final Database database, InputStream stream, String charset) throws UnsupportedEncodingException {
     this(new JavaCharStream(stream, charset));
     this.database = database;
   }
@@ -551,7 +551,7 @@ if (jjtc000) {
     throw new Error("Missing return statement in function");
 }
 
-  final public java.lang.String PString() throws ParseException {/*@bgen(jjtree) PString */
+  final public String PString() throws ParseException {/*@bgen(jjtree) PString */
 PString jjtn000 = new PString(JJTPSTRING);
 boolean jjtc000 = true;
 jjtree.openNodeScope(jjtn000);
@@ -3963,7 +3963,7 @@ if (jjtc000) {
   Projection jjtn000 = new Projection(JJTPROJECTION);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
-  jjtn000.jjtSetFirstToken(getToken(1));java.util.List<ProjectionItem> items = new java.util.ArrayList<ProjectionItem>();
+  jjtn000.jjtSetFirstToken(getToken(1));List<ProjectionItem> items = new ArrayList<ProjectionItem>();
   ProjectionItem lastItem = null;
     try {
       if (jj_2_38(2147483647)) {
@@ -5372,7 +5372,7 @@ if (jjtc000) {
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));ArrayConcatExpressionElement sub;
-  jjtn000.setChildExpressions(new java.util.ArrayList());
+  jjtn000.setChildExpressions(new ArrayList());
     try {
       sub = ArrayConcatExpressionElement();
 jjtn000.getChildExpressions().add(sub);
@@ -5503,7 +5503,7 @@ if (jjtc000) {
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));MathExpression sub;
-  jjtn000.setChildExpressions(new java.util.ArrayList());
+  jjtn000.setChildExpressions(new ArrayList());
     try {
       sub = FirstLevelExpression();
 jjtn000.getChildExpressions().add(sub);
@@ -6254,8 +6254,8 @@ if (jjtc000) {
   FromItem jjtn000 = new FromItem(JJTFROMITEM);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
-  jjtn000.jjtSetFirstToken(getToken(1));jjtn000.rids = new java.util.ArrayList();
-  jjtn000.inputParams = new java.util.ArrayList();
+  jjtn000.jjtSetFirstToken(getToken(1));jjtn000.rids = new ArrayList();
+  jjtn000.inputParams = new ArrayList();
   Rid lastRid;
   InputParameter lastParam;
     try {
@@ -9390,7 +9390,7 @@ if (jjtc000) {
   OrderBy jjtn000 = new OrderBy(JJTORDERBY);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
-  jjtn000.jjtSetFirstToken(getToken(1));jjtn000.items = new java.util.ArrayList();
+  jjtn000.jjtSetFirstToken(getToken(1));jjtn000.items = new ArrayList();
   OrderByItem lastItem;
   Identifier lastIdentifier;
   Modifier lastModifier;
@@ -16269,7 +16269,7 @@ if (jjtc000) {
   LockStatement jjtn000 = new LockStatement(JJTLOCKSTATEMENT);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
-  jjtn000.jjtSetFirstToken(getToken(1));jjtn000.identifiers = new java.util.ArrayList();
+  jjtn000.jjtSetFirstToken(getToken(1));jjtn000.identifiers = new ArrayList();
   Identifier lastLockIdentifier;
     try {
       jj_consume_token(LOCK);
@@ -26854,7 +26854,7 @@ if (jjtc000) {
   }
 
   @SuppressWarnings("serial")
-  static private final class LookaheadSuccess extends java.lang.Error {
+  static private final class LookaheadSuccess extends Error {
     @Override
     public Throwable fillInStackTrace() {
       return this;
@@ -26909,7 +26909,7 @@ if (jjtc000) {
 	   return (jj_ntk = jj_nt.kind);
   }
 
-  private java.util.List<int[]> jj_expentries = new java.util.ArrayList<int[]>();
+  private List<int[]> jj_expentries = new ArrayList<int[]>();
   private int[] jj_expentry;
   private int jj_kind = -1;
   private int[] jj_lasttokens = new int[100];

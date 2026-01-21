@@ -20,6 +20,7 @@ package com.arcadedb.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -295,7 +296,7 @@ public class OpenCypherSetTest {
 
       assertThat(result.hasNext()).isTrue();
       final Result res = result.next();
-      final com.arcadedb.graph.Edge edge = (com.arcadedb.graph.Edge) res.getProperty("r");
+      final Edge edge = (Edge) res.getProperty("r");
       assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2021);
       assertThat((String) edge.get("role")).isEqualTo("Engineer");
     });
@@ -304,7 +305,7 @@ public class OpenCypherSetTest {
     final ResultSet verify = database.query("opencypher",
         "MATCH (a:Person)-[r:WORKS_AT]->(c:Company) RETURN r");
     assertThat(verify.hasNext()).isTrue();
-    final com.arcadedb.graph.Edge edge = (com.arcadedb.graph.Edge) verify.next().getProperty("r");
+    final Edge edge = (Edge) verify.next().getProperty("r");
     assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2021);
     assertThat((String) edge.get("role")).isEqualTo("Engineer");
   }

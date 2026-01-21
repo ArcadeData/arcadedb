@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.traversal;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -155,7 +156,7 @@ public abstract class GraphTraverser {
    *
    * @return new hash set for tracking visited vertex RIDs
    */
-  protected Set<com.arcadedb.database.RID> createVisitedSet() {
+  protected Set<RID> createVisitedSet() {
     return new HashSet<>();
   }
 
@@ -168,10 +169,10 @@ public abstract class GraphTraverser {
    * @param visited set of visited vertex RIDs
    * @return true if visited
    */
-  protected boolean isVisited(final Vertex vertex, final Set<com.arcadedb.database.RID> visited) {
-    final com.arcadedb.database.RID rid = vertex.getIdentity();
+  protected boolean isVisited(final Vertex vertex, final Set<RID> visited) {
+    final RID rid = vertex.getIdentity();
     // Create database-independent RID for consistent equals/hashCode
-    return visited.contains(new com.arcadedb.database.RID(rid.getBucketId(), rid.getPosition()));
+    return visited.contains(new RID(rid.getBucketId(), rid.getPosition()));
   }
 
   /**
@@ -182,9 +183,9 @@ public abstract class GraphTraverser {
    * @param vertex  vertex to mark
    * @param visited set of visited vertex RIDs
    */
-  protected void markVisited(final Vertex vertex, final Set<com.arcadedb.database.RID> visited) {
-    final com.arcadedb.database.RID rid = vertex.getIdentity();
+  protected void markVisited(final Vertex vertex, final Set<RID> visited) {
+    final RID rid = vertex.getIdentity();
     // Create database-independent RID for consistent equals/hashCode
-    visited.add(new com.arcadedb.database.RID(rid.getBucketId(), rid.getPosition()));
+    visited.add(new RID(rid.getBucketId(), rid.getPosition()));
   }
 }

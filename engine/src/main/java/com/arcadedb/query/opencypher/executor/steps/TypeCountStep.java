@@ -19,11 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.executor.AbstractExecutionStep;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.*;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -51,7 +47,7 @@ public final class TypeCountStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (executed)
-      return new com.arcadedb.query.sql.executor.InternalResultSet();
+      return new InternalResultSet();
 
     executed = true;
 
