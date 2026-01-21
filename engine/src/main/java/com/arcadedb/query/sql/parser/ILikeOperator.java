@@ -33,12 +33,26 @@ public class ILikeOperator extends SimpleNode implements BinaryCompareOperator {
 
   @Override
   public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
-    if (MultiValue.isMultiValue(iLeft) || MultiValue.isMultiValue(iRight))
-      return false;
-
     if (iLeft == null || iRight == null) {
       return false;
     }
+
+    if (MultiValue.isMultiValue(iRight))
+      return false;
+
+    // Handle multi-value left operand (e.g., when using BY ITEM indexes on LIST properties)
+    // Issue #2693: Support ILIKE operator with BY ITEM FULL_TEXT indexes
+    if (MultiValue.isMultiValue(iLeft)) {
+      Iterator<?> valueIterator = MultiValue.getMultiValueIterator(iLeft);
+      while (valueIterator.hasNext()) {
+        Object val = valueIterator.next();
+        if (val != null && QueryHelper.like(val.toString().toLowerCase(Locale.ENGLISH), iRight.toString().toLowerCase(Locale.ENGLISH))) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     return QueryHelper.like(iLeft.toString().toLowerCase(Locale.ENGLISH), iRight.toString().toLowerCase(Locale.ENGLISH));
   }
 

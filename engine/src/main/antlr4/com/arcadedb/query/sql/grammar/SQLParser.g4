@@ -200,14 +200,16 @@ traverseStatement
  */
 matchStatement
     : MATCH matchExpression (COMMA (NOT? matchExpression))*
-      RETURN (DISTINCT expression nestedProjection? | expression nestedProjection?)
-      (AS identifier)?
-      (COMMA expression nestedProjection? (AS identifier)?)*
+      RETURN DISTINCT? matchReturnItem (COMMA matchReturnItem)*
       groupBy?
       orderBy?
       unwind?
       skip?
       limit?
+    ;
+
+matchReturnItem
+    : expression nestedProjection? (AS identifier)?
     ;
 
 matchExpression

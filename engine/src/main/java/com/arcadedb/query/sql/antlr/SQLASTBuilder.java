@@ -247,62 +247,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final List<Identifier> returnAliases = new ArrayList<>();
     final List<NestedProjection> returnNestedProjections = new ArrayList<>();
 
-    if (CollectionUtils.isNotEmpty(ctx.expression())) {
-      // Walk through the parse tree children to find expressions, AS keywords, and identifiers in order
-      // This is more reliable than using ctx.identifier() which returns all identifiers unordered
-      final List<org.antlr.v4.runtime.tree.ParseTree> children = ctx.children;
-      boolean inReturnClause = false;
-      int exprIndex = 0;
+    if (CollectionUtils.isNotEmpty(ctx.matchReturnItem())) {
+      for (final SQLParser.MatchReturnItemContext itemCtx : ctx.matchReturnItem()) {
+        // Extract expression
+        final Expression expr = (Expression) visit(itemCtx.expression());
+        returnItems.add(expr);
 
-      for (int i = 0; i < children.size(); i++) {
-        final org.antlr.v4.runtime.tree.ParseTree child = children.get(i);
-
-        if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) child;
-          if (terminal.getSymbol().getType() == SQLParser.RETURN) {
-            inReturnClause = true;
-            continue;
-          }
+        // Extract optional alias
+        if (itemCtx.identifier() != null) {
+          returnAliases.add((Identifier) visit(itemCtx.identifier()));
+        } else {
+          returnAliases.add(null);
         }
 
-        if (!inReturnClause) {
-          continue;
-        }
-
-        // Process expressions in RETURN clause
-        if (child instanceof SQLParser.ExpressionContext && exprIndex < ctx.expression().size()) {
-          final Expression returnItem = (Expression) visit(child);
-          returnItems.add(returnItem);
-
-          // Check if the next non-whitespace token is AS
-          boolean hasAlias = false;
-          Identifier alias = null;
-
-          if (i + 1 < children.size()) {
-            final org.antlr.v4.runtime.tree.ParseTree nextChild = children.get(i + 1);
-            if (nextChild instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-              final org.antlr.v4.runtime.tree.TerminalNode nextTerminal = (org.antlr.v4.runtime.tree.TerminalNode) nextChild;
-              if (nextTerminal.getSymbol().getType() == SQLParser.AS) {
-                hasAlias = true;
-                // The identifier should be right after AS
-                if (i + 2 < children.size() && children.get(i + 2) instanceof SQLParser.IdentifierContext) {
-                  alias = (Identifier) visit(children.get(i + 2));
-                }
-              }
-            }
-          }
-
-          returnAliases.add(alias);
-
-          // Handle optional nested projection
-          if (exprIndex < ctx.nestedProjection().size() && ctx.nestedProjection(exprIndex) != null) {
-            final NestedProjection nestedProj = (NestedProjection) visit(ctx.nestedProjection(exprIndex));
-            returnNestedProjections.add(nestedProj);
-          } else {
-            returnNestedProjections.add(null);
-          }
-
-          exprIndex++;
+        // Extract optional nested projection
+        if (itemCtx.nestedProjection() != null) {
+          returnNestedProjections.add((NestedProjection) visit(itemCtx.nestedProjection()));
+        } else {
+          returnNestedProjections.add(null);
         }
       }
     }
@@ -379,23 +341,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final List<Identifier> returnAliases = new ArrayList<>();
     final List<NestedProjection> returnNestedProjections = new ArrayList<>();
 
-    if (CollectionUtils.isNotEmpty(matchCtx.expression())) {
-      for (int i = 0; i < matchCtx.expression().size(); i++) {
-        final Expression returnItem = (Expression) visit(matchCtx.expression(i));
-        returnItems.add(returnItem);
+    if (CollectionUtils.isNotEmpty(matchCtx.matchReturnItem())) {
+      for (final SQLParser.MatchReturnItemContext itemCtx : matchCtx.matchReturnItem()) {
+        // Extract expression
+        final Expression expr = (Expression) visit(itemCtx.expression());
+        returnItems.add(expr);
 
-        // Handle optional alias (AS identifier)
-        if (i < matchCtx.identifier().size() && matchCtx.identifier(i) != null) {
-          final Identifier alias = (Identifier) visit(matchCtx.identifier(i));
-          returnAliases.add(alias);
+        // Extract optional alias
+        if (itemCtx.identifier() != null) {
+          returnAliases.add((Identifier) visit(itemCtx.identifier()));
         } else {
           returnAliases.add(null);
         }
 
-        // Handle optional nested projection
-        if (i < matchCtx.nestedProjection().size() && matchCtx.nestedProjection(i) != null) {
-          final NestedProjection nestedProj = (NestedProjection) visit(matchCtx.nestedProjection(i));
-          returnNestedProjections.add(nestedProj);
+        // Extract optional nested projection
+        if (itemCtx.nestedProjection() != null) {
+          returnNestedProjections.add((NestedProjection) visit(itemCtx.nestedProjection()));
         } else {
           returnNestedProjections.add(null);
         }

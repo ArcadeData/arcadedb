@@ -206,8 +206,8 @@ public class SQLCaseTest {
     }
     assertThat(simpleCount).isEqualTo(4); // Alice, Bob, Charlie, Dave have ages
 
-    // Debug test: see what properties are actually in the result
-    final ResultSet debugResults = database.query("sql",
+    // Test CASE in MATCH RETURN with proper alias alignment
+    final ResultSet results = database.query("sql",
         "MATCH {type: Person, as: p, where: (age IS NOT NULL)} " +
             "RETURN p.name, " +
             "CASE " +
@@ -215,24 +215,29 @@ public class SQLCaseTest {
             "  WHEN p.age < 65 THEN 'adult' " +
             "  ELSE 'senior' " +
             "END as category " +
-            "ORDER BY p.name LIMIT 1");
+            "ORDER BY p.name");
 
-    if (debugResults.hasNext()) {
-      final Result result = debugResults.next();
-      System.out.println("Properties: " + result.getPropertyNames());
-      for (String propName : result.getPropertyNames()) {
-        System.out.println("  " + propName + " = " + result.getProperty(propName));
+    int count = 0;
+    while (results.hasNext()) {
+      final Result result = results.next();
+      final String name = result.getProperty("p.name");
+      final String category = result.getProperty("category");
+
+      switch (name) {
+        case "Alice":
+          assertThat(category).isEqualTo("minor");
+          break;
+        case "Bob":
+        case "Charlie":
+          assertThat(category).isEqualTo("adult");
+          break;
+        case "Dave":
+          assertThat(category).isEqualTo("senior");
+          break;
       }
+      count++;
     }
-
-    // TODO: Known limitation - CASE in MATCH RETURN has projection alias alignment issue
-    // The workaround is to use SELECT instead of MATCH for CASE in projections
-    // Or use CASE only in MATCH WHERE clauses (which works perfectly)
-    // See: The property names get misaligned when CASE is used in MATCH RETURN
-    //
-    // Workaround example:
-    // SELECT name, CASE WHEN age < 18 THEN 'minor' ... END as category FROM Person
-    // OR use MATCH with CASE only in WHERE clause (testCaseInMatchWhere demonstrates this)
+    assertThat(count).isEqualTo(4);
   }
 
   @Test

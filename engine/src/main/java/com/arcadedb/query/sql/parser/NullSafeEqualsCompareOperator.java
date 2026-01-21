@@ -21,7 +21,10 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
+
+import java.util.Iterator;
 
 public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryCompareOperator {
   public NullSafeEqualsCompareOperator(final int id) {
@@ -32,6 +35,19 @@ public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryC
   public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     if (iLeft == null && iRight == null)
       return true;
+
+    // Handle multi-value left operand (e.g., when using BY ITEM indexes on LIST properties)
+    // Issue #2693: Support NULL-safe equals operator (<=>) with BY ITEM FULL_TEXT indexes
+    if (MultiValue.isMultiValue(iLeft) && !MultiValue.isMultiValue(iRight)) {
+      Iterator<?> valueIterator = MultiValue.getMultiValueIterator(iLeft);
+      while (valueIterator.hasNext()) {
+        Object val = valueIterator.next();
+        if ((val == null && iRight == null) || QueryOperatorEquals.equals(val, iRight)) {
+          return true;
+        }
+      }
+      return false;
+    }
 
     return QueryOperatorEquals.equals(iLeft, iRight);
   }
