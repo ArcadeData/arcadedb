@@ -18,6 +18,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
@@ -201,7 +202,7 @@ public class WithStep extends AbstractExecutionStep {
    * Evaluates WHERE clause predicate on the projected result.
    */
   private boolean evaluateWhereClause(final Result projectedResult) {
-    final com.arcadedb.query.opencypher.ast.BooleanExpression predicate =
+    final BooleanExpression predicate =
         withClause.getWhereClause().getConditionExpression();
     return predicate.evaluate(projectedResult, context);
   }

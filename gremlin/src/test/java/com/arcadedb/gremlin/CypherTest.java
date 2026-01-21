@@ -28,11 +28,15 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+
+import org.apache.tinkerpop.gremlin.structure.T;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -297,15 +301,15 @@ class CypherTest {
       });
 
       // Verify SQL insert worked
-      final com.arcadedb.query.sql.executor.ResultSet sqlResult = graph.getDatabase().query("sql", "SELECT FROM EmbeddingNode");
+      final ResultSet sqlResult = graph.getDatabase().query("sql", "SELECT FROM EmbeddingNode");
       assertThat(sqlResult.hasNext()).as("SQL insert should have created a node").isTrue();
       sqlResult.close();
 
       // Now test direct Gremlin/TinkerPop vertex creation with properties in addVertex
       graph.getDatabase().transaction(() -> {
-        final org.apache.tinkerpop.gremlin.structure.Vertex v = graph.addVertex(
-            org.apache.tinkerpop.gremlin.structure.T.label, "EmbeddingNode",
-            "vector", java.util.List.of(2.0f, 3.0f, 4.0f, 5.0f)
+        final Vertex v = graph.addVertex(
+            T.label, "EmbeddingNode",
+            "vector", List.of(2.0f, 3.0f, 4.0f, 5.0f)
         );
       });
 

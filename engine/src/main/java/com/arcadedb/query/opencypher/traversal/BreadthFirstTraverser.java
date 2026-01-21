@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.traversal;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -58,7 +59,7 @@ public class BreadthFirstTraverser extends GraphTraverser {
    */
   private class BFSVertexIterator implements Iterator<Vertex> {
     private final Queue<VertexWithDepth> queue = new LinkedList<>();
-    private final Set<com.arcadedb.database.RID> visited;
+    private final Set<RID> visited;
     private final List<Vertex> results = new ArrayList<>();
     private int currentIndex = 0;
 
@@ -127,7 +128,7 @@ public class BreadthFirstTraverser extends GraphTraverser {
    */
   private class BFSPathIterator implements Iterator<TraversalPath> {
     private final Queue<PathWithDepth> queue = new LinkedList<>();
-    private final Set<com.arcadedb.database.RID> visited;
+    private final Set<RID> visited;
     private final List<TraversalPath> results = new ArrayList<>();
     private int currentIndex = 0;
 

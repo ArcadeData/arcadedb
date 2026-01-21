@@ -22,6 +22,10 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.grammar.Cypher25ParserBaseVisitor;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
+
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
@@ -29,6 +33,8 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -82,9 +88,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Determine if each UNION is ALL or DISTINCT
     // Grammar: singleQuery (UNION (ALL | DISTINCT)? singleQuery)*
     // We have N queries and N-1 UNION tokens
-    final List<org.antlr.v4.runtime.tree.TerminalNode> unionTokens = ctx.UNION();
-    final List<org.antlr.v4.runtime.tree.TerminalNode> allTokens = ctx.ALL();
-    final List<org.antlr.v4.runtime.tree.TerminalNode> distinctTokens = ctx.DISTINCT();
+    final List<TerminalNode> unionTokens = ctx.UNION();
+    final List<TerminalNode> allTokens = ctx.ALL();
+    final List<TerminalNode> distinctTokens = ctx.DISTINCT();
 
     // Build a simple flag for each union: default is DISTINCT (false), unless ALL is present
     // We need to determine which ALL/DISTINCT tokens correspond to which UNION
@@ -95,7 +101,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
       // Check if there's an ALL token between this UNION and the next query
       boolean isAll = false;
-      for (final org.antlr.v4.runtime.tree.TerminalNode allToken : allTokens) {
+      for (final TerminalNode allToken : allTokens) {
         final int allPos = allToken.getSymbol().getStartIndex();
         if (allPos > unionStart && allPos < nextQueryStart) {
           isAll = true;
@@ -479,7 +485,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return createFallbackComparison(ctx);
   }
 
-  private Cypher25Parser.Expression11Context findExpression11(final org.antlr.v4.runtime.tree.ParseTree node) {
+  private Cypher25Parser.Expression11Context findExpression11(final ParseTree node) {
     if (node instanceof Cypher25Parser.Expression11Context) {
       return (Cypher25Parser.Expression11Context) node;
     }
@@ -490,7 +496,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return null;
   }
 
-  private Cypher25Parser.ParenthesizedExpressionContext findParenthesizedExpressionRecursive(final org.antlr.v4.runtime.tree.ParseTree node) {
+  private Cypher25Parser.ParenthesizedExpressionContext findParenthesizedExpressionRecursive(final ParseTree node) {
     if (node instanceof Cypher25Parser.ParenthesizedExpressionContext) {
       return (Cypher25Parser.ParenthesizedExpressionContext) node;
     }
@@ -505,7 +511,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Recursively find a PatternExpressionContext in the parse tree.
    * Pattern expressions are used for pattern predicates in WHERE clauses.
    */
-  private Cypher25Parser.PatternExpressionContext findPatternExpressionRecursive(final org.antlr.v4.runtime.tree.ParseTree node) {
+  private Cypher25Parser.PatternExpressionContext findPatternExpressionRecursive(final ParseTree node) {
     if (node instanceof Cypher25Parser.PatternExpressionContext) {
       return (Cypher25Parser.PatternExpressionContext) node;
     }
@@ -612,8 +618,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (ctx.expression7().size() > 1) {
       // Found a comparison, get the operator
       for (int i = 1; i < ctx.getChildCount(); i++) {
-        if (ctx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) ctx.getChild(i);
+        if (ctx.getChild(i) instanceof TerminalNode) {
+          final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
           final int type = terminal.getSymbol().getType();
 
           ComparisonExpression.Operator op = null;
@@ -653,8 +659,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Create an adapter that evaluates the EXISTS expression as a boolean
       return new BooleanExpression() {
         @Override
-        public boolean evaluate(final com.arcadedb.query.sql.executor.Result result,
-                               final com.arcadedb.query.sql.executor.CommandContext context) {
+        public boolean evaluate(final Result result,
+                               final CommandContext context) {
           final Object value = exists.evaluate(result, context);
           return value instanceof Boolean && (Boolean) value;
         }
@@ -745,14 +751,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return createFallbackComparison(ctx);
   }
 
-  private BooleanExpression createFallbackComparison(final org.antlr.v4.runtime.tree.ParseTree ctx) {
+  private BooleanExpression createFallbackComparison(final ParseTree ctx) {
     // Legacy fallback: parse simple comparisons from text
     // This handles cases we haven't explicitly parsed yet
     final String text = ctx.getText();
 
     // Try to parse as "variable.property operator value"
-    final java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)?)");
-    final java.util.regex.Matcher matcher = pattern.matcher(text);
+    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)?)");
+    final Matcher matcher = pattern.matcher(text);
 
     if (matcher.find()) {
       final String variable = matcher.group(1);

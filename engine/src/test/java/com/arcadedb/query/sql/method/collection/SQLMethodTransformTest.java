@@ -50,6 +50,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.opencypher.query.CypherPlanCache;
+import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -305,12 +307,12 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public com.arcadedb.query.opencypher.query.CypherStatementCache getCypherStatementCache() {
+      public CypherStatementCache getCypherStatementCache() {
         return null;
       }
 
       @Override
-      public com.arcadedb.query.opencypher.query.CypherPlanCache getCypherPlanCache() {
+      public CypherPlanCache getCypherPlanCache() {
         return null;
       }
 

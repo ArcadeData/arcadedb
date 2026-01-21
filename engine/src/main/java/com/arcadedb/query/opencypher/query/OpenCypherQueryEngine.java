@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
@@ -163,7 +164,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile) {
     // Try to get cached physical plan first (saves optimization time: 200-500ms)
-    com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan physicalPlan = null;
+    PhysicalPlan physicalPlan = null;
 
     if (!explain && !profile) {
       // Only use plan cache for normal execution (not explain/profile)
@@ -173,7 +174,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final CypherExecutionPlan plan;
     if (physicalPlan != null) {
       // Reuse cached physical plan (avoids expensive statistics collection and optimization)
-      plan = new com.arcadedb.query.opencypher.executor.CypherExecutionPlan(
+      plan = new CypherExecutionPlan(
           database, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
     } else {
       // Create new plan from scratch and cache it

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.traversal;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -59,11 +60,11 @@ public class DepthFirstTraverser extends GraphTraverser {
     private int currentIndex = 0;
 
     DFSVertexIterator(final Vertex startVertex) {
-      final Set<com.arcadedb.database.RID> visited = detectCycles ? createVisitedSet() : new HashSet<>();
+      final Set<RID> visited = detectCycles ? createVisitedSet() : new HashSet<>();
       performDFS(startVertex, 0, visited);
     }
 
-    private void performDFS(final Vertex vertex, final int depth, final Set<com.arcadedb.database.RID> visited) {
+    private void performDFS(final Vertex vertex, final int depth, final Set<RID> visited) {
       // Skip if already visited
       if (detectCycles && isVisited(vertex, visited)) {
         return;
@@ -117,12 +118,12 @@ public class DepthFirstTraverser extends GraphTraverser {
     private int currentIndex = 0;
 
     DFSPathIterator(final Vertex startVertex) {
-      final Set<com.arcadedb.database.RID> globalVisited = detectCycles ? createVisitedSet() : new HashSet<>();
+      final Set<RID> globalVisited = detectCycles ? createVisitedSet() : new HashSet<>();
       final TraversalPath initialPath = new TraversalPath(startVertex);
       performDFS(initialPath, 0, globalVisited);
     }
 
-    private void performDFS(final TraversalPath path, final int depth, final Set<com.arcadedb.database.RID> globalVisited) {
+    private void performDFS(final TraversalPath path, final int depth, final Set<RID> globalVisited) {
       final Vertex vertex = path.getEndVertex();
 
       // Skip if already globally visited (cycle detection)

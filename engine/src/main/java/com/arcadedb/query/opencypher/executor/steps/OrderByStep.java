@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -126,10 +128,10 @@ public class OrderByStep extends AbstractExecutionStep {
           }
 
           // Try to get property from vertex/edge
-          if (obj instanceof com.arcadedb.graph.Vertex) {
-            return ((com.arcadedb.graph.Vertex) obj).get(parts[1]);
-          } else if (obj instanceof com.arcadedb.graph.Edge) {
-            return ((com.arcadedb.graph.Edge) obj).get(parts[1]);
+          if (obj instanceof Vertex) {
+            return ((Vertex) obj).get(parts[1]);
+          } else if (obj instanceof Edge) {
+            return ((Edge) obj).get(parts[1]);
           }
         }
 

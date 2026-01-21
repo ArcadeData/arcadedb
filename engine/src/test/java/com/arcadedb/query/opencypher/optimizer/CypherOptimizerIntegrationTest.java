@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.optimizer.rules.*;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.schema.Schema;
@@ -222,11 +223,11 @@ public class CypherOptimizerIntegrationTest {
     final CostModel costModel = new CostModel(stats);
 
     // When: Create rules
-    final var rules = new java.util.ArrayList<com.arcadedb.query.opencypher.optimizer.rules.OptimizationRule>();
-    rules.add(new com.arcadedb.query.opencypher.optimizer.rules.IndexSelectionRule(stats, costModel));
-    rules.add(new com.arcadedb.query.opencypher.optimizer.rules.FilterPushdownRule());
-    rules.add(new com.arcadedb.query.opencypher.optimizer.rules.ExpandIntoRule());
-    rules.add(new com.arcadedb.query.opencypher.optimizer.rules.JoinOrderRule(stats, costModel));
+    final var rules = new ArrayList<OptimizationRule>();
+    rules.add(new IndexSelectionRule(stats, costModel));
+    rules.add(new FilterPushdownRule());
+    rules.add(new ExpandIntoRule());
+    rules.add(new JoinOrderRule(stats, costModel));
 
     // Then: Rules should be in priority order
     assertThat(rules.get(0).getPriority()).isEqualTo(10); // IndexSelection

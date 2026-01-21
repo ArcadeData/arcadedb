@@ -22,23 +22,25 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
-import com.arcadedb.query.sql.executor.AbstractExecutionStep;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Execution step for CALL clause.
@@ -132,7 +134,7 @@ public class CallStep extends AbstractExecutionStep {
         return null;
 
       // Get the function from the library
-      final com.arcadedb.function.FunctionDefinition function =
+      final FunctionDefinition function =
           context.getDatabase().getSchema().getFunction(libraryName, functionName);
       if (function == null)
         return null;
@@ -151,8 +153,8 @@ public class CallStep extends AbstractExecutionStep {
    */
   private List<Map<String, Object>> getLabels(final CommandContext context) {
     final List<Map<String, Object>> results = new ArrayList<>();
-    for (final com.arcadedb.schema.DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (type instanceof com.arcadedb.schema.VertexType) {
+    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
+      if (type instanceof VertexType) {
         results.add(Map.of("label", type.getName()));
       }
     }
@@ -164,8 +166,8 @@ public class CallStep extends AbstractExecutionStep {
    */
   private List<Map<String, Object>> getRelationshipTypes(final CommandContext context) {
     final List<Map<String, Object>> results = new ArrayList<>();
-    for (final com.arcadedb.schema.DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (type instanceof com.arcadedb.schema.EdgeType) {
+    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
+      if (type instanceof EdgeType) {
         results.add(Map.of("relationshipType", type.getName()));
       }
     }
@@ -176,8 +178,8 @@ public class CallStep extends AbstractExecutionStep {
    * Returns all property keys across all types.
    */
   private List<Map<String, Object>> getPropertyKeys(final CommandContext context) {
-    final java.util.Set<String> propertyKeys = new java.util.HashSet<>();
-    for (final com.arcadedb.schema.DocumentType type : context.getDatabase().getSchema().getTypes()) {
+    final Set<String> propertyKeys = new HashSet<>();
+    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
       for (final String propName : type.getPropertyNames()) {
         propertyKeys.add(propName);
       }
@@ -194,12 +196,12 @@ public class CallStep extends AbstractExecutionStep {
    */
   private List<Map<String, Object>> getSchemaVisualization(final CommandContext context) {
     final List<Map<String, Object>> results = new ArrayList<>();
-    for (final com.arcadedb.schema.DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      final Map<String, Object> typeInfo = new java.util.HashMap<>();
+    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
+      final Map<String, Object> typeInfo = new HashMap<>();
       typeInfo.put("name", type.getName());
-      if (type instanceof com.arcadedb.schema.VertexType) {
+      if (type instanceof VertexType) {
         typeInfo.put("type", "node");
-      } else if (type instanceof com.arcadedb.schema.EdgeType) {
+      } else if (type instanceof EdgeType) {
         typeInfo.put("type", "relationship");
       } else {
         typeInfo.put("type", "document");
@@ -267,7 +269,7 @@ public class CallStep extends AbstractExecutionStep {
       return applyYieldFiltering(results);
     }
 
-    return new com.arcadedb.query.sql.executor.IteratorResultSet(results.iterator());
+    return new IteratorResultSet(results.iterator());
   }
 
   /**
@@ -323,7 +325,7 @@ public class CallStep extends AbstractExecutionStep {
       filteredResults.add(output);
     }
 
-    return new com.arcadedb.query.sql.executor.IteratorResultSet(filteredResults.iterator());
+    return new IteratorResultSet(filteredResults.iterator());
   }
 
   private ResultSet createEmptyResultSet() {
