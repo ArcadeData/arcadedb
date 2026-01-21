@@ -20,6 +20,7 @@ package com.arcadedb.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -120,10 +121,10 @@ public class OpenCypherDeleteTest {
     // Verify only Charlie deleted, Alice and Bob remain
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN n ORDER BY n.name");
     assertThat(verify.hasNext()).isTrue();
-    final com.arcadedb.graph.Vertex v1 = (com.arcadedb.graph.Vertex) verify.next().getProperty("n");
+    final Vertex v1 = (Vertex) verify.next().getProperty("n");
     assertThat((String) v1.get("name")).isEqualTo("Alice");
     assertThat(verify.hasNext()).isTrue();
-    final com.arcadedb.graph.Vertex v2 = (com.arcadedb.graph.Vertex) verify.next().getProperty("n");
+    final Vertex v2 = (Vertex) verify.next().getProperty("n");
     assertThat((String) v2.get("name")).isEqualTo("Bob");
     assertThat(verify.hasNext()).isFalse();
   }

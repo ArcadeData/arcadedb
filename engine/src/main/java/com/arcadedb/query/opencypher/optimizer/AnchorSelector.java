@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.optimizer;
 
+import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
@@ -26,6 +27,8 @@ import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -103,7 +106,7 @@ public class AnchorSelector {
     final Map<String, Object> wherePredicates = extractEqualityPredicates(variable, plan);
 
     // Merge inline properties with WHERE clause predicates
-    final Map<String, Object> allPredicates = new java.util.HashMap<>();
+    final Map<String, Object> allPredicates = new HashMap<>();
     if (properties != null) {
       allPredicates.putAll(properties);
     }
@@ -252,45 +255,45 @@ public class AnchorSelector {
    * @return map of property names to their equality values
    */
   private Map<String, Object> extractEqualityPredicates(final String variable, final LogicalPlan plan) {
-    final Map<String, Object> predicates = new java.util.HashMap<>();
+    final Map<String, Object> predicates = new HashMap<>();
 
     if (plan.getWhereFilters() == null || plan.getWhereFilters().isEmpty()) {
       return predicates;
     }
 
-    for (final com.arcadedb.query.opencypher.ast.WhereClause whereClause : plan.getWhereFilters()) {
-      final com.arcadedb.query.opencypher.ast.BooleanExpression condition = whereClause.getConditionExpression();
+    for (final WhereClause whereClause : plan.getWhereFilters()) {
+      final BooleanExpression condition = whereClause.getConditionExpression();
       if (condition == null) {
         continue;
       }
 
       // Check if it's a comparison expression
-      if (condition instanceof com.arcadedb.query.opencypher.ast.ComparisonExpression) {
-        final com.arcadedb.query.opencypher.ast.ComparisonExpression comparison =
-            (com.arcadedb.query.opencypher.ast.ComparisonExpression) condition;
+      if (condition instanceof ComparisonExpression) {
+        final ComparisonExpression comparison =
+            (ComparisonExpression) condition;
 
         // Only handle EQUALS comparisons
-        if (comparison.getOperator() != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.EQUALS) {
+        if (comparison.getOperator() != ComparisonExpression.Operator.EQUALS) {
           continue;
         }
 
         // Check if left side is a property access on our variable
-        final com.arcadedb.query.opencypher.ast.Expression left = comparison.getLeft();
-        final com.arcadedb.query.opencypher.ast.Expression right = comparison.getRight();
+        final Expression left = comparison.getLeft();
+        final Expression right = comparison.getRight();
 
-        if (left instanceof com.arcadedb.query.opencypher.ast.PropertyAccessExpression) {
-          final com.arcadedb.query.opencypher.ast.PropertyAccessExpression propAccess =
-              (com.arcadedb.query.opencypher.ast.PropertyAccessExpression) left;
+        if (left instanceof PropertyAccessExpression) {
+          final PropertyAccessExpression propAccess =
+              (PropertyAccessExpression) left;
 
           if (propAccess.getVariableName().equals(variable)) {
             // Extract the property name and value
             final String propertyName = propAccess.getPropertyName();
 
             // Try to extract constant value from right side
-            if (right instanceof com.arcadedb.query.opencypher.ast.LiteralExpression) {
-              final Object value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) right).getValue();
+            if (right instanceof LiteralExpression) {
+              final Object value = ((LiteralExpression) right).getValue();
               predicates.put(propertyName, value);
-            } else if (right instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
+            } else if (right instanceof ParameterExpression) {
               // For parameters, we'll mark it as having a predicate but value unknown
               // The index can still be used at runtime
               predicates.put(propertyName, null);
@@ -299,17 +302,17 @@ public class AnchorSelector {
         }
 
         // Also check reverse: value = property (e.g., 500 = p.id)
-        if (right instanceof com.arcadedb.query.opencypher.ast.PropertyAccessExpression) {
-          final com.arcadedb.query.opencypher.ast.PropertyAccessExpression propAccess =
-              (com.arcadedb.query.opencypher.ast.PropertyAccessExpression) right;
+        if (right instanceof PropertyAccessExpression) {
+          final PropertyAccessExpression propAccess =
+              (PropertyAccessExpression) right;
 
           if (propAccess.getVariableName().equals(variable)) {
             final String propertyName = propAccess.getPropertyName();
 
-            if (left instanceof com.arcadedb.query.opencypher.ast.LiteralExpression) {
-              final Object value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) left).getValue();
+            if (left instanceof LiteralExpression) {
+              final Object value = ((LiteralExpression) left).getValue();
               predicates.put(propertyName, value);
-            } else if (left instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
+            } else if (left instanceof ParameterExpression) {
               predicates.put(propertyName, null);
             }
           }
@@ -331,14 +334,14 @@ public class AnchorSelector {
    * - WHERE date >= $start         → {date: [RangePredicate(>=, $start)]}
    */
   private Map<String, List<RangePredicate>> extractRangePredicates(final String variable, final LogicalPlan plan) {
-    final Map<String, List<RangePredicate>> predicates = new java.util.HashMap<>();
+    final Map<String, List<RangePredicate>> predicates = new HashMap<>();
 
     if (plan.getWhereFilters() == null || plan.getWhereFilters().isEmpty()) {
       return predicates;
     }
 
-    for (final com.arcadedb.query.opencypher.ast.WhereClause whereClause : plan.getWhereFilters()) {
-      final com.arcadedb.query.opencypher.ast.BooleanExpression condition = whereClause.getConditionExpression();
+    for (final WhereClause whereClause : plan.getWhereFilters()) {
+      final BooleanExpression condition = whereClause.getConditionExpression();
       if (condition == null) {
         continue;
       }
@@ -354,82 +357,82 @@ public class AnchorSelector {
    * Handles AND/OR logic to find all range comparisons.
    */
   private void extractRangePredicatesFromExpression(final String variable,
-                                                     final com.arcadedb.query.opencypher.ast.BooleanExpression expression,
+                                                     final BooleanExpression expression,
                                                      final Map<String, List<RangePredicate>> predicates) {
     // Handle comparison expressions
-    if (expression instanceof com.arcadedb.query.opencypher.ast.ComparisonExpression) {
-      final com.arcadedb.query.opencypher.ast.ComparisonExpression comparison =
-              (com.arcadedb.query.opencypher.ast.ComparisonExpression) expression;
+    if (expression instanceof ComparisonExpression) {
+      final ComparisonExpression comparison =
+              (ComparisonExpression) expression;
 
       // Only handle range operators: <, >, <=, >=
-      final com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator operator = comparison.getOperator();
-      if (operator != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.LESS_THAN &&
-          operator != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.GREATER_THAN &&
-          operator != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL &&
-          operator != com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL) {
+      final ComparisonExpression.Operator operator = comparison.getOperator();
+      if (operator != ComparisonExpression.Operator.LESS_THAN &&
+          operator != ComparisonExpression.Operator.GREATER_THAN &&
+          operator != ComparisonExpression.Operator.LESS_THAN_OR_EQUAL &&
+          operator != ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL) {
         return;
       }
 
-      final com.arcadedb.query.opencypher.ast.Expression left = comparison.getLeft();
-      final com.arcadedb.query.opencypher.ast.Expression right = comparison.getRight();
+      final Expression left = comparison.getLeft();
+      final Expression right = comparison.getRight();
 
       // Pattern: property < value  (e.g., age < 65)
-      if (left instanceof com.arcadedb.query.opencypher.ast.PropertyAccessExpression) {
-        final com.arcadedb.query.opencypher.ast.PropertyAccessExpression propAccess =
-                (com.arcadedb.query.opencypher.ast.PropertyAccessExpression) left;
+      if (left instanceof PropertyAccessExpression) {
+        final PropertyAccessExpression propAccess =
+                (PropertyAccessExpression) left;
 
         if (propAccess.getVariableName().equals(variable)) {
           final String propertyName = propAccess.getPropertyName();
           Object value = null;
           boolean isParameter = false;
 
-          if (right instanceof com.arcadedb.query.opencypher.ast.LiteralExpression) {
-            value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) right).getValue();
-          } else if (right instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
+          if (right instanceof LiteralExpression) {
+            value = ((LiteralExpression) right).getValue();
+          } else if (right instanceof ParameterExpression) {
             isParameter = true;
-            value = ((com.arcadedb.query.opencypher.ast.ParameterExpression) right).getParameterName();
+            value = ((ParameterExpression) right).getParameterName();
           } else {
             return; // Unsupported right side (function call, etc.)
           }
 
           final RangePredicate predicate = new RangePredicate(propertyName, operator, value, isParameter);
-          predicates.computeIfAbsent(propertyName, k -> new java.util.ArrayList<>()).add(predicate);
+          predicates.computeIfAbsent(propertyName, k -> new ArrayList<>()).add(predicate);
         }
       }
 
       // Pattern: value > property  (e.g., 65 > age) - need to flip operator
-      if (right instanceof com.arcadedb.query.opencypher.ast.PropertyAccessExpression) {
-        final com.arcadedb.query.opencypher.ast.PropertyAccessExpression propAccess =
-                (com.arcadedb.query.opencypher.ast.PropertyAccessExpression) right;
+      if (right instanceof PropertyAccessExpression) {
+        final PropertyAccessExpression propAccess =
+                (PropertyAccessExpression) right;
 
         if (propAccess.getVariableName().equals(variable)) {
           final String propertyName = propAccess.getPropertyName();
           Object value = null;
           boolean isParameter = false;
 
-          if (left instanceof com.arcadedb.query.opencypher.ast.LiteralExpression) {
-            value = ((com.arcadedb.query.opencypher.ast.LiteralExpression) left).getValue();
-          } else if (left instanceof com.arcadedb.query.opencypher.ast.ParameterExpression) {
+          if (left instanceof LiteralExpression) {
+            value = ((LiteralExpression) left).getValue();
+          } else if (left instanceof ParameterExpression) {
             isParameter = true;
-            value = ((com.arcadedb.query.opencypher.ast.ParameterExpression) left).getParameterName();
+            value = ((ParameterExpression) left).getParameterName();
           } else {
             return; // Unsupported left side
           }
 
           // Flip the operator: 65 > age  becomes  age < 65
-          final com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator flippedOperator = flipOperator(operator);
+          final ComparisonExpression.Operator flippedOperator = flipOperator(operator);
           final RangePredicate predicate = new RangePredicate(propertyName, flippedOperator, value, isParameter);
-          predicates.computeIfAbsent(propertyName, k -> new java.util.ArrayList<>()).add(predicate);
+          predicates.computeIfAbsent(propertyName, k -> new ArrayList<>()).add(predicate);
         }
       }
     }
 
     // Handle AND expressions - both sides may contain range predicates
-    if (expression instanceof com.arcadedb.query.opencypher.ast.LogicalExpression) {
-      final com.arcadedb.query.opencypher.ast.LogicalExpression logicalExpr =
-              (com.arcadedb.query.opencypher.ast.LogicalExpression) expression;
+    if (expression instanceof LogicalExpression) {
+      final LogicalExpression logicalExpr =
+              (LogicalExpression) expression;
 
-      if (logicalExpr.getOperator() == com.arcadedb.query.opencypher.ast.LogicalExpression.Operator.AND) {
+      if (logicalExpr.getOperator() == LogicalExpression.Operator.AND) {
         extractRangePredicatesFromExpression(variable, logicalExpr.getLeft(), predicates);
         if (logicalExpr.getRight() != null) {
           extractRangePredicatesFromExpression(variable, logicalExpr.getRight(), predicates);
@@ -444,17 +447,17 @@ public class AnchorSelector {
    * Flip comparison operator when value and property are reversed.
    * Examples: 65 > age becomes age < 65
    */
-  private com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator flipOperator(
-          final com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator operator) {
+  private ComparisonExpression.Operator flipOperator(
+          final ComparisonExpression.Operator operator) {
     switch (operator) {
       case LESS_THAN:
-        return com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.GREATER_THAN;
+        return ComparisonExpression.Operator.GREATER_THAN;
       case GREATER_THAN:
-        return com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.LESS_THAN;
+        return ComparisonExpression.Operator.LESS_THAN;
       case LESS_THAN_OR_EQUAL:
-        return com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+        return ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
       case GREATER_THAN_OR_EQUAL:
-        return com.arcadedb.query.opencypher.ast.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+        return ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
       default:
         return operator;
     }

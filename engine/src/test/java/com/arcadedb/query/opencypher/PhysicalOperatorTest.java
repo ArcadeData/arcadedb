@@ -24,6 +24,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.executor.operators.*;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -110,7 +111,7 @@ public class PhysicalOperatorTest {
   @Test
   public void testNodeByLabelScan() {
     database.transaction(() -> {
-      final com.arcadedb.query.sql.executor.BasicCommandContext context = new com.arcadedb.query.sql.executor.BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
 
       // Test scan of Person vertices
@@ -142,7 +143,7 @@ public class PhysicalOperatorTest {
   @Test
   public void testNodeIndexSeek() {
     database.transaction(() -> {
-      final com.arcadedb.query.sql.executor.BasicCommandContext context = new com.arcadedb.query.sql.executor.BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
 
       // Test index seek for Person with id=1
@@ -171,7 +172,7 @@ public class PhysicalOperatorTest {
   @Test
   public void testNodeIndexSeekNotFound() {
     database.transaction(() -> {
-      final com.arcadedb.query.sql.executor.BasicCommandContext context = new com.arcadedb.query.sql.executor.BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
 
       // Test index seek for non-existent id
@@ -190,7 +191,7 @@ public class PhysicalOperatorTest {
   @Test
   public void testExpandAll() {
     database.transaction(() -> {
-      final com.arcadedb.query.sql.executor.BasicCommandContext context = new com.arcadedb.query.sql.executor.BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
 
       // First get Alice using index seek
@@ -228,7 +229,7 @@ public class PhysicalOperatorTest {
   @Test
   public void testExpandInto() {
     database.transaction(() -> {
-      final com.arcadedb.query.sql.executor.BasicCommandContext context = new com.arcadedb.query.sql.executor.BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
 
       // Get both Alice and Bob using index seeks
@@ -271,7 +272,7 @@ public class PhysicalOperatorTest {
   @Test
   public void testExpandIntoNotConnected() {
     database.transaction(() -> {
-      final com.arcadedb.query.sql.executor.BasicCommandContext context = new com.arcadedb.query.sql.executor.BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
 
       // Get Bob and Alice (reverse direction - Bob doesn't know Alice in OUT direction)
@@ -303,7 +304,7 @@ public class PhysicalOperatorTest {
   @Test
   public void testNodeHashJoin() {
     database.transaction(() -> {
-      final com.arcadedb.query.sql.executor.BasicCommandContext context = new com.arcadedb.query.sql.executor.BasicCommandContext();
+      final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
 
       // Get Alice

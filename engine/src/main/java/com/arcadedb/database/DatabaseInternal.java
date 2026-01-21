@@ -25,6 +25,8 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.query.opencypher.query.CypherPlanCache;
+import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -121,9 +123,9 @@ public interface DatabaseInternal extends Database {
 
   ExecutionPlanCache getExecutionPlanCache();
 
-  com.arcadedb.query.opencypher.query.CypherStatementCache getCypherStatementCache();
+  CypherStatementCache getCypherStatementCache();
 
-  com.arcadedb.query.opencypher.query.CypherPlanCache getCypherPlanCache();
+  CypherPlanCache getCypherPlanCache();
 
   int getNewEdgeListSize(int previousSize);
 

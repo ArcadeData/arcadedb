@@ -94,6 +94,50 @@
                             <tarLongFileMode>gnu</tarLongFileMode>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>base</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <appendAssemblyId>true</appendAssemblyId>
+                            <finalName>arcadedb-${project.version}</finalName>
+                            <descriptors>
+                                <descriptor>./src/main/assembly/base.xml</descriptor>
+                            </descriptors>
+                            <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
+                            <tarLongFileMode>gnu</tarLongFileMode>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>net.nicoulaj.maven.plugins</groupId>
+                <artifactId>checksum-maven-plugin</artifactId>
+                <version>1.11</version>
+                <executions>
+                    <execution>
+                        <id>generate-checksums</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>files</goal>
+                        </goals>
+                        <configuration>
+                            <algorithms>
+                                <algorithm>SHA-256</algorithm>
+                            </algorithms>
+                            <fileSets>
+                                <fileSet>
+                                    <directory>${project.build.directory}</directory>
+                                    <includes>
+                                        <include>arcadedb-*.tar.gz</include>
+                                        <include>arcadedb-*.zip</include>
+                                    </includes>
+                                </fileSet>
+                            </fileSets>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

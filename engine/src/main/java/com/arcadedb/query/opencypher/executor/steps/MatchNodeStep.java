@@ -18,19 +18,25 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 
 /**
@@ -119,7 +125,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
             if (iterator.hasNext()) {
               final Identifiable identifiable = iterator.next();
               // Load the record if it's not already loaded
-              final com.arcadedb.database.Document record = identifiable.asDocument();
+              final Document record = identifiable.asDocument();
               if (record instanceof Vertex) {
                 final Vertex vertex = (Vertex) record;
 
@@ -152,7 +158,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
             final Identifiable identifiable = iterator.next();
 
             // Load the record if it's not already loaded
-            final com.arcadedb.database.Document record = identifiable.asDocument();
+            final Document record = identifiable.asDocument();
             if (record instanceof Vertex) {
               final Vertex vertex = (Vertex) record;
 
@@ -192,7 +198,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       // OPTIMIZATION: Check if we can use an index for property lookup
       if (pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
-        final com.arcadedb.schema.DocumentType type = context.getDatabase().getSchema().getType(label);
+        final DocumentType type = context.getDatabase().getSchema().getType(label);
         if (type != null) {
           // Try to find an index that matches the property constraints
           // Support composite indexes with partial keys (leftmost prefix matching)
@@ -209,11 +215,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
     } else {
       // No label specified - iterate ALL vertex types
       // Get all vertex types from schema and chain their iterators
-      final java.util.List<Iterator<Identifiable>> iterators = new java.util.ArrayList<>();
+      final List<Iterator<Identifiable>> iterators = new ArrayList<>();
 
-      for (final com.arcadedb.schema.DocumentType type : context.getDatabase().getSchema().getTypes()) {
+      for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
         // Only include vertex types (not edge types or document types)
-        if (type instanceof com.arcadedb.schema.VertexType) {
+        if (type instanceof VertexType) {
           @SuppressWarnings("unchecked")
           final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
           iterators.add(iter);
@@ -229,10 +235,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Iterator that chains multiple iterators together.
    */
   private static class ChainedIterator implements Iterator<Identifiable> {
-    private final java.util.List<Iterator<Identifiable>> iterators;
+    private final List<Iterator<Identifiable>> iterators;
     private int currentIndex = 0;
 
-    public ChainedIterator(final java.util.List<Iterator<Identifiable>> iterators) {
+    public ChainedIterator(final List<Iterator<Identifiable>> iterators) {
       this.iterators = iterators;
     }
 
@@ -250,7 +256,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     @Override
     public Identifiable next() {
       if (!hasNext()) {
-        throw new java.util.NoSuchElementException();
+        throw new NoSuchElementException();
       }
       return iterators.get(currentIndex).next();
     }
@@ -264,10 +270,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param label the type label
    * @return iterator from index lookup, or null if no suitable index found
    */
-  private Iterator<Identifiable> tryFindAndUseIndex(final com.arcadedb.schema.DocumentType type, final String label) {
+  private Iterator<Identifiable> tryFindAndUseIndex(final DocumentType type, final String label) {
     // Prepare property names and values from the pattern
-    final java.util.Map<String, Object> properties = new java.util.LinkedHashMap<>();
-    for (final java.util.Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+    final Map<String, Object> properties = new LinkedHashMap<>();
+    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
       final String propertyName = entry.getKey();
       Object propertyValue = entry.getValue();
 
@@ -297,19 +303,19 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
 
     // Find the best index (longest leftmost prefix match)
-    com.arcadedb.index.TypeIndex bestIndex = null;
+    TypeIndex bestIndex = null;
     int bestMatchCount = 0;
-    java.util.List<String> bestMatchedProperties = null;
+    List<String> bestMatchedProperties = null;
 
-    for (final com.arcadedb.index.TypeIndex index : type.getAllIndexes(false)) {
-      final java.util.List<String> indexProperties = index.getPropertyNames();
+    for (final TypeIndex index : type.getAllIndexes(false)) {
+      final List<String> indexProperties = index.getPropertyNames();
 
       // Check how many properties match as a leftmost prefix
       // For composite indexes, we can only use a partial key if we have values for all
       // properties from the beginning (leftmost prefix)
       // Example: Index [a,b,c] can be used for [a], [a,b], or [a,b,c] but not [b] or [a,c]
       int matchCount = 0;
-      final java.util.List<String> matchedProperties = new java.util.ArrayList<>();
+      final List<String> matchedProperties = new ArrayList<>();
 
       for (int i = 0; i < indexProperties.size(); i++) {
         final String indexProp = indexProperties.get(i);
@@ -362,7 +368,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
 
     // Check each property filter
-    for (final java.util.Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
       final String key = entry.getKey();
       Object expectedValue = entry.getValue();
 

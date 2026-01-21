@@ -22,6 +22,8 @@ import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -55,7 +57,7 @@ public class InExpression implements BooleanExpression {
 
     // Build the list of values to check against
     // This handles both list literals [1,2,3] and parameters $ids where the parameter is a list
-    final java.util.List<Object> valuesToCheck = new java.util.ArrayList<>();
+    final List<Object> valuesToCheck = new ArrayList<>();
 
     for (final Expression listItem : list) {
       final Object listValue;
@@ -69,10 +71,10 @@ public class InExpression implements BooleanExpression {
 
       // If the evaluated value is itself a list/collection (e.g., from a parameter),
       // expand it into individual values
-      if (listValue instanceof java.util.List) {
-        valuesToCheck.addAll((java.util.List<?>) listValue);
-      } else if (listValue instanceof java.util.Collection) {
-        valuesToCheck.addAll((java.util.Collection<?>) listValue);
+      if (listValue instanceof List) {
+        valuesToCheck.addAll((List<?>) listValue);
+      } else if (listValue instanceof Collection) {
+        valuesToCheck.addAll((Collection<?>) listValue);
       } else {
         valuesToCheck.add(listValue);
       }

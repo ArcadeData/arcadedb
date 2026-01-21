@@ -24,7 +24,10 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.MostUsedCache;
+
+import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
+import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
@@ -145,12 +148,12 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     // Only during search (vectorSnapshot == null), NOT during graph building (vectorSnapshot != null)
     if (lsmIndex != null && lsmIndex.metadata.storeVectorsInGraph && vectorSnapshot == null) {
       try {
-        final io.github.jbellis.jvector.graph.ImmutableGraphIndex graph = lsmIndex.getGraphIndex();
-        if (graph instanceof io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex) {
-          final io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex diskGraph =
-              (io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex) graph;
+        final ImmutableGraphIndex graph = lsmIndex.getGraphIndex();
+        if (graph instanceof OnDiskGraphIndex) {
+          final OnDiskGraphIndex diskGraph =
+              (OnDiskGraphIndex) graph;
           // Read vector directly from graph file (no RID lookup needed!)
-          final io.github.jbellis.jvector.vector.types.VectorFloat<?> vector = diskGraph.getView().getVector(ordinal);
+          final VectorFloat<?> vector = diskGraph.getView().getVector(ordinal);
           if (vector != null) {
             // Track fetch source for metrics
             lsmIndex.metrics.incrementVectorFetchFromGraph();

@@ -20,20 +20,28 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.query.opencypher.ast.CypherStatement;
-import com.arcadedb.query.opencypher.ast.MatchClause;
-import com.arcadedb.query.opencypher.ast.NodePattern;
-import com.arcadedb.query.opencypher.ast.PathPattern;
-import com.arcadedb.query.opencypher.ast.RelationshipPattern;
-import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
+import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
+import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
+import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
+import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
+import com.arcadedb.query.opencypher.executor.steps.MergeStep;
+import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
+import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
+import com.arcadedb.query.opencypher.executor.steps.SetStep;
+import com.arcadedb.query.opencypher.executor.steps.SkipStep;
+import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
+import com.arcadedb.query.opencypher.executor.steps.UnionStep;
+import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
+import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -45,9 +53,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Execution plan for a Cypher query.
@@ -210,8 +216,8 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
 
-    final com.arcadedb.query.opencypher.executor.steps.UnionStep unionStep =
-        new com.arcadedb.query.opencypher.executor.steps.UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+    final UnionStep unionStep =
+        new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
 
     return unionStep.syncPull(context, 100);
   }
@@ -276,8 +282,8 @@ public class CypherExecutionPlan {
     try {
       // Handle UNION queries specially
       if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
-        final com.arcadedb.query.opencypher.executor.steps.UnionStep unionStep =
-            new com.arcadedb.query.opencypher.executor.steps.UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+        final UnionStep unionStep =
+            new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
         final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE);
         while (resultSet.hasNext()) {
           allResults.add((ResultInternal) resultSet.next());
@@ -385,33 +391,33 @@ public class CypherExecutionPlan {
 
     // Step 3: SET clause (if any)
     if (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) {
-      final com.arcadedb.query.opencypher.executor.steps.SetStep setStep =
-          new com.arcadedb.query.opencypher.executor.steps.SetStep(statement.getSetClause(), context, functionFactory);
+      final SetStep setStep =
+          new SetStep(statement.getSetClause(), context, functionFactory);
       setStep.setPrevious(currentStep);
       currentStep = setStep;
     }
 
     // Step 4: DELETE clause (if any)
     if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) {
-      final com.arcadedb.query.opencypher.executor.steps.DeleteStep deleteStep =
-          new com.arcadedb.query.opencypher.executor.steps.DeleteStep(statement.getDeleteClause(), context);
+      final DeleteStep deleteStep =
+          new DeleteStep(statement.getDeleteClause(), context);
       deleteStep.setPrevious(currentStep);
       currentStep = deleteStep;
     }
 
     // Step 5: MERGE clause (if any)
     if (statement.getMergeClause() != null) {
-      final com.arcadedb.query.opencypher.executor.steps.MergeStep mergeStep =
-          new com.arcadedb.query.opencypher.executor.steps.MergeStep(statement.getMergeClause(), context, functionFactory);
+      final MergeStep mergeStep =
+          new MergeStep(statement.getMergeClause(), context, functionFactory);
       mergeStep.setPrevious(currentStep);
       currentStep = mergeStep;
     }
 
     // Step 6: UNWIND clause (if any)
     if (!statement.getUnwindClauses().isEmpty()) {
-      for (final com.arcadedb.query.opencypher.ast.UnwindClause unwind : statement.getUnwindClauses()) {
-        final com.arcadedb.query.opencypher.executor.steps.UnwindStep unwindStep =
-            new com.arcadedb.query.opencypher.executor.steps.UnwindStep(unwind, context, functionFactory);
+      for (final UnwindClause unwind : statement.getUnwindClauses()) {
+        final UnwindStep unwindStep =
+            new UnwindStep(unwind, context, functionFactory);
         unwindStep.setPrevious(currentStep);
         currentStep = unwindStep;
       }
@@ -419,38 +425,38 @@ public class CypherExecutionPlan {
 
     // Step 6.5: WITH clauses (if any)
     if (!statement.getWithClauses().isEmpty()) {
-      for (final com.arcadedb.query.opencypher.ast.WithClause withClause : statement.getWithClauses()) {
+      for (final WithClause withClause : statement.getWithClauses()) {
         // Handle aggregations in WITH clause
         if (withClause.hasAggregations()) {
           if (withClause.hasNonAggregations()) {
             // GROUP BY aggregation (implicit grouping)
-            final com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep groupByStep =
-                new com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep(
-                    new com.arcadedb.query.opencypher.ast.ReturnClause(withClause.getItems(), true),
+            final GroupByAggregationStep groupByStep =
+                new GroupByAggregationStep(
+                    new ReturnClause(withClause.getItems(), true),
                     context, functionFactory);
             groupByStep.setPrevious(currentStep);
             currentStep = groupByStep;
           } else {
             // Pure aggregation (no grouping)
-            final com.arcadedb.query.opencypher.executor.steps.AggregationStep aggStep =
-                new com.arcadedb.query.opencypher.executor.steps.AggregationStep(
-                    new com.arcadedb.query.opencypher.ast.ReturnClause(withClause.getItems(), true),
+            final AggregationStep aggStep =
+                new AggregationStep(
+                    new ReturnClause(withClause.getItems(), true),
                     context, functionFactory);
             aggStep.setPrevious(currentStep);
             currentStep = aggStep;
           }
         } else {
           // Regular WITH step (no aggregation)
-          final com.arcadedb.query.opencypher.executor.steps.WithStep withStep =
-              new com.arcadedb.query.opencypher.executor.steps.WithStep(withClause, context, functionFactory);
+          final WithStep withStep =
+              new WithStep(withClause, context, functionFactory);
           withStep.setPrevious(currentStep);
           currentStep = withStep;
         }
 
         // Apply ORDER BY if present in WITH
         if (withClause.getOrderByClause() != null) {
-          final com.arcadedb.query.opencypher.executor.steps.OrderByStep orderByStep =
-              new com.arcadedb.query.opencypher.executor.steps.OrderByStep(withClause.getOrderByClause(), context);
+          final OrderByStep orderByStep =
+              new OrderByStep(withClause.getOrderByClause(), context);
           orderByStep.setPrevious(currentStep);
           currentStep = orderByStep;
         }
@@ -464,8 +470,8 @@ public class CypherExecutionPlan {
         // Check if there are also non-aggregated expressions (implicit GROUP BY)
         if (statement.getReturnClause().hasNonAggregations()) {
           // Use GROUP BY aggregation step (implicit grouping)
-          final com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep groupByAggStep =
-              new com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep(
+          final GroupByAggregationStep groupByAggStep =
+              new GroupByAggregationStep(
                   statement.getReturnClause(), context, functionFactory);
           groupByAggStep.setPrevious(currentStep);
           currentStep = groupByAggStep;
@@ -485,24 +491,24 @@ public class CypherExecutionPlan {
 
     // Step 8: ORDER BY (if any)
     if (statement.getOrderByClause() != null) {
-      final com.arcadedb.query.opencypher.executor.steps.OrderByStep orderByStep =
-          new com.arcadedb.query.opencypher.executor.steps.OrderByStep(statement.getOrderByClause(), context);
+      final OrderByStep orderByStep =
+          new OrderByStep(statement.getOrderByClause(), context);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
 
     // Step 9: SKIP (if any)
     if (statement.getSkip() != null) {
-      final com.arcadedb.query.opencypher.executor.steps.SkipStep skipStep =
-          new com.arcadedb.query.opencypher.executor.steps.SkipStep(statement.getSkip(), context);
+      final SkipStep skipStep =
+          new SkipStep(statement.getSkip(), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
 
     // Step 10: LIMIT (if any)
     if (statement.getLimit() != null) {
-      final com.arcadedb.query.opencypher.executor.steps.LimitStep limitStep =
-          new com.arcadedb.query.opencypher.executor.steps.LimitStep(statement.getLimit(), context);
+      final LimitStep limitStep =
+          new LimitStep(statement.getLimit(), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -524,7 +530,7 @@ public class CypherExecutionPlan {
    * doesn't handle clause ordering correctly.
    */
   private boolean hasUnwindPrecedingMatch() {
-    final List<com.arcadedb.query.opencypher.ast.ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     if (clausesInOrder == null || clausesInOrder.isEmpty()) {
       // Fall back to checking if both UNWIND and MATCH exist
       return !statement.getUnwindClauses().isEmpty() && !statement.getMatchClauses().isEmpty();
@@ -534,10 +540,10 @@ public class CypherExecutionPlan {
     int firstUnwindOrder = Integer.MAX_VALUE;
     int firstMatchOrder = Integer.MAX_VALUE;
 
-    for (final com.arcadedb.query.opencypher.ast.ClauseEntry entry : clausesInOrder) {
-      if (entry.getType() == com.arcadedb.query.opencypher.ast.ClauseEntry.ClauseType.UNWIND) {
+    for (final ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() == ClauseEntry.ClauseType.UNWIND) {
         firstUnwindOrder = Math.min(firstUnwindOrder, entry.getOrder());
-      } else if (entry.getType() == com.arcadedb.query.opencypher.ast.ClauseEntry.ClauseType.MATCH) {
+      } else if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
         firstMatchOrder = Math.min(firstMatchOrder, entry.getOrder());
       }
     }
@@ -551,7 +557,7 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep buildExecutionSteps(final CommandContext context) {
     // Check if we have clause order information available
-    final List<com.arcadedb.query.opencypher.ast.ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     if (clausesInOrder != null && !clausesInOrder.isEmpty()) {
       return buildExecutionStepsWithOrder(context, clausesInOrder);
     }
@@ -564,7 +570,7 @@ public class CypherExecutionPlan {
    * This is essential for queries like UNWIND...MATCH where UNWIND must run first.
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
-      final List<com.arcadedb.query.opencypher.ast.ClauseEntry> clausesInOrder) {
+      final List<ClauseEntry> clausesInOrder) {
     AbstractExecutionStep currentStep = null;
 
     // Get function factory from evaluator for steps that need it
@@ -579,7 +585,7 @@ public class CypherExecutionPlan {
     // Special case: RETURN without MATCH (standalone expressions)
     // E.g., RETURN abs(-42), RETURN 1+1
     if (statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null &&
-        clausesInOrder.stream().noneMatch(c -> c.getType() == com.arcadedb.query.opencypher.ast.ClauseEntry.ClauseType.UNWIND)) {
+        clausesInOrder.stream().noneMatch(c -> c.getType() == ClauseEntry.ClauseType.UNWIND)) {
       // Create a dummy row to evaluate expressions against
       final ResultInternal dummyRow = new ResultInternal();
       final List<Result> singleRow = List.of(dummyRow);
@@ -605,12 +611,12 @@ public class CypherExecutionPlan {
     }
 
     // Process clauses in order
-    for (final com.arcadedb.query.opencypher.ast.ClauseEntry entry : clausesInOrder) {
+    for (final ClauseEntry entry : clausesInOrder) {
       switch (entry.getType()) {
         case UNWIND:
-          final com.arcadedb.query.opencypher.ast.UnwindClause unwindClause = entry.getTypedClause();
-          final com.arcadedb.query.opencypher.executor.steps.UnwindStep unwindStep =
-              new com.arcadedb.query.opencypher.executor.steps.UnwindStep(unwindClause, context, functionFactory);
+          final UnwindClause unwindClause = entry.getTypedClause();
+          final UnwindStep unwindStep =
+              new UnwindStep(unwindClause, context, functionFactory);
           if (currentStep != null) {
             unwindStep.setPrevious(currentStep);
           }
@@ -623,14 +629,14 @@ public class CypherExecutionPlan {
           break;
 
         case WITH:
-          final com.arcadedb.query.opencypher.ast.WithClause withClause = entry.getTypedClause();
+          final WithClause withClause = entry.getTypedClause();
           currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
           break;
 
         case MERGE:
-          final com.arcadedb.query.opencypher.ast.MergeClause mergeClause = entry.getTypedClause();
-          final com.arcadedb.query.opencypher.executor.steps.MergeStep mergeStep =
-              new com.arcadedb.query.opencypher.executor.steps.MergeStep(mergeClause, context, functionFactory);
+          final MergeClause mergeClause = entry.getTypedClause();
+          final MergeStep mergeStep =
+              new MergeStep(mergeClause, context, functionFactory);
           if (currentStep != null) {
             mergeStep.setPrevious(currentStep);
           }
@@ -638,7 +644,7 @@ public class CypherExecutionPlan {
           break;
 
         case CREATE:
-          final com.arcadedb.query.opencypher.ast.CreateClause createClause = entry.getTypedClause();
+          final CreateClause createClause = entry.getTypedClause();
           if (!createClause.isEmpty()) {
             final CreateStep createStep = new CreateStep(createClause, context);
             if (currentStep != null) {
@@ -649,20 +655,20 @@ public class CypherExecutionPlan {
           break;
 
         case SET:
-          final com.arcadedb.query.opencypher.ast.SetClause setClause = entry.getTypedClause();
+          final SetClause setClause = entry.getTypedClause();
           if (!setClause.isEmpty() && currentStep != null) {
-            final com.arcadedb.query.opencypher.executor.steps.SetStep setStep =
-                new com.arcadedb.query.opencypher.executor.steps.SetStep(setClause, context, functionFactory);
+            final SetStep setStep =
+                new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
             currentStep = setStep;
           }
           break;
 
         case DELETE:
-          final com.arcadedb.query.opencypher.ast.DeleteClause deleteClause = entry.getTypedClause();
+          final DeleteClause deleteClause = entry.getTypedClause();
           if (!deleteClause.isEmpty() && currentStep != null) {
-            final com.arcadedb.query.opencypher.executor.steps.DeleteStep deleteStep =
-                new com.arcadedb.query.opencypher.executor.steps.DeleteStep(deleteClause, context);
+            final DeleteStep deleteStep =
+                new DeleteStep(deleteClause, context);
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
           }
@@ -673,9 +679,9 @@ public class CypherExecutionPlan {
           break;
 
         case CALL:
-          final com.arcadedb.query.opencypher.ast.CallClause callClause = entry.getTypedClause();
-          final com.arcadedb.query.opencypher.executor.steps.CallStep callStep =
-              new com.arcadedb.query.opencypher.executor.steps.CallStep(callClause, context, functionFactory);
+          final CallClause callClause = entry.getTypedClause();
+          final CallStep callStep =
+              new CallStep(callClause, context, functionFactory);
           if (currentStep != null) {
             callStep.setPrevious(currentStep);
           }
@@ -695,8 +701,8 @@ public class CypherExecutionPlan {
     if (statement.getReturnClause() != null && currentStep != null) {
       if (statement.getReturnClause().hasAggregations()) {
         if (statement.getReturnClause().hasNonAggregations()) {
-          final com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep groupByAggStep =
-              new com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep(
+          final GroupByAggregationStep groupByAggStep =
+              new GroupByAggregationStep(
                   statement.getReturnClause(), context, functionFactory);
           groupByAggStep.setPrevious(currentStep);
           currentStep = groupByAggStep;
@@ -714,24 +720,24 @@ public class CypherExecutionPlan {
 
     // ORDER BY
     if (statement.getOrderByClause() != null && currentStep != null) {
-      final com.arcadedb.query.opencypher.executor.steps.OrderByStep orderByStep =
-          new com.arcadedb.query.opencypher.executor.steps.OrderByStep(statement.getOrderByClause(), context);
+      final OrderByStep orderByStep =
+          new OrderByStep(statement.getOrderByClause(), context);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
 
     // SKIP
     if (statement.getSkip() != null && currentStep != null) {
-      final com.arcadedb.query.opencypher.executor.steps.SkipStep skipStep =
-          new com.arcadedb.query.opencypher.executor.steps.SkipStep(statement.getSkip(), context);
+      final SkipStep skipStep =
+          new SkipStep(statement.getSkip(), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
 
     // LIMIT
     if (statement.getLimit() != null && currentStep != null) {
-      final com.arcadedb.query.opencypher.executor.steps.LimitStep limitStep =
-          new com.arcadedb.query.opencypher.executor.steps.LimitStep(statement.getLimit(), context);
+      final LimitStep limitStep =
+          new LimitStep(statement.getLimit(), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -749,22 +755,22 @@ public class CypherExecutionPlan {
   /**
    * Builds execution step for a WITH clause.
    */
-  private AbstractExecutionStep buildWithStep(final com.arcadedb.query.opencypher.ast.WithClause withClause,
+  private AbstractExecutionStep buildWithStep(final WithClause withClause,
       AbstractExecutionStep currentStep, final CommandContext context, final CypherFunctionFactory functionFactory) {
     if (withClause.hasAggregations()) {
       if (withClause.hasNonAggregations()) {
-        final com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep groupByStep =
-            new com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep(
-                new com.arcadedb.query.opencypher.ast.ReturnClause(withClause.getItems(), true),
+        final GroupByAggregationStep groupByStep =
+            new GroupByAggregationStep(
+                new ReturnClause(withClause.getItems(), true),
                 context, functionFactory);
         if (currentStep != null) {
           groupByStep.setPrevious(currentStep);
         }
         currentStep = groupByStep;
       } else {
-        final com.arcadedb.query.opencypher.executor.steps.AggregationStep aggStep =
-            new com.arcadedb.query.opencypher.executor.steps.AggregationStep(
-                new com.arcadedb.query.opencypher.ast.ReturnClause(withClause.getItems(), true),
+        final AggregationStep aggStep =
+            new AggregationStep(
+                new ReturnClause(withClause.getItems(), true),
                 context, functionFactory);
         if (currentStep != null) {
           aggStep.setPrevious(currentStep);
@@ -772,8 +778,8 @@ public class CypherExecutionPlan {
         currentStep = aggStep;
       }
     } else {
-      final com.arcadedb.query.opencypher.executor.steps.WithStep withStep =
-          new com.arcadedb.query.opencypher.executor.steps.WithStep(withClause, context, functionFactory);
+      final WithStep withStep =
+          new WithStep(withClause, context, functionFactory);
       if (currentStep != null) {
         withStep.setPrevious(currentStep);
       }
@@ -782,8 +788,8 @@ public class CypherExecutionPlan {
 
     // Apply ORDER BY if present in WITH
     if (withClause.getOrderByClause() != null) {
-      final com.arcadedb.query.opencypher.executor.steps.OrderByStep orderByStep =
-          new com.arcadedb.query.opencypher.executor.steps.OrderByStep(withClause.getOrderByClause(), context);
+      final OrderByStep orderByStep =
+          new OrderByStep(withClause.getOrderByClause(), context);
       if (currentStep != null) {
         orderByStep.setPrevious(currentStep);
       }
@@ -804,7 +810,7 @@ public class CypherExecutionPlan {
 
     final List<PathPattern> pathPatterns = matchClause.getPathPatterns();
     final AbstractExecutionStep stepBeforeMatch = currentStep;
-    final java.util.Set<String> matchVariables = new java.util.HashSet<>();
+    final Set<String> matchVariables = new HashSet<>();
     final boolean isOptional = matchClause.isOptional();
 
     AbstractExecutionStep matchChainStart = null;
@@ -918,8 +924,8 @@ public class CypherExecutionPlan {
 
     // Wrap in OptionalMatchStep if this is an OPTIONAL MATCH
     if (isOptional && matchChainStart != null) {
-      final com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep optionalStep =
-          new com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep(matchChainStart, matchVariables, context);
+      final OptionalMatchStep optionalStep =
+          new OptionalMatchStep(matchChainStart, matchVariables, context);
 
       if (stepBeforeMatch != null) {
         optionalStep.setPrevious(stepBeforeMatch);
@@ -983,7 +989,7 @@ public class CypherExecutionPlan {
 
           // Track the step before this MATCH clause for OPTIONAL MATCH wrapping
           final AbstractExecutionStep stepBeforeMatch = currentStep;
-          final java.util.Set<String> matchVariables = new java.util.HashSet<>();
+          final Set<String> matchVariables = new HashSet<>();
           final boolean isOptional = matchClause.isOptional();
 
           // For optional match, we build the match chain separately (not chained to stepBeforeMatch)
@@ -1134,8 +1140,8 @@ public class CypherExecutionPlan {
             // We built a separate match chain - wrap it in OptionalMatchStep
             // Pass matchChainStart (first step) not currentStep (last step)
             // because OptionalMatchStep needs to feed input into the start of the chain
-            final com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep optionalStep =
-                new com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep(matchChainStart, matchVariables, context);
+            final OptionalMatchStep optionalStep =
+                new OptionalMatchStep(matchChainStart, matchVariables, context);
 
             // OptionalMatchStep pulls from stepBeforeMatch
             if (stepBeforeMatch != null) {
@@ -1163,9 +1169,9 @@ public class CypherExecutionPlan {
     }
 
     // Step 2.5: UNWIND clauses - expand lists into rows (can be chained)
-    for (final com.arcadedb.query.opencypher.ast.UnwindClause unwindClause : statement.getUnwindClauses()) {
-      final com.arcadedb.query.opencypher.executor.steps.UnwindStep unwindStep =
-          new com.arcadedb.query.opencypher.executor.steps.UnwindStep(unwindClause, context, functionFactory);
+    for (final UnwindClause unwindClause : statement.getUnwindClauses()) {
+      final UnwindStep unwindStep =
+          new UnwindStep(unwindClause, context, functionFactory);
       if (currentStep != null) {
         unwindStep.setPrevious(currentStep);
       }
@@ -1174,14 +1180,14 @@ public class CypherExecutionPlan {
     }
 
     // Step 2.6: WITH clauses - project and transform results (can be chained)
-    for (final com.arcadedb.query.opencypher.ast.WithClause withClause : statement.getWithClauses()) {
+    for (final WithClause withClause : statement.getWithClauses()) {
       // Handle aggregations in WITH clause
       if (withClause.hasAggregations()) {
         if (withClause.hasNonAggregations()) {
           // GROUP BY aggregation (implicit grouping)
-          final com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep groupByStep =
-              new com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep(
-                  new com.arcadedb.query.opencypher.ast.ReturnClause(withClause.getItems(), true),
+          final GroupByAggregationStep groupByStep =
+              new GroupByAggregationStep(
+                  new ReturnClause(withClause.getItems(), true),
                   context, functionFactory);
           if (currentStep != null) {
             groupByStep.setPrevious(currentStep);
@@ -1189,9 +1195,9 @@ public class CypherExecutionPlan {
           currentStep = groupByStep;
         } else {
           // Pure aggregation (no grouping)
-          final com.arcadedb.query.opencypher.executor.steps.AggregationStep aggStep =
-              new com.arcadedb.query.opencypher.executor.steps.AggregationStep(
-                  new com.arcadedb.query.opencypher.ast.ReturnClause(withClause.getItems(), true),
+          final AggregationStep aggStep =
+              new AggregationStep(
+                  new ReturnClause(withClause.getItems(), true),
                   context, functionFactory);
           if (currentStep != null) {
             aggStep.setPrevious(currentStep);
@@ -1200,8 +1206,8 @@ public class CypherExecutionPlan {
         }
       } else {
         // Regular WITH step (no aggregation)
-        final com.arcadedb.query.opencypher.executor.steps.WithStep withStep =
-            new com.arcadedb.query.opencypher.executor.steps.WithStep(withClause, context, functionFactory);
+        final WithStep withStep =
+            new WithStep(withClause, context, functionFactory);
         if (currentStep != null) {
           withStep.setPrevious(currentStep);
         }
@@ -1210,8 +1216,8 @@ public class CypherExecutionPlan {
 
       // Apply ORDER BY if present in WITH
       if (withClause.getOrderByClause() != null) {
-        final com.arcadedb.query.opencypher.executor.steps.OrderByStep orderByStep =
-            new com.arcadedb.query.opencypher.executor.steps.OrderByStep(withClause.getOrderByClause(), context);
+        final OrderByStep orderByStep =
+            new OrderByStep(withClause.getOrderByClause(), context);
         if (currentStep != null) {
           orderByStep.setPrevious(currentStep);
         }
@@ -1221,7 +1227,7 @@ public class CypherExecutionPlan {
 
     // Step 3: MERGE clause - find or create pattern
     if (statement.getMergeClause() != null) {
-      final com.arcadedb.query.opencypher.executor.steps.MergeStep mergeStep = new com.arcadedb.query.opencypher.executor.steps.MergeStep(
+      final MergeStep mergeStep = new MergeStep(
           statement.getMergeClause(), context, functionFactory);
       // MERGE is typically standalone, but can be chained
       if (currentStep != null) {
@@ -1243,7 +1249,7 @@ public class CypherExecutionPlan {
 
     // Step 5: SET clause - update properties
     if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null) {
-      final com.arcadedb.query.opencypher.executor.steps.SetStep setStep = new com.arcadedb.query.opencypher.executor.steps.SetStep(
+      final SetStep setStep = new SetStep(
           statement.getSetClause(), context, functionFactory);
       setStep.setPrevious(currentStep);
       currentStep = setStep;
@@ -1251,7 +1257,7 @@ public class CypherExecutionPlan {
 
     // Step 6: DELETE clause - delete vertices/edges
     if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty() && currentStep != null) {
-      final com.arcadedb.query.opencypher.executor.steps.DeleteStep deleteStep = new com.arcadedb.query.opencypher.executor.steps.DeleteStep(
+      final DeleteStep deleteStep = new DeleteStep(
           statement.getDeleteClause(), context);
       deleteStep.setPrevious(currentStep);
       currentStep = deleteStep;
@@ -1264,8 +1270,8 @@ public class CypherExecutionPlan {
         // Check if there are also non-aggregated expressions (implicit GROUP BY)
         if (statement.getReturnClause().hasNonAggregations()) {
           // Use GROUP BY aggregation step (implicit grouping)
-          final com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep groupByAggStep =
-              new com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep(
+          final GroupByAggregationStep groupByAggStep =
+              new GroupByAggregationStep(
                   statement.getReturnClause(), context, functionFactory);
           groupByAggStep.setPrevious(currentStep);
           currentStep = groupByAggStep;
@@ -1285,7 +1291,7 @@ public class CypherExecutionPlan {
 
     // Step 8: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
-      final com.arcadedb.query.opencypher.executor.steps.OrderByStep orderByStep = new com.arcadedb.query.opencypher.executor.steps.OrderByStep(
+      final OrderByStep orderByStep = new OrderByStep(
           statement.getOrderByClause(), context);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
@@ -1293,7 +1299,7 @@ public class CypherExecutionPlan {
 
     // Step 9: SKIP clause - skip first N results
     if (statement.getSkip() != null && currentStep != null) {
-      final com.arcadedb.query.opencypher.executor.steps.SkipStep skipStep = new com.arcadedb.query.opencypher.executor.steps.SkipStep(
+      final SkipStep skipStep = new SkipStep(
           statement.getSkip(), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
@@ -1301,7 +1307,7 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
-      final com.arcadedb.query.opencypher.executor.steps.LimitStep limitStep = new com.arcadedb.query.opencypher.executor.steps.LimitStep(
+      final LimitStep limitStep = new LimitStep(
           statement.getLimit(), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
@@ -1396,14 +1402,14 @@ public class CypherExecutionPlan {
       return null;
 
     final ReturnClause.ReturnItem returnItem = statement.getReturnClause().getReturnItems().get(0);
-    final com.arcadedb.query.opencypher.ast.Expression returnExpr = returnItem.getExpression();
+    final Expression returnExpr = returnItem.getExpression();
 
     // Must be a function call
-    if (!(returnExpr instanceof com.arcadedb.query.opencypher.ast.FunctionCallExpression))
+    if (!(returnExpr instanceof FunctionCallExpression))
       return null;
 
-    final com.arcadedb.query.opencypher.ast.FunctionCallExpression funcExpr =
-        (com.arcadedb.query.opencypher.ast.FunctionCallExpression) returnExpr;
+    final FunctionCallExpression funcExpr =
+        (FunctionCallExpression) returnExpr;
 
     // Function must be COUNT
     if (!"count".equalsIgnoreCase(funcExpr.getFunctionName()))
@@ -1413,14 +1419,14 @@ public class CypherExecutionPlan {
     if (funcExpr.getArguments().size() != 1)
       return null;
 
-    final com.arcadedb.query.opencypher.ast.Expression countArg = funcExpr.getArguments().get(0);
+    final Expression countArg = funcExpr.getArguments().get(0);
 
     // Argument must be a variable reference
-    if (!(countArg instanceof com.arcadedb.query.opencypher.ast.VariableExpression))
+    if (!(countArg instanceof VariableExpression))
       return null;
 
-    final com.arcadedb.query.opencypher.ast.VariableExpression varExpr =
-        (com.arcadedb.query.opencypher.ast.VariableExpression) countArg;
+    final VariableExpression varExpr =
+        (VariableExpression) countArg;
 
     // Variable in COUNT must match the MATCH variable
     if (!variable.equals(varExpr.getVariableName()))
@@ -1456,6 +1462,6 @@ public class CypherExecutionPlan {
 
     // All conditions met - create optimized TypeCountStep
     final String outputAlias = returnItem.getOutputName();
-    return new com.arcadedb.query.opencypher.executor.steps.TypeCountStep(typeName, outputAlias, context);
+    return new TypeCountStep(typeName, outputAlias, context);
   }
 }

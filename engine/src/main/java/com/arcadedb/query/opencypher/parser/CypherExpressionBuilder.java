@@ -22,6 +22,11 @@ import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
+
 import java.util.List;
 import java.util.Map;
 
@@ -135,7 +140,7 @@ class CypherExpressionBuilder {
    * Parse any parse tree node as an expression using its text.
    * This is a helper for parsing lower-level expression contexts.
    */
-  Expression parseExpressionFromText(final org.antlr.v4.runtime.tree.ParseTree node) {
+  Expression parseExpressionFromText(final ParseTree node) {
     // Check for CASE expressions in the parse tree
     final Cypher25Parser.CaseExpressionContext caseCtx = findCaseExpressionRecursive(node);
     if (caseCtx != null) {
@@ -243,7 +248,7 @@ class CypherExpressionBuilder {
    * Parse a list expression into a list of Expression items.
    * Handles list literals like [1, 2, 3] or ['Alice', 'Bob'].
    */
-  List<Expression> parseListExpression(final org.antlr.v4.runtime.tree.ParseTree node) {
+  List<Expression> parseListExpression(final ParseTree node) {
     final List<Expression> items = new ArrayList<>();
 
     // Try to find a listLiteral context
@@ -283,7 +288,7 @@ class CypherExpressionBuilder {
    * Recursively find countStar context in the parse tree.
    * count(*) has special grammar handling as CountStarContext.
    */
-  Cypher25Parser.CountStarContext findCountStarRecursive(final org.antlr.v4.runtime.tree.ParseTree node) {
+  Cypher25Parser.CountStarContext findCountStarRecursive(final ParseTree node) {
     if (node == null) {
       return null;
     }
@@ -307,7 +312,7 @@ class CypherExpressionBuilder {
   /**
    * Recursively find list literal context in the parse tree.
    */
-  Cypher25Parser.ListLiteralContext findListLiteralRecursive(final org.antlr.v4.runtime.tree.ParseTree node) {
+  Cypher25Parser.ListLiteralContext findListLiteralRecursive(final ParseTree node) {
     if (node == null) {
       return null;
     }
@@ -331,7 +336,7 @@ class CypherExpressionBuilder {
   /**
    * Recursively find a ListLiteralContext in the parse tree.
    */
-  Cypher25Parser.ListLiteralContext findListLiteral(final org.antlr.v4.runtime.tree.ParseTree node) {
+  Cypher25Parser.ListLiteralContext findListLiteral(final ParseTree node) {
     if (node instanceof Cypher25Parser.ListLiteralContext) {
       return (Cypher25Parser.ListLiteralContext) node;
     }
@@ -348,7 +353,7 @@ class CypherExpressionBuilder {
    * Recursively find function invocation in the parse tree using depth-first search.
    */
   Cypher25Parser.FunctionInvocationContext findFunctionInvocationRecursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null) {
       return null;
     }
@@ -371,7 +376,7 @@ class CypherExpressionBuilder {
    * Recursively find EXISTS expression in the parse tree.
    */
   Cypher25Parser.ExistsExpressionContext findExistsExpressionRecursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null) {
       return null;
     }
@@ -394,7 +399,7 @@ class CypherExpressionBuilder {
    * Recursively find CASE expression in the parse tree.
    */
   Cypher25Parser.CaseExpressionContext findCaseExpressionRecursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null) {
       return null;
     }
@@ -417,7 +422,7 @@ class CypherExpressionBuilder {
    * Recursively find extended CASE expression in the parse tree.
    */
   Cypher25Parser.ExtendedCaseExpressionContext findExtendedCaseExpressionRecursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null) {
       return null;
     }
@@ -440,7 +445,7 @@ class CypherExpressionBuilder {
    * Recursively find Expression8 context (handles comparison operators).
    */
   Cypher25Parser.Expression8Context findExpression8Recursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null) {
       return null;
     }
@@ -467,7 +472,7 @@ class CypherExpressionBuilder {
    * Recursively find NullComparison context (IS NULL / IS NOT NULL).
    */
   Cypher25Parser.NullComparisonContext findNullComparisonRecursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null) {
       return null;
     }
@@ -490,7 +495,7 @@ class CypherExpressionBuilder {
    * Recursively find Expression6Context with arithmetic operators (+ - ||)
    */
   Cypher25Parser.Expression6Context findArithmeticExpression6Recursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null)
       return null;
 
@@ -514,7 +519,7 @@ class CypherExpressionBuilder {
    * Recursively find Expression5Context with arithmetic operators (* / %)
    */
   Cypher25Parser.Expression5Context findArithmeticExpression5Recursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null)
       return null;
 
@@ -537,7 +542,7 @@ class CypherExpressionBuilder {
   /**
    * Recursively find MapContext in the parse tree (for map literals like {name: 'Alice'})
    */
-  Cypher25Parser.MapContext findMapRecursive(final org.antlr.v4.runtime.tree.ParseTree node) {
+  Cypher25Parser.MapContext findMapRecursive(final ParseTree node) {
     if (node == null)
       return null;
 
@@ -557,7 +562,7 @@ class CypherExpressionBuilder {
    * Recursively find ListComprehensionContext in the parse tree.
    */
   Cypher25Parser.ListComprehensionContext findListComprehensionRecursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null)
       return null;
 
@@ -577,7 +582,7 @@ class CypherExpressionBuilder {
    * Recursively find MapProjectionContext in the parse tree.
    */
   Cypher25Parser.MapProjectionContext findMapProjectionRecursive(
-      final org.antlr.v4.runtime.tree.ParseTree node) {
+      final ParseTree node) {
     if (node == null)
       return null;
 
@@ -721,8 +726,8 @@ class CypherExpressionBuilder {
     if (ctx.expression7().size() > 1) {
       // Found a comparison, get the operator
       for (int i = 1; i < ctx.getChildCount(); i++) {
-        if (ctx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) ctx.getChild(i);
+        if (ctx.getChild(i) instanceof TerminalNode) {
+          final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
           final int type = terminal.getSymbol().getType();
 
           ComparisonExpression.Operator op = null;
@@ -756,7 +761,7 @@ class CypherExpressionBuilder {
    */
   Expression parseIsNullExpression(final Cypher25Parser.NullComparisonContext ctx) {
     // Get the parent expression7 context to find the left side
-    org.antlr.v4.runtime.tree.ParseTree parent = ctx.getParent();
+    ParseTree parent = ctx.getParent();
     if (parent instanceof Cypher25Parser.ComparisonExpression6Context) {
       parent = parent.getParent(); // Get expression7
     }
@@ -792,8 +797,8 @@ class CypherExpressionBuilder {
 
     int operandIndex = 1;
     for (int i = 0; i < ctx.getChildCount() && operandIndex < operands.size(); i++) {
-      if (ctx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-        final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) ctx.getChild(i);
+      if (ctx.getChild(i) instanceof TerminalNode) {
+        final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
         final int type = terminal.getSymbol().getType();
 
         ArithmeticExpression.Operator op = null;
@@ -826,8 +831,8 @@ class CypherExpressionBuilder {
 
     int operandIndex = 1;
     for (int i = 0; i < ctx.getChildCount() && operandIndex < operands.size(); i++) {
-      if (ctx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-        final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) ctx.getChild(i);
+      if (ctx.getChild(i) instanceof TerminalNode) {
+        final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
         final int type = terminal.getSymbol().getType();
 
         ArithmeticExpression.Operator op = null;
@@ -873,9 +878,9 @@ class CypherExpressionBuilder {
   Expression parseArithmeticExpression3(final Cypher25Parser.Expression3Context ctx) {
     // Check for unary plus/minus
     if (ctx.getChildCount() > 1) {
-      final org.antlr.v4.runtime.tree.ParseTree firstChild = ctx.getChild(0);
-      if (firstChild instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-        final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) firstChild;
+      final ParseTree firstChild = ctx.getChild(0);
+      if (firstChild instanceof TerminalNode) {
+        final TerminalNode terminal = (TerminalNode) firstChild;
         final int type = terminal.getSymbol().getType();
         if (type == Cypher25Parser.MINUS) {
           // Unary minus: -expression
@@ -901,7 +906,7 @@ class CypherExpressionBuilder {
    * Example: {name: 'Alice', age: 30}
    */
   MapExpression parseMapLiteralExpression(final Cypher25Parser.MapContext ctx) {
-    final Map<String, Expression> entries = new java.util.LinkedHashMap<>();
+    final Map<String, Expression> entries = new LinkedHashMap<>();
 
     final List<Cypher25Parser.PropertyKeyNameContext> keys = ctx.propertyKeyName();
     final List<Cypher25Parser.ExpressionContext> values = ctx.expression();
