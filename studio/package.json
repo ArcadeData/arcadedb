@@ -42,7 +42,7 @@
     "jquery": "^4.0.0",
     "jszip": "^3.10.1",
     "notyf": "^3.10.0",
-    "pdfmake": "^0.3.2",
+    "pdfmake": "^0.3.3",
     "swagger-ui-dist": "^5.31.0",
     "sweetalert2": "^11.26.17",
     "webcola": "^3.4.0"
