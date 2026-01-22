@@ -488,7 +488,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     checkForNulls(keys);
 
     final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
-    if (convertedKeys == null)
+    if (convertedKeys == null && nullStrategy != NULL_STRATEGY.INDEX)
       return;
 
     database.checkTransactionIsActive(database.isAutoTransaction());
