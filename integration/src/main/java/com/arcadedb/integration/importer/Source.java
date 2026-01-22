@@ -54,7 +54,16 @@ public class Source {
 
   public void close() {
     try {
-      closeCallback.call();
+      // Close the current inputStream first - this is important when reset() was called,
+      // as it creates a new stream that the closeCallback doesn't know about.
+      // See GitHub issue #1627.
+      if (inputStream != null) {
+        inputStream.close();
+      }
+      // Call the closeCallback for any additional cleanup (e.g., disconnecting HTTP connections)
+      if (closeCallback != null) {
+        closeCallback.call();
+      }
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing source %s", e, this);
     }
