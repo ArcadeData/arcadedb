@@ -993,12 +993,17 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Simple expression evaluation
     final String text = ctx.getText();
 
-    // String literal - strip quotes
+    // String literal - strip quotes and decode escape sequences
     if (text.startsWith("'") && text.endsWith("'")) {
-      return text.substring(1, text.length() - 1);
+      return decodeStringLiteral(text.substring(1, text.length() - 1));
     }
     if (text.startsWith("\"") && text.endsWith("\"")) {
-      return text.substring(1, text.length() - 1);
+      return decodeStringLiteral(text.substring(1, text.length() - 1));
+    }
+
+    // Null
+    if (text.equalsIgnoreCase("null")) {
+      return null;
     }
 
     // Boolean
@@ -1007,6 +1012,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
     if (text.equalsIgnoreCase("false")) {
       return Boolean.FALSE;
+    }
+
+    // Parameter reference: $paramName (unquoted, starts with $)
+    // This is different from a string literal like '$50' which was already handled above
+    if (text.startsWith("$") && text.length() > 1) {
+      final String paramName = text.substring(1);
+      // Return a marker that will be resolved at execution time
+      return new ParameterReference(paramName);
     }
 
     // Number
@@ -1020,5 +1033,99 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Keep as string
       return text;
     }
+  }
+
+  /**
+   * Marker class for unresolved parameter references.
+   * Used when parsing property values that reference parameters.
+   */
+  public static class ParameterReference {
+    private final String name;
+
+    public ParameterReference(final String name) {
+      this.name = name;
+    }
+
+    public String getName() {
+      return name;
+    }
+
+    @Override
+    public String toString() {
+      return "$" + name;
+    }
+  }
+
+  /**
+   * Decodes escape sequences in a string literal.
+   * Handles: \n (newline), \t (tab), \r (carriage return), \\ (backslash), \' (single quote), \" (double quote)
+   *
+   * @param input the string with escape sequences (without surrounding quotes)
+   * @return the decoded string
+   */
+  static String decodeStringLiteral(final String input) {
+    if (input == null || input.isEmpty()) {
+      return input;
+    }
+
+    // Quick check: if no backslash, return as-is to avoid allocation
+    if (input.indexOf('\\') == -1) {
+      return input;
+    }
+
+    final StringBuilder result = new StringBuilder(input.length());
+    boolean escaped = false;
+
+    for (int i = 0; i < input.length(); i++) {
+      final char c = input.charAt(i);
+
+      if (escaped) {
+        escaped = false;
+        switch (c) {
+          case 'n':
+            result.append('\n');
+            break;
+          case 't':
+            result.append('\t');
+            break;
+          case 'r':
+            result.append('\r');
+            break;
+          case 'b':
+            result.append('\b');
+            break;
+          case 'f':
+            result.append('\f');
+            break;
+          case '\\':
+            result.append('\\');
+            break;
+          case '\'':
+            result.append('\'');
+            break;
+          case '"':
+            result.append('"');
+            break;
+          case '0':
+            result.append('\0');
+            break;
+          default:
+            // For unrecognized escape sequences, keep the character as-is
+            result.append(c);
+            break;
+        }
+      } else if (c == '\\') {
+        escaped = true;
+      } else {
+        result.append(c);
+      }
+    }
+
+    // Handle trailing backslash (keep it as-is)
+    if (escaped) {
+      result.append('\\');
+    }
+
+    return result.toString();
   }
 }

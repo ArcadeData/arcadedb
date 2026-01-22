@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.sql.executor.*;
 
 import java.util.ArrayList;
@@ -264,24 +265,19 @@ public class CreateStep extends AbstractExecutionStep {
 
   /**
    * Sets properties on a document from a property map.
+   * Property values are already processed by CypherASTBuilder.evaluateExpression:
+   * - String literals have quotes stripped and escape sequences decoded
+   * - Parameters are represented as ParameterReference objects
    */
   private void setProperties(final MutableDocument document, final Map<String, Object> properties) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String key = entry.getKey();
       Object value = entry.getValue();
 
-      // Handle string literals: remove quotes
-      if (value instanceof String) {
-        final String strValue = (String) value;
-        if (strValue.startsWith("$") && strValue.length() > 1) {
-          // Parameter reference, resolve from context
-          final String paramName = strValue.substring(1);
-          value = context.getInputParameters().get(paramName);
-        } else if (strValue.startsWith("'") && strValue.endsWith("'")) {
-          value = strValue.substring(1, strValue.length() - 1);
-        } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
-          value = strValue.substring(1, strValue.length() - 1);
-        }
+      // Resolve parameter references
+      if (value instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
+        value = context.getInputParameters().get(paramName);
       }
 
       document.set(key, value);
@@ -290,20 +286,17 @@ public class CreateStep extends AbstractExecutionStep {
 
   /**
    * Sets properties on an edge from a property map.
+   * Property values are already processed by CypherASTBuilder.evaluateExpression.
    */
   private void setPropertiesOnEdge(final MutableEdge edge, final Map<String, Object> properties) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String key = entry.getKey();
       Object value = entry.getValue();
 
-      // Handle string literals: remove quotes
-      if (value instanceof String) {
-        final String strValue = (String) value;
-        if (strValue.startsWith("'") && strValue.endsWith("'")) {
-          value = strValue.substring(1, strValue.length() - 1);
-        } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
-          value = strValue.substring(1, strValue.length() - 1);
-        }
+      // Resolve parameter references
+      if (value instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
+        value = context.getInputParameters().get(paramName);
       }
 
       edge.set(key, value);
