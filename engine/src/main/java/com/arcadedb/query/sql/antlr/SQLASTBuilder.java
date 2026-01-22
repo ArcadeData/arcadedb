@@ -3063,8 +3063,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         if (ctx.identifier().size() > 1) {
           for (int i = 1; i < ctx.identifier().size(); i++) {
             final Modifier modifier = new Modifier(-1);
-            final Identifier id = (Identifier) visit(ctx.identifier(i));
-            final SuffixIdentifier suffix = new SuffixIdentifier(id);
+            final SQLParser.IdentifierContext idCtx = ctx.identifier(i);
+            final SuffixIdentifier suffix;
+
+            // Check if this identifier is a record attribute (@rid, @type, @in, @out, @this)
+            if (idCtx.RID_ATTR() != null || idCtx.TYPE_ATTR() != null ||
+                idCtx.IN_ATTR() != null || idCtx.OUT_ATTR() != null ||
+                idCtx.THIS() != null) {
+              final RecordAttribute attr = new RecordAttribute(-1);
+              attr.setName(idCtx.getText());
+              suffix = new SuffixIdentifier(attr);
+            } else {
+              final Identifier id = (Identifier) visit(idCtx);
+              suffix = new SuffixIdentifier(id);
+            }
 
             modifier.suffix = suffix;
 

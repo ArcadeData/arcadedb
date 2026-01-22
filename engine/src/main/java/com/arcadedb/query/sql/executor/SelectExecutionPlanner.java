@@ -811,14 +811,38 @@ public class SelectExecutionPlanner {
     } else if (target.getIdentifier() != null && target.getModifier() != null) {
 
       final List<RID> rids = new ArrayList<>();
-      final Collection<Identifiable> records = (Collection<Identifiable>) context.getVariablePath(target.toString());
-      if (records != null && !records.isEmpty()) {
-        for (Object o : records) {
-          if (o instanceof Identifiable identifiable)
-            rids.add(identifiable.getIdentity());
-          else if (o instanceof Result result1 && result1.isElement())
-            rids.add(result1.toElement().getIdentity());
+      final String targetStr = target.toString();
+      final Object variableValue = context.getVariablePath(targetStr);
+      if (variableValue != null) {
+        // Handle single Result object (e.g., from $parent.$current)
+        if (variableValue instanceof Result resultVal) {
+          if (resultVal.isElement()) {
+            rids.add(resultVal.toElement().getIdentity());
+          } else if (resultVal.getIdentity().isPresent()) {
+            rids.add(resultVal.getIdentity().get());
+          }
         }
+        // Handle single Identifiable object
+        else if (variableValue instanceof Identifiable identifiable) {
+          rids.add(identifiable.getIdentity());
+        }
+        // Handle single RID object
+        else if (variableValue instanceof RID rid) {
+          rids.add(rid);
+        }
+        // Handle collection of records
+        else if (variableValue instanceof Collection<?> records) {
+          for (Object o : records) {
+            if (o instanceof Identifiable identifiable)
+              rids.add(identifiable.getIdentity());
+            else if (o instanceof Result result1 && result1.isElement())
+              rids.add(result1.toElement().getIdentity());
+            else if (o instanceof RID rid)
+              rids.add(rid);
+          }
+        }
+      }
+      if (!rids.isEmpty()) {
         info.fetchExecutionPlan.chain(new FetchFromRidsStep(rids, context));
       } else
         result.chain(new EmptyStep(context));//nothing to return
@@ -2551,8 +2575,8 @@ public class SelectExecutionPlanner {
 
     if (item.getIdentifier() != null) {
       if (item.getIdentifier().getStringValue().startsWith("$")) {
-        // RESOLVE VARIABLE
-        final Object value = context.getVariable(item.toString());
+        // RESOLVE VARIABLE - use getVariablePath to support nested paths like $parent.$current.@rid
+        final Object value = context.getVariablePath(item.toString());
         if (value != null) {
           // Handle RID string (e.g., '#1:143') - Issue #2350
           if (value instanceof String strValue && strValue.startsWith("#")) {

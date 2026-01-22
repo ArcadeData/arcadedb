@@ -4484,4 +4484,80 @@ public class SelectStatementExecutionTest extends TestHelper {
       result4.close();
     });
   }
+
+  /**
+   * Tests for GitHub issue #1825: $parent.$current should work in subquery FROM clause.
+   * The $parent.$current should refer to the current record from the outer query context.
+   */
+  @Test
+  void testParentCurrentInSubqueryFromClause_Issue1825() {
+    final String className = "testParentCurrentInSubqueryFromClause";
+    database.getSchema().createDocumentType(className);
+
+    database.begin();
+    final MutableDocument doc = database.newDocument(className);
+    doc.set("a", 0);
+    doc.save();
+    final RID docRid = doc.getIdentity();
+    database.commit();
+
+    // Basic test: SELECT a FROM <specific RID> should work
+    try (ResultSet result = database.query("sql", "SELECT a FROM " + docRid)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.<Integer>getProperty("a")).isEqualTo(0);
+      assertThat(result.hasNext()).isFalse();
+    }
+
+    // Test using $parent.$current in WHERE clause with field access
+    try (ResultSet result = database.query("sql",
+        "SELECT @rid, (SELECT a FROM " + className + " WHERE a = $parent.$current.a) as subResult FROM " + className)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      final Object subResult = item.getProperty("subResult");
+      assertThat(subResult).isNotNull();
+      assertThat(subResult instanceof Collection).isTrue();
+      assertThat(((Collection<?>) subResult).isEmpty()).as("$parent.$current.a in WHERE should match parent record").isFalse();
+    }
+
+    // Issue #1825 - Test 1: $parent.$current directly as FROM source
+    try (ResultSet result = database.query("sql",
+        "SELECT @rid, (SELECT a FROM $parent.$current) as subResult FROM " + docRid)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.getIdentity().orElse(null)).isEqualTo(docRid);
+      final Object subResult = item.getProperty("subResult");
+      assertThat(subResult).isNotNull();
+      assertThat(subResult instanceof Collection).isTrue();
+      Collection<?> subResultList = (Collection<?>) subResult;
+      assertThat(subResultList.isEmpty()).as("$parent.$current in FROM should return the parent's current record").isFalse();
+      Object firstResult = subResultList.iterator().next();
+      assertThat(firstResult instanceof Result).isTrue();
+      assertThat(((Result) firstResult).<Integer>getProperty("a")).isEqualTo(0);
+    }
+
+    // Issue #1825 - Test 2: $parent.$current.@rid as FROM source
+    try (ResultSet result = database.query("sql",
+        "SELECT @rid, (SELECT a FROM $parent.$current.@rid) as subResult FROM " + docRid)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.getIdentity().orElse(null)).isEqualTo(docRid);
+      final Object subResult = item.getProperty("subResult");
+      assertThat(subResult).isNotNull();
+      assertThat(subResult instanceof Collection).isTrue();
+      Collection<?> subResultList = (Collection<?>) subResult;
+      assertThat(subResultList.isEmpty()).as("$parent.$current.@rid in FROM should return results").isFalse();
+      Object firstResult = subResultList.iterator().next();
+      assertThat(firstResult instanceof Result).isTrue();
+      assertThat(((Result) firstResult).<Integer>getProperty("a")).isEqualTo(0);
+    }
+
+    // Test $current.@rid in main query (not subquery)
+    try (ResultSet result = database.query("sql", "SELECT @rid, $current.@rid as currentRid FROM " + docRid)) {
+      assertThat(result.hasNext()).isTrue();
+      Result r = result.next();
+      assertThat(r.getIdentity().orElse(null)).isEqualTo(docRid);
+      assertThat(r.<RID>getProperty("currentRid")).isEqualTo(docRid);
+    }
+  }
 }
