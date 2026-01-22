@@ -55,7 +55,7 @@ public class SubqueryExpression extends BaseExpression {
   }
 
   private Object executeSubquery(final CommandContext context) {
-    final ResultSet rs = statement.execute(context.getDatabase(), context.getInputParameters());
+    final ResultSet rs = statement.execute(context.getDatabase(), context.getInputParameters(), context);
     final List<Object> values = new ArrayList<>();
 
     while (rs.hasNext()) {
