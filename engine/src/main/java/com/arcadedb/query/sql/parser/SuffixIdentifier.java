@@ -109,6 +109,11 @@ public class SuffixIdentifier extends SimpleNode {
       if (context != null && varName.equalsIgnoreCase("$parent")) {
         return context.getParent();
       }
+      // For $ variables, check record metadata FIRST - this preserves LET variable values
+      // through expand()/UNWIND operations (see GitHub issue #2776)
+      if (currentRecord != null && varName.startsWith("$") && currentRecord.getMetadataKeys().contains(varName)) {
+        return currentRecord.getMetadata(varName);
+      }
       if (context != null && (varName.startsWith("$") || varName.startsWith("_$$$")) && context.getVariable(varName) != null) {
         final Object result = context.getVariable(varName);
         return result;

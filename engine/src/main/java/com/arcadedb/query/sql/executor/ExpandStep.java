@@ -37,6 +37,7 @@ public class ExpandStep extends AbstractExecutionStep {
   ResultSet lastResult      = null;
   Iterator  nextSubsequence = null;
   Result    nextElement     = null;
+  Result    sourceResult    = null; // Source result from which we're expanding, used to preserve metadata
 
   public ExpandStep(final CommandContext context) {
     super(context);
@@ -102,6 +103,12 @@ public class ExpandStep extends AbstractExecutionStep {
             nextElement = new ResultInternal(context.getDatabase());
             ((ResultInternal) nextElement).setProperty("value", nextElementObj);
           }
+          // Copy metadata from source result to the expanded result (e.g., LET variables like $nrid)
+          if (sourceResult != null && nextElement instanceof ResultInternal resultInternal) {
+            for (final String key : sourceResult.getMetadataKeys()) {
+              resultInternal.setMetadata(key, sourceResult.getMetadata(key));
+            }
+          }
           break;
         } finally {
           if (context.isProfiling()) {
@@ -120,6 +127,7 @@ public class ExpandStep extends AbstractExecutionStep {
         return;
 
       final Result nextAggregateItem = lastResult.next();
+      sourceResult = nextAggregateItem; // Store source to copy metadata to expanded results
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         if (nextAggregateItem.getPropertyNames().size() == 0) {

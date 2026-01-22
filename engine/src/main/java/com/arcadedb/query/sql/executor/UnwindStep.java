@@ -156,6 +156,10 @@ public class UnwindStep extends AbstractExecutionStep {
     for (final String prop : from.getPropertyNames()) {
       to.setProperty(prop, from.getProperty(prop));
     }
+    // Copy metadata (e.g., LET variables like $nrid) to preserve them through UNWIND
+    for (final String key : from.getMetadataKeys()) {
+      to.setMetadata(key, from.getMetadata(key));
+    }
   }
 
   @Override
