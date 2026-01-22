@@ -46,12 +46,24 @@ public class SubqueryExpression extends BaseExpression {
 
   @Override
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
-    return executeSubquery(context);
+    Object result = executeSubquery(context);
+
+    // Apply modifier if present (e.g., (SELECT ...).name or (SELECT ...)[0])
+    if (modifier != null)
+      result = modifier.execute(currentRecord, result, context);
+
+    return result;
   }
 
   @Override
   public Object execute(final Result currentRecord, final CommandContext context) {
-    return executeSubquery(context);
+    Object result = executeSubquery(context);
+
+    // Apply modifier if present (e.g., (SELECT ...).name or (SELECT ...)[0])
+    if (modifier != null)
+      result = modifier.execute(currentRecord, result, context);
+
+    return result;
   }
 
   private Object executeSubquery(final CommandContext context) {
@@ -60,15 +72,10 @@ public class SubqueryExpression extends BaseExpression {
 
     while (rs.hasNext()) {
       final Result result = rs.next();
-      // If result is a document (not a projection), add the full result
-      if (result.isElement()) {
-        values.add(result);
-      } else if (result.getPropertyNames().size() == 1) {
-        // For projections with a single value, extract that value
-        values.add(result.getProperty(result.getPropertyNames().iterator().next()));
-      } else {
-        values.add(result);
-      }
+      // Always keep Result objects so that modifiers (field access) work correctly.
+      // For example: (SELECT name FROM doc).name should extract the name field from each Result.
+      // If we extract values early, modifiers can't access fields.
+      values.add(result);
     }
 
     // Always return the list to match JavaCC behavior
@@ -79,11 +86,18 @@ public class SubqueryExpression extends BaseExpression {
 
   @Override
   public String toString() {
-    return "(" + statement.toString() + ")";
+    final StringBuilder sb = new StringBuilder();
+    sb.append("(").append(statement.toString()).append(")");
+    if (modifier != null)
+      sb.append(modifier.toString());
+    return sb.toString();
   }
 
   @Override
   public SubqueryExpression copy() {
-    return new SubqueryExpression(statement);
+    final SubqueryExpression copy = new SubqueryExpression(statement);
+    if (modifier != null)
+      copy.setModifier(modifier.copy());
+    return copy;
   }
 }

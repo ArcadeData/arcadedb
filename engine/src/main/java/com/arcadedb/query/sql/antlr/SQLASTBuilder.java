@@ -3263,14 +3263,39 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public BaseExpression visitParenthesizedStmt(final SQLParser.ParenthesizedStmtContext ctx) {
     final Statement stmt = (Statement) visit(ctx.statement());
+    final BaseExpression result;
     if (stmt instanceof SelectStatement) {
       // Return a SubqueryExpression that wraps the SELECT statement
-      return new SubqueryExpression((SelectStatement) stmt);
+      result = new SubqueryExpression((SelectStatement) stmt);
     } else {
       // For other statements (INSERT, UPDATE, DELETE, etc.), wrap them in a StatementExpression
       // This allows statements like: INSERT INTO foo SET x = (INSERT INTO bar SET y = 1)
-      return new StatementExpression(stmt);
+      result = new StatementExpression(stmt);
     }
+
+    // Process modifiers if present (e.g., (SELECT ...).name or (SELECT ...)[0])
+    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          // Find the end of the current modifier chain
+          while (currentModifier.next != null)
+            currentModifier = currentModifier.next;
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
+      result.setModifier(firstModifier);
+    }
+
+    return result;
   }
 
   /**
@@ -3283,6 +3308,29 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Regular parenthesized expression
     final BaseExpression baseExpr = new BaseExpression(-1);
     baseExpr.expression = (Expression) visit(ctx.expression());
+
+    // Process modifiers if present
+    if (CollectionUtils.isNotEmpty(ctx.modifier())) {
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      for (final SQLParser.ModifierContext modCtx : ctx.modifier()) {
+        final Modifier modifier = (Modifier) visit(modCtx);
+
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          // Find the end of the current modifier chain
+          while (currentModifier.next != null)
+            currentModifier = currentModifier.next;
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
+      baseExpr.setModifier(firstModifier);
+    }
+
     return baseExpr;
   }
 

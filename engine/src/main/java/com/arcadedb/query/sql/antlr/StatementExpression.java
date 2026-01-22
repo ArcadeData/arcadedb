@@ -42,12 +42,24 @@ public class StatementExpression extends BaseExpression {
 
   @Override
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
-    return executeStatement(context);
+    Object result = executeStatement(context);
+
+    // Apply modifier if present (e.g., (INSERT ...).name or (INSERT ...)[0])
+    if (modifier != null)
+      result = modifier.execute(currentRecord, result, context);
+
+    return result;
   }
 
   @Override
   public Object execute(final Result currentRecord, final CommandContext context) {
-    return executeStatement(context);
+    Object result = executeStatement(context);
+
+    // Apply modifier if present (e.g., (INSERT ...).name or (INSERT ...)[0])
+    if (modifier != null)
+      result = modifier.execute(currentRecord, result, context);
+
+    return result;
   }
 
   private Object executeStatement(final CommandContext context) {
@@ -67,11 +79,18 @@ public class StatementExpression extends BaseExpression {
 
   @Override
   public String toString() {
-    return "(" + statement.toString() + ")";
+    final StringBuilder sb = new StringBuilder();
+    sb.append("(").append(statement.toString()).append(")");
+    if (modifier != null)
+      sb.append(modifier.toString());
+    return sb.toString();
   }
 
   @Override
   public StatementExpression copy() {
-    return new StatementExpression(statement);
+    final StatementExpression copy = new StatementExpression(statement);
+    if (modifier != null)
+      copy.setModifier(modifier.copy());
+    return copy;
   }
 }
