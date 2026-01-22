@@ -24,6 +24,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -277,25 +278,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final String propertyName = entry.getKey();
       Object propertyValue = entry.getValue();
 
-      // Resolve parameter references (e.g., $id -> actual value from context)
-      if (propertyValue instanceof String) {
-        final String strValue = (String) propertyValue;
-
-        // Check if it's a parameter reference
-        if (strValue.startsWith("$")) {
-          final String paramName = strValue.substring(1);
-          if (context.getInputParameters() != null) {
-            final Object paramValue = context.getInputParameters().get(paramName);
-            if (paramValue != null) {
-              propertyValue = paramValue;
-            }
+      // Resolve parameter references
+      // Property values are already processed by CypherASTBuilder.evaluateExpression
+      if (propertyValue instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) propertyValue).getName();
+        if (context.getInputParameters() != null) {
+          final Object paramValue = context.getInputParameters().get(paramName);
+          if (paramValue != null) {
+            propertyValue = paramValue;
           }
-        }
-        // Handle string literals: remove quotes
-        else if (strValue.startsWith("'") && strValue.endsWith("'")) {
-          propertyValue = strValue.substring(1, strValue.length() - 1);
-        } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
-          propertyValue = strValue.substring(1, strValue.length() - 1);
         }
       }
 

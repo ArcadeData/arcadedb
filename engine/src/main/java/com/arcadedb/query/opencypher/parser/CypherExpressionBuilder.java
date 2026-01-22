@@ -1063,12 +1063,12 @@ class CypherExpressionBuilder {
       return Boolean.FALSE;
     }
 
-    // String (quoted)
+    // String (quoted) - strip quotes and decode escape sequences
     if (text.startsWith("'") && text.endsWith("'") && text.length() >= 2) {
-      return text.substring(1, text.length() - 1);
+      return CypherASTBuilder.decodeStringLiteral(text.substring(1, text.length() - 1));
     }
     if (text.startsWith("\"") && text.endsWith("\"") && text.length() >= 2) {
-      return text.substring(1, text.length() - 1);
+      return CypherASTBuilder.decodeStringLiteral(text.substring(1, text.length() - 1));
     }
 
     // Number
