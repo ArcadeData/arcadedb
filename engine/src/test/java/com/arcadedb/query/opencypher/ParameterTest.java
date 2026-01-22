@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
@@ -28,6 +29,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -116,6 +120,86 @@ class ParameterTest {
     } finally {
       database.drop();
       FileUtils.deleteRecursively(new File("./target/testparams2"));
+    }
+  }
+
+  /**
+   * Issue #2364: 16 params or more in cypher = BOOM | 15 is fine
+   * https://github.com/ArcadeData/arcadedb/issues/2364
+   * Verifies native OpenCypher engine handles 16+ parameters correctly.
+   */
+  @Test
+  void testManyParametersInIdQuery() {
+    final Database database = new DatabaseFactory("./target/testparams3").create();
+    try {
+      database.getSchema().getOrCreateVertexType("CHUNK");
+
+      // Create 20 test nodes
+      final List<RID> rids = new ArrayList<>();
+      database.transaction(() -> {
+        for (int i = 0; i < 20; i++) {
+          final RID rid = database.newVertex("CHUNK").set("name", "chunk" + i).save().getIdentity();
+          rids.add(rid);
+        }
+      });
+
+      // Test with 15 parameters - baseline
+      final StringBuilder query15 = new StringBuilder("MATCH (n:CHUNK) WHERE ID(n) IN [");
+      final Map<String, Object> params15 = new HashMap<>();
+      for (int i = 0; i < 15; i++) {
+        if (i > 0) query15.append(", ");
+        query15.append("$id_").append(i);
+        params15.put("id_" + i, rids.get(i).toString());
+      }
+      query15.append("] RETURN n");
+
+      final ResultSet result15 = database.query("opencypher", query15.toString(), params15);
+      int count15 = 0;
+      while (result15.hasNext()) {
+        result15.next();
+        count15++;
+      }
+      assertThat(count15).isEqualTo(15);
+
+      // Test with 16 parameters - this was the boundary that previously failed
+      final StringBuilder query16 = new StringBuilder("MATCH (n:CHUNK) WHERE ID(n) IN [");
+      final Map<String, Object> params16 = new HashMap<>();
+      for (int i = 0; i < 16; i++) {
+        if (i > 0) query16.append(", ");
+        query16.append("$id_").append(i);
+        params16.put("id_" + i, rids.get(i).toString());
+      }
+      query16.append("] RETURN n");
+
+      final ResultSet result16 = database.query("opencypher", query16.toString(), params16);
+      int count16 = 0;
+      while (result16.hasNext()) {
+        result16.next();
+        count16++;
+      }
+      assertThat(count16).isEqualTo(16);
+
+      // Test with 20 parameters to ensure higher counts work
+      final StringBuilder query20 = new StringBuilder("MATCH (n:CHUNK) WHERE ID(n) IN [");
+      final Map<String, Object> params20 = new HashMap<>();
+      for (int i = 0; i < 20; i++) {
+        if (i > 0) query20.append(", ");
+        query20.append("$id_").append(i);
+        params20.put("id_" + i, rids.get(i).toString());
+      }
+      query20.append("] RETURN n");
+
+      final ResultSet result20 = database.query("opencypher", query20.toString(), params20);
+      int count20 = 0;
+      while (result20.hasNext()) {
+        result20.next();
+        count20++;
+      }
+      assertThat(count20).isEqualTo(20);
+
+    } finally {
+      database.drop();
+      FileUtils.deleteRecursively(new File("./target/testparams3"));
     }
   }
 
