@@ -43,7 +43,7 @@ public class Rid extends SimpleNode {
   public Rid(final RID rid) {
     super(-1);
     bucket = new PInteger(-1).setValue(rid.getBucketId());
-    position = new PInteger(-1).setValue(rid.getBucketId());
+    position = new PInteger(-1).setValue(rid.getPosition());
     legacy = true;
   }
 

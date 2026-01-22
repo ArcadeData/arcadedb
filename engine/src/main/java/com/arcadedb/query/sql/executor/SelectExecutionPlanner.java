@@ -823,6 +823,53 @@ public class SelectExecutionPlanner {
       } else
         result.chain(new EmptyStep(context));//nothing to return
     } else if (target.getIdentifier() != null) {
+      final String identifierValue = target.getIdentifier().getStringValue();
+
+      // Check if identifier is a variable reference
+      if (identifierValue.startsWith("$")) {
+        final Object variableValue = context.getVariable(identifierValue);
+        if (variableValue != null) {
+          // Handle variable containing a RID string (e.g., '#1:143')
+          if (variableValue instanceof String strValue && strValue.startsWith("#")) {
+            final RID rid = new RID(context.getDatabase(), strValue);
+            info.fetchExecutionPlan.chain(new FetchFromRidsStep(List.of(rid), context));
+            return;
+          }
+          // Handle variable containing a RID object directly
+          else if (variableValue instanceof RID rid) {
+            info.fetchExecutionPlan.chain(new FetchFromRidsStep(List.of(rid), context));
+            return;
+          }
+          // Handle variable containing an Identifiable
+          else if (variableValue instanceof Identifiable identifiable) {
+            info.fetchExecutionPlan.chain(new FetchFromRidsStep(List.of(identifiable.getIdentity()), context));
+            return;
+          }
+          // Handle variable containing a collection of RIDs or Identifiables
+          else if (variableValue instanceof Iterable<?> iterable) {
+            final List<RID> rids = new ArrayList<>();
+            for (final Object item : iterable) {
+              if (item instanceof RID rid)
+                rids.add(rid);
+              else if (item instanceof Identifiable identifiable)
+                rids.add(identifiable.getIdentity());
+              else if (item instanceof Result resultItem && resultItem.getIdentity().isPresent())
+                rids.add(resultItem.getIdentity().get());
+              else if (item instanceof String strItem && strItem.startsWith("#"))
+                rids.add(new RID(context.getDatabase(), strItem));
+            }
+            if (!rids.isEmpty()) {
+              info.fetchExecutionPlan.chain(new FetchFromRidsStep(rids, context));
+              return;
+            }
+          }
+          // Handle variable containing a type name string (no '#' prefix)
+          else if (variableValue instanceof String typeName) {
+            target.setIdentifier(new Identifier(typeName));
+          }
+        }
+      }
+
       Set<String> filterBuckets = info.buckets;
 
       final AndBlock ridRangeConditions = extractRidRanges(info.flattenedWhereClause, context);
@@ -2505,8 +2552,30 @@ public class SelectExecutionPlanner {
         // RESOLVE VARIABLE
         final Object value = context.getVariable(item.toString());
         if (value != null) {
-          item.setValue(value);
-          item.setIdentifier(null);
+          // Handle RID string (e.g., '#1:143') - Issue #2350
+          if (value instanceof String strValue && strValue.startsWith("#")) {
+            final RID rid = new RID(db, strValue);
+            if (item.getRids() == null) {
+              item.setRids(new ArrayList<>());
+            }
+            item.getRids().add(new Rid(rid));
+            item.setIdentifier(null);
+          } else if (value instanceof RID rid) {
+            // Handle RID object directly
+            if (item.getRids() == null) {
+              item.setRids(new ArrayList<>());
+            }
+            item.getRids().add(new Rid(rid));
+            item.setIdentifier(null);
+          } else if (value instanceof Identifiable || value instanceof ResultSet) {
+            // Handle Identifiable or ResultSet through setValue
+            item.setValue(value);
+            item.setIdentifier(null);
+          } else if (value instanceof String typeName) {
+            // Handle type name string - resolve as type
+            item.setIdentifier(new Identifier(typeName));
+          }
+          // For other types, keep the identifier as-is and let handleFetchFromTarget deal with it
         }
       }
     }
