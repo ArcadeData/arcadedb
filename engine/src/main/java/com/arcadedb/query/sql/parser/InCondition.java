@@ -286,18 +286,35 @@ public class InCondition extends BooleanExpression {
     }
 
     // Handle inverted syntax for BY-ITEM indexes: value IN list_field
-    // For "1 IN nums", rightMathExpression should contain the field "nums"
-    if (rightMathExpression != null && rightMathExpression.isBaseIdentifier() && info.isIndexByItem()) {
-      // Since BaseExpression extends MathExpression, rightMathExpression might BE a BaseExpression
-      if (rightMathExpression instanceof BaseExpression) {
-        final BaseExpression baseExpr = (BaseExpression) rightMathExpression;
-        if (baseExpr.getIdentifier() != null) {
-          final String fieldName = baseExpr.getIdentifier().getSuffix().identifier.getStringValue();
-          if (info.getField().equals(fieldName)) {
-            // The right side matches the indexed field, and left side is the search value
-            return left.isEarlyCalculated(info.getContext());
+    // For "1 IN nums" or "2 IN nums.a", rightMathExpression should contain the field
+    if (rightMathExpression != null && info.isIndexByItem()) {
+      String fieldName = null;
+
+      if (rightMathExpression.isBaseIdentifier()) {
+        // Simple identifier like "nums"
+        if (rightMathExpression instanceof BaseExpression baseExpr) {
+          if (baseExpr.getIdentifier() != null) {
+            fieldName = baseExpr.getIdentifier().getSuffix().identifier.getStringValue();
           }
         }
+      } else {
+        // Might be a nested property like "nums.a" - try using the string representation
+        String rightStr = rightMathExpression.toString();
+        // Remove backticks for comparison (they're used for quoting identifiers with special chars)
+        String normalizedRightStr = rightStr.replace("`", "");
+
+        // Check if this looks like a valid property path
+        if (!normalizedRightStr.contains("..") &&
+            !normalizedRightStr.startsWith(".") &&
+            !normalizedRightStr.endsWith(".") &&
+            !normalizedRightStr.isEmpty()) {
+          fieldName = normalizedRightStr;
+        }
+      }
+
+      if (fieldName != null && info.getField().equals(fieldName)) {
+        // The right side matches the indexed field, and left side is the search value
+        return left.isEarlyCalculated(info.getContext());
       }
     }
 
@@ -307,7 +324,8 @@ public class InCondition extends BooleanExpression {
   @Override
   public Expression resolveKeyFrom(final BinaryCondition additional) {
     // Check for inverted syntax: value IN list_field (for BY-ITEM indexes)
-    if (getRightMathExpression() != null && getRightMathExpression().isBaseIdentifier()) {
+    // This handles both simple identifiers (isBaseIdentifier=true) and nested properties like "nums.a"
+    if (getRightMathExpression() != null && isRightSideFieldIdentifier()) {
       // Inverted syntax - the search key is on the left side
       return left;
     }
@@ -330,7 +348,8 @@ public class InCondition extends BooleanExpression {
   @Override
   public Expression resolveKeyTo(final BinaryCondition additional) {
     // Check for inverted syntax: value IN list_field (for BY-ITEM indexes)
-    if (getRightMathExpression() != null && getRightMathExpression().isBaseIdentifier()) {
+    // This handles both simple identifiers (isBaseIdentifier=true) and nested properties like "nums.a"
+    if (getRightMathExpression() != null && isRightSideFieldIdentifier()) {
       // Inverted syntax - the search key is on the left side
       return left;
     }
@@ -348,6 +367,29 @@ public class InCondition extends BooleanExpression {
     } else {
       throw new UnsupportedOperationException("Cannot execute index query with " + this);
     }
+  }
+
+  /**
+   * Checks if the right side of the IN condition looks like a field identifier
+   * (either simple like "nums" or nested like "nums.a").
+   * This is used to detect inverted syntax: value IN list_field
+   */
+  private boolean isRightSideFieldIdentifier() {
+    if (rightMathExpression == null) {
+      return false;
+    }
+    if (rightMathExpression.isBaseIdentifier()) {
+      return true;
+    }
+    // Check for nested property path like "nums.a"
+    String rightStr = rightMathExpression.toString();
+    String normalizedRightStr = rightStr.replace("`", "");
+    // A field identifier should look like a property path (letters, dots, no operators)
+    return !normalizedRightStr.contains("..") &&
+           !normalizedRightStr.startsWith(".") &&
+           !normalizedRightStr.endsWith(".") &&
+           !normalizedRightStr.isEmpty() &&
+           normalizedRightStr.matches("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
   }
 
   @Override

@@ -204,13 +204,52 @@ public class ContainsAllCondition extends BooleanExpression {
 
   @Override
   public boolean isIndexAware(final IndexSearchInfo info) {
+    // For nested properties like "tags.id", we need to handle the case where isBaseIdentifier() returns false
+    // due to the presence of a suffix/modifier. We'll check both cases:
+    // 1. Simple identifiers: left.isBaseIdentifier() == true (e.g., "tags")
+    // 2. Nested identifiers: Compare the full string representation (e.g., "tags.id")
+
+    String fieldName = null;
+
     if (left.isBaseIdentifier()) {
-      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        // CONTAINSALL operator only works with BY-ITEM indexes, not regular list indexes
-        if (info.isIndexByItem())
-          return right != null && right.isEarlyCalculated(info.getContext());
+      // Simple identifier - use default alias
+      fieldName = left.getDefaultAlias().getStringValue();
+    } else {
+      // Might be a nested property - try using the string representation
+      String leftStr = left.toString();
+      // Remove backticks for comparison (they're used for quoting identifiers with special chars)
+      String normalizedLeftStr = leftStr.replace("`", "");
+
+      // Check if this looks like a valid property path:
+      // - No consecutive dots (invalid syntax)
+      // - No leading or trailing dots
+      // Since the SQL parser already validated the expression syntax, we mainly need to ensure
+      // it's a simple property path (not a complex expression) and normalize it for comparison
+      if (!normalizedLeftStr.contains("..") &&
+          !normalizedLeftStr.startsWith(".") &&
+          !normalizedLeftStr.endsWith(".") &&
+          !normalizedLeftStr.isEmpty()) {
+        fieldName = normalizedLeftStr;
       }
     }
+
+    if (fieldName != null && info.getField().equals(fieldName)) {
+      // CONTAINSALL operator only works with BY-ITEM indexes, not regular list indexes
+      if (info.isIndexByItem() && right != null && right.isEarlyCalculated(info.getContext())) {
+        // For CONTAINSALL with multiple values, the current index execution merges results (UNION)
+        // instead of intersecting them (INTERSECTION), which gives incorrect results.
+        // Only use index for single-value CONTAINSALL; for multiple values, use full scan with filter.
+        // This is correct but suboptimal - a future optimization could implement proper intersection.
+        final Object rightValue = right.execute((Result) null, info.getContext());
+        if (rightValue instanceof Collection<?> collection) {
+          // Only use index if collection has exactly one element
+          return collection.size() == 1;
+        }
+        // Single value - can use index
+        return true;
+      }
+    }
+
     return false;
   }
 

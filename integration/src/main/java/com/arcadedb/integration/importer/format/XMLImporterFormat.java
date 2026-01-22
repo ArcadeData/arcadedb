@@ -72,6 +72,9 @@ public class XMLImporterFormat implements FormatImporter {
           if (nestLevel == objectNestLevel) {
             entityName = "v_" + xmlReader.getName().getLocalPart();
 
+            // CLEAR THE MAP FOR THE NEW RECORD
+            object.clear();
+
             // GET ELEMENT'S ATTRIBUTES AS PROPERTIES
             for (int i = 0; i < xmlReader.getAttributeCount(); ++i) {
               object.put(xmlReader.getAttributeName(i).getLocalPart(), xmlReader.getAttributeValue(i));
@@ -135,6 +138,10 @@ public class XMLImporterFormat implements FormatImporter {
         if (settings.parsingLimitEntries > 0 && context.parsed.get() > settings.parsingLimitEntries)
           break;
       }
+
+      // WAIT FOR ALL ASYNC OPERATIONS TO COMPLETE
+      database.async().waitCompletion();
+
     } catch (final Exception e) {
       throw new ImportException("Error on importing from source '" + parser.getSource() + "'", e);
     }
