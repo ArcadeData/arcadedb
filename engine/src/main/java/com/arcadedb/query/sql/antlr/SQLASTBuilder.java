@@ -4220,6 +4220,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // UPSERT flag
     stmt.upsert = updateCtx.UPSERT() != null;
 
+    // APPLY DEFAULTS flag
+    stmt.applyDefaults = updateCtx.APPLY() != null && updateCtx.DEFAULTS() != null;
+
     // RETURN clause
     if (updateCtx.RETURN() != null) {
       stmt.returnBefore = updateCtx.BEFORE() != null;

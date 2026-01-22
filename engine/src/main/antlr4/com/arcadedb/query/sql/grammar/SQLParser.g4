@@ -330,12 +330,13 @@ jsonArray
 /**
  * UPDATE statement
  * UPDATE target [SET...] [ADD...] [PUT...] [REMOVE...] [INCREMENT...] [CONTENT...]
- * [UPSERT] [RETURN BEFORE|AFTER|COUNT projection] [WHERE condition] [LIMIT n] [TIMEOUT n]
+ * [UPSERT] [APPLY DEFAULTS] [RETURN BEFORE|AFTER|COUNT projection] [WHERE condition] [LIMIT n] [TIMEOUT n]
  */
 updateStatement
     : UPDATE fromClause
       updateOperation+
       UPSERT?
+      (APPLY DEFAULTS)?
       (RETURN (BEFORE | AFTER | COUNT) projection?)?
       (WHERE whereClause)?
       limit?
