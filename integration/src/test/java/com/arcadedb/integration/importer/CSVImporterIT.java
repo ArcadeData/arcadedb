@@ -110,4 +110,61 @@ class CSVImporterIT {
     TestHelper.checkActiveDatabases();
   }
 
+  /**
+   * Test for GitHub issue #1198: IMPORT DATABASE misses edge
+   * This test verifies that ALL edges are imported, including the last one.
+   * The bug was that the last edge batch was never flushed when importing ended.
+   */
+  @Test
+  void importGraphVerifyAllEdgesImported() {
+    final String databasePath = "target/databases/test-import-graph-edges";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    // Import both vertices and edges in a single Importer instance
+    // This tests the scenario where vertices and edges are loaded in the same import operation
+    Importer importer = new Importer(new String[] {
+        "-vertices", "src/test/resources/importer-vertices.csv",
+        "-edges", "src/test/resources/importer-edges.csv",
+        "-database", databasePath,
+        "-typeIdProperty", "Id",
+        "-typeIdType", "Long",
+        "-typeIdUnique", "true",
+        "-forceDatabaseCreate", "true",
+        "-edgeFromField", "From",
+        "-edgeToField", "To"
+    });
+    importer.load();
+
+    try (final Database db = databaseFactory.open()) {
+      assertThat(db.countType("Node", true)).isEqualTo(6);
+
+      // Verify ALL 3 edges are imported (this is the key assertion for issue #1198)
+      // edges.csv has: 0->1, 0->2, 1->4
+      assertThat(db.countType("Relationship", true)).as("All 3 edges should be imported").isEqualTo(3);
+
+      // Verify specific edges exist
+      var vertex0 = db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex();
+      assertThat(vertex0.get("First Name")).isEqualTo("Jay");
+      assertThat(vertex0.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Relationship"))
+          .as("Vertex 0 should have 2 outgoing edges").isEqualTo(2);
+
+      var vertex1 = db.lookupByKey("Node", "Id", 1).next().getRecord().asVertex();
+      assertThat(vertex1.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Relationship"))
+          .as("Vertex 1 should have 1 outgoing edge (the last edge 1->4)").isEqualTo(1);
+      assertThat(vertex1.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Relationship"))
+          .as("Vertex 1 should have 1 incoming edge (0->1)").isEqualTo(1);
+
+      var vertex4 = db.lookupByKey("Node", "Id", 4).next().getRecord().asVertex();
+      assertThat(vertex4.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Relationship"))
+          .as("Vertex 4 should have 1 incoming edge (1->4)").isEqualTo(1);
+    }
+
+    databaseFactory.open().drop();
+
+    TestHelper.checkActiveDatabases();
+  }
+
 }
