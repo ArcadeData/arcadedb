@@ -28,6 +28,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import com.arcadedb.gremlin.ArcadeGraph;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -109,6 +113,66 @@ class GraphSONImporterIT {
       }
     }
     assertThat(DatabaseFactory.getActiveDatabaseInstance(DATABASE_PATH)).isNull();
+  }
+
+  /**
+   * Test importing GraphSON with string-based IDs (like URIs).
+   * This tests the fix for GitHub issue #1714.
+   *
+   * The issue is that when importing GraphSON files where vertex IDs are strings
+   * (not ArcadeDB RIDs), the original IDs should be preserved as a property
+   * and edges should correctly connect vertices.
+   */
+  @Test
+  void importGraphSONWithStringIds() throws Exception {
+    final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource("graphson-with-string-ids.graphson");
+    assertThat(inputFile).isNotNull();
+
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+
+      final Importer importer = new Importer(database, inputFile.getFile());
+      importer.load();
+
+      assertThat(databaseDirectory.exists()).isTrue();
+
+      // Verify types were created
+      assertThat(database.getSchema().existsType("Class")).isTrue();
+      assertThat(database.getSchema().existsType("Person")).isTrue();
+
+      // Test that we can query vertices by their original IDs using Gremlin
+      try (final ArcadeGraph graph = ArcadeGraph.open(database)) {
+        final GraphTraversalSource g = graph.traversal();
+
+        // Verify vertices were created
+        assertThat(database.countType("Class", true)).isEqualTo(2);
+        assertThat(database.countType("Person", true)).isEqualTo(2);
+
+        // Find vertex by original ID stored as property
+        List<Vertex> datatype = g.V().has("@id", "http://www.w3.org/2000/01/rdf-schema#Datatype").toList();
+        assertThat(datatype).hasSize(1);
+        assertThat(datatype.getFirst().property("name").value()).isEqualTo("Datatype");
+
+        List<Vertex> resource = g.V().has("@id", "http://www.w3.org/2000/01/rdf-schema#Resource").toList();
+        assertThat(resource).hasSize(1);
+        assertThat(resource.getFirst().property("name").value()).isEqualTo("Resource");
+
+        // Verify edges were correctly connected
+        List<Vertex> subclassTargets = g.V().has("@id", "http://www.w3.org/2000/01/rdf-schema#Datatype")
+            .out("subClassOf").toList();
+        assertThat(subclassTargets).hasSize(1);
+        assertThat(subclassTargets.getFirst().property("@id").value())
+            .isEqualTo("http://www.w3.org/2000/01/rdf-schema#Resource");
+
+        // Verify Person vertices and their edges
+        List<Vertex> john = g.V().has("@id", "http://example.org/person/John").toList();
+        assertThat(john).hasSize(1);
+        assertThat(john.getFirst().property("name").value()).isEqualTo("John");
+
+        List<Vertex> janeFromJohn = g.V().has("@id", "http://example.org/person/John").out("knows").toList();
+        assertThat(janeFromJohn).hasSize(1);
+        assertThat(janeFromJohn.getFirst().property("@id").value()).isEqualTo("http://example.org/person/Jane");
+      }
+    }
   }
 
   @BeforeEach
