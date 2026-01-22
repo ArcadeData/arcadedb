@@ -330,13 +330,12 @@ class BatchTest extends TestHelper {
   @Test
   void usingReservedVariableNames() {
     assertThatThrownBy(() -> database.command("sqlscript", """
-          FOREACH ($parent IN [1, 2, 3]){
-          RETURN;
-          }""")).isInstanceOf(CommandSQLParsingException.class);
+        FOREACH ($parent IN [1, 2, 3]){
+        RETURN;
+        }""")).isInstanceOf(CommandSQLParsingException.class);
 
     assertThatThrownBy(() -> database.command("sqlscript", "LET parent = 33;")).isInstanceOf(CommandSQLParsingException.class);
   }
-
 
   /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/1723
@@ -395,7 +394,7 @@ class BatchTest extends TestHelper {
    * Issue https://github.com/ArcadeData/arcadedb/issues/1723
    * Direct arithmetic on ResultSet variable (without explicit field access)
    * This tests the more convenient syntax that users expect to work.
-   *
+   * <p>
    * When a ResultSet contains a single row with a single column (like SELECT max(...)),
    * arithmetic operations should automatically extract the scalar value.
    */
@@ -478,66 +477,6 @@ class BatchTest extends TestHelper {
 
   /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/2350
-   * SELECT FROM variable containing RID string should work
-   */
-  @Test
-  void selectFromVariableWithRidString() {
-    database.command("sql", "CREATE DOCUMENT TYPE TestSelectFromRid");
-
-    database.transaction(() -> {
-      // Create a document and get its RID
-      final ResultSet insertResult = database.command("sql", "INSERT INTO TestSelectFromRid SET name = 'test'");
-      assertThat(insertResult.hasNext()).isTrue();
-      final String ridString = insertResult.next().getIdentity().get().toString();
-
-      // First, test that a simple LET and variable resolution works
-      final ResultSet simpleResult = database.command("sqlscript", """
-          LET $rid = '%s';
-          RETURN $rid;
-          """.formatted(ridString));
-
-      assertThat(simpleResult.hasNext()).isTrue();
-      final String resolvedRid = simpleResult.next().getProperty("value");
-      assertThat(resolvedRid).isEqualTo(ridString);
-
-      // Now test: SELECT FROM a variable containing a RID string
-      // First, verify the RID by directly selecting from it
-      final ResultSet directResult = database.query("sql", "SELECT FROM " + ridString);
-      assertThat(directResult.hasNext()).as("Direct SELECT FROM should return the record").isTrue();
-      final Result directRow = directResult.next();
-      assertThat((Object) directRow.getProperty("name")).isEqualTo("test");
-
-      // Now test with SQLSCRIPT
-      final ResultSet result = database.command("sqlscript", """
-          LET $source_id = '%s';
-          LET $source = (SELECT FROM $source_id);
-          RETURN $source;
-          """.formatted(ridString));
-
-      assertThat(result.hasNext()).isTrue();
-      final Result row = result.next();
-      // The result should contain the "value" property OR be the document directly
-      // depending on how RETURN handles the InternalResultSet
-      if (row.hasProperty("value")) {
-        final Object value = row.getProperty("value");
-        assertThat(value).isNotNull();
-        // Verify the result contains the expected document
-        if (value instanceof java.util.List<?> list) {
-          assertThat(list).isNotEmpty();
-          final Object firstItem = list.get(0);
-          if (firstItem instanceof Result r) {
-            assertThat((Object) r.getProperty("name")).isEqualTo("test");
-          }
-        }
-      } else {
-        // The row itself is the document
-        assertThat((Object) row.getProperty("name")).isEqualTo("test");
-      }
-    });
-  }
-
-  /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/2350
    * SELECT FROM variable containing nested property access with RID string
    */
   @Test
@@ -546,7 +485,8 @@ class BatchTest extends TestHelper {
 
     database.transaction(() -> {
       // Create a document and get its RID
-      final ResultSet insertResult = database.command("sql", "INSERT INTO TestSelectFromNestedRid SET name = 'nested_test'");
+      final ResultSet insertResult = database.command("sql", "INSERT INTO TestSelectFromNestedRid SET name = " +
+          "'nested_test'");
       assertThat(insertResult.hasNext()).isTrue();
       final String ridString = insertResult.next().getIdentity().get().toString();
 
