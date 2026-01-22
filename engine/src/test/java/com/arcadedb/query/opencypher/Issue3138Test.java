@@ -454,4 +454,98 @@ class Issue3138Test {
           .isEqualTo(3);
     });
   }
+
+  /**
+   * Test for GitHub issue #1948: UNWIND + MATCH with type constraint and same source_id.
+   * When batch entries have the SAME source_id but different target_ids,
+   * the query should return results for ALL batch entries, not just the first one.
+   */
+  @Test
+  void testIssue1948UnwindMatchWithSameSourceId() {
+    // Create additional Target vertices
+    final List<String> targetIds = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++) {
+        MutableVertex target = database.newVertex("Target");
+        target.set("name", "multiTarget" + i);
+        target.save();
+        targetIds.add(target.getIdentity().toString());
+      }
+    });
+
+    // Use the FIRST source ID for ALL batch entries (key scenario from issue #1948)
+    final String sameSourceId = sourceIds.get(0);
+    final List<Map<String, Object>> batch = new ArrayList<>();
+    for (String targetIdItem : targetIds) {
+      Map<String, Object> row = new HashMap<>();
+      row.put("source_id", sameSourceId); // Same source_id for all entries
+      row.put("target_id", targetIdItem);  // Different target_ids
+      batch.add(row);
+    }
+
+    // Execute UNWIND + MATCH with type constraint + MERGE (exact pattern from issue #1948)
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "UNWIND $batch as row " +
+              "MATCH (a:Source) WHERE ID(a) = row.source_id " +
+              "MATCH (b) WHERE ID(b) = row.target_id " +
+              "MERGE (a)-[r:in]->(b) " +
+              "RETURN a, b, r",
+          Map.of("batch", batch));
+
+      int count = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        count++;
+      }
+
+      // Bug in issue #1948: Only 1 result returned instead of 3
+      // Fix: Should return 3 results (one for each batch entry with different target_id)
+      assertThat(count)
+          .as("Issue #1948: With same source_id but different target_ids, should return 3 results")
+          .isEqualTo(3);
+    });
+
+    // Verify all 3 relationships were created
+    final ResultSet verifyResult = database.query("opencypher",
+        "MATCH (a:Source {name: 'source0'})-[r:in]->(b:Target) RETURN count(r) AS count");
+    final long edgeCount = ((Number) verifyResult.next().getProperty("count")).longValue();
+
+    assertThat(edgeCount)
+        .as("Should have created 3 relationships from the same source")
+        .isEqualTo(3);
+  }
+
+  /**
+   * Simpler test for issue #1948: UNWIND + MATCH with type constraint and same ID.
+   * Tests just MATCH without MERGE to isolate the iteration issue.
+   */
+  @Test
+  void testIssue1948SimpleMatchWithSameSourceId() {
+    // Use the FIRST source ID for ALL batch entries
+    final String sameSourceId = sourceIds.get(0);
+    final List<Map<String, Object>> batch = new ArrayList<>();
+    // Add the same source_id multiple times
+    batch.add(Map.of("source_id", sameSourceId));
+    batch.add(Map.of("source_id", sameSourceId));
+    batch.add(Map.of("source_id", sameSourceId));
+
+    // Execute UNWIND + MATCH with type constraint only (no MERGE)
+    final ResultSet rs = database.query("opencypher",
+        "UNWIND $batch as row " +
+            "MATCH (a:Source) WHERE ID(a) = row.source_id " +
+            "RETURN a, row",
+        Map.of("batch", batch));
+
+    int count = 0;
+    while (rs.hasNext()) {
+      rs.next();
+      count++;
+    }
+
+    // Should return 3 results (one for each batch entry, even though they all match the same vertex)
+    assertThat(count)
+        .as("Issue #1948: UNWIND + MATCH with same source_id should return one result per batch entry")
+        .isEqualTo(3);
+  }
 }
