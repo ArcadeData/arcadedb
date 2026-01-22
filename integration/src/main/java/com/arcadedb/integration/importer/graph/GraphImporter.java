@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.VertexInternal;
@@ -77,14 +78,22 @@ public class GraphImporter {
   }
 
   public void close() {
-    close(null);
+    close(null, null);
   }
 
   public void close(final EdgeLinkedCallback callback) {
+    close(callback, null);
+  }
+
+  public void close(final EdgeLinkedCallback callback, final ImporterContext context) {
     if (database.isTransactionActive())
       database.commit();
 
     database.async().waitCompletion();
+
+    // Flush any remaining connections from all thread contexts
+    // This fixes the issue where the last batch of edges for each thread was never created
+    flushRemainingConnections(context);
 
     for (GraphImporterThreadContext threadContext : threadContexts)
       threadContext.incomingConnectionsIndexThread.setReadOnly();
@@ -96,6 +105,56 @@ public class GraphImporter {
     Arrays.fill(threadContexts, null);
 
     status = Status.CLOSED;
+  }
+
+  /**
+   * Flushes any remaining edge connections from all thread contexts.
+   * This is called at the end of edge import to ensure the last batch of edges
+   * for each thread is properly created (fixes GitHub issue #1198).
+   */
+  private void flushRemainingConnections(final ImporterContext context) {
+    // Check if there are any remaining connections to flush
+    boolean hasRemainingConnections = false;
+    for (final GraphImporterThreadContext threadContext : threadContexts) {
+      if (!threadContext.connections.isEmpty() && threadContext.lastSourceVertex != null) {
+        hasRemainingConnections = true;
+        break;
+      }
+    }
+
+    if (!hasRemainingConnections)
+      return;
+
+    // Begin transaction for the flush operation
+    database.begin();
+
+    try {
+      for (final GraphImporterThreadContext threadContext : threadContexts) {
+        if (!threadContext.connections.isEmpty() && threadContext.lastSourceVertex != null) {
+          // Reload vertex if chunks are not loaded
+          if (threadContext.lastSourceVertex.getOutEdgesHeadChunk() == null)
+            threadContext.lastSourceVertex = (VertexInternal) threadContext.lastSourceVertex.getIdentity().asVertex();
+
+          // Create edges for the remaining connections
+          final List<Edge> newEdges = database.getGraphEngine().newEdges(threadContext.lastSourceVertex, threadContext.connections, false);
+
+          // Update statistics
+          if (context != null)
+            context.createdEdges.addAndGet(newEdges.size());
+
+          // Add to incoming connections index for back-linking
+          for (final Edge e : newEdges)
+            threadContext.incomingConnectionsIndexThread.put(e.getIn(), e.getIdentity(), threadContext.lastSourceVertex.getIdentity());
+
+          threadContext.connections.clear();
+        }
+      }
+
+      database.commit();
+    } catch (final Exception e) {
+      database.rollback();
+      throw e;
+    }
   }
 
   public RID getVertex(final Binary vertexIndexThreadBuffer, final long vertexId) {
