@@ -123,22 +123,32 @@ public class Issue2774IndexByItemTest extends TestHelper {
   }
 
   @Test
-  void containsAllMultipleValuesUsesIndex() {
+  void containsAllMultipleValuesReturnsCorrectResults() {
     // Test CONTAINSALL with multiple values
+    // Note: For multiple values, index is intentionally NOT used because the current
+    // index execution merges results (UNION) instead of intersecting them (INTERSECTION).
+    // This ensures correct results at the cost of performance for multi-value CONTAINSALL.
     database.transaction(() -> {
+      // Insert additional docs to test proper filtering
+      database.command("sql", "INSERT INTO doc SET nums = [1, 4, 5]"); // has 1 but not 2
+      database.command("sql", "INSERT INTO doc SET nums = [2, 4, 5]"); // has 2 but not 1
+    });
+
+    database.transaction(() -> {
+      // CONTAINSALL [1, 2] should only return docs that have BOTH 1 AND 2
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums CONTAINSALL [1, 2]");
+      long count = result.stream().count();
+      // Only the original doc [1,2,3] should match - docs with [1,4,5] or [2,4,5] should NOT
+      assertThat(count).isEqualTo(1);
+
+      // For multiple values, full scan with filter is used (by design for correctness)
       String explain = database.query("sql",
               "EXPLAIN SELECT FROM doc WHERE nums CONTAINSALL [1, 2]")
           .next()
           .getProperty("executionPlan")
           .toString();
-
-      // Should use index for efficient lookup
-      assertThat(explain).contains("FETCH FROM INDEX doc[numsbyitem]");
-      assertThat(explain).doesNotContain("FETCH FROM TYPE doc");
-
-      // Verify query returns correct results
-      ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums CONTAINSALL [1, 2]");
-      assertThat(result.hasNext()).isTrue();
+      // Index is not used for multi-value CONTAINSALL to ensure correct INTERSECTION semantics
+      assertThat(explain).contains("FETCH FROM TYPE doc");
     });
   }
 
