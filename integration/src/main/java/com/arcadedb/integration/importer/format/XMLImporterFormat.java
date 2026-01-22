@@ -70,11 +70,11 @@ public class XMLImporterFormat implements FormatImporter {
 
         case XMLStreamReader.START_ELEMENT:
           if (nestLevel == objectNestLevel) {
-            entityName = "v_" + xmlReader.getName().toString();
+            entityName = "v_" + xmlReader.getName().getLocalPart();
 
             // GET ELEMENT'S ATTRIBUTES AS PROPERTIES
             for (int i = 0; i < xmlReader.getAttributeCount(); ++i) {
-              object.put(xmlReader.getAttributeName(i).toString(), xmlReader.getAttributeValue(i));
+              object.put(xmlReader.getAttributeName(i).getLocalPart(), xmlReader.getAttributeValue(i));
               lastName = null;
             }
           } else if (nestLevel == objectNestLevel + 1) {
@@ -82,7 +82,7 @@ public class XMLImporterFormat implements FormatImporter {
             if (lastName != null)
               object.put(lastName, lastContent);
 
-            lastName = xmlReader.getName().toString();
+            lastName = xmlReader.getName().getLocalPart();
           }
 
           ++nestLevel;
@@ -98,6 +98,10 @@ public class XMLImporterFormat implements FormatImporter {
 
           if (nestLevel == objectNestLevel) {
             context.parsed.incrementAndGet();
+
+            // Auto-create vertex type if it doesn't exist
+            if (!database.getSchema().existsType(entityName))
+              database.getSchema().createVertexType(entityName);
 
             final MutableVertex record = database.newVertex(entityName);
             record.fromMap(object);
@@ -179,12 +183,12 @@ public class XMLImporterFormat implements FormatImporter {
                   nestLevel);
 
           if (nestLevel == objectNestLevel) {
-            entityName = xmlReader.getName().toString();
+            entityName = xmlReader.getName().getLocalPart();
 
             // GET ELEMENT'S ATTRIBUTES AS PROPERTIES
             for (int i = 0; i < xmlReader.getAttributeCount(); ++i) {
               analyzedSchema.getOrCreateEntity(entityName, entityType)
-                  .getOrCreateProperty(xmlReader.getAttributeName(i).toString(), xmlReader.getAttributeValue(i));
+                  .getOrCreateProperty(xmlReader.getAttributeName(i).getLocalPart(), xmlReader.getAttributeValue(i));
               lastName = null;
             }
           } else if (nestLevel == objectNestLevel + 1) {
@@ -192,7 +196,7 @@ public class XMLImporterFormat implements FormatImporter {
             if (lastName != null)
               analyzedSchema.getOrCreateEntity(entityName, entityType).getOrCreateProperty(lastName, lastContent);
 
-            lastName = xmlReader.getName().toString();
+            lastName = xmlReader.getName().getLocalPart();
           }
 
           ++nestLevel;

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<books>
+  <book id="1" isbn="978-1234567890">
+    <title>The Great Book</title>
+    <author>John Doe</author>
+    <year>2023</year>
+  </book>
+  <book id="2" isbn="978-0987654321">
+    <title>Another Book</title>
+    <author>Jane Smith</author>
+    <year>2024</year>
+  </book>
+</books>
