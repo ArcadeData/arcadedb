@@ -30,6 +30,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.DateUtils;
 
+import com.arcadedb.query.sql.executor.ResultSet;
+
 import java.math.*;
 import java.time.*;
 import java.time.temporal.*;
@@ -40,6 +42,45 @@ public class MathExpression extends SimpleNode {
   private static final Object               NULL_VALUE       = new Object();
   public            List<MathExpression> childExpressions = new ArrayList<MathExpression>();
   public final      List<Operator>       operators        = new ArrayList<>();
+
+  /**
+   * Extracts a scalar value from a ResultSet for use in arithmetic operations.
+   * <p>
+   * When a LET variable contains a ResultSet (e.g., from SELECT max(value) FROM ...),
+   * and it's used directly in arithmetic like $max + 1, we need to extract the actual
+   * scalar value instead of operating on the ResultSet object itself.
+   * <p>
+   * This method extracts the value if:
+   * - The object is a ResultSet with exactly one result
+   * - That result has exactly one property (excluding metadata)
+   * <p>
+   * Issue: https://github.com/ArcadeData/arcadedb/issues/1723
+   *
+   * @param value the value to potentially extract from
+   * @return the extracted scalar value, or the original value if extraction is not applicable
+   */
+  private static Object extractScalarFromResultSet(Object value) {
+    if (value instanceof ResultSet resultSet) {
+      // Check if we can extract a single scalar value
+      if (resultSet instanceof com.arcadedb.query.sql.executor.InternalResultSet internalResultSet) {
+        // InternalResultSet has countEntries() to check size without consuming
+        if (internalResultSet.countEntries() == 1) {
+          internalResultSet.reset(); // Reset to beginning
+          final Result result = internalResultSet.next();
+          internalResultSet.reset(); // Reset again for future use
+
+          // Get the property names (excluding metadata)
+          final Set<String> propertyNames = result.getPropertyNames();
+          if (propertyNames.size() == 1) {
+            // Single property - extract its value
+            final String propertyName = propertyNames.iterator().next();
+            return result.getProperty(propertyName);
+          }
+        }
+      }
+    }
+    return value;
+  }
 
   public Expression getExpandContent() {
     throw new CommandExecutionException("Invalid expand expression");
@@ -684,8 +725,9 @@ public class MathExpression extends SimpleNode {
       return childExpressions.getFirst().execute(currentRecord, context);
 
     if (childExpressions.size() == 2) {
-      final Object leftValue = childExpressions.getFirst().execute(currentRecord, context);
-      final Object rightValue = childExpressions.get(1).execute(currentRecord, context);
+      // Extract scalar values from ResultSets for arithmetic operations (issue #1723)
+      final Object leftValue = extractScalarFromResultSet(childExpressions.getFirst().execute(currentRecord, context));
+      final Object rightValue = extractScalarFromResultSet(childExpressions.get(1).execute(currentRecord, context));
       return operators.getFirst().apply(leftValue, rightValue);
     }
 
@@ -700,8 +742,9 @@ public class MathExpression extends SimpleNode {
       return childExpressions.getFirst().execute(currentRecord, context);
 
     if (childExpressions.size() == 2) {
-      final Object leftValue = childExpressions.getFirst().execute(currentRecord, context);
-      final Object rightValue = childExpressions.get(1).execute(currentRecord, context);
+      // Extract scalar values from ResultSets for arithmetic operations (issue #1723)
+      final Object leftValue = extractScalarFromResultSet(childExpressions.getFirst().execute(currentRecord, context));
+      final Object rightValue = extractScalarFromResultSet(childExpressions.get(1).execute(currentRecord, context));
       return operators.getFirst().apply(leftValue, rightValue);
     }
 
@@ -713,12 +756,14 @@ public class MathExpression extends SimpleNode {
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
     final MathExpression nextExpression = childExpressions.getFirst();
-    final Object val = nextExpression.execute(currentRecord, context);
+    // Extract scalar from ResultSet for arithmetic operations (issue #1723)
+    final Object val = extractScalarFromResultSet(nextExpression.execute(currentRecord, context));
     valuesStack.push(val == null ? NULL_VALUE : val);
 
     for (int i = 0; i < operators.size() && i + 1 < childExpressions.size(); i++) {
       final Operator nextOperator = operators.get(i);
-      final Object rightValue = childExpressions.get(i + 1).execute(currentRecord, context);
+      // Extract scalar from ResultSet for arithmetic operations (issue #1723)
+      final Object rightValue = extractScalarFromResultSet(childExpressions.get(i + 1).execute(currentRecord, context));
 
       if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
         Object right = valuesStack.poll();
@@ -741,12 +786,14 @@ public class MathExpression extends SimpleNode {
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
     final MathExpression nextExpression = childExpressions.getFirst();
-    final Object val = nextExpression.execute(currentRecord, context);
+    // Extract scalar from ResultSet for arithmetic operations (issue #1723)
+    final Object val = extractScalarFromResultSet(nextExpression.execute(currentRecord, context));
     valuesStack.push(val == null ? NULL_VALUE : val);
 
     for (int i = 0; i < operators.size() && i + 1 < childExpressions.size(); i++) {
       final Operator nextOperator = operators.get(i);
-      final Object rightValue = childExpressions.get(i + 1).execute(currentRecord, context);
+      // Extract scalar from ResultSet for arithmetic operations (issue #1723)
+      final Object rightValue = extractScalarFromResultSet(childExpressions.get(i + 1).execute(currentRecord, context));
 
       if (!operatorsStack.isEmpty() && operatorsStack.peek().getPriority() <= nextOperator.getPriority()) {
         Object right = valuesStack.poll();
