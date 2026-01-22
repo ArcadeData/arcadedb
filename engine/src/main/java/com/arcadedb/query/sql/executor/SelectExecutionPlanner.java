@@ -188,6 +188,10 @@ public class SelectExecutionPlanner {
       handleProjections(result, info, context);
       handleExpand(result, info, context);
       handleUnwind(result, info, context);
+      // Apply final projection after UNWIND to remove temporarily added fields
+      if (info.projectionAfterUnwind != null)
+        result.chain(new ProjectionCalculationStep(info.projectionAfterUnwind, context));
+
       handleOrderBy(result, info, context);
       if (info.skip != null)
         result.chain(new SkipExecutionStep(info.skip, context));
@@ -442,6 +446,7 @@ public class SelectExecutionPlanner {
 
     splitProjectionsForGroupBy(info, context);
     addOrderByProjections(info);
+    addUnwindProjections(info);
   }
 
   private static void rewriteIndexChainsAsSubqueries(QueryPlanningInfo info, CommandContext context) {
@@ -545,6 +550,52 @@ public class SelectExecutionPlanner {
       }
 
       for (final ProjectionItem item : additionalOrderByProjections) {
+        if (info.preAggregateProjection != null) {
+          info.preAggregateProjection.getItems().add(item);
+          info.aggregateProjection.getItems().add(projectionFromAlias(item.getAlias()));
+          info.projection.getItems().add(projectionFromAlias(item.getAlias()));
+        } else {
+          info.projection.getItems().add(item);
+        }
+      }
+    }
+  }
+
+  /**
+   * Adds UNWIND fields to projections if they are not already present.
+   * This ensures the UNWIND step can access the field values even when projections would otherwise exclude them.
+   */
+  private static void addUnwindProjections(final QueryPlanningInfo info) {
+    if (info.unwind == null || info.unwind.getItems() == null || info.unwind.getItems().isEmpty()
+        || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
+        && info.projection.getItems().getFirst().isAll())) {
+      return;
+    }
+
+    final List<String> allAliases = info.projection.getAllAliases();
+    final List<ProjectionItem> additionalUnwindProjections = new ArrayList<>();
+
+    for (final Identifier unwindItem : info.unwind.getItems()) {
+      final String unwindFieldName = unwindItem.getStringValue();
+      if (!allAliases.contains(unwindFieldName)) {
+        final ProjectionItem newProj = new ProjectionItem(-1);
+        newProj.setExpression(new Expression(unwindItem));
+        // Keep the original field name so UNWIND can find it
+        newProj.setAlias(unwindItem);
+        additionalUnwindProjections.add(newProj);
+      }
+    }
+
+    if (!additionalUnwindProjections.isEmpty()) {
+      // Save the original projection to restore after UNWIND
+      info.projectionAfterUnwind = new Projection(-1);
+      info.projectionAfterUnwind.setItems(new ArrayList<>());
+      for (final String alias : allAliases) {
+        info.projectionAfterUnwind.getItems().add(projectionFromAlias(new Identifier(alias)));
+      }
+
+      // Add the UNWIND fields to the current projection
+      for (final ProjectionItem item : additionalUnwindProjections) {
         if (info.preAggregateProjection != null) {
           info.preAggregateProjection.getItems().add(item);
           info.aggregateProjection.getItems().add(projectionFromAlias(item.getAlias()));

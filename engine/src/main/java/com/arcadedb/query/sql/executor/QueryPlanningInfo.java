@@ -45,6 +45,7 @@ public class QueryPlanningInfo {
   Projection aggregateProjection;
   Projection projection             = null;
   Projection projectionAfterOrderBy = null;
+  Projection projectionAfterUnwind  = null;
 
   LetClause globalLetClause  = null;
   boolean   globalLetPresent = false;
@@ -81,6 +82,7 @@ public class QueryPlanningInfo {
     result.aggregateProjection = this.aggregateProjection;
     result.projection = this.projection;
     result.projectionAfterOrderBy = this.projectionAfterOrderBy;
+    result.projectionAfterUnwind = this.projectionAfterUnwind;
     result.globalLetClause = this.globalLetClause;
     result.globalLetPresent = this.globalLetPresent;
     result.perRecordLetClause = this.perRecordLetClause;
