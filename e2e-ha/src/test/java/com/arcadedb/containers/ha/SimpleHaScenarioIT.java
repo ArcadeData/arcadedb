@@ -31,7 +31,7 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
     createArcadeContainer("arcade2", "{arcade1}arcade1:2424", "none", "any", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
-    List<ServerWrapper> servers = startContainers();
+    List<ServerWrapper> servers = startContainersDeeply();
 
     logger.info("Creating the database on the first arcade container");
     DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier);

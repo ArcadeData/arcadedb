@@ -121,8 +121,9 @@ public abstract class ContainersTestTemplate {
     Metrics.addRegistry(loggingMeterRegistry);
 
     // NETWORK
-    network = Network.newNetwork();
+    network = Network.builder().driver("bridge").build();
 
+    Network.newNetwork();
     // Toxiproxy
     logger.info("Creating a Toxiproxy container");
     toxiproxy = new ToxiproxyContainer("ghcr.io/shopify/toxiproxy:2.12.0")
@@ -363,6 +364,15 @@ public abstract class ContainersTestTemplate {
 //        .peek(container ->
 //            container.followOutput(logConsumer)
 //        )
+        .map(ServerWrapper::new)
+        .toList();
+  }
+  protected List<ServerWrapper> startContainersDeeply() {
+    logger.info("Starting all containers");
+    Slf4jLogConsumer logConsumer = new Slf4jLogConsumer(logger);
+
+   Startables.deepStart(containers).join();
+    return containers.stream()
         .map(ServerWrapper::new)
         .toList();
   }
