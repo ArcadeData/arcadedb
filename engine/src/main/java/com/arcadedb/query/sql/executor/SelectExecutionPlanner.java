@@ -1534,7 +1534,9 @@ public class SelectExecutionPlanner {
       return false;
 
     for (BooleanExpression exp : subBlocks) {
-      if (exp.toString().startsWith("$"))
+      // Check if expression contains a variable reference (starts with or contains "$")
+      // An expression like "#X:Y IN $brain" doesn't start with "$" but contains a variable reference
+      if (exp.toString().contains("$"))
         return true;
     }
     return false;

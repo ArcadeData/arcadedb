@@ -4337,4 +4337,151 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     result.close();
   }
+
+  /**
+   * Simplified test to verify OR conditions work without LET
+   */
+  @Test
+  void issue2586_simpleOrCondition() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Issue2586_SimpleTest");
+
+      database.command("sql", "INSERT INTO Issue2586_SimpleTest SET field1 = 'value1', field2 = 'value2'").close();
+      database.command("sql", "INSERT INTO Issue2586_SimpleTest SET field1 = 'other1', field2 = 'other2'").close();
+
+      // Test simple OR condition
+      final String query1 = "SELECT FROM Issue2586_SimpleTest WHERE field1 = 'value1' OR field2 = 'value2'";
+      final ResultSet result1 = database.query("sql", query1);
+      assertThat(result1.hasNext()).as("Simple OR condition should return results").isTrue();
+      result1.close();
+
+      // Test AND with OR in parentheses
+      final String query2 = "SELECT FROM Issue2586_SimpleTest WHERE field1 = 'value1' AND (field2 = 'value2' OR field2 = 'nonexistent')";
+      final ResultSet result2 = database.query("sql", query2);
+      assertThat(result2.hasNext()).as("AND with OR in parentheses should return results").isTrue();
+      result2.close();
+
+      // Test that failed condition returns no results
+      final String query3 = "SELECT FROM Issue2586_SimpleTest WHERE field1 = 'nonexistent' AND (field2 = 'value2' OR field2 = 'nonexistent')";
+      final ResultSet result3 = database.query("sql", query3);
+      assertThat(result3.hasNext()).as("Query with failed AND should return no results").isFalse();
+      result3.close();
+    });
+  }
+
+  /**
+   * Test for LET with IN operator but without OR condition
+   */
+  @Test
+  void issue2586_letWithInNoOr() {
+    database.transaction(() -> {
+      // Create the schema
+      database.getSchema().createVertexType("Issue2586_Chat2");
+      database.getSchema().createVertexType("Issue2586_Assistant2");
+      database.getSchema().createEdgeType("Issue2586_CreatedFromAssistant2");
+
+      // Create vertices
+      database.command("sql", "CREATE VERTEX Issue2586_Assistant2 SET name = 'assistant1'").close();
+      database.command("sql", "CREATE VERTEX Issue2586_Chat2 SET contextVariables = {'local:fin': 'value1'}").close();
+
+      // Get RIDs
+      final RID assistantRid = database.query("sql", "SELECT FROM Issue2586_Assistant2").next().getIdentity().get();
+      final RID chatRid = database.query("sql", "SELECT FROM Issue2586_Chat2").next().getIdentity().get();
+
+      // Create edge: Chat -CreatedFromAssistant-> Assistant
+      database.command("sql", "CREATE EDGE Issue2586_CreatedFromAssistant2 FROM " + chatRid + " TO " + assistantRid).close();
+
+      // Test: LET with out() and IN check - no OR condition (this should work)
+      final String query = "SELECT FROM Issue2586_Chat2 " +
+          "LET brain = out('Issue2586_CreatedFromAssistant2') " +
+          "WHERE " + assistantRid + " IN $brain";
+
+      final ResultSet result = database.query("sql", query);
+      assertThat(result.hasNext()).as("LET with IN should return results").isTrue();
+      result.close();
+
+      // Add a simple AND condition (should still work)
+      final String query2 = "SELECT FROM Issue2586_Chat2 " +
+          "LET brain = out('Issue2586_CreatedFromAssistant2') " +
+          "WHERE " + assistantRid + " IN $brain AND contextVariables['local:fin'] = 'value1'";
+
+      final ResultSet result2 = database.query("sql", query2);
+      assertThat(result2.hasNext()).as("LET with IN and simple AND should return results").isTrue();
+      result2.close();
+    });
+  }
+
+  /**
+   * Test for issue #2586: Query with LET, IN operator, AND and OR conditions
+   * The query should work correctly when combining:
+   * - LET clause with graph traversals (in(), out())
+   * - WHERE clause with IN operator on LET variable
+   * - AND combined with OR conditions in parentheses
+   */
+  @Test
+  void issue2586_letWithInAndOrCondition() {
+    database.transaction(() -> {
+      // Create the schema
+      database.getSchema().createVertexType("Issue2586_Chat");
+      database.getSchema().createVertexType("Issue2586_User");
+      database.getSchema().createVertexType("Issue2586_Assistant");
+      database.getSchema().createEdgeType("Issue2586_HasChat");
+      database.getSchema().createEdgeType("Issue2586_CreatedFromAssistant");
+
+      // Create vertices
+      database.command("sql", "CREATE VERTEX Issue2586_User SET name = 'user1'").close();
+      database.command("sql", "CREATE VERTEX Issue2586_Assistant SET name = 'assistant1'").close();
+      database.command("sql", "CREATE VERTEX Issue2586_Chat SET contextVariables = {'local:fin': 'value1'}").close();
+
+      // Get RIDs
+      final RID userRid = database.query("sql", "SELECT FROM Issue2586_User").next().getIdentity().get();
+      final RID assistantRid = database.query("sql", "SELECT FROM Issue2586_Assistant").next().getIdentity().get();
+      final RID chatRid = database.query("sql", "SELECT FROM Issue2586_Chat").next().getIdentity().get();
+
+      // Create edges: User -HasChat-> Chat and Chat -CreatedFromAssistant-> Assistant
+      database.command("sql", "CREATE EDGE Issue2586_HasChat FROM " + userRid + " TO " + chatRid).close();
+      database.command("sql", "CREATE EDGE Issue2586_CreatedFromAssistant FROM " + chatRid + " TO " + assistantRid).close();
+
+      // This is the problematic query pattern from issue #2586:
+      // SELECT with LET using in()/out(), WHERE with IN $variable AND (condition OR condition)
+      final String query = "SELECT FROM Issue2586_Chat " +
+          "LET users = in('Issue2586_HasChat'), brain = out('Issue2586_CreatedFromAssistant') " +
+          "WHERE " + assistantRid + " IN $brain AND (contextVariables['local:fin'] = 'value1' OR @rid = " + chatRid + ")";
+
+      final ResultSet result = database.query("sql", query);
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.getIdentity()).isPresent();
+      assertThat(item.getIdentity().get()).isEqualTo(chatRid);
+      assertThat(result.hasNext()).isFalse();
+      result.close();
+
+      // Also test with the OR condition being false - should still return result because first part is true
+      final String query2 = "SELECT FROM Issue2586_Chat " +
+          "LET users = in('Issue2586_HasChat'), brain = out('Issue2586_CreatedFromAssistant') " +
+          "WHERE " + assistantRid + " IN $brain AND (contextVariables['local:fin'] = 'value1' OR @rid = #999:999)";
+
+      final ResultSet result2 = database.query("sql", query2);
+      assertThat(result2.hasNext()).isTrue();
+      result2.close();
+
+      // Test with the first part of OR being false - should still return result because second part is true
+      final String query3 = "SELECT FROM Issue2586_Chat " +
+          "LET users = in('Issue2586_HasChat'), brain = out('Issue2586_CreatedFromAssistant') " +
+          "WHERE " + assistantRid + " IN $brain AND (contextVariables['local:fin'] = 'wrongValue' OR @rid = " + chatRid + ")";
+
+      final ResultSet result3 = database.query("sql", query3);
+      assertThat(result3.hasNext()).isTrue();
+      result3.close();
+
+      // Test with both parts of OR being false - should return empty
+      final String query4 = "SELECT FROM Issue2586_Chat " +
+          "LET users = in('Issue2586_HasChat'), brain = out('Issue2586_CreatedFromAssistant') " +
+          "WHERE " + assistantRid + " IN $brain AND (contextVariables['local:fin'] = 'wrongValue' OR @rid = #999:999)";
+
+      final ResultSet result4 = database.query("sql", query4);
+      assertThat(result4.hasNext()).isFalse();
+      result4.close();
+    });
+  }
 }
