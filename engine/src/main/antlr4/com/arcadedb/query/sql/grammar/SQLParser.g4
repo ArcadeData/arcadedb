@@ -854,8 +854,8 @@ conditionBlock
     | expression CONTAINSKEY expression                                 # containsKeyCondition
     | expression CONTAINSVALUE expression                               # containsValueCondition
     | expression CONTAINSTEXT expression                                # containsTextCondition
-    | expression LIKE expression                                        # likeCondition
-    | expression ILIKE expression                                       # ilikeCondition
+    | expression NOT? LIKE expression                                    # likeCondition
+    | expression NOT? ILIKE expression                                  # ilikeCondition
     | expression MATCHES expression                                     # matchesCondition
     | expression INSTANCEOF (identifier | STRING_LITERAL)               # instanceofCondition
     | expression comparisonOperator expression                          # comparisonCondition

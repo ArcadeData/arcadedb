@@ -2226,7 +2226,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * LIKE condition (e.g., name LIKE 'John%').
-   * Grammar: expression LIKE expression
+   * Grammar: expression NOT? LIKE expression
+   * Supports PostgreSQL-style semantic negation: name NOT LIKE 'pattern'
    */
   @Override
   public BooleanExpression visitLikeCondition(final SQLParser.LikeConditionContext ctx) {
@@ -2234,12 +2235,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     condition.left = (Expression) visit(ctx.expression(0));
     condition.right = (Expression) visit(ctx.expression(1));
     condition.operator = new LikeOperator(-1);
+
+    // Handle NOT LIKE
+    if (ctx.NOT() != null) {
+      final NotBlock notBlock = new NotBlock(-1);
+      notBlock.sub = condition;
+      notBlock.negate = true;
+      return notBlock;
+    }
+
     return condition;
   }
 
   /**
    * ILIKE condition (case-insensitive LIKE).
-   * Grammar: expression ILIKE expression
+   * Grammar: expression NOT? ILIKE expression
+   * Supports PostgreSQL-style semantic negation: name NOT ILIKE 'pattern'
    */
   @Override
   public BooleanExpression visitIlikeCondition(final SQLParser.IlikeConditionContext ctx) {
@@ -2247,6 +2258,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     condition.left = (Expression) visit(ctx.expression(0));
     condition.right = (Expression) visit(ctx.expression(1));
     condition.operator = new ILikeOperator(-1);
+
+    // Handle NOT ILIKE
+    if (ctx.NOT() != null) {
+      final NotBlock notBlock = new NotBlock(-1);
+      notBlock.sub = condition;
+      notBlock.negate = true;
+      return notBlock;
+    }
+
     return condition;
   }
 
