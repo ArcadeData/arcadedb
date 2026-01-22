@@ -91,6 +91,10 @@ public class BasicCommandContext implements CommandContext {
           result = getVariableFromParentHierarchy(firstPart);
       }
 
+      // Fallback to database global variables if not found in context
+      if (result == null && database != null)
+        result = database.getGlobalVariable(firstPart);
+
       while (!otherParts.isEmpty()) {
         pos = otherParts.indexOf('.');
         firstPart = pos > -1 ? otherParts.substring(0, pos) : otherParts;
@@ -155,6 +159,10 @@ public class BasicCommandContext implements CommandContext {
           result = getVariableFromParentHierarchy(name);
       }
     }
+
+    // Fallback to database global variables if not found in context
+    if (result == null && database != null)
+      result = database.getGlobalVariable(name);
 
     if (fieldName != null) {
       if (result instanceof Result result1)

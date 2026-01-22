@@ -285,7 +285,7 @@ public class Console {
         executeInfo(lineTrimmed.substring("info".length()).trim());
       else if (lineLowerCase.startsWith("load"))
         executeLoad(lineTrimmed.substring("load".length()).trim());
-      else if (lineLowerCase.startsWith("set "))
+      else if (lineLowerCase.startsWith("set ") && !lineLowerCase.startsWith("set global"))
         executeSet(lineTrimmed.substring("set".length()).trim());
       else if (lineLowerCase.startsWith("pwd"))
         outputLine(3, "Current directory: " + new File(".").getAbsolutePath());

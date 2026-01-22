@@ -5523,6 +5523,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Visit SET GLOBAL statement.
+   */
+  @Override
+  public SetGlobalStatement visitSetGlobalStmt(final SQLParser.SetGlobalStmtContext ctx) {
+    final SetGlobalStatement stmt = new SetGlobalStatement(-1);
+    final SQLParser.SetGlobalStatementContext setGlobalCtx = ctx.setGlobalStatement();
+
+    stmt.variableName = (Identifier) visit(setGlobalCtx.identifier());
+    stmt.expression = (Expression) visit(setGlobalCtx.expression());
+
+    return stmt;
+  }
+
+  /**
    * Visit RETURN statement.
    */
   @Override

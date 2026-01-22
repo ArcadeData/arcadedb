@@ -123,6 +123,7 @@ statement
     | letStatement                                   # letStmt
     | returnStatement                                # returnStmt
     | ifStatement                                    # ifStmt
+    | setGlobalStatement                             # setGlobalStmt
 
     // Utility Statements
     | explainStatement                               # explainStmt
@@ -619,6 +620,14 @@ letStatement
 
 letItem
     : identifier EQ (expression | statement | LPAREN statement RPAREN)
+    ;
+
+/**
+ * SET GLOBAL statement - sets a database-scoped transient variable
+ * SET GLOBAL $varname = expression
+ */
+setGlobalStatement
+    : SET GLOBAL identifier EQ expression
     ;
 
 /**
