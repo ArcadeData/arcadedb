@@ -105,19 +105,19 @@ public class DatabaseWrapper implements AutoCloseable {
   }
 
   public void createDatabase() {
-    RemoteServer httpServer = new RemoteServer(
+    RemoteServer remoteServer = new RemoteServer(
         server.host(),
         server.httpPort(),
         "root",
         PASSWORD);
-    httpServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    remoteServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
-    if (httpServer.exists(DATABASE)) {
+    if (remoteServer.exists(DATABASE)) {
       logger.info("Dropping existing database {}", DATABASE);
-      httpServer.drop(DATABASE);
+      remoteServer.drop(DATABASE);
     }
     logger.info("Creating  database {}", DATABASE);
-    httpServer.create(DATABASE);
+    remoteServer.create(DATABASE);
   }
 
   /**
