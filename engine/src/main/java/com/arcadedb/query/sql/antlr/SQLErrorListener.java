@@ -88,27 +88,30 @@ public class SQLErrorListener extends BaseErrorListener {
       return null;
     }
 
+    final String msgLower = msg.toLowerCase();
+
     // Detect "AND and" or "OR and" patterns (duplicate operators)
-    if (msg.contains("extraneous input 'and'") || msg.contains("extraneous input 'AND'")) {
-      // Look at the context around the error position
-      if (charPositionInLine > 0 && charPositionInLine < sqlText.length()) {
-        final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), charPositionInLine).toUpperCase();
-        if (before.contains("AND")) {
+    // ANTLR may report this as "extraneous input", "no viable alternative", or similar
+    if (msgLower.contains("'and'") || msgLower.contains("'or'")) {
+      // Look at the context around the error position to determine which operator is duplicated
+      if (charPositionInLine > 0 && charPositionInLine <= sqlText.length()) {
+        final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), charPositionInLine).toUpperCase().trim();
+        if (before.endsWith("AND") || before.contains("AND ")) {
           return "AND operator must be followed by a condition";
-        } else if (before.contains("OR")) {
+        } else if (before.endsWith("OR") || before.contains("OR ")) {
           return "OR operator must be followed by a condition";
         }
       }
-      return "AND operator must be followed by a condition";
+      // Default to AND if we can't determine from context
+      if (msgLower.contains("'and'")) {
+        return "AND operator must be followed by a condition";
+      } else {
+        return "OR operator must be followed by a condition";
+      }
     }
 
-    // Detect "OR AND" pattern
-    if (msg.contains("extraneous input 'AND'") && sqlText.toUpperCase().contains("OR AND")) {
-      return "OR operator must be followed by a condition";
-    }
-
-    // Detect missing condition after AND/OR
-    if (msg.contains("missing") || msg.contains("expecting")) {
+    // Detect missing condition after AND/OR at end of query
+    if (msgLower.contains("missing") || msgLower.contains("expecting") || msgLower.contains("no viable alternative")) {
       if (charPositionInLine > 0 && charPositionInLine <= sqlText.length()) {
         final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), Math.min(sqlText.length(), charPositionInLine)).toUpperCase().trim();
         if (before.endsWith("AND")) {
