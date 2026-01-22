@@ -25,9 +25,13 @@ import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.WhereClause;
+import org.antlr.v4.runtime.BailErrorStrategy;
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.DefaultErrorStrategy;
+import org.antlr.v4.runtime.atn.PredictionMode;
+import org.antlr.v4.runtime.misc.ParseCancellationException;
 
 import java.util.List;
 
@@ -87,8 +91,22 @@ public class SQLAntlrParser {
       parser.addErrorListener(errorListener);
       lexer.addErrorListener(errorListener);
 
-      // Parse the SQL
-      final SQLParser.ParseContext parseTree = parser.parse();
+      // Parse the SQL using two-stage strategy:
+      // 1. Try SLL mode first (faster, handles most cases)
+      // 2. Fall back to ALL(*) mode if SLL fails (handles ambiguous grammars)
+      SQLParser.ParseContext parseTree;
+      try {
+        parser.getInterpreter().setPredictionMode(PredictionMode.SLL);
+        parser.setErrorHandler(new BailErrorStrategy());
+        parseTree = parser.parse();
+      } catch (final ParseCancellationException e) {
+        // SLL mode failed, try again with ALL(*) mode
+        tokens.seek(0);
+        parser.reset();
+        parser.getInterpreter().setPredictionMode(PredictionMode.LL);
+        parser.setErrorHandler(new DefaultErrorStrategy());
+        parseTree = parser.parse();
+      }
 
       // Build AST
       final SQLASTBuilder builder = new SQLASTBuilder(database);
@@ -138,8 +156,19 @@ public class SQLAntlrParser {
       parser.addErrorListener(errorListener);
       lexer.addErrorListener(errorListener);
 
-      // Parse the script
-      final SQLParser.ParseScriptContext parseTree = parser.parseScript();
+      // Parse the script using two-stage strategy (SLL first, then ALL(*) on failure)
+      SQLParser.ParseScriptContext parseTree;
+      try {
+        parser.getInterpreter().setPredictionMode(PredictionMode.SLL);
+        parser.setErrorHandler(new BailErrorStrategy());
+        parseTree = parser.parseScript();
+      } catch (final ParseCancellationException e) {
+        tokens.seek(0);
+        parser.reset();
+        parser.getInterpreter().setPredictionMode(PredictionMode.LL);
+        parser.setErrorHandler(new DefaultErrorStrategy());
+        parseTree = parser.parseScript();
+      }
 
       // Build AST
       final SQLASTBuilder builder = new SQLASTBuilder(database);
@@ -191,8 +220,19 @@ public class SQLAntlrParser {
       parser.addErrorListener(errorListener);
       lexer.addErrorListener(errorListener);
 
-      // Parse the expression
-      final SQLParser.ParseExpressionContext parseTree = parser.parseExpression();
+      // Parse the expression using two-stage strategy (SLL first, then ALL(*) on failure)
+      SQLParser.ParseExpressionContext parseTree;
+      try {
+        parser.getInterpreter().setPredictionMode(PredictionMode.SLL);
+        parser.setErrorHandler(new BailErrorStrategy());
+        parseTree = parser.parseExpression();
+      } catch (final ParseCancellationException e) {
+        tokens.seek(0);
+        parser.reset();
+        parser.getInterpreter().setPredictionMode(PredictionMode.LL);
+        parser.setErrorHandler(new DefaultErrorStrategy());
+        parseTree = parser.parseExpression();
+      }
 
       // Build AST
       final SQLASTBuilder builder = new SQLASTBuilder(database);
@@ -235,8 +275,19 @@ public class SQLAntlrParser {
       parser.addErrorListener(errorListener);
       lexer.addErrorListener(errorListener);
 
-      // Parse the condition
-      final SQLParser.ParseConditionContext parseTree = parser.parseCondition();
+      // Parse the condition using two-stage strategy (SLL first, then ALL(*) on failure)
+      SQLParser.ParseConditionContext parseTree;
+      try {
+        parser.getInterpreter().setPredictionMode(PredictionMode.SLL);
+        parser.setErrorHandler(new BailErrorStrategy());
+        parseTree = parser.parseCondition();
+      } catch (final ParseCancellationException e) {
+        tokens.seek(0);
+        parser.reset();
+        parser.getInterpreter().setPredictionMode(PredictionMode.LL);
+        parser.setErrorHandler(new DefaultErrorStrategy());
+        parseTree = parser.parseCondition();
+      }
 
       // Build AST
       final SQLASTBuilder builder = new SQLASTBuilder(database);

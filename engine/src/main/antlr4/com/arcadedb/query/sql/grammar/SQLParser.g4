@@ -925,6 +925,8 @@ projectionItem
 /**
  * Expression hierarchy with left recursion for operator precedence
  * Includes null coalescing operator (??)
+ * Note: parenthesizedWhereExpr is placed LAST among non-left-recursive alternatives
+ * so ANTLR tries mathExpression first for pure expressions like (1 + 2).
  */
 expression
     : expression SC_OR expression                                       # arrayConcat
@@ -934,8 +936,8 @@ expression
     | TRUE                                                              # trueLiteral
     | FALSE                                                             # falseLiteral
     | rid                                                               # ridLiteral
-    | LPAREN whereClause RPAREN                                         # parenthesizedWhereExpr
     | json                                                              # jsonLiteral
+    | LPAREN whereClause RPAREN                                         # parenthesizedWhereExpr
     ;
 
 /**
@@ -974,7 +976,8 @@ baseExpression
     | identifier (DOT identifier)* methodCall* arraySelector* modifier* # identifierChain
     | functionCall                                                      # functionCallExpr
     | inputParameter modifier*                                          # inputParam
-    | LPAREN (statement | expression) RPAREN modifier*                  # parenthesizedExpr
+    | LPAREN statement RPAREN modifier*                                 # parenthesizedStmt
+    | LPAREN expression RPAREN modifier*                                # parenthesizedExpr
     | arrayLiteral modifier*                                            # arrayLit
     | mapLiteral modifier*                                              # mapLit
     | LBRACKET expression FOR identifier IN expression (WHERE whereClause)? RBRACKET # listComprehension

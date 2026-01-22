@@ -1850,8 +1850,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final SQLParser.MathExpressionContext leftMathCtx = ((SQLParser.MathExprContext) leftExprCtx).mathExpression();
       if (leftMathCtx instanceof SQLParser.BaseContext) {
         final SQLParser.BaseExpressionContext leftBaseCtx = ((SQLParser.BaseContext) leftMathCtx).baseExpression();
-        if (leftBaseCtx instanceof SQLParser.ParenthesizedExprContext) {
-          final SQLParser.ParenthesizedExprContext leftParenCtx = (SQLParser.ParenthesizedExprContext) leftBaseCtx;
+        if (leftBaseCtx instanceof SQLParser.ParenthesizedStmtContext) {
+          final SQLParser.ParenthesizedStmtContext leftParenCtx = (SQLParser.ParenthesizedStmtContext) leftBaseCtx;
           if (leftParenCtx.statement() != null) {
             // (SELECT ...) IN tags - create expression wrapper for subquery
             condition.left = createStatementExpression((SelectStatement) visit(leftParenCtx.statement()));
@@ -1929,8 +1929,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final SQLParser.MathExpressionContext mathCtx = ((SQLParser.MathExprContext) exprCtx).mathExpression();
         if (mathCtx instanceof SQLParser.BaseContext) {
           final SQLParser.BaseExpressionContext baseCtx = ((SQLParser.BaseContext) mathCtx).baseExpression();
-          if (baseCtx instanceof SQLParser.ParenthesizedExprContext) {
-            final SQLParser.ParenthesizedExprContext parenCtx = (SQLParser.ParenthesizedExprContext) baseCtx;
+          if (baseCtx instanceof SQLParser.ParenthesizedStmtContext) {
+            final SQLParser.ParenthesizedStmtContext parenCtx = (SQLParser.ParenthesizedStmtContext) baseCtx;
             if (parenCtx.statement() != null) {
               // IN (SELECT ...) - extract the subquery
               condition.rightStatement = (SelectStatement) visit(parenCtx.statement());
@@ -2055,8 +2055,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final SQLParser.MathExpressionContext mathCtx = ((SQLParser.MathExprContext) exprCtx).mathExpression();
           if (mathCtx instanceof SQLParser.BaseContext) {
             final SQLParser.BaseExpressionContext baseCtx = ((SQLParser.BaseContext) mathCtx).baseExpression();
-            if (baseCtx instanceof SQLParser.ParenthesizedExprContext) {
-              final SQLParser.ParenthesizedExprContext parenCtx = (SQLParser.ParenthesizedExprContext) baseCtx;
+            if (baseCtx instanceof SQLParser.ParenthesizedStmtContext) {
+              final SQLParser.ParenthesizedStmtContext parenCtx = (SQLParser.ParenthesizedStmtContext) baseCtx;
               if (parenCtx.statement() != null) {
                 // CONTAINS (SELECT ...) - need to handle as subquery
                 // ContainsCondition doesn't have a rightStatement field, so wrap in expression
@@ -2402,6 +2402,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Parenthesized WHERE clause alternative.
+   * Handles conditions in parentheses like (1 > 0).
    */
   @Override
   public Expression visitParenthesizedWhereExpr(final SQLParser.ParenthesizedWhereExprContext ctx) {
@@ -3255,30 +3256,34 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Parenthesized statement visitor.
+   * Handles (statement) - subqueries and nested statements.
+   * Grammar: LPAREN statement RPAREN modifier*
+   */
+  @Override
+  public BaseExpression visitParenthesizedStmt(final SQLParser.ParenthesizedStmtContext ctx) {
+    final Statement stmt = (Statement) visit(ctx.statement());
+    if (stmt instanceof SelectStatement) {
+      // Return a SubqueryExpression that wraps the SELECT statement
+      return new SubqueryExpression((SelectStatement) stmt);
+    } else {
+      // For other statements (INSERT, UPDATE, DELETE, etc.), wrap them in a StatementExpression
+      // This allows statements like: INSERT INTO foo SET x = (INSERT INTO bar SET y = 1)
+      return new StatementExpression(stmt);
+    }
+  }
+
+  /**
    * Parenthesized expression visitor.
-   * Handles both (expression) and (statement) alternatives.
+   * Handles (expression) - pure expressions in parentheses.
+   * Grammar: LPAREN expression RPAREN modifier*
    */
   @Override
   public BaseExpression visitParenthesizedExpr(final SQLParser.ParenthesizedExprContext ctx) {
-    if (ctx.expression() != null) {
-      // Regular parenthesized expression
-      final BaseExpression baseExpr = new BaseExpression(-1);
-      baseExpr.expression = (Expression) visit(ctx.expression());
-      return baseExpr;
-    } else if (ctx.statement() != null) {
-      // Parenthesized statement (subquery or nested statement)
-      final Statement stmt = (Statement) visit(ctx.statement());
-      if (stmt instanceof SelectStatement) {
-        // Return a SubqueryExpression that wraps the SELECT statement
-        return new SubqueryExpression((SelectStatement) stmt);
-      } else {
-        // For other statements (INSERT, UPDATE, DELETE, etc.), wrap them in a StatementExpression
-        // This allows statements like: INSERT INTO foo SET x = (INSERT INTO bar SET y = 1)
-        return new StatementExpression(stmt);
-      }
-    }
-
-    return new BaseExpression(-1);
+    // Regular parenthesized expression
+    final BaseExpression baseExpr = new BaseExpression(-1);
+    baseExpr.expression = (Expression) visit(ctx.expression());
+    return baseExpr;
   }
 
   /**
@@ -3959,8 +3964,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final SQLParser.BaseContext baseCtx = (SQLParser.BaseContext) mathCtx;
         final SQLParser.BaseExpressionContext baseExprCtx = baseCtx.baseExpression();
 
-        if (baseExprCtx != null && baseExprCtx instanceof SQLParser.ParenthesizedExprContext) {
-          final SQLParser.ParenthesizedExprContext parenCtx = (SQLParser.ParenthesizedExprContext) baseExprCtx;
+        if (baseExprCtx != null && baseExprCtx instanceof SQLParser.ParenthesizedStmtContext) {
+          final SQLParser.ParenthesizedStmtContext parenCtx = (SQLParser.ParenthesizedStmtContext) baseExprCtx;
           if (parenCtx.statement() != null) {
             // Found a statement inside parentheses - visit it directly
             statementFromExpr = (Statement) visit(parenCtx.statement());
