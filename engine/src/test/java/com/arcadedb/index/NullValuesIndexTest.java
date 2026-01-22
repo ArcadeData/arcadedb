@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -211,5 +213,204 @@ class NullValuesIndexTest extends TestHelper {
     });
 
     database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + TOT));
+  }
+
+  @Test
+  void nullStrategyIndex_basicInsertAndLookup() {
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
+
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    type.createProperty("id", Integer.class);
+    type.createProperty("name", String.class);
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .withPageSize(PAGE_SIZE)
+        .create();
+    final TypeIndex nameIndex = database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "name" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false)
+        .withPageSize(PAGE_SIZE)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+        .create();
+
+    database.transaction(() -> {
+      // Insert documents with non-null names
+      for (int i = 0; i < TOT; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        v.set("name", "Jay" + i);
+        v.save();
+      }
+
+      // Insert documents with null names
+      for (int i = TOT; i < TOT + 3; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        // name is null
+        v.save();
+      }
+    });
+
+    // Verify total count
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 3));
+
+    // Verify we can look up NULL values via the index
+    database.transaction(() -> {
+      final IndexCursor cursor = nameIndex.get(new Object[] { null });
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(3);
+    });
+  }
+
+  @Test
+  void nullStrategyIndex_sqlIsNullQuery() {
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
+
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    type.createProperty("id", Integer.class);
+    type.createProperty("name", String.class);
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .withPageSize(PAGE_SIZE)
+        .create();
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "name" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false)
+        .withPageSize(PAGE_SIZE)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+        .create();
+
+    database.transaction(() -> {
+      // Insert documents with non-null names
+      for (int i = 0; i < TOT; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        v.set("name", "Jay" + i);
+        v.save();
+      }
+
+      // Insert documents with null names
+      for (int i = TOT; i < TOT + 5; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        // name is null
+        v.save();
+      }
+    });
+
+    // Query using SQL IS NULL
+    database.transaction(() -> {
+      final var result = database.query("SQL", "SELECT FROM " + TYPE_NAME + " WHERE name IS NULL");
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(5);
+    });
+  }
+
+  @Test
+  void nullStrategyIndex_uniqueAllowsMultipleNulls() {
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
+
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    type.createProperty("id", Integer.class);
+    type.createProperty("name", String.class);
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .withPageSize(PAGE_SIZE)
+        .create();
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "name" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true) // UNIQUE index
+        .withPageSize(PAGE_SIZE)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+        .create();
+
+    // Should be able to insert multiple documents with null name (SQL standard: NULL != NULL)
+    database.transaction(() -> {
+      for (int i = 0; i < 5; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        // name is null
+        v.save();
+      }
+    });
+
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(5));
+  }
+
+  @Test
+  void nullStrategyIndex_persistenceReload() {
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
+
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    type.createProperty("id", Integer.class);
+    type.createProperty("name", String.class);
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .withPageSize(PAGE_SIZE)
+        .create();
+    database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "name" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false)
+        .withPageSize(PAGE_SIZE)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+        .create();
+
+    database.transaction(() -> {
+      // Insert documents with non-null names
+      for (int i = 0; i < TOT; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        v.set("name", "Jay" + i);
+        v.save();
+      }
+
+      // Insert documents with null names
+      for (int i = TOT; i < TOT + 3; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        // name is null
+        v.save();
+      }
+    });
+
+    database.close();
+    database = factory.open();
+
+    // Verify NULL_STRATEGY persisted
+    database.transaction(() -> {
+      final Index nameIndex = database.getSchema().getIndexByName(TYPE_NAME + "[name]");
+      assertThat(nameIndex.getNullStrategy()).isEqualTo(LSMTreeIndexAbstract.NULL_STRATEGY.INDEX);
+    });
+
+    // Verify we can still query NULL values after reopen
+    database.transaction(() -> {
+      final var result = database.query("SQL", "SELECT FROM " + TYPE_NAME + " WHERE name IS NULL");
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(3);
+    });
   }
 }

@@ -35,7 +35,9 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GeOperator;
 import com.arcadedb.query.sql.parser.GtOperator;
 import com.arcadedb.query.sql.parser.InCondition;
+import com.arcadedb.query.sql.parser.IsNullCondition;
 import com.arcadedb.query.sql.parser.LeOperator;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
@@ -217,6 +219,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         processAndBlock();
       } else if (condition instanceof InCondition) {
         processInCondition();
+      } else if (condition instanceof IsNullCondition) {
+        processIsNullCondition();
       } else {
         //TODO process containsAny
         throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
@@ -292,6 +296,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     init(fromKey, fromKeyIncluded, toKey, toKeyIncluded);
   }
 
+  private void processIsNullCondition() {
+    final int keyCount = index.getPropertyNames().size();
+    final Object[] nullKeys = new Object[keyCount];
+    cursor = index.get(nullKeys);
+    fetchNextEntry();
+  }
+
   private void processFlatIteration() {
     cursor = index.iterator(isOrderAsc());
 
@@ -302,20 +313,24 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private void fetchNullKeys() {
-//    if (index.getDefinition().isNullValuesIgnored()) {
-    nullKeyIterator = Collections.emptyIterator();
-//      return;
-//    }
-//    Object nullIter = index.get(null);
-//    if (nullIter instanceof PIdentifiable) {
-//      nullKeyIterator = Collections.singleton(nullIter).iterator();
-//    } else if (nullIter instanceof Iterable) {
-//      nullKeyIterator = ((Iterable) nullIter).iterator();
-//    } else if (nullIter instanceof Iterator) {
-//      nullKeyIterator = (Iterator) nullIter;
-//    } else {
-//      nullKeyIterator = Collections.emptyIterator();
-//    }
+    if (index.getNullStrategy() != LSMTreeIndexAbstract.NULL_STRATEGY.INDEX) {
+      nullKeyIterator = Collections.emptyIterator();
+      return;
+    }
+    final int keyCount = index.getPropertyNames().size();
+    final Object[] nullKeys = new Object[keyCount];
+    final IndexCursor nullCursor = index.get(nullKeys);
+    nullKeyIterator = new Iterator<>() {
+      @Override
+      public boolean hasNext() {
+        return nullCursor.hasNext();
+      }
+
+      @Override
+      public Identifiable next() {
+        return nullCursor.next();
+      }
+    };
   }
 
   private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
