@@ -876,7 +876,17 @@ orderBy
     ;
 
 orderByItem
-    : expression (ASC | DESC)?
+    : expression orderDirection?
+    ;
+
+/**
+ * Order direction - supports ASC/DESC keywords, TRUE/FALSE boolean alternatives,
+ * and input parameters (for parameterized queries).
+ * TRUE = ASC (ascending, the default), FALSE = DESC (descending).
+ * The boolean/parameter alternatives allow setting sort direction via HTTP API params.
+ */
+orderDirection
+    : ASC | TRUE | DESC | FALSE | inputParameter
     ;
 
 /**

@@ -38,6 +38,8 @@ public class OrderByItem {
   public Modifier modifier;
   public String   recordAttr;
   protected           String   type = ASC;
+  // For parameterized order direction (e.g., ORDER BY field :dir)
+  protected           InputParameter directionParameter;
 
   public String getAlias() {
     return alias;
@@ -63,6 +65,14 @@ public class OrderByItem {
     this.recordAttr = recordAttr;
   }
 
+  public InputParameter getDirectionParameter() {
+    return directionParameter;
+  }
+
+  public void setDirectionParameter(final InputParameter directionParameter) {
+    this.directionParameter = directionParameter;
+  }
+
   public String getName() {
     return alias != null ? alias : recordAttr != null ? recordAttr : null;
   }
@@ -76,7 +86,10 @@ public class OrderByItem {
     } else if (recordAttr != null) {
       builder.append(recordAttr);
     }
-    if (type != null) {
+    if (directionParameter != null) {
+      builder.append(" ");
+      directionParameter.toString(params, builder);
+    } else if (type != null) {
       builder.append(" " + type);
     }
   }
@@ -127,7 +140,18 @@ public class OrderByItem {
         result = 0;
       }
     }
-    if (DESC.equals(type)) {
+    // Determine sort direction: check parameterized direction first, then static type
+    boolean isDescending = DESC.equals(type);
+    if (directionParameter != null) {
+      final Object dirValue = directionParameter.getValue(context.getInputParameters());
+      // false = DESC (descending), true/null = ASC (ascending, default)
+      if (Boolean.FALSE.equals(dirValue)) {
+        isDescending = true;
+      } else if (dirValue instanceof String) {
+        isDescending = DESC.equalsIgnoreCase((String) dirValue);
+      }
+    }
+    if (isDescending) {
       result = -1 * result;
     }
     return result;
@@ -139,6 +163,7 @@ public class OrderByItem {
     result.modifier = modifier == null ? null : modifier.copy();
     result.recordAttr = recordAttr;
     result.type = type;
+    result.directionParameter = directionParameter == null ? null : directionParameter.copy();
     return result;
   }
 

@@ -3915,9 +3915,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       throw new CommandSQLParsingException("Failed to build ORDER BY item: " + e.getMessage(), e);
     }
 
-    // Set ASC or DESC
-    if (ctx.DESC() != null) {
-      item.setType(OrderByItem.DESC);
+    // Set ASC or DESC based on orderDirection
+    // Supports ASC/DESC keywords, TRUE/FALSE boolean alternatives, and input parameters
+    // TRUE = ASC (ascending, default), FALSE = DESC (descending)
+    // Parameters are evaluated at runtime (true/ASC = ascending, false/DESC = descending)
+    final SQLParser.OrderDirectionContext dirCtx = ctx.orderDirection();
+    if (dirCtx != null) {
+      if (dirCtx.inputParameter() != null) {
+        // Direction specified via parameter - will be resolved at runtime
+        item.setDirectionParameter((InputParameter) visit(dirCtx.inputParameter()));
+        // Default to ASC, will be overridden at compare time if parameter value is false/DESC
+        item.setType(OrderByItem.ASC);
+      } else if (dirCtx.DESC() != null || dirCtx.FALSE() != null) {
+        item.setType(OrderByItem.DESC);
+      } else {
+        item.setType(OrderByItem.ASC);
+      }
     } else {
       item.setType(OrderByItem.ASC);
     }
