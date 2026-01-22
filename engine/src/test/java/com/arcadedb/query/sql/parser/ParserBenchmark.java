@@ -31,9 +31,9 @@ import java.util.Map;
  */
 public class ParserBenchmark {
 
-  private static Database database;
-  private static final int WARMUP_ITERATIONS = 100;
-  private static final int BENCHMARK_ITERATIONS = 1000;
+  private static       Database database;
+  private static final int      WARMUP_ITERATIONS    = 100;
+  private static final int      BENCHMARK_ITERATIONS = 1000;
 
   // Test queries
   private static final String SIMPLE_SELECT =
@@ -41,33 +41,33 @@ public class ParserBenchmark {
 
   private static final String COMPLEX_SELECT =
       "SELECT name, age, total, status " +
-      "FROM Person " +
-      "WHERE (age > 18 AND age < 65) " +
-      "AND (country = 'USA' OR country = 'Canada' OR country = 'Mexico') " +
-      "AND ((status = 'pending' AND total > 100) OR (status = 'completed' AND total > 500)) " +
-      "AND (verified = true OR (score > 80 AND level >= 5)) " +
-      "AND NOT (banned = true OR suspended = true) " +
-      "AND (createdDate > '2024-01-01' AND createdDate < '2024-12-31') " +
-      "ORDER BY total DESC, name ASC " +
-      "SKIP 20 LIMIT 50";
+          "FROM Person " +
+          "WHERE (age > 18 AND age < 65) " +
+          "AND (country = 'USA' OR country = 'Canada' OR country = 'Mexico') " +
+          "AND ((status = 'pending' AND total > 100) OR (status = 'completed' AND total > 500)) " +
+          "AND (verified = true OR (score > 80 AND level >= 5)) " +
+          "AND NOT (banned = true OR suspended = true) " +
+          "AND (createdDate > '2024-01-01' AND createdDate < '2024-12-31') " +
+          "ORDER BY total DESC, name ASC " +
+          "SKIP 20 LIMIT 50";
 
   private static final String MATCH_QUERY_1 =
       "MATCH {type: Person, as: p, where: (name = 'John' AND age > 25)} " +
-      ".out('Follows'){as: followed, where: (verified = true)} " +
-      ".out('Likes'){as: liked, maxDepth: 3} " +
-      "RETURN p.name, followed.name, liked.title " +
-      "ORDER BY p.name " +
-      "LIMIT 100";
+          ".out('Follows'){as: followed, where: (verified = true)} " +
+          ".out('Likes'){as: liked, maxDepth: 3} " +
+          "RETURN p.name, followed.name, liked.title " +
+          "ORDER BY p.name " +
+          "LIMIT 100";
 
   private static final String MATCH_QUERY_2 =
       "MATCH {type: Employee, as: emp, where: (department = 'Engineering')} " +
-      ".out('WorksOn'){as: project, where: (status = 'active')} " +
-      ".in('ManagedBy'){as: manager} " +
-      ".out('ReportsTo'){as: director, optional: true} " +
-      ", {as: emp}.out('HasSkill'){as: skill, where: (level >= 3)} " +
-      "RETURN emp.name, project.name, manager.name, director.name, skill.name " +
-      "GROUP BY emp.name " +
-      "ORDER BY emp.name";
+          ".out('WorksOn'){as: project, where: (status = 'active')} " +
+          ".in('ManagedBy'){as: manager} " +
+          ".out('ReportsTo'){as: director, optional: true} " +
+          ", {as: emp}.out('HasSkill'){as: skill, where: (level >= 3)} " +
+          "RETURN emp.name, project.name, manager.name, director.name, skill.name " +
+          "GROUP BY emp.name " +
+          "ORDER BY emp.name";
 
   // Individual statements that are parsed separately to measure parsing time
   private static final String[] SQL_STATEMENTS = {
@@ -82,6 +82,8 @@ public class ParserBenchmark {
       "INSERT INTO Session SET userId = #1:0, token = uuid(), expires = sysdate()",
       "DELETE FROM TempData WHERE createdAt < '2024-01-01'"
   };
+
+  private static final String MANY_PARENTHESIS = "SELECT (((((((1 > 0))))))) AS ref0 FROM t0;";
 
   @BeforeAll
   static void setup() {
@@ -109,6 +111,7 @@ public class ParserBenchmark {
     Map<String, Object> queries = new LinkedHashMap<>();
     queries.put("Simple SELECT", SIMPLE_SELECT);
     queries.put("Complex SELECT (AND/OR)", COMPLEX_SELECT);
+    queries.put("SQL Many Parenthesis", MANY_PARENTHESIS);
     queries.put("MATCH Query 1", MATCH_QUERY_1);
     queries.put("MATCH Query 2", MATCH_QUERY_2);
     queries.put("Mixed SQL (10 cmds)", SQL_STATEMENTS);
@@ -256,7 +259,7 @@ public class ParserBenchmark {
 
       long diff = antlrTime - javaccTime;
       String winner = javaccTime < antlrTime ? "JavaCC" :
-                      antlrTime < javaccTime ? "ANTLR" : "TIE";
+          antlrTime < javaccTime ? "ANTLR" : "TIE";
       String diffStr = (diff >= 0 ? "+" : "") + diff;
 
       System.out.printf("%-30s │ %12d │ %12d │ %12s │ %10s%n",
@@ -269,14 +272,14 @@ public class ParserBenchmark {
 
     long totalDiff = totalAntlr - totalJavacc;
     String totalWinner = totalJavacc < totalAntlr ? "JavaCC" :
-                         totalAntlr < totalJavacc ? "ANTLR" : "TIE";
+        totalAntlr < totalJavacc ? "ANTLR" : "TIE";
     String totalDiffStr = (totalDiff >= 0 ? "+" : "") + totalDiff;
 
     System.out.printf("%-30s │ %12d │ %12d │ %12s │ %10s%n",
         "TOTAL", totalJavacc, totalAntlr, totalDiffStr, totalWinner);
 
     // Calculate percentage difference
-    double pctDiff = ((double)(totalAntlr - totalJavacc) / totalJavacc) * 100;
+    double pctDiff = ((double) (totalAntlr - totalJavacc) / totalJavacc) * 100;
     System.out.println("=".repeat(90));
     System.out.printf("Overall: ANTLR is %.1f%% %s than JavaCC%n",
         Math.abs(pctDiff),
