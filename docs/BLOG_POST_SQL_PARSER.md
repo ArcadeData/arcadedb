@@ -34,23 +34,21 @@ RESULTS SUMMARY
 ==========================================================================================
 Query Type                     │  JavaCC (µs) │   ANTLR (µs) │    Diff (µs) │     Winner
 ------------------------------─┼─------------─┼─------------─┼─------------─┼─----------
-Simple SELECT                  │          134 │          203 │          +69 │     JavaCC
-Complex SELECT (AND/OR)        │         1101 │          238 │         -863 │      ANTLR
-MATCH Query 1                  │          211 │          367 │         +156 │     JavaCC
-MATCH Query 2                  │          257 │          504 │         +247 │     JavaCC
-Mixed SQL (10 cmds)            │          760 │          293 │         -467 │      ANTLR
+Simple SELECT                  │          173 │           74 │          -99 │      ANTLR
+Complex SELECT (AND/OR)        │          520 │          211 │         -309 │      ANTLR
+SQL Many Parenthesis           │          122 │           29 │          -93 │      ANTLR
+MATCH Query 1                  │          272 │           93 │         -179 │      ANTLR
+MATCH Query 2                  │          293 │          102 │         -191 │      ANTLR
+Mixed SQL (10 cmds)            │          721 │          138 │         -583 │      ANTLR
 ------------------------------─┼─------------─┼─------------─┼─------------─┼─----------
-TOTAL                          │         2463 │         1605 │         -858 │      ANTLR
+TOTAL                          │         2101 │          647 │        -1454 │      ANTLR
 ==========================================================================================
-Overall: ANTLR is 34.8% faster than JavaCC
+Overall: ANTLR is 69.2% faster than JavaCC
 ==========================================================================================
 ```
 
 **Key Takeaways:**
-- **Overall, ANTLR is 34.8% faster** across our benchmark suite
-- **Complex queries see the biggest gains** - queries with multiple AND/OR conditions are now 78% faster (863µs improvement)
-- **Mixed workloads benefit significantly** - batches of varied SQL commands show 61% improvement (467µs faster)
-- **Simple queries show a small regression** - basic SELECTs and some MATCH queries are slightly slower, but the overall gains far outweigh these minor trade-offs
+- **Overall, ANTLR is 69.2% faster** across our benchmark suite
 
 The pattern is clear: the more complex your queries, the more you'll benefit from the new parser. For real-world applications with diverse query patterns, the ANTLR implementation delivers substantially better performance.
 
