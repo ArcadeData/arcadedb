@@ -48,16 +48,39 @@ import java.util.logging.Level;
 public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
   private final GraphImporter.GraphImporterThreadContext threadContext;
   private final String                                   edgeTypeName;
-  private final long                                     sourceVertexKey;
-  private final long                                     destinationVertexKey;
+  private final Object                                   sourceVertexKey;
+  private final Object                                   destinationVertexKey;
   private final Object[]                                 params;
   private final ImporterContext                          context;
   private final ImporterSettings                         settings;
 
+  /**
+   * Constructor for long vertex keys (legacy, for backward compatibility).
+   */
   public CreateEdgeFromImportTask(final GraphImporter.GraphImporterThreadContext threadContext,
       final String edgeTypeName,
       final long sourceVertexKey,
       final long destinationVertexKey,
+      final Object[] edgeProperties,
+      final ImporterContext context,
+      final ImporterSettings settings) {
+    this.threadContext = threadContext;
+    this.edgeTypeName = edgeTypeName;
+    this.sourceVertexKey = sourceVertexKey;
+    this.destinationVertexKey = destinationVertexKey;
+    this.params = edgeProperties;
+    this.context = context;
+    this.settings = settings;
+  }
+
+  /**
+   * Constructor for Object vertex keys (supports any ID type including String).
+   * Added to fix GitHub issue #1552.
+   */
+  public CreateEdgeFromImportTask(final GraphImporter.GraphImporterThreadContext threadContext,
+      final String edgeTypeName,
+      final Object sourceVertexKey,
+      final Object destinationVertexKey,
       final Object[] edgeProperties,
       final ImporterContext context,
       final ImporterSettings settings) {

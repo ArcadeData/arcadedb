@@ -111,6 +111,59 @@ class CSVImporterIT {
   }
 
   /**
+   * Regression test for GitHub issue #1552: Edge import should use typeIdType for from/to fields.
+   * By default typeIdType is String, but edge from/to fields were always parsed as Long.
+   * This test verifies that String IDs work correctly for both vertices and edges.
+   */
+  @Test
+  void testRegression_Issue1552_StringIdType() {
+    final String databasePath = "target/databases/test-import-graph-stringid";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    // Import with default typeIdType (String) - this should work now
+    Importer importer = new Importer(new String[] {
+        "-vertices", "src/test/resources/importer-vertices-stringid.csv",
+        "-edges", "src/test/resources/importer-edges-stringid.csv",
+        "-database", databasePath,
+        "-typeIdProperty", "Id",
+        // typeIdType defaults to "String" - this is the key part of the test
+        "-typeIdUnique", "true",
+        "-forceDatabaseCreate", "true",
+        "-edgeFromField", "From",
+        "-edgeToField", "To"
+    });
+    importer.load();
+
+    try (final Database db = databaseFactory.open()) {
+      assertThat(db.countType("Node", true)).isEqualTo(6);
+      assertThat(db.countType("Relationship", true)).as("All 3 edges should be imported with String IDs").isEqualTo(3);
+
+      // Verify specific edges exist using String IDs
+      var vertexA = db.lookupByKey("Node", "Id", "A").next().getRecord().asVertex();
+      assertThat(vertexA.get("First Name")).isEqualTo("Jay");
+      assertThat(vertexA.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Relationship"))
+          .as("Vertex A should have 2 outgoing edges").isEqualTo(2);
+
+      var vertexB = db.lookupByKey("Node", "Id", "B").next().getRecord().asVertex();
+      assertThat(vertexB.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Relationship"))
+          .as("Vertex B should have 1 outgoing edge (B->E)").isEqualTo(1);
+      assertThat(vertexB.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Relationship"))
+          .as("Vertex B should have 1 incoming edge (A->B)").isEqualTo(1);
+
+      var vertexE = db.lookupByKey("Node", "Id", "E").next().getRecord().asVertex();
+      assertThat(vertexE.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Relationship"))
+          .as("Vertex E should have 1 incoming edge (B->E)").isEqualTo(1);
+    }
+
+    databaseFactory.open().drop();
+
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
    * Test for GitHub issue #1198: IMPORT DATABASE misses edge
    * This test verifies that ALL edges are imported, including the last one.
    * The bug was that the last edge batch was never flushed when importing ended.

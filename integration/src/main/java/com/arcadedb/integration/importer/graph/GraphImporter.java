@@ -52,7 +52,7 @@ public class GraphImporter {
   public class GraphImporterThreadContext {
     Binary                                vertexIndexThreadBuffer;
     CompressedRID2RIDsIndex               incomingConnectionsIndexThread;
-    Long                                  lastSourceKey    = null;
+    Object                                lastSourceKey    = null;
     VertexInternal                        lastSourceVertex = null;
     List<GraphEngine.CreateEdgeOperation> connections      = new ArrayList<>();
     int                                   importedEdges    = 0;
@@ -165,6 +165,14 @@ public class GraphImporter {
     return verticesIndex.get(vertexId);
   }
 
+  public RID getVertex(final Binary vertexIndexThreadBuffer, final Object vertexId) {
+    return verticesIndex.get(vertexIndexThreadBuffer, vertexId);
+  }
+
+  public RID getVertex(final Object vertexId) {
+    return verticesIndex.get(vertexId);
+  }
+
   public void createVertex(final String vertexTypeName, final String vertexId, final Object[] vertexProperties) {
     final Object transformedVertexId = verticesIndex.getKeyBinaryType().newInstance(vertexId);
 
@@ -185,7 +193,9 @@ public class GraphImporter {
     }
   }
 
-  //TODO SUPPORT NOT ONLY LONGS AS VERTICES KEYS
+  /**
+   * Creates an edge with long vertex keys (legacy method for backward compatibility).
+   */
   public void createEdge(final long sourceVertexKey,
       final String edgeTypeName,
       final long destinationVertexKey,
@@ -194,6 +204,24 @@ public class GraphImporter {
       final ImporterSettings settings) {
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
     final int slot = async.getSlot((int) sourceVertexKey);
+
+    async.scheduleTask(slot,
+        new CreateEdgeFromImportTask(threadContexts[slot], edgeTypeName, sourceVertexKey, destinationVertexKey, edgeProperties,
+            context, settings), true, 70);
+  }
+
+  /**
+   * Creates an edge with Object vertex keys (supports any ID type including String).
+   * This method was added to fix GitHub issue #1552.
+   */
+  public void createEdge(final Object sourceVertexKey,
+      final String edgeTypeName,
+      final Object destinationVertexKey,
+      final Object[] edgeProperties,
+      final ImporterContext context,
+      final ImporterSettings settings) {
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
+    final int slot = async.getSlot(sourceVertexKey.hashCode());
 
     async.scheduleTask(slot,
         new CreateEdgeFromImportTask(threadContexts[slot], edgeTypeName, sourceVertexKey, destinationVertexKey, edgeProperties,
