@@ -175,6 +175,42 @@ class GraphSONImporterIT {
     }
   }
 
+  /**
+   * Test that files can be deleted after import.
+   * This tests the fix for GitHub issue #1627.
+   *
+   * The issue is that file handles are not properly closed after import,
+   * preventing the file from being deleted (especially on Windows).
+   */
+  @Test
+  void importFileCanBeDeletedAfterImport() throws Exception {
+    // Create a temporary GraphSON file to import
+    final File tempFile = File.createTempFile("test-import-", ".graphson");
+    try (final FileOutputStream fos = new FileOutputStream(tempFile)) {
+      // Write a simple GraphSON file with RID-format IDs
+      final String graphson = """
+          {"id":{"@type":"g:Int64","@value":0},"label":"TestVertex","properties":{"name":[{"id":{"@type":"g:Int64","@value":1},"value":"Test"}]}}
+          """;
+      fos.write(graphson.getBytes());
+    }
+
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+      final Importer importer = new Importer(database, tempFile.getAbsolutePath());
+      importer.load();
+
+      // Verify import worked
+      assertThat(database.getSchema().existsType("TestVertex")).isTrue();
+      assertThat(database.countType("TestVertex", true)).isEqualTo(1);
+    }
+
+    // The file should be deletable after import completes
+    // On Windows, this will fail if file handles are not properly closed
+    final boolean deleted = tempFile.delete();
+    assertThat(deleted)
+        .as("File should be deletable after import - file handles must be properly closed (issue #1627)")
+        .isTrue();
+  }
+
   @BeforeEach
   @AfterEach
   void clean() {
