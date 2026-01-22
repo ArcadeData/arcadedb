@@ -35,4 +35,18 @@ class ImportDatabaseStatementTestParserTest extends AbstractParserTest {
     checkWrongSyntax("import database http://www.foo.bar asdf ");
     checkWrongSyntax("IMPORT DATABASE https://www.foo.bar asd ");
   }
+
+  /**
+   * Regression test for GitHub issue #1552.
+   * IMPORT DATABASE should allow optional URL when vertices/edges files are specified.
+   */
+  @Test
+  void testRegression_Issue1552_OptionalUrl() {
+    // URL should be optional when using vertices/edges settings
+    checkRightSyntax("IMPORT DATABASE WITH vertices=\"file://vertices.csv\"");
+    checkRightSyntax("IMPORT DATABASE WITH vertices=\"file://vertices.csv\", verticesFileType=csv, typeIdProperty=Id");
+    checkRightSyntax(
+        "IMPORT DATABASE WITH vertices=\"file://vertices.csv\", verticesFileType=csv, typeIdProperty=Id, " +
+            "edges=\"file://edges.csv\", edgesFileType=csv, edgeFromField=\"From\", edgeToField=\"To\"");
+  }
 }

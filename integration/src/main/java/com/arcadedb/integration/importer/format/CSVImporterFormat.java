@@ -411,8 +411,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       return;
     }
 
-    final long sourceVertexKey = Long.parseLong(fromValue);
-    final long destinationVertexKey = Long.parseLong(toValue);
+    // Parse vertex keys based on typeIdType setting (fixes GitHub issue #1552)
+    final Object sourceVertexKey = parseVertexKey(fromValue, settings.typeIdType);
+    final Object destinationVertexKey = parseVertexKey(toValue, settings.typeIdType);
 
     final Object[] params;
     if (row.length > 2) {
@@ -427,6 +428,25 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     }
 
     context.graphImporter.createEdge(sourceVertexKey, settings.edgeTypeName, destinationVertexKey, params, context, settings);
+  }
+
+  /**
+   * Parses a vertex key string based on the configured type.
+   * This supports any ID type (String, Long, Integer, etc.) based on typeIdType setting.
+   * Added to fix GitHub issue #1552.
+   */
+  private Object parseVertexKey(final String value, final String typeIdType) {
+    if (value == null)
+      return null;
+
+    return switch (typeIdType.toUpperCase(Locale.ENGLISH)) {
+      case "LONG" -> Long.parseLong(value);
+      case "INTEGER", "INT" -> Integer.parseInt(value);
+      case "SHORT" -> Short.parseShort(value);
+      case "DOUBLE" -> Double.parseDouble(value);
+      case "FLOAT" -> Float.parseFloat(value);
+      default -> value; // String is the default
+    };
   }
 
   @Override

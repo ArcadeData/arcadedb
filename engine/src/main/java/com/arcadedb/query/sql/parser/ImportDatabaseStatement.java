@@ -83,7 +83,20 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("IMPORT DATABASE ");
-    url.toString(params, builder);
+    if (url != null)
+      url.toString(params, builder);
+    if (!settings.isEmpty()) {
+      builder.append(" WITH ");
+      boolean first = true;
+      for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+        if (!first)
+          builder.append(", ");
+        first = false;
+        entry.getKey().toString(params, builder);
+        builder.append(" = ");
+        entry.getValue().toString(params, builder);
+      }
+    }
   }
 
   @Override
