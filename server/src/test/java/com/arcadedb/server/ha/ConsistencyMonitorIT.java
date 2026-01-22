@@ -75,10 +75,9 @@ public class ConsistencyMonitorIT extends BaseGraphServerTest {
     }
 
     // Create test data for consistency monitor to sample
-    // Use ID range starting at 1000 to avoid conflicts with checkDatabases() which uses 0-2
     final Database db = getServerDatabase(0, getDatabaseName());
     db.transaction(() -> {
-      for (int i = 1000; i < 1200; i++) {
+      for (int i = 0; i < 200; i++) {
         final MutableVertex vertex = db.newVertex(VERTEX1_TYPE_NAME);
         vertex.set("id", i);
         vertex.set("name", "test-vertex-" + i);
