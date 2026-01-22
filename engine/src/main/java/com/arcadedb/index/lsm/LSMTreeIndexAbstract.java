@@ -60,7 +60,7 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
  * The page content size and available space API are not valid in the index pages, because the whole page is used from start to end.
  */
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
-  public enum NULL_STRATEGY {ERROR, SKIP}
+  public enum NULL_STRATEGY {ERROR, SKIP, INDEX}
 
   public static final    int    DEF_PAGE_SIZE = 262_144;
   public final           RID    REMOVED_ENTRY_RID;
@@ -432,7 +432,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
     currentPageBuffer.position(contentPos);
 
-    int result = -1;
+    int result = 0;
     for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
       // GET THE KEY
       final Object key = keys[keyIndex];

@@ -281,8 +281,9 @@ public class TransactionIndexContext {
         keys.put(k, values);
       } else {
         if (v.operation == IndexKey.IndexKeyOperation.ADD) {
-          if (index.isUnique()) {
+          if (index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keysValues)) {
             // CHECK IMMEDIATELY (INSTEAD OF AT COMMIT TIME) FOR DUPLICATED KEY IN CASE 2 ENTRIES WITH THE SAME KEY ARE SAVED IN TX.
+            // Skip duplicate check for NULL keys - SQL standard: NULL != NULL (multiple NULLs allowed in unique index)
             final IndexKey entry = values.get(v);
             if (entry != null && entry.operation == IndexKey.IndexKeyOperation.ADD && !entry.rid.equals(rid))
               throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), entry.rid);
@@ -294,9 +295,10 @@ public class TransactionIndexContext {
       }
     }
 
-    if (index.isUnique() &&
+    if (index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keysValues) &&
         (v.operation == IndexKey.IndexKeyOperation.ADD || v.operation == IndexKey.IndexKeyOperation.REPLACE)) {
       // CHECK FOR UNIQUE ON OTHER SUB-INDEXES
+      // Skip duplicate check for NULL keys - SQL standard: NULL != NULL (multiple NULLs allowed in unique index)
       final TypeIndex typeIndex = index.getTypeIndex();
       if (typeIndex != null) {
         for (final Index idx : typeIndex.getIndexesByKeys(keysValues)) {
@@ -384,6 +386,9 @@ public class TransactionIndexContext {
 
           for (final IndexKey entry : valuesPerKey.values()) {
             if (entry.operation == IndexKey.IndexKeyOperation.ADD || entry.operation == IndexKey.IndexKeyOperation.REPLACE) {
+              // Skip uniqueness check for NULL keys - SQL standard: NULL != NULL (multiple NULLs allowed in unique index)
+              if (LSMTreeIndexAbstract.isKeyNull(entry.keyValues))
+                continue;
               final Map<ComparableKey, RID> deletedEntries = deletedKeys.get(typeIndex);
               final RID deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
               checkUniqueIndexKeys(index, entry, deleted);
