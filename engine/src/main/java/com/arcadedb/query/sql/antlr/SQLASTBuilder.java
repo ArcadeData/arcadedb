@@ -1650,6 +1650,35 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * FROM bucket parameter visitor (e.g., FROM bucket::paramName, FROM bucket:?).
+   * Grammar: BUCKET_NAMED_PARAM | BUCKET_POSITIONAL_PARAM
+   */
+  @Override
+  public FromItem visitFromBucketParameter(final SQLParser.FromBucketParameterContext ctx) {
+    final FromItem fromItem = new FromItem(-1);
+    final Bucket bucket = new Bucket(-1);
+
+    // Extract the parameter from the token
+    if (ctx.BUCKET_NAMED_PARAM() != null) {
+      // bucket::paramName - extract the parameter name after "bucket::"
+      final String text = ctx.BUCKET_NAMED_PARAM().getText();
+      final String paramName = text.substring("bucket::".length());
+      final NamedParameter param = new NamedParameter(-1);
+      param.paramName = paramName;
+      param.paramNumber = positionalParamCounter++;
+      bucket.inputParam = param;
+    } else if (ctx.BUCKET_POSITIONAL_PARAM() != null) {
+      // bucket:? - create a positional parameter
+      final PositionalParameter param = new PositionalParameter(-1);
+      param.paramNumber = positionalParamCounter++;
+      bucket.inputParam = param;
+    }
+
+    fromItem.bucket = bucket;
+    return fromItem;
+  }
+
+  /**
    * FROM bucket list visitor (e.g., FROM bucket:[users, admins]).
    */
   @Override
@@ -4089,6 +4118,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         bucket.bucketName = bucketId.bucketName.getStringValue();
       } else if (bucketId.bucketId != null) {
         bucket.bucketNumber = bucketId.bucketId.getValue().intValue();
+      } else if (bucketId.inputParam != null) {
+        bucket.inputParam = bucketId.inputParam;
       }
       stmt.targetBucket = bucket;
     }
@@ -4482,8 +4513,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   // DDL STATEMENT VISITORS - CREATE
 
   /**
-   * Visit bucket identifier (integer ID, bucket name, or BUCKET:name/BUCKET:id syntax).
+   * Visit bucket identifier (integer ID, bucket name, BUCKET:name/BUCKET:id syntax, or BUCKET:parameter).
    * Grammar: bucketIdentifier : INTEGER_LITERAL | identifier | BUCKET_IDENTIFIER | BUCKET_NUMBER_IDENTIFIER
+   *                           | BUCKET_NAMED_PARAM | BUCKET_POSITIONAL_PARAM
    */
   @Override
   public BucketIdentifier visitBucketIdentifier(final SQLParser.BucketIdentifierContext ctx) {
@@ -4509,6 +4541,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final PInteger pInt = new PInteger(-1);
       pInt.setValue(Integer.parseInt(bucketNumberStr));
       bucketId.bucketId = pInt;
+    } else if (ctx.BUCKET_NAMED_PARAM() != null) {
+      // bucket::paramName format
+      final String text = ctx.BUCKET_NAMED_PARAM().getText();
+      final String paramName = text.substring("bucket::".length());
+      final NamedParameter param = new NamedParameter(-1);
+      param.paramName = paramName;
+      param.paramNumber = positionalParamCounter++;
+      bucketId.inputParam = param;
+    } else if (ctx.BUCKET_POSITIONAL_PARAM() != null) {
+      // bucket:? format
+      final PositionalParameter param = new PositionalParameter(-1);
+      param.paramNumber = positionalParamCounter++;
+      bucketId.inputParam = param;
     }
 
     return bucketId;

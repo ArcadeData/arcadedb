@@ -429,13 +429,16 @@ createEdgeTypeBody
     ;
 
 /**
- * Bucket identifier - can be integer ID, bucket name, or BUCKET:name/BUCKET:id syntax
+ * Bucket identifier - can be integer ID, bucket name, BUCKET:name/BUCKET:id syntax,
+ * or BUCKET:parameter for parameterized bucket names
  */
 bucketIdentifier
     : INTEGER_LITERAL
     | identifier
     | BUCKET_IDENTIFIER
     | BUCKET_NUMBER_IDENTIFIER
+    | BUCKET_NAMED_PARAM
+    | BUCKET_POSITIONAL_PARAM
     ;
 
 /**
@@ -787,6 +790,8 @@ fromItem
     | inputParameter                                                 # fromParam
     | BUCKET_IDENTIFIER                                             # fromBucket
     | BUCKET_NUMBER_IDENTIFIER                                      # fromBucket
+    | BUCKET_NAMED_PARAM                                            # fromBucketParameter
+    | BUCKET_POSITIONAL_PARAM                                       # fromBucketParameter
     | bucketList                                                    # fromBucketList
     | indexIdentifier                                               # fromIndex
     | schemaIdentifier                                              # fromSchema

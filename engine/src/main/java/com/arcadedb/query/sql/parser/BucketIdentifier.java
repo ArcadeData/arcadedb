@@ -23,8 +23,9 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class BucketIdentifier extends SimpleNode {
-  public PInteger   bucketId;
-  public Identifier bucketName;
+  public PInteger       bucketId;
+  public Identifier     bucketName;
+  public InputParameter inputParam;
 
   public BucketIdentifier(final int id) {
     super(id);
@@ -34,6 +35,9 @@ public class BucketIdentifier extends SimpleNode {
     if (bucketId != null)
       return bucketId;
 
+    if (inputParam != null)
+      return inputParam;
+
     final String bucketNameAsString = bucketName.getValue();
 
     if (bucketNameAsString.startsWith("\"") || bucketNameAsString.startsWith("'"))
@@ -42,18 +46,52 @@ public class BucketIdentifier extends SimpleNode {
     return bucketNameAsString;
   }
 
+  /**
+   * Resolves the bucket name, evaluating any input parameter if present.
+   *
+   * @param params the parameter map for resolving input parameters
+   * @return the resolved bucket name as a String, or null if not resolvable
+   */
+  public String resolveBucketName(final Map<String, Object> params) {
+    if (bucketName != null) {
+      final String bucketNameAsString = bucketName.getValue();
+      if (bucketNameAsString.startsWith("\"") || bucketNameAsString.startsWith("'"))
+        return bucketNameAsString.substring(1, bucketNameAsString.length() - 1);
+      return bucketNameAsString;
+    }
+
+    if (inputParam != null && params != null) {
+      final Object value = inputParam.getValue(params);
+      if (value != null)
+        return value.toString();
+    }
+
+    return null;
+  }
+
+  public InputParameter getInputParam() {
+    return inputParam;
+  }
+
   @Override
   public BucketIdentifier copy() {
     final BucketIdentifier copy = new BucketIdentifier(-1);
-    copy.bucketName = bucketName.copy();
-    copy.bucketId = bucketId.copy();
+    copy.bucketName = bucketName != null ? bucketName.copy() : null;
+    copy.bucketId = bucketId != null ? bucketId.copy() : null;
+    copy.inputParam = inputParam != null ? inputParam.copy() : null;
     return copy;
   }
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append(getValue());
+    if (inputParam != null) {
+      builder.append("bucket:");
+      inputParam.toString(params, builder);
+    } else {
+      builder.append(getValue());
+    }
   }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();
@@ -63,6 +101,9 @@ public class BucketIdentifier extends SimpleNode {
     }
     if (bucketName != null) {
       json.put("bucketName", bucketName.toJSON());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toJSON());
     }
 
     return json;

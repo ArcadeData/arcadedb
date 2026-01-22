@@ -2409,12 +2409,12 @@ public class SelectExecutionPlanner {
     final Set<String> bucketNames = new HashSet<>();
 
     for (final Bucket parserBucket : buckets) {
-      String name = parserBucket.getBucketName();
+      String name = resolveBucketName(parserBucket, context);
       Integer bucketId = parserBucket.getBucketNumber();
       if (name == null && bucketId != null)
         name = db.getSchema().getBucketById(bucketId).getName();
 
-      if (bucketId == null) {
+      if (bucketId == null && name != null) {
         final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(name);
         if (bucket != null)
           bucketId = bucket.getFileId();
@@ -2467,9 +2467,12 @@ public class SelectExecutionPlanner {
 
       Integer bucketId = parserBucket.getBucketNumber();
       if (bucketId == null) {
-        final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(parserBucket.getBucketName());
-        if (bucket != null)
-          bucketId = bucket.getFileId();
+        final String resolvedName = resolveBucketName(parserBucket, context);
+        if (resolvedName != null) {
+          final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(resolvedName);
+          if (bucket != null)
+            bucketId = bucket.getFileId();
+        }
       }
 
       if (bucketId == null)
@@ -2488,9 +2491,12 @@ public class SelectExecutionPlanner {
 
         Integer bucketId = parserBucket.getBucketNumber();
         if (bucketId == null) {
-          final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(parserBucket.getBucketName());
-          if (bucket != null)
-            bucketId = bucket.getFileId();
+          final String resolvedName = resolveBucketName(parserBucket, context);
+          if (resolvedName != null) {
+            final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(resolvedName);
+            if (bucket != null)
+              bucketId = bucket.getFileId();
+          }
         }
 
         if (bucketId == null) {
@@ -2501,6 +2507,31 @@ public class SelectExecutionPlanner {
       final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, orderByRidAsc);
       plan.chain(step);
     }
+  }
+
+  /**
+   * Resolves the bucket name from a Bucket object, handling parameterized bucket names.
+   * If the bucket has an inputParam, it resolves the parameter value from the context.
+   *
+   * @param parserBucket the bucket object to resolve
+   * @param context      the command context containing input parameters
+   * @return the resolved bucket name, or null if it cannot be resolved
+   */
+  private String resolveBucketName(final Bucket parserBucket, final CommandContext context) {
+    // First check for literal bucket name
+    if (parserBucket.getBucketName() != null) {
+      return parserBucket.getBucketName();
+    }
+
+    // Check for input parameter
+    if (parserBucket.getInputParam() != null) {
+      final Object paramValue = parserBucket.getInputParam().getValue(context.getInputParameters());
+      if (paramValue != null) {
+        return paramValue.toString();
+      }
+    }
+
+    return null;
   }
 
   private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context) {
@@ -2620,8 +2651,12 @@ public class SelectExecutionPlanner {
     } else if (item.getInputParams() != null && item.getInputParams().size() > 0) {
       return null;
     } else if (item.getBucket() != null) {
+      // If bucket has an input parameter, defer resolution to runtime
+      if (item.getBucket().getInputParam() != null) {
+        return null;
+      }
       String name = item.getBucket().getBucketName();
-      if (name == null) {
+      if (name == null && item.getBucket().getBucketNumber() != null) {
         name = db.getSchema().getBucketById(item.getBucket().getBucketNumber()).getName();
       }
       if (name != null) {
