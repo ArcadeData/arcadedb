@@ -104,4 +104,57 @@ class SQLFunctionSearchIndexTest extends TestHelper {
       assertThat(count).isGreaterThanOrEqualTo(1); // At least Doc2 matches both
     });
   }
+
+  @Test
+  void booleanAndSearch() {
+    database.transaction(() -> {
+      // Using Lucene syntax: +java +database means both terms required
+      final ResultSet result = database.query("sql",
+          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', '+java +database') = true");
+
+      int count = 0;
+      while (result.hasNext()) {
+        final Result r = result.next();
+        // Only Doc2 has both "java" and "database"
+        assertThat(r.getProperty("title").toString()).isEqualTo("Doc2");
+        count++;
+      }
+      assertThat(count).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void booleanNotSearch() {
+    database.transaction(() -> {
+      // Using Lucene syntax: java -database means java but NOT database
+      final ResultSet result = database.query("sql",
+          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'java -database') = true");
+
+      int count = 0;
+      while (result.hasNext()) {
+        final Result r = result.next();
+        // Only Doc1 has "java" without "database"
+        assertThat(r.getProperty("title").toString()).isEqualTo("Doc1");
+        count++;
+      }
+      assertThat(count).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void phraseSearch() {
+    database.transaction(() -> {
+      // Using Lucene phrase query
+      final ResultSet result = database.query("sql",
+          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', '\"java programming\"') = true");
+
+      int count = 0;
+      while (result.hasNext()) {
+        final Result r = result.next();
+        assertThat(r.getProperty("title").toString()).isEqualTo("Doc1");
+        count++;
+      }
+      assertThat(count).isEqualTo(1);
+    });
+  }
 }

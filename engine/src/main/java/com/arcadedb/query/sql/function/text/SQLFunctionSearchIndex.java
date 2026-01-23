@@ -24,7 +24,10 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexCursorEntry;
+import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.FullTextQueryExecutor;
 import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
@@ -60,13 +63,13 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract {
     // Cache key for this specific search
     final String cacheKey = "search_index:" + indexName + ":" + queryString;
 
-    // Try to get cached results
+    // Try to get cached results (Map of RID -> score)
     @SuppressWarnings("unchecked")
-    Set<RID> matchingRids = (Set<RID>) iContext.getVariable(cacheKey);
+    Map<RID, Integer> allResults = (Map<RID, Integer>) iContext.getVariable(cacheKey);
 
-    if (matchingRids == null) {
+    if (allResults == null) {
       // First execution - perform the actual search
-      matchingRids = new HashSet<>();
+      allResults = new HashMap<>();
 
       final Database database = iContext.getDatabase();
       final Index index = database.getSchema().getIndexByName(indexName);
@@ -84,26 +87,38 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract {
       if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
         throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
 
-      // Execute search across all bucket indexes
+      // Execute search across all bucket indexes using QueryExecutor
       for (final Index bucketIndex : bucketIndexes) {
         if (bucketIndex instanceof LSMTreeFullTextIndex) {
-          final IndexCursor cursor = bucketIndex.get(new Object[] { queryString });
+          final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) bucketIndex;
+          final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+          final IndexCursor cursor = executor.search(queryString, -1);
+
           while (cursor.hasNext()) {
-            matchingRids.add(cursor.next().getIdentity());
+            final Identifiable match = cursor.next();
+            final int score = cursor.getScore();
+            allResults.merge(match.getIdentity(), score, Integer::sum);
           }
         }
       }
 
       // Cache the results
-      iContext.setVariable(cacheKey, matchingRids);
+      iContext.setVariable(cacheKey, allResults);
     }
 
     // Check if current record matches
     if (iCurrentRecord != null) {
-      return matchingRids.contains(iCurrentRecord.getIdentity());
+      return allResults.containsKey(iCurrentRecord.getIdentity());
     }
 
-    return false;
+    // Return cursor with all results (used when called without a current record)
+    final List<IndexCursorEntry> entries = new ArrayList<>();
+    for (final Map.Entry<RID, Integer> entry : allResults.entrySet()) {
+      entries.add(new IndexCursorEntry(new Object[] { queryString }, entry.getKey(), entry.getValue()));
+    }
+    entries.sort((a, b) -> Integer.compare(b.score, a.score));
+
+    return new TempIndexCursor(entries);
   }
 
   @Override
