@@ -53,13 +53,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>Wildcards: java* (suffix), *java (prefix if enabled)</li>
  *   <li>Field-specific search: field:value</li>
  * </ul>
+ * <p>
+ * This class is thread-safe. QueryParser instances are created per search() invocation.
  *
  * @author ArcadeDB Team
  */
 public class FullTextQueryExecutor {
-  private final LSMTreeFullTextIndex index;
-  private final Analyzer             analyzer;
-  private final QueryParser          queryParser;
+  private final LSMTreeFullTextIndex   index;
+  private final Analyzer               analyzer;
+  private final FullTextIndexMetadata  metadata;
 
   /**
    * Creates a new FullTextQueryExecutor for the given index.
@@ -69,16 +71,24 @@ public class FullTextQueryExecutor {
   public FullTextQueryExecutor(final LSMTreeFullTextIndex index) {
     this.index = index;
     this.analyzer = index.getAnalyzer();
+    this.metadata = index.getFullTextMetadata();
+  }
 
-    final FullTextIndexMetadata metadata = index.getFullTextMetadata();
-    this.queryParser = new QueryParser("content", analyzer);
-
+  /**
+   * Creates a new QueryParser configured for this index.
+   * QueryParser is not thread-safe, so we create a new instance per search.
+   *
+   * @return a configured QueryParser
+   */
+  private QueryParser createQueryParser() {
+    final QueryParser parser = new QueryParser("content", analyzer);
     if (metadata != null) {
-      queryParser.setAllowLeadingWildcard(metadata.isAllowLeadingWildcard());
+      parser.setAllowLeadingWildcard(metadata.isAllowLeadingWildcard());
       if ("AND".equalsIgnoreCase(metadata.getDefaultOperator())) {
-        queryParser.setDefaultOperator(QueryParser.Operator.AND);
+        parser.setDefaultOperator(QueryParser.Operator.AND);
       }
     }
+    return parser;
   }
 
   /**
@@ -90,7 +100,9 @@ public class FullTextQueryExecutor {
    */
   public IndexCursor search(final String queryString, final int limit) {
     try {
-      final Query query = queryParser.parse(queryString);
+      // Create parser per invocation for thread safety
+      final QueryParser parser = createQueryParser();
+      final Query query = parser.parse(queryString);
       return executeQuery(query, limit);
     } catch (final ParseException e) {
       throw new IndexException("Invalid search query: " + queryString, e);
@@ -114,8 +126,13 @@ public class FullTextQueryExecutor {
       list.add(new IndexCursorEntry(new Object[] {}, entry.getKey(), entry.getValue().get()));
     }
 
-    // Sort by score descending
-    list.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
+    // Sort by score descending, then by RID for deterministic ordering
+    list.sort((o1, o2) -> {
+      final int scoreCompare = Integer.compare(o2.score, o1.score);
+      if (scoreCompare != 0)
+        return scoreCompare;
+      return o1.record.getIdentity().compareTo(o2.record.getIdentity());
+    });
 
     if (limit > 0 && list.size() > limit) {
       return new TempIndexCursor(list.subList(0, limit));
@@ -176,6 +193,10 @@ public class FullTextQueryExecutor {
       collectPrefixMatches((PrefixQuery) query, scoreMap);
     } else if (query instanceof WildcardQuery) {
       collectWildcardMatches((WildcardQuery) query, scoreMap);
+    } else {
+      // Fallback for unsupported query types (FuzzyQuery, RegexpQuery, etc.)
+      // Log or handle gracefully - return no matches rather than throw
+      // Future enhancement: implement support for additional query types
     }
   }
 
