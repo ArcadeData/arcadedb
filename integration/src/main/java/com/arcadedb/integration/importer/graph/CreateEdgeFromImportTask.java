@@ -98,24 +98,34 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
 
 //    LogManager.instance().log(this, Level.INFO, "Using context %s from theadId=%d", null, threadContext, Thread.currentThread().threadId());
 
-    // TODO: LOAD FROM INDEX
-    final RID destinationVertexRID = context.graphImporter.getVertex(threadContext.vertexIndexThreadBuffer, destinationVertexKey);
+    // Try to get destination vertex from in-memory index first
+    RID destinationVertexRID = context.graphImporter.getVertex(threadContext.vertexIndexThreadBuffer, destinationVertexKey);
+
+    // If not found in memory, query the database (fixes GitHub issue #2267)
     if (destinationVertexRID == null) {
-      // SKIP IT
-      context.skippedEdges.incrementAndGet();
-      return;
+      destinationVertexRID = queryVertexFromDatabase(database, destinationVertexKey, settings);
+      if (destinationVertexRID == null) {
+        // Still not found, skip the edge
+        context.skippedEdges.incrementAndGet();
+        return;
+      }
     }
 
     if (threadContext.lastSourceKey == null || !threadContext.lastSourceKey.equals(sourceVertexKey)) {
       createEdgesInBatch(database, threadContext.incomingConnectionsIndexThread, context, settings, threadContext.connections);
       threadContext.connections = new ArrayList<>();
 
-      // TODO: LOAD FROM INDEX
-      final RID sourceVertexRID = context.graphImporter.getVertex(threadContext.vertexIndexThreadBuffer, sourceVertexKey);
+      // Try to get source vertex from in-memory index first
+      RID sourceVertexRID = context.graphImporter.getVertex(threadContext.vertexIndexThreadBuffer, sourceVertexKey);
+
+      // If not found in memory, query the database (fixes GitHub issue #2267)
       if (sourceVertexRID == null) {
-        // SKIP IT
-        context.skippedEdges.incrementAndGet();
-        return;
+        sourceVertexRID = queryVertexFromDatabase(database, sourceVertexKey, settings);
+        if (sourceVertexRID == null) {
+          // Still not found, skip the edge
+          context.skippedEdges.incrementAndGet();
+          return;
+        }
       }
 
       threadContext.lastSourceKey = sourceVertexKey;
@@ -253,6 +263,47 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
 
     if (callback != null)
       callback.onLinked(connections.size());
+  }
+
+  /**
+   * Queries the database to find a vertex by its ID property when it's not in the in-memory index.
+   * This is a fallback mechanism for when edges are imported in a separate IMPORT command from vertices.
+   * Fixes GitHub issue #2267.
+   *
+   * @param database the database to query
+   * @param vertexKey the vertex ID to search for
+   * @param settings the importer settings containing typeIdProperty
+   * @return the RID of the found vertex, or null if not found
+   */
+  private RID queryVertexFromDatabase(final DatabaseInternal database, final Object vertexKey,
+      final ImporterSettings settings) {
+    if (settings.typeIdProperty == null) {
+      return null;
+    }
+
+    // Search across all vertex types that have an index on the typeIdProperty
+    for (final var type : database.getSchema().getTypes()) {
+      if (type instanceof com.arcadedb.schema.VertexType) {
+        try {
+          // Try to use an index lookup (faster if index exists)
+          final var result = database.lookupByKey(type.getName(), settings.typeIdProperty, vertexKey);
+          if (result.hasNext()) {
+            return result.next().getIdentity();
+          }
+        } catch (final IllegalArgumentException e) {
+          // No index on this type for this property, continue to next type
+          continue;
+        } catch (final Exception e) {
+          // Other error, log and continue
+          LogManager.instance()
+              .log(this, Level.FINE, "Error looking up vertex %s in type %s: %s", null,
+                  vertexKey, type.getName(), e.getMessage());
+          continue;
+        }
+      }
+    }
+
+    return null;
   }
 
   @Override
