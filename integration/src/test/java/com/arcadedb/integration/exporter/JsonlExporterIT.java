@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -102,6 +104,88 @@ class JsonlExporterIT {
       new File(FILE).createNewFile();
       new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -format jsonl").split(" ")).exportDatabase();
     }).isInstanceOf(ExportException.class);
+  }
+
+  /**
+   * Test for issue #1540: unique field is missing from the exported JSONL
+   * <p>
+   * When exporting a database to JSONL format, the schema indexes should include the "unique" field.
+   */
+  @Test
+  void testExportedIndexesContainUniqueField() throws Exception {
+    final File file = new File(FILE);
+
+    // Create a database with indexes (both unique and non-unique)
+    try (final Database db = new DatabaseFactory(DATABASE_PATH).create()) {
+      db.transaction(() -> {
+        final DocumentType type = db.getSchema().createDocumentType("Person");
+        type.createProperty("name", String.class);
+        type.createProperty("age", Integer.class);
+        type.createProperty("email", String.class);
+
+        // Create a non-unique index on age
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "age");
+
+        // Create a unique index on email
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "email");
+      });
+    }
+
+    // Export the database
+    new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format jsonl").split(" ")).exportDatabase();
+
+    assertThat(file.exists()).isTrue();
+
+    // Read the exported file and verify the schema line contains "unique" field for indexes
+    JSONObject schemaLine = null;
+    try (final BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(file))))) {
+      while (in.ready()) {
+        final String line = in.readLine();
+        final JSONObject json = new JSONObject(line);
+        if ("schema".equals(json.getString("t"))) {
+          schemaLine = json.getJSONObject("c");
+          break;
+        }
+      }
+    }
+
+    assertThat(schemaLine).as("Schema line not found in export").isNotNull();
+
+    // Navigate to the Person type indexes
+    final JSONObject types = schemaLine.getJSONObject("types");
+    assertThat(types.has("Person")).as("Person type should exist in exported schema").isTrue();
+
+    final JSONObject personType = types.getJSONObject("Person");
+    final JSONObject indexes = personType.getJSONObject("indexes");
+    assertThat(indexes.length()).as("Person type should have 2 indexes exported").isGreaterThanOrEqualTo(2);
+
+    // Verify that each index has the "unique" field
+    boolean foundNonUniqueIndex = false;
+    boolean foundUniqueIndex = false;
+
+    for (final String indexName : indexes.keySet()) {
+      final JSONObject indexJson = indexes.getJSONObject(indexName);
+
+      // Verify the "unique" field exists (issue #1540)
+      assertThat(indexJson.has("unique"))
+          .as("Index '%s' should have 'unique' field in exported JSONL (issue #1540)", indexName)
+          .isTrue();
+
+      // Also verify the value is correctly exported
+      final boolean isUnique = indexJson.getBoolean("unique");
+      final String properties = indexJson.getJSONArray("properties").toString();
+
+      if (properties.contains("age")) {
+        assertThat(isUnique).as("Index on 'age' should be non-unique").isFalse();
+        foundNonUniqueIndex = true;
+      } else if (properties.contains("email")) {
+        assertThat(isUnique).as("Index on 'email' should be unique").isTrue();
+        foundUniqueIndex = true;
+      }
+    }
+
+    assertThat(foundNonUniqueIndex).as("Should find the non-unique index on age").isTrue();
+    assertThat(foundUniqueIndex).as("Should find the unique index on email").isTrue();
   }
 
 }
