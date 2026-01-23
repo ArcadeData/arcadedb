@@ -102,4 +102,69 @@ public class SQLLocalExporterTest {
     }
 
   }
+
+  @Test
+  void testExportAndReimportSmallDatabase() {
+    // Test case for issue #1839 - exported database cannot be imported
+    final String dbPath = "databases/testExportImport";
+    FileUtils.deleteRecursively(new File(dbPath));
+
+    try (final Database database = new DatabaseFactory(dbPath).create()) {
+      // Create a simple schema with vertices and edges like in the bug report
+      database.getSchema().createVertexType("TestVertex");
+      database.getSchema().createEdgeType("TestEdge");
+
+      // Create some test data: 110 vertices and 135 edges (similar to bug report)
+      database.transaction(() -> {
+        final var vertices = new java.util.ArrayList<com.arcadedb.graph.Vertex>();
+        for (int i = 0; i < 110; i++) {
+          final var v = database.newVertex("TestVertex");
+          v.set("id", i);
+          v.set("name", "Vertex" + i);
+          v.save();
+          vertices.add(v);
+        }
+
+        // Create edges
+        for (int i = 0; i < 135; i++) {
+          final var from = vertices.get(i % 110);
+          final var to = vertices.get((i + 1) % 110);
+          from.newEdge("TestEdge", to).save();
+        }
+      });
+
+      assertThat(database.countType("TestVertex", false)).isEqualTo(110);
+      assertThat(database.countType("TestEdge", false)).isEqualTo(135);
+
+      // Export the database
+      final ResultSet exportResult = database.command("sql", "export database file://test-export.jsonl.tgz with `overwrite` = true");
+      final Result exportStats = exportResult.next();
+
+      assertThat((long) exportStats.getProperty("vertices")).isEqualTo(110L);
+      assertThat((long) exportStats.getProperty("edges")).isEqualTo(135L);
+
+      final File exportFile = new File("./exports/test-export.jsonl.tgz");
+      assertThat(exportFile.exists()).isTrue();
+      assertThat(exportFile.length()).isGreaterThan(0);
+    }
+
+    // Now try to import it into a new database
+    final String dbPath2 = "databases/testExportImport2";
+    FileUtils.deleteRecursively(new File(dbPath2));
+
+    try (final Database database2 = new DatabaseFactory(dbPath2).create()) {
+      // Import the exported database
+      final ResultSet importResult = database2.command("sql", "import database file://exports/test-export.jsonl.tgz");
+      final Result importStats = importResult.next();
+
+      // Verify the import worked
+      assertThat((String) importStats.getProperty("result")).isEqualTo("OK");
+      assertThat(database2.countType("TestVertex", false)).isEqualTo(110L);
+      assertThat(database2.countType("TestEdge", false)).isEqualTo(135L);
+    } finally {
+      FileUtils.deleteRecursively(new File(dbPath));
+      FileUtils.deleteRecursively(new File(dbPath2));
+      new File("./exports/test-export.jsonl.tgz").delete();
+    }
+  }
 }
