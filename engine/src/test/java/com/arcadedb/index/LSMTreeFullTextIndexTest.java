@@ -29,7 +29,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.apache.lucene.analysis.en.EnglishAnalyzer;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -188,10 +187,8 @@ class LSMTreeFullTextIndexTest extends TestHelper {
 
   /**
    * Tests that METADATA in CREATE INDEX SQL is passed to the full-text index builder.
-   * This test requires Task 1.4 (LSMTreeFullTextIndex using configurable analyzer) to pass.
-   * Task 1.3 ensures the metadata is parsed and passed to the builder.
+   * The metadata configures the analyzer class for the full-text index.
    */
-  @Disabled("Requires Task 1.4: LSMTreeFullTextIndex needs to use metadata to configure analyzer")
   @Test
   void createIndexWithMetadata() {
     database.transaction(() -> {

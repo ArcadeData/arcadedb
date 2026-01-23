@@ -30,6 +30,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
@@ -64,9 +65,12 @@ import java.util.concurrent.atomic.*;
  * the query result will be the TreeMap ordered by score, so if the query has a limit, only the first X items will be returned ordered by score desc
  */
 public class LSMTreeFullTextIndex implements Index, IndexInternal {
-  private final LSMTreeIndex underlyingIndex;
-  private final Analyzer     analyzer;
-  private       TypeIndex    typeIndex;
+  private final LSMTreeIndex            underlyingIndex;
+  private final Analyzer                indexAnalyzer;
+  private final Analyzer                queryAnalyzer;
+  private final FullTextIndexMetadata   ftMetadata;
+  private final int                     propertyCount;
+  private       TypeIndex               typeIndex;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -75,36 +79,57 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         throw new IllegalArgumentException("Full text index cannot be unique");
 
       if (builder.getKeyTypes().length != 1)
-        throw new IllegalArgumentException("Full text index can only be defined on one only string property");
+        throw new IndexException("Full text index can only be defined on one property");
 
       if (builder.getKeyTypes()[0] != Type.STRING)
         throw new IllegalArgumentException(
-            "Full text index can only be defined on a '" + builder.getKeyTypes()[0] + "' property, only string");
+            "Full text index can only be defined on STRING properties, found: " + builder.getKeyTypes()[0]);
+
+      // Get metadata if available
+      FullTextIndexMetadata ftMetadata = null;
+      if (builder.getMetadata() instanceof FullTextIndexMetadata) {
+        ftMetadata = (FullTextIndexMetadata) builder.getMetadata();
+      }
 
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy());
+          ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy(),
+          builder.getKeyTypes().length, ftMetadata);
     }
   }
 
   /**
-   * Called at load time. The Full Text index is just a wrapper of an LSMTree Inddex.
+   * Called at load time. The Full Text index is just a wrapper of an LSMTree Index.
    */
   public LSMTreeFullTextIndex(final LSMTreeIndex index) {
-    analyzer = new StandardAnalyzer();
-    underlyingIndex = index;
+    this(index, null);
   }
 
   /**
-   * Creation time.
+   * Called at load time with optional metadata. The Full Text index is just a wrapper of an LSMTree Index.
+   */
+  public LSMTreeFullTextIndex(final LSMTreeIndex index, final FullTextIndexMetadata metadata) {
+    this.underlyingIndex = index;
+    this.ftMetadata = metadata;
+    this.propertyCount = 1;
+    this.indexAnalyzer = createAnalyzer(metadata, true);
+    this.queryAnalyzer = createAnalyzer(metadata, false);
+  }
+
+  /**
+   * Creation time with metadata.
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath,
-      final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
-    analyzer = new StandardAnalyzer();
+      final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final int propertyCount, final FullTextIndexMetadata metadata) {
+    this.ftMetadata = metadata;
+    this.propertyCount = propertyCount;
+    this.indexAnalyzer = createAnalyzer(metadata, true);
+    this.queryAnalyzer = createAnalyzer(metadata, false);
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
   }
 
   /**
-   * Loading time.
+   * Loading time from file.
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final int fileId,
       final ComponentFile.MODE mode, final int pageSize, final int version) {
@@ -113,7 +138,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     } catch (final IOException e) {
       throw new IndexException("Cannot create search engine (error=" + e + ")", e);
     }
-    analyzer = new StandardAnalyzer();
+    // When loading from file, metadata will be set later via setMetadata()
+    this.ftMetadata = null;
+    this.propertyCount = 1;
+    this.indexAnalyzer = new StandardAnalyzer();
+    this.queryAnalyzer = new StandardAnalyzer();
   }
 
   @Override
@@ -128,7 +157,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
-    final List<String> keywords = analyzeText(analyzer, keys);
+    final List<String> keywords = analyzeText(queryAnalyzer, keys);
 
     final HashMap<RID, AtomicInteger> scoreMap = new HashMap<>();
 
@@ -164,21 +193,21 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   @Override
   public void put(final Object[] keys, final RID[] rids) {
-    final List<String> keywords = analyzeText(analyzer, keys);
+    final List<String> keywords = analyzeText(indexAnalyzer, keys);
     for (final String k : keywords)
       underlyingIndex.put(new String[] { k }, rids);
   }
 
   @Override
   public void remove(final Object[] keys) {
-    final List<String> keywords = analyzeText(analyzer, keys);
+    final List<String> keywords = analyzeText(indexAnalyzer, keys);
     for (final String k : keywords)
       underlyingIndex.remove(new String[] { k });
   }
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
-    final List<String> keywords = analyzeText(analyzer, keys);
+    final List<String> keywords = analyzeText(indexAnalyzer, keys);
     for (final String k : keywords)
       underlyingIndex.remove(new String[] { k }, rid);
   }
@@ -356,13 +385,57 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return Schema.INDEX_TYPE.FULL_TEXT;
   }
 
+  /**
+   * Returns the query analyzer.
+   *
+   * @return the query analyzer
+   */
   public Analyzer getAnalyzer() {
-    return analyzer;
+    return queryAnalyzer;
+  }
+
+  /**
+   * Returns the index analyzer.
+   *
+   * @return the index analyzer
+   */
+  public Analyzer getIndexAnalyzer() {
+    return indexAnalyzer;
+  }
+
+  /**
+   * Returns the full-text index metadata.
+   *
+   * @return the metadata, or null if using defaults
+   */
+  public FullTextIndexMetadata getFullTextMetadata() {
+    return ftMetadata;
   }
 
   @Override
   public boolean isValid() {
     return underlyingIndex.isValid();
+  }
+
+  /**
+   * Creates an analyzer from the metadata configuration.
+   *
+   * @param metadata     the full-text index metadata (may be null)
+   * @param forIndexing  true for indexing analyzer, false for query analyzer
+   * @return the configured analyzer, or StandardAnalyzer if metadata is null
+   */
+  private static Analyzer createAnalyzer(final FullTextIndexMetadata metadata, final boolean forIndexing) {
+    if (metadata == null)
+      return new StandardAnalyzer();
+
+    final String analyzerClass = forIndexing ? metadata.getIndexAnalyzerClass() : metadata.getQueryAnalyzerClass();
+
+    try {
+      final Class<?> clazz = Class.forName(analyzerClass);
+      return (Analyzer) clazz.getDeclaredConstructor().newInstance();
+    } catch (final Exception e) {
+      throw new IndexException("Cannot instantiate analyzer: " + analyzerClass, e);
+    }
   }
 
   public List<String> analyzeText(final Analyzer analyzer, final Object[] text) {
