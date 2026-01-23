@@ -55,11 +55,11 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
    */
   @Test
   void testVectorSearchByChildType() {
-    System.out.println("\n=== Testing Vector Search by Child Type ===");
+    //System.out.println("\n=== Testing Vector Search by Child Type ===");
 
     // Step 1: Create parent type with vector index
     database.transaction(() -> {
-      System.out.println("\n1. Creating parent type EMBEDDING with vector index");
+      //System.out.println("\n1. Creating parent type EMBEDDING with vector index");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING");
       database.command("sql", "CREATE PROPERTY EMBEDDING.vector ARRAY_OF_FLOATS");
       database.command("sql", """
@@ -72,7 +72,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
 
     // Step 2: Create child types
     database.transaction(() -> {
-      System.out.println("2. Creating child types");
+      //System.out.println("2. Creating child types");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING_IMAGE EXTENDS EMBEDDING");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING_DOCUMENT EXTENDS EMBEDDING");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING_CHUNK EXTENDS EMBEDDING");
@@ -80,7 +80,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
 
     // Step 3: Insert test data into different types with distinguishable vectors
     database.transaction(() -> {
-      System.out.println("3. Inserting test data");
+      //System.out.println("3. Inserting test data");
 
       // Create clearly different vectors for each type:
       // Images: vectors where first component is dominant
@@ -96,12 +96,12 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
         database.command("sql", "INSERT INTO EMBEDDING_DOCUMENT SET vector = ?", (Object) documentVector);
         database.command("sql", "INSERT INTO EMBEDDING_CHUNK SET vector = ?", (Object) chunkVector);
       }
-      System.out.println("   Inserted 30 records (10 each type)");
+      //System.out.println("   Inserted 30 records (10 each type)");
     });
 
     // Step 4: Test type-specific vector search using child type name
     database.transaction(() -> {
-      System.out.println("\n4. Testing type-specific vector search on EMBEDDING_IMAGE");
+      //System.out.println("\n4. Testing type-specific vector search on EMBEDDING_IMAGE");
 
       // Query vector similar to image vectors (dominant in first dimensions)
       float[] queryVector = createTestVector(0, 5);
@@ -122,15 +122,15 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
       for (Map<String, Object> neighbor : neighbors) {
         Vertex vertex = (Vertex) neighbor.get("record");
         String typeName = vertex.getTypeName();
-        System.out.println("   Found neighbor: " + vertex.getIdentity() + " type=" + typeName);
+        //System.out.println("   Found neighbor: " + vertex.getIdentity() + " type=" + typeName);
         assertThat(typeName).as("All results should be EMBEDDING_IMAGE").isEqualTo("EMBEDDING_IMAGE");
       }
-      System.out.println("   ✓ Type-specific search returned only EMBEDDING_IMAGE records");
+      //System.out.println("   ✓ Type-specific search returned only EMBEDDING_IMAGE records");
     });
 
     // Step 5: Test cross-type vector search using parent type name
     database.transaction(() -> {
-      System.out.println("\n5. Testing cross-type vector search on EMBEDDING (parent)");
+      //System.out.println("\n5. Testing cross-type vector search on EMBEDDING (parent)");
 
       // Same query vector
       float[] queryVector = createTestVector(0, 5);
@@ -145,7 +145,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
       List<Map<String, Object>> neighbors = row.getProperty("neighbors");
 
       assertThat(neighbors).as("Should find neighbors").isNotNull();
-      System.out.println("   Found " + neighbors.size() + " neighbors");
+      //System.out.println("   Found " + neighbors.size() + " neighbors");
 
       // Count types in results
       Set<String> typesFound = new HashSet<>();
@@ -154,15 +154,15 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
         typesFound.add(vertex.getTypeName());
       }
 
-      System.out.println("   Types found: " + typesFound);
+      //System.out.println("   Types found: " + typesFound);
       // Cross-type search may return multiple types depending on similarity
       // With our test vectors, images should be closest to the image query vector
-      System.out.println("   ✓ Cross-type search completed");
+      //System.out.println("   ✓ Cross-type search completed");
     });
 
     // Step 6: Test searching in EMBEDDING_DOCUMENT type
     database.transaction(() -> {
-      System.out.println("\n6. Testing type-specific search on EMBEDDING_DOCUMENT");
+      //System.out.println("\n6. Testing type-specific search on EMBEDDING_DOCUMENT");
 
       // Query vector similar to document vectors (dominant in second dimensions)
       float[] queryVector = createTestVector(1, 5);
@@ -182,10 +182,10 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
         Vertex vertex = (Vertex) neighbor.get("record");
         assertThat(vertex.getTypeName()).isEqualTo("EMBEDDING_DOCUMENT");
       }
-      System.out.println("   ✓ EMBEDDING_DOCUMENT search returned only document records");
+      //System.out.println("   ✓ EMBEDDING_DOCUMENT search returned only document records");
     });
 
-    System.out.println("\n=== Test completed successfully ===");
+    //System.out.println("\n=== Test completed successfully ===");
   }
 
   /**
@@ -193,7 +193,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
    */
   @Test
   void testTypeFilteringExcludesOtherTypes() {
-    System.out.println("\n=== Testing Type Filtering Exclusion ===");
+    //System.out.println("\n=== Testing Type Filtering Exclusion ===");
 
     // Create schema
     database.transaction(() -> {
@@ -239,7 +239,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
         Vertex vertex = (Vertex) neighbor.get("record");
         assertThat(vertex.getTypeName()).as("All results should be EMBEDDING_A").isEqualTo("EMBEDDING_A");
       }
-      System.out.println("✓ Type-specific search correctly excluded other types (found " + neighbors.size() + " results)");
+      //System.out.println("✓ Type-specific search correctly excluded other types (found " + neighbors.size() + " results)");
     });
   }
 

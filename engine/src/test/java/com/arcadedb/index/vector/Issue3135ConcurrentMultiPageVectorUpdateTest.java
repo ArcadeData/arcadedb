@@ -125,7 +125,7 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
           updateEmbedding(id);
         } catch (final Exception e) {
           // Log but continue - we're testing for corruption
-          System.err.println("Update error for " + id + ": " + e.getMessage());
+          //System.err.println("Update error for " + id + ": " + e.getMessage());
         } finally {
           latch.countDown();
         }
