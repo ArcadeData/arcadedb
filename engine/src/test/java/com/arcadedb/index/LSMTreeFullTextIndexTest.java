@@ -487,6 +487,39 @@ class LSMTreeFullTextIndexTest extends TestHelper {
     */
   }
 
+  @Test
+  void scoreInSQLProjection() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.title STRING");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
+      database.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'java database'");
+    });
+
+    database.transaction(() -> {
+      // Test $score projection with SEARCH_INDEX function
+      final ResultSet result = database.query("sql",
+          "SELECT title, $score FROM Article WHERE SEARCH_INDEX('Article[content]', 'java programming') = true");
+
+      final Map<String, Float> scores = new HashMap<>();
+      while (result.hasNext()) {
+        final Result r = result.next();
+        final String title = r.getProperty("title");
+        final Float score = r.getProperty("$score");
+        assertThat(score).isNotNull();
+        assertThat(score).isGreaterThan(0f);
+        scores.put(title, score);
+      }
+
+      assertThat(scores).hasSize(2);
+      // Doc1 matches both 'java' and 'programming', Doc2 only 'java'
+      assertThat(scores.get("Doc1")).isGreaterThan(scores.get("Doc2"));
+    });
+  }
+
   private boolean skipIndexing(final String toIndex) {
     boolean skip = false;
     for (int j = 0; j < toIndex.length(); j++) {

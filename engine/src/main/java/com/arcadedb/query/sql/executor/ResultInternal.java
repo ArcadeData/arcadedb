@@ -151,10 +151,6 @@ public class ResultInternal implements Result {
   }
 
   public <T> T getProperty(final String name) {
-    // Handle special $score variable for full-text search
-    if ("$score".equals(name))
-      return (T) Float.valueOf(score);
-
     T result;
     if (content != null && !content.isEmpty())
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
@@ -163,6 +159,10 @@ public class ResultInternal implements Result {
       result = (T) element.get(name);
     else
       result = null;
+
+    // If $score not found in content/element, fall back to score field
+    if (result == null && "$score".equals(name))
+      return (T) Float.valueOf(score);
 
     if (!(result instanceof Record) &&
             result instanceof Identifiable identifiable &&

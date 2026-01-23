@@ -108,7 +108,20 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract {
 
     // Check if current record matches
     if (iCurrentRecord != null) {
-      return allResults.containsKey(iCurrentRecord.getIdentity());
+      final RID rid = iCurrentRecord.getIdentity();
+      final boolean matches = allResults.containsKey(rid);
+
+      if (matches) {
+        // Store the score for this record in the context variable $score
+        // This allows $score projection to work in SELECT
+        final int recordScore = allResults.get(rid);
+        iContext.setVariable("$score", (float) recordScore);
+      } else {
+        // Clear the score for non-matching records
+        iContext.setVariable("$score", 0f);
+      }
+
+      return matches;
     }
 
     // Return cursor with all results (used when called without a current record)
