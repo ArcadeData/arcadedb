@@ -83,7 +83,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
     }
 
-    if (record != null)
+    if (record != null && source instanceof String)
       source = record.get((String) source);
 
     if (source instanceof Identifiable) {
@@ -106,7 +106,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
     }
 
-    if (record != null)
+    if (record != null && dest instanceof String)
       dest = record.get((String) dest);
 
     if (dest instanceof Identifiable identifiable) {
