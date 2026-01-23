@@ -252,6 +252,40 @@ public class GraphImporter {
 
     LogManager.instance().log(this, Level.INFO, "Linking back edges for %d vertices...", null, verticesIndex.size());
 
+    // Check if vertices index is empty (happens when edges are imported separately from vertices)
+    // In this case, we need to iterate through the incoming connections index instead
+    // This fixes GitHub issue #2267
+    if (verticesIndex.size() == 0) {
+      LogManager.instance()
+          .log(this, Level.INFO,
+              "Vertices index is empty, iterating through incoming connections index instead (separate edge import scenario)");
+
+      // Begin transaction for linking incoming edges
+      database.begin();
+
+      try {
+        // Iterate through all thread contexts and process their incoming connections
+        for (int t = 0; t < threadContexts.length; ++t) {
+          final CompressedRID2RIDsIndex incomingIndex = threadContexts[t].incomingConnectionsIndexThread;
+
+          // Use the existing method in CreateEdgeFromImportTask to process this index
+          CreateEdgeFromImportTask.createIncomingEdgesInBatch(database, incomingIndex, callback);
+        }
+
+        database.commit();
+      } catch (final Exception e) {
+        database.rollback();
+        throw e;
+      }
+
+      LogManager.instance()
+          .log(this, Level.INFO,
+              "Linking back edges completed (separate edge import scenario): browsedVertices=%d browsedEdges=%d verticesWithEdges=%d verticesWithNoEdges=%d",
+              null,
+              browsedVertices, browsedEdges, verticesWithEdges, verticesWithNoEdges);
+      return;
+    }
+
     // BROWSE ALL THE VERTICES AND COLLECT ALL THE EDGES FROM THE OTHER IN RAM INDEXES
     for (final CompressedAny2RIDIndex.EntryIterator it = verticesIndex.vertexIterator(); it.hasNext(); ) {
       final RID destinationVertex = it.next();
