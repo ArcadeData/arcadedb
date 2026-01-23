@@ -151,12 +151,12 @@ public class AlterTypeStatement extends DDLStatement {
 
       case "supertype":
         doSetSuperType(context, type);
-        result.setProperty("supertype", type);
+        result.setProperty("supertype", type.getSuperTypes());
         break;
 
       case "aliases":
         doSetAliases(context, type);
-        result.setProperty("aliases", type);
+        result.setProperty("aliases", type.getAliases());
         break;
 
       case "bucketselectionstrategy": {
