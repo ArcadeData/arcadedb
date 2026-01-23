@@ -152,8 +152,24 @@ public class InsertExecutionPlanner {
       final CommandContext context) {
     final InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(context);
     result.chain(new SubQueryStep(subPlan, context, context));
-    if (targetType != null)
-      result.chain(new CopyDocumentStep(context, targetType.getStringValue()));
+
+    // If targetType is null but targetBucket is specified, derive the type from the bucket
+    Identifier effectiveTargetType = targetType;
+    if (effectiveTargetType == null && targetBucket != null) {
+      final com.arcadedb.engine.Bucket bucket;
+      if (targetBucket.getBucketName() != null)
+        bucket = context.getDatabase().getSchema().getBucketByName(targetBucket.getBucketName());
+      else
+        bucket = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber());
+
+      if (bucket == null)
+        throw new CommandSQLParsingException("Target bucket not found");
+
+      effectiveTargetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
+    }
+
+    if (effectiveTargetType != null)
+      result.chain(new CopyDocumentStep(context, effectiveTargetType.getStringValue()));
 
     result.chain(new RemoveEdgePointersStep(context));
   }
