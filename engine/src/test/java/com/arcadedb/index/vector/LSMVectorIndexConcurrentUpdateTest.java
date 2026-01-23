@@ -266,7 +266,7 @@ class LSMVectorIndexConcurrentUpdateTest extends TestHelper {
       for (Index bucketIndex : typeIndex.getIndexesOnBuckets()) {
         LSMVectorIndex lsmIndex = (LSMVectorIndex) bucketIndex;
         //System.out.println("Searching in bucket index: " + lsmIndex.getName() + " (fileId=" + lsmIndex.getFileId() +
-                           ", pages=" + lsmIndex.getTotalPages() + ")");
+        //                   ", pages=" + lsmIndex.getTotalPages() + ")");
         List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, 10);
         //System.out.println("Found " + neighbors.size() + " neighbors in this bucket");
         allNeighbors.addAll(neighbors);

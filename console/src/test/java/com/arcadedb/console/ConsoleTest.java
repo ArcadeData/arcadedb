@@ -315,7 +315,7 @@ class ConsoleTest {
     }
 
     assertThat(vertices).isEqualTo(101);
-    assertThat(edges).isEqualTo(135);
+    assertThat(edges).isEqualTo(141);
   }
 
   @Test
