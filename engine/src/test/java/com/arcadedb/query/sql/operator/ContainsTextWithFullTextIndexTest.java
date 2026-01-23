@@ -1,0 +1,139 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql.operator;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
+
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Test to reproduce and verify issue #1062: CONTAINSTEXT operator with full-text index.
+ *
+ * Issue: When a full-text index exists on a property, CONTAINSTEXT operator throws
+ * UnsupportedOperationException instead of using the index for efficient search.
+ */
+public class ContainsTextWithFullTextIndexTest extends TestHelper {
+
+  @Test
+  void testContainsTextWithFullTextIndex() {
+    database.transaction(() -> {
+      // Create type and property as in issue #1062
+      database.command("sql", "CREATE DOCUMENT TYPE PersonResource");
+      database.command("sql", "CREATE PROPERTY PersonResource.label STRING");
+      database.command("sql", "CREATE INDEX ON PersonResource (label) FULL_TEXT");
+
+      // Insert test documents
+      database.command("sql", "INSERT INTO PersonResource SET label = 'John Doe'");
+      database.command("sql", "INSERT INTO PersonResource SET label = 'Jane Smith'");
+      database.command("sql", "INSERT INTO PersonResource SET label = 'John Smith'");
+      database.command("sql", "INSERT INTO PersonResource SET label = 'Bob Johnson'");
+      database.command("sql", "INSERT INTO PersonResource SET label = 'Alice Wonder'");
+      database.command("sql", "INSERT INTO PersonResource SET label = 'John Williams'");
+    });
+
+    database.transaction(() -> {
+      // This should use the full-text index and find all records containing "John"
+      ResultSet result = database.query("sql", "SELECT FROM PersonResource WHERE label CONTAINSTEXT 'John'");
+
+      final List<String> labels = new ArrayList<>();
+      while (result.hasNext()) {
+        labels.add(result.next().getProperty("label"));
+      }
+
+      // Should find: "John Doe", "John Smith", "John Williams" (full-text matches exact word "John")
+      // Note: "Bob Johnson" won't match because full-text indexes tokenize by word
+      assertThat(labels).hasSize(3);
+      assertThat(labels).contains("John Doe", "John Smith", "John Williams");
+    });
+  }
+
+  @Test
+  void testContainsTextWithFullTextIndexMultipleKeywords() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      // Insert test documents
+      database.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
+      database.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'java database system'");
+      database.command("sql", "INSERT INTO Article SET title = 'Doc3', content = 'programming language tutorial'");
+      database.command("sql", "INSERT INTO Article SET title = 'Doc4', content = 'python scripting language'");
+    });
+
+    database.transaction(() -> {
+      // Test searching for "java"
+      ResultSet result = database.query("sql", "SELECT FROM Article WHERE content CONTAINSTEXT 'java'");
+
+      final List<String> titles = new ArrayList<>();
+      while (result.hasNext()) {
+        titles.add(result.next().getProperty("title"));
+      }
+
+      assertThat(titles).containsExactlyInAnyOrder("Doc1", "Doc2");
+    });
+
+    database.transaction(() -> {
+      // Test searching for "language"
+      ResultSet result = database.query("sql", "SELECT FROM Article WHERE content CONTAINSTEXT 'language'");
+
+      final List<String> titles = new ArrayList<>();
+      while (result.hasNext()) {
+        titles.add(result.next().getProperty("title"));
+      }
+
+      assertThat(titles).containsExactlyInAnyOrder("Doc1", "Doc3", "Doc4");
+    });
+  }
+
+  @Test
+  void testContainsTextPreferIndexOverFullScan() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Book");
+      database.command("sql", "CREATE PROPERTY Book.abstract STRING");
+      database.command("sql", "CREATE INDEX ON Book (abstract) FULL_TEXT");
+
+      // Insert test documents
+      database.command("sql", "INSERT INTO Book SET title = 'Magic Book 1', abstract = 'A story about magic and wizards'");
+      database.command("sql", "INSERT INTO Book SET title = 'Science Book', abstract = 'A book about science and technology'");
+      database.command("sql", "INSERT INTO Book SET title = 'Magic Book 2', abstract = 'More magic and spells'");
+    });
+
+    database.transaction(() -> {
+      // This should use the full-text index
+      ResultSet result = database.query("sql", "SELECT FROM Book WHERE abstract CONTAINSTEXT 'magic'");
+
+      final List<String> titles = new ArrayList<>();
+      while (result.hasNext()) {
+        titles.add(result.next().getProperty("title"));
+      }
+
+      assertThat(titles).containsExactlyInAnyOrder("Magic Book 1", "Magic Book 2");
+
+      // TODO: Verify that the query plan shows index usage instead of full scan
+      // ResultSet explainResult = database.query("sql", "EXPLAIN SELECT FROM Book WHERE abstract CONTAINSTEXT 'magic'");
+      // String executionPlan = explainResult.getExecutionPlan().toString();
+      // assertThat(executionPlan).contains("FETCH FROM INDEX");
+    });
+  }
+}

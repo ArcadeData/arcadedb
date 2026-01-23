@@ -124,9 +124,9 @@ public class ContainsTextCondition extends BooleanExpression {
 
   @Override
   public Expression resolveKeyFrom(BinaryCondition additional) {
-    if (getRight() != null)
-      return getRight();
-    throw new UnsupportedOperationException("Cannot execute index query with " + this);
+    // Return the right expression to enable full-text index usage
+    // If a full-text index exists on the left property, it will be used for the lookup
+    return getRight();
   }
 
   @Override
