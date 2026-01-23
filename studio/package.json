@@ -1,6 +1,6 @@
 {
   "name": "arcadedb-studio",
-  "version": "26.1.1",
+  "version": "26.2.1-SNAPSHOT",
   "description": "ArcadeDB Studio Frontend - Multi-Model Database Administration Interface",
   "main": "src/main/resources/static/index.html",
   "scripts": {
