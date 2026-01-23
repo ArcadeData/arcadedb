@@ -110,7 +110,9 @@ public class CreateEdgeExecutionPlanner {
             new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), unidirectional, ifNotExists, context));
 
     handleSetFields(result, body, context);
+    handleApplyDefaults(result, context);
     handleSave(result, targetBucketName, context);
+    handleConnectEdge(result, context);
     //TODO implement batch, wait and retry
     return result;
   }
@@ -154,6 +156,14 @@ public class CreateEdgeExecutionPlanner {
       }
       result.chain(new UpdateSetStep(items, context));
     }
+  }
+
+  private void handleApplyDefaults(final InsertExecutionPlan result, final CommandContext context) {
+    result.chain(new ApplyDefaultsStep(context));
+  }
+
+  private void handleConnectEdge(final InsertExecutionPlan result, final CommandContext context) {
+    result.chain(new ConnectEdgeStep(context));
   }
 
 }

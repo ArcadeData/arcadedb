@@ -148,4 +148,105 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     });
 
   }
+
+  @Test
+  @DisplayName("createEdgeWithMandatoryDefaultProperty - test Issue #2164")
+  void createEdgeWithMandatoryDefaultProperty() {
+    database.getSchema().createVertexType("testVertex");
+    database.getSchema().createEdgeType("transmit");
+    database.command("sql", "CREATE PROPERTY transmit.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT SYSDATE().asLong())");
+
+    database.transaction(() -> {
+      // Create two vertices using the API (like the passing test)
+      MutableVertex v1 = database.newVertex("testVertex").save();
+      MutableVertex v2 = database.newVertex("testVertex").save();
+
+      // Create edge with CONTENT but without the mandatory property
+      // Should apply DEFAULT value and succeed
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE transmit FROM ? TO ? CONTENT [{'test':'test'}]", v1, v2);
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.isEdge()).isTrue();
+      assertThat((String) result.getProperty("test")).isEqualTo("test");
+      assertThat((Object) result.getProperty("created_timestamp")).isNotNull();
+    });
+  }
+
+  @Test
+  @DisplayName("createEdgeWithDefaultPropertyOnly - test Issue #2164")
+  void createEdgeWithDefaultPropertyOnly() {
+    database.getSchema().createVertexType("testVertex2");
+    database.getSchema().createEdgeType("transmit2");
+    database.command("sql", "CREATE PROPERTY transmit2.created_timestamp LONG (DEFAULT SYSDATE().asLong())");
+
+    database.transaction(() -> {
+      // Create two vertices using the API
+      MutableVertex v1 = database.newVertex("testVertex2").save();
+      MutableVertex v2 = database.newVertex("testVertex2").save();
+
+      // Create edge with CONTENT but without the property
+      // Should apply DEFAULT value
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE transmit2 FROM ? TO ? CONTENT [{'test':'test'}]", v1, v2);
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.isEdge()).isTrue();
+      assertThat((String) result.getProperty("test")).isEqualTo("test");
+      assertThat((Object) result.getProperty("created_timestamp")).isNotNull();
+    });
+  }
+
+  @Test
+  @DisplayName("createVertexWithMandatoryDefaultProperty - verify vertices work correctly")
+  void createVertexWithMandatoryDefaultProperty() {
+    database.transaction(() -> {
+      // Create vertex type with mandatory property that has a default value
+      database.command("sql", "CREATE VERTEX TYPE message IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY message.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT SYSDATE().asLong())");
+    });
+
+    // Create vertex with CONTENT but without the mandatory property
+    // Should apply DEFAULT value and succeed
+    database.transaction(() -> {
+      final ResultSet rs = database.command("sql", """
+          CREATE VERTEX message CONTENT {"test":"test"}
+          """);
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.isVertex()).isTrue();
+      assertThat((String) result.getProperty("test")).isEqualTo("test");
+      assertThat((Object) result.getProperty("created_timestamp")).isNotNull();
+    });
+  }
+
+  @Test
+  @DisplayName("createEdgeWithDefaultNoContent - test defaults without CONTENT")
+  void createEdgeWithDefaultNoContent() {
+    database.transaction(() -> {
+      // Create vertex type
+      database.command("sql", "CREATE VERTEX TYPE testVertex4 IF NOT EXISTS");
+
+      // Create edge type with default value
+      database.command("sql", "CREATE EDGE TYPE transmit4 IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY transmit4.created_timestamp LONG (DEFAULT SYSDATE().asLong())");
+
+      // Create two vertices
+      ResultSet v1Rs = database.command("sql", "CREATE VERTEX testVertex4");
+      Result v1 = v1Rs.next();
+      String v1Id = v1.getElement().get().getIdentity().toString();
+
+      ResultSet v2Rs = database.command("sql", "CREATE VERTEX testVertex4");
+      Result v2 = v2Rs.next();
+      String v2Id = v2.getElement().get().getIdentity().toString();
+
+      // Create edge without CONTENT - should still apply DEFAULT
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE transmit4 FROM " + v1Id + " TO " + v2Id);
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.isEdge()).isTrue();
+      assertThat((Object) result.getProperty("created_timestamp")).isNotNull();
+    });
+  }
 }
