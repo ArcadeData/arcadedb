@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.Index;
@@ -138,8 +139,25 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           if (unidirectional && ((EdgeType) context.getDatabase().getSchema().getType(target)).isBidirectional())
             throw new CommandExecutionException("Cannot create unidirectional edge on a bidirectional edge type");
 
-          final MutableEdge edge =
-              edgeToUpdate != null ? edgeToUpdate : currentFrom.newEdge(target, currentTo, properties);
+          final MutableEdge edge;
+          if (edgeToUpdate != null) {
+            edge = edgeToUpdate;
+          } else {
+            // Create unsaved edge - it will be saved later by SaveElementStep
+            // This allows UpdateContentStep and ApplyDefaultsStep to run before save
+            final EdgeType edgeType = (EdgeType) context.getDatabase().getSchema().getType(targetClass.getStringValue());
+            edge = new MutableEdge(context.getDatabase(), edgeType, currentFrom.getIdentity(), currentTo.getIdentity());
+
+            // Set properties if provided
+            if (properties != null && properties.length > 0) {
+              edge.set(properties);
+            }
+
+            // Store vertices for later connection after save
+            context.setVariable("$__ARCADEDB_EDGE_FROM_" + System.identityHashCode(edge), currentFrom);
+            context.setVariable("$__ARCADEDB_EDGE_TO_" + System.identityHashCode(edge), currentTo);
+            context.setVariable("$__ARCADEDB_EDGE_TYPE_" + System.identityHashCode(edge), edgeType);
+          }
 
           final UpdatableResult result = new UpdatableResult(edge);
           currentTo = null;
