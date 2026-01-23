@@ -28,6 +28,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import org.apache.lucene.analysis.en.EnglishAnalyzer;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -182,6 +184,30 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       database.command("sql", "INSERT INTO doc2 (str) VALUES ('a'), ('b'), (null)");
     });
 
+  }
+
+  /**
+   * Tests that METADATA in CREATE INDEX SQL is passed to the full-text index builder.
+   * This test requires Task 1.4 (LSMTreeFullTextIndex using configurable analyzer) to pass.
+   * Task 1.3 ensures the metadata is parsed and passed to the builder.
+   */
+  @Disabled("Requires Task 1.4: LSMTreeFullTextIndex needs to use metadata to configure analyzer")
+  @Test
+  void createIndexWithMetadata() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.title STRING");
+      database.command("sql",
+          "CREATE INDEX ON Article (title) FULL_TEXT METADATA {\"analyzer\": \"org.apache.lucene.analysis.en.EnglishAnalyzer\", \"allowLeadingWildcard\": true}");
+
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[title]");
+      assertThat(index).isNotNull();
+      assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.FULL_TEXT);
+
+      // Verify metadata was applied
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      assertThat(ftIndex.getAnalyzer()).isInstanceOf(EnglishAnalyzer.class);
+    });
   }
 
   @Test
