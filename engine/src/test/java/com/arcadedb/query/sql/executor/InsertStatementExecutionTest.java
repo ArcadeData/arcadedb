@@ -677,4 +677,114 @@ public class InsertStatementExecutionTest extends TestHelper {
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
+
+  @Test
+  void insertWithLanguageKeywordAsPropertyName() {
+    // Test case for issue #3212: INSERT with 'language' keyword as property name
+    final String className = "testInsertLanguage";
+    database.getSchema().createDocumentType(className);
+
+    // Test simple insert with language property
+    ResultSet result = database.command("sql", "INSERT INTO " + className + " SET hash = 'abc', language = 'en'");
+    assertThat(result.hasNext()).isTrue();
+    Result item = result.next();
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("hash")).isEqualTo("abc");
+    assertThat(item.<String>getProperty("language")).isEqualTo("en");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    // Test with parameters (as in the original issue)
+    final Map<String, Object> params = new HashMap<>();
+    params.put("hash", "def");
+    params.put("language", "fr");
+    result = database.command("sql", "INSERT INTO " + className + " SET hash = :hash, language = :language", params);
+    assertThat(result.hasNext()).isTrue();
+    item = result.next();
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("hash")).isEqualTo("def");
+    assertThat(item.<String>getProperty("language")).isEqualTo("fr");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    // Verify the two records were created
+    result = database.query("sql", "SELECT FROM " + className);
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(2);
+    result.close();
+  }
+
+  @Test
+  void insertWithLanguageKeywordInScript() {
+    // Test case for issue #3212: Complete example with LET and RETURN
+    final String className = "testInsertLanguageScript";
+    database.getSchema().createDocumentType(className);
+
+    final Map<String, Object> params = new HashMap<>();
+    params.put("hash", "ghi");
+    params.put("language", "es");
+    ResultSet result = database.command("sqlscript",
+        "LET $newRecord = INSERT INTO " + className + " SET hash = :hash, language = :language RETURN @rid;\n" +
+        "RETURN { \"created\": true, \"rid\": $newRecord['@rid'] };",
+        params);
+    assertThat(result.hasNext()).isTrue();
+    Result item = result.next();
+    assertThat(item).isNotNull();
+
+    // The result is wrapped in a "value" property for sqlscript RETURN statements
+    Map<String, Object> value = item.getProperty("value");
+    assertThat(value).isNotNull();
+    assertThat((Boolean) value.get("created")).isTrue();
+    assertThat(value.get("rid")).isNotNull();
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    // Verify the record was created
+    result = database.query("sql", "SELECT FROM " + className);
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(1);
+    result.close();
+  }
+
+  @Test
+  void insertWithLanguageKeywordExactIssueQuery() {
+    // Test case for issue #3212: Exact query from the GitHub issue
+    database.getSchema().createDocumentType("DOCUMENT");
+
+    // This is the exact query that was failing in the issue
+    final Map<String, Object> params = new HashMap<>();
+    params.put("hash", "test123");
+    params.put("language", "en-US");
+
+    ResultSet result = database.command("sqlscript",
+        "LET $newRecord = INSERT INTO `DOCUMENT` SET hash = :hash, language = :language RETURN @rid;\n" +
+        "RETURN { \"created\": true, \"rid\": $newRecord['@rid'] };",
+        params);
+
+    assertThat(result.hasNext()).isTrue();
+    Result item = result.next();
+    assertThat(item).isNotNull();
+
+    Map<String, Object> value = item.getProperty("value");
+    assertThat(value).isNotNull();
+    assertThat((Boolean) value.get("created")).isTrue();
+    assertThat(value.get("rid")).isNotNull();
+    result.close();
+
+    // Verify the record was created with correct properties
+    result = database.query("sql", "SELECT FROM DOCUMENT");
+    assertThat(result.hasNext()).isTrue();
+    Result doc = result.next();
+    assertThat(doc.<String>getProperty("hash")).isEqualTo("test123");
+    assertThat(doc.<String>getProperty("language")).isEqualTo("en-US");
+    result.close();
+  }
 }
