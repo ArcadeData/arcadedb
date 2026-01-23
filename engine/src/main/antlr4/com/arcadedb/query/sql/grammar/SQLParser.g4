@@ -1206,4 +1206,6 @@ identifier
     | WHERE
     | WHILE
     | INDEX
+    | LANGUAGE
+    | DOCUMENT
     ;
