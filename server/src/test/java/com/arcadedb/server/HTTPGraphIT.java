@@ -626,4 +626,42 @@ class HTTPGraphIT extends BaseGraphServerTest {
       assertThat(responseAsJsonSelect.getJSONObject("result").getJSONArray("records").length()).isEqualTo(THREADS * SCRIPTS);
     });
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/1620
+   * Test that edges are not duplicated in studio serializer when explicitly returned in query
+   */
+  @Test
+  void checkEdgeNoDuplicationInStudioSerializer() throws Exception {
+    testEachServer((serverIndex) -> {
+      // Test with SQL query returning only vertices (edges should be auto-added)
+      final JSONObject response1 = executeCommand(serverIndex, "sql",
+          "SELECT FROM V1 WHERE out() IS NOT NULL OR in() IS NOT NULL LIMIT 20");
+
+      final int verticesCount1 = response1.getJSONObject("result").getJSONArray("vertices").length();
+      final int edgesCount1 = response1.getJSONObject("result").getJSONArray("edges").length();
+
+      LogManager.instance().log(this, Level.INFO, "Query returning only vertices returned %d vertices and %d edges",
+          verticesCount1, edgesCount1);
+
+      // Test with SQL query explicitly returning edges in the result properties
+      final JSONObject response2 = executeCommand(serverIndex, "sql",
+          "SELECT *, outE(), inE() FROM V1 WHERE out() IS NOT NULL OR in() IS NOT NULL LIMIT 20");
+
+      final int verticesCount2 = response2.getJSONObject("result").getJSONArray("vertices").length();
+      final int edgesCount2 = response2.getJSONObject("result").getJSONArray("edges").length();
+
+      LogManager.instance().log(this, Level.INFO, "Query returning vertices with edges returned %d vertices and %d edges",
+          verticesCount2, edgesCount2);
+
+      // Vertices should be the same in both queries
+      assertThat(verticesCount1).isEqualTo(verticesCount2);
+
+      // Edges should NOT be duplicated when explicitly returned
+      // In the issue, edges were doubled (82 -> 164), so this test should catch that bug
+      assertThat(edgesCount1).isEqualTo(edgesCount2)
+          .withFailMessage("Edges were duplicated: query without edges returned %d edges, but query with edges returned %d edges (should be equal)",
+              edgesCount1, edgesCount2);
+    });
+  }
 }
