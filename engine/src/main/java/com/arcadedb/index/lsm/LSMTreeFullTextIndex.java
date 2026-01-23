@@ -78,12 +78,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       if (builder.isUnique())
         throw new IllegalArgumentException("Full text index cannot be unique");
 
-      if (builder.getKeyTypes().length != 1)
-        throw new IndexException("Full text index can only be defined on one property");
-
-      if (builder.getKeyTypes()[0] != Type.STRING)
-        throw new IllegalArgumentException(
-            "Full text index can only be defined on STRING properties, found: " + builder.getKeyTypes()[0]);
+      // Allow multiple STRING properties for multi-property indexes
+      for (final Type keyType : builder.getKeyTypes()) {
+        if (keyType != Type.STRING)
+          throw new IllegalArgumentException(
+              "Full text index can only be defined on STRING properties, found: " + keyType);
+      }
 
       // Get metadata if available
       FullTextIndexMetadata ftMetadata = null;
@@ -157,21 +157,35 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
-    final List<String> keywords = analyzeText(queryAnalyzer, keys);
-
     final HashMap<RID, AtomicInteger> scoreMap = new HashMap<>();
 
-    for (final String k : keywords) {
-      final IndexCursor rids = underlyingIndex.get(new String[] { k });
+    // Parse query text to handle field-specific terms (field:term)
+    final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";
+    final List<QueryTerm> queryTerms = parseQueryTerms(queryText);
 
-      while (rids.hasNext()) {
-        final RID rid = rids.next().getIdentity();
+    for (final QueryTerm term : queryTerms) {
+      // Analyze the term value
+      final List<String> keywords = analyzeText(queryAnalyzer, new Object[] { term.value });
 
-        final AtomicInteger score = scoreMap.get(rid);
-        if (score == null)
-          scoreMap.put(rid, new AtomicInteger(1));
-        else
-          score.incrementAndGet();
+      for (final String k : keywords) {
+        final IndexCursor rids;
+        if (term.fieldName != null) {
+          // Field-specific search - look up the prefixed token
+          rids = underlyingIndex.get(new String[] { term.fieldName + ":" + k });
+        } else {
+          // Unqualified search - search without prefix
+          rids = underlyingIndex.get(new String[] { k });
+        }
+
+        while (rids.hasNext()) {
+          final RID rid = rids.next().getIdentity();
+
+          final AtomicInteger score = scoreMap.get(rid);
+          if (score == null)
+            scoreMap.put(rid, new AtomicInteger(1));
+          else
+            score.incrementAndGet();
+        }
       }
     }
 
@@ -191,25 +205,143 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return new TempIndexCursor(list);
   }
 
+  /**
+   * Represents a parsed query term with optional field name.
+   */
+  private static class QueryTerm {
+    final String fieldName; // null for unqualified terms
+    final String value;
+
+    QueryTerm(final String fieldName, final String value) {
+      this.fieldName = fieldName;
+      this.value = value;
+    }
+  }
+
+  /**
+   * Parse query text into terms, identifying field-prefixed terms (field:value).
+   * For example, "title:java programming" returns:
+   *   - QueryTerm(fieldName="title", value="java")
+   *   - QueryTerm(fieldName=null, value="programming")
+   */
+  private List<QueryTerm> parseQueryTerms(final String queryText) {
+    final List<QueryTerm> terms = new ArrayList<>();
+    if (queryText == null || queryText.isEmpty())
+      return terms;
+
+    // Split by whitespace to get individual terms
+    final String[] parts = queryText.split("\\s+");
+    for (final String part : parts) {
+      if (part.isEmpty())
+        continue;
+
+      // Check for field:value pattern
+      final int colonIdx = part.indexOf(':');
+      if (colonIdx > 0 && colonIdx < part.length() - 1) {
+        // Field-prefixed term
+        final String fieldName = part.substring(0, colonIdx);
+        final String value = part.substring(colonIdx + 1);
+        terms.add(new QueryTerm(fieldName, value));
+      } else {
+        // Unqualified term
+        terms.add(new QueryTerm(null, part));
+      }
+    }
+    return terms;
+  }
+
   @Override
   public void put(final Object[] keys, final RID[] rids) {
-    final List<String> keywords = analyzeText(indexAnalyzer, keys);
-    for (final String k : keywords)
-      underlyingIndex.put(new String[] { k }, rids);
+    // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
+    // (TransactionIndexContext stores tokens during transaction and replays them at commit time)
+    // In that case, pass through directly to the underlying index without re-tokenizing
+    if (keys.length != propertyCount) {
+      // Already tokenized - pass through directly
+      underlyingIndex.put(keys, rids);
+      return;
+    }
+
+    if (propertyCount == 1) {
+      // Single property - existing behavior
+      final List<String> keywords = analyzeText(indexAnalyzer, keys);
+      for (final String k : keywords)
+        underlyingIndex.put(new String[] { k }, rids);
+    } else {
+      // Multi-property - prefix tokens with field name
+      final List<String> propertyNames = getPropertyNames();
+      for (int i = 0; i < keys.length && i < propertyNames.size(); i++) {
+        if (keys[i] == null)
+          continue;
+        final String fieldName = propertyNames.get(i);
+        final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
+        for (final String k : keywords) {
+          // Store with field prefix for field-specific queries
+          underlyingIndex.put(new String[] { fieldName + ":" + k }, rids);
+          // Also store without prefix for unqualified queries
+          underlyingIndex.put(new String[] { k }, rids);
+        }
+      }
+    }
   }
 
   @Override
   public void remove(final Object[] keys) {
-    final List<String> keywords = analyzeText(indexAnalyzer, keys);
-    for (final String k : keywords)
-      underlyingIndex.remove(new String[] { k });
+    // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
+    if (keys.length != propertyCount) {
+      // Already tokenized - pass through directly
+      underlyingIndex.remove(keys);
+      return;
+    }
+
+    if (propertyCount == 1) {
+      // Single property - existing behavior
+      final List<String> keywords = analyzeText(indexAnalyzer, keys);
+      for (final String k : keywords)
+        underlyingIndex.remove(new String[] { k });
+    } else {
+      // Multi-property - remove both prefixed and unprefixed tokens
+      final List<String> propertyNames = getPropertyNames();
+      for (int i = 0; i < keys.length && i < propertyNames.size(); i++) {
+        if (keys[i] == null)
+          continue;
+        final String fieldName = propertyNames.get(i);
+        final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
+        for (final String k : keywords) {
+          underlyingIndex.remove(new String[] { fieldName + ":" + k });
+          underlyingIndex.remove(new String[] { k });
+        }
+      }
+    }
   }
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
-    final List<String> keywords = analyzeText(indexAnalyzer, keys);
-    for (final String k : keywords)
-      underlyingIndex.remove(new String[] { k }, rid);
+    // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
+    if (keys.length != propertyCount) {
+      // Already tokenized - pass through directly
+      underlyingIndex.remove(keys, rid);
+      return;
+    }
+
+    if (propertyCount == 1) {
+      // Single property - existing behavior
+      final List<String> keywords = analyzeText(indexAnalyzer, keys);
+      for (final String k : keywords)
+        underlyingIndex.remove(new String[] { k }, rid);
+    } else {
+      // Multi-property - remove both prefixed and unprefixed tokens
+      final List<String> propertyNames = getPropertyNames();
+      for (int i = 0; i < keys.length && i < propertyNames.size(); i++) {
+        if (keys[i] == null)
+          continue;
+        final String fieldName = propertyNames.get(i);
+        final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
+        for (final String k : keywords) {
+          underlyingIndex.remove(new String[] { fieldName + ":" + k }, rid);
+          underlyingIndex.remove(new String[] { k }, rid);
+        }
+      }
+    }
   }
 
   @Override

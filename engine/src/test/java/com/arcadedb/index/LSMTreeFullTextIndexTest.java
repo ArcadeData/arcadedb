@@ -97,7 +97,9 @@ class LSMTreeFullTextIndexTest extends TestHelper {
   }
 
   @Test
-  void indexingComposite() {
+  void indexingCompositeNonStringProperty() {
+    // Multi-property full-text indexes are now supported, but only for STRING properties.
+    // This test verifies that non-STRING properties are still rejected.
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType()
@@ -105,14 +107,16 @@ class LSMTreeFullTextIndexTest extends TestHelper {
         .withTotalBuckets(1)
         .create();
     type.createProperty("text", String.class);
-    type.createProperty("type", String.class);
+    type.createProperty("count", Integer.class);
     assertThatThrownBy(() -> database.getSchema()
-        .buildTypeIndex(TYPE_NAME, new String[] { "text", "type" })
+        .buildTypeIndex(TYPE_NAME, new String[] { "text", "count" })
         .withType(Schema.INDEX_TYPE.FULL_TEXT)
         .withPageSize(PAGE_SIZE)
         .withUnique(false)
         .create())
-        .isInstanceOf(IndexException.class);
+        .isInstanceOf(IndexException.class)
+        .hasRootCauseInstanceOf(IllegalArgumentException.class)
+        .hasRootCauseMessage("Full text index can only be defined on STRING properties, found: INTEGER");
   }
 
   @Test
@@ -204,6 +208,112 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       // Verify metadata was applied
       final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
       assertThat(ftIndex.getAnalyzer()).isInstanceOf(EnglishAnalyzer.class);
+    });
+  }
+
+  @Test
+  void multiPropertyIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article2");
+      database.command("sql", "CREATE PROPERTY Article2.title STRING");
+      database.command("sql", "CREATE PROPERTY Article2.body STRING");
+      database.command("sql", "CREATE INDEX ON Article2 (title, body) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article2 SET title = 'Java Programming', body = 'Learn Java basics'");
+      database.command("sql", "INSERT INTO Article2 SET title = 'Python Tutorial', body = 'Python programming guide'");
+    });
+
+    database.transaction(() -> {
+      // Search should find documents matching in either field
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article2[title,body]");
+      final IndexCursor cursor = index.get(new Object[] { "java programming" });
+
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      // Both documents should match (Java appears in title of doc1, programming in both)
+      assertThat(count).isEqualTo(2);
+    });
+  }
+
+  @Test
+  void multiPropertyIndexFieldSpecificSearch() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article3");
+      database.command("sql", "CREATE PROPERTY Article3.title STRING");
+      database.command("sql", "CREATE PROPERTY Article3.body STRING");
+      database.command("sql", "CREATE INDEX ON Article3 (title, body) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article3 SET title = 'Java Programming', body = 'Learn basics'");
+      database.command("sql", "INSERT INTO Article3 SET title = 'Python Tutorial', body = 'Java programming guide'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article3[title,body]");
+
+      // First, test unqualified search to verify both documents are indexed
+      final IndexCursor allJavaCursor = index.get(new Object[] { "java" });
+      int allJavaCount = 0;
+      while (allJavaCursor.hasNext()) {
+        allJavaCursor.next();
+        allJavaCount++;
+      }
+      // Both documents have "java" somewhere
+      assertThat(allJavaCount).isEqualTo(2);
+
+      // Field-specific search: only match "java" in the title field
+      // Access the underlying bucket index directly to bypass TypeIndex
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final IndexCursor titleCursor = ftIndex.get(new Object[] { "title:java" });
+      final Set<String> titlesFound = new HashSet<>();
+      while (titleCursor.hasNext()) {
+        final Identifiable record = titleCursor.next();
+        titlesFound.add(record.asDocument().getString("title"));
+      }
+      // Only first document has "java" in title
+      assertThat(titlesFound).containsExactly("Java Programming");
+
+      // Field-specific search: only match "java" in the body field
+      final IndexCursor bodyCursor = ftIndex.get(new Object[] { "body:java" });
+      final Set<String> bodiesFound = new HashSet<>();
+      while (bodyCursor.hasNext()) {
+        final Identifiable record = bodyCursor.next();
+        bodiesFound.add(record.asDocument().getString("title"));
+      }
+      // Only second document has "java" in body
+      assertThat(bodiesFound).containsExactly("Python Tutorial");
+    });
+  }
+
+  @Test
+  void multiPropertyIndexRemove() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article4");
+      database.command("sql", "CREATE PROPERTY Article4.title STRING");
+      database.command("sql", "CREATE PROPERTY Article4.body STRING");
+      database.command("sql", "CREATE INDEX ON Article4 (title, body) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article4 SET title = 'Java Programming', body = 'Learn basics'");
+    });
+
+    // Delete the document and verify it's removed from the index
+    database.transaction(() -> {
+      database.command("sql", "DELETE FROM Article4 WHERE title = 'Java Programming'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article4[title,body]");
+      final IndexCursor cursor = index.get(new Object[] { "java" });
+
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      // Document should be removed from index
+      assertThat(count).isEqualTo(0);
     });
   }
 
