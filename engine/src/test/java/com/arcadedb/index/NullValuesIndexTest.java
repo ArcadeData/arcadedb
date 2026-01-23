@@ -355,6 +355,88 @@ class NullValuesIndexTest extends TestHelper {
   }
 
   @Test
+  void nullStrategyIndex_orderByIncludesNullValues() {
+    // This is the original issue from GitHub #2692 - ORDER BY should include NULL values
+    // when using NULL_STRATEGY INDEX
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
+
+    database.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+    database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".num LONG");
+    database.command("sql", "CREATE INDEX ON " + TYPE_NAME + " (num) NOTUNIQUE NULL_STRATEGY INDEX");
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET num = 1");
+      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET num = 2");
+      database.command("sql", "INSERT INTO " + TYPE_NAME + " CONTENT {}"); // no num value (NULL)
+    });
+
+    // Without ORDER BY - should return 3 records
+    database.transaction(() -> {
+      final var result = database.query("SQL", "SELECT FROM " + TYPE_NAME);
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(3);
+    });
+
+    // With ORDER BY - should also return 3 records (including the NULL)
+    database.transaction(() -> {
+      final var result = database.query("SQL", "SELECT FROM " + TYPE_NAME + " ORDER BY num");
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(3);
+    });
+  }
+
+  @Test
+  void nullStrategyIndex_sqlCreateIndex() {
+    assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
+
+    database.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+    database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".id INTEGER");
+    database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".name STRING");
+    database.command("sql", "CREATE INDEX ON " + TYPE_NAME + " (id) UNIQUE");
+    database.command("sql", "CREATE INDEX ON " + TYPE_NAME + " (name) NOTUNIQUE NULL_STRATEGY INDEX");
+
+    database.transaction(() -> {
+      // Insert documents with non-null names
+      for (int i = 0; i < TOT; ++i) {
+        database.command("sql", "INSERT INTO " + TYPE_NAME + " SET id = ?, name = ?", i, "Jay" + i);
+      }
+
+      // Insert documents with null names
+      for (int i = TOT; i < TOT + 3; ++i) {
+        database.command("sql", "INSERT INTO " + TYPE_NAME + " SET id = ?", i);
+      }
+    });
+
+    // Verify total count
+    database.transaction(() -> assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 3));
+
+    // Verify NULL_STRATEGY is INDEX
+    database.transaction(() -> {
+      final Index nameIndex = database.getSchema().getIndexByName(TYPE_NAME + "[name]");
+      assertThat(nameIndex.getNullStrategy()).isEqualTo(LSMTreeIndexAbstract.NULL_STRATEGY.INDEX);
+    });
+
+    // Verify we can query NULL values via SQL
+    database.transaction(() -> {
+      final var result = database.query("SQL", "SELECT FROM " + TYPE_NAME + " WHERE name IS NULL");
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(3);
+    });
+  }
+
+  @Test
   void nullStrategyIndex_persistenceReload() {
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 

@@ -133,6 +133,57 @@ public abstract class BooleanExpression extends SimpleNode {
     }
   };
 
+  public static final BooleanExpression NULL = new BooleanExpression(0) {
+    @Override
+    public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
+      return null;
+    }
+
+    @Override
+    public Boolean evaluate(final Result currentRecord, final CommandContext context) {
+      return null;
+    }
+
+    @Override
+    public BooleanExpression copy() {
+      return NULL;
+    }
+
+    @Override
+    public List<String> getMatchPatternInvolvedAliases() {
+      return null;
+    }
+
+    @Override
+    public boolean isCacheable() {
+      return true;
+    }
+
+    @Override
+    public String toString() {
+      return "null";
+    }
+
+    public void toString(final Map<String, Object> params, final StringBuilder builder) {
+      builder.append("null");
+    }
+
+    @Override
+    public boolean isEmpty() {
+      return false;
+    }
+
+    @Override
+    public void extractSubQueries(final SubQueryCollector collector) {
+      // NO ACTIONS
+    }
+
+    @Override
+    public boolean refersToParent() {
+      return false;
+    }
+  };
+
   public BooleanExpression(final int id) {
     super(id);
   }

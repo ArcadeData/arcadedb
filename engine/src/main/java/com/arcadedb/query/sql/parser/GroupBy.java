@@ -24,7 +24,7 @@ import java.util.*;
 import java.util.stream.*;
 
 public class GroupBy extends SimpleNode {
-  protected List<Expression> items = new ArrayList<Expression>();
+  public List<Expression> items = new ArrayList<Expression>();
 
   public GroupBy(final int id) {
     super(id);
@@ -64,5 +64,24 @@ public class GroupBy extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return items.toArray(new Expression[items.size()]);
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (items != null) {
+      final java.util.List<Object> itemsJson = new java.util.ArrayList<>();
+      for (Object item : items) {
+        if (item instanceof SimpleNode) {
+          itemsJson.add(((SimpleNode) item).toJSON());
+        } else {
+          itemsJson.add(item);
+        }
+      }
+      json.put("items", itemsJson);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=4739190aa6c1a3533a89b76a15bd6fdf (do not edit this line) */

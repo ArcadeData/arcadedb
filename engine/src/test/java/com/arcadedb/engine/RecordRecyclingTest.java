@@ -35,6 +35,7 @@ import java.util.Collection;
 import static com.arcadedb.schema.LocalSchema.STATISTICS_FILE_NAME;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("slow")
 class RecordRecyclingTest {
   private final static int    TOT_RECORDS  = 100_000;
   private final static String VERTEX_TYPE  = "Product";

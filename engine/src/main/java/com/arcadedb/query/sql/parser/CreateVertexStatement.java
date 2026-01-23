@@ -33,11 +33,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class CreateVertexStatement extends Statement {
-  Identifier targetType;
-  Identifier targetBucketName;
-  Bucket     targetBucket;
-  Projection returnStatement;
-  InsertBody insertBody;
+  public Identifier targetType;
+  public Identifier targetBucketName;
+  public Bucket     targetBucket;
+  public Projection returnStatement;
+  public InsertBody insertBody;
 
   public CreateVertexStatement(final int id) {
     super(id);

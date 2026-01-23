@@ -81,5 +81,19 @@ public class Timeout extends SimpleNode {
     this.val = val;
     return this;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (val != null) {
+      json.put("val", val.toString());
+    }
+    if (failureStrategy != null) {
+      json.put("failureStrategy", failureStrategy);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=fef7f5d488f7fca1b6ad0b70c6841931 (do not edit this line) */

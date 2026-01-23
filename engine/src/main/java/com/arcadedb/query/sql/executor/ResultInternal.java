@@ -77,6 +77,15 @@ public class ResultInternal implements Result {
     return database;
   }
 
+  /**
+   * Returns the raw value stored in this Result, if any.
+   * This is used when the Result was created to wrap a plain value (like a String)
+   * rather than a Document or Map.
+   */
+  public Object getValue() {
+    return value;
+  }
+
   public void setTemporaryProperty(final String name, Object value) {
     if (temporaryContent == null)
       temporaryContent = new HashMap<>();

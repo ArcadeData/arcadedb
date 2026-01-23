@@ -96,7 +96,7 @@ class Issue3131Test {
     assertThat((Object) result.getProperty("b")).as("b should be a vertex").isNotNull();
     assertThat((Object) result.getProperty("r")).as("r should be an edge").isNotNull();
 
-    System.out.println("Result: " + result.toJSON());
+//    System.out.println("Result: " + result.toJSON());
 
     // No more results
     assertThat(rs.hasNext()).as("Should only return one result").isFalse();

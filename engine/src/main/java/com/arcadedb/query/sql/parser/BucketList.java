@@ -25,7 +25,7 @@ import java.util.stream.*;
 
 public class BucketList extends SimpleNode {
 
-  protected List<Identifier> buckets = new ArrayList<>();
+  public List<Identifier> buckets = new ArrayList<>();
 
   public BucketList(final int id) {
     super(id);
@@ -64,5 +64,24 @@ public class BucketList extends SimpleNode {
   protected Object[] getIdentityElements() {
     return new Object[] { buckets };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (buckets != null) {
+      final java.util.List<Object> bucketsJson = new java.util.ArrayList<>();
+      for (Object item : buckets) {
+        if (item instanceof SimpleNode) {
+          bucketsJson.add(((SimpleNode) item).toJSON());
+        } else {
+          bucketsJson.add(item);
+        }
+      }
+      json.put("buckets", bucketsJson);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=bd90ffa0b9d17f204b3cf2d47eedb409 (do not edit this line) */

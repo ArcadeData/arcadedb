@@ -57,6 +57,7 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@Tag("slow")
 class LSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "V";

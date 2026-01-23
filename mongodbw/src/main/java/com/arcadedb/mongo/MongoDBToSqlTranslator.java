@@ -145,14 +145,14 @@ public class MongoDBToSqlTranslator {
 
   protected static void buildCollection(final StringBuilder buffer, final Collection coll) {
     int i = 0;
-    buffer.append('[');
+    buffer.append('(');
     for (final Iterator it = coll.iterator(); it.hasNext(); ) {
       if (i++ > 0)
-        buffer.append(',');
+        buffer.append(", ");
 
       buildValue(buffer, it.next());
     }
-    buffer.append(']');
+    buffer.append(')');
   }
 
   protected static void buildValue(final StringBuilder buffer, final Object value) {

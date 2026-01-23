@@ -26,22 +26,25 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 public class Limit extends SimpleNode {
-  protected PInteger       num;
-  protected InputParameter inputParam;
+  public PInteger       num;
+  public InputParameter inputParam;
+  public Expression     expression;
 
   public Limit(final int id) {
     super(id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (num == null && inputParam == null)
+    if (num == null && inputParam == null && expression == null)
       return;
 
     builder.append(" LIMIT ");
     if (num != null)
       num.toString(params, builder);
-    else
+    else if (inputParam != null)
       inputParam.toString(params, builder);
+    else
+      expression.toString(params, builder);
 
   }
 
@@ -56,6 +59,15 @@ public class Limit extends SimpleNode {
       else
         throw new CommandExecutionException("Invalid value for LIMIT: " + paramValue);
     }
+
+    if (expression != null) {
+      final Object exprValue = expression.execute((com.arcadedb.query.sql.executor.Result) null, context);
+      if (exprValue instanceof Number number)
+        return number.intValue();
+      else
+        throw new CommandExecutionException("Invalid value for LIMIT: " + exprValue);
+    }
+
     throw new CommandExecutionException("No value for LIMIT");
   }
 
@@ -68,6 +80,7 @@ public class Limit extends SimpleNode {
     final Limit result = new Limit(-1);
     result.num = num == null ? null : num.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
+    result.expression = expression == null ? null : expression.copy();
     return result;
   }
 
@@ -82,14 +95,34 @@ public class Limit extends SimpleNode {
 
     if (!Objects.equals(num, oLimit.num))
       return false;
-    return Objects.equals(inputParam, oLimit.inputParam);
+    if (!Objects.equals(inputParam, oLimit.inputParam))
+      return false;
+    return Objects.equals(expression, oLimit.expression);
   }
 
   @Override
   public int hashCode() {
     int result = num != null ? num.hashCode() : 0;
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
+    result = 31 * result + (expression != null ? expression.hashCode() : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (num != null) {
+      json.put("num", num.toString());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toString());
+    }
+    if (expression != null) {
+      json.put("expression", expression.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=1063b9489290bb08de6048ba55013171 (do not edit this line) */

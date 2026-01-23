@@ -28,9 +28,9 @@ import com.arcadedb.schema.DocumentType;
 import java.util.*;
 
 public class NotBlock extends BooleanExpression {
-  protected BooleanExpression sub;
+  public BooleanExpression sub;
 
-  protected boolean negate = false;
+  public boolean negate = false;
 
   public NotBlock(final int id) {
     super(id);

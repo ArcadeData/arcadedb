@@ -64,5 +64,16 @@ public class Url extends SimpleNode {
   public String getUrlString() {
     return urlString;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (urlString != null) {
+      json.put("urlString", urlString);
+    }
+
+    return json;
+  }
+
 }
 /* ParserGeneratorCC - OriginalChecksum=1c71d71eb1a1a5f32261d88739a61629 (do not edit this line) */

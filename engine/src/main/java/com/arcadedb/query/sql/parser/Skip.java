@@ -26,22 +26,25 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 public class Skip extends SimpleNode {
-  protected PInteger       num;
-  protected InputParameter inputParam;
+  public PInteger       num;
+  public InputParameter inputParam;
+  public Expression     expression;
 
   public Skip(final int id) {
     super(id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (num == null && inputParam == null)
+    if (num == null && inputParam == null && expression == null)
       return;
 
     builder.append(" SKIP ");
     if (num != null)
       num.toString(params, builder);
-    else
+    else if (inputParam != null)
       inputParam.toString(params, builder);
+    else
+      expression.toString(params, builder);
   }
 
   public int getValue(final CommandContext context) {
@@ -55,6 +58,15 @@ public class Skip extends SimpleNode {
       else
         throw new CommandExecutionException("Invalid value for SKIP: " + paramValue);
     }
+
+    if (expression != null) {
+      final Object exprValue = expression.execute((com.arcadedb.query.sql.executor.Result) null, context);
+      if (exprValue instanceof Number number)
+        return number.intValue();
+      else
+        throw new CommandExecutionException("Invalid value for SKIP: " + exprValue);
+    }
+
     throw new CommandExecutionException("No value for SKIP");
   }
 
@@ -62,12 +74,30 @@ public class Skip extends SimpleNode {
     final Skip result = new Skip(-1);
     result.num = num == null ? null : num.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
+    result.expression = expression == null ? null : expression.copy();
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { num, inputParam };
+    return new Object[] { num, inputParam, expression };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (num != null) {
+      json.put("num", num.toString());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toString());
+    }
+    if (expression != null) {
+      json.put("expression", expression.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=8e13ca184705a8fc1b5939ecefe56a60 (do not edit this line) */

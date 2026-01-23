@@ -13,11 +13,11 @@ import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 import java.util.*;
 
 public class MoveVertexStatement extends Statement {
-  protected FromItem         source;
-  protected Bucket           targetBucket;
-  protected Identifier       targetType;
-  protected UpdateOperations updateOperations;
-  protected Batch            batch;
+  public FromItem         source;
+  public Bucket           targetBucket;
+  public Identifier       targetType;
+  public UpdateOperations updateOperations;
+  public Batch            batch;
 
   public MoveVertexStatement(int id) {
     super(id);

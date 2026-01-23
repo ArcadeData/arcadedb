@@ -68,6 +68,7 @@ import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
@@ -149,6 +150,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private              FileLock                                  lockFileLock;
   private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
   private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<String, Object>         globalVariables                      = new ConcurrentHashMap<>();
   private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private              long                                      openedOn;
   private              long                                      lastUpdatedOn;
@@ -1651,6 +1653,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       this.wrappers.remove(name);
     else
       this.wrappers.put(name, instance);
+  }
+
+  @Override
+  public Object getGlobalVariable(String name) {
+    if (name == null)
+      return null;
+    if (name.startsWith("$"))
+      name = name.substring(1);
+    return globalVariables.get(name);
+  }
+
+  @Override
+  public Object setGlobalVariable(String name, final Object value) {
+    if (name == null)
+      throw new IllegalArgumentException("Variable name cannot be null");
+    if (name.startsWith("$"))
+      name = name.substring(1);
+    SQLQueryEngine.validateVariableName(name);
+    if (value == null)
+      return globalVariables.remove(name);
+    return globalVariables.put(name, value);
+  }
+
+  @Override
+  public Map<String, Object> getGlobalVariables() {
+    return Collections.unmodifiableMap(globalVariables);
   }
 
   public QueryEngineManager getQueryEngineManager() {

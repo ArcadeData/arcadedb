@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -97,5 +98,20 @@ public class MatchPathItemFirst extends MatchPathItem {
       }
     }
     return methodWrapper;
+  }
+
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", getClass().getSimpleName());
+
+    if (function != null) {
+      json.put("function", function.toJSON());
+    }
+    if (filter != null) {
+      json.put("filter", filter.toJSON());
+    }
+
+    return json;
   }
 }

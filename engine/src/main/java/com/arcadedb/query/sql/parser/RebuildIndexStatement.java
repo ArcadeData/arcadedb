@@ -45,11 +45,11 @@ import java.util.logging.*;
 
 public class RebuildIndexStatement extends DDLStatement {
   private static final int                         MAX_ATTEMPTS = 5;
-  protected            boolean                     all          = false;
-  protected            Identifier                  name;
-  protected            Expression                  key;
-  protected            Expression                  value;
-  protected final      Map<Expression, Expression> settings     = new HashMap<>();
+  public               boolean                     all          = false;
+  public               Identifier                  name;
+  public               Expression                  key;
+  public               Expression                  value;
+  public final         Map<Expression, Expression> settings     = new HashMap<>();
 
   public RebuildIndexStatement(final int id) {
     super(id);

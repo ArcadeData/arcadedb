@@ -29,14 +29,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class Statement extends SimpleNode {
-
-  //only for internal use!!! (caching)
-  protected Statement originalStatement;
-  protected String    originalStatementAsString;
-  protected Limit     limit   = null;
-  protected Timeout   timeout = null;
-
-  public static final String CUSTOM_STRICT_SQL = "strictSql";
+  // Only for internal use!!! (caching)
+  public Statement originalStatement;
+  public String    originalStatementAsString;
+  public Limit     limit   = null;
+  public Timeout   timeout = null;
 
   public Statement(final int id) {
     super(id);
@@ -169,5 +166,25 @@ public class Statement extends SimpleNode {
     if (timeout.val.longValue() > -1)
       this.timeout = timeout;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (originalStatement != null) {
+      json.put("originalStatement", originalStatement.toJSON());
+    }
+    if (originalStatementAsString != null) {
+      json.put("originalStatementAsString", originalStatementAsString);
+    }
+    if (limit != null) {
+      json.put("limit", limit.toString());
+    }
+    if (timeout != null) {
+      json.put("timeout", timeout.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=589c4dcc8287f430e46d8eb12b0412c5 (do not edit this line) */

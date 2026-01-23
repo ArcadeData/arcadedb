@@ -28,8 +28,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class TraverseProjectionItem extends SimpleNode {
-  protected BaseIdentifier base;
-  protected Modifier       modifier;
+  public BaseIdentifier base;
+  public Modifier       modifier;
 
   public TraverseProjectionItem(final int id) {
     super(id);
@@ -121,5 +121,19 @@ public class TraverseProjectionItem extends SimpleNode {
     result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (base != null) {
+      json.put("base", base.toString());
+    }
+    if (modifier != null) {
+      json.put("modifier", modifier.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=0c562254fd4d11266edc0504fd36fc99 (do not edit this line) */

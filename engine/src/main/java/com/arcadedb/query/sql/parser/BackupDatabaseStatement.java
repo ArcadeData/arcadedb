@@ -38,10 +38,10 @@ import java.util.Map;
 import java.util.logging.Level;
 
 public class BackupDatabaseStatement extends SimpleExecStatement {
-  protected       Url                         url;
+  public          Url                         url;
   protected       Expression                  key;
   protected       Expression                  value;
-  protected final Map<Expression, Expression> settings = new HashMap<>();
+  public final    Map<Expression, Expression> settings = new HashMap<>();
 
   public BackupDatabaseStatement(final int id) {
     super(id);

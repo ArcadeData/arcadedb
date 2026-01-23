@@ -32,9 +32,9 @@ import java.util.*;
 
 public class ContainsCondition extends BooleanExpression {
 
-  protected Expression        left;
-  protected Expression        right;
-  protected BooleanExpression condition;
+  public Expression        left;
+  public Expression        right;
+  public BooleanExpression condition;
 
   public ContainsCondition(final int id) {
     super(id);

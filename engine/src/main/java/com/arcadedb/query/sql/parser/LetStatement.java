@@ -29,9 +29,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class LetStatement extends SimpleExecStatement {
-  protected Identifier variableName;
-  protected Statement  statement;
-  protected Expression expression;
+  public Identifier variableName;
+  public Statement  statement;
+  public Expression expression;
 
   public LetStatement(final int id) {
     super(id);

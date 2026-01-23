@@ -72,8 +72,8 @@ public class InsertExecutionPlanner {
     handleTargetType(result, targetType, context);
     handleSetFields(result, insertBody, context);
     if (targetBucket != null) {
-      String name = targetBucket.getBucketName();
-      if (name == null) {
+      String name = resolveBucketName(targetBucket, context);
+      if (name == null && targetBucket.getBucketNumber() != null) {
         name = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber()).getName();
       }
       handleSave(result, new Identifier(name), context);
@@ -134,10 +134,13 @@ public class InsertExecutionPlanner {
 
     if (targetType == null && targetBucket != null) {
       final com.arcadedb.engine.Bucket bucket;
-      if (targetBucket.getBucketName() != null)
-        bucket = context.getDatabase().getSchema().getBucketByName(targetBucket.getBucketName());
-      else
+      final String resolvedName = resolveBucketName(targetBucket, context);
+      if (resolvedName != null)
+        bucket = context.getDatabase().getSchema().getBucketByName(resolvedName);
+      else if (targetBucket.getBucketNumber() != null)
         bucket = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber());
+      else
+        bucket = null;
 
       if (bucket == null)
         throw new CommandSQLParsingException("Target not specified");
@@ -146,6 +149,31 @@ public class InsertExecutionPlanner {
     }
 
     result.chain(new CreateRecordStep(targetType.getStringValue(), context, tot));
+  }
+
+  /**
+   * Resolves the bucket name from a Bucket object, handling parameterized bucket names.
+   * If the bucket has an inputParam, it resolves the parameter value from the context.
+   *
+   * @param bucket  the bucket object to resolve
+   * @param context the command context containing input parameters
+   * @return the resolved bucket name, or null if it cannot be resolved
+   */
+  private String resolveBucketName(final Bucket bucket, final CommandContext context) {
+    // First check for literal bucket name
+    if (bucket.getBucketName() != null) {
+      return bucket.getBucketName();
+    }
+
+    // Check for input parameter
+    if (bucket.getInputParam() != null) {
+      final Object paramValue = bucket.getInputParam().getValue(context.getInputParameters());
+      if (paramValue != null) {
+        return paramValue.toString();
+      }
+    }
+
+    return null;
   }
 
   private void handleInsertSelect(final InsertExecutionPlan result, final SelectStatement selectStatement,

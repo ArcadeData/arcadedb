@@ -31,9 +31,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class CreateBucketStatement extends DDLStatement {
-  protected Identifier name;
-  protected boolean    ifNotExists = false;
-  protected boolean    blob        = false;
+  public Identifier name;
+  public boolean    ifNotExists = false;
+  public boolean    blob        = false;
 
   public CreateBucketStatement(final int id) {
     super(id);

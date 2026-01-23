@@ -24,7 +24,7 @@ import java.util.*;
 import java.util.stream.*;
 
 public class Unwind extends SimpleNode {
-  protected List<Identifier> items = new ArrayList<Identifier>();
+  public List<Identifier> items = new ArrayList<Identifier>();
 
   public Unwind(final int id) {
     super(id);
@@ -66,5 +66,24 @@ public class Unwind extends SimpleNode {
   public List<Identifier> getItems() {
     return items;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (items != null) {
+      final java.util.List<Object> itemsJson = new java.util.ArrayList<>();
+      for (Object item : items) {
+        if (item instanceof SimpleNode) {
+          itemsJson.add(((SimpleNode) item).toJSON());
+        } else {
+          itemsJson.add(item);
+        }
+      }
+      json.put("items", itemsJson);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=4739190aa6c1a3533a89b76a15bd6fdf (do not edit this line) */

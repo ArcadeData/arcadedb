@@ -19,12 +19,12 @@ import java.util.*;
 import java.util.stream.*;
 
 public class DefineFunctionStatement extends SimpleExecStatement {
-  protected Identifier       libraryName;
-  protected Identifier       functionName;
-  protected String           codeQuoted;
-  protected String           code;
-  protected List<Identifier> parameters;
-  protected Identifier       language;
+  public Identifier       libraryName;
+  public Identifier       functionName;
+  public String           codeQuoted;
+  public String           code;
+  public List<Identifier> parameters;
+  public Identifier       language;
 
   public DefineFunctionStatement(final int id) {
     super(id);

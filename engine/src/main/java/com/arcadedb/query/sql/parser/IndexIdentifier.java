@@ -28,9 +28,9 @@ public class IndexIdentifier extends SimpleNode {
     INDEX, VALUES, VALUESASC, VALUESDESC
   }
 
-  protected Type       type;
-  protected String     indexNameString;
-  protected Identifier indexName;
+  public Type       type;
+  public String     indexNameString;
+  public Identifier indexName;
 
   public IndexIdentifier(final int id) {
     super(id);
@@ -118,5 +118,22 @@ public class IndexIdentifier extends SimpleNode {
   public String toString() {
     return getIndexName();
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (type != null) {
+      json.put("type", type.toString());
+    }
+    if (indexNameString != null) {
+      json.put("indexNameString", indexNameString);
+    }
+    if (indexName != null) {
+      json.put("indexName", indexName.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=025f134fd4b27b84210738cdb6dd027c (do not edit this line) */

@@ -33,7 +33,7 @@ import java.util.*;
 
 public class ProfileStatement extends Statement {
 
-  protected Statement statement;
+  public Statement statement;
 
   public ProfileStatement(final int id) {
     super(id);

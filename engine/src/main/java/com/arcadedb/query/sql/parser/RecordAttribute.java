@@ -28,11 +28,7 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
 
-import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.IN_PROPERTY;
-import static com.arcadedb.schema.Property.OUT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+import static com.arcadedb.schema.Property.*;
 
 public class RecordAttribute extends SimpleNode {
   protected String name;
@@ -96,8 +92,30 @@ public class RecordAttribute extends SimpleNode {
     } else if (name.equalsIgnoreCase(OUT_PROPERTY) && //
         currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
       return currentRecord.getElement().get().asEdge().getOut();
+    } else if (name.equalsIgnoreCase(THIS_PROPERTY)) {
+      // Return the entire current record or value
+      // For element-based results, return the element
+      // For value-based results (like plain strings in CONTAINS conditions), return the value
+      if (currentRecord.getElement().isPresent()) {
+        return currentRecord.getElement().get();
+      } else if (currentRecord instanceof com.arcadedb.query.sql.executor.ResultInternal internal) {
+        // Try to get the raw value if no element is present
+        return internal.getValue();
+      }
+      return currentRecord;
     }
     return null;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (name != null) {
+      json.put("name", name);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=45ce3cd16399dec7d7ef89f8920d02ae (do not edit this line) */

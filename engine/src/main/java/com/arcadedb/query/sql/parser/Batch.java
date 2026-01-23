@@ -71,5 +71,19 @@ public class Batch extends SimpleNode {
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (num != null) {
+      json.put("num", num.toString());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=b1587460e08cbf21086d8c8fcca192e0 (do not edit this line) */

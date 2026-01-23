@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class FromClause extends SimpleNode {
-  FromItem item;
+  public FromItem item;
 
   public FromClause(final int id) {
     super(id);
@@ -62,5 +62,16 @@ public class FromClause extends SimpleNode {
   public boolean refersToParent() {
     return item.refersToParent();
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (item != null) {
+      json.put("item", item.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=051839d20dabfa4cce26ebcbe0d03a86 (do not edit this line) */

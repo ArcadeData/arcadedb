@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class IsDefinedCondition extends BooleanExpression implements SimpleBooleanExpression {
-  protected Expression expression;
+  public Expression expression;
 
   public IsDefinedCondition(final int id) {
     super(id);

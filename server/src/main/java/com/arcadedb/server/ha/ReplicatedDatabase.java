@@ -173,6 +173,21 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public Object getGlobalVariable(final String name) {
+    return proxied.getGlobalVariable(name);
+  }
+
+  @Override
+  public Object setGlobalVariable(final String name, final Object value) {
+    return proxied.setGlobalVariable(name, value);
+  }
+
+  @Override
+  public Map<String, Object> getGlobalVariables() {
+    return proxied.getGlobalVariables();
+  }
+
+  @Override
   public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
     proxied.checkPermissionsOnDatabase(access);
   }

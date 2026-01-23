@@ -36,7 +36,7 @@ import java.util.stream.Collectors;
 
 public class ArraySingleValuesSelector extends SimpleNode {
 
-  protected List<ArraySelector> items = new ArrayList<>();
+  public List<ArraySelector> items = new ArrayList<>();
 
   public ArraySingleValuesSelector(final int id) {
     super(id);
@@ -219,5 +219,16 @@ public class ArraySingleValuesSelector extends SimpleNode {
       return 0;
     }
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (items != null) {
+      json.put("items", items);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=991998c77a4831184b6dca572513fd8d (do not edit this line) */

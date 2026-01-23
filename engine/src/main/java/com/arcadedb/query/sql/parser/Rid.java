@@ -31,10 +31,10 @@ import com.arcadedb.utility.CodeUtils;
 import java.util.*;
 
 public class Rid extends SimpleNode {
-  protected PInteger   bucket;
-  protected PInteger   position;
-  protected Expression expression;
-  protected boolean    legacy;
+  public PInteger   bucket;
+  public PInteger   position;
+  public Expression expression;
+  public boolean    legacy;
 
   public Rid(final int id) {
     super(id);
@@ -43,7 +43,7 @@ public class Rid extends SimpleNode {
   public Rid(final RID rid) {
     super(-1);
     bucket = new PInteger(-1).setValue(rid.getBucketId());
-    position = new PInteger(-1).setValue(rid.getBucketId());
+    position = new PInteger(-1).setValue(rid.getPosition());
     legacy = true;
   }
 
@@ -179,5 +179,23 @@ public class Rid extends SimpleNode {
     }
     return position;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (bucket != null) {
+      json.put("bucket", bucket.toString());
+    }
+    if (position != null) {
+      json.put("position", position.toString());
+    }
+    if (expression != null) {
+      json.put("expression", expression.toJSON());
+    }
+    json.put("legacy", legacy);
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=c2c6d67d7722e29212e438574698d7cd (do not edit this line) */

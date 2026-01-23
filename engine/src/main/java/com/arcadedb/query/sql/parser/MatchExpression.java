@@ -82,5 +82,30 @@ public class MatchExpression extends SimpleNode {
   public void setItems(final List<MatchPathItem> items) {
     this.items = items;
   }
+
+  /**
+   * Exports this MatchExpression as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "MatchExpression");
+
+    if (origin != null) {
+      json.put("origin", origin.toJSON());
+    }
+
+    if (!items.isEmpty()) {
+      final List<Object> pathItems = new ArrayList<>();
+      for (final MatchPathItem item : items) {
+        pathItems.add(item.toJSON());
+      }
+      json.put("pathItems", pathItems);
+    }
+
+    return json;
+  }
 }
 /* JavaCC - OriginalChecksum=73491fb653c32baf66997290db29f370 (do not edit this line) */

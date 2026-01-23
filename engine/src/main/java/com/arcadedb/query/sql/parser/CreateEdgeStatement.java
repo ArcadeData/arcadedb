@@ -31,13 +31,13 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class CreateEdgeStatement extends Statement {
-  protected Identifier targetType;
+  public Identifier targetType;
   protected Identifier targetBucketName;
-  protected Expression leftExpression;
-  protected Expression rightExpression;
-  protected InsertBody body;
-  protected boolean    ifNotExists;
-  protected boolean    unidirectional = false;
+  public Expression leftExpression;
+  public Expression rightExpression;
+  public InsertBody body;
+  public boolean    ifNotExists;
+  public boolean    unidirectional = false;
 
   public CreateEdgeStatement(final int id) {
     super(id);
