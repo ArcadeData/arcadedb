@@ -51,35 +51,51 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract {
     if (iParams.length < 2)
       throw new CommandExecutionException("SEARCH_INDEX() requires 2 parameters: indexName and query");
 
+    if (iParams[0] == null || iParams[1] == null)
+      throw new CommandExecutionException("SEARCH_INDEX() parameters cannot be null");
+
     final String indexName = iParams[0].toString();
     final String queryString = iParams[1].toString();
 
-    final Database database = iContext.getDatabase();
-    final Index index = database.getSchema().getIndexByName(indexName);
+    // Cache key for this specific search
+    final String cacheKey = "search_index:" + indexName + ":" + queryString;
 
-    if (index == null)
-      throw new CommandExecutionException("Index '" + indexName + "' not found");
+    // Try to get cached results
+    @SuppressWarnings("unchecked")
+    Set<RID> matchingRids = (Set<RID>) iContext.getVariable(cacheKey);
 
-    if (!(index instanceof TypeIndex))
-      throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
+    if (matchingRids == null) {
+      // First execution - perform the actual search
+      matchingRids = new HashSet<>();
 
-    final TypeIndex typeIndex = (TypeIndex) index;
+      final Database database = iContext.getDatabase();
+      final Index index = database.getSchema().getIndexByName(indexName);
 
-    // Get the underlying full-text index
-    final Index[] bucketIndexes = typeIndex.getIndexesOnBuckets();
-    if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
-      throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
+      if (index == null)
+        throw new CommandExecutionException("Index '" + indexName + "' not found");
 
-    // Execute search across all bucket indexes
-    final Set<RID> matchingRids = new HashSet<>();
+      if (!(index instanceof TypeIndex))
+        throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
 
-    for (final Index bucketIndex : bucketIndexes) {
-      if (bucketIndex instanceof LSMTreeFullTextIndex) {
-        final IndexCursor cursor = bucketIndex.get(new Object[] { queryString });
-        while (cursor.hasNext()) {
-          matchingRids.add(cursor.next().getIdentity());
+      final TypeIndex typeIndex = (TypeIndex) index;
+
+      // Get the underlying full-text index
+      final Index[] bucketIndexes = typeIndex.getIndexesOnBuckets();
+      if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
+        throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
+
+      // Execute search across all bucket indexes
+      for (final Index bucketIndex : bucketIndexes) {
+        if (bucketIndex instanceof LSMTreeFullTextIndex) {
+          final IndexCursor cursor = bucketIndex.get(new Object[] { queryString });
+          while (cursor.hasNext()) {
+            matchingRids.add(cursor.next().getIdentity());
+          }
         }
       }
+
+      // Cache the results
+      iContext.setVariable(cacheKey, matchingRids);
     }
 
     // Check if current record matches
@@ -87,8 +103,6 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract {
       return matchingRids.contains(iCurrentRecord.getIdentity());
     }
 
-    // If no current record context, this shouldn't happen in a WHERE clause
-    // but return false as a safe default
     return false;
   }
 

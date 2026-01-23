@@ -19,12 +19,15 @@
 package com.arcadedb.query.sql.function.text;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLFunctionSearchIndexTest extends TestHelper {
 
@@ -65,6 +68,40 @@ class SQLFunctionSearchIndexTest extends TestHelper {
           "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'nonexistent') = true");
 
       assertThat(result.hasNext()).isFalse();
+    });
+  }
+
+  @Test
+  void invalidIndexName() {
+    database.transaction(() -> {
+      assertThatThrownBy(() ->
+          database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX('NonExistent', 'java') = true")
+      ).isInstanceOf(SchemaException.class);
+    });
+  }
+
+  @Test
+  void nullParameters() {
+    database.transaction(() -> {
+      assertThatThrownBy(() ->
+          database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX(null, 'java') = true")
+      ).isInstanceOf(CommandExecutionException.class);
+    });
+  }
+
+  @Test
+  void multiWordSearch() {
+    database.transaction(() -> {
+      final ResultSet result = database.query("sql",
+          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'java database') = true");
+
+      // Both Doc1 and Doc2 contain "java", Doc2 also contains "database"
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isGreaterThanOrEqualTo(1); // At least Doc2 matches both
     });
   }
 }
