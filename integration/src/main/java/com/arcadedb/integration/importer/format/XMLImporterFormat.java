@@ -19,8 +19,10 @@
 package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.integration.importer.AnalyzedEntity;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
@@ -70,7 +72,13 @@ public class XMLImporterFormat implements FormatImporter {
 
         case XMLStreamReader.START_ELEMENT:
           if (nestLevel == objectNestLevel) {
-            entityName = "v_" + xmlReader.getName().getLocalPart();
+            // Use appropriate prefix based on entity type
+            final String localName = xmlReader.getName().getLocalPart();
+            if (entityType == AnalyzedEntity.EntityType.DOCUMENT) {
+              entityName = localName;  // No prefix for documents
+            } else {
+              entityName = "v_" + localName;  // v_ prefix for vertices (including DATABASE for backward compatibility)
+            }
 
             // CLEAR THE MAP FOR THE NEW RECORD
             object.clear();
@@ -102,13 +110,34 @@ public class XMLImporterFormat implements FormatImporter {
           if (nestLevel == objectNestLevel) {
             context.parsed.incrementAndGet();
 
-            // Auto-create vertex type if it doesn't exist
-            if (!database.getSchema().existsType(entityName))
-              database.getSchema().createVertexType(entityName);
+            // Create record based on entityType
+            final MutableDocument record;
+            if (entityType == AnalyzedEntity.EntityType.DOCUMENT) {
+              // Ensure document type exists
+              if (!database.getSchema().existsType(entityName))
+                database.getSchema().createDocumentType(entityName);
 
-            final MutableVertex record = database.newVertex(entityName);
-            record.fromMap(object);
-            database.async().createRecord(record, newDocument -> context.createdVertices.incrementAndGet());
+              record = database.newDocument(entityName);
+              record.fromMap(object);
+              database.async().createRecord(record, newDocument -> context.createdDocuments.incrementAndGet());
+            } else if (entityType == AnalyzedEntity.EntityType.VERTEX || entityType == AnalyzedEntity.EntityType.DATABASE) {
+              // DATABASE creates vertices for backward compatibility
+              // Ensure vertex type exists (DATABASE entityType is handled as DOCUMENT in updateDatabaseSchema,
+              // so we need to ensure it's a vertex type here)
+              if (!database.getSchema().existsType(entityName)) {
+                database.getSchema().createVertexType(entityName);
+              } else if (!(database.getSchema().getType(entityName) instanceof VertexType)) {
+                // Type exists but is not a VertexType - drop and recreate as VertexType
+                database.getSchema().dropType(entityName);
+                database.getSchema().createVertexType(entityName);
+              }
+
+              record = database.newVertex(entityName);
+              record.fromMap(object);
+              database.async().createRecord(record, newDocument -> context.createdVertices.incrementAndGet());
+            } else {
+              throw new IllegalArgumentException("XMLImporterFormat only supports DOCUMENT and VERTEX entity types, got: " + entityType);
+            }
           }
           break;
 
@@ -190,7 +219,13 @@ public class XMLImporterFormat implements FormatImporter {
                   nestLevel);
 
           if (nestLevel == objectNestLevel) {
-            entityName = xmlReader.getName().getLocalPart();
+            // Use appropriate prefix based on entity type (consistent with load method)
+            final String localName = xmlReader.getName().getLocalPart();
+            if (entityType == AnalyzedEntity.EntityType.DOCUMENT) {
+              entityName = localName;  // No prefix for documents
+            } else {
+              entityName = "v_" + localName;  // v_ prefix for vertices (including DATABASE for backward compatibility)
+            }
 
             // GET ELEMENT'S ATTRIBUTES AS PROPERTIES
             for (int i = 0; i < xmlReader.getAttributeCount(); ++i) {
