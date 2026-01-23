@@ -22,37 +22,43 @@ import com.arcadedb.utility.AnsiLogFormatter;
 import com.arcadedb.utility.SystemVariableResolver;
 
 import java.io.*;
-import java.util.concurrent.*;
-import java.util.logging.LogManager;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.logging.*;
+import java.util.logging.LogManager;
 
 /**
  * Default Logger implementation that writes to the Java Logging Framework.
  * Set the property `java.util.logging.config.file` to the configuration file to use.
  */
 public class DefaultLogger implements Logger {
-  private static final String                                          DEFAULT_LOG                  = "com.arcadedb";
-  private static final String                                          ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
-  private static final DefaultLogger                                   instance                     = new DefaultLogger();
-  private static final String                                          FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
-  private final        ConcurrentMap<String, java.util.logging.Logger> loggersCache                 = new ConcurrentHashMap<>();
+  private static final String DEFAULT_LOG                  = "com.arcadedb";
+  private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb" +
+      ".installCustomFormatter";
+  private static final String FILE_LOG_PROPERTIES          = "arcadedb-log" +
+      ".properties";
 
-  public DefaultLogger() {
+  private       boolean                                         initialized  = false;
+  private final ConcurrentMap<String, java.util.logging.Logger> loggersCache =
+      new ConcurrentHashMap<>();
+
+  public void init() {
+    if (initialized)
+      return;
+
+    initialized = true;
     final File logDir = new File("./log");
 
     try {
       if (!logDir.exists() || !logDir.isDirectory())
         // TRY TO CREATE LOG DIRECTORY
-        logDir.mkdirs();
+        if (!logDir.mkdirs())
+          System.err.println("Cannot create log directory: " + logDir.getAbsolutePath());
     } catch (final Exception e) {
       // IGNORE
     }
 
     installCustomFormatter();
-  }
-
-  public static DefaultLogger instance() {
-    return instance;
   }
 
   public void installCustomFormatter() {
@@ -67,7 +73,8 @@ public class DefaultLogger implements Logger {
         } catch (Exception e) {
           // USE DEFAULT SETTINGS
           System.err.println(
-              "Error on loading logging configuration file '" + defaultLogConfigurationFile + "'. Using default settings");
+              "Error on loading logging configuration file '" + defaultLogConfigurationFile + "'. Using default " +
+                  "settings");
         }
       } else
         System.err.println("Error on loading logging configuration file '" + defaultLogConfigurationFile
@@ -121,14 +128,17 @@ public class DefaultLogger implements Logger {
     }
   }
 
-  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context,
-      final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
-      final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12,
-      final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+  public void log(final Object requester, final Level level, String message, final Throwable exception,
+                  final String context,
+                  final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
+                  final Object arg6,
+                  final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
+                  final Object arg12,
+                  final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
     if (message == null)
       return;
 
-    //level = Level.SEVERE;
+    init();
 
     final String requesterName;
     if (requester instanceof String string)
@@ -161,12 +171,13 @@ public class DefaultLogger implements Logger {
       if (context != null)
         message = "<" + context + "> " + message;
 
-      // USE SYSERR
+      // USE SYS ERR
       try {
         String msg = message;
         if (hasParams)
-          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-            arg15, arg16, arg17);
+          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
+              arg14,
+              arg15, arg16, arg17);
 
         System.err.println(msg);
 
@@ -184,8 +195,9 @@ public class DefaultLogger implements Logger {
 
         String msg = message;
         if (hasParams)
-          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-            arg15, arg16, arg17);
+          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
+              arg14,
+              arg15, arg16, arg17);
 
         if (exception != null)
           log.log(level, msg, exception);
@@ -202,76 +214,84 @@ public class DefaultLogger implements Logger {
     }
   }
 
-  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context,
-      final Object... args) {
-    if (message != null) {
-      final String requesterName;
-      if (requester instanceof String string)
-        requesterName = string;
-      else if (requester instanceof Class<?> class1)
-        requesterName = class1.getName();
-      else if (requester != null)
-        requesterName = requester.getClass().getName();
-      else
-        requesterName = DEFAULT_LOG;
+  public void log(final Object requester, final Level level, String message, final Throwable exception,
+                  final String context,
+                  final Object... args) {
+    if (message == null)
+      return;
 
-      java.util.logging.Logger log = loggersCache.get(requesterName);
-      if (log == null) {
-        log = java.util.logging.Logger.getLogger(requesterName);
+    init();
 
-        if (log != null) {
-          final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
+    final String requesterName;
+    if (requester instanceof String string)
+      requesterName = string;
+    else if (requester instanceof Class<?> class1)
+      requesterName = class1.getName();
+    else if (requester != null)
+      requesterName = requester.getClass().getName();
+    else
+      requesterName = DEFAULT_LOG;
 
-          if (oldLogger != null)
-            log = oldLogger;
-        }
+    java.util.logging.Logger log = loggersCache.get(requesterName);
+    if (log == null) {
+      log = java.util.logging.Logger.getLogger(requesterName);
+
+      if (log != null) {
+        final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
+
+        if (oldLogger != null)
+          log = oldLogger;
       }
+    }
 
-      if (log == null) {
+    if (log == null) {
+      if (context != null)
+        message = "<" + context + "> " + message;
+
+      try {
+        String msg = message;
+        if (args.length > 0)
+          msg = message.formatted(args);
+        System.err.println(msg);
+
+      } catch (final Exception e) {
+        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
+      }
+    } else {
+      // USE THE LOG
+      try {
         if (context != null)
           message = "<" + context + "> " + message;
 
-        try {
-          String msg = message;
-          if (args.length > 0)
-            msg = message.formatted(args);
-          System.err.println(msg);
+        String msg = message;
+        if (args.length > 0)
+          msg = message.formatted(args);
 
-        } catch (final Exception e) {
-          System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
+        if (log.isLoggable(level)) {
+          if (exception != null)
+            log.log(level, msg, exception);
+          else
+            log.log(level, msg);
+        } else if (com.arcadedb.log.LogManager.instance().isDebugEnabled()) {
+          if (exception != null) {
+            System.out.print(new LogFormatter().format(new LogRecord(level, msg)));
+            exception.printStackTrace();
+          } else
+            System.out.println(msg);
         }
-      } else {
-        // USE THE LOG
-        try {
-          if (context != null)
-            message = "<" + context + "> " + message;
-
-          String msg = message;
-          if (args.length > 0)
-            msg = message.formatted(args);
-
-          if (log.isLoggable(level)) {
-            if (exception != null)
-              log.log(level, msg, exception);
-            else
-              log.log(level, msg);
-          } else if (com.arcadedb.log.LogManager.instance().isDebugEnabled()) {
-            if (exception != null) {
-              System.out.print(new LogFormatter().format(new LogRecord(level, msg)));
-              exception.printStackTrace();
-            } else
-              System.out.println(msg);
-          }
-        } catch (final Exception e) {
-          System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
-        }
+      } catch (final Exception e) {
+        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
       }
     }
   }
 
   @Override
   public void flush() {
-    for (final Handler h : java.util.logging.Logger.getLogger(java.util.logging.Logger.GLOBAL_LOGGER_NAME).getHandlers())
+    if (!initialized)
+      return;
+
+    for (final Handler h :
+        java.util.logging.Logger.getLogger(java.util.logging.Logger.GLOBAL_LOGGER_NAME).getHandlers())
       h.flush();
   }
 }
