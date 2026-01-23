@@ -69,7 +69,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   private final Analyzer                indexAnalyzer;
   private final Analyzer                queryAnalyzer;
   private final FullTextIndexMetadata   ftMetadata;
-  private final int                     propertyCount;
   private       TypeIndex               typeIndex;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
@@ -92,8 +91,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
 
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy(),
-          builder.getKeyTypes().length, ftMetadata);
+          ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy(), ftMetadata);
     }
   }
 
@@ -110,7 +108,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public LSMTreeFullTextIndex(final LSMTreeIndex index, final FullTextIndexMetadata metadata) {
     this.underlyingIndex = index;
     this.ftMetadata = metadata;
-    this.propertyCount = 1;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
   }
@@ -120,9 +117,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
-      final int propertyCount, final FullTextIndexMetadata metadata) {
+      final FullTextIndexMetadata metadata) {
     this.ftMetadata = metadata;
-    this.propertyCount = propertyCount;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
@@ -140,7 +136,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
     // When loading from file, metadata will be set later via setMetadata()
     this.ftMetadata = null;
-    this.propertyCount = 1;
     this.indexAnalyzer = new StandardAnalyzer();
     this.queryAnalyzer = new StandardAnalyzer();
   }
@@ -250,18 +245,30 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return terms;
   }
 
+  /**
+   * Returns the number of properties in this index.
+   * This is derived dynamically from the property names list to ensure
+   * correct behavior after database restart (when loaded from disk).
+   *
+   * @return the number of properties in the index
+   */
+  private int getPropertyCount() {
+    final List<String> props = getPropertyNames();
+    return props != null ? props.size() : 1;
+  }
+
   @Override
   public void put(final Object[] keys, final RID[] rids) {
     // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
     // (TransactionIndexContext stores tokens during transaction and replays them at commit time)
     // In that case, pass through directly to the underlying index without re-tokenizing
-    if (keys.length != propertyCount) {
+    if (keys.length != getPropertyCount()) {
       // Already tokenized - pass through directly
       underlyingIndex.put(keys, rids);
       return;
     }
 
-    if (propertyCount == 1) {
+    if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
       for (final String k : keywords)
@@ -287,13 +294,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public void remove(final Object[] keys) {
     // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
-    if (keys.length != propertyCount) {
+    if (keys.length != getPropertyCount()) {
       // Already tokenized - pass through directly
       underlyingIndex.remove(keys);
       return;
     }
 
-    if (propertyCount == 1) {
+    if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
       for (final String k : keywords)
@@ -317,13 +324,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
     // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
-    if (keys.length != propertyCount) {
+    if (keys.length != getPropertyCount()) {
       // Already tokenized - pass through directly
       underlyingIndex.remove(keys, rid);
       return;
     }
 
-    if (propertyCount == 1) {
+    if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
       for (final String k : keywords)

@@ -317,6 +317,78 @@ class LSMTreeFullTextIndexTest extends TestHelper {
     });
   }
 
+  /**
+   * Tests that multi-property full-text indexes work correctly after database restart.
+   * This verifies that the propertyCount is correctly derived from getPropertyNames()
+   * rather than being hardcoded to 1 when loading from disk.
+   */
+  @Test
+  void multiPropertyIndexPersistence() {
+    // Create index and insert documents
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article5");
+      database.command("sql", "CREATE PROPERTY Article5.title STRING");
+      database.command("sql", "CREATE PROPERTY Article5.body STRING");
+      database.command("sql", "CREATE INDEX ON Article5 (title, body) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article5 SET title = 'Java Programming', body = 'Learn Java basics'");
+      database.command("sql", "INSERT INTO Article5 SET title = 'Python Tutorial', body = 'Python programming guide'");
+    });
+
+    // Verify index works before restart
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article5[title,body]");
+      final IndexCursor cursor = index.get(new Object[] { "java programming" });
+
+      int countBeforeRestart = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        countBeforeRestart++;
+      }
+      assertThat(countBeforeRestart).isEqualTo(2);
+    });
+
+    // Close and reopen the database to simulate restart
+    reopenDatabase();
+
+    // Verify index still works after restart
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article5[title,body]");
+      assertThat(index).isNotNull();
+      assertThat(index.getPropertyNames()).containsExactly("title", "body");
+
+      // Search should still find documents
+      final IndexCursor cursor = index.get(new Object[] { "java programming" });
+
+      int countAfterRestart = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        countAfterRestart++;
+      }
+      // Both documents should still be found after restart
+      assertThat(countAfterRestart).isEqualTo(2);
+    });
+
+    // Verify we can insert new documents after restart
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Article5 SET title = 'Database Design', body = 'SQL and NoSQL databases'");
+    });
+
+    // Verify the new document is indexed correctly
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article5[title,body]");
+      final IndexCursor cursor = index.get(new Object[] { "database" });
+
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      // New document should be found
+      assertThat(count).isEqualTo(1);
+    });
+  }
+
   @Test
   void scoreExposure() {
     database.transaction(() -> {
