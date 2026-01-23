@@ -27,10 +27,10 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class RightBinaryCondition extends SimpleNode {
-  BinaryCompareOperator operator;
-  boolean               not = false;
-  InOperator            inOperator;
-  Expression            right;
+  public BinaryCompareOperator operator;
+  public boolean               not = false;
+  public InOperator            inOperator;
+  public Expression            right;
 
   public RightBinaryCondition(final int id) {
     super(id);
@@ -113,7 +113,7 @@ public class RightBinaryCondition extends SimpleNode {
 
   private boolean matchesFilters(final Identifiable currentRecord, final Object element, final CommandContext context) {
     if (operator != null) {
-      operator.execute(context.getDatabase(), element, right.execute(currentRecord, context));
+      return operator.execute(context.getDatabase(), element, right.execute(currentRecord, context));
     } else if (inOperator != null) {
 
       final Object rightVal = evaluateRight(currentRecord, context);
@@ -170,5 +170,23 @@ public class RightBinaryCondition extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { right };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (operator != null) {
+      json.put("operator", operator.toString());
+    }
+    json.put("not", not);
+    if (inOperator != null) {
+      json.put("inOperator", inOperator.toString());
+    }
+    if (right != null) {
+      json.put("right", right.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=29d59ae04778eb611547292a27863da4 (do not edit this line) */

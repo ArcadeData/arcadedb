@@ -31,15 +31,15 @@ import java.util.*;
 
 public class InsertStatement extends Statement {
 
-  Identifier      targetType;
-  Identifier      targetBucketName;
-  Bucket          targetBucket;
-  InsertBody      insertBody;
-  Projection      returnStatement;
-  SelectStatement selectStatement;
-  boolean         selectInParentheses = false;
-  boolean         selectWithFrom      = false;
-  boolean         unsafe              = false;
+  public Identifier      targetType;
+  public Identifier      targetBucketName;
+  public Bucket          targetBucket;
+  public InsertBody      insertBody;
+  public Projection      returnStatement;
+  public SelectStatement selectStatement;
+  public boolean         selectInParentheses = false;
+  public boolean         selectWithFrom      = false;
+  public boolean         unsafe              = false;
 
   public InsertStatement(final int id) {
     super(id);

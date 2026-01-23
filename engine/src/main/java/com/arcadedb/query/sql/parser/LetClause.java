@@ -25,7 +25,7 @@ import java.util.stream.*;
 
 public class LetClause extends SimpleNode {
 
-  protected List<LetItem> items = new ArrayList<LetItem>();
+  public List<LetItem> items = new ArrayList<LetItem>();
 
   public LetClause(final int id) {
     super(id);
@@ -72,6 +72,17 @@ public class LetClause extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return items.toArray(new LetItem[items.size()]);
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (items != null) {
+      json.put("items", items);
+    }
+
+    return json;
+  }
+
 }
 
 /* JavaCC - OriginalChecksum=201a864b5ed7f1fbe0533843a7acd03d (do not edit this line) */

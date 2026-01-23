@@ -121,5 +121,24 @@ public class PCollection extends SimpleNode {
   public List<Expression> getExpressions() {
     return expressions;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (expressions != null) {
+      final java.util.List<Object> expressionsJson = new java.util.ArrayList<>();
+      for (Object item : expressions) {
+        if (item instanceof SimpleNode) {
+          expressionsJson.add(((SimpleNode) item).toJSON());
+        } else {
+          expressionsJson.add(item);
+        }
+      }
+      json.put("expressions", expressionsJson);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=c93b20138b2ae58c5f76e458c34b5946 (do not edit this line) */

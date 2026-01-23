@@ -25,12 +25,12 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 public class NestedProjectionItem extends SimpleNode {
-  protected boolean          exclude       = false;
-  protected boolean          star          = false;
-  protected Expression       expression;
-  protected boolean          rightWildcard = false;
-  protected NestedProjection expansion;
-  protected Identifier       alias;
+  public boolean          exclude       = false;
+  public boolean          star          = false;
+  public Expression       expression;
+  public boolean          rightWildcard = false;
+  public NestedProjection expansion;
+  public Identifier       alias;
 
   public NestedProjectionItem(final int id) {
     super(id);
@@ -133,5 +133,25 @@ public class NestedProjectionItem extends SimpleNode {
   public Object expand(final Expression expression, final String name, final Object value, final CommandContext context, final int recursion) {
     return expansion.apply(expression, value, context);
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("exclude", exclude);
+    json.put("star", star);
+    if (expression != null) {
+      json.put("expression", expression.toJSON());
+    }
+    json.put("rightWildcard", rightWildcard);
+    if (expansion != null) {
+      json.put("expansion", expansion.toString());
+    }
+    if (alias != null) {
+      json.put("alias", alias.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=606b3fe37ff952934e3e2e3daa9915f2 (do not edit this line) */

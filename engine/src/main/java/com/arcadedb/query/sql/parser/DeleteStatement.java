@@ -31,10 +31,10 @@ import java.util.*;
 
 public class DeleteStatement extends Statement {
 
-  public    FromClause  fromClause;
-  protected WhereClause whereClause;
-  protected boolean     returnBefore = false;
-  protected boolean     unsafe       = false;
+  public FromClause  fromClause;
+  public WhereClause whereClause;
+  public boolean     returnBefore = false;
+  public boolean     unsafe       = false;
 
   public DeleteStatement(final int id) {
     super(id);

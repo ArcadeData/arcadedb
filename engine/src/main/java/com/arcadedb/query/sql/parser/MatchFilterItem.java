@@ -23,19 +23,19 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class MatchFilterItem extends SimpleNode {
-  protected Expression         typeName;
-  protected Expression         typeNames;
-  protected Identifier         bucketName;
-  protected PInteger           bucketId;
-  protected Rid                rid;
-  protected Identifier         alias;
-  protected WhereClause        filter;
-  protected WhereClause        whileCondition;
-  protected ArrayRangeSelector depth;
-  protected PInteger           maxDepth;
-  protected Boolean            optional;
-  protected Identifier         depthAlias;
-  protected Identifier         pathAlias;
+  public Expression         typeName;
+  public Expression         typeNames;
+  public Identifier         bucketName;
+  public PInteger           bucketId;
+  public Rid                rid;
+  public Identifier         alias;
+  public WhereClause        filter;
+  public WhereClause        whileCondition;
+  public ArrayRangeSelector depth;
+  public PInteger           maxDepth;
+  public Boolean            optional;
+  public Identifier         depthAlias;
+  public Identifier         pathAlias;
 
   public MatchFilterItem(final int id) {
     super(id);
@@ -184,6 +184,58 @@ public class MatchFilterItem extends SimpleNode {
     result = 31 * result + (depthAlias != null ? depthAlias.hashCode() : 0);
     result = 31 * result + (pathAlias != null ? pathAlias.hashCode() : 0);
     return result;
+  }
+
+  /**
+   * Exports this MatchFilterItem as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "MatchFilterItem");
+
+    if (typeName != null) {
+      json.put("typeName", typeName.toString());
+    }
+    if (typeNames != null) {
+      json.put("typeNames", typeNames.toString());
+    }
+    if (bucketName != null) {
+      json.put("bucketName", bucketName.getStringValue());
+    }
+    if (bucketId != null) {
+      json.put("bucketId", bucketId.value.intValue());
+    }
+    if (rid != null) {
+      json.put("rid", rid.toString());
+    }
+    if (alias != null) {
+      json.put("alias", alias.getStringValue());
+    }
+    if (filter != null) {
+      json.put("filter", filter.toJSON());
+    }
+    if (whileCondition != null) {
+      json.put("whileCondition", whileCondition.toJSON());
+    }
+    if (depth != null) {
+      json.put("depth", depth.toString());
+    }
+    if (maxDepth != null) {
+      json.put("maxDepth", maxDepth.value.intValue());
+    }
+    if (optional != null) {
+      json.put("optional", optional);
+    }
+    if (depthAlias != null) {
+      json.put("depthAlias", depthAlias.getStringValue());
+    }
+    if (pathAlias != null) {
+      json.put("pathAlias", pathAlias.getStringValue());
+    }
+
+    return json;
   }
 }
 /* JavaCC - OriginalChecksum=74bf4765509f102180cac29f2295031e (do not edit this line) */

@@ -688,6 +688,21 @@ class SQLMethodTransformTest {
       public Map<String, Object> getStats() {
         return null;
       }
+
+      @Override
+      public Object getGlobalVariable(String name) {
+        return null;
+      }
+
+      @Override
+      public Object setGlobalVariable(String name, Object value) {
+        return null;
+      }
+
+      @Override
+      public Map<String, Object> getGlobalVariables() {
+        return null;
+      }
     });
     return context;
   }

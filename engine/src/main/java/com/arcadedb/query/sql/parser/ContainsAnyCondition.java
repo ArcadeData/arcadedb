@@ -30,9 +30,9 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class ContainsAnyCondition extends BooleanExpression {
-  protected Expression left;
-  protected Expression right;
-  protected OrBlock    rightBlock;
+  public Expression left;
+  public Expression right;
+  public OrBlock    rightBlock;
 
   public ContainsAnyCondition(final int id) {
     super(id);

@@ -91,17 +91,34 @@ public class BasicCommandContext implements CommandContext {
           result = getVariableFromParentHierarchy(firstPart);
       }
 
+      // Fallback to database global variables if not found in context
+      if (result == null && database != null)
+        result = database.getGlobalVariable(firstPart);
+
       while (!otherParts.isEmpty()) {
         pos = otherParts.indexOf('.');
         firstPart = pos > -1 ? otherParts.substring(0, pos) : otherParts;
         otherParts = pos > -1 ? otherParts.substring(pos + 1) : "";
 
-        if (result instanceof Result result1)
-          result = result1.getProperty(firstPart);
-        else if (result instanceof Map map)
+        if (result instanceof Result result1) {
+          // Handle special metadata properties for Result objects
+          if ("@rid".equals(firstPart))
+            result = result1.getIdentity().orElse(null);
+          else if ("@type".equals(firstPart))
+            result = result1.getElement().map(Document::getTypeName).orElse(null);
+          else
+            result = result1.getProperty(firstPart);
+        } else if (result instanceof Map map)
           result = map.get(firstPart);
-        else if (result instanceof Document document)
-          result = document.get(firstPart);
+        else if (result instanceof Document document) {
+          // Handle special metadata properties that are not stored in the document
+          if ("@rid".equals(firstPart))
+            result = document.getIdentity();
+          else if ("@type".equals(firstPart))
+            result = document.getTypeName();
+          else
+            result = document.get(firstPart);
+        }
 
       }
     }
@@ -155,6 +172,10 @@ public class BasicCommandContext implements CommandContext {
           result = getVariableFromParentHierarchy(name);
       }
     }
+
+    // Fallback to database global variables if not found in context
+    if (result == null && database != null)
+      result = database.getGlobalVariable(name);
 
     if (fieldName != null) {
       if (result instanceof Result result1)

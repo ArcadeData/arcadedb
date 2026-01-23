@@ -12,8 +12,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class LockStatement extends SimpleExecStatement {
-  protected String           mode;
-  protected List<Identifier> identifiers;
+  public String           mode;
+  public List<Identifier> identifiers;
 
   public LockStatement(final int id) {
     super(id);

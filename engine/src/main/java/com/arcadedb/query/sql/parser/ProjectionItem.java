@@ -33,12 +33,12 @@ import java.util.*;
 import java.util.stream.*;
 
 public class ProjectionItem extends SimpleNode {
-  protected boolean          exclude = false;
-  protected boolean          all     = false;
-  protected Identifier       alias;
-  protected Expression       expression;
-  protected Boolean          aggregate;
-  protected NestedProjection nestedProjection;
+  public boolean          exclude = false;
+  public boolean          all     = false;
+  public Identifier       alias;
+  public Expression       expression;
+  public Boolean          aggregate;
+  public NestedProjection nestedProjection;
 
   public ProjectionItem(final Expression expression, final Identifier alias, final NestedProjection nestedProjection) {
     super(-1);
@@ -167,7 +167,7 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public boolean isExpand() {
-    return expression.isExpand();
+    return expression != null && expression.isExpand();
   }
 
   public ProjectionItem getExpandContent() {
@@ -267,5 +267,27 @@ public class ProjectionItem extends SimpleNode {
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { expression };
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("exclude", exclude);
+    json.put("all", all);
+    if (alias != null) {
+      json.put("alias", alias.toJSON());
+    }
+    if (expression != null) {
+      json.put("expression", expression.toJSON());
+    }
+    if (aggregate != null) {
+      json.put("aggregate", aggregate);
+    }
+    if (nestedProjection != null) {
+      json.put("nestedProjection", nestedProjection.toString());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=6d6010734c7434a6f516e2eac308e9ce (do not edit this line) */

@@ -32,12 +32,12 @@ public class UpdateOperations extends SimpleNode {
   public static final int TYPE_ADD       = 5;
   public static final int TYPE_REMOVE    = 6;
 
-  protected int                       type;
-  protected List<UpdateItem>          updateItems          = new ArrayList<UpdateItem>();
-  protected List<UpdatePutItem>       updatePutItems       = new ArrayList<UpdatePutItem>();
-  protected Json                      json;
-  protected List<UpdateIncrementItem> updateIncrementItems = new ArrayList<UpdateIncrementItem>();
-  protected List<UpdateRemoveItem>    updateRemoveItems    = new ArrayList<UpdateRemoveItem>();
+  public int                       type;
+  public List<UpdateItem>          updateItems          = new ArrayList<UpdateItem>();
+  public List<UpdatePutItem>       updatePutItems       = new ArrayList<UpdatePutItem>();
+  public Json                      json;
+  public List<UpdateIncrementItem> updateIncrementItems = new ArrayList<UpdateIncrementItem>();
+  public List<UpdateRemoveItem>    updateRemoveItems    = new ArrayList<UpdateRemoveItem>();
 
   public UpdateOperations(final int id) {
     super(id);
@@ -176,5 +176,29 @@ public class UpdateOperations extends SimpleNode {
   public List<UpdateRemoveItem> getUpdateRemoveItems() {
     return updateRemoveItems;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    json.put("type", type);
+    if (updateItems != null) {
+      json.put("updateItems", updateItems);
+    }
+    if (updatePutItems != null) {
+      json.put("updatePutItems", updatePutItems);
+    }
+    if (json != null) {
+      json.put("json", json.toString());
+    }
+    if (updateIncrementItems != null) {
+      json.put("updateIncrementItems", updateIncrementItems);
+    }
+    if (updateRemoveItems != null) {
+      json.put("updateRemoveItems", updateRemoveItems);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=0eca3b3e4e3d96c42db57b7cd89cf755 (do not edit this line) */

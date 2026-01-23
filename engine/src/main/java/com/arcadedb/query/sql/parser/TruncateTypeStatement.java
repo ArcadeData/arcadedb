@@ -32,9 +32,9 @@ import com.arcadedb.schema.Schema;
 import java.util.*;
 
 public class TruncateTypeStatement extends DDLStatement {
-  protected Identifier typeName;
-  protected boolean    polymorphic = false;
-  protected boolean    unsafe      = false;
+  public Identifier typeName;
+  public boolean    polymorphic = false;
+  public boolean    unsafe      = false;
 
   public TruncateTypeStatement(final int id) {
     super(id);

@@ -110,8 +110,7 @@ public class CreateEdgeExecutionPlanner {
             new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), unidirectional, ifNotExists, context));
 
     handleSetFields(result, body, context);
-    // TODO: ApplyDefaultsStep class is missing - commented out until implemented
-    // handleApplyDefaults(result, context);
+    handleApplyDefaults(result, context);
     handleSave(result, targetBucketName, context);
     handleConnectEdge(result, context);
     //TODO implement batch, wait and retry
@@ -119,7 +118,7 @@ public class CreateEdgeExecutionPlanner {
   }
 
   private void handleGlobalLet(final InsertExecutionPlan result, final Identifier name, final Expression expression,
-                               final CommandContext context) {
+      final CommandContext context) {
     result.chain(new GlobalLetExpressionStep(name, expression, context));
   }
 
@@ -159,10 +158,9 @@ public class CreateEdgeExecutionPlanner {
     }
   }
 
-  // TODO: ApplyDefaultsStep class is missing - commented out until implemented
-  // private void handleApplyDefaults(final InsertExecutionPlan result, final CommandContext context) {
-  //   result.chain(new ApplyDefaultsStep(context));
-  // }
+  private void handleApplyDefaults(final InsertExecutionPlan result, final CommandContext context) {
+    result.chain(new ApplyDefaultsStep(context));
+  }
 
   private void handleConnectEdge(final InsertExecutionPlan result, final CommandContext context) {
     result.chain(new ConnectEdgeStep(context));

@@ -21,7 +21,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.Set;
 
 /**
  * Schema Property.
@@ -37,6 +37,7 @@ public interface Property {
   String OUT_PROPERTY            = "@out";
   String CAT_PROPERTY            = "@cat";
   String PROPERTY_TYPES_PROPERTY = "@props";
+  String THIS_PROPERTY           = "@this";
 
   Set<String> METADATA_PROPERTIES = Set.of(RID_PROPERTY, TYPE_PROPERTY, IN_PROPERTY, OUT_PROPERTY, CAT_PROPERTY,
       PROPERTY_TYPES_PROPERTY);

@@ -23,9 +23,12 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
 
 /**
  * Debug test for EXISTS() expression.
@@ -35,6 +38,7 @@ public class CypherExistsDebugTest {
 
   @BeforeEach
   public void setup() {
+    FileUtils.deleteRecursively(new File("./target/databases/cypherexistsdebug"));
     database = new DatabaseFactory("./target/databases/cypherexistsdebug").create();
 
     database.transaction(() -> {
@@ -61,55 +65,56 @@ public class CypherExistsDebugTest {
 
   @Test
   public void debugExists() {
-    System.out.println("=== Testing EXISTS expression ===");
+    //System.out.println("=== Testing EXISTS expression ===");
 
     // First, test basic query without EXISTS
-    System.out.println("\n1. Basic MATCH query:");
+    //System.out.println("\n1. Basic MATCH query:");
     ResultSet results = database.query("opencypher", "MATCH (p:Person) RETURN p.name ORDER BY p.name");
     while (results.hasNext()) {
-      System.out.println("  Person: " + results.next().getProperty("p.name"));
+      final Object name = results.next().getProperty("p.name");
+      //System.out.println("  Person: " +name  );
     }
 
     // Test WORKS_AT relationships
-    System.out.println("\n2. Check WORKS_AT relationships:");
+    //System.out.println("\n2. Check WORKS_AT relationships:");
     results = database.query("opencypher", "MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN p.name, c.name");
     while (results.hasNext()) {
       final Result r = results.next();
-      System.out.println("  " + r.getProperty("p.name") + " works at " + r.getProperty("c.name"));
+      //System.out.println("  " + r.getProperty("p.name") + " works at " + r.getProperty("c.name"));
     }
 
     // Test EXISTS expression
-    System.out.println("\n3. Test EXISTS expression:");
+    //System.out.println("\n3. Test EXISTS expression:");
     try {
       final String query = "MATCH (p:Person) WHERE EXISTS { (p)-[:WORKS_AT]->(:Company) } RETURN p.name ORDER BY p.name";
-      System.out.println("  Query: " + query);
+      //System.out.println("  Query: " + query);
 
       results = database.query("opencypher", query);
-      System.out.println("  Query executed successfully");
+      //System.out.println("  Query executed successfully");
       int count = 0;
       while (results.hasNext()) {
         final String name = results.next().getProperty("p.name");
-        System.out.println("  Found: " + name);
+        //System.out.println("  Found: " + name);
         count++;
       }
-      System.out.println("  Total results: " + count);
-      System.out.println("  Expected: Alice, Bob (2 results)");
+      //System.out.println("  Total results: " + count);
+      //System.out.println("  Expected: Alice, Bob (2 results)");
     } catch (Exception e) {
-      System.out.println("  ERROR: " + e.getMessage());
+      //System.out.println("  ERROR: " + e.getMessage());
       e.printStackTrace();
     }
 
     // Try to get execution plan
-    System.out.println("\n4. Check execution plan:");
+    //System.out.println("\n4. Check execution plan:");
     try {
       results = database.query("opencypher",
           "EXPLAIN MATCH (p:Person) WHERE EXISTS { (p)-[:WORKS_AT]->(:Company) } RETURN p.name");
       if (results.hasNext()) {
         final Result r = results.next();
-        System.out.println("  Plan: " + r.toJSON());
+        //System.out.println("  Plan: " + r.toJSON());
       }
     } catch (Exception e) {
-      System.out.println("  EXPLAIN not supported or error: " + e.getMessage());
+      //System.out.println("  EXPLAIN not supported or error: " + e.getMessage());
     }
   }
 }

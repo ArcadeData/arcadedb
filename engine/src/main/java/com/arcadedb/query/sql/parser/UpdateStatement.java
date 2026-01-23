@@ -31,14 +31,15 @@ import java.util.*;
 import java.util.stream.*;
 
 public class UpdateStatement extends Statement {
-  protected FromClause             target;
-  protected List<UpdateOperations> operations   = new ArrayList<UpdateOperations>();
-  protected boolean                upsert       = false;
-  protected boolean                returnBefore = false;
-  protected boolean                returnAfter  = false;
-  protected boolean                returnCount  = false;
-  protected Projection             returnProjection;
-  protected WhereClause            whereClause;
+  public FromClause             target;
+  public List<UpdateOperations> operations     = new ArrayList<UpdateOperations>();
+  public boolean                upsert         = false;
+  public boolean                applyDefaults  = false;
+  public boolean                returnBefore   = false;
+  public boolean                returnAfter    = false;
+  public boolean                returnCount    = false;
+  public Projection             returnProjection;
+  public WhereClause            whereClause;
 
   public UpdateStatement(final int id) {
     super(id);
@@ -56,6 +57,9 @@ public class UpdateStatement extends Statement {
 
     if (upsert)
       builder.append(" UPSERT");
+
+    if (applyDefaults)
+      builder.append(" APPLY DEFAULTS");
 
     if (returnBefore || returnAfter || returnCount) {
       builder.append(" RETURN");
@@ -92,6 +96,7 @@ public class UpdateStatement extends Statement {
     result.target = target == null ? null : target.copy();
     result.operations = operations == null ? null : operations.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.upsert = upsert;
+    result.applyDefaults = applyDefaults;
     result.returnBefore = returnBefore;
     result.returnAfter = returnAfter;
     result.returnProjection = returnProjection == null ? null : returnProjection.copy();
@@ -143,6 +148,8 @@ public class UpdateStatement extends Statement {
 
     if (upsert != that.upsert)
       return false;
+    if (applyDefaults != that.applyDefaults)
+      return false;
     if (returnBefore != that.returnBefore)
       return false;
     if (returnAfter != that.returnAfter)
@@ -165,6 +172,7 @@ public class UpdateStatement extends Statement {
     int result = target != null ? target.hashCode() : 0;
     result = 31 * result + (operations != null ? operations.hashCode() : 0);
     result = 31 * result + (upsert ? 1 : 0);
+    result = 31 * result + (applyDefaults ? 1 : 0);
     result = 31 * result + (returnBefore ? 1 : 0);
     result = 31 * result + (returnAfter ? 1 : 0);
     result = 31 * result + (returnProjection != null ? returnProjection.hashCode() : 0);
@@ -184,6 +192,10 @@ public class UpdateStatement extends Statement {
 
   public boolean isUpsert() {
     return upsert;
+  }
+
+  public boolean isApplyDefaults() {
+    return applyDefaults;
   }
 
   public boolean isReturnBefore() {

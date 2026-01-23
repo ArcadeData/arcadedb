@@ -36,18 +36,18 @@ public class AlterTypeStatement extends DDLStatement {
   /**
    * the name of the class
    */
-  protected Identifier       name;
+  public Identifier       name;
   /**
    * the class property to be altered
    */
-  public    String           property;
-  protected Identifier       identifierValue;
-  protected List<Boolean>    identifierListAddRemove = new ArrayList<>();
-  protected List<Identifier> identifierListValue     = new ArrayList<>();
-  protected PNumber          numberValue;
-  protected Boolean          booleanValue;
-  protected Identifier       customKey;
-  protected Expression       customValue;
+  public String           property;
+  public Identifier       identifierValue;
+  public List<Boolean>    identifierListAddRemove = new ArrayList<>();
+  public List<Identifier> identifierListValue     = new ArrayList<>();
+  public PNumber          numberValue;
+  public Boolean          booleanValue;
+  public Identifier       customKey;
+  public Expression       customValue;
 
   public AlterTypeStatement(final int id) {
     super(id);

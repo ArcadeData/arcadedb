@@ -27,10 +27,10 @@ import java.util.*;
 
 public class AlterBucketStatement extends DDLStatement {
 
-  protected Identifier name;
-  protected boolean    starred = false;
-  protected Identifier attributeName;
-  protected Expression attributeValue;
+  public Identifier name;
+  public boolean    starred = false;
+  public Identifier attributeName;
+  public Expression attributeValue;
 
   public AlterBucketStatement(final int id) {
     super(id);

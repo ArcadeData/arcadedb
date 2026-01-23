@@ -1802,6 +1802,44 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void expandWithChainedMethodCalls() {
+    // Test for chained method calls within expand() function
+    // Query: SELECT expand(out('Follows').out('Follows').out('Follows')) FROM Account WHERE id = ?
+    final String className = "Account";
+    final String edgeClassName = "Follows";
+
+    database.getSchema().createVertexType(className);
+    database.getSchema().createEdgeType(edgeClassName);
+
+    database.begin();
+
+    // Create a chain: v0 -> v1 -> v2 -> v3 -> v4
+    final MutableVertex v0 = database.newVertex(className).set("id", 0).save();
+    final MutableVertex v1 = database.newVertex(className).set("id", 1).save();
+    final MutableVertex v2 = database.newVertex(className).set("id", 2).save();
+    final MutableVertex v3 = database.newVertex(className).set("id", 3).save();
+    final MutableVertex v4 = database.newVertex(className).set("id", 4).save();
+
+    v0.newEdge(edgeClassName, v1).save();
+    v1.newEdge(edgeClassName, v2).save();
+    v2.newEdge(edgeClassName, v3).save();
+    v3.newEdge(edgeClassName, v4).save();
+
+    database.commit();
+
+    // Test query: traverse 3 hops from v0
+    final ResultSet result = database.query("sql",
+      "SELECT expand(out('Follows').out('Follows').out('Follows')) FROM Account WHERE id = ?", 0);
+
+    assertThat(result.hasNext()).isTrue();
+    final Result next = result.next();
+    assertThat(next).isNotNull();
+    assertThat((int) next.getProperty("id")).isEqualTo(3); // Should reach v3 (3 hops from v0)
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
   void distinct1() {
     final String className = "testDistinct1";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
@@ -4298,5 +4336,228 @@ public class SelectStatementExecutionTest extends TestHelper {
     assertThat(((Map<?, ?>) map).get("SchemaMap")).isEqualTo("Document");
 
     result.close();
+  }
+
+  /**
+   * Simplified test to verify OR conditions work without LET
+   */
+  @Test
+  void issue2586_simpleOrCondition() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Issue2586_SimpleTest");
+
+      database.command("sql", "INSERT INTO Issue2586_SimpleTest SET field1 = 'value1', field2 = 'value2'").close();
+      database.command("sql", "INSERT INTO Issue2586_SimpleTest SET field1 = 'other1', field2 = 'other2'").close();
+
+      // Test simple OR condition
+      final String query1 = "SELECT FROM Issue2586_SimpleTest WHERE field1 = 'value1' OR field2 = 'value2'";
+      final ResultSet result1 = database.query("sql", query1);
+      assertThat(result1.hasNext()).as("Simple OR condition should return results").isTrue();
+      result1.close();
+
+      // Test AND with OR in parentheses
+      final String query2 = "SELECT FROM Issue2586_SimpleTest WHERE field1 = 'value1' AND (field2 = 'value2' OR field2 = 'nonexistent')";
+      final ResultSet result2 = database.query("sql", query2);
+      assertThat(result2.hasNext()).as("AND with OR in parentheses should return results").isTrue();
+      result2.close();
+
+      // Test that failed condition returns no results
+      final String query3 = "SELECT FROM Issue2586_SimpleTest WHERE field1 = 'nonexistent' AND (field2 = 'value2' OR field2 = 'nonexistent')";
+      final ResultSet result3 = database.query("sql", query3);
+      assertThat(result3.hasNext()).as("Query with failed AND should return no results").isFalse();
+      result3.close();
+    });
+  }
+
+  /**
+   * Test for LET with IN operator but without OR condition
+   */
+  @Test
+  void issue2586_letWithInNoOr() {
+    database.transaction(() -> {
+      // Create the schema
+      database.getSchema().createVertexType("Issue2586_Chat2");
+      database.getSchema().createVertexType("Issue2586_Assistant2");
+      database.getSchema().createEdgeType("Issue2586_CreatedFromAssistant2");
+
+      // Create vertices
+      database.command("sql", "CREATE VERTEX Issue2586_Assistant2 SET name = 'assistant1'").close();
+      database.command("sql", "CREATE VERTEX Issue2586_Chat2 SET contextVariables = {'local:fin': 'value1'}").close();
+
+      // Get RIDs
+      final RID assistantRid = database.query("sql", "SELECT FROM Issue2586_Assistant2").next().getIdentity().get();
+      final RID chatRid = database.query("sql", "SELECT FROM Issue2586_Chat2").next().getIdentity().get();
+
+      // Create edge: Chat -CreatedFromAssistant-> Assistant
+      database.command("sql", "CREATE EDGE Issue2586_CreatedFromAssistant2 FROM " + chatRid + " TO " + assistantRid).close();
+
+      // Test: LET with out() and IN check - no OR condition (this should work)
+      final String query = "SELECT FROM Issue2586_Chat2 " +
+          "LET brain = out('Issue2586_CreatedFromAssistant2') " +
+          "WHERE " + assistantRid + " IN $brain";
+
+      final ResultSet result = database.query("sql", query);
+      assertThat(result.hasNext()).as("LET with IN should return results").isTrue();
+      result.close();
+
+      // Add a simple AND condition (should still work)
+      final String query2 = "SELECT FROM Issue2586_Chat2 " +
+          "LET brain = out('Issue2586_CreatedFromAssistant2') " +
+          "WHERE " + assistantRid + " IN $brain AND contextVariables['local:fin'] = 'value1'";
+
+      final ResultSet result2 = database.query("sql", query2);
+      assertThat(result2.hasNext()).as("LET with IN and simple AND should return results").isTrue();
+      result2.close();
+    });
+  }
+
+  /**
+   * Test for issue #2586: Query with LET, IN operator, AND and OR conditions
+   * The query should work correctly when combining:
+   * - LET clause with graph traversals (in(), out())
+   * - WHERE clause with IN operator on LET variable
+   * - AND combined with OR conditions in parentheses
+   */
+  @Test
+  void issue2586_letWithInAndOrCondition() {
+    database.transaction(() -> {
+      // Create the schema
+      database.getSchema().createVertexType("Issue2586_Chat");
+      database.getSchema().createVertexType("Issue2586_User");
+      database.getSchema().createVertexType("Issue2586_Assistant");
+      database.getSchema().createEdgeType("Issue2586_HasChat");
+      database.getSchema().createEdgeType("Issue2586_CreatedFromAssistant");
+
+      // Create vertices
+      database.command("sql", "CREATE VERTEX Issue2586_User SET name = 'user1'").close();
+      database.command("sql", "CREATE VERTEX Issue2586_Assistant SET name = 'assistant1'").close();
+      database.command("sql", "CREATE VERTEX Issue2586_Chat SET contextVariables = {'local:fin': 'value1'}").close();
+
+      // Get RIDs
+      final RID userRid = database.query("sql", "SELECT FROM Issue2586_User").next().getIdentity().get();
+      final RID assistantRid = database.query("sql", "SELECT FROM Issue2586_Assistant").next().getIdentity().get();
+      final RID chatRid = database.query("sql", "SELECT FROM Issue2586_Chat").next().getIdentity().get();
+
+      // Create edges: User -HasChat-> Chat and Chat -CreatedFromAssistant-> Assistant
+      database.command("sql", "CREATE EDGE Issue2586_HasChat FROM " + userRid + " TO " + chatRid).close();
+      database.command("sql", "CREATE EDGE Issue2586_CreatedFromAssistant FROM " + chatRid + " TO " + assistantRid).close();
+
+      // This is the problematic query pattern from issue #2586:
+      // SELECT with LET using in()/out(), WHERE with IN $variable AND (condition OR condition)
+      final String query = "SELECT FROM Issue2586_Chat " +
+          "LET users = in('Issue2586_HasChat'), brain = out('Issue2586_CreatedFromAssistant') " +
+          "WHERE " + assistantRid + " IN $brain AND (contextVariables['local:fin'] = 'value1' OR @rid = " + chatRid + ")";
+
+      final ResultSet result = database.query("sql", query);
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.getIdentity()).isPresent();
+      assertThat(item.getIdentity().get()).isEqualTo(chatRid);
+      assertThat(result.hasNext()).isFalse();
+      result.close();
+
+      // Also test with the OR condition being false - should still return result because first part is true
+      final String query2 = "SELECT FROM Issue2586_Chat " +
+          "LET users = in('Issue2586_HasChat'), brain = out('Issue2586_CreatedFromAssistant') " +
+          "WHERE " + assistantRid + " IN $brain AND (contextVariables['local:fin'] = 'value1' OR @rid = #999:999)";
+
+      final ResultSet result2 = database.query("sql", query2);
+      assertThat(result2.hasNext()).isTrue();
+      result2.close();
+
+      // Test with the first part of OR being false - should still return result because second part is true
+      final String query3 = "SELECT FROM Issue2586_Chat " +
+          "LET users = in('Issue2586_HasChat'), brain = out('Issue2586_CreatedFromAssistant') " +
+          "WHERE " + assistantRid + " IN $brain AND (contextVariables['local:fin'] = 'wrongValue' OR @rid = " + chatRid + ")";
+
+      final ResultSet result3 = database.query("sql", query3);
+      assertThat(result3.hasNext()).isTrue();
+      result3.close();
+
+      // Test with both parts of OR being false - should return empty
+      final String query4 = "SELECT FROM Issue2586_Chat " +
+          "LET users = in('Issue2586_HasChat'), brain = out('Issue2586_CreatedFromAssistant') " +
+          "WHERE " + assistantRid + " IN $brain AND (contextVariables['local:fin'] = 'wrongValue' OR @rid = #999:999)";
+
+      final ResultSet result4 = database.query("sql", query4);
+      assertThat(result4.hasNext()).isFalse();
+      result4.close();
+    });
+  }
+
+  /**
+   * Tests for GitHub issue #1825: $parent.$current should work in subquery FROM clause.
+   * The $parent.$current should refer to the current record from the outer query context.
+   */
+  @Test
+  void testParentCurrentInSubqueryFromClause_Issue1825() {
+    final String className = "testParentCurrentInSubqueryFromClause";
+    database.getSchema().createDocumentType(className);
+
+    database.begin();
+    final MutableDocument doc = database.newDocument(className);
+    doc.set("a", 0);
+    doc.save();
+    final RID docRid = doc.getIdentity();
+    database.commit();
+
+    // Basic test: SELECT a FROM <specific RID> should work
+    try (ResultSet result = database.query("sql", "SELECT a FROM " + docRid)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.<Integer>getProperty("a")).isEqualTo(0);
+      assertThat(result.hasNext()).isFalse();
+    }
+
+    // Test using $parent.$current in WHERE clause with field access
+    try (ResultSet result = database.query("sql",
+        "SELECT @rid, (SELECT a FROM " + className + " WHERE a = $parent.$current.a) as subResult FROM " + className)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      final Object subResult = item.getProperty("subResult");
+      assertThat(subResult).isNotNull();
+      assertThat(subResult instanceof Collection).isTrue();
+      assertThat(((Collection<?>) subResult).isEmpty()).as("$parent.$current.a in WHERE should match parent record").isFalse();
+    }
+
+    // Issue #1825 - Test 1: $parent.$current directly as FROM source
+    try (ResultSet result = database.query("sql",
+        "SELECT @rid, (SELECT a FROM $parent.$current) as subResult FROM " + docRid)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.getIdentity().orElse(null)).isEqualTo(docRid);
+      final Object subResult = item.getProperty("subResult");
+      assertThat(subResult).isNotNull();
+      assertThat(subResult instanceof Collection).isTrue();
+      Collection<?> subResultList = (Collection<?>) subResult;
+      assertThat(subResultList.isEmpty()).as("$parent.$current in FROM should return the parent's current record").isFalse();
+      Object firstResult = subResultList.iterator().next();
+      assertThat(firstResult instanceof Result).isTrue();
+      assertThat(((Result) firstResult).<Integer>getProperty("a")).isEqualTo(0);
+    }
+
+    // Issue #1825 - Test 2: $parent.$current.@rid as FROM source
+    try (ResultSet result = database.query("sql",
+        "SELECT @rid, (SELECT a FROM $parent.$current.@rid) as subResult FROM " + docRid)) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.getIdentity().orElse(null)).isEqualTo(docRid);
+      final Object subResult = item.getProperty("subResult");
+      assertThat(subResult).isNotNull();
+      assertThat(subResult instanceof Collection).isTrue();
+      Collection<?> subResultList = (Collection<?>) subResult;
+      assertThat(subResultList.isEmpty()).as("$parent.$current.@rid in FROM should return results").isFalse();
+      Object firstResult = subResultList.iterator().next();
+      assertThat(firstResult instanceof Result).isTrue();
+      assertThat(((Result) firstResult).<Integer>getProperty("a")).isEqualTo(0);
+    }
+
+    // Test $current.@rid in main query (not subquery)
+    try (ResultSet result = database.query("sql", "SELECT @rid, $current.@rid as currentRid FROM " + docRid)) {
+      assertThat(result.hasNext()).isTrue();
+      Result r = result.next();
+      assertThat(r.getIdentity().orElse(null)).isEqualTo(docRid);
+      assertThat(r.<RID>getProperty("currentRid")).isEqualTo(docRid);
+    }
   }
 }

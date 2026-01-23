@@ -150,4 +150,25 @@ public interface DatabaseInternal extends Database {
   default void setDataEncryption(DataEncryption encryption) {
     getSerializer().setDataEncryption(encryption);
   }
+
+  /**
+   * Gets a global variable value by name.
+   * @param name Variable name (with or without $ prefix)
+   * @return The variable value, or null if not set
+   */
+  Object getGlobalVariable(String name);
+
+  /**
+   * Sets a global variable. Setting to null removes the variable.
+   * @param name Variable name (with or without $ prefix)
+   * @param value The value to set, or null to remove
+   * @return The previous value, or null
+   */
+  Object setGlobalVariable(String name, Object value);
+
+  /**
+   * Gets all global variables as an unmodifiable map.
+   * @return Map of variable name to value
+   */
+  Map<String, Object> getGlobalVariables();
 }

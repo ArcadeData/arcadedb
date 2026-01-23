@@ -71,5 +71,22 @@ public class UpdateIncrementItem extends SimpleNode {
     result = 31 * result + (right != null ? right.hashCode() : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (left != null) {
+      json.put("left", left.toJSON());
+    }
+    if (leftModifier != null) {
+      json.put("leftModifier", leftModifier.toString());
+    }
+    if (right != null) {
+      json.put("right", right.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=94dd82febb904e4e31130bdcbbb48fe3 (do not edit this line) */

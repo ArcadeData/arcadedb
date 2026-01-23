@@ -110,5 +110,19 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     result = 31 * result + (settingValue != null ? settingValue.hashCode() : 0);
     return result;
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (settingName != null) {
+      json.put("settingName", settingName.toJSON());
+    }
+    if (settingValue != null) {
+      json.put("settingValue", settingValue.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=6a7964c2b9dad541ca962eecea00651b (do not edit this line) */

@@ -27,7 +27,7 @@ import java.util.stream.*;
 
 public class MatchFilter extends SimpleNode {
   // TODO transform in a map
-  protected List<MatchFilterItem> items = new ArrayList<MatchFilterItem>();
+  public List<MatchFilterItem> items = new ArrayList<MatchFilterItem>();
 
   public MatchFilter(final int id) {
     super(id);
@@ -206,6 +206,30 @@ public class MatchFilter extends SimpleNode {
   @Override
   public int hashCode() {
     return items != null ? items.hashCode() : 0;
+  }
+
+  /**
+   * Exports this MatchFilter as a JSON-compatible Map for debugging and profiling.
+   *
+   * @return Map representing the AST structure in JSON format
+   */
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "MatchFilter");
+
+    if (getAlias() != null) {
+      json.put("alias", getAlias());
+    }
+
+    if (!items.isEmpty()) {
+      final List<Object> filterItems = new ArrayList<>();
+      for (final MatchFilterItem item : items) {
+        filterItems.add(item.toJSON());
+      }
+      json.put("items", filterItems);
+    }
+
+    return json;
   }
 
 }

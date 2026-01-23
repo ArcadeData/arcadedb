@@ -31,7 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class ReturnStatement extends SimpleExecStatement {
-  protected Expression expression;
+  public Expression expression;
 
   public ReturnStatement(final int id) {
     super(id);

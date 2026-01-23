@@ -41,6 +41,8 @@ class CreatePropertyStatementTestParserTest extends AbstractParserTest {
   @Test
   void ifNotExists() {
     checkRightSyntax("CREATE PROPERTY Foo.bar if not exists STRING");
+    checkRightSyntax("CREATE PROPERTY RebuildDoc.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+    checkRightSyntax("CREATE PROPERTY MyType.data if not exists LIST");
     checkWrongSyntax("CREATE PROPERTY Foo.bar if exists STRING");
     checkWrongSyntax("CREATE PROPERTY Foo.bar if not exists");
   }

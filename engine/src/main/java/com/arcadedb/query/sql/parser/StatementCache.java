@@ -18,15 +18,16 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 
-import java.io.*;
-import java.nio.charset.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * This class is an LRU cache for already parsed SQL statement executors. It stores itself in the storage as a resource. It also
@@ -38,6 +39,7 @@ public class StatementCache {
   private final Database               db;
   private final Map<String, Statement> cache;
   private final int                    maxCacheSize;
+  private final SQLAntlrParser         antlrParser;
 
   /**
    * @param size the size of the cache
@@ -45,6 +47,7 @@ public class StatementCache {
   public StatementCache(final Database db, final int size) {
     this.db = db;
     this.maxCacheSize = size;
+    this.antlrParser = new SQLAntlrParser(db);  // Create ANTLR parser once, reuse for all parses
     this.cache = new LinkedHashMap<>(size) {
       @Override
       protected boolean removeEldestEntry(final Map.Entry<String, Statement> eldest) {
@@ -55,7 +58,6 @@ public class StatementCache {
 
   /**
    * @param statement an SQL statement
-   *
    * @return the corresponding executor, taking it from the internal cache, if it exists
    */
   public Statement get(final String statement) {
@@ -77,50 +79,53 @@ public class StatementCache {
   }
 
   /**
+   * Returns true if the ANTLR parser should be used, false for JavaCC parser.
+   */
+  private boolean useAntlrParser() {
+    String parserType = GlobalConfiguration.SQL_PARSER_IMPLEMENTATION.getValueAsString();
+    if (db != null)
+      parserType = db.getConfiguration().getValueAsString(GlobalConfiguration.SQL_PARSER_IMPLEMENTATION);
+
+    return !"javacc".equalsIgnoreCase(parserType);
+  }
+
+  /**
    * parses an SQL statement and returns the corresponding executor
    *
    * @param statement the SQL statement
-   *
    * @return the corresponding executor
-   *
    * @throws CommandSQLParsingException if the input parameter is not a valid SQL statement
    */
   protected Statement parse(final String statement) throws CommandSQLParsingException {
     try {
-
-      final InputStream is;
-
-      if (db == null) {
-        is = new ByteArrayInputStream(statement.getBytes(DatabaseFactory.getDefaultCharset()));
+      final Statement result;
+      if (useAntlrParser()) {
+        // Use ANTLR4-based SQL parser (reuse parser instance for efficiency)
+        result = antlrParser.parse(statement);
       } else {
-        is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
+        // Use legacy JavaCC-based SQL parser
+        result = parseWithJavaCC(statement);
       }
-
-      SqlParser parser;
-      if (db == null) {
-        parser = new SqlParser(db, is);
-      } else {
-        try {
-          parser = new SqlParser(db, is, "UTF-8");
-        } catch (final UnsupportedEncodingException e2) {
-          LogManager.instance().log(this, Level.WARNING, "Unsupported charset for database " + db);
-          parser = new SqlParser(db, is);
-        }
-      }
-
-      final Statement result = parser.Parse();
 
       result.originalStatementAsString = statement;
       return result;
 
-    } catch (final ParseException e) {
+    } catch (final CommandSQLParsingException e) {
+      // Re-throw parsing exceptions as-is
+      throw e;
+    } catch (final Throwable e) {
       throwParsingException(e, statement);
-    } catch (final TokenMgrError e2) {
-      throwParsingException(e2, statement);
-    } catch (final Throwable e3) {
-      throwParsingException(e3, statement);
     }
     return null;
+  }
+
+  /**
+   * Parse using the legacy JavaCC parser.
+   */
+  private Statement parseWithJavaCC(final String statement) throws ParseException {
+    final InputStream is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
+    final SqlParser parser = new SqlParser(db, is);
+    return parser.Parse();
   }
 
   protected static void throwParsingException(final Throwable e, final String statement) {

@@ -40,14 +40,14 @@ import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;
 
 public class SelectStatement extends Statement {
-  protected FromClause  target;
-  protected Projection  projection;
-  protected WhereClause whereClause;
-  protected GroupBy     groupBy;
-  protected OrderBy     orderBy;
-  protected Unwind      unwind;
-  protected Skip        skip;
-  protected LetClause   letClause;
+  public FromClause  target;
+  public Projection  projection;
+  public WhereClause whereClause;
+  public GroupBy     groupBy;
+  public OrderBy     orderBy;
+  public Unwind      unwind;
+  public Skip        skip;
+  public LetClause   letClause;
 
   public SelectStatement(final int id) {
     super(id);

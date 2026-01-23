@@ -33,13 +33,13 @@ import com.arcadedb.utility.NumberUtils;
 import java.util.*;
 
 public class BaseExpression extends MathExpression {
-  protected PNumber        number;
-  protected BaseIdentifier identifier;
-  protected Expression     expression;
-  protected InputParameter inputParam;
-  protected String         string;
-  protected Modifier       modifier;
-  protected boolean        isNull = false;
+  public PNumber        number;
+  public BaseIdentifier identifier;
+  public Expression     expression;
+  public InputParameter inputParam;
+  public String         string;
+  public Modifier       modifier;
+  public boolean        isNull = false;
 
   public BaseExpression(final int id) {
     super(id);
@@ -71,9 +71,27 @@ public class BaseExpression extends MathExpression {
   }
 
   public void setModifier(final Modifier modifier) {
+    // Validate: expand() should not allow method calls or suffix identifiers
+    // Only nested projections are allowed (e.g., expand([...]):{fields})
+    if (isExpand() && modifier != null) {
+      // Walk through the modifier chain to check if any disallowed modifiers exist
+      Modifier current = modifier;
+      while (current != null) {
+        if (current.methodCall != null) {
+          throw new CommandSQLParsingException(
+              "Cannot use method calls (e.g., .asString()) after expand() function");
+        }
+        if (current.suffix != null) {
+          throw new CommandSQLParsingException(
+              "Cannot use property access (e.g., .name) after expand() function");
+        }
+        // Nested projections are OK (e.g., expand([...]):{fields})
+        current = current.next;
+      }
+    }
     this.modifier = modifier;
-    if (identifier != null && modifier != null && identifier.isExpand())
-      throw new CommandSQLParsingException("Invalid modifier after special function expand()");
+    // Note: Nested projections after expand() are now allowed (e.g., expand([...]):{fields})
+    // This enables issue #2965 fix - nested projection on expanded results
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -289,11 +307,26 @@ public class BaseExpression extends MathExpression {
     if (isAggregate(context)) {
       final BaseExpression result = new BaseExpression(-1);
 
-      final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, context);
-      if (splitResult instanceof BaseIdentifier baseIdentifier) {
-        result.identifier = baseIdentifier;
-      } else if (splitResult instanceof Expression expr) {
-        result.expression = expr;
+      // Handle case where identifier is set
+      if (identifier != null) {
+        final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, context);
+        if (splitResult instanceof BaseIdentifier baseIdentifier) {
+          result.identifier = baseIdentifier;
+        } else if (splitResult instanceof Expression expr) {
+          result.expression = expr;
+        }
+      }
+      // Handle case where expression is set instead (e.g., for array literals)
+      else if (expression != null) {
+        final SimpleNode splitResult = expression.splitForAggregation(aggregateProj, context);
+        if (splitResult instanceof Expression expr) {
+          result.expression = expr;
+        } else if (splitResult instanceof MathExpression mathExpr) {
+          // Wrap the MathExpression back in an Expression
+          final Expression wrapperExpr = new Expression(-1);
+          wrapperExpr.mathExpression = mathExpr;
+          result.expression = wrapperExpr;
+        }
       }
 
       if (this.modifier != null)

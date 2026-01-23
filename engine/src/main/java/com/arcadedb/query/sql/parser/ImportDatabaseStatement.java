@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -32,10 +33,10 @@ import java.util.*;
 
 public class ImportDatabaseStatement extends SimpleExecStatement {
 
-  protected       Url                         url;
+  public          Url                         url;
   protected       Expression                  key;
   protected       Expression                  value;
-  protected final Map<Expression, Expression> settings = new HashMap<>();
+  public final    Map<Expression, Expression> settings = new HashMap<>();
 
   public ImportDatabaseStatement(final int id) {
     super(id);
@@ -56,7 +57,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
       // TRANSFORM SETTINGS
       final Map<String, String> settingsToString = new HashMap<>();
       for (final Map.Entry<Expression, Expression> entry : settings.entrySet())
-        settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
+        settingsToString.put(entry.getKey().value.toString(), entry.getValue().execute((Identifiable) null, context).toString());
 
       clazz.getMethod("setSettings", Map.class).invoke(importer, settingsToString);
       final Map<String, Object> statistics = (Map<String, Object>) clazz.getMethod("load").invoke(importer);

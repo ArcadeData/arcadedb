@@ -30,10 +30,10 @@ import java.util.*;
 import java.util.stream.*;
 
 public class CheckDatabaseStatement extends SimpleExecStatement {
-  protected final Set<BucketIdentifier> buckets  = new HashSet<>();
-  protected final Set<Identifier>       types    = new HashSet<>();
-  protected       boolean               fix      = false;
-  protected       boolean               compress = false;
+  public final Set<BucketIdentifier> buckets  = new HashSet<>();
+  public final Set<Identifier>       types    = new HashSet<>();
+  public       boolean               fix      = false;
+  public       boolean               compress = false;
 
   public CheckDatabaseStatement(final int id) {
     super(id);

@@ -442,6 +442,68 @@ class QueryTest extends TestHelper {
     });
   }
 
+  /**
+   * Test case for issue https://github.com/ArcadeData/arcadedb/issues/1581
+   * Tests PostgreSQL-style semantic negation of LIKE and ILIKE operators.
+   */
+  @Test
+  void notLikeAndNotIlike() {
+    database.transaction(() -> {
+      // Test NOT LIKE - should return records that do NOT match the pattern
+      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE surname NOT LIKE 'Miner999'");
+      assertThat(rs.hasNext()).isTrue();
+      int count = 0;
+      while (rs.hasNext()) {
+        Result r = rs.next();
+        String surname = r.getProperty("surname");
+        assertThat(surname).isNotEqualTo("Miner999");
+        count++;
+      }
+      // Only "Miner999" should be excluded from TOT records
+      assertThat(count).isEqualTo(TOT - 1);
+      rs.close();
+
+      // Test NOT ILIKE - case-insensitive NOT LIKE
+      database.command("SQL", "insert into V set surname = 'ALLCAPS'");
+      database.command("SQL", "insert into V set surname = 'lowercase'");
+
+      rs = database.command("SQL", "SELECT FROM V WHERE surname NOT ILIKE '%caps%'");
+      int capsExcludedCount = 0;
+      while (rs.hasNext()) {
+        Result r = rs.next();
+        String surname = r.getProperty("surname");
+        // Should not contain 'caps' (case-insensitive)
+        assertThat(surname.toLowerCase()).doesNotContain("caps");
+        capsExcludedCount++;
+      }
+      // ALLCAPS should be excluded, lowercase should be included
+      // Total: TOT + 2 inserted - 1 excluded = TOT + 1
+      assertThat(capsExcludedCount).isEqualTo(TOT + 1);
+      rs.close();
+
+      // Test expression form: SELECT ('abc' NOT LIKE 'a?c')
+      rs = database.command("SQL", "SELECT ('abc' NOT LIKE 'a?c') as result");
+      assertThat(rs.hasNext()).isTrue();
+      Result result = rs.next();
+      assertThat(result.<Boolean>getProperty("result")).isFalse(); // 'abc' LIKE 'a?c' is true, so NOT is false
+      rs.close();
+
+      // Test expression form: SELECT ('ABC' NOT ILIKE 'a?c')
+      rs = database.command("SQL", "SELECT ('ABC' NOT ILIKE 'a?c') as result");
+      assertThat(rs.hasNext()).isTrue();
+      result = rs.next();
+      assertThat(result.<Boolean>getProperty("result")).isFalse(); // 'ABC' ILIKE 'a?c' is true, so NOT is false
+      rs.close();
+
+      // Test that 'xyz' NOT LIKE 'a?c' returns true
+      rs = database.command("SQL", "SELECT ('xyz' NOT LIKE 'a?c') as result");
+      assertThat(rs.hasNext()).isTrue();
+      result = rs.next();
+      assertThat(result.<Boolean>getProperty("result")).isTrue(); // 'xyz' LIKE 'a?c' is false, so NOT is true
+      rs.close();
+    });
+  }
+
   // Issue https://github.com/ArcadeData/arcadedb/issues/603
   @Test
   void likeEncoding() {

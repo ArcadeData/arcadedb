@@ -25,8 +25,15 @@ import java.util.*;
  */
 public class InsertSetExpression {
 
-  protected Identifier left;
-  protected Expression right;
+  public Identifier left;
+  public Expression right;
+
+  public InsertSetExpression() {
+  }
+
+  public InsertSetExpression(final int id) {
+    // Constructor for compatibility with visitor pattern
+  }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);

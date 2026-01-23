@@ -20,11 +20,13 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 
 public abstract class SimpleNode implements Node {
   protected Node[] children;
-  protected Object value;
+  public    Object value;
   protected String cachedStringForm;
 
   public SimpleNode() {
@@ -110,6 +112,20 @@ public abstract class SimpleNode implements Node {
 
   public String toString(final String prefix) {
     return prefix + this;
+  }
+
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = new LinkedHashMap<>();
+    json.put("@class", "SimpleNode");
+    json.put("value", value);
+    if (children != null) {
+      final Object[] childrenJson = new Object[children.length];
+      for (int i = 0; i < children.length; i++)
+        childrenJson[i] = (children[i] instanceof SimpleNode) ? ((SimpleNode) children[i]).toJSON() : children[i];
+
+      json.put("children", childrenJson);
+    }
+    return json;
   }
 
   /*

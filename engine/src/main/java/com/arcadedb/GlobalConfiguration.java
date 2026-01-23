@@ -27,11 +27,13 @@ import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 
-import java.io.*;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
@@ -255,6 +257,11 @@ public enum GlobalConfiguration {
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
 
+  SQL_PARSER_IMPLEMENTATION("arcadedb.sql.parserImplementation", SCOPE.DATABASE,
+      "SQL parser implementation to use. 'antlr' (default) uses the new ANTLR4-based parser with improved error messages. " +
+          "'javacc' uses the legacy JavaCC-based parser for backward compatibility.",
+      String.class, "antlr", Set.of("antlr", "javacc")),
+
   // OPENCYPHER
   OPENCYPHER_STATEMENT_CACHE("arcadedb.opencypher.statementCache", SCOPE.DATABASE,
       "Maximum number of parsed OpenCypher statements to keep in cache", Integer.class, 300),
@@ -271,8 +278,8 @@ public enum GlobalConfiguration {
 
   GREMLIN_ENGINE("arcadedb.gremlin.engine", SCOPE.DATABASE,
       "Gremlin engine to use. 'java' (default, secure) uses the native Gremlin parser - recommended for production. " +
-      "'groovy' enables the legacy Groovy engine with security restrictions (use only if needed for compatibility). " +
-      "'auto' attempts Java first, falls back to Groovy if needed (not recommended for security-critical deployments).",
+          "'groovy' enables the legacy Groovy engine with security restrictions (use only if needed for compatibility). " +
+          "'auto' attempts Java first, falls back to Groovy if needed (not recommended for security-critical deployments).",
       String.class, "java", Set.of("auto", "groovy", "java")),
 
   /**
@@ -298,11 +305,11 @@ public enum GlobalConfiguration {
 
   // INDEXES
   INDEX_BUILD_CHUNK_SIZE_MB("arcadedb.index.buildChunkSizeMB", SCOPE.DATABASE,
-          "Size in MB for transaction chunks during bulk index creation with WAL disabled. " +
-                  "Larger chunks reduce commit overhead but use more memory. " +
-                  "Smaller chunks reduce memory pressure but add commit overhead. " +
-                  "Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.",
-          Long.class, 50L),
+      "Size in MB for transaction chunks during bulk index creation with WAL disabled. " +
+          "Larger chunks reduce commit overhead but use more memory. " +
+          "Smaller chunks reduce memory pressure but add commit overhead. " +
+          "Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.",
+      Long.class, 50L),
 
   INDEX_COMPACTION_RAM_MB("arcadedb.indexCompactionRAM", SCOPE.DATABASE, "Maximum amount of RAM to use for index compaction, in MB",
       Long.class, 300),
@@ -312,23 +319,23 @@ public enum GlobalConfiguration {
 
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       "Maximum number of vector locations to cache in memory per vector index. " +
-      "Set to -1 for unlimited (backward compatible). " +
-      "Each entry uses ~56 bytes. Recommended: 100000 for datasets with 1M+ vectors (~5.6MB), " +
-      "-1 for smaller datasets.",
+          "Set to -1 for unlimited (backward compatible). " +
+          "Each entry uses ~56 bytes. Recommended: 100000 for datasets with 1M+ vectors (~5.6MB), " +
+          "-1 for smaller datasets.",
       Integer.class, -1),
 
   VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE("arcadedb.vectorIndex.graphBuildCacheSize", SCOPE.DATABASE,
       "Maximum number of vectors to cache in memory during HNSW graph building. " +
-      "Higher values speed up construction but use more RAM. " +
-      "RAM usage = cacheSize * (dimensions * 4 + 64) bytes. " +
-      "Recommended: 100000 for 768-dim vectors (~30MB), scale based on dimensionality.",
+          "Higher values speed up construction but use more RAM. " +
+          "RAM usage = cacheSize * (dimensions * 4 + 64) bytes. " +
+          "Recommended: 100000 for 768-dim vectors (~30MB), scale based on dimensionality.",
       Integer.class, 100_000),
 
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
       "Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. " +
-      "Higher values reduce rebuild cost but may return slightly stale results in queries. " +
-      "Lower values provide fresher results but rebuild more frequently. " +
-      "Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.",
+          "Higher values reduce rebuild cost but may return slightly stale results in queries. " +
+          "Lower values provide fresher results but rebuild more frequently. " +
+          "Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.",
       Integer.class, 100),
 
   // NETWORK
@@ -362,7 +369,7 @@ public enum GlobalConfiguration {
       String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
-      "development", Set.of((Object[]) new String[] { "development", "test", "production" })),
+      "development", Set.of((Object[]) new String[]{"development", "test", "production"})),
 
   // Metrics
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
@@ -391,7 +398,7 @@ public enum GlobalConfiguration {
   SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER, """
       The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}\
       Databases which are newly created will always be opened READ_WRITE.""", String.class, "READ_WRITE",
-      Set.of((Object[]) new String[] { "read_only", "read_write" })),
+      Set.of((Object[]) new String[]{"read_only", "read_write"})),
 
   SERVER_PLUGINS("arcadedb.server.plugins", SCOPE.SERVER,
       "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class, ""),
@@ -443,7 +450,7 @@ public enum GlobalConfiguration {
 
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,
       "Server role between ANY (default) OR REPLICA to configure replica only servers", String.class, "any",
-      Set.of((Object[]) new String[] { "any", "replica" })),
+      Set.of((Object[]) new String[]{"any", "replica"})),
 
   HA_CLUSTER_NAME("arcadedb.ha.clusterName", SCOPE.SERVER,
       "Cluster name. By default is 'arcadedb'. Useful in case of multiple clusters in the same network", String.class,
@@ -455,7 +462,7 @@ public enum GlobalConfiguration {
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
       "Default quorum between 'none', one, two, three, 'majority' and 'all' servers. Default is majority", String.class, "majority",
-      Set.of(new String[] { "none", "one", "two", "three", "majority", "all" })),
+      Set.of(new String[]{"none", "one", "two", "three", "majority", "all"})),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
@@ -535,27 +542,27 @@ public enum GlobalConfiguration {
   }
 
   GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType,
-      final Object iDefValue) {
+                      final Object iDefValue) {
     this(iKey, scope, iDescription, iType, iDefValue, null, null, null);
   }
 
   GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
-      final Set<Object> allowed) {
+                      final Set<Object> allowed) {
     this(iKey, scope, iDescription, iType, iDefValue, null, null, allowed);
   }
 
   GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
-      final Callable<Object, Object> callback) {
+                      final Callable<Object, Object> callback) {
     this(iKey, scope, iDescription, iType, iDefValue, callback, null, null);
   }
 
   GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
-      final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet) {
+                      final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet) {
     this(iKey, scope, iDescription, iType, iDefValue, callback, callbackIfNoSet, null);
   }
 
   GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
-      final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed) {
+                      final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed) {
     this.key = iKey;
     this.scope = scope;
     this.description = iDescription;
@@ -642,7 +649,6 @@ public enum GlobalConfiguration {
    * Find the OGlobalConfiguration instance by the key. Key is case insensitive.
    *
    * @param iKey Key to find. It's case insensitive.
-   *
    * @return OGlobalConfiguration instance if found, otherwise null
    */
   public static GlobalConfiguration findByKey(final String iKey) {
@@ -707,7 +713,6 @@ public enum GlobalConfiguration {
 
   /**
    * @return Value of configuration parameter stored as enumeration if such one exists.
-   *
    * @throws ClassCastException       if stored value can not be casted and parsed from string to passed in enumeration class.
    * @throws IllegalArgumentException if value associated with configuration parameter is a string bug can not be converted to
    *                                  instance of passed in enumeration class.

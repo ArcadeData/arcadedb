@@ -37,7 +37,7 @@ public class OrderByDebugTest {
 
   @Test
   void testDebugOrderBy() {
-    System.out.println("=== Testing ORDER BY ===");
+    //System.out.println("=== Testing ORDER BY ===");
 
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n.name ORDER BY n.age ASC");
 
@@ -45,16 +45,16 @@ public class OrderByDebugTest {
     while (result.hasNext()) {
       final Result r = result.next();
       final String name = (String) r.getProperty("n.name");
-      System.out.println("Result " + count + ": name=" + name);
+      //System.out.println("Result " + count + ": name=" + name);
       count++;
     }
 
-    System.out.println("Total results: " + count);
+    //System.out.println("Total results: " + count);
   }
 
   @Test
   void testDebugOrderByFullVertex() {
-    System.out.println("=== Testing ORDER BY with full vertex ===");
+    //System.out.println("=== Testing ORDER BY with full vertex ===");
 
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n ORDER BY n.age ASC");
 
@@ -62,10 +62,10 @@ public class OrderByDebugTest {
     while (result.hasNext()) {
       final Result r = result.next();
       final Vertex v = (Vertex) r.getProperty("n");
-      System.out.println("Result " + count + ": name=" + v.get("name") + ", age=" + v.get("age"));
+      //System.out.println("Result " + count + ": name=" + v.get("name") + ", age=" + v.get("age"));
       count++;
     }
 
-    System.out.println("Total results: " + count);
+    //System.out.println("Total results: " + count);
   }
 }

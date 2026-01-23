@@ -19,31 +19,18 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.RetryExecutionPlan;
-import com.arcadedb.query.sql.executor.RetryStep;
-import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
-import com.arcadedb.query.sql.parser.BeginStatement;
-import com.arcadedb.query.sql.parser.CommitStatement;
-import com.arcadedb.query.sql.parser.LetStatement;
-import com.arcadedb.query.sql.parser.Limit;
-import com.arcadedb.query.sql.parser.LocalResultSet;
-import com.arcadedb.query.sql.parser.ParseException;
-import com.arcadedb.query.sql.parser.SqlParser;
-import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.query.sql.parser.*;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-
-import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
 public class SQLScriptQueryEngine extends SQLQueryEngine {
   public static final String ENGINE_NAME = "sqlscript";
@@ -145,17 +132,22 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
     try {
-      final SqlParser parser = new SqlParser(database, addSemicolon(script));
-      return parser.ParseScript();
-    } catch (final ParseException e) {
-      throw new CommandSQLParsingException(e).setCommand(script);
+      final String parserType = database.getConfiguration().getValueAsString(GlobalConfiguration.SQL_PARSER_IMPLEMENTATION);
+      if ("javacc".equalsIgnoreCase(parserType)) {
+        // Use legacy JavaCC-based SQL parser for scripts
+        final java.io.InputStream is = new java.io.ByteArrayInputStream(script.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        final com.arcadedb.query.sql.parser.SqlParser parser = new com.arcadedb.query.sql.parser.SqlParser(database, is);
+        return parser.ParseScript();
+      } else {
+        // Use ANTLR4-based SQL parser for scripts (default)
+        final SQLAntlrParser parser = new SQLAntlrParser(database);
+        return parser.parseScript(script);
+      }
+    } catch (final CommandSQLParsingException e) {
+      throw e.setCommand(script);
+    } catch (final com.arcadedb.query.sql.parser.ParseException e) {
+      throw new CommandSQLParsingException(e.getMessage(), e, script);
     }
-  }
-
-  private static String addSemicolon(final String parserText) {
-    if (!parserText.endsWith(";"))
-      return parserText + ";";
-    return parserText;
   }
 
   @Override
@@ -174,7 +166,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
     for (final Statement stm : statements) {
       stm.setOriginalStatement(stm);
-      stm.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
+      stm.setLimit(new Limit(-1).setValue((int) database.getResultSetLimit()));
 
       if (stm instanceof BeginStatement)
         nestedTxLevel++;

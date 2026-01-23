@@ -28,18 +28,19 @@ import java.util.*;
 import java.util.stream.*;
 
 public class FromItem extends SimpleNode {
-  protected List<Rid>            rids;
-  protected List<InputParameter> inputParams;
-  protected ResultSet            resultSet;
-  protected Bucket               bucket;
-  protected BucketList           bucketList;
-  protected IndexIdentifier      index;
-  protected SchemaIdentifier     schema;
-  protected Statement            statement;
-  protected InputParameter       inputParam;
-  protected Identifier           identifier;
-  protected FunctionCall         functionCall;
-  protected Modifier             modifier;
+  public List<Rid>            rids;
+  public List<InputParameter> inputParams;
+  public ResultSet            resultSet;
+  public Bucket               bucket;
+  public BucketList           bucketList;
+  public IndexIdentifier      index;
+  public SchemaIdentifier     schema;
+  public Statement            statement;
+  public InputParameter       inputParam;
+  public Identifier           identifier;
+  public FunctionCall         functionCall;
+  public Modifier             modifier;
+  public Identifier           alias;
 
   public FromItem(final int id) {
     super(id);
@@ -110,6 +111,11 @@ public class FromItem extends SimpleNode {
 
     if (modifier != null)
       modifier.toString(params, builder);
+
+    if (alias != null) {
+      builder.append(" AS ");
+      alias.toString(params, builder);
+    }
   }
 
   public Identifier getIdentifier() {
@@ -160,6 +166,10 @@ public class FromItem extends SimpleNode {
     return modifier;
   }
 
+  public Identifier getAlias() {
+    return alias;
+  }
+
   public FromItem copy() {
     final FromItem result = new FromItem(-1);
     if (rids != null) {
@@ -177,6 +187,7 @@ public class FromItem extends SimpleNode {
     result.identifier = identifier == null ? null : identifier.copy();
     result.functionCall = functionCall == null ? null : functionCall.copy();
     result.modifier = modifier == null ? null : modifier.copy();
+    result.alias = alias == null ? null : alias.copy();
     result.resultSet = resultSet == null ? null : resultSet.copy();
 
     return result;
@@ -213,7 +224,9 @@ public class FromItem extends SimpleNode {
       return false;
     if (!Objects.equals(resultSet, oFromItem.resultSet))
       return false;
-    return Objects.equals(modifier, oFromItem.modifier);
+    if (!Objects.equals(modifier, oFromItem.modifier))
+      return false;
+    return Objects.equals(alias, oFromItem.alias);
   }
 
   @Override
@@ -230,6 +243,7 @@ public class FromItem extends SimpleNode {
     result = 31 * result + (functionCall != null ? functionCall.hashCode() : 0);
     result = 31 * result + (resultSet != null ? resultSet.hashCode() : 0);
     result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
+    result = 31 * result + (alias != null ? alias.hashCode() : 0);
     return result;
   }
 
@@ -271,6 +285,10 @@ public class FromItem extends SimpleNode {
 
   public void setModifier(final Modifier modifier) {
     this.modifier = modifier;
+  }
+
+  public void setAlias(final Identifier alias) {
+    this.alias = alias;
   }
 
   public void setInputParams(final List<InputParameter> inputParams) {
@@ -322,5 +340,52 @@ public class FromItem extends SimpleNode {
         setValue(r.toMap());
     }
   }
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (rids != null) {
+      json.put("rids", rids);
+    }
+    if (inputParams != null) {
+      json.put("inputParams", inputParams);
+    }
+    if (resultSet != null) {
+      json.put("resultSet", resultSet.toString());
+    }
+    if (bucket != null) {
+      json.put("bucket", bucket.toString());
+    }
+    if (bucketList != null) {
+      json.put("bucketList", bucketList.toString());
+    }
+    if (index != null) {
+      json.put("index", index.toString());
+    }
+    if (schema != null) {
+      json.put("schema", schema.toString());
+    }
+    if (statement != null) {
+      json.put("statement", statement.toJSON());
+    }
+    if (inputParam != null) {
+      json.put("inputParam", inputParam.toString());
+    }
+    if (identifier != null) {
+      json.put("identifier", identifier.toJSON());
+    }
+    if (functionCall != null) {
+      json.put("functionCall", functionCall.toString());
+    }
+    if (modifier != null) {
+      json.put("modifier", modifier.toString());
+    }
+    if (alias != null) {
+      json.put("alias", alias.toJSON());
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=f64e3b4d2a2627a1b5d04a7dcb95fa94 (do not edit this line) */

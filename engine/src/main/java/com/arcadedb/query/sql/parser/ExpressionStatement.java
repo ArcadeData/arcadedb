@@ -11,7 +11,7 @@ import java.util.*;
 
 public class ExpressionStatement extends SimpleExecStatement {
 
-  protected Expression expression;
+  public Expression expression;
 
   public ExpressionStatement(int id) {
     super(id);

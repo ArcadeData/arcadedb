@@ -39,7 +39,7 @@ public class CreatePropertyStatement extends DDLStatement {
   public Identifier                             propertyType;
   public Identifier                             ofType;
   public List<CreatePropertyAttributeStatement> attributes = new ArrayList<CreatePropertyAttributeStatement>();
-  boolean ifNotExists = false;
+  public boolean ifNotExists = false;
 
   public CreatePropertyStatement(final int id) {
     super(id);

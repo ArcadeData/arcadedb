@@ -609,6 +609,21 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public Object getGlobalVariable(final String name) {
+    return wrapped.getGlobalVariable(name);
+  }
+
+  @Override
+  public Object setGlobalVariable(final String name, final Object value) {
+    return wrapped.setGlobalVariable(name, value);
+  }
+
+  @Override
+  public Map<String, Object> getGlobalVariables() {
+    return wrapped.getGlobalVariables();
+  }
+
+  @Override
   public long getLastUpdatedOn() {
     return wrapped.getLastUpdatedOn();
   }

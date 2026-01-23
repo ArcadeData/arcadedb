@@ -43,15 +43,15 @@ import java.util.stream.Collectors;
 
 public class CreateIndexStatement extends DDLStatement {
 
-  protected Identifier                         name;
-  protected Identifier                         typeName;
-  protected List<Property>                     propertyList = new ArrayList<Property>();
-  protected Identifier                         type;
-  protected boolean                            ifNotExists  = false;
-  protected Identifier                         engine;
-  protected Json                               metadata;
-  protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
-  protected List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
+  public Identifier                         name;
+  public Identifier                         typeName;
+  public List<Property>                     propertyList = new ArrayList<Property>();
+  public Identifier                         type;
+  public boolean                            ifNotExists  = false;
+  public Identifier                         engine;
+  public Json                               metadata;
+  public LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
+  public List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
 
   public CreateIndexStatement(final int id) {
     super(id);
@@ -274,12 +274,12 @@ public class CreateIndexStatement extends DDLStatement {
   }
 
   public static class Property {
-    protected Identifier      name;
-    protected RecordAttribute recordAttribute;
-    protected boolean         byKey   = false;
-    protected boolean         byValue = false;
-    protected boolean         byItem  = false;
-    protected Identifier      collate;
+    public Identifier      name;
+    public RecordAttribute recordAttribute;
+    public boolean         byKey   = false;
+    public boolean         byValue = false;
+    public boolean         byItem  = false;
+    public Identifier      collate;
 
     public Property copy() {
       final Property result = new Property();

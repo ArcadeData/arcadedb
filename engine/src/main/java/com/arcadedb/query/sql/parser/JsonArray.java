@@ -37,5 +37,16 @@ public class JsonArray extends SimpleNode {
     return new Object[] { items };
   }
 
+  @Override
+  public Map<String, Object> toJSON() {
+    final Map<String, Object> json = super.toJSON();
+
+    if (items != null) {
+      json.put("items", items);
+    }
+
+    return json;
+  }
+
 }
 /* JavaCC - OriginalChecksum=beafb9a5a435d346cad52bf835b7a2df (do not edit this line) */
