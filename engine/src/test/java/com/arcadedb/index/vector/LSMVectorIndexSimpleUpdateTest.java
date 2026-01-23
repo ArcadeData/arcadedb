@@ -61,21 +61,21 @@ class LSMVectorIndexSimpleUpdateTest extends TestHelper {
     });
 
     // Insert record with zero embedding
-    System.out.println("Inserting record with zero embedding...");
+    //System.out.println("Inserting record with zero embedding...");
     float[] zeroEmbedding = new float[EMBEDDING_DIM];
     database.transaction(() -> {
       database.command("sql", "INSERT INTO ContentV SET id=?, embedding=?", "content-1", zeroEmbedding);
     });
 
     // Update with real embedding
-    System.out.println("Updating with real embedding...");
+    //System.out.println("Updating with real embedding...");
     float[] realEmbedding = generateRandomEmbedding(random, EMBEDDING_DIM);
     database.transaction(() -> {
       database.command("sql", "UPDATE ContentV SET embedding=? WHERE id=?", realEmbedding, "content-1");
     });
 
     // Verify before close
-    System.out.println("Verifying before close...");
+    //System.out.println("Verifying before close...");
     database.transaction(() -> {
       try (ResultSet rs = database.query("sql", "SELECT embedding FROM ContentV WHERE id=?", "content-1")) {
         assertThat(rs.hasNext()).isTrue();
@@ -86,23 +86,23 @@ class LSMVectorIndexSimpleUpdateTest extends TestHelper {
     }, true);
 
     // Close and reopen
-    System.out.println("Closing and reopening database...");
+    //System.out.println("Closing and reopening database...");
     String dbPath = database.getDatabasePath();
     database.close();
 
     DatabaseFactory factory = new DatabaseFactory(dbPath);
     database = factory.open();
-    System.out.println("Database reopened");
+    //System.out.println("Database reopened");
 
     // Check index state after reopen
     TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ContentV[embedding]");
     assertThat(typeIndex).as("Index should exist after reopen").isNotNull();
 
     long indexEntries = typeIndex.countEntries();
-    System.out.println("Index entry count after reopen: " + indexEntries);
+    //System.out.println("Index entry count after reopen: " + indexEntries);
 
     // Verify record can still be read
-    System.out.println("Verifying record after reopen...");
+    //System.out.println("Verifying record after reopen...");
     database.transaction(() -> {
       try (ResultSet rs = database.query("sql", "SELECT embedding FROM ContentV WHERE id=?", "content-1")) {
         assertThat(rs.hasNext()).as("Record should exist after reopen").isTrue();
@@ -113,15 +113,15 @@ class LSMVectorIndexSimpleUpdateTest extends TestHelper {
     }, true);
 
     // Attempt vector search after reopen
-    System.out.println("Attempting vector search after reopen...");
+    //System.out.println("Attempting vector search after reopen...");
     float[] queryVector = generateRandomEmbedding(new Random(99), EMBEDDING_DIM);
 
     LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
     List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, 10);
-    System.out.println("Found " + neighbors.size() + " neighbors after reopen");
+    //System.out.println("Found " + neighbors.size() + " neighbors after reopen");
     assertThat(neighbors).as("Should find at least 1 neighbor after reopen").isNotEmpty();
 
-    System.out.println("TEST PASSED");
+    //System.out.println("TEST PASSED");
   }
 
   private float[] generateRandomEmbedding(Random random, int dimensions) {

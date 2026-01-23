@@ -71,8 +71,8 @@ public class Issue1062Test extends TestHelper {
       assertThat(plan).isNotNull();
 
       String planString = plan.prettyPrint(0, 2);
-      System.out.println("Execution plan for issue #1062:");
-      System.out.println(planString);
+      //System.out.println("Execution plan for issue #1062:");
+      //System.out.println(planString);
 
       // The plan should mention "FETCH FROM INDEX" to confirm index usage
       assertThat(planString.toLowerCase()).contains("fetch from index");
