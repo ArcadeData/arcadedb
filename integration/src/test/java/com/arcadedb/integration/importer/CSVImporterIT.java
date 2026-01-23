@@ -220,4 +220,125 @@ class CSVImporterIT {
     TestHelper.checkActiveDatabases();
   }
 
+  /**
+   * Regression test for GitHub issue #2267: CSV importer bug with separate vertex type imports
+   * When vertices of different types are imported in separate IMPORT commands, and then edges
+   * are imported in another separate IMPORT command, the edges get skipped because the
+   * GraphImporter's in-memory vertex index is empty (it was closed after the vertex imports).
+   *
+   * This test reproduces the exact scenario from the issue:
+   * 1. Import Tenant vertices (IDs 0-9)
+   * 2. Import Supervisor vertices (IDs 10-19) in a separate command
+   * 3. Import edges connecting them in yet another separate command
+   *
+   * Expected: All edges should be created by querying the database for vertices
+   * Actual (before fix): All edges are skipped because vertices are not in the in-memory index
+   */
+  @Test
+  void testRegression_Issue2267_SeparateVertexTypeImports() throws Exception {
+    final String databasePath = "target/databases/test-import-separate-types";
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      // Create schema
+      db.command("sql", "CREATE VERTEX TYPE Tenant");
+      db.command("sql", "CREATE VERTEX TYPE Supervisor");
+      db.command("sql", "CREATE EDGE TYPE Belongs");
+      db.command("sql", "CREATE PROPERTY Tenant.id LONG");
+      db.command("sql", "CREATE PROPERTY Tenant.name STRING");
+      db.command("sql", "CREATE PROPERTY Supervisor.id LONG");
+      db.command("sql", "CREATE PROPERTY Supervisor.name STRING");
+      db.command("sql", "CREATE INDEX ON Tenant (id) UNIQUE");
+      db.command("sql", "CREATE INDEX ON Supervisor (id) UNIQUE");
+
+      // Create test CSV files
+      final java.io.File tempDir = new java.io.File("target/test-csv-issue2267");
+      tempDir.mkdirs();
+
+      // Create tenants.csv
+      final java.io.File tenantsFile = new java.io.File(tempDir, "tenants.csv");
+      java.nio.file.Files.writeString(tenantsFile.toPath(), """
+          @class,id,name
+          Tenant,0,Tenant-1
+          Tenant,1,Tenant-2
+          Tenant,2,Tenant-3
+          Tenant,3,Tenant-4
+          Tenant,4,Tenant-5
+          Tenant,5,Tenant-6
+          """);
+
+      // Create supervisors.csv
+      final java.io.File supervisorsFile = new java.io.File(tempDir, "supervisors.csv");
+      java.nio.file.Files.writeString(supervisorsFile.toPath(), """
+          @class,id,name
+          Supervisor,10,Supervisor-1
+          Supervisor,11,Supervisor-2
+          Supervisor,12,Supervisor-3
+          Supervisor,13,Supervisor-4
+          Supervisor,14,Supervisor-5
+          Supervisor,15,Supervisor-6
+          """);
+
+      // Create edges.csv (Tenant -> Supervisor)
+      final java.io.File edgesFile = new java.io.File(tempDir, "edges.csv");
+      java.nio.file.Files.writeString(edgesFile.toPath(), """
+          Tenant,Supervisor
+          0,10
+          1,11
+          2,12
+          3,13
+          4,14
+          5,15
+          """);
+
+      // Create empty.csv (required for the import command syntax)
+      final java.io.File emptyFile = new java.io.File(tempDir, "empty.csv");
+      java.nio.file.Files.writeString(emptyFile.toPath(), "");
+
+      // Import Tenants in first command
+      db.command("sql", String.format("""
+          IMPORT DATABASE file://%s WITH vertices="file://%s", vertexType=Tenant, verticesFileType=csv, typeIdProperty=id, typeIdType=Long, typeIdPropertyIsUnique=true
+          """, emptyFile.getAbsolutePath(), tenantsFile.getAbsolutePath()));
+
+      assertThat(db.countType("Tenant", true)).isEqualTo(6);
+
+      // Import Supervisors in second command (separate GraphImporter instance)
+      db.command("sql", String.format("""
+          IMPORT DATABASE file://%s WITH vertices="file://%s", vertexType=Supervisor, verticesFileType=csv, typeIdProperty=id, typeIdType=Long, typeIdPropertyIsUnique=true
+          """, emptyFile.getAbsolutePath(), supervisorsFile.getAbsolutePath()));
+
+      assertThat(db.countType("Supervisor", true)).isEqualTo(6);
+
+      // Import edges in third command (YET ANOTHER separate GraphImporter instance with empty vertex index)
+      // THIS IS WHERE THE BUG OCCURS - edges are skipped because the vertices are not in the in-memory index
+      db.command("sql", String.format("""
+          IMPORT DATABASE file://%s WITH edges="file://%s", edgesFileType=csv, edgeType=Belongs, edgeFromField=Tenant, edgeToField=Supervisor, typeIdProperty=id, typeIdType=Long
+          """, emptyFile.getAbsolutePath(), edgesFile.getAbsolutePath()));
+
+      // Verify edges were created (this will fail before the fix)
+      assertThat(db.countType("Belongs", true))
+          .as("All 6 edges should be imported even though vertices are not in the in-memory index")
+          .isEqualTo(6);
+
+      // Verify specific edge connections
+      var tenant0 = db.lookupByKey("Tenant", "id", 0L).next().getRecord().asVertex();
+      assertThat(tenant0.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Belongs"))
+          .as("Tenant 0 should have 1 outgoing Belongs edge to Supervisor 10")
+          .isEqualTo(1);
+
+      var supervisor10 = db.lookupByKey("Supervisor", "id", 10L).next().getRecord().asVertex();
+      assertThat(supervisor10.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Belongs"))
+          .as("Supervisor 10 should have 1 incoming Belongs edge from Tenant 0")
+          .isEqualTo(1);
+
+    } finally {
+      db.drop();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
 }

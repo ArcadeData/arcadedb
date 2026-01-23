@@ -393,4 +393,49 @@ public class SQLScriptTest extends TestHelper {
       assertThat(res.hasProperty("results")).isTrue();
     });
   }
+
+  @Test
+  void testUninitializedVariables() {
+    // Test case for issue #1939: https://github.com/ArcadeData/arcadedb/issues/1939
+    // Uninitialized variables should evaluate to null, not to their symbol name as a string
+    //
+    // Before the fix:
+    // - CONSOLE.log $abc would output "$abc" (the string)
+    // - LET $test = $abc would set $test to "$abc" (the string)
+    // - CONSOLE.log $test would output "$test" (the string)
+    //
+    // After the fix:
+    // - CONSOLE.log $abc should output "null"
+    // - LET $test = $abc should set $test to null
+    // - CONSOLE.log $test should output "null"
+
+    // Test 1: Direct console.log of uninitialized variable should output "null", not "$abc"
+    ResultSet result = database.command("SQLScript", "CONSOLE.log $abc");
+    assertThat(result.hasNext()).isTrue();
+    Result consoleResult = result.next();
+    Object message = consoleResult.getProperty("message");
+    assertThat(message).isEqualTo("null");
+
+    // Test 2: Assignment of uninitialized variable to another variable should assign null
+    String script = """
+        LET $test = $abc;
+        RETURN $test;
+        """;
+    result = database.command("SQLScript", script);
+    assertThat(result.hasNext()).isTrue();
+    Result returnResult = result.next();
+    Object value = returnResult.getProperty("value");
+    assertThat(value).isNull();
+
+    // Test 3: LET with uninitialized variable should set to null, then log "null"
+    script = """
+        LET $test = $abc;
+        CONSOLE.log $test;
+        """;
+    result = database.command("SQLScript", script);
+    assertThat(result.hasNext()).isTrue();
+    consoleResult = result.next();
+    message = consoleResult.getProperty("message");
+    assertThat(message).isEqualTo("null");
+  }
 }

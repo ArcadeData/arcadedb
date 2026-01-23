@@ -79,7 +79,8 @@ public class SuffixIdentifier extends SimpleNode {
       if (currentRecord != null)
         return ((Document) currentRecord.getRecord()).get(varName);
 
-      return varName;
+      // Return null instead of the variable name for uninitialized variables (issue #1939)
+      return null;
     }
     if (recordAttribute != null) {
       if (RID_PROPERTY.equalsIgnoreCase(recordAttribute.name))

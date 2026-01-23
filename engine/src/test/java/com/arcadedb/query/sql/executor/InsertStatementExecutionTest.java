@@ -611,4 +611,70 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     assertThat(i).isEqualTo(3);
   }
+
+  @Test
+  void insertIntoBucketFromSubquery() {
+    // Test case for issue #1961: INSERT INTO BUCKET FROM (subquery) silently fails
+    database.command("sql", "CREATE DOCUMENT TYPE src");
+    database.command("sql", "INSERT INTO src SET name = 'Hi'");
+
+    database.command("sql", "CREATE DOCUMENT TYPE doc BUCKET doc");
+
+    // This should insert the record into the bucket
+    ResultSet result = database.command("sql", "INSERT INTO BUCKET:doc FROM (SELECT name FROM src)");
+
+    // Should return 1 inserted record
+    assertThat(result.hasNext()).isTrue();
+    Result item = result.next();
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("name")).isEqualTo("Hi");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    // Verify the record was actually inserted into the bucket
+    result = database.query("sql", "SELECT FROM BUCKET:doc");
+    assertThat(result.hasNext()).isTrue();
+    item = result.next();
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("name")).isEqualTo("Hi");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void insertIntoBucketFromSubqueryWithMultipleBuckets() {
+    // Test case for issue #1961 scenario 3: INSERT INTO BUCKET:doc FROM (SELECT name FROM BUCKET:src)
+    // where doc type has multiple buckets
+    database.command("sql", "CREATE DOCUMENT TYPE doc BUCKET doc, src");
+    database.command("sql", "INSERT INTO BUCKET:src SET name = 'Hi'");
+
+    // This should insert the record from src bucket into doc bucket
+    ResultSet result = database.command("sql", "INSERT INTO BUCKET:doc FROM (SELECT name FROM BUCKET:src)");
+
+    // Should return 1 inserted record
+    assertThat(result.hasNext()).isTrue();
+    Result item = result.next();
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("name")).isEqualTo("Hi");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    // Verify the record was actually inserted into the doc bucket
+    result = database.query("sql", "SELECT FROM BUCKET:doc");
+    assertThat(result.hasNext()).isTrue();
+    item = result.next();
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("name")).isEqualTo("Hi");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    // Verify the source record still exists in src bucket
+    result = database.query("sql", "SELECT FROM BUCKET:src");
+    assertThat(result.hasNext()).isTrue();
+    item = result.next();
+    assertThat(item).isNotNull();
+    assertThat(item.<String>getProperty("name")).isEqualTo("Hi");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
 }
