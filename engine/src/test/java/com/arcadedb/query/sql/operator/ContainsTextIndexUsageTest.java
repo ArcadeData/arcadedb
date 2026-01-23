@@ -61,8 +61,8 @@ public class ContainsTextIndexUsageTest extends TestHelper {
 
       // Check if the execution plan mentions index usage
       String planString = plan.prettyPrint(0, 2);
-      System.out.println("Execution plan for CONTAINSTEXT with full-text index:");
-      System.out.println(planString);
+      //System.out.println("Execution plan for CONTAINSTEXT with full-text index:");
+      //System.out.println(planString);
 
       // The plan should use FetchFromIndexStep or similar, not scan all buckets
       // After fixing issue #1062, CONTAINSTEXT should use the full-text index
@@ -105,8 +105,8 @@ public class ContainsTextIndexUsageTest extends TestHelper {
       assertThat(plan).isNotNull();
 
       String planString = plan.toString();
-      System.out.println("\nExecution plan for CONTAINSTEXT without index:");
-      System.out.println(planString);
+      //System.out.println("\nExecution plan for CONTAINSTEXT without index:");
+      //System.out.println(planString);
     });
   }
 }
