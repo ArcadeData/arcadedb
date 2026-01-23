@@ -164,14 +164,18 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
           final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
           for (final Edge e : vEdgesOut) {
-            if (includedVertices.contains(e.getIn()) && !includedEdges.contains(e.getIdentity()))
+            if (includedVertices.contains(e.getIn()) && !includedEdges.contains(e.getIdentity())) {
               edges.put(serializerImpl.serializeGraphElement(e));
+              includedEdges.add(e.getIdentity());
+            }
           }
 
           final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
           for (final Edge e : vEdgesIn) {
-            if (includedVertices.contains(e.getOut()) && !includedEdges.contains(e.getIdentity()))
+            if (includedVertices.contains(e.getOut()) && !includedEdges.contains(e.getIdentity())) {
               edges.put(serializerImpl.serializeGraphElement(e));
+              includedEdges.add(e.getIdentity());
+            }
           }
         } catch (RecordNotFoundException e) {
           LogManager.instance().log(this, Level.SEVERE, "Vertex %s not found during serialization", e.getRID());

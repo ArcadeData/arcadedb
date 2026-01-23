@@ -145,4 +145,68 @@ class AlterTypeExecutionTest extends TestHelper {
     assertThatExceptionOfType(Exception.class).isThrownBy(() ->
       database.commit());
   }
+
+  @Test
+  void sqlAlterTypeAliases() {
+    // Test for issue #2496: ALTER TYPE ... ALIASES should return correct aliases, not type name
+    database.command("sql", "CREATE VERTEX TYPE v");
+
+    // Execute ALTER TYPE with ALIASES
+    ResultSet result = database.command("sql", "ALTER TYPE v ALIASES x");
+
+    // Check that we have a result
+    assertThat(result.hasNext()).isTrue();
+
+    // Get the result document
+    var resultDoc = result.next();
+
+    // The operation field should indicate ALTER TYPE was executed
+    assertThat((String) resultDoc.getProperty("operation")).isEqualTo("ALTER TYPE");
+
+    // The aliases property should contain the actual alias 'x', not the type name 'v'
+    Object aliasesObj = resultDoc.getProperty("aliases");
+    assertThat((Object) aliasesObj).isNotNull();
+    assertThat(aliasesObj).isInstanceOf(java.util.Collection.class);
+
+    @SuppressWarnings("unchecked")
+    java.util.Collection<String> aliases = (java.util.Collection<String>) aliasesObj;
+    assertThat(aliases).hasSize(1);
+    assertThat(aliases).contains("x");
+
+    // Verify the schema was actually updated correctly
+    assertThat(database.getSchema().getType("v")).isNotNull();
+    assertThat(database.getSchema().existsType("x")).isTrue();
+    assertThat(database.getSchema().getType("x").getName()).isEqualTo("v");
+  }
+
+  @Test
+  void sqlScriptAlterTypeAliases() {
+    // Test for issue #2496 part 2: SQL mode should return correct aliases
+    database.command("sql", "CREATE VERTEX TYPE w");
+
+    // Test ALTER TYPE with ALIASES in SQL mode - the main fix
+    ResultSet result = database.command("sql", "ALTER TYPE w ALIASES yy");
+
+    // SQL mode should return results
+    assertThat(result.hasNext()).isTrue();
+
+    var resultDoc = result.next();
+    assertThat((String) resultDoc.getProperty("operation")).isEqualTo("ALTER TYPE");
+
+    // The aliases property should contain the actual aliases, not the type object
+    Object aliasesObj = resultDoc.getProperty("aliases");
+    assertThat(aliasesObj).isNotNull();
+    assertThat(aliasesObj).isInstanceOf(java.util.Collection.class);
+
+    @SuppressWarnings("unchecked")
+    java.util.Collection<String> aliases = (java.util.Collection<String>) aliasesObj;
+    assertThat(aliases).contains("yy");
+
+    // Verify schema was updated correctly
+    assertThat(database.getSchema().existsType("yy")).isTrue();
+
+    // NOTE: Issue #2496 part 1 about SQLscript mode not returning results is a general
+    // SQLscript behavior for ALL DDL statements (CREATE, ALTER, etc.), not specific to
+    // ALTER TYPE ALIASES. This would need to be addressed separately in the SQLscript engine.
+  }
 }

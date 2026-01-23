@@ -959,7 +959,33 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     for (int i = 0; i < keys.size() && i < values.size(); i++) {
       final String key = keys.get(i).getText();
-      final Object value = evaluateExpression(values.get(i));
+      // Parse as Expression
+      final Expression expr = expressionBuilder.parseExpression(values.get(i));
+
+      // For literal expressions, extract the value immediately for backward compatibility
+      // For dynamic expressions (property access, variables, etc.), keep as Expression for runtime evaluation
+      final Object value;
+      if (expr instanceof LiteralExpression) {
+        Object literalValue = ((LiteralExpression) expr).getValue();
+        // Convert Long to Integer for backward compatibility with tests
+        if (literalValue instanceof Long) {
+          final long longValue = (Long) literalValue;
+          if (longValue >= Integer.MIN_VALUE && longValue <= Integer.MAX_VALUE)
+            literalValue = (int) longValue;
+        }
+        value = literalValue;
+      } else if (expr instanceof ParameterExpression) {
+        // Convert to ParameterReference for backward compatibility
+        final ParameterExpression paramExpr = (ParameterExpression) expr;
+        value = new ParameterReference(paramExpr.getParameterName());
+      } else if (expr instanceof ListExpression) {
+        // Evaluate list literals immediately
+        value = expr.evaluate(null, null);
+      } else {
+        // Keep dynamic expressions as Expression objects for runtime evaluation
+        value = expr;
+      }
+
       map.put(key, value);
     }
 

@@ -492,9 +492,13 @@ public class MergeStep extends AbstractExecutionStep {
       final String key = entry.getKey();
       Object value = entry.getValue();
 
-      // If the value looks like a property access (e.g., "BatchEntry.subtype"),
+      // If the value is an Expression object, evaluate it in the current result context
+      if (value instanceof Expression) {
+        value = evaluator.evaluate((Expression) value, result, context);
+      }
+      // Legacy support: If the value looks like a property access (e.g., "BatchEntry.subtype"),
       // try to evaluate it against the current result context
-      if (value instanceof String) {
+      else if (value instanceof String) {
         final String strValue = (String) value;
 
         // Check if it's a property access pattern: variable.property
