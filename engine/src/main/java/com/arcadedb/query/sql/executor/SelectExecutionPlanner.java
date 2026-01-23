@@ -138,8 +138,19 @@ public class SelectExecutionPlanner {
     final long planningStart = System.currentTimeMillis();
 
     init(context);
-    final SelectExecutionPlan selectExecutionPlan = new SelectExecutionPlan(context,
-        statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+
+    // Try to get the limit value for the execution plan
+    // If it depends on runtime context (e.g., LET variables), use 0 for now
+    int limitValue = 0;
+    try {
+      if (statement.getLimit() != null)
+        limitValue = statement.getLimit().getValue(context);
+    } catch (final Exception e) {
+      // Limit value depends on runtime context, use 0 for now
+      limitValue = 0;
+    }
+
+    final SelectExecutionPlan selectExecutionPlan = new SelectExecutionPlan(context, limitValue);
 
     if (info.expand && info.distinct)
       throw new CommandExecutionException("Cannot execute a statement with DISTINCT expand(), please use a subquery");
@@ -153,8 +164,18 @@ public class SelectExecutionPlanner {
 
     info.buckets = calculateTargetBuckets(info, context);
 
-    info.fetchExecutionPlan = new SelectExecutionPlan(context,
-        statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+    // Try to get the limit value for the fetch execution plan
+    // If it depends on runtime context (e.g., LET variables), use 0 for now
+    int fetchLimitValue = 0;
+    try {
+      if (statement.getLimit() != null)
+        fetchLimitValue = statement.getLimit().getValue(context);
+    } catch (final Exception e) {
+      // Limit value depends on runtime context, use 0 for now
+      fetchLimitValue = 0;
+    }
+
+    info.fetchExecutionPlan = new SelectExecutionPlan(context, fetchLimitValue);
 
     handleFetchFromTarget(selectExecutionPlan, info, context);
 
@@ -412,9 +433,15 @@ public class SelectExecutionPlanner {
       if (info.aggregateProjection != null) {
         long aggregationLimit = -1;
         if (info.orderBy == null && info.limit != null) {
-          aggregationLimit = info.limit.getValue(context);
-          if (info.skip != null && info.skip.getValue(context) > 0) {
-            aggregationLimit += info.skip.getValue(context);
+          try {
+            aggregationLimit = info.limit.getValue(context);
+            if (info.skip != null && info.skip.getValue(context) > 0) {
+              aggregationLimit += info.skip.getValue(context);
+            }
+          } catch (final Exception e) {
+            // Limit/skip value depends on runtime context (e.g., LET variables), use -1 for now
+            // The actual LIMIT/SKIP steps will handle it at execution time
+            aggregationLimit = -1;
           }
         }
 
@@ -1404,11 +1431,22 @@ public class SelectExecutionPlanner {
   }
 
   public static void handleOrderBy(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext context) {
-    final int skipSize = info.skip == null ? 0 : info.skip.getValue(context);
-    if (skipSize < 0)
-      throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
+    int skipSize = 0;
+    int limitSize = -1;
 
-    final int limitSize = info.limit == null ? -1 : info.limit.getValue(context);
+    try {
+      skipSize = info.skip == null ? 0 : info.skip.getValue(context);
+      if (skipSize < 0)
+        throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
+
+      limitSize = info.limit == null ? -1 : info.limit.getValue(context);
+    } catch (final Exception e) {
+      // Limit/skip value depends on runtime context (e.g., LET variables)
+      // Use default values for planning, actual values will be used at execution time
+      skipSize = 0;
+      limitSize = -1;
+    }
+
     Integer maxResults = null;
     if (limitSize >= 0)
       maxResults = skipSize + limitSize;

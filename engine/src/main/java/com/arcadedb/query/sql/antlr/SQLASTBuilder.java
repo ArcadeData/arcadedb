@@ -3784,6 +3784,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         limit.num = (PInteger) baseExpr.number;
       } else if (baseExpr.inputParam != null) {
         limit.inputParam = baseExpr.inputParam;
+      } else {
+        // For other base expressions (like identifiers from LET variables), store the expression
+        limit.expression = expr;
       }
     } else {
       // Handle other expressions like -1 (negative numbers)
@@ -3792,9 +3795,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Object value = expr.execute((com.arcadedb.query.sql.executor.Result) null, null);
         if (value instanceof Number number) {
           limit.setValue(number.intValue());
+        } else {
+          // Can't evaluate as constant, store expression for runtime evaluation
+          limit.expression = expr;
         }
       } catch (final Exception ignored) {
-        // Expression needs runtime context, leave limit empty for now
+        // Expression needs runtime context, store expression for runtime evaluation
+        limit.expression = expr;
       }
     }
 
@@ -3818,6 +3825,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           skip.num = (PInteger) baseExpr.number;
         } else if (baseExpr.inputParam != null) {
           skip.inputParam = baseExpr.inputParam;
+        } else {
+          // For other base expressions (like identifiers from LET variables), store the expression
+          skip.expression = expr;
         }
       } else {
         // Handle other expressions like negative numbers
@@ -3825,9 +3835,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final Object value = expr.execute((com.arcadedb.query.sql.executor.Result) null, null);
           if (value instanceof Number number) {
             skip.num = new PInteger(-1).setValue(number.intValue());
+          } else {
+            // Can't evaluate as constant, store expression for runtime evaluation
+            skip.expression = expr;
           }
         } catch (final Exception ignored) {
-          // Expression needs runtime context, leave skip empty for now
+          // Expression needs runtime context, store expression for runtime evaluation
+          skip.expression = expr;
         }
       }
     } catch (final Exception e) {
