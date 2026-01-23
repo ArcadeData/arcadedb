@@ -20,8 +20,11 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -105,6 +108,83 @@ class XMLImporterIT {
       final Vertex record = db.iterateType("v_record", true).next().asVertex();
       // The datafield element name becomes a property key, subfield content becomes value
       assertThat(record.has("datafield")).isTrue();
+    }
+
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * Test for issue #2758: XMLImporterFormat should respect EntityType parameter.
+   * When using -documents parameter, the importer should create documents, not vertices.
+   * Type names are derived from XML tags (e.g., <book> becomes "book" for documents).
+   */
+  @Test
+  void importXMLAsDocuments() throws Exception {
+    final String databasePath = "target/databases/test-import-xml-documents";
+
+    // Import XML as documents using -documents parameter
+    Importer importer = new Importer(
+        ("-documents file://src/test/resources/importer-simple.xml -database " + databasePath
+            + " -forceDatabaseCreate true -objectNestLevel 1").split(" "));
+    importer.load();
+
+    try (final Database db = new DatabaseFactory(databasePath).open()) {
+      // Should create document type named "book" (from <book> XML tag, no "v_" prefix)
+      assertThat(db.getSchema().existsType("book")).isTrue();
+
+      // Verify it's a DocumentType but NOT a VertexType
+      final DocumentType bookType = db.getSchema().getType("book");
+      assertThat(bookType).isInstanceOf(DocumentType.class);
+      assertThat(bookType).isNotInstanceOf(VertexType.class);
+
+      assertThat(db.countType("book", true)).isEqualTo(2);
+
+      // Verify we can iterate as documents
+      final Iterator<com.arcadedb.database.Record> iterator = db.iterateType("book", true);
+      assertThat(iterator.hasNext()).isTrue();
+
+      final Document doc = iterator.next().asDocument();
+      assertThat(doc.has("id")).isTrue();
+      assertThat(doc.has("isbn")).isTrue();
+      assertThat(doc.has("title")).isTrue();
+    }
+
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * Test for issue #2758: XMLImporterFormat should respect EntityType parameter.
+   * When using -vertices parameter, the importer should create vertices.
+   * Type names are derived from XML tags (e.g., <book> becomes "v_book" for vertices).
+   */
+  @Test
+  void importXMLAsVerticesWithExplicitType() throws Exception {
+    final String databasePath = "target/databases/test-import-xml-vertices-explicit";
+
+    // Import XML as vertices using -vertices parameter
+    Importer importer = new Importer(
+        ("-vertices file://src/test/resources/importer-simple.xml -database " + databasePath
+            + " -forceDatabaseCreate true -objectNestLevel 1").split(" "));
+    importer.load();
+
+    try (final Database db = new DatabaseFactory(databasePath).open()) {
+      // Should create vertex type named "v_book" (from <book> XML tag with "v_" prefix)
+      assertThat(db.getSchema().existsType("v_book")).isTrue();
+
+      // Verify it's a VertexType
+      final DocumentType vBookType = db.getSchema().getType("v_book");
+      assertThat(vBookType).isInstanceOf(VertexType.class);
+
+      assertThat(db.countType("v_book", true)).isEqualTo(2);
+
+      // Verify we can iterate as vertices
+      final Iterator<com.arcadedb.database.Record> iterator = db.iterateType("v_book", true);
+      assertThat(iterator.hasNext()).isTrue();
+
+      final Vertex vertex = iterator.next().asVertex();
+      assertThat(vertex.has("id")).isTrue();
+      assertThat(vertex.has("isbn")).isTrue();
+      assertThat(vertex.has("title")).isTrue();
     }
 
     TestHelper.checkActiveDatabases();
