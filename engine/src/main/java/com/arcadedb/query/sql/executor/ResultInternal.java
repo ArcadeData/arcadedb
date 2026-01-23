@@ -39,6 +39,7 @@ public class ResultInternal implements Result {
   protected Map<String, Object> temporaryContent;
   protected Map<String, Object> metadata;
   protected Document element;
+  protected float score = 0f;
 
   public ResultInternal() {
     // Memory optimization: Use smaller initial capacity to reduce memory footprint
@@ -109,6 +110,26 @@ public class ResultInternal implements Result {
     return temporaryContent == null ? Collections.emptySet() : temporaryContent.keySet();
   }
 
+  /**
+   * Gets the search score for this result.
+   * Used for full-text search relevance scoring.
+   *
+   * @return the score, or 0 if not set
+   */
+  public float getScore() {
+    return score;
+  }
+
+  /**
+   * Sets the search score for this result.
+   * Used for full-text search relevance scoring.
+   *
+   * @param score the relevance score
+   */
+  public void setScore(final float score) {
+    this.score = score;
+  }
+
   public ResultInternal setProperty(final String name, Object value) {
     if (value instanceof Optional optional)
       value = optional.orElse(null);
@@ -130,6 +151,10 @@ public class ResultInternal implements Result {
   }
 
   public <T> T getProperty(final String name) {
+    // Handle special $score variable for full-text search
+    if ("$score".equals(name))
+      return (T) Float.valueOf(score);
+
     T result;
     if (content != null && !content.isEmpty())
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
@@ -209,6 +234,11 @@ public class ResultInternal implements Result {
 
   public Set<String> getPropertyNames() {
     final Set<String> result = new LinkedHashSet<>();
+
+    // Include $score in property names if score is set
+    if (score > 0)
+      result.add("$score");
+
     if (element != null)
       result.addAll(element.getPropertyNames());
 
@@ -218,6 +248,10 @@ public class ResultInternal implements Result {
   }
 
   public boolean hasProperty(final String propName) {
+    // $score is always available as a special property
+    if ("$score".equals(propName))
+      return true;
+
     if (element != null && element.has(propName))
       return true;
 
