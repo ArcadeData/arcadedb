@@ -82,12 +82,12 @@ public class XMLImporterFormat implements FormatImporter {
 
             // CLEAR THE MAP FOR THE NEW RECORD
             object.clear();
+            lastName = null;
+            lastContent = null;
 
             // GET ELEMENT'S ATTRIBUTES AS PROPERTIES
-            for (int i = 0; i < xmlReader.getAttributeCount(); ++i) {
+            for (int i = 0; i < xmlReader.getAttributeCount(); ++i)
               object.put(xmlReader.getAttributeName(i).getLocalPart(), xmlReader.getAttributeValue(i));
-              lastName = null;
-            }
           } else if (nestLevel == objectNestLevel + 1) {
             // GET ELEMENT'S SUB-NODES AS PROPERTIES
             if (lastName != null)
