@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -130,6 +131,19 @@ public class RebuildIndexStatement extends DDLStatement {
     if (!idx.isAutomatic())
       throw new CommandExecutionException(
           "Cannot rebuild index '" + idx.getName() + "' because it's manual and there aren't indications of what to index");
+
+    // Check if we're running in an async context (e.g., via HTTP API with awaitResponse=false).
+    // Index rebuild requires scheduling blocking tasks on all async threads, which will deadlock
+    // if we're already running on one of those threads. In this case, throw NeedRetryException
+    // to allow the operation to be retried in a non-async context.
+    // See: https://github.com/ArcadeData/arcadedb/issues/2097
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(
+        ((DatabaseInternal) database).getDatabasePath());
+    if (context != null && context.asyncMode) {
+      throw new NeedRetryException(
+          "Cannot rebuild index '" + idx.getName() + "' while running in asynchronous context. " +
+          "Use synchronous execution (awaitResponse=true) or run the command directly.");
+    }
 
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
