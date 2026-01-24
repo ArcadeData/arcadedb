@@ -692,6 +692,17 @@ Performance tests measuring trigger execution overhead on document creation with
 - **Monitor Impact**: Test performance with realistic data volumes
 - **Profile Your Workload**: Measure actual impact in your specific use case
 
+### Internal Optimizations
+
+ArcadeDB optimizes JavaScript trigger performance through engine pooling:
+
+- **Shared GraalVM Engine**: All JavaScript triggers share a single GraalVM Polyglot Engine instance across the entire database process, reducing memory overhead and initialization time
+- **Lightweight Contexts**: Each trigger creates a lightweight execution context that reuses the shared engine
+- **Lazy Initialization**: Engine and context creation is deferred until the trigger first executes
+- **Automatic Resource Management**: Contexts are properly closed when triggers are removed, while the shared engine persists for the lifetime of the database process
+
+This architecture ensures that creating multiple JavaScript triggers does not linearly increase memory consumption or initialization overhead.
+
 ### When to Use Each Type
 
 **Java Triggers** - Best for:

@@ -43,5 +43,5 @@ public interface TriggerExecutor {
   /**
    * Clean up any resources held by this executor (e.g., script engines).
    */
-  void cleanup();
+  void close();
 }

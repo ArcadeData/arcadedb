@@ -89,7 +89,7 @@ public class JavaClassTriggerExecutor implements TriggerExecutor {
   }
 
   @Override
-  public void cleanup() {
+  public void close() {
     // No resources to cleanup for Java executor
   }
 

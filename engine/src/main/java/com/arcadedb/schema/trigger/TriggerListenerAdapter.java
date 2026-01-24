@@ -58,7 +58,7 @@ public class TriggerListenerAdapter implements
 
   public void cleanup() {
     if (executor != null) {
-      executor.cleanup();
+      executor.close();
     }
   }
 
