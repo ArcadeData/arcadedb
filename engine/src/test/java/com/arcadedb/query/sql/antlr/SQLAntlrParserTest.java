@@ -22,6 +22,8 @@ import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -86,7 +88,7 @@ public class SQLAntlrParserTest {
     final SQLAntlrParser parser = new SQLAntlrParser(null);
 
     final String sql = "SELECT * FROM User; SELECT * FROM Product";
-    final java.util.List<Statement> statements = parser.parseScript(sql);
+    final List<Statement> statements = parser.parseScript(sql);
 
     assertNotNull(statements, "Statements list should not be null");
     assertEquals(2, statements.size(), "Should have 2 statements");

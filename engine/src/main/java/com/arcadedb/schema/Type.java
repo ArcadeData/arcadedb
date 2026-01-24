@@ -28,6 +28,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
@@ -594,7 +595,7 @@ public enum Type {
           for (final Object o : MultiValue.getMultiValueIterable(value)) {
             if (o instanceof Identifiable identifiable) {
               result.add(identifiable);
-            } else if (o instanceof com.arcadedb.query.sql.executor.Result resultObj && resultObj.isElement()) {
+            } else if (o instanceof Result resultObj && resultObj.isElement()) {
               // Extract the document from Result object
               result.add((Identifiable) resultObj.getElement().get());
             } else if (o instanceof String) {

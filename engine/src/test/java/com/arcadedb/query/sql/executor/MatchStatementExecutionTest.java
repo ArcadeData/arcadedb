@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
@@ -321,7 +322,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   void commonFriends() {
     // DIAGNOSTIC: Print all results to see what's being returned
     System.out.println("\n=== DIAGNOSTIC commonFriends ===");
-    System.out.println("Parser: " + database.getConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.SQL_PARSER_IMPLEMENTATION));
+    System.out.println("Parser: " + database.getConfiguration().getValueAsString(GlobalConfiguration.SQL_PARSER_IMPLEMENTATION));
 
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend)");
