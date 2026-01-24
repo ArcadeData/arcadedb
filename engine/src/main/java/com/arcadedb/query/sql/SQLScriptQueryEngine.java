@@ -28,6 +28,9 @@ import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.query.sql.parser.*;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -135,8 +138,8 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
       final String parserType = database.getConfiguration().getValueAsString(GlobalConfiguration.SQL_PARSER_IMPLEMENTATION);
       if ("javacc".equalsIgnoreCase(parserType)) {
         // Use legacy JavaCC-based SQL parser for scripts
-        final java.io.InputStream is = new java.io.ByteArrayInputStream(script.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        final com.arcadedb.query.sql.parser.SqlParser parser = new com.arcadedb.query.sql.parser.SqlParser(database, is);
+        final InputStream is = new ByteArrayInputStream(script.getBytes(StandardCharsets.UTF_8));
+        final SqlParser parser = new SqlParser(database, is);
         return parser.ParseScript();
       } else {
         // Use ANTLR4-based SQL parser for scripts (default)
@@ -145,7 +148,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
       }
     } catch (final CommandSQLParsingException e) {
       throw e.setCommand(script);
-    } catch (final com.arcadedb.query.sql.parser.ParseException e) {
+    } catch (final ParseException e) {
       throw new CommandSQLParsingException(e.getMessage(), e, script);
     }
   }

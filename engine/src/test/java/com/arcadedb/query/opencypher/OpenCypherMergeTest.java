@@ -26,6 +26,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -221,10 +223,10 @@ public class OpenCypherMergeTest {
         "MATCH (n:`select`) RETURN labels(n) as nodeLabels");
     assertThat(verify.hasNext()).isTrue();
     final Object labelsObj = verify.next().getProperty("nodeLabels");
-    assertThat(labelsObj).isInstanceOf(java.util.List.class);
+    assertThat(labelsObj).isInstanceOf(List.class);
 
     @SuppressWarnings("unchecked")
-    final java.util.List<String> labels = (java.util.List<String>) labelsObj;
+    final List<String> labels = (List<String>) labelsObj;
     assertThat(labels).hasSize(1);
     assertThat(labels.get(0)).isEqualTo("select");
     assertThat(labels.get(0)).doesNotContain("`");

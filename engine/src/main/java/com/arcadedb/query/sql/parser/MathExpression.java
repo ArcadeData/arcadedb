@@ -24,10 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.executor.AggregationContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.utility.DateUtils;
 
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -62,7 +59,7 @@ public class MathExpression extends SimpleNode {
   private static Object extractScalarFromResultSet(Object value) {
     if (value instanceof ResultSet resultSet) {
       // Check if we can extract a single scalar value
-      if (resultSet instanceof com.arcadedb.query.sql.executor.InternalResultSet internalResultSet) {
+      if (resultSet instanceof InternalResultSet internalResultSet) {
         // InternalResultSet has countEntries() to check size without consuming
         if (internalResultSet.countEntries() == 1) {
           internalResultSet.reset(); // Reset to beginning
@@ -1110,7 +1107,7 @@ public class MathExpression extends SimpleNode {
     final Map<String, Object> json = super.toJSON();
 
     if (childExpressions != null) {
-      final java.util.List<Object> childExpressionsJson = new java.util.ArrayList<>();
+      final List<Object> childExpressionsJson = new ArrayList<>();
       for (Object item : childExpressions) {
         if (item instanceof SimpleNode) {
           childExpressionsJson.add(((SimpleNode) item).toJSON());

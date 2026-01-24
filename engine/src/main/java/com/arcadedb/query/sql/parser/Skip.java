@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
 
@@ -60,7 +61,7 @@ public class Skip extends SimpleNode {
     }
 
     if (expression != null) {
-      final Object exprValue = expression.execute((com.arcadedb.query.sql.executor.Result) null, context);
+      final Object exprValue = expression.execute((Result) null, context);
       if (exprValue instanceof Number number)
         return number.intValue();
       else

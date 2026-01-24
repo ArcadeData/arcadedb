@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
@@ -215,7 +216,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // would create a Cartesian product of ALL vertices before filtering
     if (idFilter != null && !idFilter.isEmpty()) {
       try {
-        final com.arcadedb.database.RID rid = new com.arcadedb.database.RID(context.getDatabase(), idFilter);
+        final RID rid = new RID(context.getDatabase(), idFilter);
         final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
         if (vertex != null) {
           // Return single-element iterator for the matched vertex

@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -147,7 +148,7 @@ public class ArrayLiteralExpression extends MathExpression {
             result.items.add(expr);
           } else {
             // This shouldn't happen, but follow the same pattern as MathExpression
-            throw new com.arcadedb.exception.CommandExecutionException(
+            throw new CommandExecutionException(
                 "Cannot mix aggregate and single record attribute values in the same array projection");
           }
         } else {

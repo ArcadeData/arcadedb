@@ -25,6 +25,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collection;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -166,10 +167,10 @@ class AlterTypeExecutionTest extends TestHelper {
     // The aliases property should contain the actual alias 'x', not the type name 'v'
     Object aliasesObj = resultDoc.getProperty("aliases");
     assertThat((Object) aliasesObj).isNotNull();
-    assertThat(aliasesObj).isInstanceOf(java.util.Collection.class);
+    assertThat(aliasesObj).isInstanceOf(Collection.class);
 
     @SuppressWarnings("unchecked")
-    java.util.Collection<String> aliases = (java.util.Collection<String>) aliasesObj;
+    Collection<String> aliases = (Collection<String>) aliasesObj;
     assertThat(aliases).hasSize(1);
     assertThat(aliases).contains("x");
 
@@ -196,10 +197,10 @@ class AlterTypeExecutionTest extends TestHelper {
     // The aliases property should contain the actual aliases, not the type object
     Object aliasesObj = resultDoc.getProperty("aliases");
     assertThat(aliasesObj).isNotNull();
-    assertThat(aliasesObj).isInstanceOf(java.util.Collection.class);
+    assertThat(aliasesObj).isInstanceOf(Collection.class);
 
     @SuppressWarnings("unchecked")
-    java.util.Collection<String> aliases = (java.util.Collection<String>) aliasesObj;
+    Collection<String> aliases = (Collection<String>) aliasesObj;
     assertThat(aliases).contains("yy");
 
     // Verify schema was updated correctly
