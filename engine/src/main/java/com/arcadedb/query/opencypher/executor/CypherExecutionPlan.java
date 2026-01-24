@@ -813,6 +813,9 @@ public class CypherExecutionPlan {
     final Set<String> matchVariables = new HashSet<>();
     final boolean isOptional = matchClause.isOptional();
 
+    // Extract ID filters from WHERE clause (if present) for pushdown optimization
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+
     AbstractExecutionStep matchChainStart = null;
 
     for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
@@ -822,7 +825,10 @@ public class CypherExecutionPlan {
         final NodePattern nodePattern = pathPattern.getFirstNode();
         final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("n" + patternIndex);
         matchVariables.add(variable);
-        final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context);
+
+        // OPTIMIZATION: Extract ID filter for this variable to avoid Cartesian product
+        final String idFilter = extractIdFilter(whereClause, variable);
+        final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter);
 
         if (isOptional) {
           if (matchChainStart == null) {
@@ -847,7 +853,10 @@ public class CypherExecutionPlan {
 
         if (!sourceAlreadyBound) {
           matchVariables.add(sourceVar);
-          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context);
+
+          // OPTIMIZATION: Extract ID filter for source variable to avoid Cartesian product
+          final String sourceIdFilter = extractIdFilter(whereClause, sourceVar);
+          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
 
           if (isOptional) {
             if (matchChainStart == null) {
@@ -1005,7 +1014,11 @@ public class CypherExecutionPlan {
             final NodePattern nodePattern = pathPattern.getFirstNode();
             final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("n" + patternIndex);
             matchVariables.add(variable); // Track variable for OPTIONAL MATCH
-            final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context);
+
+            // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
+            final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+            final String idFilter = extractIdFilter(matchWhere, variable);
+            final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter);
 
             if (isOptional) {
               // For optional match, chain within the match steps only
@@ -1038,8 +1051,12 @@ public class CypherExecutionPlan {
               // Only track the source variable if we're creating a new binding for it
               matchVariables.add(sourceVar);
 
+              // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
+              final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+              final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
+
               // Start with source node (or chain if we have previous patterns)
-              final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context);
+              final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
 
               if (isOptional) {
                 // For optional match, chain within the match steps only
@@ -1463,5 +1480,106 @@ public class CypherExecutionPlan {
     // All conditions met - create optimized TypeCountStep
     final String outputAlias = returnItem.getOutputName();
     return new TypeCountStep(typeName, outputAlias, context);
+  }
+
+  /**
+   * Extracts ID filters from a WHERE clause for a specific variable.
+   * Looks for predicates like: ID(variable) = "value" or ID(variable) = $param
+   * <p>
+   * This optimization is critical for performance when matching by ID.
+   * Without it, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y would create
+   * a Cartesian product of ALL vertices before filtering (extremely slow).
+   *
+   * @param whereClause the WHERE clause to analyze
+   * @param variable the variable to extract ID filter for
+   * @return the ID value to filter by, or null if no ID filter found
+   */
+  private String extractIdFilter(final WhereClause whereClause, final String variable) {
+    if (whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+
+    final BooleanExpression condition = whereClause.getConditionExpression();
+
+    // Try to extract ID filter from the condition expression
+    // The condition may be an AND expression containing multiple predicates
+    // We need to find the one that matches: ID(variable) = value
+    return extractIdFilterFromExpression(condition, variable);
+  }
+
+  /**
+   * Recursively extracts ID filter from a boolean expression.
+   */
+  private String extractIdFilterFromExpression(final BooleanExpression expr, final String variable) {
+    if (expr == null)
+      return null;
+
+    // Check if this is a comparison expression (ID(var) = value)
+    if (expr instanceof ComparisonExpression) {
+      final ComparisonExpression compExpr = (ComparisonExpression) expr;
+
+      // Check if left side is ID(variable)
+      final Expression left = compExpr.getLeft();
+      if (left instanceof FunctionCallExpression) {
+        final FunctionCallExpression funcExpr = (FunctionCallExpression) left;
+        if ("id".equalsIgnoreCase(funcExpr.getFunctionName()) && funcExpr.getArguments().size() == 1) {
+          final Expression arg = funcExpr.getArguments().get(0);
+          if (arg instanceof VariableExpression) {
+            final VariableExpression varExpr = (VariableExpression) arg;
+            if (variable.equals(varExpr.getVariableName())) {
+              // Found ID(variable) - extract the value from right side
+              final Expression right = compExpr.getRight();
+              return evaluateIdValue(right);
+            }
+          }
+        }
+      }
+    }
+
+    // Check if this is a logical AND expression - recursively search both sides
+    if (expr instanceof LogicalExpression) {
+      final LogicalExpression logExpr = (LogicalExpression) expr;
+      if (logExpr.getOperator() == LogicalExpression.Operator.AND) {
+        final String leftResult = extractIdFilterFromExpression(logExpr.getLeft(), variable);
+        if (leftResult != null)
+          return leftResult;
+        return extractIdFilterFromExpression(logExpr.getRight(), variable);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Evaluates an expression to extract the ID value (literal or parameter).
+   */
+  private String evaluateIdValue(final Expression expr) {
+    if (expr == null)
+      return null;
+
+    // Handle literal string values
+    if (expr instanceof LiteralExpression) {
+      final LiteralExpression litExpr = (LiteralExpression) expr;
+      final Object value = litExpr.getValue();
+      return value != null ? value.toString() : null;
+    }
+
+    // Handle parameter references
+    if (expr instanceof ParameterExpression) {
+      final ParameterExpression paramExpr = (ParameterExpression) expr;
+      final String paramName = paramExpr.getParameterName();
+      if (parameters != null && parameters.containsKey(paramName)) {
+        final Object value = parameters.get(paramName);
+        return value != null ? value.toString() : null;
+      }
+    }
+
+    // Handle property access for UNWIND scenarios (e.g., row.source_id)
+    if (expr instanceof PropertyAccessExpression) {
+      // Can't evaluate at plan time - would need runtime context
+      // This is handled differently via parameter substitution
+      return null;
+    }
+
+    return null;
   }
 }
