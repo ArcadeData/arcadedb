@@ -147,6 +147,46 @@ public interface Schema {
 
   void dropIndex(String indexName);
 
+  // TRIGGER MANAGEMENT
+
+  /**
+   * Check if a trigger with the given name exists.
+   */
+  boolean existsTrigger(String triggerName);
+
+  /**
+   * Get a trigger by name.
+   *
+   * @return The trigger or null if not found
+   */
+  Trigger getTrigger(String triggerName);
+
+  /**
+   * Get all triggers defined in the schema.
+   */
+  Trigger[] getTriggers();
+
+  /**
+   * Get all triggers defined for a specific type.
+   */
+  Trigger[] getTriggersForType(String typeName);
+
+  /**
+   * Create a new trigger and register it in the schema.
+   * The trigger will be automatically registered as an event listener.
+   *
+   * @throws com.arcadedb.exception.CommandExecutionException if a trigger with the same name already exists
+   * @throws com.arcadedb.exception.CommandExecutionException if the type does not exist
+   */
+  void createTrigger(Trigger trigger);
+
+  /**
+   * Drop an existing trigger and unregister it from the event system.
+   *
+   * @throws com.arcadedb.exception.CommandExecutionException if the trigger does not exist
+   */
+  void dropTrigger(String triggerName);
+
   TypeBuilder<? extends DocumentType> buildDocumentType();
 
   TypeBuilder<VertexType> buildVertexType();

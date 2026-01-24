@@ -20,7 +20,7 @@ package com.arcadedb.function.polyglot;/*
 import com.arcadedb.database.Database;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
-import org.graalvm.polyglot.Engine;
+import com.arcadedb.query.polyglot.PolyglotEngineManager;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -42,7 +42,8 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
     this.libraryName = libraryName;
     this.language = language;
     this.allowedPackages = allowedPackages;
-    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
+    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
+        .setLanguage(language).setAllowedPackages(allowedPackages).build();
   }
 
   public PolyglotFunctionLibraryDefinition registerFunction(final T function) {
@@ -51,7 +52,8 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
 
     // REGISTER ALL THE FUNCTIONS UNDER THE NEW ENGINE INSTANCE
     this.polyglotEngine.close();
-    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
+    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
+        .setLanguage(language).setAllowedPackages(allowedPackages).build();
     for (final T f : functions.values())
       f.init(this);
 

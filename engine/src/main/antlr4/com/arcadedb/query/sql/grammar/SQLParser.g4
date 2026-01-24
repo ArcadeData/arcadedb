@@ -93,6 +93,7 @@ statement
     | CREATE BUCKET createBucketBody                 # createBucketStmt
     | CREATE VERTEX createVertexBody                 # createVertexStmt
     | CREATE EDGE createEdgeBody                     # createEdgeStmt
+    | CREATE TRIGGER createTriggerBody               # createTriggerStmt
 
     // DDL Statements - ALTER variants
     | ALTER TYPE alterTypeBody                       # alterTypeStmt
@@ -105,6 +106,7 @@ statement
     | DROP PROPERTY dropPropertyBody                 # dropPropertyStmt
     | DROP INDEX dropIndexBody                       # dropIndexStmt
     | DROP BUCKET dropBucketBody                     # dropBucketStmt
+    | DROP TRIGGER dropTriggerBody                   # dropTriggerStmt
 
     // DDL Statements - TRUNCATE variants
     | TRUNCATE TYPE truncateTypeBody                 # truncateTypeStmt
@@ -584,6 +586,46 @@ dropIndexBody
 
 dropBucketBody
     : identifier (IF EXISTS)?
+    ;
+
+// ============================================================================
+// TRIGGER MANAGEMENT
+// ============================================================================
+
+/**
+ * CREATE TRIGGER statement
+ * Syntax: CREATE TRIGGER [IF NOT EXISTS] name (BEFORE|AFTER) (CREATE|READ|UPDATE|DELETE)
+ *         ON [TYPE] typeName (EXECUTE SQL 'statement' | EXECUTE JAVASCRIPT 'code' | EXECUTE JAVA 'className')
+ */
+createTriggerBody
+    : (IF NOT EXISTS)? identifier
+      triggerTiming triggerEvent
+      ON TYPE? identifier
+      triggerAction
+    ;
+
+triggerTiming
+    : BEFORE
+    | AFTER
+    ;
+
+triggerEvent
+    : CREATE
+    | READ
+    | UPDATE
+    | DELETE
+    ;
+
+triggerAction
+    : EXECUTE identifier STRING_LITERAL
+    ;
+
+/**
+ * DROP TRIGGER statement
+ * Syntax: DROP TRIGGER [IF EXISTS] name
+ */
+dropTriggerBody
+    : (IF EXISTS)? identifier
     ;
 
 // ============================================================================
