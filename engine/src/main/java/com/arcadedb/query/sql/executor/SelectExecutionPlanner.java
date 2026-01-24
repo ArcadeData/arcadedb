@@ -2151,29 +2151,39 @@ public class SelectExecutionPlanner {
     // is redundant, just discard it)
     //descriptors = removePrefixIndexes(descriptors);
 
-    // sort by cost
-    final List<Pair<Integer, IndexSearchDescriptor>> sortedDescriptors = descriptors.stream()
-        .map(x -> (Pair<Integer, IndexSearchDescriptor>) new Pair(x.cost(context), x))
-        .sorted()
+    if (descriptors.isEmpty())
+      return null;
+
+    // First, prefer indexes that cover more conditions (more subBlocks)
+    // This ensures composite indexes are preferred over single-property indexes
+    final int maxSubBlocks = descriptors.stream()
+        .mapToInt(x -> x.getSubBlocks().size())
+        .max()
+        .orElse(0);
+
+    // Filter to keep only indexes with the maximum number of covered conditions
+    descriptors = descriptors.stream()
+        .filter(x -> x.getSubBlocks().size() == maxSubBlocks)
         .toList();
 
-    // get only the descriptors with the lowest cost
-    if (sortedDescriptors.isEmpty()) {
-      descriptors = Collections.emptyList();
-    } else {
+    // If there are multiple indexes covering the same number of conditions,
+    // select based on cost (lower is better)
+    if (descriptors.size() > 1) {
+      final List<Pair<Integer, IndexSearchDescriptor>> sortedDescriptors = descriptors.stream()
+          .map(x -> (Pair<Integer, IndexSearchDescriptor>) new Pair(x.cost(context), x))
+          .sorted()
+          .toList();
+
+      // get only the descriptors with the lowest cost
+      final int lowestCost = sortedDescriptors.getFirst().getFirst();
       descriptors = sortedDescriptors.stream()
-          .filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
+          .filter(x -> x.getFirst().equals(lowestCost))
           .map(x -> x.getSecond())
           .toList();
     }
 
-    // sort remaining by the number of indexed fields
-    descriptors = descriptors.stream()
-        .sorted(Comparator.comparingInt(x -> x.getSubBlocks().size()))
-        .toList();
-
-    // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.getLast();
+    // Return the first descriptor (all remaining have same subBlocks size and cost)
+    return descriptors.getFirst();
   }
 
   /**
