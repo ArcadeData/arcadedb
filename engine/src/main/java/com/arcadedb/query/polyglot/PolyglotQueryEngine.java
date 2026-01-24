@@ -29,7 +29,6 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.Value;
 
 import java.util.*;
@@ -88,8 +87,8 @@ public class PolyglotQueryEngine implements QueryEngine {
     this.language = language;
     this.database = database;
     this.allowedPackages = allowedPackages;
-    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language)
-        .setAllowedPackages(allowedPackages).build();
+    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
+        .setLanguage(language).setAllowedPackages(allowedPackages).build();
     this.userCodeExecutorQueue = new ArrayBlockingQueue<>(10000);
     this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue,
         new ThreadPoolExecutor.CallerRunsPolicy());
@@ -174,8 +173,8 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   @Override
   public QueryEngine unregisterFunctions() {
-    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language)
-        .setAllowedPackages(allowedPackages).build();
+    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
+        .setLanguage(language).setAllowedPackages(allowedPackages).build();
     return this;
   }
 

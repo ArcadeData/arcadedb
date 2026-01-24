@@ -88,6 +88,8 @@ public class LocalSchema implements Schema {
   private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
   protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
+  protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
+  private final       Map<String, com.arcadedb.schema.trigger.TriggerListenerAdapter> triggerAdapters = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
   private final       ComponentFactory                       componentFactory;
@@ -494,6 +496,167 @@ public class LocalSchema implements Schema {
           multipleUpdate = false;
       }
     });
+  }
+
+  // TRIGGER MANAGEMENT
+
+  @Override
+  public boolean existsTrigger(final String triggerName) {
+    return triggers.containsKey(triggerName);
+  }
+
+  @Override
+  public Trigger getTrigger(final String triggerName) {
+    return triggers.get(triggerName);
+  }
+
+  @Override
+  public Trigger[] getTriggers() {
+    return triggers.values().toArray(new Trigger[0]);
+  }
+
+  @Override
+  public Trigger[] getTriggersForType(final String typeName) {
+    return triggers.values().stream()
+        .filter(t -> t.getTypeName().equals(typeName))
+        .toArray(Trigger[]::new);
+  }
+
+  @Override
+  public void createTrigger(final Trigger trigger) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    recordFileChanges(() -> {
+      // Validate trigger does not already exist
+      if (triggers.containsKey(trigger.getName())) {
+        throw new SchemaException("Trigger '" + trigger.getName() + "' already exists");
+      }
+
+      // Validate type exists
+      if (!existsType(trigger.getTypeName())) {
+        throw new SchemaException("Type '" + trigger.getTypeName() + "' does not exist");
+      }
+
+      // Store trigger
+      triggers.put(trigger.getName(), trigger);
+
+      // Register event listener
+      registerTriggerListener(trigger);
+
+      return null;
+    });
+  }
+
+  @Override
+  public void dropTrigger(final String triggerName) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    recordFileChanges(() -> {
+      final Trigger trigger = triggers.get(triggerName);
+      if (trigger == null) {
+        throw new SchemaException("Trigger '" + triggerName + "' does not exist");
+      }
+
+      // Unregister event listener
+      unregisterTriggerListener(triggerName);
+
+      // Remove trigger
+      triggers.remove(triggerName);
+
+      return null;
+    });
+  }
+
+  /**
+   * Register a trigger as an event listener on the appropriate type.
+   */
+  private void registerTriggerListener(final Trigger trigger) {
+    final LocalDocumentType type = types.get(trigger.getTypeName());
+    if (type == null) {
+      throw new SchemaException("Type '" + trigger.getTypeName() + "' not found");
+    }
+
+    // Create executor
+    final com.arcadedb.schema.trigger.TriggerExecutor executor;
+    if (trigger.getActionType() == Trigger.ActionType.SQL) {
+      executor = new com.arcadedb.schema.trigger.SQLTriggerExecutor(trigger.getName(), trigger.getActionCode());
+    } else if (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT) {
+      executor = new com.arcadedb.schema.trigger.ScriptTriggerExecutor(trigger.getName(), trigger.getActionCode());
+    } else if (trigger.getActionType() == Trigger.ActionType.JAVA) {
+      executor = new com.arcadedb.schema.trigger.JavaClassTriggerExecutor(trigger.getName(), trigger.getActionCode());
+    } else {
+      throw new SchemaException("Unknown trigger action type: " + trigger.getActionType());
+    }
+
+    // Create adapter
+    final com.arcadedb.schema.trigger.TriggerListenerAdapter adapter =
+        new com.arcadedb.schema.trigger.TriggerListenerAdapter(database, trigger, executor);
+
+    // Register listener based on timing and event
+    final com.arcadedb.database.RecordEventsRegistry events = (com.arcadedb.database.RecordEventsRegistry) type.getEvents();
+    switch (trigger.getTiming()) {
+      case BEFORE -> {
+        switch (trigger.getEvent()) {
+          case CREATE -> events.registerListener((com.arcadedb.event.BeforeRecordCreateListener) adapter);
+          case READ -> events.registerListener((com.arcadedb.event.BeforeRecordReadListener) adapter);
+          case UPDATE -> events.registerListener((com.arcadedb.event.BeforeRecordUpdateListener) adapter);
+          case DELETE -> events.registerListener((com.arcadedb.event.BeforeRecordDeleteListener) adapter);
+        }
+      }
+      case AFTER -> {
+        switch (trigger.getEvent()) {
+          case CREATE -> events.registerListener((com.arcadedb.event.AfterRecordCreateListener) adapter);
+          case READ -> events.registerListener((com.arcadedb.event.AfterRecordReadListener) adapter);
+          case UPDATE -> events.registerListener((com.arcadedb.event.AfterRecordUpdateListener) adapter);
+          case DELETE -> events.registerListener((com.arcadedb.event.AfterRecordDeleteListener) adapter);
+        }
+      }
+    }
+
+    // Store adapter for cleanup
+    triggerAdapters.put(trigger.getName(), adapter);
+  }
+
+  /**
+   * Unregister a trigger's event listener.
+   */
+  private void unregisterTriggerListener(final String triggerName) {
+    final com.arcadedb.schema.trigger.TriggerListenerAdapter adapter = triggerAdapters.get(triggerName);
+    if (adapter == null) {
+      return; // Already unregistered
+    }
+
+    final Trigger trigger = adapter.getTrigger();
+    final LocalDocumentType type = types.get(trigger.getTypeName());
+    if (type != null) {
+      final com.arcadedb.database.RecordEventsRegistry events = (com.arcadedb.database.RecordEventsRegistry) type.getEvents();
+
+      // Unregister listener based on timing and event
+      switch (trigger.getTiming()) {
+        case BEFORE -> {
+          switch (trigger.getEvent()) {
+            case CREATE -> events.unregisterListener((com.arcadedb.event.BeforeRecordCreateListener) adapter);
+            case READ -> events.unregisterListener((com.arcadedb.event.BeforeRecordReadListener) adapter);
+            case UPDATE -> events.unregisterListener((com.arcadedb.event.BeforeRecordUpdateListener) adapter);
+            case DELETE -> events.unregisterListener((com.arcadedb.event.BeforeRecordDeleteListener) adapter);
+          }
+        }
+        case AFTER -> {
+          switch (trigger.getEvent()) {
+            case CREATE -> events.unregisterListener((com.arcadedb.event.AfterRecordCreateListener) adapter);
+            case READ -> events.unregisterListener((com.arcadedb.event.AfterRecordReadListener) adapter);
+            case UPDATE -> events.unregisterListener((com.arcadedb.event.AfterRecordUpdateListener) adapter);
+            case DELETE -> events.unregisterListener((com.arcadedb.event.AfterRecordDeleteListener) adapter);
+          }
+        }
+      }
+    }
+
+    // Cleanup executor resources
+    adapter.cleanup();
+
+    // Remove adapter
+    triggerAdapters.remove(triggerName);
   }
 
   @Override
@@ -1200,6 +1363,30 @@ public class LocalSchema implements Schema {
       if (saveConfiguration)
         saveConfiguration();
 
+      // LOAD TRIGGERS
+      if (root.has("triggers")) {
+        final JSONObject triggersJSON = root.getJSONObject("triggers");
+        for (final String triggerName : triggersJSON.keySet()) {
+          final JSONObject triggerJSON = triggersJSON.getJSONObject(triggerName);
+          try {
+            final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
+            triggers.put(trigger.getName(), trigger);
+
+            // Re-register trigger listeners after loading
+            if (existsType(trigger.getTypeName())) {
+              registerTriggerListener(trigger);
+            } else {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Cannot register trigger '%s' because type '%s' does not exist",
+                  null, triggerName, trigger.getTypeName());
+            }
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Error loading trigger '%s': %s", e, triggerName, e.getMessage());
+          }
+        }
+      }
+
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
     } finally {
@@ -1255,6 +1442,12 @@ public class LocalSchema implements Schema {
 
     for (final DocumentType t : this.types.values())
       types.put(t.getName(), t.toJSON());
+
+    final JSONObject triggersJson = new JSONObject();
+    root.put("triggers", triggersJson);
+
+    for (final Trigger trigger : this.triggers.values())
+      triggersJson.put(trigger.getName(), trigger.toJSON());
 
     return root;
   }

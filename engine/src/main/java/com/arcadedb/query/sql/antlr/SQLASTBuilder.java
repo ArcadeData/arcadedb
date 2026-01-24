@@ -5595,6 +5595,90 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
+  // TRIGGER MANAGEMENT
+
+  /**
+   * Visit CREATE TRIGGER statement.
+   */
+  @Override
+  public CreateTriggerStatement visitCreateTriggerStmt(final SQLParser.CreateTriggerStmtContext ctx) {
+    final CreateTriggerStatement stmt = new CreateTriggerStatement(-1);
+    final SQLParser.CreateTriggerBodyContext bodyCtx = ctx.createTriggerBody();
+
+    // IF NOT EXISTS flag
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+
+    // Trigger name (first identifier)
+    stmt.name = (Identifier) visit(bodyCtx.identifier(0));
+
+    // Trigger timing (BEFORE or AFTER)
+    stmt.timing = (Identifier) visit(bodyCtx.triggerTiming());
+
+    // Trigger event (CREATE, READ, UPDATE, DELETE)
+    stmt.event = (Identifier) visit(bodyCtx.triggerEvent());
+
+    // Type name (second identifier - the one after ON)
+    stmt.typeName = (Identifier) visit(bodyCtx.identifier(1));
+
+    // Action type and code (SQL or JAVASCRIPT)
+    final SQLParser.TriggerActionContext actionCtx = bodyCtx.triggerAction();
+    final Identifier actionTypeId = (Identifier) visit(actionCtx.identifier());
+    stmt.actionType = actionTypeId;
+
+    // Extract string literal and remove quotes
+    final String rawText = actionCtx.STRING_LITERAL().getText();
+    stmt.actionCode = rawText.substring(1, rawText.length() - 1);
+
+    return stmt;
+  }
+
+  /**
+   * Visit DROP TRIGGER statement.
+   */
+  @Override
+  public DropTriggerStatement visitDropTriggerStmt(final SQLParser.DropTriggerStmtContext ctx) {
+    final DropTriggerStatement stmt = new DropTriggerStatement(-1);
+    final SQLParser.DropTriggerBodyContext bodyCtx = ctx.dropTriggerBody();
+
+    // Trigger name
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+
+    // IF EXISTS
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+
+    return stmt;
+  }
+
+  /**
+   * Visit trigger timing (BEFORE or AFTER).
+   */
+  @Override
+  public Identifier visitTriggerTiming(final SQLParser.TriggerTimingContext ctx) {
+    if (ctx.BEFORE() != null) {
+      return new Identifier("BEFORE");
+    } else if (ctx.AFTER() != null) {
+      return new Identifier("AFTER");
+    }
+    return null;
+  }
+
+  /**
+   * Visit trigger event (CREATE, READ, UPDATE, DELETE).
+   */
+  @Override
+  public Identifier visitTriggerEvent(final SQLParser.TriggerEventContext ctx) {
+    if (ctx.CREATE() != null) {
+      return new Identifier("CREATE");
+    } else if (ctx.READ() != null) {
+      return new Identifier("READ");
+    } else if (ctx.UPDATE() != null) {
+      return new Identifier("UPDATE");
+    } else if (ctx.DELETE() != null) {
+      return new Identifier("DELETE");
+    }
+    return null;
+  }
+
   // DDL STATEMENTS - TRUNCATE
 
   /**

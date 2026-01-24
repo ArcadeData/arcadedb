@@ -101,6 +101,40 @@ public class RemoteSchema implements Schema {
     remoteDatabase.command("sql", "drop index `" + indexName + "`");
   }
 
+  // TRIGGER MANAGEMENT
+
+  @Override
+  public boolean existsTrigger(final String triggerName) {
+    final ResultSet result = remoteDatabase.command("sql",
+        "select from schema:triggers where name = '" + triggerName + "'");
+    return result.hasNext();
+  }
+
+  @Override
+  public com.arcadedb.schema.Trigger getTrigger(final String triggerName) {
+    throw new UnsupportedOperationException("getTrigger() is not supported in remote database");
+  }
+
+  @Override
+  public com.arcadedb.schema.Trigger[] getTriggers() {
+    throw new UnsupportedOperationException("getTriggers() is not supported in remote database");
+  }
+
+  @Override
+  public com.arcadedb.schema.Trigger[] getTriggersForType(final String typeName) {
+    throw new UnsupportedOperationException("getTriggersForType() is not supported in remote database");
+  }
+
+  @Override
+  public void createTrigger(final com.arcadedb.schema.Trigger trigger) {
+    throw new UnsupportedOperationException("createTrigger() is not supported in remote database. Use SQL CREATE TRIGGER instead.");
+  }
+
+  @Override
+  public void dropTrigger(final String triggerName) {
+    remoteDatabase.command("sql", "drop trigger `" + triggerName + "`");
+  }
+
   @Override
   public Bucket createBucket(final String bucketName) {
     final ResultSet result = remoteDatabase.command("sql", "create bucket `" + bucketName + "`");
