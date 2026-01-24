@@ -66,7 +66,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
   @Override
   public void fromJSON(final JSONObject metadata) {
-    super.fromJSON(metadata);
+    if (metadata.has("typeName"))
+      super.fromJSON(metadata);
 
     if (metadata.has("analyzer"))
       this.analyzerClass = metadata.getString("analyzer");

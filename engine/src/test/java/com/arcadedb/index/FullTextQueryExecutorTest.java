@@ -211,4 +211,51 @@ class FullTextQueryExecutorTest extends TestHelper {
       assertThat(count).isEqualTo(2);
     });
   }
+
+  @Test
+  void mustWithShouldQuery() {
+    // Tests that MUST clauses are required, while SHOULD only adds bonus score
+    // This is the fix for: documents matching only SHOULD should NOT be returned
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      // Doc1: matches both java (MUST) and programming (SHOULD)
+      database.command("sql", "INSERT INTO Article SET content = 'java programming language'");
+      // Doc2: matches only java (MUST)
+      database.command("sql", "INSERT INTO Article SET content = 'java database system'");
+      // Doc3: matches only programming (SHOULD) - should NOT be returned
+      database.command("sql", "INSERT INTO Article SET content = 'programming tutorial guide'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      // +java programming means: MUST have java, SHOULD have programming (bonus score)
+      final IndexCursor cursor = executor.search("+java programming", -1);
+
+      int count = 0;
+      int firstScore = 0;
+      int secondScore = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+        if (count == 1)
+          firstScore = cursor.getScore();
+        else if (count == 2)
+          secondScore = cursor.getScore();
+      }
+
+      // Only 2 documents should match (those with java)
+      // Doc3 with only "programming" should NOT be returned
+      assertThat(count).isEqualTo(2);
+
+      // Doc1 (java + programming) should have higher score than Doc2 (java only)
+      assertThat(firstScore).isGreaterThan(secondScore);
+    });
+  }
 }

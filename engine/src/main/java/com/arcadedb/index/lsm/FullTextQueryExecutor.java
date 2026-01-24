@@ -155,6 +155,7 @@ public class FullTextQueryExecutor {
 
       // Second pass: process MUST and SHOULD terms
       Map<RID, AtomicInteger> mustResults = null;
+      final Map<RID, AtomicInteger> shouldResults = new HashMap<>();
 
       for (final BooleanClause clause : bq.clauses()) {
         if (clause.occur() == BooleanClause.Occur.MUST) {
@@ -174,12 +175,25 @@ public class FullTextQueryExecutor {
             }
           }
         } else if (clause.occur() == BooleanClause.Occur.SHOULD) {
-          collectMatches(clause.query(), scoreMap, excluded);
+          collectMatches(clause.query(), shouldResults, excluded);
         }
       }
 
       if (mustResults != null) {
+        // MUST clauses exist: only include documents that satisfy all MUST clauses
+        // SHOULD clauses add bonus score to documents that already match MUST
         for (final Map.Entry<RID, AtomicInteger> entry : mustResults.entrySet()) {
+          final RID rid = entry.getKey();
+          int totalScore = entry.getValue().get();
+          // Add bonus from SHOULD matches if present
+          if (shouldResults.containsKey(rid)) {
+            totalScore += shouldResults.get(rid).get();
+          }
+          scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(totalScore);
+        }
+      } else {
+        // No MUST clauses: SHOULD results are returned (standard OR behavior)
+        for (final Map.Entry<RID, AtomicInteger> entry : shouldResults.entrySet()) {
           scoreMap.computeIfAbsent(entry.getKey(), k -> new AtomicInteger(0))
               .addAndGet(entry.getValue().get());
         }

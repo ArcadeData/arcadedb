@@ -143,30 +143,6 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * @param json the JSON object containing metadata configuration
    */
   public void withMetadata(final JSONObject json) {
-    final FullTextIndexMetadata meta = (FullTextIndexMetadata) metadata;
-
-    if (json.has("analyzer"))
-      meta.setAnalyzerClass(json.getString("analyzer"));
-
-    if (json.has("index_analyzer"))
-      meta.setIndexAnalyzerClass(json.getString("index_analyzer"));
-
-    if (json.has("query_analyzer"))
-      meta.setQueryAnalyzerClass(json.getString("query_analyzer"));
-
-    if (json.has("allowLeadingWildcard"))
-      meta.setAllowLeadingWildcard(json.getBoolean("allowLeadingWildcard"));
-
-    if (json.has("defaultOperator"))
-      meta.setDefaultOperator(json.getString("defaultOperator"));
-
-    // Parse per-field analyzers (pattern: *_analyzer)
-    final String analyzerSuffix = "_analyzer";
-    for (final String key : json.keySet()) {
-      if (key.endsWith(analyzerSuffix) && !key.equals("analyzer") && !key.equals("index_analyzer") && !key.equals("query_analyzer")) {
-        final String fieldName = key.substring(0, key.length() - analyzerSuffix.length());
-        meta.setFieldAnalyzer(fieldName, json.getString(key));
-      }
-    }
+    ((FullTextIndexMetadata) metadata).fromJSON(json);
   }
 }
