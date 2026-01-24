@@ -19,8 +19,11 @@
 package com.arcadedb.query.sql.function.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -138,6 +141,96 @@ public class SQLFunctionDijkstraIssue1941Test {
       }
 
       assertThat(path).as("Path should not be null").isNotNull();
+    });
+  }
+
+  @Test
+  void testDijkstraReturnsListOfRIDs() throws Exception {
+    TestHelper.executeInNewDatabase("SQLFunctionDijkstraReturnsRIDs", (db) -> {
+      // Setup schema
+      db.transaction(() -> {
+        db.getSchema().createVertexType("V");
+        db.getSchema().createEdgeType("E");
+        db.getSchema().getType("E").createProperty("distance", Long.class);
+      });
+
+      String script = """
+        LET $src = (INSERT INTO V);
+        LET $dst = (INSERT INTO V);
+        CREATE EDGE E FROM $src TO $dst SET distance = 1;
+
+        LET $src = (SELECT FROM V LIMIT 1);
+        LET $dst = (SELECT FROM V LIMIT 1 SKIP 1);
+        SELECT dijkstra($src, $dst, 'distance') as path FROM V LIMIT 1;
+        """;
+
+      ResultSet result = db.command("sqlscript", script);
+
+      // Get to the last result (the SELECT query result)
+      Object path = null;
+      while (result.hasNext()) {
+        var r = result.next();
+        if (r.getPropertyNames().contains("path")) {
+          path = r.getProperty("path");
+        }
+      }
+
+      assertThat(path).as("Path should not be null").isNotNull();
+      assertThat(path).as("Path should be a List").isInstanceOf(List.class);
+
+      @SuppressWarnings("unchecked")
+      List<Object> pathList = (List<Object>) path;
+      assertThat(pathList).hasSize(2);
+
+      // Verify all elements are RIDs, not Vertices
+      for (Object element : pathList) {
+        assertThat(element).as("Path element should be a RID").isInstanceOf(RID.class);
+      }
+    });
+  }
+
+  @Test
+  void testAstarReturnsListOfRIDs() throws Exception {
+    TestHelper.executeInNewDatabase("SQLFunctionAstarReturnsRIDs", (db) -> {
+      // Setup schema
+      db.transaction(() -> {
+        db.getSchema().createVertexType("V");
+        db.getSchema().createEdgeType("E");
+        db.getSchema().getType("E").createProperty("distance", Long.class);
+      });
+
+      String script = """
+        LET $src = (INSERT INTO V);
+        LET $dst = (INSERT INTO V);
+        CREATE EDGE E FROM $src TO $dst SET distance = 1;
+
+        LET $src = (SELECT FROM V LIMIT 1);
+        LET $dst = (SELECT FROM V LIMIT 1 SKIP 1);
+        SELECT astar($src, $dst, 'distance') as path FROM V LIMIT 1;
+        """;
+
+      ResultSet result = db.command("sqlscript", script);
+
+      // Get to the last result (the SELECT query result)
+      Object path = null;
+      while (result.hasNext()) {
+        var r = result.next();
+        if (r.getPropertyNames().contains("path")) {
+          path = r.getProperty("path");
+        }
+      }
+
+      assertThat(path).as("Path should not be null").isNotNull();
+      assertThat(path).as("Path should be a List").isInstanceOf(List.class);
+
+      @SuppressWarnings("unchecked")
+      List<Object> pathList = (List<Object>) path;
+      assertThat(pathList).hasSize(2);
+
+      // Verify all elements are RIDs, not Vertices
+      for (Object element : pathList) {
+        assertThat(element).as("Path element should be a RID").isInstanceOf(RID.class);
+      }
     });
   }
 }

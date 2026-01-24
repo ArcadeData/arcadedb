@@ -187,7 +187,7 @@ public class DuanSSSPBenchmark {
 
       // Benchmark Dijkstra
       final long dijkstraStart = System.nanoTime();
-      final List<Vertex> dijkstraPath = dijkstra.execute(null, null, null,
+      final List<RID> dijkstraPath = dijkstra.execute(null, null, null,
           new Object[] { source, dest, "weight" }, ctx);
       final long dijkstraEnd = System.nanoTime();
 
