@@ -661,7 +661,7 @@ DROP TRIGGER user_audit
 
 ### Benchmark Results
 
-Performance tests measuring trigger execution overhead on document creation with identical operations (100,000 iterations, Java 21, macOS). All triggers perform the same operation: `INSERT INTO [Type]Audit SET triggered = true`.
+Performance tests measuring trigger execution overhead on document creation with identical operations (100,000 iterations, Java 21, macOS). All triggers perform the same operation: `INSERT INTO AuditLog SET triggered = true`.
 
 | Trigger Type | Avg Time (µs) | Overhead (µs) | Overhead (%) | Relative Performance |
 |--------------|---------------|---------------|--------------|---------------------|
