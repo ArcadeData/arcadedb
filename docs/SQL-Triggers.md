@@ -126,7 +126,7 @@ Enforce business rules using BEFORE triggers:
 -- Ensure product prices are positive
 CREATE TRIGGER validate_price BEFORE CREATE ON TYPE Product
 EXECUTE SQL 'SELECT FROM Product WHERE @this = $record AND price > 0'
--- If SELECT returns no results, the trigger fails and creation is aborted
+-- If this SELECT statement returns no results, the trigger fails and the operation is aborted. This provides a concise way to enforce data validation rules.
 ```
 
 ## JavaScript Triggers
