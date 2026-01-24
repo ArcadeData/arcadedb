@@ -8,9 +8,17 @@ The ArcadeDB Modular Distribution Builder allows you to create custom ArcadeDB p
 
 ### Getting Started
 
-1. Download `arcadedb-builder.sh` from the [GitHub releases page](https://github.com/arcadedata/arcadedb/releases)
-2. Make it executable: `chmod +x arcadedb-builder.sh`
-3. Run it: `./arcadedb-builder.sh`
+**Option 1: Run directly with curl**
+```bash
+curl -fsSL https://github.com/ArcadeData/arcadedb/releases/download/26.1.1/arcadedb-builder.sh | bash -s -- --version=26.1.1 --modules=gremlin,studio
+```
+
+**Option 2: Download and run locally**
+```bash
+curl -fsSLO https://github.com/ArcadeData/arcadedb/releases/download/26.1.1/arcadedb-builder.sh
+chmod +x arcadedb-builder.sh
+./arcadedb-builder.sh
+```
 
 ### Quick Examples
 
@@ -22,30 +30,58 @@ The ArcadeDB Modular Distribution Builder allows you to create custom ArcadeDB p
 
 **PostgreSQL-only Build:**
 ```bash
-./arcadedb-builder.sh --version=26.1.0 --modules=postgresw
+./arcadedb-builder.sh --version=26.1.1 --modules=postgresw
 ```
 
 **Full Custom Build:**
 ```bash
 ./arcadedb-builder.sh \
-  --version=26.1.0 \
+  --version=26.1.1 \
   --modules=console,gremlin,studio,postgresw \
   --output-name=my-arcadedb
 ```
+
+**Dry Run (preview without building):**
+```bash
+./arcadedb-builder.sh --version=26.1.1 --modules=gremlin,studio --dry-run
+```
+
+### Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--version=VERSION` | ArcadeDB version to build (required for non-interactive mode) |
+| `--modules=MODULES` | Comma-separated list of modules |
+| `--output-name=NAME` | Custom name for distribution (default: arcadedb-VERSION-custom-TIMESTAMP) |
+| `--output-dir=DIR` | Output directory (default: current directory) |
+| `--local-repo[=PATH]` | Use local Maven repository or custom JAR directory |
+| `--local-base=FILE` | Use local base distribution file |
+| `--docker-tag=TAG` | Build Docker image with specified tag |
+| `--skip-docker` | Skip Docker image build |
+| `--dockerfile-only` | Only generate Dockerfile, don't build image |
+| `--keep-temp` | Keep temporary build directory |
+| `--dry-run` | Show what would be done without executing |
+| `-v, --verbose` | Enable verbose output |
+| `-q, --quiet` | Suppress non-error output |
+| `-h, --help` | Show help message |
 
 ### Module Selection Guide
 
 Choose modules based on your needs:
 
-- **console**: If you need the interactive command-line tool
-- **gremlin**: If you're using Gremlin graph queries
-- **studio**: If you want the web-based admin UI
-- **postgresw**: If you're connecting via PostgreSQL protocol
-- **mongodbw**: If you're connecting via MongoDB protocol
-- **redisw**: If you're connecting via Redis protocol
-- **grpcw**: If you're using gRPC
-- **graphql**: If you're using GraphQL queries
-- **metrics**: If you need Prometheus metrics
+| Module | Type | Description |
+|--------|------|-------------|
+| **console** | Regular | Interactive database console |
+| **studio** | Regular | Web-based administration interface |
+| **graphql** | Regular | GraphQL API support |
+| **gremlin** | Shaded | Apache Tinkerpop Gremlin support |
+| **postgresw** | Shaded | PostgreSQL wire protocol compatibility |
+| **mongodbw** | Shaded | MongoDB wire protocol compatibility |
+| **redisw** | Shaded | Redis wire protocol compatibility |
+| **grpcw** | Shaded | gRPC wire protocol support |
+| **metrics** | Shaded | Prometheus metrics integration |
+
+*Shaded modules include all dependencies in a single JAR to avoid conflicts.*
 
 ### Distribution Comparison
 
@@ -65,7 +101,7 @@ After building ArcadeDB:
 ```bash
 cd package
 mvn clean package -DskipTests
-./arcadedb-builder.sh --version=26.1.1-SNAPSHOT --modules=gremlin
+./arcadedb-builder.sh --version=26.1.2-SNAPSHOT --modules=gremlin
 ```
 
 ### Testing the Builder
@@ -79,10 +115,10 @@ cd package
 
 ```bash
 cd package
-./prepare-release.sh 26.1.0
+./prepare-release.sh 26.1.1
 ```
 
-This creates release artifacts in `target/release-26.1.0/`:
+This creates release artifacts in `target/release-26.1.1/`:
 - `arcadedb-builder.sh`
 - `README-BUILDER.md`
 
@@ -138,12 +174,12 @@ For advanced scenarios, you can use a custom directory with hand-picked JAR vers
 ```bash
 # Prepare custom directory
 mkdir -p /tmp/custom-arcade-jars
-cp ~/.m2/repository/com/arcadedb/arcadedb-gremlin/26.1.0/arcadedb-gremlin-26.1.0-shaded.jar /tmp/custom-arcade-jars/
-cp ~/.m2/repository/com/arcadedb/arcadedb-console/26.1.0/arcadedb-console-26.1.0.jar /tmp/custom-arcade-jars/
+cp ~/.m2/repository/com/arcadedb/arcadedb-gremlin/26.1.1/arcadedb-gremlin-26.1.1-shaded.jar /tmp/custom-arcade-jars/
+cp ~/.m2/repository/com/arcadedb/arcadedb-console/26.1.1/arcadedb-console-26.1.1.jar /tmp/custom-arcade-jars/
 
 # Build with custom JARs
 ./arcadedb-builder.sh \
-    --version=26.1.0 \
+    --version=26.1.1 \
     --modules=gremlin,console \
     --local-repo=/tmp/custom-arcade-jars
 ```
@@ -152,23 +188,24 @@ cp ~/.m2/repository/com/arcadedb/arcadedb-console/26.1.0/arcadedb-console-26.1.0
 
 The builder automatically verifies checksums when available:
 
-- **Maven repository**: If `.sha1` files exist alongside JARs, they are verified
+- **GitHub releases**: SHA-256 checksums for base distribution
+- **Maven repository**: SHA-1 checksums for module JARs
 - **Custom directory**: If `.sha1` files exist, they are verified; otherwise skipped with warning
 
 Generate checksums for custom JARs:
 
 ```bash
 cd /tmp/custom-arcade-jars
-shasum -a 1 arcadedb-gremlin-26.1.0-shaded.jar > arcadedb-gremlin-26.1.0-shaded.jar.sha1
+shasum -a 1 arcadedb-gremlin-26.1.1-shaded.jar > arcadedb-gremlin-26.1.1-shaded.jar.sha1
 ```
 
 ### Architecture
 
 The builder works in phases:
 
-1. **Download Base**: Gets core modules from GitHub releases
-2. **Add Modules**: Downloads optional modules from Maven Central (or copies from local repository)
-3. **Verify**: Checks SHA-256 and SHA-1 checksums
+1. **Download Base**: Gets core modules from GitHub releases (or uses `--local-base`)
+2. **Add Modules**: Downloads optional modules from Maven Central (or uses `--local-repo`)
+3. **Verify**: Checks SHA-256 (base) and SHA-1 (modules) checksums
 4. **Package**: Creates zip and tar.gz archives
 5. **Docker**: Optionally builds Docker image
 
@@ -180,7 +217,7 @@ To add a new optional module:
 2. Update base.xml to exclude the new module
 3. Update `arcadedb-builder.sh`:
    - Add to `SHADED_MODULES` or `REGULAR_MODULES`
-   - Add description to `MODULE_DESCRIPTIONS`
+   - Add description to `get_module_description()` function
 4. Test with local builder
 5. Update documentation
 

@@ -21,6 +21,7 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.schema.DocumentType;
@@ -140,7 +141,7 @@ class XMLImporterIT {
       assertThat(db.countType("book", true)).isEqualTo(2);
 
       // Verify we can iterate as documents
-      final Iterator<com.arcadedb.database.Record> iterator = db.iterateType("book", true);
+      final Iterator<Record> iterator = db.iterateType("book", true);
       assertThat(iterator.hasNext()).isTrue();
 
       final Document doc = iterator.next().asDocument();
@@ -178,7 +179,7 @@ class XMLImporterIT {
       assertThat(db.countType("v_book", true)).isEqualTo(2);
 
       // Verify we can iterate as vertices
-      final Iterator<com.arcadedb.database.Record> iterator = db.iterateType("v_book", true);
+      final Iterator<Record> iterator = db.iterateType("v_book", true);
       assertThat(iterator.hasNext()).isTrue();
 
       final Vertex vertex = iterator.next().asVertex();

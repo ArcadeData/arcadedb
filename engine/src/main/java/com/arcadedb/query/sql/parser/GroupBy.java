@@ -69,7 +69,7 @@ public class GroupBy extends SimpleNode {
     final Map<String, Object> json = super.toJSON();
 
     if (items != null) {
-      final java.util.List<Object> itemsJson = new java.util.ArrayList<>();
+      final List<Object> itemsJson = new ArrayList<>();
       for (Object item : items) {
         if (item instanceof SimpleNode) {
           itemsJson.add(((SimpleNode) item).toJSON());

@@ -19,15 +19,24 @@
 package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.ArrayList;
+
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
+
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * ANTLR4 visitor that builds ArcadeDB's internal AST from the SQL parse tree.
@@ -1009,13 +1018,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         if (valueObj instanceof BaseIdentifier) {
           // Create Identifier from the string representation
           final StringBuilder sb = new StringBuilder();
-          ((BaseIdentifier) valueObj).toString(java.util.Collections.emptyMap(), sb);
+          ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
           item.alias = new Identifier(sb.toString());
         } else if (valueObj instanceof BaseExpression) {
           final BaseExpression baseExpr = (BaseExpression) valueObj;
           if (baseExpr.identifier != null) {
             final StringBuilder sb = new StringBuilder();
-            baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+            baseExpr.identifier.toString(Collections.emptyMap(), sb);
             item.alias = new Identifier(sb.toString());
           } else {
             item.alias = new Identifier(valueObj.toString().replace("'", ""));
@@ -1151,13 +1160,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // Extract identifier name from the expression
         if (valueObj instanceof BaseIdentifier) {
           final StringBuilder sb = new StringBuilder();
-          ((BaseIdentifier) valueObj).toString(java.util.Collections.emptyMap(), sb);
+          ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
           item.depthAlias = new Identifier(sb.toString());
         } else if (valueObj instanceof BaseExpression) {
           final BaseExpression baseExpr = (BaseExpression) valueObj;
           if (baseExpr.identifier != null) {
             final StringBuilder sb = new StringBuilder();
-            baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+            baseExpr.identifier.toString(Collections.emptyMap(), sb);
             item.depthAlias = new Identifier(sb.toString());
           }
         } else if (valueObj instanceof Expression) {
@@ -1166,7 +1175,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
             if (baseExpr.identifier != null) {
               final StringBuilder sb = new StringBuilder();
-              baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+              baseExpr.identifier.toString(Collections.emptyMap(), sb);
               item.depthAlias = new Identifier(sb.toString());
             }
           }
@@ -1176,13 +1185,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // Extract identifier name from the expression
         if (valueObj instanceof BaseIdentifier) {
           final StringBuilder sb = new StringBuilder();
-          ((BaseIdentifier) valueObj).toString(java.util.Collections.emptyMap(), sb);
+          ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
           item.pathAlias = new Identifier(sb.toString());
         } else if (valueObj instanceof BaseExpression) {
           final BaseExpression baseExpr = (BaseExpression) valueObj;
           if (baseExpr.identifier != null) {
             final StringBuilder sb = new StringBuilder();
-            baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+            baseExpr.identifier.toString(Collections.emptyMap(), sb);
             item.pathAlias = new Identifier(sb.toString());
           }
         } else if (valueObj instanceof Expression) {
@@ -1191,7 +1200,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
             if (baseExpr.identifier != null) {
               final StringBuilder sb = new StringBuilder();
-              baseExpr.identifier.toString(java.util.Collections.emptyMap(), sb);
+              baseExpr.identifier.toString(Collections.emptyMap(), sb);
               item.pathAlias = new Identifier(sb.toString());
             }
           }
@@ -3526,7 +3535,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private com.arcadedb.query.opencypher.ast.Expression convertToOpenCypherExpression(final Expression sqlExpression) {
     return new com.arcadedb.query.opencypher.ast.Expression() {
       @Override
-      public Object evaluate(final com.arcadedb.query.sql.executor.Result result, final com.arcadedb.query.sql.executor.CommandContext context) {
+      public Object evaluate(final Result result, final CommandContext context) {
         return sqlExpression.execute(result, context);
       }
 
@@ -3550,7 +3559,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private com.arcadedb.query.opencypher.ast.Expression convertWhereClauseToExpression(final WhereClause whereClause) {
     return new com.arcadedb.query.opencypher.ast.Expression() {
       @Override
-      public Object evaluate(final com.arcadedb.query.sql.executor.Result result, final com.arcadedb.query.sql.executor.CommandContext context) {
+      public Object evaluate(final Result result, final CommandContext context) {
         return whereClause.evaluateExpression(result, context);
       }
 
@@ -3792,7 +3801,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Handle other expressions like -1 (negative numbers)
       // Try to evaluate the expression as a constant
       try {
-        final Object value = expr.execute((com.arcadedb.query.sql.executor.Result) null, null);
+        final Object value = expr.execute((Result) null, null);
         if (value instanceof Number number) {
           limit.setValue(number.intValue());
         } else {
@@ -3832,7 +3841,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else {
         // Handle other expressions like negative numbers
         try {
-          final Object value = expr.execute((com.arcadedb.query.sql.executor.Result) null, null);
+          final Object value = expr.execute((Result) null, null);
           if (value instanceof Number number) {
             skip.num = new PInteger(-1).setValue(number.intValue());
           } else {
@@ -3945,7 +3954,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           } else {
             // Fallback: use string representation
             final StringBuilder sb = new StringBuilder();
-            baseExpr.toString(java.util.Collections.emptyMap(), sb);
+            baseExpr.toString(Collections.emptyMap(), sb);
             item.setAlias(sb.toString());
           }
         } else {
@@ -3969,7 +3978,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               // Check for RecordAttribute (e.g., @rid, @type, @this)
               // Use toString to get the record attribute name
               final StringBuilder sb = new StringBuilder();
-              suffix.toString(java.util.Collections.emptyMap(), sb);
+              suffix.toString(Collections.emptyMap(), sb);
               final String suffixStr = sb.toString();
               if (suffixStr != null && suffixStr.startsWith("@")) {
                 item.recordAttr = suffixStr;
@@ -3983,7 +3992,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (item.getAlias() == null && item.getRecordAttr() == null && item.modifier == null) {
         // Use toString to get the expression text
         final StringBuilder sb = new StringBuilder();
-        expr.toString(java.util.Collections.emptyMap(), sb);
+        expr.toString(Collections.emptyMap(), sb);
         item.setAlias(sb.toString());
       }
     } catch (final Exception e) {
@@ -4484,9 +4493,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     } else if (sourceObj instanceof SubqueryExpression) {
       // Parenthesized SELECT statement wrapped in SubqueryExpression
       fromItem.statement = ((SubqueryExpression) sourceObj).getStatement();
-    } else if (sourceObj instanceof com.arcadedb.query.sql.parser.Expression) {
+    } else if (sourceObj instanceof Expression) {
       // Expression that contains a subquery - try to extract the SelectStatement
-      final com.arcadedb.query.sql.parser.Expression expr = (com.arcadedb.query.sql.parser.Expression) sourceObj;
+      final Expression expr = (Expression) sourceObj;
 
       // Check if the mathExpression is a SubqueryExpression
       if (expr.mathExpression instanceof SubqueryExpression) {
@@ -4623,9 +4632,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Walk through all children to find INTEGER_LITERAL after BUCKETS token
       boolean foundBuckets = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
-        final org.antlr.v4.runtime.tree.ParseTree child = bodyCtx.getChild(i);
-        if (foundBuckets && child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+        final ParseTree child = bodyCtx.getChild(i);
+        if (foundBuckets && child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4633,8 +4642,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+        if (child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
           if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
             foundBuckets = true;
           }
@@ -4681,9 +4690,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Walk through all children to find INTEGER_LITERAL after BUCKETS token
       boolean foundBuckets = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
-        final org.antlr.v4.runtime.tree.ParseTree child = bodyCtx.getChild(i);
-        if (foundBuckets && child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+        final ParseTree child = bodyCtx.getChild(i);
+        if (foundBuckets && child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4691,8 +4700,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+        if (child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
           if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
             foundBuckets = true;
           }
@@ -4742,9 +4751,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Walk through all children to find INTEGER_LITERAL after BUCKETS token
       boolean foundBuckets = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
-        final org.antlr.v4.runtime.tree.ParseTree child = bodyCtx.getChild(i);
-        if (foundBuckets && child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+        final ParseTree child = bodyCtx.getChild(i);
+        if (foundBuckets && child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4752,8 +4761,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-          final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) child;
+        if (child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
           if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
             foundBuckets = true;
           }
@@ -5147,8 +5156,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Find the ON token position in the token stream
     for (int i = 0; i < bodyCtx.getChildCount(); i++) {
-      if (bodyCtx.getChild(i) instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-        final org.antlr.v4.runtime.tree.TerminalNode termNode = (org.antlr.v4.runtime.tree.TerminalNode) bodyCtx.getChild(i);
+      if (bodyCtx.getChild(i) instanceof TerminalNode) {
+        final TerminalNode termNode = (TerminalNode) bodyCtx.getChild(i);
         if (termNode.getSymbol().getType() == SQLParser.ON) {
           onTokenIndex = i;
           break;
@@ -5362,8 +5371,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         int identifierIndex = 0;
         for (int i = 0; i < itemCtx.getChildCount(); i++) {
           final var child = itemCtx.getChild(i);
-          if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-            final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (child instanceof TerminalNode) {
+            final TerminalNode terminal = (TerminalNode) child;
             if (terminal.getSymbol().getType() == SQLParser.PLUS) {
               nextIsAdd = true;
             } else if (terminal.getSymbol().getType() == SQLParser.MINUS) {
@@ -5385,8 +5394,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         int identifierIndex = 0;
         for (int i = 0; i < itemCtx.getChildCount(); i++) {
           final var child = itemCtx.getChild(i);
-          if (child instanceof org.antlr.v4.runtime.tree.TerminalNode) {
-            final org.antlr.v4.runtime.tree.TerminalNode terminal = (org.antlr.v4.runtime.tree.TerminalNode) child;
+          if (child instanceof TerminalNode) {
+            final TerminalNode terminal = (TerminalNode) child;
             if (terminal.getSymbol().getType() == SQLParser.PLUS) {
               stmt.identifierListAddRemove.add(true);
             } else if (terminal.getSymbol().getType() == SQLParser.MINUS) {
@@ -6104,7 +6113,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // BUCKET can be identifier or INTEGER_LITERAL
       // If we have INTEGER_LITERAL tokens, use them
       if (checkCtx.INTEGER_LITERAL() != null && !checkCtx.INTEGER_LITERAL().isEmpty()) {
-        for (final org.antlr.v4.runtime.tree.TerminalNode intNode : checkCtx.INTEGER_LITERAL()) {
+        for (final TerminalNode intNode : checkCtx.INTEGER_LITERAL()) {
           final BucketIdentifier bucketId = new BucketIdentifier(-1);
           final PInteger pInt = new PInteger(-1);
           pInt.setValue(Integer.parseInt(intNode.getText()));
@@ -6737,17 +6746,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final boolean val = boolValue != null && boolValue;  // Convert to primitive to avoid closure issues
     return new BooleanExpression(-1) {
       @Override
-      public Boolean evaluate(final com.arcadedb.database.Identifiable currentRecord, final com.arcadedb.query.sql.executor.CommandContext ctx) {
+      public Boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
         return val;
       }
 
       @Override
-      public Boolean evaluate(final com.arcadedb.query.sql.executor.Result currentRecord, final com.arcadedb.query.sql.executor.CommandContext ctx) {
+      public Boolean evaluate(final Result currentRecord, final CommandContext ctx) {
         return val;
       }
 
       @Override
-      public void toString(final java.util.Map<String, Object> params, final StringBuilder builder) {
+      public void toString(final Map<String, Object> params, final StringBuilder builder) {
         builder.append(val);
       }
 
@@ -6757,14 +6766,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       @Override
-      public void extractSubQueries(final com.arcadedb.query.sql.parser.SubQueryCollector collector) {
+      public void extractSubQueries(final SubQueryCollector collector) {
         // No subqueries in a boolean literal
       }
 
       @Override
-      public java.util.List<String> getMatchPatternInvolvedAliases() {
+      public List<String> getMatchPatternInvolvedAliases() {
         // No aliases involved in a boolean literal
-        return java.util.Collections.emptyList();
+        return Collections.emptyList();
       }
     };
   }

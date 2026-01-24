@@ -21,6 +21,7 @@ package com.arcadedb.integration.exporter;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.query.sql.executor.Result;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.net.URL;
+import java.util.ArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -116,7 +118,7 @@ public class SQLLocalExporterTest {
 
       // Create some test data: 110 vertices and 135 edges (similar to bug report)
       database.transaction(() -> {
-        final var vertices = new java.util.ArrayList<com.arcadedb.graph.Vertex>();
+        final var vertices = new ArrayList<Vertex>();
         for (int i = 0; i < 110; i++) {
           final var v = database.newVertex("TestVertex");
           v.set("id", i);

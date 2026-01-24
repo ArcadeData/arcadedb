@@ -69,7 +69,7 @@ public class BucketList extends SimpleNode {
     final Map<String, Object> json = super.toJSON();
 
     if (buckets != null) {
-      final java.util.List<Object> bucketsJson = new java.util.ArrayList<>();
+      final List<Object> bucketsJson = new ArrayList<>();
       for (Object item : buckets) {
         if (item instanceof SimpleNode) {
           bucketsJson.add(((SimpleNode) item).toJSON());

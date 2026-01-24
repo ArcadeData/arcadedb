@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedSchema;
@@ -200,7 +201,7 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
         }
 
         // Create edge
-        final com.arcadedb.graph.Vertex outVertex = outRid.asVertex();
+        final Vertex outVertex = outRid.asVertex();
         final MutableEdge edge = outVertex.newEdge(edgeData.label, inRid.asVertex());
 
         // Store original edge ID if present
