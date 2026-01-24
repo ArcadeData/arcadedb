@@ -71,7 +71,9 @@ public class AggregationStep extends AbstractExecutionStep {
       final Expression expr = item.getExpression();
       if (expr.isAggregation() && expr instanceof FunctionCallExpression) {
         final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
-        final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(funcExpr.getFunctionName());
+        // Pass the DISTINCT flag to create the appropriate function executor
+        final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(
+            funcExpr.getFunctionName(), funcExpr.isDistinct());
         aggregators.put(item.getOutputName(), executor);
         aggregationExpressions.put(item.getOutputName(), expr);
       } else {
