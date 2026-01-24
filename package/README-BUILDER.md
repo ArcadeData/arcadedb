@@ -19,6 +19,25 @@ The modular distribution builder (`arcadedb-builder.sh`) creates custom ArcadeDB
 
 ## Quick Start
 
+### Run Directly with curl
+
+**One-liner (non-interactive):**
+```bash
+curl -fsSL https://github.com/ArcadeData/arcadedb/releases/download/26.1.1/arcadedb-builder.sh | bash -s -- --version=26.1.1 --modules=gremlin,studio
+```
+
+**Download and run interactively:**
+```bash
+curl -fsSLO https://github.com/ArcadeData/arcadedb/releases/download/26.1.1/arcadedb-builder.sh
+chmod +x arcadedb-builder.sh
+./arcadedb-builder.sh
+```
+
+**Dry run (preview without building):**
+```bash
+curl -fsSL https://github.com/ArcadeData/arcadedb/releases/download/26.1.1/arcadedb-builder.sh | bash -s -- --version=26.1.1 --modules=gremlin --dry-run
+```
+
 ### Interactive Mode
 
 ```bash
@@ -32,7 +51,7 @@ The script will prompt for:
 ### CLI Mode
 
 ```bash
-./arcadedb-builder.sh --version=26.1.0 --modules=gremlin,postgresw,studio
+./arcadedb-builder.sh --version=26.1.1 --modules=gremlin,postgresw,studio
 ```
 
 ## Available Modules
@@ -58,14 +77,14 @@ The script will prompt for:
 ### Minimal Build (PostgreSQL only)
 
 ```bash
-./arcadedb-builder.sh --version=26.1.0 --modules=postgresw
+./arcadedb-builder.sh --version=26.1.1 --modules=postgresw
 ```
 
 ### Development Build
 
 ```bash
 ./arcadedb-builder.sh \
-  --version=26.1.0 \
+  --version=26.1.1 \
   --modules=console,gremlin,studio \
   --output-name=arcadedb-dev
 ```
@@ -74,7 +93,7 @@ The script will prompt for:
 
 ```bash
 ./arcadedb-builder.sh \
-  --version=26.1.0 \
+  --version=26.1.1 \
   --modules=postgresw,metrics \
   --output-name=arcadedb-prod
 ```
@@ -83,7 +102,7 @@ The script will prompt for:
 
 ```bash
 ./arcadedb-builder.sh \
-  --version=26.1.0 \
+  --version=26.1.1 \
   --modules=gremlin,studio \
   --quiet \
   --skip-docker \
@@ -94,7 +113,7 @@ The script will prompt for:
 
 ```bash
 ./arcadedb-builder.sh \
-  --version=26.1.0 \
+  --version=26.1.1 \
   --modules=gremlin,studio \
   --dockerfile-only
 ```
@@ -131,7 +150,7 @@ If you only want to use local modules but download the base from GitHub:
 
 ```bash
 ./arcadedb-builder.sh \
-    --version=26.1.0 \
+    --version=26.1.1 \
     --modules=gremlin,studio \
     --local-repo
 ```
