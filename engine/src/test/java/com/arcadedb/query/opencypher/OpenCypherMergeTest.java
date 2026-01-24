@@ -41,6 +41,7 @@ public class OpenCypherMergeTest {
     database.getSchema().createVertexType("Company");
     database.getSchema().createEdgeType("KNOWS");
     database.getSchema().createEdgeType("WORKS_AT");
+    database.getSchema().createEdgeType("in");
   }
 
   @AfterEach
@@ -156,5 +157,76 @@ public class OpenCypherMergeTest {
       count++;
     }
     assertThat(count).isEqualTo(1);
+  }
+
+  /**
+   * Test for issue #3217: Backticks in relationship types should be treated as escape characters,
+   * not included in the relationship type name.
+   */
+  @Test
+  void testMergeRelationshipWithBackticksInTypeName() {
+    // Create nodes first
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (a:Person {name: 'Alice'})");
+      database.command("opencypher", "CREATE (b:Company {name: 'TechCorp'})");
+    });
+
+    // MERGE relationship using backticks around the type name 'in' (which is a reserved keyword)
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}), (b:Company {name: 'TechCorp'}) " +
+          "MERGE (a)-[r:`in`]->(b) RETURN a, b, r");
+    });
+
+    // Verify the relationship type is "in" (without backticks)
+    final ResultSet verify = database.query("opencypher",
+        "MATCH (a:Person)-[r:`in`]->(b:Company) RETURN type(r) as relType");
+    assertThat(verify.hasNext()).isTrue();
+    final String relType = (String) verify.next().getProperty("relType");
+
+    // The relationship type should be "in", NOT "`in`" (backticks should not be included)
+    assertThat(relType).isEqualTo("in");
+    assertThat(relType).doesNotContain("`");
+
+    // MERGE again - should find the existing relationship (proves backticks are treated consistently)
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}), (b:Company {name: 'TechCorp'}) " +
+          "MERGE (a)-[r2:`in`]->(b) RETURN r2");
+    });
+
+    // Verify still only one relationship
+    final ResultSet countVerify = database.query("opencypher",
+        "MATCH (a:Person)-[r:`in`]->(b:Company) RETURN count(r) as cnt");
+    assertThat(countVerify.hasNext()).isTrue();
+    final Long count = (Long) countVerify.next().getProperty("cnt");
+    assertThat(count).isEqualTo(1L);
+  }
+
+  /**
+   * Test for issue #3217: Backticks in node labels should also be treated as escape characters.
+   */
+  @Test
+  void testCreateNodeWithBackticksInLabel() {
+    // Create edge type for reserved keyword
+    database.getSchema().createVertexType("select");
+
+    // Create node using backticks around the label 'select' (which is a reserved keyword)
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:`select` {id: 1})");
+    });
+
+    // Verify the node label is "select" (without backticks)
+    final ResultSet verify = database.query("opencypher",
+        "MATCH (n:`select`) RETURN labels(n) as nodeLabels");
+    assertThat(verify.hasNext()).isTrue();
+    final Object labelsObj = verify.next().getProperty("nodeLabels");
+    assertThat(labelsObj).isInstanceOf(java.util.List.class);
+
+    @SuppressWarnings("unchecked")
+    final java.util.List<String> labels = (java.util.List<String>) labelsObj;
+    assertThat(labels).hasSize(1);
+    assertThat(labels.get(0)).isEqualTo("select");
+    assertThat(labels.get(0)).doesNotContain("`");
   }
 }

@@ -317,10 +317,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (nameCtx.namespace() != null) {
       // Namespace is (symbolicNameString DOT)*
       for (final Cypher25Parser.SymbolicNameStringContext nsCtx : nameCtx.namespace().symbolicNameString()) {
-        procedureName.append(nsCtx.getText()).append(".");
+        procedureName.append(stripBackticks(nsCtx.getText())).append(".");
       }
     }
-    procedureName.append(nameCtx.symbolicNameString().getText());
+    procedureName.append(stripBackticks(nameCtx.symbolicNameString().getText()));
 
     // Parse arguments
     final List<Expression> arguments = new ArrayList<>();
@@ -366,7 +366,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     } else {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
         final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
-        final String alias = itemCtx.variable() != null ? itemCtx.variable().getText() : null;
+        final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
         items.add(new ReturnClause.ReturnItem(expr, alias));
       }
     }
@@ -403,7 +403,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public UnwindClause visitUnwindClause(final Cypher25Parser.UnwindClauseContext ctx) {
     // Grammar: UNWIND expression AS variable
     final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
-    final String variable = ctx.variable().getText();
+    final String variable = stripBackticks(ctx.variable().getText());
     return new UnwindClause(listExpression, variable);
   }
 
@@ -418,7 +418,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     } else {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
         final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
-        final String alias = itemCtx.variable() != null ? itemCtx.variable().getText() : null;
+        final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
         items.add(new ReturnClause.ReturnItem(expr, alias));
       }
     }
@@ -819,7 +819,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     String pathVariable = null;
     if (ctx.variable() != null) {
-      pathVariable = ctx.variable().getText();
+      pathVariable = stripBackticks(ctx.variable().getText());
     }
 
     // Visit the anonymous pattern to get the base path
@@ -876,7 +876,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Variable
     if (ctx.variable() != null) {
-      variable = ctx.variable().getText();
+      variable = stripBackticks(ctx.variable().getText());
     }
 
     // Label expression
@@ -901,7 +901,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Variable
     if (ctx.variable() != null) {
-      variable = ctx.variable().getText();
+      variable = stripBackticks(ctx.variable().getText());
     }
 
     // Label expression (relationship types)
@@ -999,7 +999,38 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Remove leading colon(s) and split by |
     final String cleanText = text.replaceAll("^:+", "");
-    return Arrays.asList(cleanText.split("\\|"));
+    final String[] parts = cleanText.split("\\|");
+
+    // Strip backticks from each label if present
+    final List<String> labels = new ArrayList<>();
+    for (String part : parts) {
+      labels.add(stripBackticks(part));
+    }
+    return labels;
+  }
+
+  /**
+   * Strips backticks from an escaped symbolic name.
+   * Handles both regular backticks and double backticks (escaped backticks).
+   *
+   * @param name the name potentially wrapped in backticks
+   * @return the name without backticks
+   */
+  private String stripBackticks(final String name) {
+    if (name == null || name.length() < 2) {
+      return name;
+    }
+
+    // Check if wrapped in backticks
+    if (name.startsWith("`") && name.endsWith("`")) {
+      // Remove outer backticks
+      String inner = name.substring(1, name.length() - 1);
+      // Replace double backticks (escaped backticks) with single backticks
+      inner = inner.replace("``", "`");
+      return inner;
+    }
+
+    return name;
   }
 
   private Object evaluateExpression(final Cypher25Parser.ExpressionContext ctx) {
