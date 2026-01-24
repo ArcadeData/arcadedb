@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.function.graph;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -43,7 +44,7 @@ public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
     super(NAME);
   }
 
-  public LinkedList<Vertex> execute(final Object thisObj, final Identifiable currentRecord, final Object currentResult,
+  public LinkedList<RID> execute(final Object thisObj, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext context) {
     return new SQLFunctionAstar().execute(thisObj, currentRecord, currentResult, toAStarParams(params), context);
   }

@@ -20,9 +20,9 @@ package com.arcadedb.query.sql.function.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -191,16 +191,16 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v1, v4, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v1, v4, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
       assertThat(result).hasSize(4);
-      assertThat(result.getFirst()).isEqualTo(v1);
-      assertThat(result.get(1)).isEqualTo(v2);
-      assertThat(result.get(2)).isEqualTo(v3);
-      assertThat(result.get(3)).isEqualTo(v4);
+      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v2.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v3.getIdentity());
+      assertThat(result.get(3)).isEqualTo(v4.getIdentity());
     });
   }
 
@@ -216,14 +216,14 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(v1);
-      assertThat(result.get(1)).isEqualTo(v5);
-      assertThat(result.get(2)).isEqualTo(v6);
+      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v5.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v6.getIdentity());
     });
   }
 
@@ -240,15 +240,15 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(v1);
-      assertThat(result.get(1)).isEqualTo(v5);
-      assertThat(result.get(2)).isEqualTo(v6);
+      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v5.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v6.getIdentity());
     });
   }
 
@@ -265,15 +265,15 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon", "alt" });
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(v1);
-      assertThat(result.get(1)).isEqualTo(v5);
-      assertThat(result.get(2)).isEqualTo(v6);
+      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v5.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v6.getIdentity());
     });
   }
 
@@ -290,15 +290,15 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v3, v5, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v3, v5, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(v3);
-      assertThat(result.get(1)).isEqualTo(v6);
-      assertThat(result.get(2)).isEqualTo(v5);
+      assertThat(result.getFirst()).isEqualTo(v3.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v6.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v5.getIdentity());
     });
   }
 
@@ -315,18 +315,18 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
       assertThat(result).hasSize(6);
-      assertThat(result.getFirst()).isEqualTo(v6);
-      assertThat(result.get(1)).isEqualTo(v5);
-      assertThat(result.get(2)).isEqualTo(v2);
-      assertThat(result.get(3)).isEqualTo(v3);
-      assertThat(result.get(4)).isEqualTo(v4);
-      assertThat(result.get(5)).isEqualTo(v1);
+      assertThat(result.getFirst()).isEqualTo(v6.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v5.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v2.getIdentity());
+      assertThat(result.get(3)).isEqualTo(v3.getIdentity());
+      assertThat(result.get(4)).isEqualTo(v4.getIdentity());
+      assertThat(result.get(5)).isEqualTo(v1.getIdentity());
     });
   }
 
@@ -344,18 +344,18 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, "EucliDEAN");
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
       assertThat(result).hasSize(6);
-      assertThat(result.getFirst()).isEqualTo(v6);
-      assertThat(result.get(1)).isEqualTo(v5);
-      assertThat(result.get(2)).isEqualTo(v2);
-      assertThat(result.get(3)).isEqualTo(v3);
-      assertThat(result.get(4)).isEqualTo(v4);
-      assertThat(result.get(5)).isEqualTo(v1);
+      assertThat(result.getFirst()).isEqualTo(v6.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v5.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v2.getIdentity());
+      assertThat(result.get(3)).isEqualTo(v3.getIdentity());
+      assertThat(result.get(4)).isEqualTo(v4.getIdentity());
+      assertThat(result.get(5)).isEqualTo(v1.getIdentity());
     });
   }
 
@@ -374,17 +374,17 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, SQLHeuristicFormula.EUCLIDEANNOSQR);
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
       assertThat(result).hasSize(5);
-      assertThat(result.getFirst()).isEqualTo(v6);
-      assertThat(result.get(1)).isEqualTo(v5);
-      assertThat(result.get(2)).isEqualTo(v2);
-      assertThat(result.get(3)).isEqualTo(v4);
-      assertThat(result.get(4)).isEqualTo(v1);
+      assertThat(result.getFirst()).isEqualTo(v6.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v5.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v2.getIdentity());
+      assertThat(result.get(3)).isEqualTo(v4.getIdentity());
+      assertThat(result.get(4)).isEqualTo(v1.getIdentity());
     });
   }
 
@@ -403,15 +403,15 @@ class SQLFunctionAstarTest {
       options.put(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, SQLHeuristicFormula.MAXAXIS);
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
-      final List<Vertex> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
+      final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
       try (final ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 16L);
       }
 
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(v6);
-      assertThat(result.get(1)).isEqualTo(v5);
-      assertThat(result.get(2)).isEqualTo(v1);
+      assertThat(result.getFirst()).isEqualTo(v6.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v5.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v1.getIdentity());
     });
   }
 

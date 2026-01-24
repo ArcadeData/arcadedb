@@ -20,9 +20,9 @@ package com.arcadedb.query.sql.function.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
@@ -77,14 +77,14 @@ public class SQLFunctionDijkstraTest {
   void execute() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionDijkstraTest", (graph) -> {
       setUp(graph);
-      final List<Vertex> result = functionDijkstra.execute(null, null, null, new Object[] { v1, v4, "'weight'" },
+      final List<RID> result = functionDijkstra.execute(null, null, null, new Object[] { v1, v4, "'weight'" },
           new BasicCommandContext());
 
       assertThat(result).hasSize(4);
-      assertThat(result.getFirst()).isEqualTo(v1);
-      assertThat(result.get(1)).isEqualTo(v2);
-      assertThat(result.get(2)).isEqualTo(v3);
-      assertThat(result.get(3)).isEqualTo(v4);
+      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(1)).isEqualTo(v2.getIdentity());
+      assertThat(result.get(2)).isEqualTo(v3.getIdentity());
+      assertThat(result.get(3)).isEqualTo(v4.getIdentity());
     });
   }
 }

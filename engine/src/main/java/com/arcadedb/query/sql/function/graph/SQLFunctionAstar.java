@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.function.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -66,7 +67,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     super(NAME);
   }
 
-  public LinkedList<Vertex> execute(final Object self, final Identifiable currentRecord, final Object currentResult,
+  public LinkedList<RID> execute(final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext ctx) {
     context = ctx;
     final SQLFunctionAstar context = this;
@@ -132,7 +133,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
   }
 
-  private LinkedList<Vertex> internalExecute(final CommandContext ctx, final Database graph) {
+  private LinkedList<RID> internalExecute(final CommandContext ctx, final Database graph) {
 
     final Vertex start = paramSourceVertex;
     final Vertex goal = paramDestinationVertex;
