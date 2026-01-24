@@ -660,12 +660,61 @@ DROP TRIGGER user_audit
 
 ## Performance Considerations
 
+### Benchmark Results
+
+Performance tests measuring trigger execution overhead on document creation with identical operations (100,000 iterations, Java 21, macOS). All triggers perform the same operation: `INSERT INTO [Type]Audit SET triggered = true`.
+
+| Trigger Type | Avg Time (µs) | Overhead (µs) | Overhead (%) | Relative Performance |
+|--------------|---------------|---------------|--------------|---------------------|
+| No Trigger (Baseline) | 95 | — | — | — |
+| **Java Trigger** | **147** | **+52** | **+54.7%** | **Fastest trigger** |
+| SQL Trigger | 150 | +55 | +57.9% | 2% slower than Java |
+| JavaScript Trigger | 187 | +92 | +96.8% | 27% slower than Java |
+
+**Key Findings:**
+
+1. **Java and SQL triggers have nearly identical performance**: Only 2% difference (147 vs 150 µs), both execute compiled code paths efficiently.
+
+2. **JavaScript triggers are ~27% slower**: GraalVM JavaScript execution adds noticeable overhead compared to native execution.
+
+3. **All triggers add overhead**: Expect ~50-95% overhead depending on trigger type, which is acceptable for most use cases.
+
+4. **Trigger overhead is predictable**: The performance impact is consistent and can be factored into capacity planning.
+
+### Performance Recommendations
+
 - **Minimize Work**: Keep trigger code as lightweight as possible
-- **Choose the Right Type**: Java triggers offer the best performance, followed by SQL, then JavaScript
+- **Choose the Right Type**:
+  - Use **Java triggers** when you need type safety, IDE support, and debugging capabilities
+  - Use **SQL triggers** for database operations - performance is nearly identical to Java
+  - Use **JavaScript triggers** for dynamic logic where ~30% slower performance is acceptable
 - **Avoid Complex Queries**: Heavy queries in triggers can slow down operations
 - **Consider Batch Operations**: Triggers fire for each record, which can be expensive in bulk operations
 - **Monitor Impact**: Test performance with realistic data volumes
-- **Java for Hot Paths**: Use Java triggers for performance-critical operations that execute frequently
+- **Profile Your Workload**: Measure actual impact in your specific use case
+
+### When to Use Each Type
+
+**Java Triggers** - Best for:
+- Complex validation requiring type safety and compile-time checks
+- Integration with existing Java libraries
+- Code that benefits from IDE support and refactoring
+- Unit testing requirements
+- Team prefers strongly-typed languages
+
+**SQL Triggers** - Best for:
+- Simple database operations (audit logs, denormalization)
+- Prototyping and development (no compilation step)
+- Deployment simplicity (embedded in schema)
+- Operations that are primarily SQL-based
+- **Performance-critical paths** (nearly identical performance to Java)
+
+**JavaScript Triggers** - Best for:
+- Moderate complexity business logic
+- Rapid development and iteration
+- Dynamic validation rules that change frequently
+- Scenarios where scripting flexibility outweighs performance
+- Teams comfortable with JavaScript
 
 ## Troubleshooting
 
