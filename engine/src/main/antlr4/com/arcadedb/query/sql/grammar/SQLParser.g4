@@ -743,7 +743,7 @@ exportDatabaseStatement
     ;
 
 backupDatabaseStatement
-    : BACKUP DATABASE url (WITH settingList)?
+    : BACKUP DATABASE (url)? (WITH settingList)?
     ;
 
 checkDatabaseStatement
