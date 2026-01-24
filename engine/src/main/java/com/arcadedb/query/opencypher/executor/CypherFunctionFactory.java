@@ -118,11 +118,21 @@ public class CypherFunctionFactory {
    * Get a function executor for the given Cypher function name.
    */
   public CypherFunctionExecutor getFunctionExecutor(final String cypherFunctionName) {
+    return getFunctionExecutor(cypherFunctionName, false);
+  }
+
+  /**
+   * Get a function executor for a Cypher function with optional DISTINCT handling.
+   *
+   * @param cypherFunctionName the function name
+   * @param distinct           true if DISTINCT keyword was used
+   */
+  public CypherFunctionExecutor getFunctionExecutor(final String cypherFunctionName, final boolean distinct) {
     final String functionName = cypherFunctionName.toLowerCase();
 
     // Handle Cypher-specific functions
     if (isCypherSpecificFunction(functionName)) {
-      return createCypherSpecificExecutor(functionName);
+      return createCypherSpecificExecutor(functionName, distinct);
     }
 
     // Get SQL function (either mapped or direct)
@@ -158,8 +168,11 @@ public class CypherFunctionFactory {
 
   /**
    * Create executor for Cypher-specific functions.
+   *
+   * @param functionName the function name (lowercase)
+   * @param distinct     true if DISTINCT keyword was used (for aggregation functions)
    */
-  private CypherFunctionExecutor createCypherSpecificExecutor(final String functionName) {
+  private CypherFunctionExecutor createCypherSpecificExecutor(final String functionName, final boolean distinct) {
     return switch (functionName) {
       // Graph functions
       case "id" -> new IdFunction();
@@ -190,7 +203,7 @@ public class CypherFunctionFactory {
       case "tofloat" -> new ToFloatFunction();
       case "toboolean" -> new ToBooleanFunction();
       // Aggregation functions
-      case "collect" -> new CollectFunction();
+      case "collect" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
       default -> throw new CommandExecutionException("Cypher function not implemented: " + functionName);
     };
   }
@@ -822,6 +835,83 @@ public class CypherFunctionFactory {
     @Override
     public Object getAggregatedResult() {
       return new ArrayList<>(collectedValues);
+    }
+  }
+
+  /**
+   * collect(DISTINCT ...) aggregation function - collects unique values into a list.
+   * Uses LinkedHashSet to maintain insertion order while eliminating duplicates.
+   * Example: MATCH (n:Person) RETURN collect(DISTINCT n.name)
+   */
+  private static class CollectDistinctFunction implements CypherFunctionExecutor {
+    private final Set<Object> distinctValues = new LinkedHashSet<>();
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1) {
+        throw new CommandExecutionException("collect(DISTINCT ...) requires exactly one argument");
+      }
+      final Object value = args[0];
+      // Only add non-null values, and use identity for Identifiable objects
+      if (value != null) {
+        if (value instanceof Identifiable) {
+          // Use RID as the key for deduplication to handle proxies and loaded records
+          distinctValues.add(new IdentifiableWrapper((Identifiable) value));
+        } else {
+          distinctValues.add(value);
+        }
+      }
+      return null; // Intermediate result doesn't matter
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return true;
+    }
+
+    @Override
+    public Object getAggregatedResult() {
+      // Unwrap IdentifiableWrapper back to the original objects
+      final List<Object> result = new ArrayList<>(distinctValues.size());
+      for (final Object value : distinctValues) {
+        if (value instanceof IdentifiableWrapper) {
+          result.add(((IdentifiableWrapper) value).getIdentifiable());
+        } else {
+          result.add(value);
+        }
+      }
+      return result;
+    }
+  }
+
+  /**
+   * Wrapper for Identifiable objects that uses RID for equals/hashCode.
+   * This ensures proper deduplication even when the same record is loaded multiple times.
+   */
+  private static class IdentifiableWrapper {
+    private final Identifiable identifiable;
+
+    IdentifiableWrapper(final Identifiable identifiable) {
+      this.identifiable = identifiable;
+    }
+
+    Identifiable getIdentifiable() {
+      return identifiable;
+    }
+
+    @Override
+    public boolean equals(final Object obj) {
+      if (this == obj)
+        return true;
+      if (obj == null || getClass() != obj.getClass())
+        return false;
+      final IdentifiableWrapper other = (IdentifiableWrapper) obj;
+      return identifiable.getIdentity().equals(other.identifiable.getIdentity());
+    }
+
+    @Override
+    public int hashCode() {
+      return identifiable.getIdentity().hashCode();
     }
   }
 

@@ -106,7 +106,9 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       // Create aggregators for this group
       final Map<String, CypherFunctionExecutor> aggregators = new HashMap<>();
       for (final AggregationItem aggItem : aggregationItems) {
-        final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(aggItem.funcExpr.getFunctionName());
+        // Pass the DISTINCT flag to create the appropriate function executor
+        final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(
+            aggItem.funcExpr.getFunctionName(), aggItem.funcExpr.isDistinct());
         aggregators.put(aggItem.outputName, executor);
       }
 
