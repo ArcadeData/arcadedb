@@ -4367,19 +4367,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     } else if (ctx.CONTENT() != null) {
       ops.type = UpdateOperations.TYPE_CONTENT;
-      // CONTENT also uses json field
-      final Expression expr = (Expression) visit(ctx.expression());
-
-      // Extract Json from expression (same logic as MERGE)
-      if (expr.json != null) {
-        // Direct JSON literal from jsonLiteral alternative
-        ops.json = expr.json;
-      } else if (expr.mathExpression instanceof BaseExpression) {
-        // JSON literal parsed as baseExpression mapLit alternative
-        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
-        if (baseExpr.expression != null && baseExpr.expression.json != null) {
-          ops.json = baseExpr.expression.json;
-        }
+      // CONTENT accepts json, jsonArray, or inputParameter (same as INSERT)
+      if (ctx.json() != null) {
+        ops.json = (Json) visit(ctx.json());
+      } else if (ctx.jsonArray() != null) {
+        ops.jsonArray = (JsonArray) visit(ctx.jsonArray());
+      } else if (ctx.inputParameter() != null) {
+        ops.inputParam = (InputParameter) visit(ctx.inputParameter());
       }
     }
 
