@@ -51,6 +51,7 @@ import java.util.NoSuchElementException;
 public class MatchNodeStep extends AbstractExecutionStep {
   private final String variable;
   private final NodePattern pattern;
+  private final String idFilter; // Optional ID filter to apply (e.g., "#1:0")
 
   /**
    * Creates a match node step.
@@ -60,9 +61,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param context  command context
    */
   public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context) {
+    this(variable, pattern, context, null);
+  }
+
+  /**
+   * Creates a match node step with ID filter optimization.
+   *
+   * @param variable variable name to bind vertices to
+   * @param pattern  node pattern to match
+   * @param context  command context
+   * @param idFilter optional ID filter to apply (e.g., "#1:0")
+   */
+  public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context, final String idFilter) {
     super(context);
     this.variable = variable;
     this.pattern = pattern;
+    this.idFilter = idFilter;
   }
 
   @Override
@@ -192,8 +206,30 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Gets an iterator for vertices matching the pattern.
    * OPTIMIZATION: Uses indexes for property equality constraints when available.
    * Supports composite indexes with partial key matching (leftmost prefix).
+   * OPTIMIZATION: Uses ID filter when available to return single vertex.
    */
   private Iterator<Identifiable> getVertexIterator() {
+    // OPTIMIZATION: If ID filter is present, look up the specific vertex by ID
+    // This is critical for performance when matching by ID (e.g., WHERE ID(a) = "#1:0")
+    // Without this optimization, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y
+    // would create a Cartesian product of ALL vertices before filtering
+    if (idFilter != null && !idFilter.isEmpty()) {
+      try {
+        final com.arcadedb.database.RID rid = new com.arcadedb.database.RID(context.getDatabase(), idFilter);
+        final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
+        if (vertex != null) {
+          // Return single-element iterator for the matched vertex
+          return List.of(vertex).iterator();
+        } else {
+          // ID not found - return empty iterator
+          return List.<Identifiable>of().iterator();
+        }
+      } catch (final Exception e) {
+        // Invalid ID format - return empty iterator
+        return List.<Identifiable>of().iterator();
+      }
+    }
+
     if (pattern.hasLabels()) {
       final String label = pattern.getFirstLabel();
 
