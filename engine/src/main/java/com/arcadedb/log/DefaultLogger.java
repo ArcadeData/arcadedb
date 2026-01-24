@@ -38,7 +38,9 @@ public class DefaultLogger implements Logger {
   private static final String FILE_LOG_PROPERTIES          = "arcadedb-log" +
       ".properties";
 
-  private       boolean                                         initialized  = false;
+  private volatile boolean initialized = false;
+  private volatile boolean closed      = false;
+
   private final ConcurrentMap<String, java.util.logging.Logger> loggersCache =
       new ConcurrentHashMap<>();
 
@@ -47,6 +49,7 @@ public class DefaultLogger implements Logger {
       return;
 
     initialized = true;
+    closed = false;
     final File logDir = new File("./log");
 
     try {
@@ -59,6 +62,10 @@ public class DefaultLogger implements Logger {
     }
 
     installCustomFormatter();
+  }
+
+  public void close() {
+    closed = true;
   }
 
   public void installCustomFormatter() {
@@ -131,12 +138,17 @@ public class DefaultLogger implements Logger {
   public void log(final Object requester, final Level level, String message, final Throwable exception,
                   final String context,
                   final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
-                  final Object arg6,
-                  final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
-                  final Object arg12,
-                  final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+                  final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
+                  final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15,
+                  final Object arg16, final Object arg17) {
     if (message == null)
       return;
+
+    if (closed) {
+      final String msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+      System.err.println(msg);
+      return;
+    }
 
     init();
 
@@ -215,10 +227,17 @@ public class DefaultLogger implements Logger {
   }
 
   public void log(final Object requester, final Level level, String message, final Throwable exception,
-                  final String context,
-                  final Object... args) {
+                  final String context, final Object... args) {
     if (message == null)
       return;
+
+    if (closed) {
+      String msg = message;
+      if (args.length > 0)
+        msg = message.formatted(args);
+      System.err.println(msg);
+      return;
+    }
 
     init();
 
