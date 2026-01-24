@@ -229,8 +229,19 @@ public class FullTextQueryExecutor {
   }
 
   private void collectTermMatches(final TermQuery query, final Map<RID, AtomicInteger> scoreMap) {
-    final String term = query.getTerm().text();
-    final IndexCursor cursor = index.get(new Object[] { term });
+    final String field = query.getTerm().field();
+    final String text = query.getTerm().text();
+
+    // For field-specific queries (e.g., "title:java"), prepend field name
+    // Multi-property indexes store tokens as "fieldName:token"
+    final String searchKey;
+    if (field != null && !field.isEmpty() && !"content".equals(field)) {
+      searchKey = field + ":" + text;
+    } else {
+      searchKey = text;
+    }
+
+    final IndexCursor cursor = index.get(new Object[] { searchKey });
     while (cursor.hasNext()) {
       final RID rid = cursor.next().getIdentity();
       scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
