@@ -222,11 +222,10 @@ Create detailed audit logs with JavaScript:
 CREATE TRIGGER audit_update AFTER UPDATE ON TYPE Product
 EXECUTE JAVASCRIPT '
   database.command("sql",
-    "INSERT INTO AuditLog SET " +
-    "action = \"product_updated\", " +
-    "productId = \"" + record["@rid"] + "\", " +
-    "productName = \"" + record.name + "\", " +
-    "timestamp = sysdate()"
+    "INSERT INTO AuditLog SET action = ?, productId = ?, productName = ?, timestamp = sysdate()",
+    "product_updated",
+    record["@rid"],
+    record.name
   );
 '
 ```
