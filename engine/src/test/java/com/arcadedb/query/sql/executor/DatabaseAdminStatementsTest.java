@@ -166,4 +166,14 @@ public class DatabaseAdminStatementsTest {
     BackupDatabaseStatement stmt = (BackupDatabaseStatement) cache.get(sql);
     assertThat(stmt).isNotNull();
   }
+
+  @Test
+  public void testBackupDatabaseWithoutUrl() {
+    // This should work - the URL is optional and defaults to server backup directory
+    String sql = "BACKUP DATABASE";
+
+    BackupDatabaseStatement stmt = (BackupDatabaseStatement) cache.get(sql);
+    assertThat(stmt).isNotNull();
+    assertThat(stmt.url).isNull();
+  }
 }
