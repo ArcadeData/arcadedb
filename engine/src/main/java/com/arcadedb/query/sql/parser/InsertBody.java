@@ -170,7 +170,7 @@ public class InsertBody extends SimpleNode {
     final Map<String, Object> json = super.toJSON();
 
     if (identifierList != null) {
-      final java.util.List<Object> identifierListJson = new java.util.ArrayList<>();
+      final List<Object> identifierListJson = new ArrayList<>();
       for (Object item : identifierList) {
         if (item instanceof SimpleNode) {
           identifierListJson.add(((SimpleNode) item).toJSON());
@@ -181,7 +181,7 @@ public class InsertBody extends SimpleNode {
       json.put("identifierList", identifierListJson);
     }
     if (valueExpressions != null) {
-      final java.util.List<Object> valueExpressionsJson = new java.util.ArrayList<>();
+      final List<Object> valueExpressionsJson = new ArrayList<>();
       for (Object item : valueExpressions) {
         if (item instanceof SimpleNode) {
           valueExpressionsJson.add(((SimpleNode) item).toJSON());
@@ -192,7 +192,7 @@ public class InsertBody extends SimpleNode {
       json.put("valueExpressions", valueExpressionsJson);
     }
     if (setExpressions != null) {
-      final java.util.List<Object> setExpressionsJson = new java.util.ArrayList<>();
+      final List<Object> setExpressionsJson = new ArrayList<>();
       for (Object item : setExpressions) {
         if (item instanceof SimpleNode) {
           setExpressionsJson.add(((SimpleNode) item).toJSON());

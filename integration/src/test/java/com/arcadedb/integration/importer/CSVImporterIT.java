@@ -20,8 +20,12 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.nio.file.Files;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -144,17 +148,17 @@ class CSVImporterIT {
       // Verify specific edges exist using String IDs
       var vertexA = db.lookupByKey("Node", "Id", "A").next().getRecord().asVertex();
       assertThat(vertexA.get("First Name")).isEqualTo("Jay");
-      assertThat(vertexA.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Relationship"))
+      assertThat(vertexA.countEdges(Vertex.DIRECTION.OUT, "Relationship"))
           .as("Vertex A should have 2 outgoing edges").isEqualTo(2);
 
       var vertexB = db.lookupByKey("Node", "Id", "B").next().getRecord().asVertex();
-      assertThat(vertexB.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Relationship"))
+      assertThat(vertexB.countEdges(Vertex.DIRECTION.OUT, "Relationship"))
           .as("Vertex B should have 1 outgoing edge (B->E)").isEqualTo(1);
-      assertThat(vertexB.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Relationship"))
+      assertThat(vertexB.countEdges(Vertex.DIRECTION.IN, "Relationship"))
           .as("Vertex B should have 1 incoming edge (A->B)").isEqualTo(1);
 
       var vertexE = db.lookupByKey("Node", "Id", "E").next().getRecord().asVertex();
-      assertThat(vertexE.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Relationship"))
+      assertThat(vertexE.countEdges(Vertex.DIRECTION.IN, "Relationship"))
           .as("Vertex E should have 1 incoming edge (B->E)").isEqualTo(1);
     }
 
@@ -201,17 +205,17 @@ class CSVImporterIT {
       // Verify specific edges exist
       var vertex0 = db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex();
       assertThat(vertex0.get("First Name")).isEqualTo("Jay");
-      assertThat(vertex0.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Relationship"))
+      assertThat(vertex0.countEdges(Vertex.DIRECTION.OUT, "Relationship"))
           .as("Vertex 0 should have 2 outgoing edges").isEqualTo(2);
 
       var vertex1 = db.lookupByKey("Node", "Id", 1).next().getRecord().asVertex();
-      assertThat(vertex1.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Relationship"))
+      assertThat(vertex1.countEdges(Vertex.DIRECTION.OUT, "Relationship"))
           .as("Vertex 1 should have 1 outgoing edge (the last edge 1->4)").isEqualTo(1);
-      assertThat(vertex1.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Relationship"))
+      assertThat(vertex1.countEdges(Vertex.DIRECTION.IN, "Relationship"))
           .as("Vertex 1 should have 1 incoming edge (0->1)").isEqualTo(1);
 
       var vertex4 = db.lookupByKey("Node", "Id", 4).next().getRecord().asVertex();
-      assertThat(vertex4.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Relationship"))
+      assertThat(vertex4.countEdges(Vertex.DIRECTION.IN, "Relationship"))
           .as("Vertex 4 should have 1 incoming edge (1->4)").isEqualTo(1);
     }
 
@@ -256,12 +260,12 @@ class CSVImporterIT {
       db.command("sql", "CREATE INDEX ON Supervisor (id) UNIQUE");
 
       // Create test CSV files
-      final java.io.File tempDir = new java.io.File("target/test-csv-issue2267");
+      final File tempDir = new File("target/test-csv-issue2267");
       tempDir.mkdirs();
 
       // Create tenants.csv
-      final java.io.File tenantsFile = new java.io.File(tempDir, "tenants.csv");
-      java.nio.file.Files.writeString(tenantsFile.toPath(), """
+      final File tenantsFile = new File(tempDir, "tenants.csv");
+      Files.writeString(tenantsFile.toPath(), """
           @class,id,name
           Tenant,0,Tenant-1
           Tenant,1,Tenant-2
@@ -272,8 +276,8 @@ class CSVImporterIT {
           """);
 
       // Create supervisors.csv
-      final java.io.File supervisorsFile = new java.io.File(tempDir, "supervisors.csv");
-      java.nio.file.Files.writeString(supervisorsFile.toPath(), """
+      final File supervisorsFile = new File(tempDir, "supervisors.csv");
+      Files.writeString(supervisorsFile.toPath(), """
           @class,id,name
           Supervisor,10,Supervisor-1
           Supervisor,11,Supervisor-2
@@ -284,8 +288,8 @@ class CSVImporterIT {
           """);
 
       // Create edges.csv (Tenant -> Supervisor)
-      final java.io.File edgesFile = new java.io.File(tempDir, "edges.csv");
-      java.nio.file.Files.writeString(edgesFile.toPath(), """
+      final File edgesFile = new File(tempDir, "edges.csv");
+      Files.writeString(edgesFile.toPath(), """
           Tenant,Supervisor
           0,10
           1,11
@@ -296,8 +300,8 @@ class CSVImporterIT {
           """);
 
       // Create empty.csv (required for the import command syntax)
-      final java.io.File emptyFile = new java.io.File(tempDir, "empty.csv");
-      java.nio.file.Files.writeString(emptyFile.toPath(), "");
+      final File emptyFile = new File(tempDir, "empty.csv");
+      Files.writeString(emptyFile.toPath(), "");
 
       // Import Tenants in first command
       db.command("sql", String.format("""
@@ -326,12 +330,12 @@ class CSVImporterIT {
 
       // Verify specific edge connections
       var tenant0 = db.lookupByKey("Tenant", "id", 0L).next().getRecord().asVertex();
-      assertThat(tenant0.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Belongs"))
+      assertThat(tenant0.countEdges(Vertex.DIRECTION.OUT, "Belongs"))
           .as("Tenant 0 should have 1 outgoing Belongs edge to Supervisor 10")
           .isEqualTo(1);
 
       var supervisor10 = db.lookupByKey("Supervisor", "id", 10L).next().getRecord().asVertex();
-      assertThat(supervisor10.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "Belongs"))
+      assertThat(supervisor10.countEdges(Vertex.DIRECTION.IN, "Belongs"))
           .as("Supervisor 10 should have 1 incoming Belongs edge from Tenant 0")
           .isEqualTo(1);
 

@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -98,7 +99,7 @@ public class RecordAttribute extends SimpleNode {
       // For value-based results (like plain strings in CONTAINS conditions), return the value
       if (currentRecord.getElement().isPresent()) {
         return currentRecord.getElement().get();
-      } else if (currentRecord instanceof com.arcadedb.query.sql.executor.ResultInternal internal) {
+      } else if (currentRecord instanceof ResultInternal internal) {
         // Try to get the raw value if no element is present
         return internal.getValue();
       }

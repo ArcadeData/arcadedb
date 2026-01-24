@@ -432,7 +432,7 @@ public class FunctionCall extends SimpleNode {
       json.put("name", name.toJSON());
     }
     if (params != null) {
-      final java.util.List<Object> paramsJson = new java.util.ArrayList<>();
+      final List<Object> paramsJson = new ArrayList<>();
       for (Object item : params) {
         if (item instanceof SimpleNode) {
           paramsJson.add(((SimpleNode) item).toJSON());

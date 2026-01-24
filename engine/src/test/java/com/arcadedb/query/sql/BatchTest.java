@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -547,7 +549,7 @@ class BatchTest extends TestHelper {
         final Object value = row.getProperty("value");
         assertThat(value).isNotNull();
         // Verify the result contains the expected document
-        if (value instanceof java.util.List<?> list) {
+        if (value instanceof List<?> list) {
           assertThat(list).isNotEmpty();
           final Object firstItem = list.getFirst();
           if (firstItem instanceof Result r) {

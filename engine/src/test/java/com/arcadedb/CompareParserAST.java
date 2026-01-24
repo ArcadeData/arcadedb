@@ -5,6 +5,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.StatementCache;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -29,14 +30,14 @@ public class CompareParserAST {
           "RETURN manager";
 
       System.out.println("=== ANTLR Parser AST ===");
-      com.arcadedb.GlobalConfiguration.SQL_PARSER_IMPLEMENTATION.setValue("antlr");
+      GlobalConfiguration.SQL_PARSER_IMPLEMENTATION.setValue("antlr");
       StatementCache cacheAntlr = new StatementCache(database, 0);
       MatchStatement stmtAntlr = (MatchStatement) cacheAntlr.get(query);
       Map<String, Object> jsonAntlr = stmtAntlr.toJSON();
       printJSON(jsonAntlr, 0);
 
       System.out.println("\n\n=== JavaCC Parser AST ===");
-      com.arcadedb.GlobalConfiguration.SQL_PARSER_IMPLEMENTATION.setValue("javacc");
+      GlobalConfiguration.SQL_PARSER_IMPLEMENTATION.setValue("javacc");
       StatementCache cacheJavaCC = new StatementCache(database, 0);
       MatchStatement stmtJavaCC = (MatchStatement) cacheJavaCC.get(query);
       Map<String, Object> jsonJavaCC = stmtJavaCC.toJSON();
@@ -58,10 +59,10 @@ public class CompareParserAST {
         if (entry.getValue() instanceof Map) {
           System.out.println(indentStr + entry.getKey() + ":");
           printJSON(entry.getValue(), indent + 1);
-        } else if (entry.getValue() instanceof java.util.List) {
+        } else if (entry.getValue() instanceof List) {
           System.out.println(indentStr + entry.getKey() + ":");
           int i = 0;
-          for (Object item : (java.util.List<?>) entry.getValue()) {
+          for (Object item : (List<?>) entry.getValue()) {
             System.out.println(indentStr + "  [" + i++ + "]:");
             printJSON(item, indent + 2);
           }

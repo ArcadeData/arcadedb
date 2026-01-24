@@ -35,6 +35,7 @@ import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
@@ -283,7 +284,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
 
     // Search across all vertex types that have an index on the typeIdProperty
     for (final var type : database.getSchema().getTypes()) {
-      if (type instanceof com.arcadedb.schema.VertexType) {
+      if (type instanceof VertexType) {
         try {
           // Try to use an index lookup (faster if index exists)
           final var result = database.lookupByKey(type.getName(), settings.typeIdProperty, vertexKey);

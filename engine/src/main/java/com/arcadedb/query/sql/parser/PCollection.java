@@ -126,7 +126,7 @@ public class PCollection extends SimpleNode {
     final Map<String, Object> json = super.toJSON();
 
     if (expressions != null) {
-      final java.util.List<Object> expressionsJson = new java.util.ArrayList<>();
+      final List<Object> expressionsJson = new ArrayList<>();
       for (Object item : expressions) {
         if (item instanceof SimpleNode) {
           expressionsJson.add(((SimpleNode) item).toJSON());
