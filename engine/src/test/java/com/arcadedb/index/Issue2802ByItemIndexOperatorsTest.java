@@ -100,7 +100,7 @@ public class Issue2802ByItemIndexOperatorsTest extends TestHelper {
       // For multiple values, index is NOT used (by design) to ensure correct results
       String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINSALL [2, 3]")
           .next().getProperty("executionPlan").toString();
-      System.out.println("CONTAINSALL multi-value explain: " + explain);
+      //System.out.println("CONTAINSALL multi-value explain: " + explain);
       // This is expected - full scan with filter for correctness
       assertThat(explain).contains("FETCH FROM TYPE");
     });
@@ -120,7 +120,7 @@ public class Issue2802ByItemIndexOperatorsTest extends TestHelper {
       // For single value, index IS used
       String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINSALL [2]")
           .next().getProperty("executionPlan").toString();
-      System.out.println("CONTAINSALL single-value explain: " + explain);
+      //System.out.println("CONTAINSALL single-value explain: " + explain);
       assertThat(explain).contains("FETCH FROM INDEX");
     });
   }
@@ -140,7 +140,7 @@ public class Issue2802ByItemIndexOperatorsTest extends TestHelper {
       // Verify index is being used - this currently fails
       String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE 2 IN nums.a")
           .next().getProperty("executionPlan").toString();
-      System.out.println("IN explain: " + explain);
+      //System.out.println("IN explain: " + explain);
       assertThat(explain).contains("FETCH FROM INDEX");
     });
   }
@@ -157,7 +157,7 @@ public class Issue2802ByItemIndexOperatorsTest extends TestHelper {
       // NOT IN behavior with nested list properties may vary
       ResultSet result = database.query("sql", "SELECT FROM doc WHERE 2 NOT IN nums.a");
       long count = result.stream().count();
-      System.out.println("NOT IN count: " + count);
+      //System.out.println("NOT IN count: " + count);
       // Just verify query executes - exact semantics of NOT IN with nested properties
       // may need further investigation in a separate issue
     });
@@ -200,13 +200,13 @@ public class Issue2802ByItemIndexOperatorsTest extends TestHelper {
       // For multiple values, index is NOT used (by design)
       explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc WHERE tags CONTAINSALL ['apple', 'banana']")
           .next().getProperty("executionPlan").toString();
-      System.out.println("CONTAINSALL simple list explain: " + explain);
+      //System.out.println("CONTAINSALL simple list explain: " + explain);
       assertThat(explain).contains("FETCH FROM TYPE"); // Full scan with filter
 
       // Single value CONTAINSALL uses index
       explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc WHERE tags CONTAINSALL ['apple']")
           .next().getProperty("executionPlan").toString();
-      System.out.println("CONTAINSALL single value explain: " + explain);
+      //System.out.println("CONTAINSALL single value explain: " + explain);
       assertThat(explain).contains("FETCH FROM INDEX");
     });
   }
@@ -236,7 +236,7 @@ public class Issue2802ByItemIndexOperatorsTest extends TestHelper {
       // Verify index is being used
       String explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc2 WHERE 'apple' IN tags")
           .next().getProperty("executionPlan").toString();
-      System.out.println("IN simple list explain: " + explain);
+      //System.out.println("IN simple list explain: " + explain);
       assertThat(explain).contains("FETCH FROM INDEX");
     });
   }

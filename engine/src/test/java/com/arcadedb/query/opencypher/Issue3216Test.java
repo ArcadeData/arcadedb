@@ -86,9 +86,9 @@ class Issue3216Test {
       }
     });
 
-    System.out.println("Created database with vertices");
-    System.out.println("Source vertex ID: " + sourceId);
-    System.out.println("Target vertex ID: " + targetId);
+    //System.out.println("Created database with vertices");
+    //System.out.println("Source vertex ID: " + sourceId);
+    //System.out.println("Target vertex ID: " + targetId);
   }
 
   @AfterEach
@@ -130,7 +130,7 @@ class Issue3216Test {
     });
 
     long duration = System.currentTimeMillis() - startTime;
-    System.out.println("Query execution time: " + duration + "ms");
+    //System.out.println("Query execution time: " + duration + "ms");
 
     // This should execute quickly (under 500ms even on slow systems)
     // If it takes multiple seconds, there's a performance issue
@@ -175,7 +175,7 @@ class Issue3216Test {
     });
 
     long duration = System.currentTimeMillis() - startTime;
-    System.out.println("UNWIND query execution time: " + duration + "ms");
+    //System.out.println("UNWIND query execution time: " + duration + "ms");
 
     // This should also execute quickly
     assertThat(duration)
@@ -193,12 +193,12 @@ class Issue3216Test {
     // Count total vertices
     final ResultSet countRs = database.query("opencypher", "MATCH (n) RETURN count(n) as total");
     long totalVertices = ((Number) countRs.next().getProperty("total")).longValue();
-    System.out.println("Total vertices in database: " + totalVertices);
+    //System.out.println("Total vertices in database: " + totalVertices);
 
     // MATCH (a),(b) without WHERE creates Cartesian product
     final ResultSet rs = database.query("opencypher", "MATCH (a),(b) RETURN count(*) as total");
     long cartesianCount = ((Number) rs.next().getProperty("total")).longValue();
-    System.out.println("Cartesian product size: " + cartesianCount);
+    //System.out.println("Cartesian product size: " + cartesianCount);
 
     // Should be totalVertices * totalVertices
     assertThat(cartesianCount).isEqualTo(totalVertices * totalVertices);
@@ -221,7 +221,7 @@ class Issue3216Test {
       rs.next();
     });
     long duration1 = System.currentTimeMillis() - startTime1;
-    System.out.println("Method 1 (Cartesian product): " + duration1 + "ms");
+    //System.out.println("Method 1 (Cartesian product): " + duration1 + "ms");
 
     // Method 2: Separate MATCH clauses (should be faster)
     long startTime2 = System.currentTimeMillis();
@@ -233,7 +233,7 @@ class Issue3216Test {
       rs.next();
     });
     long duration2 = System.currentTimeMillis() - startTime2;
-    System.out.println("Method 2 (Separate MATCH): " + duration2 + "ms");
+    //System.out.println("Method 2 (Separate MATCH): " + duration2 + "ms");
 
     // Method 2 should be significantly faster
     // (commenting out the assertion for now since we're diagnosing the issue)
