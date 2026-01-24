@@ -531,10 +531,10 @@ CREATE TRIGGER low_stock_alert AFTER UPDATE ON TYPE Product
 EXECUTE JAVASCRIPT '
   if (record.stock < 10) {
     database.command("sql",
-      "INSERT INTO Notification SET " +
-      "type = \"low_stock\", " +
-      "productId = \"" + record["@rid"] + "\", " +
-      "message = \"Product stock low: " + record.stock + "\""
+      "INSERT INTO Notification SET type = ?, productId = ?, message = ?",
+      "low_stock",
+      record["@rid"],
+      "Product stock low: " + record.stock
     );
   }
 '
