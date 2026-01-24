@@ -36,6 +36,8 @@ public class UpdateOperations extends SimpleNode {
   public List<UpdateItem>          updateItems          = new ArrayList<UpdateItem>();
   public List<UpdatePutItem>       updatePutItems       = new ArrayList<UpdatePutItem>();
   public Json                      json;
+  public JsonArray                 jsonArray;
+  public InputParameter            inputParam;
   public List<UpdateIncrementItem> updateIncrementItems = new ArrayList<UpdateIncrementItem>();
   public List<UpdateRemoveItem>    updateRemoveItems    = new ArrayList<UpdateRemoveItem>();
 
@@ -72,7 +74,13 @@ public class UpdateOperations extends SimpleNode {
       break;
     case TYPE_CONTENT:
       builder.append("CONTENT ");
-      json.toString(params, builder);
+      if (json != null) {
+        json.toString(params, builder);
+      } else if (jsonArray != null) {
+        jsonArray.toString(params, builder);
+      } else if (inputParam != null) {
+        inputParam.toString(params, builder);
+      }
       break;
     case TYPE_INCREMENT:
       builder.append("INCREMENT ");
@@ -115,6 +123,8 @@ public class UpdateOperations extends SimpleNode {
     result.updateItems = updateItems == null ? null : updateItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.updatePutItems = updatePutItems == null ? null : updatePutItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.json = json == null ? null : json.copy();
+    result.jsonArray = jsonArray == null ? null : jsonArray.copy();
+    result.inputParam = inputParam == null ? null : inputParam.copy();
     result.updateIncrementItems = updateIncrementItems == null ? null : updateIncrementItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.updateRemoveItems = updateRemoveItems == null ? null : updateRemoveItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
@@ -137,6 +147,10 @@ public class UpdateOperations extends SimpleNode {
       return false;
     if (!Objects.equals(json, that.json))
       return false;
+    if (!Objects.equals(jsonArray, that.jsonArray))
+      return false;
+    if (!Objects.equals(inputParam, that.inputParam))
+      return false;
     if (!Objects.equals(updateIncrementItems, that.updateIncrementItems))
       return false;
     return Objects.equals(updateRemoveItems, that.updateRemoveItems);
@@ -148,6 +162,8 @@ public class UpdateOperations extends SimpleNode {
     result = 31 * result + (updateItems != null ? updateItems.hashCode() : 0);
     result = 31 * result + (updatePutItems != null ? updatePutItems.hashCode() : 0);
     result = 31 * result + (json != null ? json.hashCode() : 0);
+    result = 31 * result + (jsonArray != null ? jsonArray.hashCode() : 0);
+    result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     result = 31 * result + (updateIncrementItems != null ? updateIncrementItems.hashCode() : 0);
     result = 31 * result + (updateRemoveItems != null ? updateRemoveItems.hashCode() : 0);
     return result;
@@ -169,6 +185,14 @@ public class UpdateOperations extends SimpleNode {
     return json;
   }
 
+  public JsonArray getJsonArray() {
+    return jsonArray;
+  }
+
+  public InputParameter getInputParam() {
+    return inputParam;
+  }
+
   public List<UpdateIncrementItem> getUpdateIncrementItems() {
     return updateIncrementItems;
   }
@@ -178,26 +202,32 @@ public class UpdateOperations extends SimpleNode {
   }
   @Override
   public Map<String, Object> toJSON() {
-    final Map<String, Object> json = super.toJSON();
+    final Map<String, Object> result = super.toJSON();
 
-    json.put("type", type);
+    result.put("type", type);
     if (updateItems != null) {
-      json.put("updateItems", updateItems);
+      result.put("updateItems", updateItems);
     }
     if (updatePutItems != null) {
-      json.put("updatePutItems", updatePutItems);
+      result.put("updatePutItems", updatePutItems);
     }
-    if (json != null) {
-      json.put("json", json.toString());
+    if (this.json != null) {
+      result.put("json", this.json.toString());
+    }
+    if (this.jsonArray != null) {
+      result.put("jsonArray", this.jsonArray.toString());
+    }
+    if (this.inputParam != null) {
+      result.put("inputParam", this.inputParam.toString());
     }
     if (updateIncrementItems != null) {
-      json.put("updateIncrementItems", updateIncrementItems);
+      result.put("updateIncrementItems", updateIncrementItems);
     }
     if (updateRemoveItems != null) {
-      json.put("updateRemoveItems", updateRemoveItems);
+      result.put("updateRemoveItems", updateRemoveItems);
     }
 
-    return json;
+    return result;
   }
 
 }

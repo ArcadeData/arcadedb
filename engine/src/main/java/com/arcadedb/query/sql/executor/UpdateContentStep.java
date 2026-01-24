@@ -36,6 +36,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
   private JsonArray      jsonArray;
   private int            arrayIndex = 0;
   private InputParameter inputParameter;
+  private List<?>        parameterArray; // For handling List parameters
 
   public UpdateContentStep(final Json json, final CommandContext context) {
     super(context);
@@ -94,9 +95,24 @@ public class UpdateContentStep extends AbstractExecutionStep {
     } else if (jsonArray != null && arrayIndex < jsonArray.items.size()) {
       final Json jsonItem = jsonArray.items.get(arrayIndex++);
       doc.fromMap(jsonItem.toMap(record, context));
-    } else if (inputParameter != null) {
+    } else if (parameterArray != null && arrayIndex < parameterArray.size()) {
+      // Handle List parameter like jsonArray
+      final Object item = parameterArray.get(arrayIndex++);
+      if (item instanceof Document document) {
+        doc.fromMap(document.getRecord().toJSON().toMap());
+      } else if (item instanceof Map) {
+        doc.fromMap((Map<String, Object>) item);
+      } else {
+        throw new CommandExecutionException("Invalid array item for UPDATE CONTENT: " + item);
+      }
+    } else if (inputParameter != null && parameterArray == null) {
+      // Initialize parameterArray on first call if the parameter is a List
       final Object val = inputParameter.getValue(context.getInputParameters());
-      if (val instanceof Document document) {
+      if (val instanceof List) {
+        parameterArray = (List<?>) val;
+        // Process first item
+        handleContent(record, context);
+      } else if (val instanceof Document document) {
         doc.fromMap(document.getRecord().toJSON().toMap());
       } else if (val instanceof Map) {
         doc.fromMap((Map<String, Object>) val);

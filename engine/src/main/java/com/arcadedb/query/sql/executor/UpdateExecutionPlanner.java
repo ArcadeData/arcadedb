@@ -183,7 +183,13 @@ public class UpdateExecutionPlanner {
           plan.chain(new UpdateMergeStep(op.getJson(), context));
           break;
         case UpdateOperations.TYPE_CONTENT:
-          plan.chain(new UpdateContentStep(op.getJson(), context));
+          if (op.getJson() != null) {
+            plan.chain(new UpdateContentStep(op.getJson(), context));
+          } else if (op.getJsonArray() != null) {
+            plan.chain(new UpdateContentStep(op.getJsonArray(), context));
+          } else if (op.getInputParam() != null) {
+            plan.chain(new UpdateContentStep(op.getInputParam(), context));
+          }
           break;
         case UpdateOperations.TYPE_PUT:
         case UpdateOperations.TYPE_INCREMENT:

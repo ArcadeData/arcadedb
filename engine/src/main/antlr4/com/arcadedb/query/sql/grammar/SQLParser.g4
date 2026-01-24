@@ -350,7 +350,7 @@ updateOperation
     | REMOVE updateRemoveItem (COMMA updateRemoveItem)*
     | INCREMENT updateIncrementItem (COMMA updateIncrementItem)*
     | MERGE expression
-    | CONTENT expression
+    | CONTENT (json | jsonArray | inputParameter)
     ;
 
 updateItem
