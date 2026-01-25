@@ -32,7 +32,7 @@
     </div>
     <div class="col-2">
       <div class="d-flex">
-        <button class="btn btn-primary mx-2" data-testid="execute-query-button" onclick="executeCommand()">
+        <button class="btn btn-primary mx-2" data-testid="execute-query-button" onclick="resetHistoryNavigation(); executeCommand()">
           <i class="fa fa-play"></i>
           <img id="executeSpinner" class="ui-loading" src="images/color-spin-small.svg" style="display: none" />
         </button>
@@ -330,11 +330,81 @@
 </div>
 
 <script>
-  $('[data-toggle="tooltip"]').tooltip();
+  // Initialize Bootstrap 5 tooltips
+  document.querySelectorAll('[data-toggle="tooltip"]').forEach(function(el) {
+    new bootstrap.Tooltip(el);
+  });
 
   var editor = null;
+  var historyNavIndex = -1; // -1 means not navigating history, 0 is most recent command
+  var historyNavBuffer = ""; // stores the current input before history navigation starts
+
+  // Get history entries filtered for current database
+  function getFilteredHistory() {
+    let queryHistory = getQueryHistory();
+    let database = escapeHtml(getCurrentDatabase());
+    let filtered = [];
+    for (let i = 0; i < queryHistory.length; i++) {
+      let q = queryHistory[i];
+      if (q != null && q.d == database && q.l != null && q.c != null) {
+        filtered.push(q);
+      }
+    }
+    return filtered;
+  }
+
+  // Navigate to previous (older) command in history
+  function historyPrevious() {
+    let filtered = getFilteredHistory();
+    if (filtered.length == 0) return;
+
+    // Save current input when starting navigation
+    if (historyNavIndex == -1) {
+      historyNavBuffer = editor.getValue();
+    }
+
+    if (historyNavIndex < filtered.length - 1) {
+      historyNavIndex++;
+      let q = filtered[historyNavIndex];
+      $("#inputLanguage").val(q.l);
+      editor.setOption("mode", getEditorMode());
+      editor.setValue(q.c);
+      editor.setCursor(editor.lineCount(), 0);
+    }
+  }
+
+  // Navigate to next (newer) command in history
+  function historyNext() {
+    if (historyNavIndex == -1) return; // not navigating
+
+    let filtered = getFilteredHistory();
+
+    if (historyNavIndex > 0) {
+      historyNavIndex--;
+      let q = filtered[historyNavIndex];
+      $("#inputLanguage").val(q.l);
+      editor.setOption("mode", getEditorMode());
+      editor.setValue(q.c);
+      editor.setCursor(editor.lineCount(), 0);
+    } else {
+      // Return to the original input
+      historyNavIndex = -1;
+      editor.setValue(historyNavBuffer);
+      editor.setCursor(editor.lineCount(), 0);
+    }
+  }
+
+  // Reset history navigation (called when executing command or changing database)
+  function resetHistoryNavigation() {
+    historyNavIndex = -1;
+    historyNavBuffer = "";
+  }
+
   function initQuery() {
-    $('[data-toggle="tooltip"]').tooltip();
+    // Initialize Bootstrap 5 tooltips
+    document.querySelectorAll('[data-toggle="tooltip"]').forEach(function(el) {
+      new bootstrap.Tooltip(el);
+    });
 
     $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
       let activeTab = $("#tabs-command .active").attr("id");
@@ -380,11 +450,13 @@
 
     $("#inputHistory").change(function () {
       copyQueryFromHistory();
+      resetHistoryNavigation();
     });
 
     $(".inputDatabase").change(function () {
       setCurrentDatabase(this.value);
       loadQueryHistory();
+      resetHistoryNavigation();
       displaySchema();
       displayDatabaseSettings();
     });
@@ -405,10 +477,24 @@
 
     editor.addKeyMap({
       "Ctrl-Enter": function (cm) {
+        resetHistoryNavigation();
         executeCommand();
       },
       "Cmd-Enter": function (cm) {
+        resetHistoryNavigation();
         executeCommand();
+      },
+      "Ctrl-Up": function (cm) {
+        historyPrevious();
+      },
+      "Ctrl-Down": function (cm) {
+        historyNext();
+      },
+      "Cmd-Up": function (cm) {
+        historyPrevious();
+      },
+      "Cmd-Down": function (cm) {
+        historyNext();
       },
     });
 

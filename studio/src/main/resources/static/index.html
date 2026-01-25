@@ -92,9 +92,11 @@
         notyf = new Notyf({
           duration: 4000,
           position: {
-            x: 'center',
+            x: 'right',
             y: 'top'
-          }
+          },
+          dismissible: true,
+          ripple: false
         });
 
         // Mark as ready and process queued notifications
