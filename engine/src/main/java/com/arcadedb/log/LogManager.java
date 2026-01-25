@@ -168,11 +168,6 @@ public class LogManager {
         null, null, null, null, null, null, null, null);
   }
 
-  public void close() {
-    if (logger instanceof DefaultLogger l)
-      l.close();
-  }
-
   public boolean isDebugEnabled() {
     return debug;
   }
