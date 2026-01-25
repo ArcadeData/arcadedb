@@ -263,7 +263,7 @@ public class CompositeIndexUpdateTest {
   }
 
   private int retrieveNextEligibleOrder(Database database) {
-    String RETRIEVE_NEXT_ELIGIBLE_ORDERS = "SELECT id, processor, trigger, vstart, vstop, status FROM Order WHERE status = ? ORDER BY id ASC LIMIT ?";
+    String RETRIEVE_NEXT_ELIGIBLE_ORDERS = "SELECT id, processor, `trigger`, vstart, vstop, status FROM Order WHERE status = ? ORDER BY id ASC LIMIT ?";
 
     Result result;
     try (ResultSet resultSet = database.query("sql", RETRIEVE_NEXT_ELIGIBLE_ORDERS, "PENDING", 1)) {
