@@ -554,8 +554,11 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice() {
-    buffer.rewind();
-    return new Binary(buffer.slice());
+    // Use duplicate() to create independent ByteBuffer with own position/limit
+    // This fixes issue #1509: prevents concurrent threads from interfering with each other
+    final ByteBuffer duplicate = buffer.duplicate();
+    duplicate.rewind();
+    return new Binary(duplicate.slice());
   }
 
   /**
@@ -566,8 +569,11 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice(final int position) {
-    buffer.position(position);
-    return new Binary(buffer.slice());
+    // Use duplicate() to create independent ByteBuffer with own position/limit
+    // This fixes issue #1509: prevents concurrent threads from interfering with each other
+    final ByteBuffer duplicate = buffer.duplicate();
+    duplicate.position(position);
+    return new Binary(duplicate.slice());
   }
 
   /**
@@ -579,9 +585,11 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice(final int position, final int length) {
-    final ByteBuffer result;
-    buffer.position(position);
-    result = buffer.slice();
+    // Use duplicate() to create independent ByteBuffer with own position/limit
+    // This fixes issue #1509: prevents concurrent threads from interfering with each other
+    final ByteBuffer duplicate = buffer.duplicate();
+    duplicate.position(position);
+    final ByteBuffer result = duplicate.slice();
     result.position(length);
     result.flip();
     return new Binary(result);

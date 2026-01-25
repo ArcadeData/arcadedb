@@ -159,11 +159,16 @@ public abstract class BasePage {
 
   /**
    * Returns the underlying ByteBuffer. If any changes occur bypassing the page object, must be tracked by calling #updateModifiedRange() method.
+   * Creates a new ByteBuffer with independent position/limit but sharing the same backing array to ensure thread-safety.
+   * This fixes issue #1509: Index iterators must be isolated from concurrent modifications.
    */
   public ByteBuffer slice() {
     final ByteBuffer buffer = content.getByteBuffer();
-    buffer.position(PAGE_HEADER_SIZE);
-    return buffer.slice();
+    // Use duplicate() to create a new ByteBuffer with independent position/limit
+    // This prevents concurrent threads from interfering with each other's buffer position
+    final ByteBuffer duplicate = buffer.duplicate();
+    duplicate.position(PAGE_HEADER_SIZE);
+    return duplicate.slice();
   }
 
   public int getBufferPosition() {
