@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>26.1.1-SNAPSHOT</version>
+        <version>26.2.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -36,13 +36,13 @@
     <properties>
         <disruptor.version>1.2.21</disruptor.version>
         <gson.version>2.13.2</gson.version>
-        <lz4-java.version>1.10.2</lz4-java.version>
-        <lucene.version>9.12.3</lucene.version>
+        <lz4-java.version>1.10.3</lz4-java.version>
+        <lucene.version>10.3.2</lucene.version>
         <graalvm.version>24.2.2</graalvm.version>
         <jvector.version>4.0.0-rc.6</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
-        <buildnumber-maven-plugin.version>3.3.0</buildnumber-maven-plugin.version>
+        <buildnumber-maven-plugin.version>3.2.1</buildnumber-maven-plugin.version>
         <antlr4.version>4.9.1</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
     </properties>
