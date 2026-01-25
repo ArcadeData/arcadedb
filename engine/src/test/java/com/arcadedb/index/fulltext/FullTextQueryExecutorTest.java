@@ -21,8 +21,6 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.FullTextQueryExecutor;
-import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

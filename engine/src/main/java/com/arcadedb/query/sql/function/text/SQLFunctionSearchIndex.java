@@ -27,8 +27,8 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.FullTextQueryExecutor;
-import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
+import com.arcadedb.index.fulltext.FullTextQueryExecutor;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 

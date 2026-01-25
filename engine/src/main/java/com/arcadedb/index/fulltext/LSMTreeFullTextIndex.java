@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.index.lsm;
+package com.arcadedb.index.fulltext;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
@@ -30,6 +30,8 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
@@ -44,7 +46,6 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
-import java.util.stream.Collectors;
 
 /**
  * Full Text index implementation based on LSM-Tree index.
@@ -66,8 +67,8 @@ import java.util.stream.Collectors;
  * the query result will be the TreeMap ordered by score, so if the query has a limit, only the first X items will be returned ordered by score desc
  */
 public class LSMTreeFullTextIndex implements Index, IndexInternal {
-  private final LSMTreeIndex            underlyingIndex;
-  private final Analyzer                indexAnalyzer;
+  private final LSMTreeIndex underlyingIndex;
+  private final Analyzer     indexAnalyzer;
   private final Analyzer                queryAnalyzer;
   private final FullTextIndexMetadata   ftMetadata;
   private       TypeIndex               typeIndex;

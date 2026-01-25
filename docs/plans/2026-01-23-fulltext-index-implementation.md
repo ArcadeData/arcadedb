@@ -821,7 +821,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
@@ -936,8 +936,8 @@ git commit -m "feat(fulltext): add SEARCH_INDEX() SQL function"
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.index.lsm.FullTextQueryExecutor;
-import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
+import com.arcadedb.index.fulltext.FullTextQueryExecutor;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.junit.jupiter.api.Test;
 
@@ -1287,7 +1287,7 @@ Add imports:
 import com.arcadedb.database.RID;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
-import com.arcadedb.index.lsm.FullTextQueryExecutor;
+import com.arcadedb.index.fulltext.FullTextQueryExecutor;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -1380,8 +1380,8 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.FullTextQueryExecutor;
-import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
+import com.arcadedb.index.fulltext.FullTextQueryExecutor;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;

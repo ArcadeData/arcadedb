@@ -21,7 +21,6 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;

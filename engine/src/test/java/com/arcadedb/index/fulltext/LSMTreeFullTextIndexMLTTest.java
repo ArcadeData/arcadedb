@@ -15,7 +15,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.index.lsm;
+package com.arcadedb.index.fulltext;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
