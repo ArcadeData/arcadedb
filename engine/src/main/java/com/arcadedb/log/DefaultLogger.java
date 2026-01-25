@@ -39,7 +39,6 @@ public class DefaultLogger implements Logger {
       ".properties";
 
   private volatile boolean initialized = false;
-  private volatile boolean closed      = false;
 
   private final ConcurrentMap<String, java.util.logging.Logger> loggersCache =
       new ConcurrentHashMap<>();
@@ -49,7 +48,6 @@ public class DefaultLogger implements Logger {
       return;
 
     initialized = true;
-    closed = false;
     final File logDir = new File("./log");
 
     try {
@@ -62,10 +60,6 @@ public class DefaultLogger implements Logger {
     }
 
     installCustomFormatter();
-  }
-
-  public void close() {
-    closed = true;
   }
 
   public void installCustomFormatter() {
@@ -143,12 +137,6 @@ public class DefaultLogger implements Logger {
                   final Object arg16, final Object arg17) {
     if (message == null)
       return;
-
-    if (closed) {
-      final String msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
-      System.err.println(msg);
-      return;
-    }
 
     init();
 
@@ -230,14 +218,6 @@ public class DefaultLogger implements Logger {
                   final String context, final Object... args) {
     if (message == null)
       return;
-
-    if (closed) {
-      String msg = message;
-      if (args.length > 0)
-        msg = message.formatted(args);
-      System.err.println(msg);
-      return;
-    }
 
     init();
 
