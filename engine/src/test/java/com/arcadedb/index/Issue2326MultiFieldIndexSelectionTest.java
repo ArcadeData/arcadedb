@@ -89,8 +89,8 @@ public class Issue2326MultiFieldIndexSelectionTest extends TestHelper {
       final ExecutionPlan plan = rs.getExecutionPlan().get();
       final String planString = plan.prettyPrint(0, 3);
 
-      System.out.println("Execution plan:");
-      System.out.println(planString);
+      //System.out.println("Execution plan:");
+      //System.out.println(planString);
 
       // The plan should use the composite index example[p1,p2,p3]
       assertThat(planString).contains("example[p1,p2,p3]");
@@ -130,8 +130,8 @@ public class Issue2326MultiFieldIndexSelectionTest extends TestHelper {
       final ExecutionPlan plan = rs.getExecutionPlan().get();
       final String planString = plan.prettyPrint(0, 3);
 
-      System.out.println("Single property query plan:");
-      System.out.println(planString);
+      //System.out.println("Single property query plan:");
+      //System.out.println(planString);
 
       // Should use an index (either full-text or LSM, both are acceptable for single property)
       assertThat(planString).contains("FETCH FROM INDEX");
@@ -148,8 +148,8 @@ public class Issue2326MultiFieldIndexSelectionTest extends TestHelper {
       final ExecutionPlan plan = rs.getExecutionPlan().get();
       final String planString = plan.prettyPrint(0, 3);
 
-      System.out.println("Two property query plan:");
-      System.out.println(planString);
+      //System.out.println("Two property query plan:");
+      //System.out.println(planString);
 
       // Should use an index for at least one property
       assertThat(planString).contains("FETCH FROM INDEX");
