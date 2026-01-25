@@ -6,6 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme performance. It's a Java-based project that supports multiple data models (Graph, Document, Key/Value, Search Engine, Time Series, Vector Embedding) and query languages (SQL, Cypher, Gremlin, GraphQL, MongoDB Query Language).
 
+## Project Instructions
+
+Before writing any code:
+- State how you will verify this change works (e.g., unit tests, integration tests, manual testing)
+- Write the tests first (TDD approach) whenever possible
+- Ensure code adheres to existing coding standards and styles
+- Then implement the code
+- Run verification and iterate until it passes
+- Run all the connected tests could be affected by the change to ensure nothing is broken (no need to run the whole suite, it would take too long)
+
 ## Build and Development Commands
 
 ### Maven (Java)
