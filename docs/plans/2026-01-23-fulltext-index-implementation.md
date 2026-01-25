@@ -1684,10 +1684,121 @@ git commit -m "test(fulltext): add test for $score in SQL projection (pending im
 
 ### Task 5.1: Integration Tests
 
-**Files:**
-- Create: `engine/src/test/java/com/arcadedb/index/FullTextIndexIntegrationTest.java`
+All integration test classes extend `TestHelper` and go in `engine/src/test/java/com/arcadedb/index/fulltext/`.
 
-Create comprehensive integration tests covering all features.
+---
+
+#### Task 5.1.1: FullTextAnalyzerConfigIT
+
+**File:** `engine/src/test/java/com/arcadedb/index/fulltext/FullTextAnalyzerConfigIT.java`
+
+**Tests:**
+
+| Test Method | Description |
+|-------------|-------------|
+| `defaultAnalyzerIsStandard` | Index without metadata uses StandardAnalyzer |
+| `englishAnalyzerStemmingWorks` | "running" matches "run" with EnglishAnalyzer |
+| `perFieldAnalyzersApplied` | title uses EnglishAnalyzer, body uses StandardAnalyzer |
+| `allowLeadingWildcardEnabled` | `*base` works when `allowLeadingWildcard: true` |
+| `allowLeadingWildcardDisabledByDefault` | `*base` fails/returns nothing by default |
+| `defaultOperatorAND` | `java cloud` requires both terms when configured |
+| `defaultOperatorOR` | `java cloud` matches either term (default) |
+
+---
+
+#### Task 5.1.2: FullTextQuerySyntaxIT
+
+**File:** `engine/src/test/java/com/arcadedb/index/fulltext/FullTextQuerySyntaxIT.java`
+
+**Tests:**
+
+| Test Method | Description |
+|-------------|-------------|
+| `booleanMust` | `+java +programming` requires both terms |
+| `booleanMustNot` | `java -python` excludes python matches |
+| `phraseQuery` | `"exact phrase"` matches exact sequence |
+| `prefixWildcard` | `data*` matches database, datastore, etc. |
+| `fuzzyQuery` | `databse~` matches "database" |
+| `fieldSpecificQuery` | `title:database` restricts to title field |
+| `combinedBooleanAndPhrase` | `+title:"multi model" -nosql` |
+
+---
+
+#### Task 5.1.3: FullTextMultiPropertyIT
+
+**File:** `engine/src/test/java/com/arcadedb/index/fulltext/FullTextMultiPropertyIT.java`
+
+**Tests:**
+
+| Test Method | Description |
+|-------------|-------------|
+| `createMultiPropertyIndex` | CREATE INDEX ON Article(title, body) FULL_TEXT succeeds |
+| `searchMatchesAnyField` | Unqualified search hits documents matching in any field |
+| `fieldQualifiedSearchRestrictsToField` | `title:term` only matches title field |
+| `scoreReflectsMultiFieldMatches` | Document matching both fields scores higher |
+
+---
+
+#### Task 5.1.4: FullTextScoreIT
+
+**File:** `engine/src/test/java/com/arcadedb/index/fulltext/FullTextScoreIT.java`
+
+**Tests:**
+
+| Test Method | Description |
+|-------------|-------------|
+| `scoreInProjection` | `SELECT $score FROM ...` returns score value |
+| `scoreOrderByDescending` | `ORDER BY $score DESC` orders by relevance |
+| `moreMatchesHigherScore` | Doc matching "java programming" scores higher than "java" alone |
+| `scoreWithAlias` | `SELECT $score AS relevance` works |
+| `scoreIsFloatGreaterThanZero` | Score is float > 0 for matching docs |
+
+---
+
+#### Task 5.1.5: FullTextEdgeCasesIT
+
+**File:** `engine/src/test/java/com/arcadedb/index/fulltext/FullTextEdgeCasesIT.java`
+
+**Tests:**
+
+| Test Method | Description |
+|-------------|-------------|
+| `emptyQueryReturnsNoResults` | Empty string query returns no matches |
+| `nonExistentIndexThrows` | SEARCH_INDEX with bad index name throws |
+| `wrongIndexTypeThrows` | Using SEARCH_INDEX on LSM_TREE index throws |
+| `nullValuesInIndexedField` | Documents with null in indexed field handled gracefully |
+| `specialCharactersInQuery` | Quotes, brackets, special chars don't crash |
+| `unicodeText` | Non-ASCII characters index and search correctly |
+
+---
+
+#### Task 5.1.6: FullTextPersistenceIT
+
+**File:** `engine/src/test/java/com/arcadedb/index/fulltext/FullTextPersistenceIT.java`
+
+**Tests:**
+
+| Test Method | Description |
+|-------------|-------------|
+| `indexSurvivesReopen` | Index exists after `reopenDatabase()` |
+| `metadataSurvivesReopen` | Analyzer configuration persists after reopen |
+| `searchWorksAfterReopen` | SEARCH_INDEX returns correct results after reopen |
+
+---
+
+#### Task 5.1.7: FullTextBackwardCompatIT
+
+**File:** `engine/src/test/java/com/arcadedb/index/fulltext/FullTextBackwardCompatIT.java`
+
+**Tests:**
+
+| Test Method | Description |
+|-------------|-------------|
+| `containsTextStillWorks` | CONTAINSTEXT operator unchanged |
+| `indexWithoutMetadataUsesDefaults` | Old-style index uses StandardAnalyzer, OR, no leading wildcards |
+| `searchIndexOnLegacyIndexWorks` | SEARCH_INDEX works on index created without metadata |
+
+---
 
 ### Task 5.2: Performance Tests
 
@@ -1706,14 +1817,14 @@ Update manual documentation to describe new features.
 
 This plan covers:
 
-| Phase | Tasks | Estimated Steps |
-|-------|-------|-----------------|
-| 1. Infrastructure | 4 tasks | ~30 steps |
-| 2. Multi-Property | 1 task | ~6 steps |
-| 3. Query Functions | 4 tasks | ~25 steps |
-| 4. Score Exposure | 2 tasks | ~12 steps |
-| 5. Testing & Docs | 3 tasks | ~15 steps |
+| Phase | Tasks | Description |
+|-------|-------|-------------|
+| 1. Infrastructure | 4 tasks | Metadata, builder, SQL parsing, analyzer support |
+| 2. Multi-Property | 1 task | Multi-field index support |
+| 3. Query Functions | 4 tasks | SEARCH_INDEX, SEARCH_FIELDS, QueryExecutor |
+| 4. Score Exposure | 2 tasks | $score in ResultInternal and SQL |
+| 5. Testing & Docs | 9 tasks | 7 IT classes (32 tests), perf tests, docs |
 
-Total: ~14 tasks, ~88 steps
+Total: ~20 tasks
 
-Each step is designed to be 2-5 minutes of work following TDD principles.
+Each task follows TDD principles: write failing test, implement, verify, commit.
