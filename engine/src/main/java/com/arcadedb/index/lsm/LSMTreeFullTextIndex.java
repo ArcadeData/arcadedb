@@ -624,31 +624,30 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * 5. Optionally exclude source documents from results
    * 6. Return results sorted by score in descending order
    *
-   * @param sourceRIDs the RIDs of source documents to find similar documents for
+   * @param sourceRids the RIDs of source documents to find similar documents for
    * @param config     the More Like This configuration parameters
    * @return cursor over matching documents, sorted by similarity score descending
-   * @throws IllegalArgumentException if sourceRIDs is null, empty, or exceeds maxSourceDocs
+   * @throws IllegalArgumentException if sourceRids is null, empty, or exceeds maxSourceDocs
    */
-  public IndexCursor searchMoreLikeThis(final List<RID> sourceRIDs, final MoreLikeThisConfig config) {
+  public IndexCursor searchMoreLikeThis(final Set<RID> sourceRids, final MoreLikeThisConfig config) {
     // Validate inputs
-    if (sourceRIDs == null) {
-      throw new IllegalArgumentException("sourceRIDs cannot be null");
+    if (sourceRids == null) {
+      throw new IllegalArgumentException("sourceRids cannot be null");
     }
-    if (sourceRIDs.isEmpty()) {
-      throw new IllegalArgumentException("sourceRIDs cannot be empty");
+    if (sourceRids.isEmpty()) {
+      throw new IllegalArgumentException("sourceRids cannot be empty");
     }
-    if (sourceRIDs.size() > config.getMaxSourceDocs()) {
+    if (sourceRids.size() > config.getMaxSourceDocs()) {
       throw new IllegalArgumentException(
-          "Number of source documents (" + sourceRIDs.size() + ") exceeds maxSourceDocs (" + config.getMaxSourceDocs() + ")");
+          "Number of source documents (" + sourceRids.size() + ") exceeds maxSourceDocs (" + config.getMaxSourceDocs() + ")");
     }
 
     // Step 1 & 2: Extract terms from source documents and count term frequencies
     final Map<String, Integer> termFreqs = new HashMap<>();
-    final Set<RID> sourceRIDSet = new HashSet<>(sourceRIDs);
 
-    for (final RID sourceRID : sourceRIDs) {
+    for (final RID sourceRid : sourceRids) {
       // Load the document
-      final Identifiable identifiable = sourceRID.getRecord();
+      final Identifiable identifiable = sourceRid.getRecord();
       if (identifiable == null) {
         continue;
       }
@@ -718,8 +717,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     // Step 6: Exclude source documents if configured
     if (config.isExcludeSource()) {
-      for (final RID sourceRID : sourceRIDSet) {
-        scoreMap.remove(sourceRID);
+      for (final RID sourceRid : sourceRids) {
+        scoreMap.remove(sourceRid);
       }
     }
 

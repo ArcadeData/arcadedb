@@ -107,8 +107,8 @@ public class LSMTreeFullTextIndexMLTTest {
         .setMaxQueryTerms(10);
 
     // Search for documents similar to Java Guide
-    final List<RID> sourceRIDs = List.of(javaGuideRID);
-    final IndexCursor cursor = index.searchMoreLikeThis(sourceRIDs, config);
+    final Set<RID> sourceRids = Set.of(javaGuideRID);
+    final IndexCursor cursor = index.searchMoreLikeThis(sourceRids, config);
 
     // Collect results
     final List<RID> results = new ArrayList<>();
@@ -136,8 +136,8 @@ public class LSMTreeFullTextIndexMLTTest {
         .setExcludeSource(true);
 
     // Search for documents similar to Java Guide
-    final List<RID> sourceRIDs = List.of(javaGuideRID);
-    final IndexCursor cursor = index.searchMoreLikeThis(sourceRIDs, config);
+    final Set<RID> sourceRids = Set.of(javaGuideRID);
+    final IndexCursor cursor = index.searchMoreLikeThis(sourceRids, config);
 
     // Collect results
     final Set<RID> results = new HashSet<>();
@@ -159,8 +159,8 @@ public class LSMTreeFullTextIndexMLTTest {
         .setExcludeSource(false);
 
     // Search for documents similar to Java Guide
-    final List<RID> sourceRIDs = List.of(javaGuideRID);
-    final IndexCursor cursor = index.searchMoreLikeThis(sourceRIDs, config);
+    final Set<RID> sourceRids = Set.of(javaGuideRID);
+    final IndexCursor cursor = index.searchMoreLikeThis(sourceRids, config);
 
     // Collect results
     final Set<RID> results = new HashSet<>();
@@ -181,8 +181,8 @@ public class LSMTreeFullTextIndexMLTTest {
         .setMaxQueryTerms(10);
 
     // Search using both Java documents as source
-    final List<RID> sourceRIDs = List.of(javaGuideRID, javaDatabaseRID);
-    final IndexCursor cursor = index.searchMoreLikeThis(sourceRIDs, config);
+    final Set<RID> sourceRids = Set.of(javaGuideRID, javaDatabaseRID);
+    final IndexCursor cursor = index.searchMoreLikeThis(sourceRids, config);
 
     // Should succeed and exclude both source documents
     final Set<RID> results = new HashSet<>();
@@ -201,7 +201,7 @@ public class LSMTreeFullTextIndexMLTTest {
 
     assertThrows(IllegalArgumentException.class, () -> {
       index.searchMoreLikeThis(null, config);
-    }, "Should throw IllegalArgumentException for null sourceRIDs");
+    }, "Should throw IllegalArgumentException for null sourceRids");
   }
 
   @Test
@@ -210,8 +210,8 @@ public class LSMTreeFullTextIndexMLTTest {
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
 
     assertThrows(IllegalArgumentException.class, () -> {
-      index.searchMoreLikeThis(List.of(), config);
-    }, "Should throw IllegalArgumentException for empty sourceRIDs");
+      index.searchMoreLikeThis(Set.of(), config);
+    }, "Should throw IllegalArgumentException for empty sourceRids");
   }
 
   @Test
@@ -220,11 +220,11 @@ public class LSMTreeFullTextIndexMLTTest {
     final MoreLikeThisConfig config = new MoreLikeThisConfig()
         .setMaxSourceDocs(1);
 
-    final List<RID> sourceRIDs = List.of(javaGuideRID, pythonGuideRID);
+    final Set<RID> sourceRids = Set.of(javaGuideRID, pythonGuideRID);
 
     assertThrows(IllegalArgumentException.class, () -> {
-      index.searchMoreLikeThis(sourceRIDs, config);
-    }, "Should throw IllegalArgumentException when sourceRIDs exceeds maxSourceDocs");
+      index.searchMoreLikeThis(sourceRids, config);
+    }, "Should throw IllegalArgumentException when sourceRids exceeds maxSourceDocs");
   }
 
   /**
