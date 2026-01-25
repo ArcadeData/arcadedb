@@ -1,7 +1,7 @@
 # SEARCH_MORE Similar Document Search Design
 
 **Date:** 2026-01-25
-**Status:** Draft
+**Status:** Implemented (2026-01-25)
 **Prerequisites:** Full-text index improvements (2026-01-23 design)
 
 ## Overview
