@@ -47,6 +47,7 @@ import com.arcadedb.query.sql.parser.GtOperator;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.InputParameter;
+import com.arcadedb.query.sql.parser.IsNullCondition;
 import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LetClause;
 import com.arcadedb.query.sql.parser.LetItem;
@@ -1722,13 +1723,53 @@ public class SelectExecutionPlanner {
         }
       }
       if (indexFound && orderType != null) {
-        plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, orderType.equals(OrderByItem.ASC), context));
+        final boolean isAsc = orderType.equals(OrderByItem.ASC);
+
         List<Integer> filterClusterIds = null;
         if (filterClusters != null)
           filterClusterIds = filterClusters.stream()
               .map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).boxed().toList();
 
-        plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
+        // Check if the index has NULL_STRATEGY.INDEX - if so, NULLs are already in the index
+        if (idx.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX) {
+          // NULLs are indexed, just use the index directly
+          plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, isAsc, context));
+          plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
+        } else {
+          // NULLs are NOT in the index (SKIP or ERROR strategy)
+          // We need to fetch records with NULL values separately and merge them with index results
+          // NULL values should come first for ASC, last for DESC
+
+          // Create sub-plan for fetching from index (sorted values)
+          final SelectExecutionPlan indexPlan = new SelectExecutionPlan(context, 0);
+          indexPlan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, isAsc, context));
+          indexPlan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
+
+          // Create sub-plan for fetching records where the indexed property IS NULL
+          final SelectExecutionPlan nullPlan = new SelectExecutionPlan(context, 0);
+          nullPlan.chain(new FetchFromTypeExecutionStep(queryTarget.getStringValue(), filterClusters, context, true));
+
+          // Create IS NULL filter for the first indexed property
+          final String propertyName = indexFields.getFirst();
+          final IsNullCondition isNullCondition = new IsNullCondition(-1);
+          final Expression expr = new Expression(new Identifier(propertyName));
+          isNullCondition.setExpression(expr);
+          final WhereClause nullWhereClause = new WhereClause(-1);
+          nullWhereClause.setBaseExpression(isNullCondition);
+          nullPlan.chain(new FilterStep(nullWhereClause, context));
+
+          // Combine: for ASC, NULL records come first; for DESC, NULL records come last
+          final List<InternalExecutionPlan> subPlans = new ArrayList<>();
+          if (isAsc) {
+            subPlans.add(nullPlan);
+            subPlans.add(indexPlan);
+          } else {
+            subPlans.add(indexPlan);
+            subPlans.add(nullPlan);
+          }
+          plan.chain(new ParallelExecStep(subPlans, context));
+        }
+
         info.orderApplied = true;
         return true;
       }
