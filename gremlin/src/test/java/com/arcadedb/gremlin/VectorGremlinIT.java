@@ -20,8 +20,8 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
@@ -77,17 +77,16 @@ class VectorGremlinIT {
         final List<Map<String, Object>> neighbors = row.getProperty("neighbors");
 
         for (Map<String, Object> neighbor : neighbors) {
-          ImmutableVertex vertex = (ImmutableVertex) neighbor.get("vertex");
-          approximateResults.add(vertex.getIdentity());
-
+          final Document record = (Document) neighbor.get("record");
+          approximateResults.add(record.getIdentity());
         }
       }
 
       assertThat(approximateResults).hasSize(10);
 
       resultSet = db.query("gremlin",
-          "g.call('arcadedb#vectorNeighbors', [ 'indexName': 'Word[vector]', 'vector': vector, 'limit': 10 ] )", "vector",
-          vector);
+          "g.call('arcadedb#vectorNeighbors', params)",
+          "params", Map.of("indexName", "Word[vector]", "vector", vector, "limit", 10));
       assertThat(resultSet.hasNext()).isTrue();
       final List<RID> approximateResultsFromGremlin = new ArrayList<>();
       while (resultSet.hasNext()) {
@@ -95,8 +94,8 @@ class VectorGremlinIT {
         final List<Map<String, Object>> neighbors = row.getProperty("result");
 
         for (Map<String, Object> neighbor : neighbors) {
-          ArcadeVertex vertex = (ArcadeVertex) neighbor.get("vertex");
-          approximateResultsFromGremlin.add(vertex.getIdentity());
+          final ArcadeVertex record = (ArcadeVertex) neighbor.get("record");
+          approximateResultsFromGremlin.add(record.getIdentity());
         }
       }
 

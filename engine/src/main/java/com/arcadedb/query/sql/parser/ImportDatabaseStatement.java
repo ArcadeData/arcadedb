@@ -56,8 +56,11 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
 
       // TRANSFORM SETTINGS
       final Map<String, String> settingsToString = new HashMap<>();
-      for (final Map.Entry<Expression, Expression> entry : settings.entrySet())
-        settingsToString.put(entry.getKey().value.toString(), entry.getValue().execute((Identifiable) null, context).toString());
+      for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+        final Object valueResult = entry.getValue().execute((Identifiable) null, context);
+        final String valueStr = valueResult != null ? valueResult.toString() : entry.getValue().toString();
+        settingsToString.put(entry.getKey().value.toString(), valueStr);
+      }
 
       clazz.getMethod("setSettings", Map.class).invoke(importer, settingsToString);
       final Map<String, Object> statistics = (Map<String, Object>) clazz.getMethod("load").invoke(importer);

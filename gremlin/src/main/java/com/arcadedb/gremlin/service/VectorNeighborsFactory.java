@@ -89,7 +89,7 @@ public class VectorNeighborsFactory extends ArcadeServiceRegistry.ArcadeServiceF
 
       final List<Map> result = new ArrayList<>(neighbors.size());
       for (Pair<RID, Float> n : neighbors)
-        result.add(Map.of("vertex", graph.getVertexFromRecord(n.getFirst()), "distance", n.getSecond()));
+        result.add(Map.of("record", graph.getVertexFromRecord(n.getFirst()), "distance", n.getSecond()));
       return CloseableIterator.of(List.of(result).iterator());
     }
     else return CloseableIterator.empty();
