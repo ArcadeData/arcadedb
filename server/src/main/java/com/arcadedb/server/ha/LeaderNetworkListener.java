@@ -39,16 +39,18 @@ import java.util.Optional;
 import java.util.logging.Level;
 
 public class LeaderNetworkListener extends Thread {
+  private final static int                 protocolVersion = -1;
+  private final        String              hostName;
   private final        HAServer            ha;
   private final        ServerSocketFactory socketFactory;
   private              ServerSocket        serverSocket;
+  private              int                 port;
   private volatile     boolean             active          = true;
   private volatile     boolean             ready           = false;
-  private final static int                 protocolVersion = -1;
-  private final        String              hostName;
-  private              int                 port;
 
-  public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory serverSocketFactory, final String hostName,
+  public LeaderNetworkListener(final HAServer ha,
+      final ServerSocketFactory serverSocketFactory,
+      final String hostName,
       final String hostPortRange) {
     super(ha.getServerName() + " replication listen at " + hostName + ":" + hostPortRange);
 
@@ -371,7 +373,8 @@ public class LeaderNetworkListener extends Thread {
     channel.flush();
   }
 
-  private void connect(final ChannelBinaryServer channel, HAServer.ServerInfo remoteServer, final String remoteHTTPAddress) throws IOException {
+  private void connect(final ChannelBinaryServer channel, HAServer.ServerInfo remoteServer, final String remoteHTTPAddress)
+      throws IOException {
     if (remoteServer.alias().equals(ha.getServerName())) {
       channel.writeBoolean(false);
       channel.writeByte(ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME);

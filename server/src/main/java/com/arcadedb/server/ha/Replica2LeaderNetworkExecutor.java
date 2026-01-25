@@ -78,17 +78,21 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   @Override
   public void run() {
     LogManager.instance().setContext(server.getServer().getServerName());
+    LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: run() thread started, entering message processing loop");
 
     // REUSE THE SAME BUFFER TO AVOID MALLOC
     final Binary buffer = new Binary(8192);
     buffer.setAllocationChunkSize(1024);
+    LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: Buffer created, about to enter while loop");
 
     long lastReqId = -1;
 
     while (!shutdown) {
       long reqId = -1;
       try {
+        LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: Waiting to receive message from leader...");
         final byte[] requestBytes = receiveResponse();
+        LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: Received message bytes, length=%d", requestBytes.length);
 
         if (shutdown)
           break;
@@ -157,8 +161,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_MSG_RECEIVED, request);
 
-        if (response != null)
+        if (response != null) {
           sendCommandToLeader(buffer, response, reqId);
+        }
         reqId = -1;
 
       } catch (final SocketTimeoutException e) {
@@ -174,6 +179,31 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         forceFullResync = true;
         reconnect(e);
+      } catch (final StackOverflowError e) {
+        // CRITICAL: Stack overflow during message processing
+        LogManager.instance().log(this, Level.SEVERE,
+            "STACK OVERFLOW during execution of request %d (shutdown=%s name=%s). " +
+            "This indicates excessive recursion or deep call stack. Thread will terminate.",
+            e, reqId, shutdown, getName());
+        e.printStackTrace(System.err);
+        shutdown = true;
+        break;
+      } catch (final OutOfMemoryError e) {
+        // CRITICAL: Out of memory during message processing
+        LogManager.instance().log(this, Level.SEVERE,
+            "OUT OF MEMORY during execution of request %d (shutdown=%s name=%s). Thread will terminate.",
+            e, reqId, shutdown, getName());
+        e.printStackTrace(System.err);
+        shutdown = true;
+        break;
+      } catch (final Error e) {
+        // CRITICAL: Other fatal errors (AssertionError, etc.)
+        LogManager.instance().log(this, Level.SEVERE,
+            "FATAL ERROR (%s) during execution of request %d (shutdown=%s name=%s). Thread will terminate.",
+            e, e.getClass().getSimpleName(), reqId, shutdown, getName());
+        e.printStackTrace(System.err);
+        shutdown = true;
+        break;
       } catch (final Exception e) {
         LogManager.instance()
             .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", e, reqId, shutdown,
@@ -590,8 +620,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         final Set<String> databases = fullSync.getDatabases();
 
-        for (final String db : databases)
+        for (final String db : databases) {
           requestInstallDatabase(buffer, db);
+        }
 
         // Full resync completed - clear the flag
         forceFullResync = false;
