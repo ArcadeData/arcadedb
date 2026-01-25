@@ -354,7 +354,6 @@ public class ArcadeDBServer {
     }
 
     LogManager.instance().setContext(null);
-    LogManager.instance().close();
     status = STATUS.OFFLINE;
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, "Server shutdown correctly");
