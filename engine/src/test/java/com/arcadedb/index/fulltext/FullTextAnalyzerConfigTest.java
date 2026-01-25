@@ -19,16 +19,14 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
-import org.apache.lucene.analysis.en.EnglishAnalyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.junit.jupiter.api.Test;
-
-import com.arcadedb.index.IndexException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Integration tests for full-text index analyzer configuration.
  */
-class FullTextAnalyzerConfigIT extends TestHelper {
+class FullTextAnalyzerConfigTest extends TestHelper {
 
   @Test
   void defaultAnalyzerIsStandard() {
@@ -63,7 +61,10 @@ class FullTextAnalyzerConfigIT extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.content STRING");
       database.command("sql",
-          "CREATE INDEX ON Article (content) FULL_TEXT METADATA {\"analyzer\": \"org.apache.lucene.analysis.en.EnglishAnalyzer\"}");
+          """
+              CREATE INDEX ON Article (content) FULL_TEXT METADATA {
+              "analyzer": "org.apache.lucene.analysis.en.EnglishAnalyzer"}
+              """);
 
       // Insert document with "running"
       database.command("sql", "INSERT INTO Article SET content = 'I am running in the park'");
@@ -92,9 +93,10 @@ class FullTextAnalyzerConfigIT extends TestHelper {
       database.command("sql", "CREATE PROPERTY Article.body STRING");
       // title uses EnglishAnalyzer (stemming), body uses StandardAnalyzer (no stemming)
       database.command("sql",
-          "CREATE INDEX ON Article (title, body) FULL_TEXT METADATA {" +
-              "\"analyzer\": \"org.apache.lucene.analysis.standard.StandardAnalyzer\", " +
-              "\"title_analyzer\": \"org.apache.lucene.analysis.en.EnglishAnalyzer\"}");
+          """
+              CREATE INDEX ON Article (title, body) FULL_TEXT METADATA {
+              "analyzer": "org.apache.lucene.analysis.standard.StandardAnalyzer",
+              "title_analyzer": "org.apache.lucene.analysis.en.EnglishAnalyzer"}""");
 
       // Insert document where stemming matters
       database.command("sql", "INSERT INTO Article SET title = 'Running Fast', body = 'running slow'");
@@ -119,7 +121,8 @@ class FullTextAnalyzerConfigIT extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.content STRING");
       database.command("sql",
-          "CREATE INDEX ON Article (content) FULL_TEXT METADATA {\"allowLeadingWildcard\": true}");
+          """
+              CREATE INDEX ON Article (content) FULL_TEXT METADATA {"allowLeadingWildcard": true}""");
 
       database.command("sql", "INSERT INTO Article SET content = 'database management system'");
     });
@@ -165,7 +168,8 @@ class FullTextAnalyzerConfigIT extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.content STRING");
       database.command("sql",
-          "CREATE INDEX ON Article (content) FULL_TEXT METADATA {\"defaultOperator\": \"AND\"}");
+          """
+              CREATE INDEX ON Article (content) FULL_TEXT METADATA {"defaultOperator": "AND"}""");
 
       database.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
       database.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'java database'");
@@ -195,7 +199,8 @@ class FullTextAnalyzerConfigIT extends TestHelper {
       database.command("sql", "CREATE PROPERTY Article.content STRING");
       // Default is OR, but let's be explicit
       database.command("sql",
-          "CREATE INDEX ON Article (content) FULL_TEXT METADATA {\"defaultOperator\": \"OR\"}");
+          """
+              CREATE INDEX ON Article (content) FULL_TEXT METADATA {"defaultOperator": "OR"}""");
 
       database.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
       database.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'java database'");

@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Integration tests for edge cases in full-text search.
  */
-class FullTextEdgeCasesIT extends TestHelper {
+class FullTextEdgeCasesTest extends TestHelper {
 
   @Test
   void emptyQueryThrowsParseException() {

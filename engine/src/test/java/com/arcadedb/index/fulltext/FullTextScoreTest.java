@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Integration tests for $score exposure in full-text search queries.
  */
-class FullTextScoreIT extends TestHelper {
+class FullTextScoreTest extends TestHelper {
 
   @Test
   void scoreInProjection() {

@@ -16,9 +16,11 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.index;
+package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.FullTextQueryExecutor;
 import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import org.junit.jupiter.api.Test;

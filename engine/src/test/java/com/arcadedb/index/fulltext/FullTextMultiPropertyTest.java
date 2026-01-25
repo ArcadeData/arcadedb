@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Integration tests for multi-property full-text indexes.
  */
-class FullTextMultiPropertyIT extends TestHelper {
+class FullTextMultiPropertyTest extends TestHelper {
 
   @Test
   void createMultiPropertyIndex() {

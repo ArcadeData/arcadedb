@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Integration tests for Lucene query syntax support in full-text indexes.
  */
-class FullTextQuerySyntaxIT extends TestHelper {
+class FullTextQuerySyntaxTest extends TestHelper {
 
   @Test
   void booleanMust() {
@@ -224,7 +224,8 @@ class FullTextQuerySyntaxIT extends TestHelper {
     database.transaction(() -> {
       // Combined: must have phrase "multi model", must NOT have "nosql"
       final ResultSet result = database.query("sql",
-          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', '+\"multi model\" -nosql') = true");
+          """
+              SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', '+"multi model" -nosql') = true""");
 
       final Set<String> titles = new HashSet<>();
       while (result.hasNext()) {

@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration tests for backward compatibility of full-text index features.
  * Verifies that existing/legacy behavior continues to work after new features are added.
  */
-class FullTextBackwardCompatIT extends TestHelper {
+class FullTextBackwardCompatibilityTest extends TestHelper {
 
   @Test
   void containsTextStillWorks() {

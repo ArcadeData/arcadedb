@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Integration tests for full-text index persistence across database reopens.
  */
-class FullTextPersistenceIT extends TestHelper {
+class FullTextPersistenceTest extends TestHelper {
 
   @Test
   void indexSurvivesReopen() {
