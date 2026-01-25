@@ -160,4 +160,40 @@ class SQLFunctionSearchFieldsMoreTest extends TestHelper {
       database.query("sql", "SELECT FROM Article WHERE SEARCH_FIELDS_MORE(['tags'], [#1:0]) = true"))
       .hasMessageContaining("No full-text index found");
   }
+
+  @Test
+  void scoreAndSimilarityConsistent() {
+    final ResultSet rs = database.query("sql",
+      "SELECT title, $score, $similarity FROM Article WHERE SEARCH_FIELDS_MORE(['title', 'body'], [#1:0], {'minTermFreq': 1, 'minDocFreq': 1, 'excludeSource': false}) = true");
+
+    float maxScore = 0f;
+    while (rs.hasNext()) {
+      final Result result = rs.next();
+      final float score = result.getProperty("$score");
+      final float similarity = result.getProperty("$similarity");
+
+      assertThat(score).isGreaterThan(0f);
+      assertThat(similarity).isBetween(0f, 1f);
+
+      if (score > maxScore) maxScore = score;
+    }
+
+    // The highest score should have similarity close to 1.0
+    assertThat(maxScore).isGreaterThan(0f);
+  }
+
+  @Test
+  void exceedsMaxSourceDocs() {
+    // Create RID list exceeding maxSourceDocs (default 25)
+    final StringBuilder rids = new StringBuilder("[");
+    for (int i = 0; i < 30; i++) {
+      if (i > 0) rids.append(", ");
+      rids.append("#1:").append(i);
+    }
+    rids.append("]");
+
+    assertThatThrownBy(() ->
+      database.query("sql", "SELECT FROM Article WHERE SEARCH_FIELDS_MORE(['title', 'body'], " + rids + ") = true"))
+      .hasMessageContaining("exceeds maxSourceDocs limit");
+  }
 }
