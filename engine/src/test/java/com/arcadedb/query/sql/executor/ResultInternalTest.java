@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ResultInternalTest {
 
   @Test
-  void testSimilarityProperty() {
+  void similarityProperty() {
     final ResultInternal result = new ResultInternal();
     result.setSimilarity(0.85f);
 
@@ -39,10 +39,36 @@ class ResultInternalTest {
   }
 
   @Test
-  void testSimilarityDefaultsToZero() {
+  void similarityDefaultsToZero() {
     final ResultInternal result = new ResultInternal();
 
     assertThat(result.getSimilarity()).isEqualTo(0f);
     assertThat(result.<Float>getProperty("$similarity")).isEqualTo(0f);
+  }
+
+  @Test
+  void similarityNotInPropertyNamesWhenZero() {
+    final ResultInternal result = new ResultInternal();
+
+    assertThat(result.hasProperty("$similarity")).isTrue(); // $similarity is always available
+    assertThat(result.getPropertyNames()).doesNotContain("$similarity"); // but not in names when 0
+  }
+
+  @Test
+  void similarityBoundaryValues() {
+    final ResultInternal result = new ResultInternal();
+
+    // Test minimum value
+    result.setSimilarity(0.0f);
+    assertThat(result.getSimilarity()).isEqualTo(0.0f);
+
+    // Test maximum value
+    result.setSimilarity(1.0f);
+    assertThat(result.getSimilarity()).isEqualTo(1.0f);
+    assertThat(result.getPropertyNames()).contains("$similarity");
+
+    // Test intermediate value
+    result.setSimilarity(0.5f);
+    assertThat(result.getSimilarity()).isEqualTo(0.5f);
   }
 }

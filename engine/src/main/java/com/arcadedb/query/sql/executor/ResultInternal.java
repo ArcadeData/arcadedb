@@ -143,11 +143,11 @@ public class ResultInternal implements Result {
   }
 
   /**
-   * Sets the similarity score for this result.
-   * Used for More Like This (MLT) queries to indicate similarity to a reference document.
-   * The similarity is normalized to 0.0-1.0 where 1.0 means most similar.
+   * Sets the similarity score for this result (normalized 0.0 to 1.0).
+   * Used for SEARCH_INDEX_MORE/SEARCH_FIELDS_MORE functions.
+   * Note: No validation is performed. Callers are responsible for ensuring valid range.
    *
-   * @param similarity the normalized similarity score (0.0-1.0)
+   * @param similarity the normalized similarity score (should be 0.0-1.0)
    */
   public void setSimilarity(final float similarity) {
     this.similarity = similarity;
