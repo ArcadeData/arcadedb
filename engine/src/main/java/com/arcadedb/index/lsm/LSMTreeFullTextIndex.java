@@ -44,6 +44,7 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
+import java.util.stream.Collectors;
 
 /**
  * Full Text index implementation based on LSM-Tree index.
@@ -610,5 +611,134 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
     }
     return tokens;
+  }
+
+  /**
+   * Search for documents similar to the source document(s) using More Like This algorithm.
+   * <p>
+   * The algorithm works as follows:
+   * 1. Extract terms from source documents using the configured analyzer
+   * 2. Calculate document frequencies for each term
+   * 3. Select top terms using TF-IDF scoring and configured filters
+   * 4. Execute an OR query across selected terms, accumulating scores
+   * 5. Optionally exclude source documents from results
+   * 6. Return results sorted by score in descending order
+   *
+   * @param sourceRIDs the RIDs of source documents to find similar documents for
+   * @param config     the More Like This configuration parameters
+   * @return cursor over matching documents, sorted by similarity score descending
+   * @throws IllegalArgumentException if sourceRIDs is null, empty, or exceeds maxSourceDocs
+   */
+  public IndexCursor searchMoreLikeThis(final List<RID> sourceRIDs, final MoreLikeThisConfig config) {
+    // Validate inputs
+    if (sourceRIDs == null) {
+      throw new IllegalArgumentException("sourceRIDs cannot be null");
+    }
+    if (sourceRIDs.isEmpty()) {
+      throw new IllegalArgumentException("sourceRIDs cannot be empty");
+    }
+    if (sourceRIDs.size() > config.getMaxSourceDocs()) {
+      throw new IllegalArgumentException(
+          "Number of source documents (" + sourceRIDs.size() + ") exceeds maxSourceDocs (" + config.getMaxSourceDocs() + ")");
+    }
+
+    // Step 1 & 2: Extract terms from source documents and count term frequencies
+    final Map<String, Integer> termFreqs = new HashMap<>();
+    final Set<RID> sourceRIDSet = new HashSet<>(sourceRIDs);
+
+    for (final RID sourceRID : sourceRIDs) {
+      // Load the document
+      final Identifiable identifiable = sourceRID.getRecord();
+      if (identifiable == null) {
+        continue;
+      }
+
+      // Extract text from indexed properties
+      final List<String> propertyNames = getPropertyNames();
+      if (propertyNames != null && !propertyNames.isEmpty()) {
+        final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) identifiable;
+        for (final String propName : propertyNames) {
+          final Object value = doc.get(propName);
+          if (value != null) {
+            // Analyze the text to get tokens
+            final List<String> tokens = analyzeText(indexAnalyzer, new Object[] { value });
+            for (final String token : tokens) {
+              if (token != null) {
+                termFreqs.merge(token, 1, Integer::sum);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // If no terms extracted, return empty cursor
+    if (termFreqs.isEmpty()) {
+      return new TempIndexCursor(Collections.emptyList());
+    }
+
+    // Step 3: Get document frequencies for each term
+    final Map<String, Integer> docFreqs = new HashMap<>();
+    for (final String term : termFreqs.keySet()) {
+      final IndexCursor termCursor = underlyingIndex.get(new String[] { term });
+      int docCount = 0;
+      while (termCursor.hasNext()) {
+        termCursor.next();
+        docCount++;
+      }
+      docFreqs.put(term, docCount);
+    }
+
+    // Estimate total documents (use the max doc frequency as approximation)
+    final int totalDocs = docFreqs.values().stream().mapToInt(Integer::intValue).max().orElse(1);
+
+    // Step 4: Select top terms using MoreLikeThisQueryBuilder
+    final MoreLikeThisQueryBuilder queryBuilder = new MoreLikeThisQueryBuilder(config);
+    final List<String> topTerms = queryBuilder.selectTopTerms(termFreqs, docFreqs, totalDocs);
+
+    // If no terms selected, return empty cursor
+    if (topTerms.isEmpty()) {
+      return new TempIndexCursor(Collections.emptyList());
+    }
+
+    // Step 5: Execute OR query and accumulate scores
+    final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
+    for (final String term : topTerms) {
+      final IndexCursor termCursor = underlyingIndex.get(new String[] { term });
+      while (termCursor.hasNext()) {
+        final RID rid = termCursor.next().getIdentity();
+        final AtomicInteger score = scoreMap.get(rid);
+        if (score == null) {
+          scoreMap.put(rid, new AtomicInteger(1));
+        } else {
+          score.incrementAndGet();
+        }
+      }
+    }
+
+    // Step 6: Exclude source documents if configured
+    if (config.isExcludeSource()) {
+      for (final RID sourceRID : sourceRIDSet) {
+        scoreMap.remove(sourceRID);
+      }
+    }
+
+    // Step 7: Build result list sorted by score descending
+    final List<IndexCursorEntry> results = new ArrayList<>(scoreMap.size());
+    for (final Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet()) {
+      results.add(new IndexCursorEntry(null, entry.getKey(), entry.getValue().get()));
+    }
+
+    // Sort by score descending
+    if (results.size() > 1) {
+      results.sort((o1, o2) -> {
+        if (o1.score == o2.score) {
+          return 0;
+        }
+        return o1.score < o2.score ? 1 : -1; // Descending order
+      });
+    }
+
+    return new TempIndexCursor(results);
   }
 }
