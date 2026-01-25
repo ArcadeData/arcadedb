@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.cypher;
+package performance;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;

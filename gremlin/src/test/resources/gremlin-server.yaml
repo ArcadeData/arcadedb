@@ -1,6 +1,5 @@
 host: 0.0.0.0
-graphs:
-  graph: ./target/config/gremlin-server.properties
+# Note: graphs are registered dynamically by ArcadeGraphManager based on database name
 scriptEngines:
   gremlin-groovy:
     plugins:
@@ -10,9 +9,6 @@ scriptEngines:
           - java.lang.Math
         methodImports:
           - "java.lang.Math#*"
-      org.apache.tinkerpop.gremlin.jsr223.ScriptFileGremlinPlugin:
-        files:
-          - ./target/config/gremlin-server.groovy
 serializers:
   - className: org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1
     config:
@@ -26,3 +22,5 @@ serializers:
     config:
       ioRegistries:
         - com.arcadedb.gremlin.io.ArcadeIoRegistry
+processors:
+  - { className: org.apache.tinkerpop.gremlin.server.op.session.SessionOpProcessor, config: { sessionTimeout: 28800000 } }

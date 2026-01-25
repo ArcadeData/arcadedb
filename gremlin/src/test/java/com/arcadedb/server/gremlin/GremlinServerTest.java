@@ -60,6 +60,6 @@ class GremlinServerTest extends AbstractGremlinServerIT {
   }
 
   private GraphTraversalSource traversal() {
-    return AnonymousTraversalSource.traversal().withRemote(DriverRemoteConnection.using(createCluster(), "graph"));
+    return AnonymousTraversalSource.traversal().withRemote(DriverRemoteConnection.using(createCluster(), getDatabaseName()));
   }
 }

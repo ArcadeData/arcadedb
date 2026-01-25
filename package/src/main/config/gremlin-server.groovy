@@ -31,7 +31,7 @@ globals << [hook : [
         }
 ] as LifeCycleHook]
 
-// define the default TraversalSource to bind queries to - this one will be named "graph".
-globals << [graph : traversal().withEmbedded(graph)]
 // define the default TraversalSource to bind queries to - this one will be named "g".
+// Note: we do NOT override 'graph' binding as it must remain a Graph object (not GraphTraversalSource)
+// for TinkerPop's SessionOpProcessor to work correctly with transactions.
 globals << [g : traversal().withEmbedded(graph)]
