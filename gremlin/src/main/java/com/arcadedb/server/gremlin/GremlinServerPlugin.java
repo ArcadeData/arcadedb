@@ -45,6 +45,9 @@ public class GremlinServerPlugin implements ServerPlugin {
 
   @Override
   public void startService() {
+    // Set the server instance for dynamic database registration
+    ArcadeGraphManager.setServer(server);
+
     Settings settings = null;
     final File confFile = new File(server.getRootPath() + CONFIG_GREMLIN_SERVER_YAML);
     if (confFile.exists()) {
@@ -61,6 +64,9 @@ public class GremlinServerPlugin implements ServerPlugin {
     if (settings == null)
       // DEFAULT CONFIGURATION
       settings = new Settings();
+
+    // Use ArcadeDB's custom GraphManager for dynamic database registration
+    settings.graphManager = ArcadeGraphManager.class.getName();
 
     // OVERWRITE AUTHENTICATION USING THE SERVER SECURITY
     settings.authentication = new Settings.AuthenticationSettings();
@@ -92,7 +98,13 @@ public class GremlinServerPlugin implements ServerPlugin {
 
   @Override
   public void stopService() {
-    if (gremlinServer != null)
+    if (gremlinServer != null) {
+      // Close all dynamically created ArcadeGraph instances
+      final var graphManager = gremlinServer.getServerGremlinExecutor().getGraphManager();
+      if (graphManager instanceof ArcadeGraphManager) {
+        ((ArcadeGraphManager) graphManager).closeAll();
+      }
       gremlinServer.stop().join();
+    }
   }
 }

@@ -1,6 +1,5 @@
 host: 0.0.0.0
-graphs:
-  graph: ./config/gremlin-server.properties
+# Note: graphs are registered dynamically by ArcadeGraphManager based on database name
 scriptEngines:
   gremlin-groovy:
     plugins:
@@ -14,9 +13,6 @@ scriptEngines:
           - "java.lang.Math#*"
           - "org.opencypher.gremlin.traversal.CustomPredicate#*"
           - "org.opencypher.gremlin.traversal.CustomFunctions#*"
-      org.apache.tinkerpop.gremlin.jsr223.ScriptFileGremlinPlugin:
-        files:
-          - ./config/gremlin-server.groovy
 serializers:
   - className: org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1
     config:

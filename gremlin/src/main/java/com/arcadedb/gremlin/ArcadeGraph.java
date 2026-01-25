@@ -188,6 +188,7 @@ public class ArcadeGraph implements Graph, Closeable {
         Cluster cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(GREMLIN_SERVER_PORT)
             .credentials(remoteDatabase.getUserName(), remoteDatabase.getUserPassword()).serializer(serializer).create();
 
+        // Use database name as the traversal source alias (dynamically registered by ArcadeGraphManager)
         traversal = AnonymousTraversalSource.traversal().withRemote(DriverRemoteConnection.using(cluster, database.getName()));
       } catch (Exception e) {
         LogManager.instance().log(this, Level.WARNING,

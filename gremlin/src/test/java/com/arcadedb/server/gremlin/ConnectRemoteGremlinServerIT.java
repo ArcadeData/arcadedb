@@ -60,6 +60,7 @@ class ConnectRemoteGremlinServerIT {
   }
 
   private GraphTraversalSource traversal() {
+    // Use database name as traversal source (dynamically registered by ArcadeGraphManager)
     return AnonymousTraversalSource.traversal().withRemote(DriverRemoteConnection.using(createCluster(), "graph"));
   }
 }
