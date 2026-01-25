@@ -19,6 +19,8 @@ package com.arcadedb.index.lsm;
 
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Objects;
+
 /**
  * Configuration for More Like This (MLT) queries. Holds all parameters that control
  * term selection and query generation for finding similar documents.
@@ -213,5 +215,29 @@ public class MoreLikeThisConfig {
   public MoreLikeThisConfig setMaxSourceDocs(final int maxSourceDocs) {
     this.maxSourceDocs = maxSourceDocs;
     return this;
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+    if (this == o) return true;
+    if (o == null || getClass() != o.getClass()) return false;
+
+    final MoreLikeThisConfig that = (MoreLikeThisConfig) o;
+
+    return minTermFreq == that.minTermFreq &&
+           minDocFreq == that.minDocFreq &&
+           maxQueryTerms == that.maxQueryTerms &&
+           minWordLen == that.minWordLen &&
+           maxWordLen == that.maxWordLen &&
+           boostByScore == that.boostByScore &&
+           excludeSource == that.excludeSource &&
+           maxSourceDocs == that.maxSourceDocs &&
+           Objects.equals(maxDocFreqPercent, that.maxDocFreqPercent);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(minTermFreq, minDocFreq, maxDocFreqPercent, maxQueryTerms,
+                        minWordLen, maxWordLen, boostByScore, excludeSource, maxSourceDocs);
   }
 }

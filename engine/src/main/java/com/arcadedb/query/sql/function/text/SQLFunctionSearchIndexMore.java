@@ -83,7 +83,7 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
       throw new CommandExecutionException("Source RIDs (" + sourceRids.size() + ") exceeds maxSourceDocs limit (" + config.getMaxSourceDocs() + ")");
 
     // Cache key - use hashCode to avoid special characters that might be interpreted as property paths
-    final String cacheKey = "search_index_more_" + indexName.hashCode() + "_" + sourceRids.hashCode() + "_" + System.identityHashCode(config);
+    final String cacheKey = "search_index_more:" + indexName + ":" + sourceRids + ":" + config.hashCode();
 
     // Try to get cached results
     @SuppressWarnings("unchecked")
@@ -123,7 +123,7 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
 
           while (cursor.hasNext()) {
             final Identifiable match = cursor.next();
-            final int score = cursor.getScore();
+            final float score = (float) cursor.getScore();
 
             allResults.compute(match.getIdentity(), (k, v) -> {
               if (v == null) return new float[] { score, 0f };
