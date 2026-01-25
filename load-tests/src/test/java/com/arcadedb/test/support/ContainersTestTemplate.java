@@ -287,6 +287,18 @@ public abstract class ContainersTestTemplate {
       String name = container.getContainerName();
       boolean running = container.isRunning();
 
+      // Log memory limit for all containers
+      try {
+        var dockerClient = container.getDockerClient();
+        var info = dockerClient.inspectContainerCmd(container.getContainerId()).exec();
+        var hostConfig = info.getHostConfig();
+        long memoryLimit = hostConfig.getMemory();
+        logger.info("Container {} memory limit: {} bytes ({} GB)",
+            name, memoryLimit, memoryLimit / (1024.0 * 1024.0 * 1024.0));
+      } catch (Exception e) {
+        logger.warn("Could not get memory limit for container {}: {}", name, e.getMessage());
+      }
+
       if (!running) {
         logger.error("Container {} is NOT running!", name);
 
@@ -444,7 +456,8 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.serverList=%s
             -Darcadedb.ha.replicationQueueSize=1024
             """, name, ha, quorum, role, serverList))
-        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms12G -Xmx12G")
+        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")  // Reduced from 12G for integration tests
+        .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024)) // 3GB container limit for 2GB heap + native overhead
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
 
     containers.add(container);

@@ -611,7 +611,9 @@ public class HAServer implements ServerPlugin {
     }
 
     final Leader2ReplicaNetworkExecutor.STATUS oldStatus = c.getStatus();
-    final Leader2ReplicaNetworkExecutor.STATUS newStatus = online ? Leader2ReplicaNetworkExecutor.STATUS.ONLINE : Leader2ReplicaNetworkExecutor.STATUS.OFFLINE;
+    final Leader2ReplicaNetworkExecutor.STATUS newStatus = online ?
+        Leader2ReplicaNetworkExecutor.STATUS.ONLINE :
+        Leader2ReplicaNetworkExecutor.STATUS.OFFLINE;
     c.setStatus(newStatus);
 
     LogManager.instance().log(this, Level.INFO,
@@ -1746,10 +1748,14 @@ public class HAServer implements ServerPlugin {
     replicaConnections.clear();
 
     leaderConnection.set(new Replica2LeaderNetworkExecutor(this, server));
+    LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: About to call startup() on Replica2LeaderNetworkExecutor");
     leaderConnection.get().startup();
+    LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: startup() returned successfully");
 
     // START SEPARATE THREAD TO EXECUTE LEADER'S REQUESTS
+    LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: About to call start() to begin run() thread");
     leaderConnection.get().start();
+    LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: start() called, run() thread should now be running");
   }
 
   protected ChannelBinaryClient createNetworkConnection(ServerInfo dest, final short commandId)
