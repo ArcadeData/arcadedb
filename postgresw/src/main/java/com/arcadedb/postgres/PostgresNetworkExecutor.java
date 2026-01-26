@@ -1073,7 +1073,7 @@ public class PostgresNetworkExecutor extends Thread {
     // Make the parsing case-insensitive for the SET command
     final String upperQuery = query.toUpperCase(Locale.ENGLISH);
     final int setLength = "SET ".length();
-    final String q = query.substring(setLength);
+    final String q = upperQuery.substring(setLength);
 
     // Try to split by either '=' or ' TO ' (case-insensitive)
     String[] parts = q.split("=");
