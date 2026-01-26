@@ -267,9 +267,7 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       assertThat(allJavaCount).isEqualTo(2);
 
       // Field-specific search: only match "java" in the title field
-      // Access the underlying bucket index directly to bypass TypeIndex
-      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
-      final IndexCursor titleCursor = ftIndex.get(new Object[] { "title:java" });
+      final IndexCursor titleCursor = index.get(new Object[] { "title:java" });
       final Set<String> titlesFound = new HashSet<>();
       while (titleCursor.hasNext()) {
         final Identifiable record = titleCursor.next();
@@ -279,7 +277,7 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       assertThat(titlesFound).containsExactly("Java Programming");
 
       // Field-specific search: only match "java" in the body field
-      final IndexCursor bodyCursor = ftIndex.get(new Object[] { "body:java" });
+      final IndexCursor bodyCursor = index.get(new Object[] { "body:java" });
       final Set<String> bodiesFound = new HashSet<>();
       while (bodyCursor.hasNext()) {
         final Identifiable record = bodyCursor.next();
@@ -520,6 +518,62 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       assertThat(scores).hasSize(2);
       // Doc1 matches both 'java' and 'programming', Doc2 only 'java'
       assertThat(scores.get("Doc1")).isGreaterThan(scores.get("Doc2"));
+    });
+  }
+
+  @Test
+  void fullTextIndexWithShardedType() {
+    // Test that full-text searches work correctly on sharded types
+    // This test verifies that TypeIndex searches ALL buckets for full-text queries
+    database.transaction(() -> {
+      // Create a sharded type with 3 buckets
+      database.getSchema().buildDocumentType().withName("ArticleSharded").withTotalBuckets(3).create();
+      database.command("sql", "CREATE PROPERTY ArticleSharded.title STRING");
+      database.command("sql", "CREATE PROPERTY ArticleSharded.body STRING");
+      database.command("sql", "CREATE INDEX ON ArticleSharded (title, body) FULL_TEXT");
+
+      // Insert documents - they will be distributed across different buckets
+      database.command("sql", "INSERT INTO ArticleSharded SET title = 'Java Programming', body = 'Learn basics'");
+      database.command("sql", "INSERT INTO ArticleSharded SET title = 'Python Tutorial', body = 'Java programming guide'");
+      database.command("sql", "INSERT INTO ArticleSharded SET title = 'Go Language', body = 'Concurrency in Go'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("ArticleSharded[title,body]");
+
+      // Verify the type has multiple buckets
+      assertThat(index.getIndexesOnBuckets().length).isGreaterThan(1);
+
+      // Test unqualified search - should find all documents with "java"
+      final IndexCursor allJavaCursor = index.get(new Object[] { "java" });
+      int allJavaCount = 0;
+      while (allJavaCursor.hasNext()) {
+        allJavaCursor.next();
+        allJavaCount++;
+      }
+      // Both documents have "java" somewhere
+      assertThat(allJavaCount).isEqualTo(2);
+
+      // Test field-specific search through TypeIndex (not bypassing it)
+      // This should search ALL buckets, not just one based on the query string hash
+      final IndexCursor titleCursor = index.get(new Object[] { "title:java" });
+      final Set<String> titlesFound = new HashSet<>();
+      while (titleCursor.hasNext()) {
+        final Identifiable record = titleCursor.next();
+        titlesFound.add(record.asDocument().getString("title"));
+      }
+      // Only first document has "java" in title
+      assertThat(titlesFound).containsExactly("Java Programming");
+
+      // Test field-specific search for "java" in body field
+      final IndexCursor bodyCursor = index.get(new Object[] { "body:java" });
+      final Set<String> bodiesFound = new HashSet<>();
+      while (bodyCursor.hasNext()) {
+        final Identifiable record = bodyCursor.next();
+        bodiesFound.add(record.asDocument().getString("title"));
+      }
+      // Only second document has "java" in body
+      assertThat(bodiesFound).containsExactly("Python Tutorial");
     });
   }
 
