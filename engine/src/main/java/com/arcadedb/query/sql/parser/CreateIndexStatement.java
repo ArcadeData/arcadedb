@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONObject;
@@ -159,6 +160,15 @@ public class CreateIndexStatement extends DDLStatement {
       final TypeLSMVectorIndexBuilder vectorBuilder = builder.withLSMVectorType();
       vectorBuilder.withMetadata(jsonMetadata);
       vectorBuilder.create();
+
+    } else if (indexType == Schema.INDEX_TYPE.FULL_TEXT && metadata != null) {
+      // Handle full-text index metadata
+      final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
+      final JSONObject jsonMetadata = new JSONObject(metadataMap);
+
+      final TypeFullTextIndexBuilder ftBuilder = builder.withFullTextType();
+      ftBuilder.withMetadata(jsonMetadata);
+      ftBuilder.create();
 
     } else {
       builder.create();

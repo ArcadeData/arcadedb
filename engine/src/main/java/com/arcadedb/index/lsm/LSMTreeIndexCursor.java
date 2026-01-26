@@ -46,13 +46,13 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private final Object[]                               serializedToKeys;
   private final boolean                                toKeysInclusive;
   private final LSMTreeIndexUnderlyingAbstractCursor[] pageCursors;
-  private       Object[]                               currentKeys;
-  private       RID[]                                  currentValues;
-  private       int                                    currentValueIndex = 0;
   private final int                                    totalCursors;
   private final byte[]                                 binaryKeyTypes;
   private final Object[][]                             cursorKeys;
   private final BinaryComparator                       comparator;
+  private       Object[]                               currentKeys;
+  private       RID[]                                  currentValues;
+  private       int                                    currentValueIndex = 0;
   private       int                                    validIterators;
   private       TempIndexCursor                        txCursor;
 

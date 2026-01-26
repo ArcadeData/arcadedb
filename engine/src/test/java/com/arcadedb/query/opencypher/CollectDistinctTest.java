@@ -27,7 +27,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -181,7 +183,7 @@ public class CollectDistinctTest {
             "RETURN c.name as city, collect(DISTINCT p.age) as ages");
 
     // Collect all results into a map for order-independent checking
-    java.util.Map<String, List<Integer>> results = new java.util.HashMap<>();
+    Map<String, List<Integer>> results = new HashMap<>();
     while (rs.hasNext()) {
       Result row = rs.next();
       String city = (String) row.getProperty("city");
