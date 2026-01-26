@@ -37,11 +37,13 @@ public class JSONFactory {
   private JSONFactory() {
     gson = new GsonBuilder()//
         .serializeNulls()//
+        .disableHtmlEscaping()// Prevents converting & to \u0026, < to \u003c, etc. (#1602)
         .create();
 
     gsonPrettyPrint = new GsonBuilder()//
         .serializeNulls()//
         .setPrettyPrinting()//
+        .disableHtmlEscaping()// Prevents converting & to \u0026, < to \u003c, etc. (#1602)
         .create();
   }
 

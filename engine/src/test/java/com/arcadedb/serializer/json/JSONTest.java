@@ -177,6 +177,50 @@ class JSONTest extends TestHelper {
     assertThat(deserialized.getExpression("map.second[1]")).isEqualTo(5);
   }
 
+  /**
+   * Test for GitHub issue #1602: Special characters should be preserved in JSON output.
+   * <p>
+   * Verifies that special characters like &, <, >, ", ' are NOT escaped to unicode escapes
+   * like \u0026, \u003c, etc. when serializing to JSON.
+   */
+  @Test
+  void specialCharacters() {
+    JSONObject json = new JSONObject()
+        .put("ampersand", "LdhgfdY&hgff2&a")
+        .put("lessThan", "a < b")
+        .put("greaterThan", "b > a")
+        .put("quote", "He said \"hello\"")
+        .put("singleQuote", "It's a test")
+        .put("allTogether", "& < > \" '")
+        .put("multipleAmpersands", "a && b &&& c");
+
+    final String serialized = json.toString();
+
+    // Verify that special characters are NOT unicode-escaped
+    assertThat(serialized)
+        .as("Ampersand should not be escaped to \\u0026")
+        .contains("&")
+        .doesNotContain("\\u0026");
+    assertThat(serialized)
+        .as("Less-than should not be escaped to \\u003c")
+        .contains("<")
+        .doesNotContain("\\u003c");
+    assertThat(serialized)
+        .as("Greater-than should not be escaped to \\u003e")
+        .contains(">")
+        .doesNotContain("\\u003e");
+
+    // Verify round-trip: deserialize and check values
+    JSONObject deserialized = new JSONObject(serialized);
+    assertThat(deserialized.getString("ampersand")).isEqualTo("LdhgfdY&hgff2&a");
+    assertThat(deserialized.getString("lessThan")).isEqualTo("a < b");
+    assertThat(deserialized.getString("greaterThan")).isEqualTo("b > a");
+    assertThat(deserialized.getString("quote")).isEqualTo("He said \"hello\"");
+    assertThat(deserialized.getString("singleQuote")).isEqualTo("It's a test");
+    assertThat(deserialized.getString("allTogether")).isEqualTo("& < > \" '");
+    assertThat(deserialized.getString("multipleAmpersands")).isEqualTo("a && b &&& c");
+  }
+
   @Test
   void nestedExpression() {
     final String schema = """
