@@ -372,6 +372,54 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Test for issue #1605: PostgreSQL DATETIME serialization should produce ISO 8601 format
+   * that is compatible with PostgreSQL clients (especially node-postgres library).
+   */
+  @Test
+  void dateTimeSerializationFormat() throws Exception {
+    try (final Connection conn = getConnection()) {
+      conn.setAutoCommit(false);
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE VERTEX TYPE TestDateTime IF NOT EXISTS");
+        st.execute("CREATE PROPERTY TestDateTime.created IF NOT EXISTS DATETIME");
+
+        // Insert a specific datetime value
+        st.execute("CREATE VERTEX TestDateTime SET name = 'test1', created = '2024-05-19 17:05:11'");
+
+        // Query the datetime value
+        ResultSet rs = st.executeQuery("SELECT created FROM TestDateTime WHERE name = 'test1'");
+
+        assertThat(rs.next()).isTrue();
+
+        // Verify the timestamp is not null (would be null if pg driver can't parse the format)
+        java.sql.Timestamp timestamp = rs.getTimestamp("created");
+        assertThat(timestamp).isNotNull();
+
+        // Verify the value is correct
+        assertThat(timestamp.toString()).startsWith("2024-05-19 17:05:11");
+
+        rs.close();
+      }
+    }
+  }
+
+  /**
+   * Test for issue #1605: SET datestyle command should be case-insensitive
+   */
+  @Test
+  void setDateStyleCaseInsensitive() throws Exception {
+    try (final Connection conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        // All these variations should work without errors
+        st.execute("set datestyle to 'ISO'");
+        st.execute("SET DATESTYLE TO 'ISO'");
+        st.execute("Set DateStyle To 'ISO'");
+        st.execute("SET datestyle = 'ISO'");
+      }
+    }
+  }
+
   @Test
   @Disabled
   void waitForConnectionFromExternal() throws Exception {

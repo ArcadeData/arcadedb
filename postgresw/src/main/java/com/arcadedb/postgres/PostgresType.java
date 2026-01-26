@@ -24,9 +24,12 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.DateUtils;
 
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -65,6 +68,10 @@ public enum PostgresType {
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
+
+  // PostgreSQL-compatible datetime format (ISO 8601 without 'T' separator)
+  private static final String POSTGRES_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss.SSSSSS";
+  private static final DateTimeFormatter POSTGRES_DATETIME_FORMATTER = DateTimeFormatter.ofPattern(POSTGRES_DATETIME_FORMAT);
 
   public final  int                      code;
   public final  Class<?>                 cls;
@@ -251,6 +258,13 @@ public enum PostgresType {
       // Handle primitive arrays by converting them to Collections
       Collection<?> collection = convertPrimitiveArrayToCollection(value);
       serializedValue = serializeArrayToString(collection, pgType);
+    } else if (value instanceof Date date) {
+      // Format Date as PostgreSQL-compatible timestamp
+      LocalDateTime ldt = LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC);
+      serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);
+    } else if (value instanceof LocalDateTime ldt) {
+      // Format LocalDateTime as PostgreSQL-compatible timestamp
+      serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
     } else if (value instanceof Map map) {
@@ -301,7 +315,12 @@ public enum PostgresType {
       } else if (element instanceof Character) {
         sb.append("'").append(element).append("'");
       } else if (element instanceof Date date) {
-        sb.append(date.getTime());
+        // Format Date as PostgreSQL-compatible timestamp in arrays
+        LocalDateTime ldt = LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC);
+        sb.append("\"").append(ldt.format(POSTGRES_DATETIME_FORMATTER)).append("\"");
+      } else if (element instanceof LocalDateTime ldt) {
+        // Format LocalDateTime as PostgreSQL-compatible timestamp in arrays
+        sb.append("\"").append(ldt.format(POSTGRES_DATETIME_FORMATTER)).append("\"");
       } else if (element instanceof Binary binary) {
         sb.append(binary.getString());
       } else if (element instanceof byte[] bytes) {
