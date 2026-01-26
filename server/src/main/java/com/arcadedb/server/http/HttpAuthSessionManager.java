@@ -38,10 +38,16 @@ import java.util.logging.Level;
 public class HttpAuthSessionManager extends RWLockContext {
   private final Map<String, HttpAuthSession> sessions = new HashMap<>();
   private final       long                         sessionTimeoutInMs;
+  private final       long                         absoluteTimeoutInMs;
   private final       Timer                        timer;
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs) {
+    this(sessionTimeoutInMs, 0);
+  }
+
+  public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs) {
     this.sessionTimeoutInMs = sessionTimeoutInMs;
+    this.absoluteTimeoutInMs = absoluteTimeoutInMs;
 
     timer = new Timer("HttpAuthSessionManager-Cleanup", true);
     timer.schedule(new TimerTask() {
@@ -72,9 +78,12 @@ public class HttpAuthSessionManager extends RWLockContext {
       for (final Iterator<Map.Entry<String, HttpAuthSession>> it = sessions.entrySet().iterator(); it.hasNext(); ) {
         final HttpAuthSession session = it.next().getValue();
 
-        if (session.elapsedFromLastUpdate() > sessionTimeoutInMs) {
-          LogManager.instance().log(this, Level.FINE, "Removing expired authentication session %s for user %s",
-              session.token, session.user.getName());
+        final boolean idleExpired = session.elapsedFromLastUpdate() > sessionTimeoutInMs;
+        final boolean absoluteExpired = absoluteTimeoutInMs > 0 && session.elapsedFromCreation() > absoluteTimeoutInMs;
+
+        if (idleExpired || absoluteExpired) {
+          LogManager.instance().log(this, Level.FINE, "Removing expired authentication session %s for user %s (idle=%b, absolute=%b)",
+              session.token, session.user.getName(), idleExpired, absoluteExpired);
           it.remove();
           expired++;
         }
@@ -85,15 +94,21 @@ public class HttpAuthSessionManager extends RWLockContext {
 
   /**
    * Get an authenticated session by token.
+   * Returns null if the session doesn't exist or if it has expired (either by idle or absolute timeout).
    *
    * @param token the authentication token
-   * @return the session if found, null otherwise
+   * @return the session if found and valid, null otherwise
    */
   public HttpAuthSession getSessionByToken(final String token) {
     return executeInReadLock(() -> {
       final HttpAuthSession session = sessions.get(token);
-      if (session != null)
+      if (session != null) {
+        // Check if session is expired by absolute timeout (from creation)
+        if (absoluteTimeoutInMs > 0 && session.elapsedFromCreation() > absoluteTimeoutInMs) {
+          return null;
+        }
         session.touch();
+      }
 
       return session;
     });

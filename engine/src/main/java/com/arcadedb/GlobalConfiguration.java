@@ -427,6 +427,10 @@ public enum GlobalConfiguration {
       "Timeout in seconds for a HTTP authentication session to expire. This timeout is computed from the latest request using the auth token. Default is 30 minutes",
       Long.class, 1800), // 30 MINUTES DEFAULT
 
+  SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT("arcadedb.server.httpAuthSessionAbsoluteTimeout", SCOPE.SERVER,
+      "Absolute timeout in seconds for a HTTP authentication session to expire from its creation time, regardless of activity. Set to 0 to disable (unlimited). Default is 0 (disabled)",
+      Long.class, 0), // 0 = DISABLED/UNLIMITED BY DEFAULT
+
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
