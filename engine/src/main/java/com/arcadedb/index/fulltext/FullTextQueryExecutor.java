@@ -25,6 +25,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.BooleanClause;
@@ -251,13 +252,13 @@ public class FullTextQueryExecutor {
   private void collectPhraseMatches(final PhraseQuery query, final Map<RID, AtomicInteger> scoreMap) {
     // For phrase queries, all terms must match in the same document
     // Note: We can't verify word order without position indexing, so we just require all terms
-    final org.apache.lucene.index.Term[] terms = query.getTerms();
+    final Term[] terms = query.getTerms();
     if (terms.length == 0)
       return;
 
     Map<RID, AtomicInteger> intersection = null;
 
-    for (final org.apache.lucene.index.Term term : terms) {
+    for (final Term term : terms) {
       final Map<RID, AtomicInteger> termMatches = new HashMap<>();
       final IndexCursor cursor = index.get(new Object[] { term.text() });
       while (cursor.hasNext()) {

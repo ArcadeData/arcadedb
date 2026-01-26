@@ -19,6 +19,7 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
@@ -656,7 +657,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       // Extract text from indexed properties
       final List<String> propertyNames = getPropertyNames();
       if (propertyNames != null && !propertyNames.isEmpty()) {
-        final com.arcadedb.database.Document doc = (com.arcadedb.database.Document) identifiable;
+        final Document doc = (Document) identifiable;
         for (final String propName : propertyNames) {
           final Object value = doc.get(propName);
           if (value != null) {

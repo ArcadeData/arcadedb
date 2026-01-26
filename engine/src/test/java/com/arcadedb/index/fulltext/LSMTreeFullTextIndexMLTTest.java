@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.AfterEach;
@@ -232,7 +233,7 @@ public class LSMTreeFullTextIndexMLTTest {
    */
   private LSMTreeFullTextIndex getFullTextIndex() {
     final DocumentType docType = db.getSchema().getType("Document");
-    final com.arcadedb.index.TypeIndex typeIndex = docType.getAllIndexes(false).iterator().next();
+    final TypeIndex typeIndex = docType.getAllIndexes(false).iterator().next();
     return (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
   }
 }
