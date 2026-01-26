@@ -1,0 +1,383 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.redis;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.test.BaseGraphServerTest;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
+/**
+ * Tests Redis commands as a query language via HTTP API.
+ * Issue: https://github.com/ArcadeData/arcadedb/issues/1010
+ */
+public class RedisQueryLanguageTest extends BaseGraphServerTest {
+
+  @Test
+  void testPingCommand() throws Exception {
+    // Test PING command via HTTP API with language=redis
+    final JSONObject response = executeCommand(0, "redis", "PING");
+    assertThat(getResultValue(response)).isEqualTo("PONG");
+  }
+
+  @Test
+  void testPingWithArgument() throws Exception {
+    // Test PING with argument
+    final JSONObject response = executeCommand(0, "redis", "PING Hello");
+    assertThat(getResultValue(response)).isEqualTo("Hello");
+  }
+
+  @Test
+  void testSetAndGetCommands() throws Exception {
+    // Test SET command
+    JSONObject response = executeCommand(0, "redis", "SET testkey testvalue");
+    assertThat(getResultValue(response)).isEqualTo("OK");
+
+    // Test GET command
+    response = executeCommand(0, "redis", "GET testkey");
+    assertThat(getResultValue(response)).isEqualTo("testvalue");
+  }
+
+  @Test
+  void testExistsCommand() throws Exception {
+    // Set a key first
+    executeCommand(0, "redis", "SET existskey value1");
+
+    // Test EXISTS for existing key
+    JSONObject response = executeCommand(0, "redis", "EXISTS existskey");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Test EXISTS for non-existing key
+    response = executeCommand(0, "redis", "EXISTS nonexistent");
+    assertThat(getResultValueAsInt(response)).isEqualTo(0);
+  }
+
+  @Test
+  void testIncrDecrCommands() throws Exception {
+    // Set initial numeric value
+    executeCommand(0, "redis", "SET counter 10");
+
+    // Test INCR
+    JSONObject response = executeCommand(0, "redis", "INCR counter");
+    assertThat(getResultValueAsLong(response)).isEqualTo(11L);
+
+    // Test INCRBY
+    response = executeCommand(0, "redis", "INCRBY counter 5");
+    assertThat(getResultValueAsLong(response)).isEqualTo(16L);
+
+    // Test DECR
+    response = executeCommand(0, "redis", "DECR counter");
+    assertThat(getResultValueAsLong(response)).isEqualTo(15L);
+
+    // Test DECRBY
+    response = executeCommand(0, "redis", "DECRBY counter 5");
+    assertThat(getResultValueAsLong(response)).isEqualTo(10L);
+  }
+
+  @Test
+  void testGetDelCommand() throws Exception {
+    // Set a key
+    executeCommand(0, "redis", "SET deletekey value123");
+
+    // Test GETDEL (get and delete)
+    JSONObject response = executeCommand(0, "redis", "GETDEL deletekey");
+    assertThat(getResultValue(response)).isEqualTo("value123");
+
+    // Verify key is deleted
+    response = executeCommand(0, "redis", "GET deletekey");
+    assertThat(getResultValue(response)).isNull();
+  }
+
+  @Test
+  void testHSetAndHGetWithDatabase() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    // Create a document type with index
+    database.command("sql", "CREATE DOCUMENT TYPE Person");
+    database.command("sql", "CREATE PROPERTY Person.id INTEGER");
+    database.command("sql", "CREATE INDEX ON Person (id) UNIQUE");
+
+    // Test HSET - persist a document (simplified syntax: HSET <type> <json>)
+    JSONObject response = executeCommand(0, "redis", "HSET Person {\"id\":1,\"name\":\"John\",\"age\":30}");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Test HGET - retrieve by index (syntax: HGET <indexName> <key>)
+    response = executeCommand(0, "redis", "HGET Person[id] 1");
+    final String docJson = (String) getResultValue(response);
+    final JSONObject doc = new JSONObject(docJson);
+    assertThat(doc.getInt("id")).isEqualTo(1);
+    assertThat(doc.getString("name")).isEqualTo("John");
+  }
+
+  @Test
+  void testHExistsCommand() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    // Create a document type with index
+    database.command("sql", "CREATE DOCUMENT TYPE TestItem");
+    database.command("sql", "CREATE PROPERTY TestItem.code STRING");
+    database.command("sql", "CREATE INDEX ON TestItem (code) UNIQUE");
+
+    // Insert a document
+    executeCommand(0, "redis", "HSET TestItem {\"code\":\"ABC123\"}");
+
+    // Test HEXISTS for existing key
+    JSONObject response = executeCommand(0, "redis", "HEXISTS TestItem[code] ABC123");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Test HEXISTS for non-existing key
+    response = executeCommand(0, "redis", "HEXISTS TestItem[code] XYZ999");
+    assertThat(getResultValueAsInt(response)).isEqualTo(0);
+  }
+
+  @Test
+  void testHDelCommand() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    // Create a document type with index
+    database.command("sql", "CREATE DOCUMENT TYPE Product");
+    database.command("sql", "CREATE PROPERTY Product.sku STRING");
+    database.command("sql", "CREATE INDEX ON Product (sku) UNIQUE");
+
+    // Insert documents
+    executeCommand(0, "redis", "HSET Product {\"sku\":\"SKU001\",\"name\":\"Product1\"}");
+    executeCommand(0, "redis", "HSET Product {\"sku\":\"SKU002\",\"name\":\"Product2\"}");
+
+    // Verify documents exist
+    JSONObject response = executeCommand(0, "redis", "HEXISTS Product[sku] SKU001");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Test HDEL
+    response = executeCommand(0, "redis", "HDEL Product[sku] SKU001");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Verify document is deleted
+    response = executeCommand(0, "redis", "HEXISTS Product[sku] SKU001");
+    assertThat(getResultValueAsInt(response)).isEqualTo(0);
+
+    // Verify other document still exists
+    response = executeCommand(0, "redis", "HEXISTS Product[sku] SKU002");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+  }
+
+  @Test
+  void testQueryEngineDirectly() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    // Test direct query engine access (like MongoDB tests do)
+    try (final ResultSet rs = database.query("redis", "PING")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat((String) result.getProperty("value")).isEqualTo("PONG");
+    }
+  }
+
+  @Test
+  void testCommandNotFound() throws Exception {
+    // Test unsupported command
+    try {
+      executeCommand(0, "redis", "UNKNOWNCOMMAND arg1");
+      fail("Expected exception for unknown command");
+    } catch (Exception e) {
+      assertThat(e.getMessage()).contains("Command not found");
+    }
+  }
+
+  @Test
+  void testBatchCommands() throws Exception {
+    // Test multiple commands separated by newlines (batch execution)
+    final String batchCommands = """
+        SET batch1 value1
+        SET batch2 value2
+        SET batch3 value3
+        GET batch1
+        GET batch2
+        GET batch3
+        """;
+
+    final JSONObject response = executeCommand(0, "redis", batchCommands);
+
+    // Batch returns array of results
+    final Object value = getResultValue(response);
+    assertThat(value).isInstanceOf(JSONArray.class);
+    final JSONArray results = (JSONArray) value;
+    assertThat(results.length()).isEqualTo(6);
+    assertThat(results.get(0)).isEqualTo("OK");
+    assertThat(results.get(1)).isEqualTo("OK");
+    assertThat(results.get(2)).isEqualTo("OK");
+    assertThat(results.get(3)).isEqualTo("value1");
+    assertThat(results.get(4)).isEqualTo("value2");
+    assertThat(results.get(5)).isEqualTo("value3");
+  }
+
+  @Test
+  void testMultiExecTransaction() throws Exception {
+    // Test MULTI/EXEC transaction (official Redis syntax)
+    final String transactionCommands = """
+        MULTI
+        SET tx1 txvalue1
+        SET tx2 txvalue2
+        INCR counter1
+        EXEC
+        """;
+
+    final JSONObject response = executeCommand(0, "redis", transactionCommands);
+
+    // Transaction returns array of results
+    final Object value = getResultValue(response);
+    assertThat(value).isInstanceOf(JSONArray.class);
+    final JSONArray results = (JSONArray) value;
+    assertThat(results.length()).isEqualTo(3);
+    assertThat(results.get(0)).isEqualTo("OK");
+    assertThat(results.get(1)).isEqualTo("OK");
+    assertThat(results.getLong(2)).isEqualTo(1L);
+
+    // Verify values were persisted
+    JSONObject getResponse = executeCommand(0, "redis", "GET tx1");
+    assertThat(getResultValue(getResponse)).isEqualTo("txvalue1");
+
+    getResponse = executeCommand(0, "redis", "GET tx2");
+    assertThat(getResultValue(getResponse)).isEqualTo("txvalue2");
+  }
+
+  @Test
+  void testMultiExecWithComments() throws Exception {
+    // Test that comments are ignored
+    final String commands = """
+        # This is a comment
+        SET comment1 value1
+        // This is also a comment
+        SET comment2 value2
+        """;
+
+    final JSONObject response = executeCommand(0, "redis", commands);
+
+    final Object value = getResultValue(response);
+    assertThat(value).isInstanceOf(JSONArray.class);
+    final JSONArray results = (JSONArray) value;
+    assertThat(results.length()).isEqualTo(2);
+  }
+
+  @Test
+  void testDiscard() throws Exception {
+    // Test DISCARD command
+    final String commands = """
+        MULTI
+        SET discard1 value1
+        DISCARD
+        """;
+
+    final JSONObject response = executeCommand(0, "redis", commands);
+    assertThat(getResultValue(response)).isEqualTo("OK");
+
+    // Verify value was NOT persisted
+    final JSONObject getResponse = executeCommand(0, "redis", "GET discard1");
+    assertThat(getResultValue(getResponse)).isNull();
+  }
+
+  @Override
+  protected void populateDatabase() {
+  }
+
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    // Redis Protocol Plugin needed for the module to be loaded
+    GlobalConfiguration.SERVER_PLUGINS.setValue("Redis Protocol:com.arcadedb.redis.RedisProtocolPlugin");
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
+    super.endTest();
+  }
+
+  /**
+   * Extracts the "value" property from the first result in the response.
+   * The response format is: {"result": [{"value": <result>}]}
+   */
+  private Object getResultValue(final JSONObject response) {
+    final JSONArray results = response.getJSONArray("result");
+    if (results.isEmpty()) {
+      return null;
+    }
+    final JSONObject firstResult = results.getJSONObject(0);
+    if (firstResult.isNull("value")) {
+      return null;
+    }
+    return firstResult.get("value");
+  }
+
+  private int getResultValueAsInt(final JSONObject response) {
+    final Object value = getResultValue(response);
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    return Integer.parseInt(value.toString());
+  }
+
+  private long getResultValueAsLong(final JSONObject response) {
+    final Object value = getResultValue(response);
+    if (value instanceof Number number) {
+      return number.longValue();
+    }
+    return Long.parseLong(value.toString());
+  }
+
+  protected JSONObject executeCommand(final int serverIndex, final String language, final String command) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject();
+    request.put("language", language);
+    request.put("command", command);
+
+    try (OutputStream os = connection.getOutputStream()) {
+      os.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    final int responseCode = connection.getResponseCode();
+    if (responseCode != 200) {
+      final String error = new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+      throw new RuntimeException("HTTP " + responseCode + ": " + error);
+    }
+
+    final String response = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    return new JSONObject(response);
+  }
+}

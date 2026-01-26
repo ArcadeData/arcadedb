@@ -44,6 +44,7 @@
           <option value="cypher">Cypher (Old Engine)</option>
           <option value="graphql">GraphQL</option>
           <option value="mongo">MongoDB</option>
+          <option value="redis">Redis</option>
         </select>
       </div>
       <div class="d-flex">
@@ -513,6 +514,7 @@
     else if (language == "gremlin") mime = "sql";
     else if (language == "mongodb") mime = "application/json";
     else if (language == "graphql") mime = "application/json";
+    else if (language == "redis") mime = "text/plain";
     return mime;
   }
 </script>
