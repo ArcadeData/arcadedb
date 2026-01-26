@@ -55,11 +55,19 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.nio.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 /**
  * LSM-Tree index implementation. It relies on a mutable index and its underlying immutable, compacted index.
@@ -70,8 +78,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private final        RWLockContext                 lock         = new RWLockContext();
   private              TypeIndex                     typeIndex;
   protected            LSMTreeIndexMutable           mutable;
-  protected final      AtomicReference<INDEX_STATUS> status       = new AtomicReference<>(
-      INDEX_STATUS.AVAILABLE);
+  protected final      AtomicReference<INDEX_STATUS> status       = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
   private              boolean                       valid        = true;
   private              IndexMetadata                 metadata;
 
