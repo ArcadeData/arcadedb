@@ -70,8 +70,8 @@ public enum PostgresType {
       .collect(Collectors.toMap(type -> type.code, type -> type));
 
   // PostgreSQL-compatible datetime format (ISO 8601 without 'T' separator)
-  private static final String POSTGRES_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss.SSSSSS";
-  private static final DateTimeFormatter POSTGRES_DATETIME_FORMATTER = DateTimeFormatter.ofPattern(POSTGRES_DATETIME_FORMAT);
+  private static final String POSTGRES_TIMESTAMP_FORMAT = "yyyy-MM-dd HH:mm:ss.SSSSSS";
+  private static final DateTimeFormatter POSTGRES_DATETIME_FORMATTER = DateTimeFormatter.ofPattern(POSTGRES_TIMESTAMP_FORMAT);
 
   public final  int                      code;
   public final  Class<?>                 cls;
