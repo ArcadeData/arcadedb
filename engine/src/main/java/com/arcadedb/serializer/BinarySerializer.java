@@ -355,6 +355,8 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_STRING:
       if (value instanceof byte[] bytes)
         content.putBytes(bytes);
+      else if (BinaryTypes.isGeoSpatialShape(value))
+        content.putString(convertShapeToWKT(value));
       else
         content.putString(value.toString());
       break;
@@ -809,8 +811,8 @@ public class BinarySerializer {
         continue;
       }
 
-      if (value != null && type == BinaryTypes.TYPE_STRING) {
-        final int id = dictionary.getIdByName((String) value, false);
+      if (value instanceof String stringValue && type == BinaryTypes.TYPE_STRING) {
+        final int id = dictionary.getIdByName(stringValue, false);
         if (id > -1) {
           // WRITE THE COMPRESSED STRING
           type = BinaryTypes.TYPE_COMPRESSED_STRING;
@@ -867,6 +869,37 @@ public class BinarySerializer {
 
   public void setDataEncryption(final DataEncryption dataEncryption) {
     this.dataEncryption = dataEncryption;
+  }
+
+  /**
+   * Converts a spatial4j Shape object to WKT (Well-Known Text) format.
+   * This method uses reflection to avoid hard dependency on spatial4j in this class.
+   */
+  private String convertShapeToWKT(final Object shape) {
+    try {
+      // Get the spatial context from the shape
+      final Class<?> shapeClass = Class.forName("org.locationtech.spatial4j.shape.Shape");
+      final java.lang.reflect.Method getContextMethod = shapeClass.getMethod("getContext");
+      final Object spatialContext = getContextMethod.invoke(shape);
+
+      // Get the WKT writer from the spatial context
+      final Class<?> spatialContextClass = Class.forName("org.locationtech.spatial4j.context.SpatialContext");
+      final java.lang.reflect.Method getFormatsMethod = spatialContextClass.getMethod("getFormats");
+      final Object formats = getFormatsMethod.invoke(spatialContext);
+
+      // Get the WKT writer and convert the shape
+      final Class<?> formatsClass = Class.forName("org.locationtech.spatial4j.io.SupportedFormats");
+      final java.lang.reflect.Method getWktWriterMethod = formatsClass.getMethod("getWktWriter");
+      final Object wktWriter = getWktWriterMethod.invoke(formats);
+
+      final Class<?> shapeWriterClass = Class.forName("org.locationtech.spatial4j.io.ShapeWriter");
+      final java.lang.reflect.Method toStringMethod = shapeWriterClass.getMethod("toString", shapeClass);
+      return (String) toStringMethod.invoke(wktWriter, shape);
+    } catch (Exception e) {
+      // Fallback to toString() if WKT conversion fails
+      LogManager.instance().log(this, Level.WARNING, "Failed to convert shape to WKT, using toString(): %s", e, e.getMessage());
+      return shape.toString();
+    }
   }
 
 }

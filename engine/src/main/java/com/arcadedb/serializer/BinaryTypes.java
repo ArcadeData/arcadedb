@@ -147,6 +147,8 @@ public class BinaryTypes {
 
     } else if (value instanceof Iterable)
       type = TYPE_LIST;
+    else if (isGeoSpatialShape(value))
+      type = TYPE_STRING; // Shapes are serialized as WKT strings
     else if (value instanceof Number) {
       // GENERIC NUMBER IMPLEMENTATION. THIS HAPPENS WITH JSON NUMBERS
       byte t;
@@ -214,5 +216,20 @@ public class BinaryTypes {
       // UNKNOWN
       default -> null;
     };
+  }
+
+  /**
+   * Checks if the value is a geospatial Shape from spatial4j library.
+   * This uses reflection to avoid hard dependency on spatial4j.
+   */
+  public static boolean isGeoSpatialShape(final Object value) {
+    if (value == null)
+      return false;
+    try {
+      final Class<?> shapeClass = Class.forName("org.locationtech.spatial4j.shape.Shape");
+      return shapeClass.isInstance(value);
+    } catch (ClassNotFoundException e) {
+      return false;
+    }
   }
 }

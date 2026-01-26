@@ -204,6 +204,136 @@ class SQLGeoFunctionsTest {
     });
   }
 
+  /**
+   * Test for issue #1843: Exact reproduction of the reported issue.
+   * Original query: insert into point set geom=(select point(30,30) as point);
+   */
+  @Test
+  void insertPointIntoDocumentExactIssue() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      db.transaction(() -> {
+        // Exact steps from issue #1843
+        db.command("sql", "create document type point");
+        db.command("sql", "insert into point set geom=(select point(30,30) as point)");
+
+        // Verify data was stored
+        final ResultSet result = db.query("sql", "select from point");
+        assertThat(result.hasNext()).isTrue();
+
+        final Document doc = result.next().toElement();
+        final Object geom = doc.get("geom");
+        assertThat(geom).isNotNull();
+
+        // The geom field should contain the stored point (as WKT or nested result)
+        // When using subquery, the result is a map containing the point
+        if (geom instanceof java.util.Map) {
+          final java.util.Map<?, ?> map = (java.util.Map<?, ?>) geom;
+          assertThat(map.get("point")).isNotNull();
+        }
+      });
+    });
+  }
+
+  /**
+   * Test for issue #1843: Cannot serialize value of type class org.locationtech.spatial4j.shape.jts.JtsPoint
+   * This test verifies that Point objects can be serialized and persisted across database restarts.
+   */
+  @Test
+  void insertPointIntoDocument() throws Exception {
+    // Use a unique database name to avoid conflicts with parallel tests
+    final String dbName = "GeoPointPersistence_" + System.nanoTime();
+    final String dbPath = "./target/databases/" + dbName;
+
+    try {
+      // Clean up first
+      com.arcadedb.utility.FileUtils.deleteRecursively(new java.io.File(dbPath));
+
+      // Create database and insert data
+      try (com.arcadedb.database.Database db = new com.arcadedb.database.DatabaseFactory(dbPath).create()) {
+        db.transaction(() -> {
+          // Create the document type as described in the issue
+          db.command("sql", "create document type GeoPoint");
+
+          // This should work: insert a point using the point() function
+          db.command("sql", "insert into GeoPoint set geom = point(30, 30)");
+        });
+      }
+
+      // Reopen database to verify data was persisted correctly
+      try (com.arcadedb.database.Database db = new com.arcadedb.database.DatabaseFactory(dbPath).open()) {
+        db.transaction(() -> {
+          // Verify we can retrieve the stored value
+          final ResultSet result = db.query("sql", "select from GeoPoint");
+          assertThat(result.hasNext()).isTrue();
+
+          final Document doc = result.next().toElement();
+          assertThat(doc.get("geom")).isNotNull();
+
+          // The value should be stored as WKT string
+          final String storedValue = doc.getString("geom");
+          assertThat(storedValue).contains("POINT");
+          assertThat(storedValue).contains("30");
+        });
+      }
+    } finally {
+      com.arcadedb.utility.FileUtils.deleteRecursively(new java.io.File(dbPath));
+    }
+  }
+
+  /**
+   * Test for issue #1843: Test various shape types serialization
+   * Note: Point, LineString, Polygon are standard WKT types and stored as WKT.
+   *       Circle and Rectangle are not standard WKT types and are stored as their toString() representation.
+   */
+  @Test
+  void insertVariousShapesIntoDocument() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      db.transaction(() -> {
+        db.command("sql", "create document type GeoShapes");
+
+        // Insert circle (not standard WKT - stored as toString)
+        db.command("sql", "insert into GeoShapes set name = 'circle', geom = circle(10, 10, 5)");
+
+        // Insert rectangle (not standard WKT - stored as toString)
+        db.command("sql", "insert into GeoShapes set name = 'rectangle', geom = rectangle(0, 0, 10, 10)");
+
+        // Insert polygon (standard WKT)
+        db.command("sql",
+            "insert into GeoShapes set name = 'polygon', geom = polygon([[0,0], [10,0], [10,10], [0,10], [0,0]])");
+
+        // Insert linestring (standard WKT)
+        db.command("sql", "insert into GeoShapes set name = 'linestring', geom = linestring([[0,0], [10,10], [20,0]])");
+
+        // Verify all shapes were stored
+        final ResultSet result = db.query("sql", "select from GeoShapes order by name");
+
+        // Circle - not standard WKT, stored as toString() which contains "Circle"
+        assertThat(result.hasNext()).isTrue();
+        Document doc = result.next().toElement();
+        assertThat(doc.getString("name")).isEqualTo("circle");
+        assertThat(doc.getString("geom")).contains("Circle");  // toString() format
+
+        // Linestring - standard WKT format
+        assertThat(result.hasNext()).isTrue();
+        doc = result.next().toElement();
+        assertThat(doc.getString("name")).isEqualTo("linestring");
+        assertThat(doc.getString("geom")).contains("LINESTRING");
+
+        // Polygon - standard WKT format
+        assertThat(result.hasNext()).isTrue();
+        doc = result.next().toElement();
+        assertThat(doc.getString("name")).isEqualTo("polygon");
+        assertThat(doc.getString("geom")).contains("POLYGON");
+
+        // Rectangle - not standard WKT, stored as toString() which contains "Rect"
+        assertThat(result.hasNext()).isTrue();
+        doc = result.next().toElement();
+        assertThat(doc.getString("name")).isEqualTo("rectangle");
+        assertThat(doc.getString("geom")).contains("Rect");  // toString() format
+      });
+    });
+  }
+
   @Test
   void geoManualIndexBoundingBoxes() throws Exception {
     final int TOTAL = 1_000;
