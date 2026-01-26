@@ -32,12 +32,27 @@ import com.arcadedb.server.security.ServerSecurityUser;
 public class HttpAuthSession {
   public final  String             token;
   public final  ServerSecurityUser user;
+  private final long               createdAt;
   private volatile long            lastUpdate;
+  private final String             sourceIp;
+  private final String             userAgent;
+  private final String             country;
+  private final String             city;
 
   public HttpAuthSession(final ServerSecurityUser user, final String token) {
+    this(user, token, null, null, null, null);
+  }
+
+  public HttpAuthSession(final ServerSecurityUser user, final String token, final String sourceIp,
+      final String userAgent, final String country, final String city) {
     this.user = user;
     this.token = token;
-    this.lastUpdate = System.currentTimeMillis();
+    this.createdAt = System.currentTimeMillis();
+    this.lastUpdate = this.createdAt;
+    this.sourceIp = sourceIp;
+    this.userAgent = userAgent;
+    this.country = country;
+    this.city = city;
   }
 
   public long elapsedFromLastUpdate() {
@@ -54,5 +69,29 @@ public class HttpAuthSession {
 
   public String getToken() {
     return token;
+  }
+
+  public long getCreatedAt() {
+    return createdAt;
+  }
+
+  public long getLastUpdate() {
+    return lastUpdate;
+  }
+
+  public String getSourceIp() {
+    return sourceIp;
+  }
+
+  public String getUserAgent() {
+    return userAgent;
+  }
+
+  public String getCountry() {
+    return country;
+  }
+
+  public String getCity() {
+    return city;
   }
 }

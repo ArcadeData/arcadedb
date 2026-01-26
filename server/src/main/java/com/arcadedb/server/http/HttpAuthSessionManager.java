@@ -106,12 +106,27 @@ public class HttpAuthSessionManager extends RWLockContext {
    * @return the new session with a unique token
    */
   public HttpAuthSession createSession(final ServerSecurityUser user) {
+    return createSession(user, null, null, null, null);
+  }
+
+  /**
+   * Create a new authenticated session for a user with additional metadata.
+   *
+   * @param user      the authenticated user
+   * @param sourceIp  the source IP address of the client
+   * @param userAgent the user agent string of the client
+   * @param country   the country from Cloudflare headers (if available)
+   * @param city      the city from Cloudflare headers (if available)
+   * @return the new session with a unique token
+   */
+  public HttpAuthSession createSession(final ServerSecurityUser user, final String sourceIp,
+      final String userAgent, final String country, final String city) {
     return executeInWriteLock(() -> {
       final String token = "AU-" + UUID.randomUUID();
-      final HttpAuthSession session = new HttpAuthSession(user, token);
+      final HttpAuthSession session = new HttpAuthSession(user, token, sourceIp, userAgent, country, city);
       sessions.put(token, session);
-      LogManager.instance().log(this, Level.FINE, "Created authentication session %s for user %s", token,
-          user.getName());
+      LogManager.instance().log(this, Level.FINE, "Created authentication session %s for user %s from %s", token,
+          user.getName(), sourceIp);
       return session;
     });
   }

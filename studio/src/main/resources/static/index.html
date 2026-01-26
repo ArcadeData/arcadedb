@@ -207,7 +207,7 @@
               </li>
               <li class="nav-item">
                 <a
-                  href="javascript:globalConfirm('Log Out','Are you sure you want to log out?','warning',function(){window.location.href=window.location.href})"
+                  href="javascript:logout()"
                   class="vertical-tab nav-link"
                   id="logout-sel"
                 >
@@ -276,7 +276,17 @@
           $("#inputUserName").delay(1000).focus().select();
         });
 
-        if (globalCredentials == null) showLoginPopup();
+        // Check for existing session in localStorage
+        if (initSessionFromStorage()) {
+          // Session found, try to use it
+          console.log("Found stored session, attempting auto-login");
+          updateDatabases(function () {
+            console.log("Auto-login successful, initializing query editor");
+            initQuery();
+          });
+        } else if (globalCredentials == null) {
+          showLoginPopup();
+        }
       });
     </script>
   </body>

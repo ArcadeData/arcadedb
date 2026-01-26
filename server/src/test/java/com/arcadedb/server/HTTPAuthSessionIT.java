@@ -90,12 +90,27 @@ public class HTTPAuthSessionIT extends BaseGraphServerTest {
         boolean foundOurSession = false;
         for (int i = 0; i < sessions.length(); i++) {
           final JSONObject session = sessions.getJSONObject(i);
+          // Verify required fields are present
           assertThat(session.has("token")).isTrue();
           assertThat(session.has("user")).isTrue();
           assertThat(session.has("elapsedMs")).isTrue();
+          assertThat(session.has("createdAt")).isTrue();
+          assertThat(session.has("lastUpdate")).isTrue();
+          // sourceIp, userAgent, country, city may be null but keys should exist
+          assertThat(session.has("sourceIp")).isTrue();
+          assertThat(session.has("userAgent")).isTrue();
+          assertThat(session.has("country")).isTrue();
+          assertThat(session.has("city")).isTrue();
           if (session.getString("token").equals(authToken)) {
             foundOurSession = true;
             assertThat(session.getString("user")).isEqualTo("root");
+            // createdAt and lastUpdate should be recent timestamps
+            assertThat(session.getLong("createdAt")).isGreaterThan(0);
+            assertThat(session.getLong("lastUpdate")).isGreaterThanOrEqualTo(session.getLong("createdAt"));
+            // sourceIp should be localhost since we're testing locally
+            if (!session.isNull("sourceIp")) {
+              assertThat(session.getString("sourceIp")).isIn("127.0.0.1", "0:0:0:0:0:0:0:1", "::1");
+            }
           }
         }
         assertThat(foundOurSession).isTrue();
