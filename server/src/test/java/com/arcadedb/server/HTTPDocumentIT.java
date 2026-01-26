@@ -691,6 +691,87 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Test for GitHub issue #1582 - UNWIND with @rid projection via HTTP API
+   * The bug: SELECT @rid FROM doc UNWIND lst should return 3 records, not 1.
+   */
+  @Test
+  void testUnwindWithRidProjectionViaHttp_Issue1582() throws Exception {
+    final String className = "TestUnwindRid1582";
+
+    testEachServer((serverIndex) -> {
+      // Setup: Create test type with list property and insert document
+      HttpURLConnection setupConnection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      setupConnection.setRequestMethod("POST");
+      setupConnection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(setupConnection, "sql", "CREATE DOCUMENT TYPE " + className + " IF NOT EXISTS", null, new HashMap<>());
+      setupConnection.getInputStream().close();
+      setupConnection.disconnect();
+
+      setupConnection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      setupConnection.setRequestMethod("POST");
+      setupConnection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(setupConnection, "sql", "INSERT INTO " + className + " SET lst = [1,2,3]", null, new HashMap<>());
+      setupConnection.getInputStream().close();
+      setupConnection.disconnect();
+
+      // Test: SELECT @rid FROM doc UNWIND lst - should return 3 results
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "SELECT @rid FROM " + className + " UNWIND lst", null, new HashMap<>());
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+
+        final JSONObject responseJson = new JSONObject(response);
+        final JSONArray result = responseJson.getJSONArray("result");
+
+        // Should return 3 records (one per list element), NOT just 1
+        assertThat(result.length()).as("SELECT @rid FROM doc UNWIND lst should return 3 results").isEqualTo(3);
+
+        // Each result should have @rid
+        for (int i = 0; i < result.length(); i++) {
+          assertThat(result.getJSONObject(i).has("@rid")).as("Each result should have @rid").isTrue();
+        }
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // Also test SELECT @type FROM doc UNWIND lst for comparison
+      final HttpURLConnection connection2 = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+
+      connection2.setRequestMethod("POST");
+      connection2.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection2, "sql", "SELECT @type FROM " + className + " UNWIND lst", null, new HashMap<>());
+
+      try {
+        final String response2 = readResponse(connection2);
+        final JSONObject responseJson2 = new JSONObject(response2);
+        final JSONArray result2 = responseJson2.getJSONArray("result");
+
+        // Should also return 3 records
+        assertThat(result2.length()).as("SELECT @type FROM doc UNWIND lst should return 3 results").isEqualTo(3);
+
+      } finally {
+        connection2.disconnect();
+      }
+    });
+  }
+
   @Override
   protected void populateDatabase() {
     final Database database = getDatabase(0);
