@@ -2,11 +2,44 @@ var editor = null;
 var globalResultset = null;
 var globalGraphMaxResult = 1000;
 var globalCredentials = null;
+var globalUsername = null;
+
+var SESSION_STORAGE_KEY = "arcadedb-session";
+var USERNAME_STORAGE_KEY = "arcadedb-username";
 
 function make_base_auth(user, password) {
   var tok = user + ":" + password;
   var hash = btoa(tok);
   return "Basic " + hash;
+}
+
+function getStoredSession() {
+  return localStorage.getItem(SESSION_STORAGE_KEY);
+}
+
+function getStoredUsername() {
+  return localStorage.getItem(USERNAME_STORAGE_KEY);
+}
+
+function storeSession(token, username) {
+  localStorage.setItem(SESSION_STORAGE_KEY, token);
+  localStorage.setItem(USERNAME_STORAGE_KEY, username);
+}
+
+function clearSession() {
+  localStorage.removeItem(SESSION_STORAGE_KEY);
+  localStorage.removeItem(USERNAME_STORAGE_KEY);
+}
+
+function initSessionFromStorage() {
+  var storedToken = getStoredSession();
+  var storedUsername = getStoredUsername();
+  if (storedToken) {
+    globalCredentials = "Bearer " + storedToken;
+    globalUsername = storedUsername;
+    return true;
+  }
+  return false;
 }
 
 function login() {
@@ -25,13 +58,112 @@ function login() {
   console.log("Starting login process for user:", userName);
   $("#loginSpinner").show();
 
-  globalCredentials = make_base_auth(userName, userPassword);
-  console.log("Credentials created, calling updateDatabases");
+  var basicAuth = make_base_auth(userName, userPassword);
 
-  updateDatabases(function () {
-    console.log("Login successful, initializing query editor");
-    initQuery();
-  });
+  // Call the login endpoint to get a session token
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/login",
+      timeout: 30000,
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", basicAuth);
+      },
+    })
+    .done(function (data) {
+      console.log("Login successful, received token");
+
+      // Store the session token
+      var token = data.token;
+      var username = data.user;
+      storeSession(token, username);
+
+      // Set global credentials to use Bearer token
+      globalCredentials = "Bearer " + token;
+      globalUsername = username;
+
+      console.log("Session stored, calling updateDatabases");
+
+      updateDatabases(function () {
+        console.log("Login complete, initializing query editor");
+        initQuery();
+      });
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      console.error("Login failed:", {
+        status: jqXHR.status,
+        statusText: jqXHR.statusText,
+        textStatus: textStatus,
+        errorThrown: errorThrown,
+        responseText: jqXHR.responseText
+      });
+
+      var errorMessage = "Login failed";
+      if (jqXHR.status === 401) {
+        errorMessage = "Invalid username or password";
+      } else if (jqXHR.status === 403) {
+        errorMessage = "Access denied";
+      } else if (jqXHR.status === 0) {
+        errorMessage = "Cannot connect to server. Please check if ArcadeDB is running.";
+      } else if (textStatus === "timeout") {
+        errorMessage = "Connection timeout. Please try again.";
+      } else if (jqXHR.responseText) {
+        try {
+          var json = JSON.parse(jqXHR.responseText);
+          errorMessage = json.error || json.detail || errorMessage;
+        } catch (e) {
+          errorMessage = jqXHR.responseText;
+        }
+      }
+
+      if (typeof globalNotify === 'function') {
+        globalNotify("Login Error", errorMessage, "danger");
+      } else {
+        alert("Login Error: " + errorMessage);
+      }
+
+      $("#inputUserName").focus().select();
+    })
+    .always(function () {
+      $("#loginSpinner").hide();
+    });
+}
+
+function logout() {
+  globalConfirm(
+    "Log Out",
+    "Are you sure you want to log out?",
+    "warning",
+    function () {
+      // Call the logout endpoint to invalidate the session
+      jQuery
+        .ajax({
+          type: "POST",
+          url: "api/v1/logout",
+          timeout: 10000,
+          beforeSend: function (xhr) {
+            if (globalCredentials) {
+              xhr.setRequestHeader("Authorization", globalCredentials);
+            }
+          },
+        })
+        .always(function () {
+          // Clear session regardless of server response
+          clearSession();
+          globalCredentials = null;
+          globalUsername = null;
+
+          // Show login popup and hide studio panel
+          $("#studioPanel").hide();
+          $("#welcomePanel").show();
+          $("#loginPopup").modal("show");
+
+          // Clear form fields
+          $("#inputUserName").val("");
+          $("#inputUserPassword").val("");
+        });
+    }
+  );
 }
 
 function showLoginPopup() {
@@ -124,20 +256,7 @@ function updateDatabases(callback) {
 
       // This is the critical part - set the user info for "Connected as" text
       // Handle both query and database user elements
-      let username = data.user;
-      if (!username) {
-        // If server doesn't return user field, extract from our credentials
-        try {
-          let authHeader = globalCredentials; // "Basic base64encodedstring"
-          if (authHeader && authHeader.startsWith('Basic ')) {
-            let decoded = atob(authHeader.substring(6)); // Remove "Basic " prefix
-            username = decoded.split(':')[0]; // Extract username part before colon
-          }
-        } catch (e) {
-          console.warn("Could not extract username from credentials:", e);
-        }
-        username = username || 'unknown';
-      }
+      let username = data.user || globalUsername || 'unknown';
       $("#queryUser").html(username);
       $("#databaseUser").html(username);
       console.log("Set user to:", username);
@@ -172,7 +291,7 @@ function updateDatabases(callback) {
       }
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
-      console.error("Login failed:", {
+      console.error("Database fetch failed:", {
         status: jqXHR.status,
         statusText: jqXHR.statusText,
         textStatus: textStatus,
@@ -180,10 +299,26 @@ function updateDatabases(callback) {
         responseText: jqXHR.responseText
       });
 
-      let errorMessage = "Login failed";
+      // Handle session expiration (401 = invalid/expired token)
       if (jqXHR.status === 401) {
-        errorMessage = "Invalid username or password";
-      } else if (jqXHR.status === 403) {
+        console.log("Session expired or invalid, clearing session");
+        clearSession();
+        globalCredentials = null;
+        globalUsername = null;
+
+        // Show login popup
+        $("#studioPanel").hide();
+        $("#welcomePanel").show();
+        $("#loginPopup").modal("show");
+
+        if (typeof globalNotify === 'function') {
+          globalNotify("Session Expired", "Your session has expired. Please log in again.", "danger");
+        }
+        return;
+      }
+
+      let errorMessage = "Failed to fetch databases";
+      if (jqXHR.status === 403) {
         errorMessage = "Access denied";
       } else if (jqXHR.status === 0) {
         errorMessage = "Cannot connect to server. Please check if ArcadeDB is running.";
@@ -198,19 +333,14 @@ function updateDatabases(callback) {
         }
       }
 
-      // Use fallback notification if globalNotify is not available
       if (typeof globalNotify === 'function') {
-        globalNotify("Login Error", errorMessage, "danger");
+        globalNotify("Error", errorMessage, "danger");
       } else {
-        alert("Login Error: " + errorMessage);
+        alert("Error: " + errorMessage);
       }
-
-      // Reset login form for retry
-      globalCredentials = null; // Clear invalid credentials
-      $("#inputUserName").focus().select();
     })
     .always(function (data) {
-      console.log("Login attempt completed, hiding spinner");
+      console.log("Database fetch completed, hiding spinner");
       $("#loginSpinner").hide();
     });
 }

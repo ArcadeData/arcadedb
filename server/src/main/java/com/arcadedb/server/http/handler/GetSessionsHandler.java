@@ -56,7 +56,13 @@ public class GetSessionsHandler extends AbstractServerHttpHandler {
       final JSONObject sessionJson = new JSONObject();
       sessionJson.put("token", session.getToken());
       sessionJson.put("user", session.getUser().getName());
+      sessionJson.put("createdAt", session.getCreatedAt());
+      sessionJson.put("lastUpdate", session.getLastUpdate());
       sessionJson.put("elapsedMs", session.elapsedFromLastUpdate());
+      sessionJson.put("sourceIp", session.getSourceIp());
+      sessionJson.put("userAgent", session.getUserAgent());
+      sessionJson.put("country", session.getCountry());
+      sessionJson.put("city", session.getCity());
       sessionsArray.put(sessionJson);
     }
 

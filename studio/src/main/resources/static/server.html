@@ -29,6 +29,7 @@
     <div class="flex-grow-1">
       <ul class="nav nav-tabs text-center" id="tabs-database" style="float: right">
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-summary" class="active show nav-link" id="tab-summary-sel">Summary</a></li>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-server-sessions" class="nav-link" id="tab-server-sessions-sel">Sessions</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-events" class="nav-link" id="tab-server-events-sel">Events</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-metrics" class="nav-link" id="tab-metrics-sel">Metrics</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-settings" class="nav-link" id="tab-server-settings-sel">Server Settings</a></li>
@@ -96,6 +97,24 @@
       <div class="row">
         <div class="col-12">
           <div id="serverChartCommands" style="min-height: 400px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-pane fade show" id="tab-server-sessions" role="tabpanel">
+      <div class="row mb-3">
+        <div class="col-12 d-flex justify-content-between align-items-center">
+          <span>Active authentication sessions</span>
+          <button class="btn btn-sm btn-outline-primary" onclick="loadServerSessions()">
+            <i class="fa fa-sync"></i> Refresh
+          </button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-12">
+          <div class="table-responsive">
+            <table id="serverSessions" class="table table-striped table-sm" style="width: 100%"></table>
+          </div>
         </div>
       </div>
     </div>

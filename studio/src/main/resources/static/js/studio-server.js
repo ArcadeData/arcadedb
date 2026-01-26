@@ -435,6 +435,117 @@ function updateServerSetting(key, value) {
   });
 }
 
+function loadServerSessions() {
+  jQuery
+    .ajax({
+      type: "GET",
+      url: "api/v1/sessions",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      if ($.fn.dataTable.isDataTable("#serverSessions")) {
+        try {
+          $("#serverSessions").DataTable().destroy();
+          $("#serverSessions").empty();
+        } catch (e) {}
+      }
+
+      var tableRecords = [];
+
+      for (let i in data.result) {
+        let session = data.result[i];
+
+        let record = [];
+        record.push(session.user);
+        record.push(formatDateTime(session.createdAt));
+        record.push(formatDateTime(session.lastUpdate));
+        record.push(session.sourceIp || "");
+        record.push(truncateUserAgent(session.userAgent));
+        record.push(formatLocation(session.country, session.city));
+        record.push(session.token);
+        tableRecords.push(record);
+      }
+
+      $("#serverSessions").DataTable({
+        paging: true,
+        ordering: true,
+        order: [[1, "desc"]],
+        pageLength: 25,
+        columns: [
+          { title: "User", width: "10%" },
+          { title: "Created", width: "15%" },
+          { title: "Last Activity", width: "15%" },
+          { title: "IP Address", width: "12%" },
+          {
+            title: "User Agent",
+            width: "25%",
+            render: function (data, type, row) {
+              if (type === "display" && data) {
+                return '<span title="' + escapeHtml(row[4]) + '">' + escapeHtml(data) + "</span>";
+              }
+              return data;
+            },
+          },
+          { title: "Location", width: "10%" },
+          {
+            title: "Token",
+            width: "13%",
+            render: function (data, type, row) {
+              if (type === "display" && data) {
+                // Show truncated token with copy button
+                let shortToken = data.substring(0, 12) + "...";
+                return (
+                  '<span class="text-muted" title="' +
+                  escapeHtml(data) +
+                  '">' +
+                  escapeHtml(shortToken) +
+                  "</span>"
+                );
+              }
+              return data;
+            },
+          },
+        ],
+        data: tableRecords,
+      });
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      globalNotifyError(jqXHR.responseText);
+    });
+}
+
+function formatDateTime(timestamp) {
+  if (!timestamp) return "";
+  let date = new Date(timestamp);
+  return (
+    date.toLocaleDateString() +
+    " " +
+    date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+  );
+}
+
+function truncateUserAgent(userAgent) {
+  if (!userAgent) return "";
+  // Extract browser name and version from user agent
+  let match = userAgent.match(/(Chrome|Firefox|Safari|Edge|Opera|MSIE|Trident)[\/\s]?(\d+(\.\d+)?)?/i);
+  if (match) {
+    return match[1] + (match[2] ? " " + match[2] : "");
+  }
+  // Fallback: truncate if too long
+  if (userAgent.length > 30) {
+    return userAgent.substring(0, 30) + "...";
+  }
+  return userAgent;
+}
+
+function formatLocation(country, city) {
+  if (!country && !city) return "";
+  if (city && country) return city + ", " + country;
+  return country || city || "";
+}
+
 function getServerEvents(file) {
   jQuery
     .ajax({
@@ -556,7 +667,9 @@ function startServerRefreshTimer(userChange) {
 document.addEventListener("DOMContentLoaded", function (event) {
   $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
     var activeTab = this.id;
-    if (activeTab == "tab-server-events-sel") {
+    if (activeTab == "tab-server-sessions-sel") {
+      loadServerSessions();
+    } else if (activeTab == "tab-server-events-sel") {
       getServerEvents();
     }
   });
