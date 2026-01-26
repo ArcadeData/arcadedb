@@ -46,6 +46,7 @@ public class QueryEngineManager {
     register("com.arcadedb.query.opencypher.query.OpenCypherQueryEngineFactory");
     register("com.arcadedb.mongo.query.MongoQueryEngineFactory");
     register("com.arcadedb.graphql.query.GraphQLQueryEngineFactory");
+    register("com.arcadedb.redis.query.RedisQueryEngineFactory");
   }
 
   public void register(final String className) {
