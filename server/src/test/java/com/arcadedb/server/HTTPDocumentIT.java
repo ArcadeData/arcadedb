@@ -602,6 +602,95 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Test for GitHub issue #1825 - $parent.$current in subquery FROM clause via HTTP API
+   */
+  @Test
+  void testParentCurrentInSubqueryViaHttp_Issue1825() throws Exception {
+    final String className = "TestParentCurrent1825";
+
+    testEachServer((serverIndex) -> {
+      // Setup: Create test type and document via HTTP commands
+      HttpURLConnection setupConnection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      setupConnection.setRequestMethod("POST");
+      setupConnection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(setupConnection, "sql", "CREATE DOCUMENT TYPE " + className + " IF NOT EXISTS", null, new HashMap<>());
+      setupConnection.getInputStream().close();
+      setupConnection.disconnect();
+
+      setupConnection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      setupConnection.setRequestMethod("POST");
+      setupConnection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(setupConnection, "sql", "INSERT INTO " + className + " SET a = 0", null, new HashMap<>());
+      setupConnection.getInputStream().close();
+      setupConnection.disconnect();
+
+      // Test 1: Query with $parent.$current in subquery FROM clause
+      final HttpURLConnection connection1 = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+
+      connection1.setRequestMethod("POST");
+      connection1.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection1, "sql", "SELECT @rid, (SELECT a FROM $parent.$current) as subResult FROM " + className, null, new HashMap<>());
+
+      try {
+        final String response1 = readResponse(connection1);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response1);
+        assertThat(connection1.getResponseCode()).isEqualTo(200);
+        assertThat(connection1.getResponseMessage()).isEqualTo("OK");
+
+        final JSONObject responseJson1 = new JSONObject(response1);
+        final JSONArray result1 = responseJson1.getJSONArray("result");
+        assertThat(result1.length()).as("Query should return at least one result").isGreaterThanOrEqualTo(1);
+
+        final JSONObject firstRow = result1.getJSONObject(0);
+        assertThat(firstRow.has("subResult")).as("Result should have subResult property").isTrue();
+
+        final JSONArray subResult = firstRow.getJSONArray("subResult");
+        assertThat(subResult.length()).as("$parent.$current in FROM should return results").isGreaterThanOrEqualTo(1);
+        assertThat(subResult.getJSONObject(0).getInt("a")).isEqualTo(0);
+
+      } finally {
+        connection1.disconnect();
+      }
+
+      // Test 2: Query with $parent.$current.@rid in subquery FROM clause
+      final HttpURLConnection connection2 = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+
+      connection2.setRequestMethod("POST");
+      connection2.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection2, "sql", "SELECT @rid, (SELECT a FROM $parent.$current.@rid) as subResult FROM " + className, null, new HashMap<>());
+
+      try {
+        final String response2 = readResponse(connection2);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response2);
+        assertThat(connection2.getResponseCode()).isEqualTo(200);
+        assertThat(connection2.getResponseMessage()).isEqualTo("OK");
+
+        final JSONObject responseJson2 = new JSONObject(response2);
+        final JSONArray result2 = responseJson2.getJSONArray("result");
+        assertThat(result2.length()).as("Query should return at least one result").isGreaterThanOrEqualTo(1);
+
+        final JSONObject firstRow2 = result2.getJSONObject(0);
+        assertThat(firstRow2.has("subResult")).as("Result should have subResult property").isTrue();
+
+        final JSONArray subResult2 = firstRow2.getJSONArray("subResult");
+        assertThat(subResult2.length()).as("$parent.$current.@rid in FROM should return results").isGreaterThanOrEqualTo(1);
+        assertThat(subResult2.getJSONObject(0).getInt("a")).isEqualTo(0);
+
+      } finally {
+        connection2.disconnect();
+      }
+    });
+  }
+
   @Override
   protected void populateDatabase() {
     final Database database = getDatabase(0);

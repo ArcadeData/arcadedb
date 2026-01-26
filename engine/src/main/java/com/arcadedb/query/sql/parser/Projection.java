@@ -136,7 +136,7 @@ public class Projection extends SimpleNode {
         }
 
         record.getElement().ifPresent(doc -> {
-          if (!excludes.contains(RID_PROPERTY)) {
+          if (!excludes.contains(RID_PROPERTY) && doc.getIdentity() != null) {
             result.setProperty(RID_PROPERTY, doc.getIdentity());
           }
           if (!excludes.contains(Property.TYPE_PROPERTY)) {
