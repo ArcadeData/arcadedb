@@ -25,7 +25,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
@@ -35,7 +34,6 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.event.*;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -55,7 +53,6 @@ import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.trigger.*;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -92,7 +89,7 @@ public class LocalSchema implements Schema {
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
   protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
-  private final       Map<String, TriggerListenerAdapter> triggerAdapters = new HashMap<>();
+  private final       Map<String, com.arcadedb.schema.trigger.TriggerListenerAdapter> triggerAdapters = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
   private final       ComponentFactory                       componentFactory;
@@ -128,9 +125,9 @@ public class LocalSchema implements Schema {
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
     // Note: LSMVectorIndexGraphFile is NOT registered here - it's a sub-component discovered by its parent LSMVectorIndex
 
-    indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
-    indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
-    indexFactory.register(INDEX_TYPE.LSM_VECTOR.name(), new LSMVectorIndex.IndexFactoryHandler());
+    indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.LSMTreeIndexFactoryHandler());
+    indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.LSMTreeFullTextIndexFactoryHandler());
+    indexFactory.register(INDEX_TYPE.LSM_VECTOR.name(), new LSMVectorIndex.LSMVectorIndexFactoryHandler());
     configurationFile = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
   }
 
@@ -580,38 +577,38 @@ public class LocalSchema implements Schema {
     }
 
     // Create executor
-    final TriggerExecutor executor;
+    final com.arcadedb.schema.trigger.TriggerExecutor executor;
     if (trigger.getActionType() == Trigger.ActionType.SQL) {
-      executor = new SQLTriggerExecutor(trigger.getName(), trigger.getActionCode());
+      executor = new com.arcadedb.schema.trigger.SQLTriggerExecutor(trigger.getName(), trigger.getActionCode());
     } else if (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT) {
-      executor = new ScriptTriggerExecutor(trigger.getName(), trigger.getActionCode());
+      executor = new com.arcadedb.schema.trigger.ScriptTriggerExecutor(trigger.getName(), trigger.getActionCode());
     } else if (trigger.getActionType() == Trigger.ActionType.JAVA) {
-      executor = new JavaClassTriggerExecutor(trigger.getName(), trigger.getActionCode());
+      executor = new com.arcadedb.schema.trigger.JavaClassTriggerExecutor(trigger.getName(), trigger.getActionCode());
     } else {
       throw new SchemaException("Unknown trigger action type: " + trigger.getActionType());
     }
 
     // Create adapter
-    final TriggerListenerAdapter adapter =
-        new TriggerListenerAdapter(database, trigger, executor);
+    final com.arcadedb.schema.trigger.TriggerListenerAdapter adapter =
+        new com.arcadedb.schema.trigger.TriggerListenerAdapter(database, trigger, executor);
 
     // Register listener based on timing and event
-    final RecordEventsRegistry events = (RecordEventsRegistry) type.getEvents();
+    final com.arcadedb.database.RecordEventsRegistry events = (com.arcadedb.database.RecordEventsRegistry) type.getEvents();
     switch (trigger.getTiming()) {
       case BEFORE -> {
         switch (trigger.getEvent()) {
-          case CREATE -> events.registerListener((BeforeRecordCreateListener) adapter);
-          case READ -> events.registerListener((BeforeRecordReadListener) adapter);
-          case UPDATE -> events.registerListener((BeforeRecordUpdateListener) adapter);
-          case DELETE -> events.registerListener((BeforeRecordDeleteListener) adapter);
+          case CREATE -> events.registerListener((com.arcadedb.event.BeforeRecordCreateListener) adapter);
+          case READ -> events.registerListener((com.arcadedb.event.BeforeRecordReadListener) adapter);
+          case UPDATE -> events.registerListener((com.arcadedb.event.BeforeRecordUpdateListener) adapter);
+          case DELETE -> events.registerListener((com.arcadedb.event.BeforeRecordDeleteListener) adapter);
         }
       }
       case AFTER -> {
         switch (trigger.getEvent()) {
-          case CREATE -> events.registerListener((AfterRecordCreateListener) adapter);
-          case READ -> events.registerListener((AfterRecordReadListener) adapter);
-          case UPDATE -> events.registerListener((AfterRecordUpdateListener) adapter);
-          case DELETE -> events.registerListener((AfterRecordDeleteListener) adapter);
+          case CREATE -> events.registerListener((com.arcadedb.event.AfterRecordCreateListener) adapter);
+          case READ -> events.registerListener((com.arcadedb.event.AfterRecordReadListener) adapter);
+          case UPDATE -> events.registerListener((com.arcadedb.event.AfterRecordUpdateListener) adapter);
+          case DELETE -> events.registerListener((com.arcadedb.event.AfterRecordDeleteListener) adapter);
         }
       }
     }
@@ -624,7 +621,7 @@ public class LocalSchema implements Schema {
    * Unregister a trigger's event listener.
    */
   private void unregisterTriggerListener(final String triggerName) {
-    final TriggerListenerAdapter adapter = triggerAdapters.get(triggerName);
+    final com.arcadedb.schema.trigger.TriggerListenerAdapter adapter = triggerAdapters.get(triggerName);
     if (adapter == null) {
       return; // Already unregistered
     }
@@ -632,24 +629,24 @@ public class LocalSchema implements Schema {
     final Trigger trigger = adapter.getTrigger();
     final LocalDocumentType type = types.get(trigger.getTypeName());
     if (type != null) {
-      final RecordEventsRegistry events = (RecordEventsRegistry) type.getEvents();
+      final com.arcadedb.database.RecordEventsRegistry events = (com.arcadedb.database.RecordEventsRegistry) type.getEvents();
 
       // Unregister listener based on timing and event
       switch (trigger.getTiming()) {
         case BEFORE -> {
           switch (trigger.getEvent()) {
-            case CREATE -> events.unregisterListener((BeforeRecordCreateListener) adapter);
-            case READ -> events.unregisterListener((BeforeRecordReadListener) adapter);
-            case UPDATE -> events.unregisterListener((BeforeRecordUpdateListener) adapter);
-            case DELETE -> events.unregisterListener((BeforeRecordDeleteListener) adapter);
+            case CREATE -> events.unregisterListener((com.arcadedb.event.BeforeRecordCreateListener) adapter);
+            case READ -> events.unregisterListener((com.arcadedb.event.BeforeRecordReadListener) adapter);
+            case UPDATE -> events.unregisterListener((com.arcadedb.event.BeforeRecordUpdateListener) adapter);
+            case DELETE -> events.unregisterListener((com.arcadedb.event.BeforeRecordDeleteListener) adapter);
           }
         }
         case AFTER -> {
           switch (trigger.getEvent()) {
-            case CREATE -> events.unregisterListener((AfterRecordCreateListener) adapter);
-            case READ -> events.unregisterListener((AfterRecordReadListener) adapter);
-            case UPDATE -> events.unregisterListener((AfterRecordUpdateListener) adapter);
-            case DELETE -> events.unregisterListener((AfterRecordDeleteListener) adapter);
+            case CREATE -> events.unregisterListener((com.arcadedb.event.AfterRecordCreateListener) adapter);
+            case READ -> events.unregisterListener((com.arcadedb.event.AfterRecordReadListener) adapter);
+            case UPDATE -> events.unregisterListener((com.arcadedb.event.AfterRecordUpdateListener) adapter);
+            case DELETE -> events.unregisterListener((com.arcadedb.event.AfterRecordDeleteListener) adapter);
           }
         }
       }

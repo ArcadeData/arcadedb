@@ -38,6 +38,7 @@ import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TempIndexCursor;
@@ -76,13 +77,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private static final IndexCursor                   EMPTY_CURSOR = new EmptyIndexCursor();
   private final        String                        name;
   private final        RWLockContext                 lock         = new RWLockContext();
-  private              TypeIndex                     typeIndex;
-  protected            LSMTreeIndexMutable           mutable;
   protected final      AtomicReference<INDEX_STATUS> status       = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
+  private              TypeIndex                     typeIndex;
   private              boolean                       valid        = true;
   private              IndexMetadata                 metadata;
+  protected            LSMTreeIndexMutable           mutable;
 
-  public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
+  public static class LSMTreeIndexFactoryHandler implements IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),

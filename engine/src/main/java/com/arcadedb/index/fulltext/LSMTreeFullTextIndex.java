@@ -28,6 +28,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -44,9 +45,14 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Full Text index implementation based on LSM-Tree index.
@@ -68,13 +74,13 @@ import java.util.concurrent.atomic.*;
  * the query result will be the TreeMap ordered by score, so if the query has a limit, only the first X items will be returned ordered by score desc
  */
 public class LSMTreeFullTextIndex implements Index, IndexInternal {
-  private final LSMTreeIndex underlyingIndex;
-  private final Analyzer     indexAnalyzer;
-  private final Analyzer                queryAnalyzer;
-  private final FullTextIndexMetadata   ftMetadata;
-  private       TypeIndex               typeIndex;
+  private final LSMTreeIndex          underlyingIndex;
+  private final Analyzer              indexAnalyzer;
+  private final Analyzer              queryAnalyzer;
+  private final FullTextIndexMetadata ftMetadata;
+  private       TypeIndex             typeIndex;
 
-  public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
+  public static class LSMTreeFullTextIndexFactoryHandler implements IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder builder) {
       if (builder.isUnique())
@@ -219,8 +225,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   /**
    * Parse query text into terms, identifying field-prefixed terms (field:value).
    * For example, "title:java programming" returns:
-   *   - QueryTerm(fieldName="title", value="java")
-   *   - QueryTerm(fieldName=null, value="programming")
+   * - QueryTerm(fieldName="title", value="java")
+   * - QueryTerm(fieldName=null, value="programming")
    */
   private List<QueryTerm> parseQueryTerms(final String queryText) {
     final List<QueryTerm> terms = new ArrayList<>();
@@ -359,7 +365,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final JSONObject json = new JSONObject();
     json.put("type", getType());
 
-    json.put("bucket", underlyingIndex.getMutableIndex().getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
+    json.put("bucket",
+        underlyingIndex.getMutableIndex().getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
@@ -562,8 +569,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   /**
    * Creates an analyzer from the metadata configuration.
    *
-   * @param metadata     the full-text index metadata (may be null)
-   * @param forIndexing  true for indexing analyzer, false for query analyzer
+   * @param metadata    the full-text index metadata (may be null)
+   * @param forIndexing true for indexing analyzer, false for query analyzer
+   *
    * @return the configured analyzer, or StandardAnalyzer if metadata is null
    */
   private static Analyzer createAnalyzer(final FullTextIndexMetadata metadata, final boolean forIndexing) {
@@ -628,7 +636,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    *
    * @param sourceRids the RIDs of source documents to find similar documents for
    * @param config     the More Like This configuration parameters
+   *
    * @return cursor over matching documents, sorted by similarity score descending
+   *
    * @throws IllegalArgumentException if sourceRids is null, empty, or exceeds maxSourceDocs
    */
   public IndexCursor searchMoreLikeThis(final Set<RID> sourceRids, final MoreLikeThisConfig config) {
