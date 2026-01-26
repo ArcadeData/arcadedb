@@ -59,6 +59,10 @@ public class HttpAuthSession {
     return System.currentTimeMillis() - lastUpdate;
   }
 
+  public long elapsedFromCreation() {
+    return System.currentTimeMillis() - createdAt;
+  }
+
   public void touch() {
     this.lastUpdate = System.currentTimeMillis();
   }

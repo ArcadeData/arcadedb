@@ -88,7 +88,8 @@ public class HttpServer implements ServerPlugin {
     this.sessionManager = new HttpSessionManager(
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT) * 1_000L);
     this.authSessionManager = new HttpAuthSessionManager(
-        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L);
+        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L,
+        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
   }
 
