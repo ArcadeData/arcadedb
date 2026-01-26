@@ -322,6 +322,8 @@ public class ResultInternal implements Result {
 
     if (hasProperty(RID_PROPERTY)) {
       final Object rid = getProperty(RID_PROPERTY);
+      if (rid == null)
+        return Optional.empty();
       return Optional.of((RID) (rid instanceof RID ? rid : new RID(rid.toString())));
     }
     return Optional.empty();

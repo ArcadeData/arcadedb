@@ -4560,4 +4560,53 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(r.<RID>getProperty("currentRid")).isEqualTo(docRid);
     }
   }
+
+  /**
+   * Tests for GitHub issue #1825 comment - user reports empty results when using FROM typeName
+   * instead of FROM RID in the outer query.
+   */
+  @Test
+  void testParentCurrentInSubqueryFromClause_Issue1825_WithTypeName() {
+    final String className = "testParentCurrentIssue1825TypeName";
+    database.getSchema().createDocumentType(className);
+
+    database.begin();
+    final MutableDocument doc = database.newDocument(className);
+    doc.set("a", 0);
+    doc.save();
+    final RID docRid = doc.getIdentity();
+    database.commit();
+
+    // Test 1: Using FROM typeName in outer query with $parent.$current in subquery FROM
+    try (ResultSet result = database.query("sql",
+        "SELECT @rid, (SELECT a FROM $parent.$current) as subResult FROM " + className)) {
+      assertThat(result.hasNext()).as("Query should return at least one result").isTrue();
+      final Result item = result.next();
+      assertThat(item.getIdentity().orElse(null)).isEqualTo(docRid);
+      final Object subResult = item.getProperty("subResult");
+      assertThat(subResult).as("subResult should not be null").isNotNull();
+      assertThat(subResult instanceof Collection).isTrue();
+      Collection<?> subResultList = (Collection<?>) subResult;
+      assertThat(subResultList.isEmpty()).as("$parent.$current in FROM with typeName outer query should return results").isFalse();
+      Object firstResult = subResultList.iterator().next();
+      assertThat(firstResult instanceof Result).isTrue();
+      assertThat(((Result) firstResult).<Integer>getProperty("a")).isEqualTo(0);
+    }
+
+    // Test 2: Using FROM typeName in outer query with $parent.$current.@rid in subquery FROM
+    try (ResultSet result = database.query("sql",
+        "SELECT @rid, (SELECT a FROM $parent.$current.@rid) as subResult FROM " + className)) {
+      assertThat(result.hasNext()).as("Query should return at least one result").isTrue();
+      final Result item = result.next();
+      assertThat(item.getIdentity().orElse(null)).isEqualTo(docRid);
+      final Object subResult = item.getProperty("subResult");
+      assertThat(subResult).as("subResult should not be null").isNotNull();
+      assertThat(subResult instanceof Collection).isTrue();
+      Collection<?> subResultList = (Collection<?>) subResult;
+      assertThat(subResultList.isEmpty()).as("$parent.$current.@rid in FROM with typeName outer query should return results").isFalse();
+      Object firstResult = subResultList.iterator().next();
+      assertThat(firstResult instanceof Result).isTrue();
+      assertThat(((Result) firstResult).<Integer>getProperty("a")).isEqualTo(0);
+    }
+  }
 }
