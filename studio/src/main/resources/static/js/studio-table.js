@@ -63,7 +63,20 @@ function renderTable() {
             return $("<div/>").html(data).text();
           },
         });
-      else tableColumns.push({ title: escapeHtml(orderedColumns[i]), defaultContent: "" });
+      else
+        tableColumns.push({
+          title: escapeHtml(orderedColumns[i]),
+          defaultContent: "",
+          // Use explicit text rendering to properly display special characters (#1602)
+          render: function (data, type, full) {
+            if (type === "display" || type === "filter") {
+              // For display and filtering, use HTML-escaped text
+              return data;
+            }
+            // For sorting, export, etc., return the raw text
+            return $("<div/>").html(data).text();
+          },
+        });
     }
 
     if (Object.keys(columns).length == 0) return;

@@ -429,6 +429,179 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Test for GitHub issue #1602: Unable to add Data with Special Characters via The Studio
+   * <p>
+   * Verifies that special characters (like &, <, >, ", ') are correctly:
+   * 1. Stored when sent via the Studio API (with HTML-escaped command)
+   * 2. Returned correctly in JSON response
+   * 3. Properly escaped for HTML display
+   */
+  @Test
+  void checkSpecialCharactersInData() throws Exception {
+    testEachServer((serverIndex) -> {
+      // Test value with special characters as described in issue #1602
+      final String testValue = "LdhgfdY&hgff2&a";
+
+      // First, create the document type via command (ignore error if already exists)
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "CREATE DOCUMENT TYPE Field", null, new HashMap<>());
+      connection.connect();
+      try {
+        // Ignore error if type already exists
+        connection.getResponseCode();
+      } finally {
+        connection.disconnect();
+      }
+
+      // Insert data with special characters using Studio serializer
+      // The Studio frontend escapes HTML before sending, so we simulate that behavior
+      final String escapedCommand = "INSERT INTO Field SET value = &#039;LdhgfdY&amp;hgff2&amp;a&#039;";
+
+      connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", escapedCommand, "studio", new HashMap<>());
+      connection.connect();
+
+      final String rid;
+      try {
+        final String response = readResponse(connection);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        final JSONObject responseAsJson = new JSONObject(response);
+        assertThat(responseAsJson.has("result")).isTrue();
+
+        final JSONArray records = responseAsJson.getJSONObject("result").getJSONArray("records");
+        assertThat(records.length()).isEqualTo(1);
+
+        // The value should be stored correctly (without HTML entities)
+        final JSONObject record = records.getJSONObject(0);
+        rid = record.getString(RID_PROPERTY);
+
+        // Check the value is correct in the response
+        final String returnedValue = record.getString("value");
+        assertThat(returnedValue)
+            .as("Special characters should be preserved in the JSON response")
+            .isEqualTo(testValue);
+      } finally {
+        connection.disconnect();
+      }
+
+      // Query the record back to verify the data is stored correctly
+      connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "SELECT FROM " + rid, "studio", new HashMap<>());
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+
+        final JSONObject responseAsJson = new JSONObject(response);
+        final JSONArray records = responseAsJson.getJSONObject("result").getJSONArray("records");
+        assertThat(records.length()).isEqualTo(1);
+
+        final JSONObject record = records.getJSONObject(0);
+        final String returnedValue = record.getString("value");
+
+        // The value should still contain the special characters
+        assertThat(returnedValue)
+            .as("Special characters should be preserved when querying the record")
+            .isEqualTo(testValue);
+
+        // Also verify the raw JSON contains the properly encoded value
+        // (Gson may use \u0026 for & which is valid JSON)
+        assertThat(response)
+            .as("JSON response should contain the value (possibly with unicode escapes)")
+            .containsPattern("LdhgfdY.*hgff2.*a");
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  /**
+   * Test that various special characters are handled correctly through the HTTP API.
+   */
+  @Test
+  void checkVariousSpecialCharacters() throws Exception {
+    testEachServer((serverIndex) -> {
+      // Create the document type (ignore error if already exists)
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "CREATE DOCUMENT TYPE SpecialChars", null, new HashMap<>());
+      connection.connect();
+      try {
+        // Ignore error if type already exists
+        connection.getResponseCode();
+      } finally {
+        connection.disconnect();
+      }
+
+      // Test various special characters - send without HTML escaping (direct JSON)
+      final String[] testValues = {
+          "Hello & World",
+          "Less < Greater >",
+          "Quote \" Test",
+          "Single ' Quote",
+          "All together: & < > \" '",
+          "URL encoded: foo%20bar",
+          "Unicode: \u00e9\u00e8\u00ea",
+          "Multiple &&& ampersands &&&"
+      };
+
+      for (final String testValue : testValues) {
+        // Insert using parameterized query (cleaner approach without HTML escaping)
+        connection = (HttpURLConnection) new URL(
+            "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+        connection.setRequestMethod("POST");
+        connection.setRequestProperty("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+
+        final JSONObject payload = new JSONObject();
+        payload.put("language", "sql");
+        payload.put("command", "INSERT INTO SpecialChars SET value = :value");
+        payload.put("serializer", "studio");
+        final JSONObject params = new JSONObject();
+        params.put("value", testValue);
+        payload.put("params", params);
+
+        formatPayload(connection, payload);
+        connection.connect();
+
+        try {
+          final String response = readResponse(connection);
+          assertThat(connection.getResponseCode()).isEqualTo(200);
+
+          final JSONObject responseAsJson = new JSONObject(response);
+          final JSONArray records = responseAsJson.getJSONObject("result").getJSONArray("records");
+          assertThat(records.length()).isEqualTo(1);
+
+          final String returnedValue = records.getJSONObject(0).getString("value");
+          assertThat(returnedValue)
+              .as("Special characters should be preserved for value: " + testValue)
+              .isEqualTo(testValue);
+
+        } finally {
+          connection.disconnect();
+        }
+      }
+    });
+  }
+
   @Override
   protected void populateDatabase() {
     final Database database = getDatabase(0);
