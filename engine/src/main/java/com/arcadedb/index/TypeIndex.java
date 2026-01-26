@@ -534,6 +534,17 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   public List<? extends Index> getIndexesByKeys(final Object[] keys) {
+    // For full-text indexes, always search all buckets regardless of bucket selection strategy.
+    // Full-text queries contain search terms/phrases, not document property values, so bucket
+    // selection based on hashing those keys would incorrectly query only one bucket.
+    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
+        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+
+    if (isFullText) {
+      // Full-text searches must scan all buckets to ensure complete results
+      return indexesOnBuckets;
+    }
+
     final int bucketIndex = type.getBucketIndexByKeys(keys,
         DatabaseContext.INSTANCE.getContext((type.getSchema().getEmbedded().getDatabase()).getDatabasePath()).asyncMode);
 

@@ -16,18 +16,22 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.index;
+package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TransactionException;
-import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import org.apache.lucene.analysis.en.EnglishAnalyzer;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -96,7 +100,9 @@ class LSMTreeFullTextIndexTest extends TestHelper {
   }
 
   @Test
-  void indexingComposite() {
+  void indexingCompositeNonStringProperty() {
+    // Multi-property full-text indexes are now supported, but only for STRING properties.
+    // This test verifies that non-STRING properties are still rejected.
     assertThat(database.getSchema().existsType(TYPE_NAME)).isFalse();
 
     final DocumentType type = database.getSchema().buildDocumentType()
@@ -104,14 +110,16 @@ class LSMTreeFullTextIndexTest extends TestHelper {
         .withTotalBuckets(1)
         .create();
     type.createProperty("text", String.class);
-    type.createProperty("type", String.class);
+    type.createProperty("count", Integer.class);
     assertThatThrownBy(() -> database.getSchema()
-        .buildTypeIndex(TYPE_NAME, new String[] { "text", "type" })
+        .buildTypeIndex(TYPE_NAME, new String[] { "text", "count" })
         .withType(Schema.INDEX_TYPE.FULL_TEXT)
         .withPageSize(PAGE_SIZE)
         .withUnique(false)
         .create())
-        .isInstanceOf(IndexException.class);
+        .isInstanceOf(IndexException.class)
+        .hasRootCauseInstanceOf(IllegalArgumentException.class)
+        .hasRootCauseMessage("Full text index can only be defined on STRING properties, found: INTEGER");
   }
 
   @Test
@@ -182,6 +190,204 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       database.command("sql", "INSERT INTO doc2 (str) VALUES ('a'), ('b'), (null)");
     });
 
+  }
+
+  /**
+   * Tests that METADATA in CREATE INDEX SQL is passed to the full-text index builder.
+   * The metadata configures the analyzer class for the full-text index.
+   */
+  @Test
+  void createIndexWithMetadata() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.title STRING");
+      database.command("sql",
+          "CREATE INDEX ON Article (title) FULL_TEXT METADATA {\"analyzer\": \"org.apache.lucene.analysis.en.EnglishAnalyzer\", \"allowLeadingWildcard\": true}");
+
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[title]");
+      assertThat(index).isNotNull();
+      assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.FULL_TEXT);
+
+      // Verify metadata was applied
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      assertThat(ftIndex.getAnalyzer()).isInstanceOf(EnglishAnalyzer.class);
+    });
+  }
+
+  @Test
+  void multiPropertyIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article2");
+      database.command("sql", "CREATE PROPERTY Article2.title STRING");
+      database.command("sql", "CREATE PROPERTY Article2.body STRING");
+      database.command("sql", "CREATE INDEX ON Article2 (title, body) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article2 SET title = 'Java Programming', body = 'Learn Java basics'");
+      database.command("sql", "INSERT INTO Article2 SET title = 'Python Tutorial', body = 'Python programming guide'");
+    });
+
+    database.transaction(() -> {
+      // Search should find documents matching in either field
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article2[title,body]");
+      final IndexCursor cursor = index.get(new Object[] { "java programming" });
+
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      // Both documents should match (Java appears in title of doc1, programming in both)
+      assertThat(count).isEqualTo(2);
+    });
+  }
+
+  @Test
+  void multiPropertyIndexFieldSpecificSearch() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article3");
+      database.command("sql", "CREATE PROPERTY Article3.title STRING");
+      database.command("sql", "CREATE PROPERTY Article3.body STRING");
+      database.command("sql", "CREATE INDEX ON Article3 (title, body) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article3 SET title = 'Java Programming', body = 'Learn basics'");
+      database.command("sql", "INSERT INTO Article3 SET title = 'Python Tutorial', body = 'Java programming guide'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article3[title,body]");
+
+      // First, test unqualified search to verify both documents are indexed
+      final IndexCursor allJavaCursor = index.get(new Object[] { "java" });
+      int allJavaCount = 0;
+      while (allJavaCursor.hasNext()) {
+        allJavaCursor.next();
+        allJavaCount++;
+      }
+      // Both documents have "java" somewhere
+      assertThat(allJavaCount).isEqualTo(2);
+
+      // Field-specific search: only match "java" in the title field
+      final IndexCursor titleCursor = index.get(new Object[] { "title:java" });
+      final Set<String> titlesFound = new HashSet<>();
+      while (titleCursor.hasNext()) {
+        final Identifiable record = titleCursor.next();
+        titlesFound.add(record.asDocument().getString("title"));
+      }
+      // Only first document has "java" in title
+      assertThat(titlesFound).containsExactly("Java Programming");
+
+      // Field-specific search: only match "java" in the body field
+      final IndexCursor bodyCursor = index.get(new Object[] { "body:java" });
+      final Set<String> bodiesFound = new HashSet<>();
+      while (bodyCursor.hasNext()) {
+        final Identifiable record = bodyCursor.next();
+        bodiesFound.add(record.asDocument().getString("title"));
+      }
+      // Only second document has "java" in body
+      assertThat(bodiesFound).containsExactly("Python Tutorial");
+    });
+  }
+
+  @Test
+  void multiPropertyIndexRemove() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article4");
+      database.command("sql", "CREATE PROPERTY Article4.title STRING");
+      database.command("sql", "CREATE PROPERTY Article4.body STRING");
+      database.command("sql", "CREATE INDEX ON Article4 (title, body) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article4 SET title = 'Java Programming', body = 'Learn basics'");
+    });
+
+    // Delete the document and verify it's removed from the index
+    database.transaction(() -> {
+      database.command("sql", "DELETE FROM Article4 WHERE title = 'Java Programming'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article4[title,body]");
+      final IndexCursor cursor = index.get(new Object[] { "java" });
+
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      // Document should be removed from index
+      assertThat(count).isEqualTo(0);
+    });
+  }
+
+  /**
+   * Tests that multi-property full-text indexes work correctly after database restart.
+   * This verifies that the propertyCount is correctly derived from getPropertyNames()
+   * rather than being hardcoded to 1 when loading from disk.
+   */
+  @Test
+  void multiPropertyIndexPersistence() {
+    // Create index and insert documents
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article5");
+      database.command("sql", "CREATE PROPERTY Article5.title STRING");
+      database.command("sql", "CREATE PROPERTY Article5.body STRING");
+      database.command("sql", "CREATE INDEX ON Article5 (title, body) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article5 SET title = 'Java Programming', body = 'Learn Java basics'");
+      database.command("sql", "INSERT INTO Article5 SET title = 'Python Tutorial', body = 'Python programming guide'");
+    });
+
+    // Verify index works before restart
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article5[title,body]");
+      final IndexCursor cursor = index.get(new Object[] { "java programming" });
+
+      int countBeforeRestart = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        countBeforeRestart++;
+      }
+      assertThat(countBeforeRestart).isEqualTo(2);
+    });
+
+    // Close and reopen the database to simulate restart
+    reopenDatabase();
+
+    // Verify index still works after restart
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article5[title,body]");
+      assertThat(index).isNotNull();
+      assertThat(index.getPropertyNames()).containsExactly("title", "body");
+
+      // Search should still find documents
+      final IndexCursor cursor = index.get(new Object[] { "java programming" });
+
+      int countAfterRestart = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        countAfterRestart++;
+      }
+      // Both documents should still be found after restart
+      assertThat(countAfterRestart).isEqualTo(2);
+    });
+
+    // Verify we can insert new documents after restart
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Article5 SET title = 'Database Design', body = 'SQL and NoSQL databases'");
+    });
+
+    // Verify the new document is indexed correctly
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article5[title,body]");
+      final IndexCursor cursor = index.get(new Object[] { "database" });
+
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      // New document should be found
+      assertThat(count).isEqualTo(1);
+    });
   }
 
   @Test
@@ -280,6 +486,95 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       assertThat(count).isEqualTo(2);
     });
     */
+  }
+
+  @Test
+  void scoreInSQLProjection() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.title STRING");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
+      database.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'java database'");
+    });
+
+    database.transaction(() -> {
+      // Test $score projection with SEARCH_INDEX function
+      final ResultSet result = database.query("sql",
+          "SELECT title, $score FROM Article WHERE SEARCH_INDEX('Article[content]', 'java programming') = true");
+
+      final Map<String, Float> scores = new HashMap<>();
+      while (result.hasNext()) {
+        final Result r = result.next();
+        final String title = r.getProperty("title");
+        final Float score = r.getProperty("$score");
+        assertThat(score).isNotNull();
+        assertThat(score).isGreaterThan(0f);
+        scores.put(title, score);
+      }
+
+      assertThat(scores).hasSize(2);
+      // Doc1 matches both 'java' and 'programming', Doc2 only 'java'
+      assertThat(scores.get("Doc1")).isGreaterThan(scores.get("Doc2"));
+    });
+  }
+
+  @Test
+  void fullTextIndexWithShardedType() {
+    // Test that full-text searches work correctly on sharded types
+    // This test verifies that TypeIndex searches ALL buckets for full-text queries
+    database.transaction(() -> {
+      // Create a sharded type with 3 buckets
+      database.getSchema().buildDocumentType().withName("ArticleSharded").withTotalBuckets(3).create();
+      database.command("sql", "CREATE PROPERTY ArticleSharded.title STRING");
+      database.command("sql", "CREATE PROPERTY ArticleSharded.body STRING");
+      database.command("sql", "CREATE INDEX ON ArticleSharded (title, body) FULL_TEXT");
+
+      // Insert documents - they will be distributed across different buckets
+      database.command("sql", "INSERT INTO ArticleSharded SET title = 'Java Programming', body = 'Learn basics'");
+      database.command("sql", "INSERT INTO ArticleSharded SET title = 'Python Tutorial', body = 'Java programming guide'");
+      database.command("sql", "INSERT INTO ArticleSharded SET title = 'Go Language', body = 'Concurrency in Go'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("ArticleSharded[title,body]");
+
+      // Verify the type has multiple buckets
+      assertThat(index.getIndexesOnBuckets().length).isGreaterThan(1);
+
+      // Test unqualified search - should find all documents with "java"
+      final IndexCursor allJavaCursor = index.get(new Object[] { "java" });
+      int allJavaCount = 0;
+      while (allJavaCursor.hasNext()) {
+        allJavaCursor.next();
+        allJavaCount++;
+      }
+      // Both documents have "java" somewhere
+      assertThat(allJavaCount).isEqualTo(2);
+
+      // Test field-specific search through TypeIndex (not bypassing it)
+      // This should search ALL buckets, not just one based on the query string hash
+      final IndexCursor titleCursor = index.get(new Object[] { "title:java" });
+      final Set<String> titlesFound = new HashSet<>();
+      while (titleCursor.hasNext()) {
+        final Identifiable record = titleCursor.next();
+        titlesFound.add(record.asDocument().getString("title"));
+      }
+      // Only first document has "java" in title
+      assertThat(titlesFound).containsExactly("Java Programming");
+
+      // Test field-specific search for "java" in body field
+      final IndexCursor bodyCursor = index.get(new Object[] { "body:java" });
+      final Set<String> bodiesFound = new HashSet<>();
+      while (bodyCursor.hasNext()) {
+        final Identifiable record = bodyCursor.next();
+        bodiesFound.add(record.asDocument().getString("title"));
+      }
+      // Only second document has "java" in body
+      assertThat(bodiesFound).containsExactly("Python Tutorial");
+    });
   }
 
   private boolean skipIndexing(final String toIndex) {

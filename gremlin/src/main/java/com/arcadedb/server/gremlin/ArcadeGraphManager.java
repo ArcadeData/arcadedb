@@ -29,6 +29,8 @@ import org.apache.tinkerpop.gremlin.structure.Transaction;
 
 import javax.script.Bindings;
 import javax.script.SimpleBindings;
+
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -94,7 +96,7 @@ public class ArcadeGraphManager implements GraphManager {
     // Return both registered traversal sources and available databases
     // This is needed because validateTraversalSourceAlias checks this set
     // before calling getTraversalSource
-    final Set<String> names = new java.util.HashSet<>(traversalSources.keySet());
+    final Set<String> names = new HashSet<>(traversalSources.keySet());
     if (serverInstance != null) {
       names.addAll(serverInstance.getDatabaseNames());
       // Also include "g" alias for script-based queries

@@ -115,9 +115,11 @@ public class SuffixIdentifier extends SimpleNode {
       if (currentRecord != null && varName.startsWith("$") && currentRecord.getMetadataKeys().contains(varName)) {
         return currentRecord.getMetadata(varName);
       }
-      if (context != null && (varName.startsWith("$") || varName.startsWith("_$$$")) && context.getVariable(varName) != null) {
-        final Object result = context.getVariable(varName);
-        return result;
+      if (context != null && (varName.startsWith("$") || varName.startsWith("_$$$"))) {
+        final Object ctxVar = context.getVariable(varName);
+        if (ctxVar != null) {
+          return ctxVar;
+        }
       }
       if (currentRecord != null) {
         if (currentRecord.hasProperty(varName)) {

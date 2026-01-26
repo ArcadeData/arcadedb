@@ -47,7 +47,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   /**
    * Sets the index type. For LSM_VECTOR indexes, returns an LSMVectorIndexBuilder
-   * to enable vector-specific configuration methods.
+   * to enable vector-specific configuration methods. For FULL_TEXT indexes, returns
+   * a TypeFullTextIndexBuilder.
    *
    * @param indexType the index type
    *
@@ -57,8 +58,25 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   public TypeIndexBuilder withType(final Schema.INDEX_TYPE indexType) {
     if (indexType == Schema.INDEX_TYPE.LSM_VECTOR && !(this instanceof TypeLSMVectorIndexBuilder))
       return new TypeLSMVectorIndexBuilder(this);
+    if (indexType == Schema.INDEX_TYPE.FULL_TEXT && !(this instanceof TypeFullTextIndexBuilder))
+      return new TypeFullTextIndexBuilder(this);
     super.withType(indexType);
     return this;
+  }
+
+  /**
+   * Returns this builder as a TypeFullTextIndexBuilder for full-text specific configuration.
+   * Only valid after withType(FULL_TEXT) has been called.
+   *
+   * @return a TypeFullTextIndexBuilder for full-text configuration
+   * @throws IllegalStateException if withType(FULL_TEXT) has not been called
+   */
+  public TypeFullTextIndexBuilder withFullTextType() {
+    if (this instanceof TypeFullTextIndexBuilder)
+      return (TypeFullTextIndexBuilder) this;
+    if (indexType != Schema.INDEX_TYPE.FULL_TEXT)
+      throw new IllegalStateException("withFullTextType() can only be called after withType(FULL_TEXT)");
+    return new TypeFullTextIndexBuilder(this);
   }
 
   @Override

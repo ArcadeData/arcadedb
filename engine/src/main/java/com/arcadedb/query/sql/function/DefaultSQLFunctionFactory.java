@@ -75,6 +75,10 @@ import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
 import com.arcadedb.query.sql.function.misc.SQLFunctionVersion;
 import com.arcadedb.query.sql.function.text.SQLFunctionConcat;
 import com.arcadedb.query.sql.function.text.SQLFunctionFormat;
+import com.arcadedb.query.sql.function.text.SQLFunctionSearchFields;
+import com.arcadedb.query.sql.function.text.SQLFunctionSearchFieldsMore;
+import com.arcadedb.query.sql.function.text.SQLFunctionSearchIndex;
+import com.arcadedb.query.sql.function.text.SQLFunctionSearchIndexMore;
 import com.arcadedb.query.sql.function.text.SQLFunctionStrcmpci;
 import com.arcadedb.query.sql.function.time.SQLFunctionDate;
 import com.arcadedb.query.sql.function.time.SQLFunctionDuration;
@@ -191,6 +195,10 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     // Text
     register(SQLFunctionFormat.NAME, new SQLFunctionFormat());
     register(SQLFunctionConcat.NAME, SQLFunctionConcat.class);
+    register(SQLFunctionSearchFields.NAME, SQLFunctionSearchFields.class);
+    register(SQLFunctionSearchFieldsMore.NAME, SQLFunctionSearchFieldsMore.class);
+    register(SQLFunctionSearchIndex.NAME, SQLFunctionSearchIndex.class);
+    register(SQLFunctionSearchIndexMore.NAME, SQLFunctionSearchIndexMore.class);
     register(SQLFunctionStrcmpci.NAME, SQLFunctionStrcmpci.class);
 
     // Time

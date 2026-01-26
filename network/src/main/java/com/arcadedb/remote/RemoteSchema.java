@@ -30,16 +30,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.BucketIndexBuilder;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.LocalSchema;
-import com.arcadedb.schema.ManualIndexBuilder;
-import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.Type;
-import com.arcadedb.schema.TypeBuilder;
-import com.arcadedb.schema.TypeIndexBuilder;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.*;
 
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -111,22 +102,22 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
-  public com.arcadedb.schema.Trigger getTrigger(final String triggerName) {
+  public Trigger getTrigger(final String triggerName) {
     throw new UnsupportedOperationException("getTrigger() is not supported in remote database");
   }
 
   @Override
-  public com.arcadedb.schema.Trigger[] getTriggers() {
+  public Trigger[] getTriggers() {
     throw new UnsupportedOperationException("getTriggers() is not supported in remote database");
   }
 
   @Override
-  public com.arcadedb.schema.Trigger[] getTriggersForType(final String typeName) {
+  public Trigger[] getTriggersForType(final String typeName) {
     throw new UnsupportedOperationException("getTriggersForType() is not supported in remote database");
   }
 
   @Override
-  public void createTrigger(final com.arcadedb.schema.Trigger trigger) {
+  public void createTrigger(final Trigger trigger) {
     throw new UnsupportedOperationException("createTrigger() is not supported in remote database. Use SQL CREATE TRIGGER instead.");
   }
 
