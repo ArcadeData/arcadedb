@@ -33,9 +33,12 @@ import com.arcadedb.server.http.handler.GetOpenApiHandler;
 import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.http.handler.GetServerHandler;
+import com.arcadedb.server.http.handler.GetSessionsHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
+import com.arcadedb.server.http.handler.PostLoginHandler;
+import com.arcadedb.server.http.handler.PostLogoutHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
 import com.arcadedb.server.http.handler.PostServerCommandHandler;
@@ -72,17 +75,20 @@ import static com.arcadedb.server.http.ssl.KeystoreType.PKCS12;
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
-  private final    ArcadeDBServer     server;
-  private final    HttpSessionManager sessionManager;
-  private final    WebSocketEventBus  webSocketEventBus;
-  private          Undertow           undertow;
-  private volatile String             listeningAddress;
-  private          int                httpPortListening;
+  private final    ArcadeDBServer         server;
+  private final    HttpSessionManager     sessionManager;
+  private final    HttpAuthSessionManager authSessionManager;
+  private final    WebSocketEventBus      webSocketEventBus;
+  private          Undertow               undertow;
+  private volatile String                 listeningAddress;
+  private          int                    httpPortListening;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
     this.sessionManager = new HttpSessionManager(
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT) * 1_000L);
+    this.authSessionManager = new HttpAuthSessionManager(
+        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
   }
 
@@ -99,6 +105,7 @@ public class HttpServer implements ServerPlugin {
     }
 
     sessionManager.close();
+    authSessionManager.close();
   }
 
   @Override
@@ -153,7 +160,10 @@ public class HttpServer implements ServerPlugin {
         .post("/commit/{database}", new PostCommitHandler(this))
         .get("/databases", new GetDatabasesHandler(this))
         .get("/exists/{database}", new GetExistsDatabaseHandler(this))
+        .post("/login", new PostLoginHandler(this))
+        .post("/logout", new PostLogoutHandler(this))
         .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))
+        .get("/sessions", new GetSessionsHandler(this))
         .post("/query/{database}", new PostQueryHandler(this))
         .post("/rollback/{database}", new PostRollbackHandler(this))
         .get("/server", new GetServerHandler(this))
@@ -238,6 +248,10 @@ public class HttpServer implements ServerPlugin {
 
   public HttpSessionManager getSessionManager() {
     return sessionManager;
+  }
+
+  public HttpAuthSessionManager getAuthSessionManager() {
+    return authSessionManager;
   }
 
   public ArcadeDBServer getServer() {

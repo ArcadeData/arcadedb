@@ -24,6 +24,7 @@ import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -39,7 +40,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
-  private static final String AUTHORIZATION_BASIC = "Basic";
+  private static final String AUTHORIZATION_BASIC  = "Basic";
+  private static final String AUTHORIZATION_BEARER = "Bearer";
   protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
@@ -94,23 +96,38 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (authorization != null) {
         try {
           final String auth = authorization.get(0);
-          if (!auth.startsWith(AUTHORIZATION_BASIC)) {
+
+          if (auth.startsWith(AUTHORIZATION_BEARER)) {
+            // Bearer token authentication
+            final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
+            final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+            if (authSession == null) {
+              exchange.setStatusCode(401);
+              sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
+              return;
+            }
+            user = authSession.getUser();
+
+          } else if (auth.startsWith(AUTHORIZATION_BASIC)) {
+            // Basic authentication
+            final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
+
+            final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
+
+            final String[] authPair = authPairClear.split(":");
+
+            if (authPair.length != 2) {
+              sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+              return;
+            }
+
+            user = authenticate(authPair[0], authPair[1]);
+
+          } else {
             sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
             return;
           }
 
-          final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
-
-          final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
-
-          final String[] authPair = authPairClear.split(":");
-
-          if (authPair.length != 2) {
-            sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
-            return;
-          }
-
-          user = authenticate(authPair[0], authPair[1]);
         } catch (ServerSecurityException e) {
           // PASS THROUGH
           throw e;
