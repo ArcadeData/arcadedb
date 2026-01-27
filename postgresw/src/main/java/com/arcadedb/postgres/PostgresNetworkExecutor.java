@@ -310,6 +310,9 @@ public class PostgresNetworkExecutor extends Thread {
         writeRowDescription(portal.columns);
         portal.rowDescriptionSent = true;
       } else {
+        // We can't determine columns at DESCRIBE time (e.g., INSERT without schema info)
+        // Send NoData, but keep isExpectingResult = true so EXECUTE can handle it properly
+        // The actual query execution will determine if there are results
         writeNoData();
       }
     } else
@@ -359,9 +362,25 @@ public class PostgresNetworkExecutor extends Thread {
           }
         }
 
-        if (portal.isExpectingResult) {
-          // Always use columns from actual result to ensure DataRows match
+        if (portal.isExpectingResult && portal.cachedResultSet != null && !portal.cachedResultSet.isEmpty()) {
+          // Query returned results - send them
           final Map<String, PostgresType> dataRowColumns = getColumns(portal.cachedResultSet);
+
+          if (DEBUG)
+            LogManager.instance().log(this, Level.INFO,
+                "PSQL: executeCommand columns - portal.columns=%s, dataRowColumns=%s, resultSize=%d (thread=%s)",
+                portal.columns != null ? portal.columns.keySet() : "null",
+                dataRowColumns.keySet(),
+                portal.cachedResultSet.size(),
+                Thread.currentThread().getId());
+
+          // If RowDescription wasn't sent during DESCRIBE (e.g., INSERT with RETURN),
+          // we need to send it now before the data rows
+          if (!portal.rowDescriptionSent) {
+            portal.columns = dataRowColumns;
+            writeRowDescription(portal.columns);
+            portal.rowDescriptionSent = true;
+          }
 
           // Verify column count matches what was sent in RowDescription
           if (portal.columns != null && portal.columns.size() != dataRowColumns.size()) {
@@ -376,9 +395,12 @@ public class PostgresNetworkExecutor extends Thread {
           // Use the columns that were sent in RowDescription for consistency
           final Map<String, PostgresType> columnsToUse = portal.columns != null ? portal.columns : dataRowColumns;
           writeDataRows(portal.cachedResultSet, columnsToUse);
-          writeCommandComplete(portal.query, portal.cachedResultSet == null ? 0 : portal.cachedResultSet.size());
-        } else
-          writeNoData();
+          writeCommandComplete(portal.query, portal.cachedResultSet.size());
+        } else {
+          // Query doesn't return data (INSERT/UPDATE/DELETE without RETURNING) or empty result
+          final int affectedRows = portal.cachedResultSet != null ? portal.cachedResultSet.size() : 0;
+          writeCommandComplete(portal.query, affectedRows);
+        }
       }
     } catch (final CommandParsingException e) {
       setErrorInTx();
@@ -429,7 +451,13 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (ignoreQueries.contains(query.query))
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       else {
-        resultSet = database.command(query.language, query.query, server.getConfiguration());
+        // Check for pg_type/pg_catalog queries from JDBC drivers
+        final List<Result> pgTypeResult = handlePgTypeQuery(query.query);
+        if (pgTypeResult != null) {
+          resultSet = new IteratorResultSet(pgTypeResult.iterator());
+        } else {
+          resultSet = database.command(query.language, query.query, server.getConfiguration());
+        }
       }
       final List<Result> cachedResultSet = browseAndCacheResultSet(resultSet, 0);
 
@@ -460,6 +488,19 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private List<Result> browseAndCacheResultSet(final ResultSet resultSet, final int limit) {
+    return browseAndCacheResultSet(resultSet, limit, true);
+  }
+
+  /**
+   * Browse a result set and cache results up to the limit.
+   *
+   * @param resultSet           The result set to browse
+   * @param limit               Maximum number of results to cache (0 = unlimited)
+   * @param sendSuspendedOnLimit If true and limit is reached, sends PortalSuspended message.
+   *                            Set to false for internal queries (like schema discovery) that
+   *                            should not send protocol messages.
+   */
+  private List<Result> browseAndCacheResultSet(final ResultSet resultSet, final int limit, final boolean sendSuspendedOnLimit) {
     final List<Result> cachedResultSet = new ArrayList<>();
     while (resultSet.hasNext()) {
       final Result row = resultSet.next();
@@ -469,7 +510,8 @@ public class PostgresNetworkExecutor extends Thread {
       cachedResultSet.add(row);
 
       if (limit > 0 && cachedResultSet.size() >= limit) {
-        portalSuspendedResponse();
+        if (sendSuspendedOnLimit)
+          portalSuspendedResponse();
         break;
       }
     }
@@ -491,6 +533,126 @@ public class PostgresNetworkExecutor extends Thread {
     return parameters;
   }
 
+  /**
+   * Handles PostgreSQL system catalog queries (pg_type, pg_catalog) from JDBC drivers.
+   * These queries are used by JDBC drivers to introspect types, especially for arrays.
+   *
+   * @param query The SQL query to check
+   * @return A list of results if this is a pg_type query we handle, null otherwise
+   */
+  private List<Result> handlePgTypeQuery(final String query) {
+    final String upperQuery = query.toUpperCase();
+
+    // Check if this is a pg_type/pg_catalog query
+    if (!upperQuery.contains("PG_TYPE") && !upperQuery.contains("PG_CATALOG")) {
+      return null;
+    }
+
+    if (DEBUG)
+      LogManager.instance().log(this, Level.INFO, "PSQL: handling pg_type query: %s (thread=%s)",
+          query, Thread.currentThread().threadId());
+
+    // Handle common JDBC driver queries for array type information
+    // Query pattern: SELECT e.typdelim, e.typname FROM pg_catalog.pg_type t, pg_catalog.pg_type e WHERE t.oid = <oid> AND t.typelem = e.oid
+    // or: SELECT typelem FROM pg_type WHERE oid = <oid>
+    // or: SELECT ... FROM pg_type WHERE typname = '<name>'
+
+    // Extract OID from the query if present
+    Pattern oidPattern = Pattern.compile("(?:t\\.oid|oid)\\s*=\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
+    Matcher oidMatcher = oidPattern.matcher(query);
+
+    if (oidMatcher.find()) {
+      int oid = Integer.parseInt(oidMatcher.group(1));
+
+      // Map array type OIDs to their element type information
+      // PostgreSQL array types and their element types:
+      // 1007 = int4[] -> 23 = int4, 1009 = text[] -> 25 = text, etc.
+      String elemTypeName = null;
+      String typDelim = ",";
+      int elemOid = 0;
+
+      switch (oid) {
+        case 1007 -> { elemTypeName = "int4"; elemOid = 23; }      // int4[]
+        case 1009 -> { elemTypeName = "text"; elemOid = 25; }      // text[]
+        case 1016 -> { elemTypeName = "int8"; elemOid = 20; }      // int8[]
+        case 1021 -> { elemTypeName = "float4"; elemOid = 700; }   // float4[]
+        case 1022 -> { elemTypeName = "float8"; elemOid = 701; }   // float8[]
+        case 1000 -> { elemTypeName = "bool"; elemOid = 16; }      // bool[]
+        case 1003 -> { elemTypeName = "char"; elemOid = 18; }      // char[]
+        case 199 -> { elemTypeName = "json"; elemOid = 114; }      // json[]
+        case 1043 -> { elemTypeName = "varchar"; elemOid = 0; }    // varchar (not an array)
+        default -> { elemTypeName = "text"; elemOid = 25; }        // Default to text for unknown arrays
+      }
+
+      // Determine what columns the query is requesting
+      final Map<String, Object> map = new HashMap<>();
+
+      if (upperQuery.contains("TYPELEM")) {
+        map.put("typelem", elemOid);
+      }
+      if (upperQuery.contains("TYPDELIM")) {
+        map.put("typdelim", typDelim);
+      }
+      if (upperQuery.contains("TYPNAME") || upperQuery.contains("E.TYPNAME")) {
+        map.put("typname", elemTypeName);
+      }
+      if (upperQuery.contains("TYPARRAY")) {
+        // typarray is the OID of the array type for this scalar type
+        // For scalar types, return the corresponding array OID
+        map.put("typarray", oid);
+      }
+      if (upperQuery.contains("TYPTYPE")) {
+        map.put("typtype", "b"); // 'b' = base type
+      }
+      if (upperQuery.contains("TYPINPUT")) {
+        map.put("typinput", "array_in");
+      }
+
+      // Only return a result if we matched an array type and have data to return
+      if (!map.isEmpty() && elemOid > 0) {
+        final Result result = new ResultInternal(map);
+        return Collections.singletonList(result);
+      }
+    }
+
+    // Handle query by type name pattern
+    Pattern namePattern = Pattern.compile("typname\\s*=\\s*'([^']+)'", Pattern.CASE_INSENSITIVE);
+    Matcher nameMatcher = namePattern.matcher(query);
+    if (nameMatcher.find()) {
+      String typeName = nameMatcher.group(1);
+
+      // Map common type names to their OIDs
+      final Map<String, Object> map = new HashMap<>();
+      switch (typeName.toLowerCase()) {
+        case "_int4" -> { map.put("oid", 1007); map.put("typelem", 23); }
+        case "_int8" -> { map.put("oid", 1016); map.put("typelem", 20); }
+        case "_text" -> { map.put("oid", 1009); map.put("typelem", 25); }
+        case "_float4" -> { map.put("oid", 1021); map.put("typelem", 700); }
+        case "_float8" -> { map.put("oid", 1022); map.put("typelem", 701); }
+        case "_bool" -> { map.put("oid", 1000); map.put("typelem", 16); }
+        case "int4" -> { map.put("oid", 23); map.put("typelem", 0); }
+        case "int8" -> { map.put("oid", 20); map.put("typelem", 0); }
+        case "text" -> { map.put("oid", 25); map.put("typelem", 0); }
+        case "varchar" -> { map.put("oid", 1043); map.put("typelem", 0); }
+        default -> {
+          // Return empty result for unknown types
+          return Collections.emptyList();
+        }
+      }
+
+      if (!map.isEmpty()) {
+        map.put("typname", typeName);
+        map.put("typdelim", ",");
+        final Result result = new ResultInternal(map);
+        return Collections.singletonList(result);
+      }
+    }
+
+    // For other pg_type queries we don't specifically handle, return empty result
+    // This prevents errors from trying to query non-existent tables
+    return Collections.emptyList();
+  }
+
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
 
@@ -501,33 +663,19 @@ public class PostgresNetworkExecutor extends Thread {
 
       final Set<String> propertyNames = row.getPropertyNames();
       for (final String p : propertyNames) {
-        // Add all property names with default VARCHAR type
         if (!columns.containsKey(p)) {
-          columns.put(p, PostgresType.VARCHAR);
-        }
+          // Determine the PostgreSQL type based on the actual value
+          // For arrays/collections, use proper array type codes so JDBC drivers can parse them
+          // For scalar values, use VARCHAR since we serialize everything as text
+          final Object value = row.getProperty(p);
+          final PostgresType pgType = PostgresType.getTypeForValue(value);
 
-        final Object value = row.getProperty(p);
-
-        // Only update type if value is not null
-        if (value != null) {
-          PostgresType currentType = columns.get(p);
-
-          final Class<?> valueClass = value.getClass();
-          if (currentType == null || currentType.cls != valueClass) {
-
-            PostgresType newType = PostgresType.getTypeForValue(value);
-            // assign new type if it id better than the current one: better means more specific than VARCHAR
-            if (newType != null &&
-                newType != currentType
-            ) {
-              currentType = newType;
-            }
-            // in the end, if currentType is null, assign VARCHAR
-            if (currentType == null)
-              currentType = PostgresType.VARCHAR;
-
-            columns.put(p, currentType);
-
+          // For array types, use the detected array type so clients can properly parse arrays
+          // For non-array types, use VARCHAR to ensure consistent text serialization
+          if (pgType.isArrayType()) {
+            columns.put(p, pgType);
+          } else {
+            columns.put(p, PostgresType.VARCHAR);
           }
         }
       }
@@ -586,13 +734,20 @@ public class PostgresNetworkExecutor extends Thread {
 
       // Query for a sample row to discover all properties (including dynamically-added ones)
       // Use LIMIT 1 to minimize overhead
+      // Use sendSuspendedOnLimit=false because this is an internal query for schema discovery,
+      // not a client-initiated query that should send protocol messages
       final String sampleQuery = "SELECT FROM " + typeName + " LIMIT 1";
       final ResultSet resultSet = database.query("sql", sampleQuery, server.getConfiguration());
-      final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1);
+      final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1, false);
 
       if (!sampleRows.isEmpty()) {
         // Use the sample row to discover columns
-        return getColumns(sampleRows);
+        final Map<String, PostgresType> cols = getColumns(sampleRows);
+        if (DEBUG)
+          LogManager.instance().log(this, Level.INFO,
+              "PSQL: getColumnsFromQuerySchema('%s') -> type=%s, sampleQuery='%s', found %d rows, columns=%s (thread=%s)",
+              query, typeName, sampleQuery, sampleRows.size(), cols.keySet(), Thread.currentThread().threadId());
+        return cols;
       }
 
       // If no rows exist, fall back to schema-defined properties
@@ -626,6 +781,10 @@ public class PostgresNetworkExecutor extends Thread {
   private void writeRowDescription(final Map<String, PostgresType> columns) {
     if (columns == null)
       return;
+
+    if (DEBUG)
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> RowDescription: %d columns: %s (thread=%s)",
+          columns.size(), columns.keySet(), Thread.currentThread().threadId());
 
 //    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
     final Binary bufferDescription = new Binary();
@@ -713,9 +872,16 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       bufferValues.flip();
+      final int dataRowLength = 4 + bufferValues.getByteBuffer().limit();
       bufferData.putByte((byte) 'D');
-      bufferData.putInt(4 + bufferValues.getByteBuffer().limit());
+      bufferData.putInt(dataRowLength);
       bufferData.putBuffer(bufferValues.getByteBuffer());
+
+      if (DEBUG)
+        LogManager.instance().log(this, Level.INFO,
+            "PSQL:-> DataRow: cols=%d, bufferValues=%d, dataRowLength=%d, bufferData=%d (thread=%s)",
+            columns.size(), bufferValues.getByteBuffer().limit(), dataRowLength,
+            bufferData.position(), Thread.currentThread().threadId());
 
       bufferData.flip();
       channel.writeBuffer(bufferData.getByteBuffer());
@@ -727,8 +893,8 @@ public class PostgresNetworkExecutor extends Thread {
     channel.flush();
 
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row data (%s) (thread=%s)", resultSet.size(),
-          FileUtils.getSizeAsString(bufferData.limit()), Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) data written (thread=%s)", resultSet.size(),
+          Thread.currentThread().getId());
   }
 
   private void bindCommand() {
@@ -819,6 +985,9 @@ public class PostgresNetworkExecutor extends Thread {
           final int resultFormat = channel.readUnsignedShort();
           portal.resultFormats.add(resultFormat);
         }
+        if (DEBUG)
+          LogManager.instance().log(this, Level.INFO, "PSQL: bind resultFormats=%s (0=text, 1=binary) (thread=%s)",
+              portal.resultFormats, Thread.currentThread().threadId());
       }
 
       if (errorInTransaction)
@@ -1037,21 +1206,30 @@ public class PostgresNetworkExecutor extends Thread {
         portal.columns.put("TABLE_SCHEM", PostgresType.VARCHAR);
         portal.columns.put("TABLE_CATALOG", PostgresType.VARCHAR);
       } else {
-        switch (portal.language) {
-        case "sql":
-          final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-          portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
-          if (portal.query.equalsIgnoreCase("BEGIN") || portal.query.equalsIgnoreCase("BEGIN TRANSACTION")) {
-            explicitTransactionStarted = true;
-            setEmptyResultSet(portal);
-          } else if (portal.query.equalsIgnoreCase("COMMIT")) {
-            explicitTransactionStarted = false;
-            setEmptyResultSet(portal);
-          }
-          break;
+        // Check for pg_type/pg_catalog queries from JDBC drivers (extended query protocol)
+        final List<Result> pgTypeResult = handlePgTypeQuery(portal.query);
+        if (pgTypeResult != null) {
+          // pg_type query handled - set up the portal with results
+          portal.executed = true;
+          portal.cachedResultSet = pgTypeResult;
+          portal.columns = getColumns(pgTypeResult);
+        } else {
+          switch (portal.language) {
+          case "sql":
+            final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
+            portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
+            if (portal.query.equalsIgnoreCase("BEGIN") || portal.query.equalsIgnoreCase("BEGIN TRANSACTION")) {
+              explicitTransactionStarted = true;
+              setEmptyResultSet(portal);
+            } else if (portal.query.equalsIgnoreCase("COMMIT")) {
+              explicitTransactionStarted = false;
+              setEmptyResultSet(portal);
+            }
+            break;
 
-        default:
-          //nooop
+          default:
+            //nooop
+          }
         }
       }
 
@@ -1070,21 +1248,10 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void setConfiguration(final String query) {
-    final int setLength = "SET ".length();
-    // Use original query to preserve case of values
-    final String q = query.substring(setLength);
-
-    // Try to split by either '=' or ' TO ' (case-insensitive)
+    final String q = query.substring("SET ".length());
     String[] parts = q.split("=");
-    if (parts.length < 2) {
-      // Try case-insensitive split for " TO "
-      parts = q.split("(?i)\\s+TO\\s+");
-    }
-
-    if (parts.length < 2) {
-      LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", query);
-      return;
-    }
+    if (parts.length < 2)
+      parts = q.split(" TO ");
 
     parts[0] = parts[0].trim();
     parts[1] = parts[1].trim();
@@ -1092,16 +1259,14 @@ public class PostgresNetworkExecutor extends Thread {
     if (parts[1].startsWith("'") || parts[1].startsWith("\""))
       parts[1] = parts[1].substring(1, parts[1].length() - 1);
 
-    // Use case-insensitive comparison for parameter names
-    final String paramName = parts[0].toLowerCase(Locale.ENGLISH);
-    if (paramName.equals("datestyle")) {
-      if (parts[1].equalsIgnoreCase("ISO"))
+    if (parts[0].equals("datestyle")) {
+      if (parts[1].equals("ISO"))
         database.getSchema().setDateTimeFormat(DateUtils.DATE_TIME_ISO_8601_FORMAT);
       else
         LogManager.instance().log(this, Level.INFO, "datestyle '%s' not supported", parts[1]);
     }
 
-    connectionProperties.put(paramName, parts[1]);
+    connectionProperties.put(parts[0], parts[1]);
   }
 
   private void setEmptyResultSet(final PostgresPortal portal) {
