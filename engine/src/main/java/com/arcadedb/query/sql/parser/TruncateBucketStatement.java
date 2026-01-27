@@ -20,8 +20,17 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 
 import java.util.*;
 
@@ -37,51 +46,68 @@ public class TruncateBucketStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-//    ODatabaseDocumentAbstract database = (ODatabaseDocumentAbstract) context.getDatabase();
-//    OInternalResultSet rs = new OInternalResultSet();
-//
-//    Integer bucketId = null;
-//    if (clusterNumber != null) {
-//      bucketId = clusterNumber.getValue().intValue();
-//    } else {
-//      bucketId = database.getClusterIdByName(bucketName.getStringValue());
-//    }
-//
-//    if (bucketId < 0) {
-//      throw new ODatabaseException("Cluster with name " + bucketName + " does not exist");
-//    }
-//
-//    final OSchema schema = database.getMetadata().getSchema();
-//    final OClass typez = schema.getClassByClusterId(bucketId);
-//    if (typez == null) {
-//      final OStorage storage = database.getStorage();
-//      final com.orientechnologies.orient.core.storage.OCluster bucket = storage.getClusterById(bucketId);
-//
-//      if (bucket == null) {
-//        throw new ODatabaseException("Cluster with name " + bucketName + " does not exist");
-//      }
-//
-//      try {
-//        database.checkForClusterPermissions(bucket.getName());
-//        bucket.truncate();
-//      } catch (IOException ioe) {
-//        throw OException.wrapException(new ODatabaseException("Error during truncation of bucket with name " + bucketName), ioe);
-//      }
-//    } else {
-//      String name = database.getClusterNameById(bucketId);
-//      typez.truncateCluster(name);
-//    }
-//
-//    OResultInternal result = new OResultInternal();
-//    result.setProperty("operation", "truncate cluster");
-//    if (bucketName != null) {
-//      result.setProperty("bucketName", bucketName.getStringValue());
-//    }
-//    result.setProperty("bucketId", bucketId);
-//
-//    rs.add(result);
-//    return rs;
-    throw new UnsupportedOperationException();
+    final Database db = context.getDatabase();
+    final Schema schema = db.getSchema();
+    final InternalResultSet rs = new InternalResultSet();
+
+    // Get the bucket by name or by ID
+    final Bucket bucket;
+    final String resolvedBucketName;
+
+    try {
+      if (bucketNumber != null) {
+        // Bucket specified by ID
+        final int bucketId = bucketNumber.getValue().intValue();
+        bucket = schema.getBucketById(bucketId);
+        if (bucket == null) {
+          throw new CommandExecutionException("Bucket with id " + bucketId + " not found");
+        }
+        resolvedBucketName = bucket.getName();
+      } else if (bucketName != null) {
+        // Bucket specified by name
+        resolvedBucketName = bucketName.getStringValue();
+        bucket = schema.getBucketByName(resolvedBucketName);
+        if (bucket == null) {
+          throw new CommandExecutionException("Bucket '" + resolvedBucketName + "' not found");
+        }
+      } else {
+        throw new CommandExecutionException("Bucket name or id is required");
+      }
+    } catch (final CommandExecutionException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new CommandExecutionException("Bucket not found: " + e.getMessage(), e);
+    }
+
+    // Check if the bucket is associated with a vertex or edge type
+    final DocumentType type = schema.getTypeByBucketId(bucket.getFileId());
+    if (type != null && !unsafe) {
+      final long recordCount = db.countBucket(resolvedBucketName);
+      if (recordCount > 0) {
+        if (type instanceof VertexType) {
+          throw new CommandExecutionException(
+              "'TRUNCATE BUCKET' command cannot be used on not empty vertex bucket. Apply the 'UNSAFE' keyword to force it (at your own risk)");
+        } else if (type instanceof EdgeType) {
+          throw new CommandExecutionException(
+              "'TRUNCATE BUCKET' command cannot be used on not empty edge bucket. Apply the 'UNSAFE' keyword to force it (at your own risk)");
+        }
+      }
+    }
+
+    // Scan and delete all records in the bucket
+    db.scanBucket(resolvedBucketName, record -> {
+      record.delete();
+      return true;
+    });
+
+    // Build result
+    final ResultInternal result = new ResultInternal(db);
+    result.setProperty("operation", "truncate bucket");
+    result.setProperty("bucketName", resolvedBucketName);
+    result.setProperty("bucketId", bucket.getFileId());
+
+    rs.add(result);
+    return rs;
   }
 
   @Override
