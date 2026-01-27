@@ -73,6 +73,88 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Test for GitHub issue #3247 - the http /server endpoint should return the available languages installed in ArcadeDB server
+   */
+  @Test
+  void serverInfoReturnsLanguages() throws Exception {
+    testEachServer((serverIndex) -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/server").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      try {
+        connection.connect();
+        final String response = readResponse(connection);
+
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+
+        final JSONObject responseJson = new JSONObject(response);
+
+        // Verify that languages array is present
+        assertThat(responseJson.has("languages")).as("Response should contain 'languages' field").isTrue();
+
+        final JSONArray languages = responseJson.getJSONArray("languages");
+        assertThat(languages.length()).as("Languages array should not be empty").isGreaterThan(0);
+
+        // Verify that at least the basic built-in languages are present
+        final List<String> languageList = new ArrayList<>();
+        for (int i = 0; i < languages.length(); i++) {
+          languageList.add(languages.getString(i).toLowerCase());
+        }
+
+        assertThat(languageList).as("Should contain SQL language").contains("sql");
+        assertThat(languageList).as("Should contain SQLScript language").contains("sqlscript");
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  /**
+   * Test for GitHub issue #3247 - languages should also be returned in basic mode
+   */
+  @Test
+  void serverInfoBasicModeReturnsLanguages() throws Exception {
+    testEachServer((serverIndex) -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/server?mode=basic").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      try {
+        connection.connect();
+        final String response = readResponse(connection);
+
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+
+        final JSONObject responseJson = new JSONObject(response);
+
+        // Verify basic info is present
+        assertThat(responseJson.getString("user")).isEqualTo("root");
+        assertThat(responseJson.getString("version")).isEqualTo(Constants.getVersion());
+        assertThat(responseJson.getString("serverName")).isEqualTo(getServer(serverIndex).getServerName());
+
+        // Verify that languages array is present even in basic mode
+        assertThat(responseJson.has("languages")).as("Basic mode response should contain 'languages' field").isTrue();
+
+        final JSONArray languages = responseJson.getJSONArray("languages");
+        assertThat(languages.length()).as("Languages array should not be empty").isGreaterThan(0);
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
   @Test
   void serverClusterInfo() throws Exception {
     testEachServer((serverIndex) -> {
