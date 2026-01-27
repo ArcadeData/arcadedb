@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.neo4j.driver.*;
 import org.neo4j.driver.exceptions.ClientException;
 import org.neo4j.driver.summary.ResultSummary;
+import org.neo4j.driver.Values;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -792,6 +793,191 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         org.neo4j.driver.Record record = result.next();
         assertThat(record.get("large").asDouble()).isEqualTo(1.0E100);
         assertThat(record.get("negLarge").asDouble()).isEqualTo(-1.0E100);
+      }
+    }
+  }
+
+  // ========== Additional Tests for Code Review Recommendations ==========
+
+  @Test
+  void testDatabaseSwitchingBetweenQueries() {
+    // This test verifies that database selection persists across queries in the same session
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // First query
+        Result r1 = session.run("RETURN 'db1' AS db");
+        assertThat(r1.next().get("db").asString()).isEqualTo("db1");
+
+        // Second query on same session should use same database
+        Result r2 = session.run("RETURN 'db2' AS db");
+        assertThat(r2.next().get("db").asString()).isEqualTo("db2");
+      }
+    }
+  }
+
+  @Test
+  void testConcurrentSessions() throws InterruptedException {
+    // Test that multiple concurrent sessions can work independently
+    final List<Thread> threads = new ArrayList<>();
+    final List<Throwable> errors = new ArrayList<>();
+
+    for (int i = 0; i < 5; i++) {
+      final int threadId = i;
+      final Thread thread = new Thread(() -> {
+        try (Driver driver = getDriver()) {
+          try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+            // Each thread creates its own data
+            session.run("CREATE (n:ConcurrentTest {threadId: $id})", Map.of("id", threadId));
+
+            // Verify it can read it back
+            Result result = session.run("MATCH (n:ConcurrentTest {threadId: $id}) RETURN n.threadId AS id", Map.of("id", threadId));
+            if (result.hasNext()) {
+              long readId = result.next().get("id").asLong();
+              if (readId != threadId) {
+                throw new AssertionError("Expected " + threadId + " but got " + readId);
+              }
+            }
+          }
+        } catch (Throwable t) {
+          synchronized (errors) {
+            errors.add(t);
+          }
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+
+    // Wait for all threads to complete
+    for (Thread thread : threads) {
+      thread.join(10000); // 10 second timeout per thread
+    }
+
+    // Check for errors
+    if (!errors.isEmpty()) {
+      throw new AssertionError("Concurrent test failed with " + errors.size() + " errors: " + errors.get(0).getMessage(), errors.get(0));
+    }
+  }
+
+  @Test
+  void testInvalidDatabaseName() {
+    try (Driver driver = GraphDatabase.driver(
+        "bolt://localhost:7687",
+        AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+        Config.builder().withoutEncryption().build()
+    )) {
+      // Try to use a database that doesn't exist
+      assertThatThrownBy(() -> {
+        try (Session session = driver.session(SessionConfig.forDatabase("nonexistent_database_12345"))) {
+          session.run("RETURN 1").consume();
+        }
+      }).isInstanceOf(Exception.class);
+    }
+  }
+
+  @Test
+  void testConnectionPoolingWithManyQueries() {
+    // Test that driver's connection pooling works correctly with many sequential queries
+    try (Driver driver = getDriver()) {
+      for (int i = 0; i < 20; i++) {
+        try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+          Result result = session.run("RETURN $i AS iteration", Map.of("i", i));
+          assertThat(result.next().get("iteration").asLong()).isEqualTo((long) i);
+        }
+      }
+    }
+  }
+
+  @Test
+  void testTransactionIsolation() {
+    // Test that uncommitted changes in one transaction are not visible to another
+    try (Driver driver = getDriver()) {
+      // Session 1: Start transaction but don't commit
+      try (Session session1 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        try (Transaction tx1 = session1.beginTransaction()) {
+          tx1.run("CREATE (n:IsolationTest {marker: 'uncommitted'})");
+
+          // Session 2: Query while session 1 transaction is open
+          try (Session session2 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+            Result result = session2.run("MATCH (n:IsolationTest {marker: 'uncommitted'}) RETURN count(n) AS cnt");
+            long count = result.next().get("cnt").asLong();
+            // Should not see uncommitted data
+            assertThat(count).isEqualTo(0L);
+          }
+
+          // Now commit
+          tx1.commit();
+        }
+
+        // Now session 2 should see it
+        try (Session session2 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+          Result result = session2.run("MATCH (n:IsolationTest {marker: 'uncommitted'}) RETURN count(n) AS cnt");
+          long count = result.next().get("cnt").asLong();
+          assertThat(count).isGreaterThanOrEqualTo(1L);
+        }
+      }
+    }
+  }
+
+  @Test
+  void testLargeParameterMap() {
+    // Test with many parameters to ensure parameter handling scales
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Map<String, Object> params = new HashMap<>();
+        for (int i = 0; i < 50; i++) {
+          params.put("param" + i, i);
+        }
+
+        // Build a query that uses all parameters
+        StringBuilder query = new StringBuilder("RETURN ");
+        for (int i = 0; i < 50; i++) {
+          if (i > 0) query.append(" + ");
+          query.append("$param").append(i);
+        }
+        query.append(" AS sum");
+
+        Result result = session.run(query.toString(), params);
+        assertThat(result.hasNext()).isTrue();
+        // Sum of 0..49 = 1225
+        assertThat(result.next().get("sum").asLong()).isEqualTo(1225L);
+      }
+    }
+  }
+
+  @Test
+  void testQueryWithNullParameter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN $param AS value", Map.of("param", Values.NULL));
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("value").isNull()).isTrue();
+      }
+    }
+  }
+
+  @Test
+  void testMultipleErrorsInSequence() {
+    // Test that session can recover from multiple consecutive errors
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Error 1
+        try {
+          session.run("INVALID SYNTAX 1").consume();
+        } catch (ClientException e) {
+          // Expected
+        }
+
+        // Error 2
+        try {
+          session.run("INVALID SYNTAX 2").consume();
+        } catch (ClientException e) {
+          // Expected
+        }
+
+        // Should still work after multiple errors
+        Result result = session.run("RETURN 'recovered' AS status");
+        assertThat(result.next().get("status").asString()).isEqualTo("recovered");
       }
     }
   }

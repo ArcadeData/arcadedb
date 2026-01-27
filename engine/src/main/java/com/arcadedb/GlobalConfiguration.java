@@ -521,6 +521,12 @@ public enum GlobalConfiguration {
   BOLT_ROUTING_TTL("arcadedb.bolt.routing.ttl", SCOPE.SERVER,
       "Time-to-live (in seconds) for BOLT routing table entries. Default is 300 (5 minutes)", Long.class, 300L),
 
+  BOLT_DEFAULT_DATABASE("arcadedb.bolt.defaultDatabase", SCOPE.SERVER,
+      "Default database name for BOLT connections when not specified in connection string. If not set, uses the first available database", String.class, null),
+
+  BOLT_MAX_CONNECTIONS("arcadedb.bolt.maxConnections", SCOPE.SERVER,
+      "Maximum number of concurrent BOLT connections. 0 means unlimited. Default is 0", Integer.class, 0),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),

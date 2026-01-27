@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
@@ -31,6 +32,8 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -40,10 +43,12 @@ import java.util.logging.Level;
 public class BoltNetworkListener extends Thread {
   private static final int BOLT_PROTOCOL_VERSION = 4; // BOLT v4.4
 
-  private final    ArcadeDBServer      server;
-  private final    ServerSocketFactory socketFactory;
-  private          ServerSocket        serverSocket;
-  private volatile boolean             active = true;
+  private final    ArcadeDBServer                      server;
+  private final    ServerSocketFactory                 socketFactory;
+  private          ServerSocket                        serverSocket;
+  private volatile boolean                             active = true;
+  private final    Set<BoltNetworkExecutor>            activeConnections = ConcurrentHashMap.newKeySet();
+  private final    int                                 maxConnections;
 
   public BoltNetworkListener(final ArcadeDBServer server,
       final ServerSocketFactory socketFactory,
@@ -53,6 +58,7 @@ public class BoltNetworkListener extends Thread {
 
     this.server = server;
     this.socketFactory = socketFactory;
+    this.maxConnections = GlobalConfiguration.BOLT_MAX_CONNECTIONS.getValueAsInteger();
 
     listen(hostName, hostPortRange);
     start();
@@ -65,11 +71,25 @@ public class BoltNetworkListener extends Thread {
         try {
           final Socket socket = serverSocket.accept();
 
+          // Check connection limit
+          if (maxConnections > 0 && activeConnections.size() >= maxConnections) {
+            LogManager.instance().log(this, Level.WARNING,
+                "BOLT connection limit reached (%d connections), rejecting new connection from %s",
+                maxConnections, socket.getRemoteSocketAddress());
+            try {
+              socket.close();
+            } catch (final IOException e) {
+              // Ignore
+            }
+            continue;
+          }
+
           socket.setPerformancePreferences(0, 2, 1);
           socket.setTcpNoDelay(true);
 
           // Create a new executor for this connection
-          final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, socket);
+          final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, socket, this);
+          activeConnections.add(connection);
           connection.start();
 
         } catch (final Exception e) {
@@ -85,6 +105,13 @@ public class BoltNetworkListener extends Thread {
         // Ignore
       }
     }
+  }
+
+  /**
+   * Called by BoltNetworkExecutor when a connection is closed.
+   */
+  void removeConnection(final BoltNetworkExecutor connection) {
+    activeConnections.remove(connection);
   }
 
   public void close() {
