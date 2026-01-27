@@ -245,6 +245,70 @@ public class RedisWTest extends BaseGraphServerTest {
   }
 
   @Test
+  void transientCommands() {
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // HSET transient (JSON objects to globalVariables)
+    long beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL_PERSISTENT; ++i) {
+      jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(),
+          "{\"id\":\"user" + i + "\",\"email\":\"jay.miner" + i + "@commodore.com\",\"firstName\":\"Jay\",\"lastName\":\"Miner\"}");
+    }
+    System.out.println("HSET transient " + TOTAL_PERSISTENT + " items to globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // HEXISTS transient
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL_PERSISTENT; ++i) {
+      assertThat(jedis.hexists(getDatabaseName(), "user" + i)).isTrue();
+    }
+    System.out.println("HEXISTS transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // HGET transient
+    beginTime = System.currentTimeMillis();
+    final JSONObject expectedJson = new JSONObject("{\"firstName\":\"Jay\",\"lastName\":\"Miner\"}");
+
+    for (int i = 0; i < TOTAL_PERSISTENT; ++i) {
+      expectedJson.put("id", "user" + i);
+      expectedJson.put("email", "jay.miner" + i + "@commodore.com");
+
+      final String jsonStr = jedis.hget(getDatabaseName(), "user" + i);
+      assertThat(jsonStr).isNotNull();
+      final JSONObject doc = new JSONObject(jsonStr);
+      assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
+    }
+    System.out.println("HGET transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // HMGET transient (chunks of 10)
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL_PERSISTENT; i += 10) {
+      final String[] keyChunk = new String[10];
+      for (int k = 0; k < 10; ++k)
+        keyChunk[k] = "user" + (i + k);
+
+      final List<String> result = jedis.hmget(getDatabaseName(), keyChunk);
+      assertThat(result.size()).isEqualTo(10);
+
+      for (int k = 0; k < 10; ++k) {
+        final JSONObject doc = new JSONObject(result.get(k));
+        assertThat(doc.getString("firstName")).isEqualTo("Jay");
+      }
+    }
+    System.out.println("HMGET transient " + TOTAL_PERSISTENT + " items by chunks of 10 from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // HDEL transient
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL_PERSISTENT; i += 2) {
+      assertThat(jedis.hdel(getDatabaseName(), "user" + i, "user" + (i + 1))).isEqualTo(2);
+    }
+    System.out.println("HDEL transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // Verify all deleted
+    for (int i = 0; i < TOTAL_PERSISTENT; ++i) {
+      assertThat(jedis.hexists(getDatabaseName(), "user" + i)).isFalse();
+    }
+  }
+
+  @Test
   void commandNotSupported() {
     final Jedis jedis = new Jedis("localhost", DEF_PORT);
     try {
