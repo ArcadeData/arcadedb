@@ -233,6 +233,10 @@ public class CypherFunctionFactory {
 
   /**
    * labels() function - returns the labels of a node.
+   * <p>
+   * For vertices with multiple labels (composite types), returns all labels
+   * sorted alphabetically. For single-label vertices, returns a list with
+   * the type name.
    */
   private static class LabelsFunction implements CypherFunctionExecutor {
     @Override
@@ -240,9 +244,9 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("labels() requires exactly one argument");
       }
-      if (args[0] instanceof Vertex) {
-        final Vertex vertex = (Vertex) args[0];
-        return List.of(vertex.getTypeName());
+      if (args[0] instanceof Vertex vertex) {
+        // Use the new Vertex.getLabels() method which handles composite types
+        return vertex.getLabels();
       }
       return Collections.emptyList();
     }

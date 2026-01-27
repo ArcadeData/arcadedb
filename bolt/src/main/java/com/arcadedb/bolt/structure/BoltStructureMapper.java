@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.math.BigDecimal;
@@ -158,14 +159,17 @@ public class BoltStructureMapper {
 
   /**
    * Convert an ArcadeDB Vertex to a BOLT Node.
+   * <p>
+   * For vertices with multiple labels (composite types), returns all labels
+   * in the BOLT node. This provides Neo4j-compatible multi-label support.
    */
   public static BoltNode toNode(final Vertex vertex) {
     final RID rid = vertex.getIdentity();
     final long id = ridToId(rid);
     final String elementId = rid.toString();
 
-    // Get type name as label
-    final List<String> labels = List.of(vertex.getTypeName());
+    // Get all labels (supertypes for composite types)
+    final List<String> labels = Labels.getLabels(vertex);
 
     // Get properties
     final Map<String, Object> properties = toProperties(vertex);

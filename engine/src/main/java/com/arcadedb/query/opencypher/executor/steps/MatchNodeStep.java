@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -35,6 +36,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -232,24 +234,45 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
 
     if (pattern.hasLabels()) {
-      final String label = pattern.getFirstLabel();
+      final List<String> labels = pattern.getLabels();
 
-      // OPTIMIZATION: Check if we can use an index for property lookup
-      if (pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
-        final DocumentType type = context.getDatabase().getSchema().getType(label);
-        if (type != null) {
-          // Try to find an index that matches the property constraints
-          // Support composite indexes with partial keys (leftmost prefix matching)
-          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label);
-          if (indexedIter != null)
-            return indexedIter;
+      if (labels.size() == 1) {
+        // Single label - polymorphic iteration (existing behavior)
+        final String label = labels.get(0);
+
+        // OPTIMIZATION: Check if we can use an index for property lookup
+        if (pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
+          final DocumentType type = context.getDatabase().getSchema().getType(label);
+          if (type != null) {
+            // Try to find an index that matches the property constraints
+            // Support composite indexes with partial keys (leftmost prefix matching)
+            final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label);
+            if (indexedIter != null)
+              return indexedIter;
+          }
         }
+
+        // No index available - fall back to full type scan
+        if (context.getDatabase().getSchema().existsType(label)) {
+          @SuppressWarnings("unchecked")
+          final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
+          return iter;
+        }
+        return Collections.emptyIterator();
       }
 
-      // No index available - fall back to full type scan
-      @SuppressWarnings("unchecked")
-      final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-      return iter;
+      // Multiple labels - check if composite type exists
+      final String compositeType = Labels.getCompositeTypeName(labels);
+      if (context.getDatabase().getSchema().existsType(compositeType)) {
+        // Direct iteration on composite type (polymorphic to include subtypes)
+        @SuppressWarnings("unchecked")
+        final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(compositeType, true);
+        return iter;
+      }
+
+      // No composite type exists - no matches possible
+      // (vertices with these labels would have created the composite type)
+      return Collections.emptyIterator();
     } else {
       // No label specified - iterate ALL vertex types
       // Get all vertex types from schema and chain their iterators
