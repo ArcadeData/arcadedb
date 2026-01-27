@@ -1,8 +1,7 @@
-package com.arcadedb.opencypher;
+package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -14,6 +13,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
+;
 
 /**
  * Tests for ORDER BY, SKIP, and LIMIT clauses in OpenCypher queries.

@@ -27,9 +27,12 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.*;
 
 import java.io.File;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test for GitHub Issue #1948: UNWIND + MATCH with type check returns incomplete results.
