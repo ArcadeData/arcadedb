@@ -20,12 +20,14 @@ package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.test.BaseGraphServerTest;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.Protocol;
 import redis.clients.jedis.exceptions.JedisDataException;
 
 import java.util.ArrayList;
@@ -252,6 +254,202 @@ public class RedisWTest extends BaseGraphServerTest {
       // EXPECTED
       assertThat(e.getMessage()).isEqualTo("Command not found");
     }
+  }
+
+  @Test
+  void selectCommandSwitchesDatabase() {
+    // Test SELECT command to switch database context
+    // Issue #3246: Redis commands should use database's globalVariables
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Select the test database (using sendCommand because Jedis select() expects int)
+    final Object selectResult = jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
+    // sendCommand returns byte[] for simple strings
+    final String resultStr = selectResult instanceof byte[] ? new String((byte[]) selectResult) : selectResult.toString();
+    assertThat(resultStr).isEqualTo("OK");
+
+    // Set a value via Redis wire protocol
+    jedis.set("wireKey", "wireValue");
+
+    // Get it back
+    assertThat(jedis.get("wireKey")).isEqualTo("wireValue");
+
+    // Verify the value is in the database's globalVariables (accessible via SQL)
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    assertThat(database.getGlobalVariable("wireKey")).isEqualTo("wireValue");
+  }
+
+  @Test
+  void keyPrefixOverridesSelectedDatabase() {
+    // Test that key prefix (dbname.key) takes priority over SELECT
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Set value using key prefix (no SELECT needed)
+    jedis.set(getDatabaseName() + ".prefixKey", "prefixValue");
+
+    // Get it back using prefix
+    assertThat(jedis.get(getDatabaseName() + ".prefixKey")).isEqualTo("prefixValue");
+
+    // Verify it's in the database's globalVariables
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    assertThat(database.getGlobalVariable("prefixKey")).isEqualTo("prefixValue");
+  }
+
+  @Test
+  void selectThenIncrDecr() {
+    // Test INCR/DECR with database context
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Select database
+    jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
+
+    // INCR on non-existent key should start from 0
+    assertThat(jedis.incr("newCounter")).isEqualTo(1L);
+    assertThat(jedis.incr("newCounter")).isEqualTo(2L);
+
+    // Verify in database globalVariables
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    assertThat(((Number) database.getGlobalVariable("newCounter")).longValue()).isEqualTo(2L);
+
+    // DECR
+    assertThat(jedis.decr("newCounter")).isEqualTo(1L);
+    assertThat(((Number) database.getGlobalVariable("newCounter")).longValue()).isEqualTo(1L);
+  }
+
+  @Test
+  void globalVariablesSharedWithSQL() {
+    // Test that Redis values are accessible via SQL $variable syntax
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Select database and set a value
+    jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
+    jedis.set("sqlSharedVar", "hello_from_redis_wire");
+
+    // Access via SQL
+    final Database database = getServerDatabase(0, getDatabaseName());
+    try (final var rs = database.query("sql", "SELECT $sqlSharedVar as val")) {
+      assertThat(rs.hasNext()).isTrue();
+      final var result = rs.next();
+      assertThat((String) result.getProperty("val")).isEqualTo("hello_from_redis_wire");
+    }
+  }
+
+  @Test
+  void existsAndGetDelWithDatabaseContext() {
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Select database
+    jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
+
+    // Set some values
+    jedis.set("existKey1", "value1");
+    jedis.set("existKey2", "value2");
+
+    // EXISTS
+    assertThat(jedis.exists("existKey1")).isTrue();
+    assertThat(jedis.exists("existKey1", "existKey2")).isEqualTo(2);
+    assertThat(jedis.exists("nonExistent")).isFalse();
+
+    // GETDEL
+    assertThat(jedis.getDel("existKey1")).isEqualTo("value1");
+    assertThat(jedis.exists("existKey1")).isFalse();
+
+    // Verify in database globalVariables
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    assertThat(database.getGlobalVariable("existKey1")).isNull();
+    assertThat(database.getGlobalVariable("existKey2")).isEqualTo("value2");
+  }
+
+  @Test
+  void transientHSetAndHGet() {
+    // Test HSET in transient mode (type omitted, JSON as second argument)
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Store JSON objects in globalVariables (transient mode)
+    // For transient: HSET <database> <json> where json starts with '{'
+    // Use sendCommand because Jedis hset() expects (key, field, value) format
+    final Object result = jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(),
+        "{\"id\":\"user1\",\"name\":\"John\",\"age\":30}",
+        "{\"id\":\"123\",\"email\":\"test@example.com\"}");
+    // Result is the count of stored items
+    assertThat(((Long) result).intValue()).isEqualTo(2);
+
+    // Retrieve using HGET in transient mode (no dot, key doesn't start with #)
+    final String user1 = jedis.hget(getDatabaseName(), "user1");
+    assertThat(user1).isNotNull();
+    final JSONObject user1Json = new JSONObject(user1);
+    assertThat(user1Json.getString("name")).isEqualTo("John");
+    assertThat(user1Json.getInt("age")).isEqualTo(30);
+
+    // Retrieve numeric id (stored as string key "123")
+    final String item123 = jedis.hget(getDatabaseName(), "123");
+    assertThat(item123).isNotNull();
+    final JSONObject item123Json = new JSONObject(item123);
+    assertThat(item123Json.getString("email")).isEqualTo("test@example.com");
+
+    // Verify also accessible via database globalVariables
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    assertThat(database.getGlobalVariable("user1")).isNotNull();
+  }
+
+  @Test
+  void transientHExists() {
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Store JSON object using sendCommand for transient mode
+    jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(), "{\"id\":\"existsTest\",\"value\":\"test\"}");
+
+    // HEXISTS in transient mode
+    assertThat(jedis.hexists(getDatabaseName(), "existsTest")).isTrue();
+    assertThat(jedis.hexists(getDatabaseName(), "nonExistent")).isFalse();
+  }
+
+  @Test
+  void transientHDel() {
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Store JSON objects using sendCommand
+    jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(),
+        "{\"id\":\"delTest1\",\"value\":\"v1\"}",
+        "{\"id\":\"delTest2\",\"value\":\"v2\"}");
+
+    // Verify they exist
+    assertThat(jedis.hexists(getDatabaseName(), "delTest1")).isTrue();
+    assertThat(jedis.hexists(getDatabaseName(), "delTest2")).isTrue();
+
+    // HDEL in transient mode (no dot in bucket name)
+    final long deleted = jedis.hdel(getDatabaseName(), "delTest1");
+    assertThat(deleted).isEqualTo(1);
+
+    // Verify delTest1 is gone but delTest2 remains
+    assertThat(jedis.hexists(getDatabaseName(), "delTest1")).isFalse();
+    assertThat(jedis.hexists(getDatabaseName(), "delTest2")).isTrue();
+  }
+
+  @Test
+  void transientHMGet() {
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    // Store multiple JSON objects using sendCommand
+    jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(),
+        "{\"id\":\"mget1\",\"name\":\"First\"}",
+        "{\"id\":\"mget2\",\"name\":\"Second\"}",
+        "{\"id\":\"mget3\",\"name\":\"Third\"}");
+
+    // HMGET in transient mode
+    final List<String> results = jedis.hmget(getDatabaseName(), "mget1", "mget2", "mget3", "nonExistent");
+    assertThat(results).hasSize(4);
+
+    final JSONObject first = new JSONObject(results.get(0));
+    assertThat(first.getString("name")).isEqualTo("First");
+
+    final JSONObject second = new JSONObject(results.get(1));
+    assertThat(second.getString("name")).isEqualTo("Second");
+
+    final JSONObject third = new JSONObject(results.get(2));
+    assertThat(third.getString("name")).isEqualTo("Third");
+
+    assertThat(results.get(3)).isNull();
   }
 
   @Override

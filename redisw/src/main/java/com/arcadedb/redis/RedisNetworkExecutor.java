@@ -19,10 +19,8 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.Constants;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
@@ -30,35 +28,52 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Type;
-import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.NumberUtils;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
   private final    ArcadeDBServer      server;
   private final    ChannelBinaryServer channel;
-  private volatile boolean             shutdown      = false;
-  private          int                 posInBuffer   = 0;
-  private final    StringBuilder       value         = new StringBuilder();
-  private final    byte[]              buffer        = new byte[32 * 1024];
-  private          int                 bytesRead     = 0;
-  private final    Map<String, Object> defaultBucket = new ConcurrentHashMap<>();
+  private volatile boolean             shutdown         = false;
+  private          int                 posInBuffer      = 0;
+  private final    StringBuilder       value            = new StringBuilder();
+  private final    byte[]              buffer           = new byte[32 * 1024];
+  private          int                 bytesRead        = 0;
+  private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
+  private          DatabaseInternal    selectedDatabase = null;
 
   public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
+
+    // Initialize default database from configuration if set
+    final String defaultDbName = GlobalConfiguration.REDIS_DEFAULT_DATABASE.getValueAsString();
+    if (defaultDbName != null && !defaultDbName.isEmpty()) {
+      try {
+        this.selectedDatabase = (DatabaseInternal) server.getDatabase(defaultDbName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Redis wrapper: Default database '%s' not found, will use connection-local storage", defaultDbName);
+      }
+    }
   }
 
   @Override
@@ -106,76 +121,83 @@ public class RedisNetworkExecutor extends Thread {
         return;
 
       final Object cmd = list.getFirst();
-      if (!(cmd instanceof String))
-        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command, cmd.getClass());
+      if (!(cmd instanceof String)) {
+        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command,
+            cmd.getClass());
+        return;
+      }
 
       final String cmdString = ((String) cmd).toUpperCase(Locale.ENGLISH);
 
       try {
         switch (cmdString) {
-        case "DECR":
-          decrBy(list);
-          break;
+          case "DECR":
+            decrBy(list);
+            break;
 
-        case "DECRBY":
-          decrBy(list);
-          break;
+          case "DECRBY":
+            decrBy(list);
+            break;
 
-        case "GET":
-          get(list);
-          break;
+          case "GET":
+            get(list);
+            break;
 
-        case "GETDEL":
-          getDel(list);
-          break;
+          case "GETDEL":
+            getDel(list);
+            break;
 
-        case "EXISTS":
-          exists(list);
-          break;
+          case "EXISTS":
+            exists(list);
+            break;
 
-        case "HDEL":
-          hDel(list);
-          break;
+          case "HDEL":
+            hDel(list);
+            break;
 
-        case "HEXISTS":
-          hExists(list);
-          break;
+          case "HEXISTS":
+            hExists(list);
+            break;
 
-        case "HGET":
-          hGet(list);
-          break;
+          case "HGET":
+            hGet(list);
+            break;
 
-        case "HMGET":
-          hMGet(list);
-          break;
+          case "HMGET":
+            hMGet(list);
+            break;
 
-        case "HSET":
-        case "HMSET": // HMSET IS DEPRECATED IN FAVOUR OF HSET
-          hSet(list);
-          break;
+          case "HSET":
+          case "HMSET": // HMSET IS DEPRECATED IN FAVOUR OF HSET
+            hSet(list);
+            break;
 
-        case "INCR":
-          incrBy(list, false);
-          break;
+          case "INCR":
+            incrBy(list, false);
+            break;
 
-        case "INCRBY":
-          incrBy(list, false);
-          break;
+          case "INCRBY":
+            incrBy(list, false);
+            break;
 
-        case "INCRBYFLOAT":
-          incrBy(list, true);
-          break;
+          case "INCRBYFLOAT":
+            incrBy(list, true);
+            break;
 
-        case "PING":
-          ping(list);
-          break;
+          case "PING":
+            ping(list);
+            break;
 
-        case "SET":
-          set(list);
-          break;
+          case "SELECT":
+            select(list);
+            break;
 
-        default:
-          value.append("-Command not found");
+          case "SET":
+            set(list);
+            break;
+
+          default:
+            value.append("-Command not found");
         }
 
       } catch (final Exception e) {
@@ -193,8 +215,10 @@ public class RedisNetworkExecutor extends Thread {
     final String k = (String) list.get(1);
     final int by = list.size() > 2 ? Integer.parseInt((String) list.get(2)) : 1;
 
-    Object number = defaultBucket.get(k);
-    if (!(number instanceof Number)) {
+    Object number = getVariable(k);
+    if (number == null) {
+      number = 0L;
+    } else if (!(number instanceof Number)) {
       if (NumberUtils.isIntegerNumber(number.toString()))
         number = Long.parseLong(number.toString());
       else
@@ -202,7 +226,7 @@ public class RedisNetworkExecutor extends Thread {
     }
 
     final Number newValue = Type.decrement((Number) number, by);
-    defaultBucket.put(k, newValue);
+    setVariable(k, newValue);
     value.append(":");
     value.append(newValue);
   }
@@ -210,20 +234,20 @@ public class RedisNetworkExecutor extends Thread {
   private void exists(final List<Object> list) {
     int total = 0;
     for (int i = 1; i < list.size(); i++)
-      total += defaultBucket.containsKey(list.get(i)) ? 1 : 0;
+      total += containsVariable((String) list.get(i)) ? 1 : 0;
 
     respondValue(total, false);
   }
 
   private void get(final List<Object> list) {
     final String k = (String) list.get(1);
-    final Object v = defaultBucket.get(k);
+    final Object v = getVariable(k);
     respondValue(v, true);
   }
 
   private void getDel(final List<Object> list) {
     final String k = (String) list.get(1);
-    final Object v = defaultBucket.remove(k);
+    final Object v = removeVariable(k);
     respondValue(v, true);
   }
 
@@ -231,37 +255,47 @@ public class RedisNetworkExecutor extends Thread {
     final String bucketName = (String) list.get(1);
 
     final int pos = bucketName.indexOf(".");
-    if (pos < 0)
-      throw new RedisException("Bucket name must be in the format <database>.<index>");
-
-    final String databaseName = bucketName.substring(0, pos);
-    final String keyType = bucketName.substring(pos + 1);
-
-    final Database database = server.getDatabase(databaseName);
-
     int deleted = 0;
 
-    if (keyType.startsWith("#")) {
-      new RID(database, keyType).getRecord().delete();
-      ++deleted;
-    } else {
-      final Index index = database.getSchema().getIndexByName(keyType);
-
+    if (pos < 0) {
+      // Transient mode: delete from globalVariables
+      final DatabaseInternal database = (DatabaseInternal) server.getDatabase(bucketName);
       for (int i = 2; i < list.size(); i++) {
         final String key = (String) list.get(i);
-
-        final Object[] keys;
-        if (key.startsWith("[")) {
-          keys = new JSONArray(key).toList().toArray();
-        } else if (key.startsWith("\"")) {
-          keys = new String[] { key.substring(1, key.length() - 1) };
-        } else
-          keys = new String[] { key };
-
-        final IndexCursor cursor = index.get(keys);
-        if (cursor.hasNext()) {
-          cursor.next().getRecord().delete();
+        if (database.getGlobalVariable(key) != null) {
+          database.setGlobalVariable(key, null);
           ++deleted;
+        }
+      }
+    } else {
+      // Persistent mode: delete from database
+      final String databaseName = bucketName.substring(0, pos);
+      final String keyType = bucketName.substring(pos + 1);
+
+      final Database database = server.getDatabase(databaseName);
+
+      if (keyType.startsWith("#")) {
+        new RID(database, keyType).getRecord().delete();
+        ++deleted;
+      } else {
+        final Index index = database.getSchema().getIndexByName(keyType);
+
+        for (int i = 2; i < list.size(); i++) {
+          final String key = (String) list.get(i);
+
+          final Object[] keys;
+          if (key.startsWith("[")) {
+            keys = new JSONArray(key).toList().toArray();
+          } else if (key.startsWith("\"")) {
+            keys = new String[]{key.substring(1, key.length() - 1)};
+          } else
+            keys = new String[]{key};
+
+          final IndexCursor cursor = index.get(keys);
+          if (cursor.hasNext()) {
+            cursor.next().getRecord().delete();
+            ++deleted;
+          }
         }
       }
     }
@@ -273,60 +307,122 @@ public class RedisNetworkExecutor extends Thread {
     final String bucketName = (String) list.get(1);
     final String key = (String) list.get(2);
 
-    final Record record = getRecord(bucketName, key);
-    respondValue(record != null ? 1 : 0, false);
+    // Check for transient mode: no dot in bucketName and key doesn't start with #
+    final int pos = bucketName.indexOf(".");
+    if (pos < 0 && !key.startsWith("#")) {
+      // Transient mode
+      final String transientValue = getTransientValue(bucketName, key);
+      respondValue(transientValue != null ? 1 : 0, false);
+    } else {
+      // Persistent mode
+      final Record record = getRecord(bucketName, key);
+      respondValue(record != null ? 1 : 0, false);
+    }
   }
 
   private void hGet(final List<Object> list) {
     final String bucketName = (String) list.get(1);
     final String key = (String) list.get(2);
 
-    final Record record = getRecord(bucketName, key);
-    respondValue(record != null ? record.toJSON(true) : null, true);
+    // Check for transient mode: no dot in bucketName and key doesn't start with #
+    final int pos = bucketName.indexOf(".");
+    if (pos < 0 && !key.startsWith("#")) {
+      // Transient mode
+      final String transientValue = getTransientValue(bucketName, key);
+      respondValue(transientValue, true);
+    } else {
+      // Persistent mode
+      final Record record = getRecord(bucketName, key);
+      respondValue(record != null ? record.toJSON(true) : null, true);
+    }
   }
 
   private void hMGet(final List<Object> list) {
     final String bucketName = (String) list.get(1);
     final List<Object> keys = list.subList(2, list.size());
 
-    final List<Record> records = getRecords(bucketName, keys);
+    // Check for transient mode: no dot in bucketName
+    final int pos = bucketName.indexOf(".");
+    if (pos < 0) {
+      // Transient mode: get from globalVariables
+      value.append("*");
+      value.append(keys.size());
 
-    value.append("*");
-    value.append(records.size());
+      for (final Object keyObj : keys) {
+        appendCrLf();
+        final String key = keyObj.toString();
+        if (key.startsWith("#")) {
+          // BY RID - persistent mode
+          final Database database = server.getDatabase(bucketName);
+          final Record record = new RID(database, key).asDocument();
+          respondValue(record != null ? record.toJSON(true) : null, true);
+        } else {
+          // Transient mode
+          final String transientValue = getTransientValue(bucketName, key);
+          respondValue(transientValue, true);
+        }
+      }
+    } else {
+      // Persistent mode: get records from database
+      final List<Record> records = getRecords(bucketName, keys);
 
-    for (int i = 0; i < records.size(); i++) {
-      appendCrLf();
-      final Record record = records.get(i);
-      respondValue(record != null ? record.toJSON(true) : null, true);
+      value.append("*");
+      value.append(records.size());
+
+      for (int i = 0; i < records.size(); i++) {
+        appendCrLf();
+        final Record record = records.get(i);
+        respondValue(record != null ? record.toJSON(true) : null, true);
+      }
     }
   }
 
   private void hSet(final List<Object> list) {
     final String databaseName = (String) list.get(1);
-    final String typeName = (String) list.get(2);
+    final String secondArg = (String) list.get(2);
 
-    final Database database = server.getDatabase(databaseName);
-    database.transaction(() -> {
-      for (int i = 3; i < list.size(); i++) {
-        final JSONObject v = new JSONObject((String) list.get(i));
-
-        final DocumentType type = database.getSchema().getType(typeName);
-
-        final MutableDocument document;
-
-        if (type instanceof LocalVertexType)
-          document = database.newVertex(typeName);
-        else if (type instanceof LocalEdgeType edgeType)
-          document = new MutableEdge(database, edgeType, null);
-        else
-          document = database.newDocument(typeName);
-
-        document.fromJSON(v);
-        document.save();
+    // Check if transient mode: second argument is JSON (starts with '{')
+    if (secondArg.startsWith("{")) {
+      // Transient mode: store JSON objects in globalVariables
+      final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+      int stored = 0;
+      for (int i = 2; i < list.size(); i++) {
+        final JSONObject json = new JSONObject((String) list.get(i));
+        if (!json.has("id")) {
+          throw new RedisException("JSON object must have an 'id' field for transient storage");
+        }
+        final String key = json.get("id").toString();
+        database.setGlobalVariable(key, json.toString());
+        stored++;
       }
-    });
-    value.append(":");
-    value.append(list.size() - 3);
+      value.append(":");
+      value.append(stored);
+    } else {
+      // Persistent mode: store documents in database type
+      final String typeName = secondArg;
+      final Database database = server.getDatabase(databaseName);
+      database.transaction(() -> {
+        for (int i = 3; i < list.size(); i++) {
+          final JSONObject v = new JSONObject((String) list.get(i));
+
+          final DocumentType type = database.getSchema().getType(typeName);
+
+          final MutableDocument document;
+
+          if (type instanceof LocalVertexType)
+            document = database.newVertex(typeName);
+          else if (type instanceof LocalEdgeType edgeType)
+            document = new MutableEdge(database, edgeType, null);
+          else
+            document = database.newDocument(typeName);
+
+          document.fromJSON(v);
+          document.save();
+        }
+      });
+      value.append(":");
+      value.append(list.size() - 3);
+    }
   }
 
   private void incrBy(final List<Object> list, final boolean decimal) {
@@ -341,8 +437,10 @@ public class RedisNetworkExecutor extends Thread {
     } else
       by = 1;
 
-    Object number = defaultBucket.get(k);
-    if (!(number instanceof Number)) {
+    Object number = getVariable(k);
+    if (number == null) {
+      number = 0L;
+    } else if (!(number instanceof Number)) {
       if (NumberUtils.isIntegerNumber(number.toString()))
         number = Long.parseLong(number.toString());
       else
@@ -350,7 +448,7 @@ public class RedisNetworkExecutor extends Thread {
     }
 
     final Number newValue = Type.increment((Number) number, by);
-    defaultBucket.put(k, newValue);
+    setVariable(k, newValue);
     value.append(newValue instanceof Long ? ":" : "+");
     value.append(newValue);
   }
@@ -358,7 +456,7 @@ public class RedisNetworkExecutor extends Thread {
   private void set(final List<Object> list) {
     final String k = (String) list.get(1);
     final String v = (String) list.get(2);
-    defaultBucket.put(k, v);
+    setVariable(k, v);
     value.append("+");
     value.append("OK");
   }
@@ -367,6 +465,84 @@ public class RedisNetworkExecutor extends Thread {
     final String response = list.size() > 1 ? (String) list.get(1) : "PONG";
     value.append("+");
     value.append(response);
+  }
+
+  private void select(final List<Object> list) {
+    final String dbName = (String) list.get(1);
+    this.selectedDatabase = (DatabaseInternal) server.getDatabase(dbName);
+    value.append("+");
+    value.append("OK");
+  }
+
+  /**
+   * Resolves the database and actual key from a potentially prefixed key.
+   * Priority: key prefix (dbname.key) > SELECT > default config > connection-local bucket.
+   *
+   * @param key the key which may contain a database prefix (e.g., "mydb.mykey")
+   * @return array of [resolvedKey, database] where database may be null if using local bucket
+   */
+  private Object[] resolveKeyAndDatabase(final String key) {
+    // Check for database prefix (dbname.key)
+    final int dotPos = key.indexOf('.');
+    if (dotPos > 0) {
+      final String dbName = key.substring(0, dotPos);
+      final String actualKey = key.substring(dotPos + 1);
+      try {
+        return new Object[]{actualKey, (DatabaseInternal) server.getDatabase(dbName)};
+      } catch (final Exception e) {
+        // Not a valid database prefix, treat as regular key
+      }
+    }
+
+    // Use selected database (from SELECT command or default config)
+    return new Object[]{key, selectedDatabase};
+  }
+
+  private Object getVariable(final String key) {
+    final Object[] resolved = resolveKeyAndDatabase(key);
+    final String actualKey = (String) resolved[0];
+    final DatabaseInternal db = (DatabaseInternal) resolved[1];
+
+    if (db != null) {
+      return db.getGlobalVariable(actualKey);
+    }
+    return defaultBucket.get(actualKey);
+  }
+
+  private void setVariable(final String key, final Object value) {
+    final Object[] resolved = resolveKeyAndDatabase(key);
+    final String actualKey = (String) resolved[0];
+    final DatabaseInternal db = (DatabaseInternal) resolved[1];
+
+    if (db != null) {
+      db.setGlobalVariable(actualKey, value);
+    } else {
+      defaultBucket.put(actualKey, value);
+    }
+  }
+
+  private Object removeVariable(final String key) {
+    final Object[] resolved = resolveKeyAndDatabase(key);
+    final String actualKey = (String) resolved[0];
+    final DatabaseInternal db = (DatabaseInternal) resolved[1];
+
+    if (db != null) {
+      final Object oldValue = db.getGlobalVariable(actualKey);
+      db.setGlobalVariable(actualKey, null);
+      return oldValue;
+    }
+    return defaultBucket.remove(actualKey);
+  }
+
+  private boolean containsVariable(final String key) {
+    final Object[] resolved = resolveKeyAndDatabase(key);
+    final String actualKey = (String) resolved[0];
+    final DatabaseInternal db = (DatabaseInternal) resolved[1];
+
+    if (db != null) {
+      return db.getGlobalVariable(actualKey) != null;
+    }
+    return defaultBucket.containsKey(actualKey);
   }
 
   private Object parseNext() throws IOException {
@@ -402,9 +578,11 @@ public class RedisNetworkExecutor extends Thread {
       final byte b2 = readNext();
       if (b2 == '\n') {
       } else
-        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\n", (char) b2);
+        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\n"
+            , (char) b2);
     } else
-      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\r", (char) b);
+      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\r",
+          (char) b);
   }
 
   private String parseValueUntilLF() throws IOException {
@@ -424,7 +602,8 @@ public class RedisNetworkExecutor extends Thread {
         if (b == '\n')
           break;
         else
-          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on parsing value waiting for LF, but found '%s' after /r", (char) b);
+          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on parsing value waiting for LF, but " +
+              "found '%s' after /r", (char) b);
       }
     }
 
@@ -483,17 +662,30 @@ public class RedisNetworkExecutor extends Thread {
     return buffer[posInBuffer++];
   }
 
+  /**
+   * Gets a record by RID, index, or from globalVariables (transient).
+   * Formats:
+   * - bucketName = database, key = #rid -> get by RID
+   * - bucketName = database, key = id (not starting with #) -> get from globalVariables (transient)
+   * - bucketName = database.indexName, key = value -> get by index
+   *
+   * @return the record, or null if not found. For transient mode, returns null but the value
+   * can be retrieved via getTransientValue() if needed for special handling.
+   */
   private Record getRecord(final String bucketName, final String key) {
     final Record record;
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
-      // BY RID
       final Database database = server.getDatabase(bucketName);
 
-      if (key.startsWith("#"))
+      if (key.startsWith("#")) {
+        // BY RID
         record = new RID(database, key).asDocument();
-      else
-        throw new RedisException("Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. Example: #13:432");
+      } else {
+        // TRANSIENT MODE: get from globalVariables
+        // Return null here - caller should use getTransientValue for the actual value
+        record = null;
+      }
     } else {
       // BY INDEX
       final String databaseName = bucketName.substring(0, pos);
@@ -507,14 +699,24 @@ public class RedisNetworkExecutor extends Thread {
       if (key.startsWith("[")) {
         keys = new JSONArray(key).toList().toArray();
       } else if (key.startsWith("\"")) {
-        keys = new String[] { key.substring(1, key.length() - 1) };
+        keys = new String[]{key.substring(1, key.length() - 1)};
       } else
-        keys = new String[] { key };
+        keys = new String[]{key};
 
       final IndexCursor cursor = index.get(keys);
       record = cursor.hasNext() ? cursor.next().asDocument() : null;
     }
     return record;
+  }
+
+  /**
+   * Gets a transient value from globalVariables.
+   * Used when bucketName has no dot and key doesn't start with #.
+   */
+  private String getTransientValue(final String databaseName, final String key) {
+    final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+    final Object value = database.getGlobalVariable(key);
+    return value != null ? value.toString() : null;
   }
 
   private List<Record> getRecords(final String bucketName, final List<Object> keys) {
@@ -530,7 +732,8 @@ public class RedisNetworkExecutor extends Thread {
         if (k.startsWith("#"))
           records.add(new RID(database, k).asDocument());
         else
-          throw new RedisException("Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. Example: #13:432");
+          throw new RedisException("Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. " +
+              "Example: #13:432");
       }
     } else {
       // BY INDEX
@@ -547,9 +750,9 @@ public class RedisNetworkExecutor extends Thread {
         if (k.startsWith("[")) {
           compositeKey = new JSONArray((String[]) key).toList().toArray();
         } else if (k.startsWith("\"")) {
-          compositeKey = new String[] { k.substring(1, k.length() - 1) };
+          compositeKey = new String[]{k.substring(1, k.length() - 1)};
         } else
-          compositeKey = new String[] { k };
+          compositeKey = new String[]{k};
 
         final IndexCursor cursor = index.get(compositeKey);
         records.add(cursor.hasNext() ? cursor.next().asDocument() : null);

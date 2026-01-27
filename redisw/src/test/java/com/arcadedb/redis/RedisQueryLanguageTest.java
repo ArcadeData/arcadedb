@@ -304,6 +304,42 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
     assertThat(getResultValue(getResponse)).isNull();
   }
 
+  @Test
+  void testGlobalVariablesSharedWithSQL() throws Exception {
+    // Issue #3246: Redis commands should use database's globalVariables
+    // This test verifies that Redis SET/GET uses the same storage as SQL variables
+
+    // Set a value via Redis
+    executeCommand(0, "redis", "SET sharedVar hello_from_redis");
+
+    // Verify we can read it back via Redis
+    JSONObject response = executeCommand(0, "redis", "GET sharedVar");
+    assertThat(getResultValue(response)).isEqualTo("hello_from_redis");
+
+    // Verify the value is accessible via SQL using $variable syntax
+    final Database database = getServerDatabase(0, getDatabaseName());
+    try (final ResultSet rs = database.query("sql", "SELECT $sharedVar as val")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat((String) result.getProperty("val")).isEqualTo("hello_from_redis");
+    }
+
+    // Set another value via Redis and verify it's in the global variables map
+    executeCommand(0, "redis", "SET counter 100");
+    executeCommand(0, "redis", "INCR counter");
+
+    // The incremented value should be accessible
+    response = executeCommand(0, "redis", "GET counter");
+    assertThat(getResultValueAsLong(response)).isEqualTo(101L);
+
+    // And also via SQL
+    try (final ResultSet rs = database.query("sql", "SELECT $counter as val")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(((Number) result.getProperty("val")).longValue()).isEqualTo(101L);
+    }
+  }
+
   @Override
   protected void populateDatabase() {
   }
