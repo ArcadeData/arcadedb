@@ -65,11 +65,12 @@ public class BoltNetworkExecutor extends Thread {
     INTERRUPTED
   }
 
-  private final ArcadeDBServer    server;
-  private final Socket            socket;
-  private final BoltChunkedInput  input;
-  private final BoltChunkedOutput output;
-  private final boolean           debug;
+  private final ArcadeDBServer      server;
+  private final Socket              socket;
+  private final BoltChunkedInput    input;
+  private final BoltChunkedOutput   output;
+  private final boolean             debug;
+  private final BoltNetworkListener listener; // For notifying when connection closes
 
   private State             state = State.DISCONNECTED;
   private int               protocolVersion;
@@ -89,11 +90,15 @@ public class BoltNetworkExecutor extends Thread {
   private List<String>   currentFields;
   private Result         firstResult; // Buffered first result for field name extraction
   private int            recordsStreamed;
+  private long           queryStartTime; // Nanosecond timestamp when query execution started
+  private long           firstRecordTime; // Nanosecond timestamp when first record was retrieved
+  private boolean        isWriteOperation; // Whether the current query performs writes
 
-  public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
+  public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener) throws IOException {
     super("BOLT-" + socket.getRemoteSocketAddress());
     this.server = server;
     this.socket = socket;
+    this.listener = listener;
     this.input = new BoltChunkedInput(socket.getInputStream());
     this.output = new BoltChunkedOutput(socket.getOutputStream());
     this.debug = GlobalConfiguration.BOLT_DEBUG.getValueAsBoolean();
@@ -406,9 +411,15 @@ public class BoltNetworkExecutor extends Thread {
         LogManager.instance().log(this, Level.INFO, "BOLT executing: %s with params %s", query, params);
       }
 
-      // Determine if this is a write query by checking for write keywords
+      // Start timing for performance metrics
+      queryStartTime = System.nanoTime();
+      firstRecordTime = 0;
+
+      // Determine if this is a write query using the query analyzer
+      isWriteOperation = isWriteQuery(query);
+
       // Use command() for writes, query() for reads
-      if (isWriteQuery(query)) {
+      if (isWriteOperation) {
         currentResultSet = database.command("opencypher", query, params);
       } else {
         currentResultSet = database.query("opencypher", query, params);
@@ -419,18 +430,26 @@ public class BoltNetworkExecutor extends Thread {
       // Build success response with query metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
       metadata.put("fields", currentFields);
-      // TODO: Implement actual time to first record calculation for accurate performance monitoring
-      metadata.put("t_first", 0L);
+
+      // Calculate time to first record if we already have one buffered
+      if (firstResult != null && firstRecordTime > 0) {
+        final long tFirstMs = (firstRecordTime - queryStartTime) / 1_000_000;
+        metadata.put("t_first", tFirstMs);
+      } else {
+        metadata.put("t_first", 0L);
+      }
 
       sendSuccess(metadata);
       state = explicitTransaction ? State.TX_STREAMING : State.STREAMING;
 
     } catch (final CommandParsingException e) {
-      sendFailure(BoltException.SYNTAX_ERROR, e.getMessage());
+      final String message = e.getMessage() != null ? e.getMessage() : "Query parsing error";
+      sendFailure(BoltException.SYNTAX_ERROR, message);
       state = State.FAILED;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "BOLT query error", e);
-      sendFailure(BoltException.DATABASE_ERROR, e.getMessage());
+      final String message = e.getMessage() != null ? e.getMessage() : "Database error";
+      sendFailure(BoltException.DATABASE_ERROR, message);
       state = State.FAILED;
     }
   }
@@ -493,10 +512,14 @@ public class BoltNetworkExecutor extends Thread {
       // Build success metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
       if (!hasMore) {
-        // TODO: Determine query type dynamically (r=read, w=write, rw=read-write, s=schema)
-        metadata.put("type", "r");
-        // TODO: Implement actual time to last record calculation for accurate performance metrics
-        metadata.put("t_last", 0L);
+        // Determine query type based on whether it performed writes
+        // r=read, w=write (for simplicity, we use binary classification)
+        metadata.put("type", isWriteOperation ? "w" : "r");
+
+        // Calculate time to last record
+        final long tLastMs = (System.nanoTime() - queryStartTime) / 1_000_000;
+        metadata.put("t_last", tLastMs);
+
         try {
           currentResultSet.close();
         } catch (final Exception e) {
@@ -513,7 +536,8 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "BOLT PULL error", e);
-      sendFailure(BoltException.DATABASE_ERROR, e.getMessage());
+      final String message = e.getMessage() != null ? e.getMessage() : "Error fetching records";
+      sendFailure(BoltException.DATABASE_ERROR, message);
       state = State.FAILED;
     }
   }
@@ -589,7 +613,8 @@ public class BoltNetworkExecutor extends Thread {
       state = State.TX_READY;
 
     } catch (final Exception e) {
-      sendFailure(BoltException.TRANSACTION_ERROR, e.getMessage());
+      final String message = e.getMessage() != null ? e.getMessage() : "Transaction error";
+      sendFailure(BoltException.TRANSACTION_ERROR, message);
       state = State.FAILED;
     }
   }
@@ -622,7 +647,8 @@ public class BoltNetworkExecutor extends Thread {
       state = State.READY;
 
     } catch (final Exception e) {
-      sendFailure(BoltException.TRANSACTION_ERROR, e.getMessage());
+      final String message = e.getMessage() != null ? e.getMessage() : "Commit error";
+      sendFailure(BoltException.TRANSACTION_ERROR, message);
       state = State.FAILED;
     }
   }
@@ -662,7 +688,8 @@ public class BoltNetworkExecutor extends Thread {
       state = State.READY;
 
     } catch (final Exception e) {
-      sendFailure(BoltException.TRANSACTION_ERROR, e.getMessage());
+      final String message = e.getMessage() != null ? e.getMessage() : "Rollback error";
+      sendFailure(BoltException.TRANSACTION_ERROR, message);
       state = State.FAILED;
     }
   }
@@ -719,15 +746,19 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     if (databaseName == null || databaseName.isEmpty()) {
-      // TODO: Consider making default database selection configurable or requiring explicit database name
-      // to avoid unpredictable behavior in multi-database environments
-      final Collection<String> databases = server.getDatabaseNames();
-      if (databases.isEmpty()) {
-        sendFailure(BoltException.DATABASE_ERROR, "No database available");
-        state = State.FAILED;
-        return false;
+      // Try to use configured default database
+      databaseName = GlobalConfiguration.BOLT_DEFAULT_DATABASE.getValueAsString();
+
+      if (databaseName == null || databaseName.isEmpty()) {
+        // If no default configured, use the first available database
+        final Collection<String> databases = server.getDatabaseNames();
+        if (databases.isEmpty()) {
+          sendFailure(BoltException.DATABASE_ERROR, "No database available");
+          state = State.FAILED;
+          return false;
+        }
+        databaseName = databases.iterator().next();
       }
-      databaseName = databases.iterator().next();
     }
 
     try {
@@ -739,7 +770,8 @@ public class BoltNetworkExecutor extends Thread {
       }
       return true;
     } catch (final Exception e) {
-      sendFailure(BoltException.DATABASE_ERROR, "Cannot open database: " + databaseName + " - " + e.getMessage());
+      final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";
+      sendFailure(BoltException.DATABASE_ERROR, "Cannot open database: " + databaseName + " - " + message);
       state = State.FAILED;
       return false;
     }
@@ -757,6 +789,7 @@ public class BoltNetworkExecutor extends Thread {
     // Peek at first result to get field names
     if (resultSet.hasNext()) {
       firstResult = resultSet.next();
+      firstRecordTime = System.nanoTime(); // Capture time when first record is available
       final Set<String> propertyNames = firstResult.getPropertyNames();
       return propertyNames != null ? new ArrayList<>(propertyNames) : List.of();
     }
@@ -766,20 +799,20 @@ public class BoltNetworkExecutor extends Thread {
 
   /**
    * Determine if a Cypher query contains write operations.
-   * This checks for common write keywords in the query.
+   * Uses ArcadeDB's query analyzer for accurate detection.
    */
   private boolean isWriteQuery(final String query) {
     if (query == null || query.isEmpty()) {
       return false;
     }
-    final String normalized = query.toUpperCase().trim();
-    // Check for write keywords - these indicate modifying operations
-    return normalized.contains("CREATE") ||
-           normalized.contains("DELETE") ||
-           normalized.contains("SET ") ||
-           normalized.contains("REMOVE") ||
-           normalized.contains("MERGE") ||
-           normalized.contains("DETACH");
+    try {
+      // Use the query engine's analyzer to determine if the query is idempotent (read-only)
+      return !database.getQueryEngine("opencypher").analyze(query).isIdempotent();
+    } catch (final Exception e) {
+      // If analysis fails, assume it's a write operation to be safe
+      LogManager.instance().log(this, Level.WARNING, "Failed to analyze query, assuming write operation: " + query, e);
+      return true;
+    }
   }
 
   /**
@@ -895,6 +928,11 @@ public class BoltNetworkExecutor extends Thread {
       socket.close();
     } catch (final Exception e) {
       // Ignore
+    }
+
+    // Notify listener that this connection is closed
+    if (listener != null) {
+      listener.removeConnection(this);
     }
 
     if (debug) {
