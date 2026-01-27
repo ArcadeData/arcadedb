@@ -22,6 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Execution step for matching relationship patterns.
@@ -50,6 +52,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private final String targetVariable;
   private final RelationshipPattern pattern;
   private final String pathVariable;
+  private final NodePattern targetNodePattern;
+  private final Set<String> boundVariableNames;
 
   /**
    * Creates a match relationship step.
@@ -77,12 +81,32 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    */
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final String pathVariable, final CommandContext context) {
+    this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, null, null, context);
+  }
+
+  /**
+   * Creates a match relationship step with target node filtering and bound variable awareness.
+   *
+   * @param sourceVariable       variable name for source vertex
+   * @param relationshipVariable variable name for relationship (can be null)
+   * @param targetVariable       variable name for target vertex
+   * @param pattern              relationship pattern to match
+   * @param pathVariable         path variable name (e.g., p in p = (a)-[r]->(b)), can be null
+   * @param targetNodePattern    target node pattern for label filtering (can be null)
+   * @param boundVariableNames   set of variable names already bound in previous steps (can be null)
+   * @param context              command context
+   */
+  public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
+      final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
+      final Set<String> boundVariableNames, final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
     this.targetVariable = targetVariable;
     this.pattern = pattern;
     this.pathVariable = pathVariable;
+    this.targetNodePattern = targetNodePattern;
+    this.boundVariableNames = boundVariableNames;
   }
 
   @Override
@@ -130,9 +154,27 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             final Edge edge = currentEdges.next();
             final Vertex targetVertex = getTargetVertex(edge, (Vertex) lastResult.getProperty(sourceVariable));
 
-            // Filter by target type if specified
+            // Filter by edge type if specified
             if (pattern.hasTypes() && !matchesEdgeType(edge)) {
               continue;
+            }
+
+            // Filter by target node label if specified in the pattern
+            if (targetNodePattern != null && targetNodePattern.hasLabels()) {
+              if (!matchesTargetLabel(targetVertex)) {
+                continue;
+              }
+            }
+
+            // If the target variable is already bound from a previous step,
+            // verify the traversed vertex matches the bound value (identity check)
+            if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
+              final Object boundValue = lastResult.getProperty(targetVariable);
+              if (boundValue instanceof Vertex) {
+                if (!((Vertex) boundValue).getIdentity().equals(targetVertex.getIdentity())) {
+                  continue;
+                }
+              }
             }
 
             // Create result with edge and target vertex
@@ -230,6 +272,23 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         return out;
       }
     }
+  }
+
+  /**
+   * Checks if a target vertex matches the label constraints from the target node pattern.
+   */
+  private boolean matchesTargetLabel(final Vertex vertex) {
+    if (targetNodePattern == null || !targetNodePattern.hasLabels()) {
+      return true;
+    }
+
+    final String vertexType = vertex.getTypeName();
+    for (final String label : targetNodePattern.getLabels()) {
+      if (label.equals(vertexType)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
