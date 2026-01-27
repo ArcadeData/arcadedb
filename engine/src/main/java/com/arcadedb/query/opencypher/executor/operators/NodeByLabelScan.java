@@ -85,6 +85,13 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
 
         // Initialize iterator on first call
         if (iterator == null) {
+          // Check if type exists before iterating
+          // This handles multi-label queries where the composite type may not exist
+          if (!context.getDatabase().getSchema().existsType(label)) {
+            finished = true;
+            return;
+          }
+
           @SuppressWarnings("unchecked")
           final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
               context.getDatabase().iterateType(label, true);

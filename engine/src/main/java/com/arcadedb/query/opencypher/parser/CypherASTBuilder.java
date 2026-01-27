@@ -993,18 +993,24 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   private List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
-    // For now, simple label extraction
-    // Label expression can be complex (OR, AND, etc.), but we'll start with simple cases
+    // Label expression handling:
+    // - Multiple labels: :Person:Developer -> ["Person", "Developer"]
+    // - Alternative labels: :Person|Developer -> ["Person", "Developer"] (treated same for MATCH)
+    // - Combination: :Person:Developer|Manager -> ["Person", "Developer", "Manager"]
     final String text = ctx.getText();
 
-    // Remove leading colon(s) and split by |
+    // Remove leading colon and split by both : and | to get all labels
     final String cleanText = text.replaceAll("^:+", "");
-    final String[] parts = cleanText.split("\\|");
+
+    // Split by both : and | to handle multiple labels and alternatives
+    final String[] parts = cleanText.split("[:&|]+");
 
     // Strip backticks from each label if present
     final List<String> labels = new ArrayList<>();
     for (String part : parts) {
-      labels.add(stripBackticks(part));
+      if (!part.isEmpty()) {
+        labels.add(stripBackticks(part));
+      }
     }
     return labels;
   }
