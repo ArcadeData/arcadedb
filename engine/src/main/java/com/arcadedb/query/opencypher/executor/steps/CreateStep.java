@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -37,6 +38,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Execution step for CREATE clause.
@@ -130,20 +132,18 @@ public class CreateStep extends AbstractExecutionStep {
 
   /**
    * Creates vertices and edges according to the path patterns.
+   * Uses database.transaction() to get automatic retry on MVCC conflicts.
    *
    * @param inputResult input result from previous step (may be null for standalone CREATE)
    * @return result containing all created elements
    */
   private Result createPatterns(final Result inputResult) {
-    // Check if we're already in a transaction
-    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+    final Database database = context.getDatabase();
+    final AtomicReference<ResultInternal> resultRef = new AtomicReference<>();
 
-    try {
-      // Begin transaction if not already active
-      if (!wasInTransaction) {
-        context.getDatabase().begin();
-      }
-
+    // Use database.transaction() for automatic retry on NeedRetryException/ConcurrentModificationException
+    // joinCurrentTx=true means it will join an existing transaction if one is active
+    database.transaction(() -> {
       final ResultInternal result = new ResultInternal();
 
       // Copy input properties if present
@@ -158,19 +158,10 @@ public class CreateStep extends AbstractExecutionStep {
         createPath(pathPattern, result);
       }
 
-      // Commit transaction if we started it
-      if (!wasInTransaction) {
-        context.getDatabase().commit();
-      }
+      resultRef.set(result);
+    }, true);
 
-      return result;
-    } catch (final Exception e) {
-      // Rollback if we started the transaction
-      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
-        context.getDatabase().rollback();
-      }
-      throw e;
-    }
+    return resultRef.get();
   }
 
   /**
