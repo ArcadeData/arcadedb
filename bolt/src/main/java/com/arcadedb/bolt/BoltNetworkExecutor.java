@@ -355,7 +355,7 @@ public class BoltNetworkExecutor extends Thread {
       try {
         currentResultSet.close();
       } catch (final Exception e) {
-        // Ignore
+        LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during RESET", e);
       }
     }
 
@@ -374,7 +374,13 @@ public class BoltNetworkExecutor extends Thread {
     firstResult = null;
 
     sendSuccess(Map.of());
-    state = State.READY;
+
+    // Check database health and force re-authentication if database is unavailable
+    if (database == null || !database.isOpen()) {
+      state = State.AUTHENTICATION;
+    } else {
+      state = State.READY;
+    }
   }
 
   /**
@@ -523,7 +529,7 @@ public class BoltNetworkExecutor extends Thread {
         try {
           currentResultSet.close();
         } catch (final Exception e) {
-          // Ignore
+          LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during PULL completion", e);
         }
         currentResultSet = null;
         currentFields = null;
@@ -565,7 +571,7 @@ public class BoltNetworkExecutor extends Thread {
       try {
         currentResultSet.close();
       } catch (final Exception e) {
-        // Ignore
+        LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during DISCARD", e);
       }
     }
 
@@ -613,6 +619,14 @@ public class BoltNetworkExecutor extends Thread {
       state = State.TX_READY;
 
     } catch (final Exception e) {
+      // Attempt to rollback in case transaction was partially started
+      try {
+        if (database != null) {
+          database.rollback();
+        }
+      } catch (final Exception rollbackError) {
+        LogManager.instance().log(this, Level.WARNING, "Failed to rollback after BEGIN error", rollbackError);
+      }
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Transaction error";
       sendFailure(BoltException.TRANSACTION_ERROR, errorMsg);
       state = State.FAILED;
@@ -673,7 +687,7 @@ public class BoltNetworkExecutor extends Thread {
         try {
           currentResultSet.close();
         } catch (final Exception e) {
-          // Ignore
+          LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during ROLLBACK", e);
         }
       }
       if (database != null) {
@@ -810,7 +824,10 @@ public class BoltNetworkExecutor extends Thread {
       return !database.getQueryEngine("opencypher").analyze(query).isIdempotent();
     } catch (final Exception e) {
       // If analysis fails, assume it's a write operation to be safe
-      LogManager.instance().log(this, Level.WARNING, "Failed to analyze query, assuming write operation: " + query, e);
+      // Log at FINE level to avoid spam for complex but valid queries
+      LogManager.instance().log(this, Level.FINE,
+          "Query analysis failed for: " + (query.length() > 100 ? query.substring(0, 100) + "..." : query) +
+          " - assuming write operation", e);
       return true;
     }
   }
@@ -832,19 +849,22 @@ public class BoltNetworkExecutor extends Thread {
    */
   private boolean authenticateUser(final String principal, final String credentials) throws IOException {
     if (principal == null || credentials == null) {
+      sendFailure(BoltException.AUTHENTICATION_ERROR, "Missing credentials");
+      state = State.FAILED;
       return false;
     }
 
     try {
       user = server.getSecurity().authenticate(principal, credentials, databaseName);
       if (user == null) {
-        sendFailure(BoltException.AUTHENTICATION_ERROR, "Invalid credentials");
+        sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication failed");
         state = State.FAILED;
         return false;
       }
       return true;
     } catch (final ServerSecurityException e) {
-      sendFailure(BoltException.AUTHENTICATION_ERROR, e.getMessage());
+      // Sanitize error message to avoid information disclosure
+      sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication failed");
       state = State.FAILED;
       return false;
     }
@@ -904,7 +924,7 @@ public class BoltNetworkExecutor extends Thread {
         currentResultSet = null;
       }
     } catch (final Exception e) {
-      // Ignore
+      LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during cleanup", e);
     }
 
     try {
@@ -915,14 +935,9 @@ public class BoltNetworkExecutor extends Thread {
       // Ignore
     }
 
-    try {
-      if (database != null) {
-        database.close();
-        database = null;
-      }
-    } catch (final Exception e) {
-      // Ignore
-    }
+    // Database is managed by the server - just release our reference
+    // DO NOT close the shared database instance
+    database = null;
 
     try {
       socket.close();

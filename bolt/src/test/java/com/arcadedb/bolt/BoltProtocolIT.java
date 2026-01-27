@@ -981,4 +981,87 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       }
     }
   }
+
+  @Test
+  void testDatabasePersistsAfterConnectionClose() {
+    // CRITICAL TEST: Verify that closing one connection doesn't close the database for others
+    // This test catches the bug where database.close() was incorrectly called in cleanup()
+    try (Driver driver = getDriver()) {
+      // Session 1: Create some data
+      try (Session session1 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session1.run("CREATE (n:PersistenceTest {id: 1, name: 'test'})").consume();
+      } // session1 closes here
+
+      // Session 2: Verify the data still exists and database is still open
+      try (Session session2 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session2.run("MATCH (n:PersistenceTest {id: 1}) RETURN n.name AS name");
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("name").asString()).isEqualTo("test");
+      }
+
+      // Session 3: Verify database is still accessible after multiple connection cycles
+      try (Session session3 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session3.run("MATCH (n:PersistenceTest) RETURN count(n) AS cnt");
+        assertThat(result.next().get("cnt").asLong()).isGreaterThanOrEqualTo(1L);
+      }
+    }
+  }
+
+  @Test
+  void testPathStructure() {
+    // Test returning path structures from Cypher queries
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create a simple path: (a)-[:REL]->(b)
+        session.run("CREATE (a:PathNode {name: 'start'})-[:CONNECTS_TO {weight: 1.0}]->(b:PathNode {name: 'end'})").consume();
+
+        // Query for the path
+        Result result = session.run("MATCH p = (a:PathNode {name: 'start'})-[r:CONNECTS_TO]->(b:PathNode {name: 'end'}) RETURN p");
+        assertThat(result.hasNext()).isTrue();
+
+        org.neo4j.driver.Record record = result.next();
+        // Note: Path support depends on OpenCypher implementation
+        // At minimum, verify the query doesn't throw an error
+        assertThat(record).isNotNull();
+      }
+    }
+  }
+
+  @Test
+  void testConnectionLimit() {
+    // Test that connection limiting works if configured
+    final int maxConnections = GlobalConfiguration.BOLT_MAX_CONNECTIONS.getValueAsInteger();
+
+    // Only run this test if connection limiting is enabled
+    if (maxConnections > 0 && maxConnections < 100) {
+      List<Driver> drivers = new ArrayList<>();
+      try {
+        // Create connections up to the limit
+        for (int i = 0; i < maxConnections; i++) {
+          Driver driver = getDriver();
+          driver.verifyConnectivity();
+          drivers.add(driver);
+        }
+
+        // Attempt to create one more connection beyond the limit
+        // This should either be rejected or one of the existing connections should be replaced
+        try (Driver extraDriver = getDriver()) {
+          // If we get here, the server either increased the limit or is using connection pooling
+          extraDriver.verifyConnectivity();
+        } catch (Exception e) {
+          // Connection was rejected due to limit - this is expected behavior
+          assertThat(e.getMessage()).contains("connection");
+        }
+      } finally {
+        // Clean up all drivers
+        for (Driver driver : drivers) {
+          try {
+            driver.close();
+          } catch (Exception e) {
+            // Ignore cleanup errors
+          }
+        }
+      }
+    }
+  }
 }

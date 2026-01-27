@@ -280,6 +280,19 @@ public class BoltStructureMapper {
 
   /**
    * Convert a Number to PackStream-compatible number.
+   * <p>
+   * <strong>Precision Loss Warning:</strong> BigInteger values that exceed Long.MAX_VALUE
+   * and BigDecimal values are converted to double, which may lose precision for very large
+   * or very precise numbers. This is a limitation of the BOLT protocol's numeric type system.
+   * <p>
+   * For example:
+   * <ul>
+   *   <li>BigInteger larger than 2^63-1 will lose precision when converted to double</li>
+   *   <li>BigDecimal with high precision will be rounded to double precision (~15-17 digits)</li>
+   * </ul>
+   *
+   * @param number the number to convert
+   * @return a Long or Double compatible with BOLT PackStream
    */
   private static Object toNumber(final Number number) {
     if (number instanceof Byte || number instanceof Short || number instanceof Integer || number instanceof Long) {
@@ -289,14 +302,16 @@ public class BoltStructureMapper {
       return number.doubleValue();
     }
     if (number instanceof BigInteger bigInt) {
-      // Try to fit in long, otherwise convert to double
+      // Try to fit in long, otherwise convert to double (with potential precision loss)
       try {
         return bigInt.longValueExact();
       } catch (final ArithmeticException e) {
+        // Precision loss: BigInteger too large for long, converting to double
         return bigInt.doubleValue();
       }
     }
     if (number instanceof BigDecimal bigDec) {
+      // Precision loss: BigDecimal always converted to double
       return bigDec.doubleValue();
     }
     // Default to double
@@ -316,7 +331,14 @@ public class BoltStructureMapper {
     if (bucketId < 0 || bucketId > 0xFFFF) {
       throw new IllegalArgumentException("Bucket ID out of range for BOLT ID conversion: " + bucketId);
     }
+
+    // Validate position to prevent overflow (max 48 bits)
+    final long position = rid.getPosition();
+    if (position < 0 || position > 0xFFFFFFFFFFFFL) {
+      throw new IllegalArgumentException("Position out of range for BOLT ID conversion: " + position);
+    }
+
     // Combine bucket ID (high bits) and position (low bits)
-    return ((long) bucketId << 48) | (rid.getPosition() & 0xFFFFFFFFFFFFL);
+    return ((long) bucketId << 48) | position;
   }
 }
