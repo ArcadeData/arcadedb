@@ -576,6 +576,10 @@ public class CypherExecutionPlan {
     // Get function factory from evaluator for steps that need it
     final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
 
+    // Track variables bound across MATCH clauses so subsequent MATCHes
+    // can detect already-bound variables and avoid Cartesian products
+    final Set<String> boundVariables = new HashSet<>();
+
     // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
     // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
     final AbstractExecutionStep typeCountStep = tryCreateTypeCountOptimization(context);
@@ -625,7 +629,7 @@ public class CypherExecutionPlan {
 
         case MATCH:
           final MatchClause matchClause = entry.getTypedClause();
-          currentStep = buildMatchStep(matchClause, currentStep, context);
+          currentStep = buildMatchStep(matchClause, currentStep, context, boundVariables);
           break;
 
         case WITH:
@@ -801,9 +805,23 @@ public class CypherExecutionPlan {
 
   /**
    * Builds execution step for a MATCH clause.
+   * Backward-compatible overload without bound variable tracking.
    */
   private AbstractExecutionStep buildMatchStep(final MatchClause matchClause, AbstractExecutionStep currentStep,
       final CommandContext context) {
+    return buildMatchStep(matchClause, currentStep, context, new HashSet<>());
+  }
+
+  /**
+   * Builds execution step for a MATCH clause with bound variable tracking.
+   *
+   * @param matchClause     the MATCH clause to build
+   * @param currentStep     current step in the execution chain
+   * @param context         command context
+   * @param boundVariables  set of variable names already bound in previous steps (updated in-place)
+   */
+  private AbstractExecutionStep buildMatchStep(final MatchClause matchClause, AbstractExecutionStep currentStep,
+      final CommandContext context, final Set<String> boundVariables) {
     if (!matchClause.hasPathPatterns()) {
       return currentStep;
     }
@@ -825,6 +843,13 @@ public class CypherExecutionPlan {
         final NodePattern nodePattern = pathPattern.getFirstNode();
         final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("n" + patternIndex);
         matchVariables.add(variable);
+
+        // Check if this variable was already bound in a previous MATCH clause
+        if (boundVariables.contains(variable)) {
+          // Variable already bound - skip creating a new MatchNodeStep
+          // The bound value will be used from the input result
+          continue;
+        }
 
         // OPTIMIZATION: Extract ID filter for this variable to avoid Cartesian product
         final String idFilter = extractIdFilter(whereClause, variable);
@@ -848,8 +873,11 @@ public class CypherExecutionPlan {
         final NodePattern sourceNode = pathPattern.getFirstNode();
         final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
 
+        // Check if source node variable is already bound (either from previous MATCH or
+        // from being in the boundVariables set). Previously this only checked for
+        // unlabeled/unpropertied nodes, which broke when labels were repeated.
         final boolean sourceAlreadyBound = stepBeforeMatch != null &&
-            !sourceNode.hasLabels() && !sourceNode.hasProperties();
+            (boundVariables.contains(sourceVar) || (!sourceNode.hasLabels() && !sourceNode.hasProperties()));
 
         if (!sourceAlreadyBound) {
           matchVariables.add(sourceVar);
@@ -898,7 +926,10 @@ public class CypherExecutionPlan {
           if (relPattern.isVariableLength()) {
             nextStep = new ExpandPathStep(sourceVar, pathVariable, targetVar, relPattern, context);
           } else {
-            nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable, context);
+            // Pass target node pattern for label filtering and bound variables
+            // for identity checking on already-bound target variables
+            nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable,
+                targetNode, boundVariables, context);
           }
 
           if (isOptional && matchChainStart == null) {
@@ -941,6 +972,9 @@ public class CypherExecutionPlan {
       }
       currentStep = optionalStep;
     }
+
+    // Update bound variables with newly bound variables from this MATCH
+    boundVariables.addAll(matchVariables);
 
     return currentStep;
   }
@@ -988,6 +1022,10 @@ public class CypherExecutionPlan {
       };
     }
 
+    // Track variables bound across MATCH clauses so subsequent MATCHes
+    // can detect already-bound variables and avoid Cartesian products
+    final Set<String> legacyBoundVariables = new HashSet<>();
+
     // Step 1: MATCH clauses - fetch nodes
     // Process ALL MATCH clauses (not just the first)
     if (!statement.getMatchClauses().isEmpty()) {
@@ -1014,6 +1052,12 @@ public class CypherExecutionPlan {
             final NodePattern nodePattern = pathPattern.getFirstNode();
             final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("n" + patternIndex);
             matchVariables.add(variable); // Track variable for OPTIONAL MATCH
+
+            // Check if this variable was already bound in a previous MATCH clause
+            if (legacyBoundVariables.contains(variable)) {
+              // Variable already bound - skip creating a new MatchNodeStep
+              continue;
+            }
 
             // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
             final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
@@ -1042,10 +1086,9 @@ public class CypherExecutionPlan {
             final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
 
             // Check if source node is already bound (for multiple MATCH clauses or OPTIONAL MATCH)
-            // If the source node has no labels/properties and there's a previous step,
-            // it's likely referring to an already-bound variable - skip creating MatchNodeStep
+            // Check both legacy bound variables AND the old heuristic (no labels/properties)
             final boolean sourceAlreadyBound = stepBeforeMatch != null &&
-                !sourceNode.hasLabels() && !sourceNode.hasProperties();
+                (legacyBoundVariables.contains(sourceVar) || (!sourceNode.hasLabels() && !sourceNode.hasProperties()));
 
             if (!sourceAlreadyBound) {
               // Only track the source variable if we're creating a new binding for it
@@ -1109,8 +1152,9 @@ public class CypherExecutionPlan {
                 // Variable-length path - pass path variable for named path support
                 nextStep = new ExpandPathStep(sourceVar, pathVariable, targetVar, relPattern, context);
               } else {
-                // Fixed-length relationship - pass path variable
-                nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable, context);
+                // Fixed-length relationship - pass path variable, target node pattern, and bound variables
+                nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable,
+                    targetNode, legacyBoundVariables, context);
               }
 
               // Chain the relationship step
@@ -1168,6 +1212,9 @@ public class CypherExecutionPlan {
             // The output of OptionalMatchStep becomes currentStep
             currentStep = optionalStep;
           }
+
+          // Update bound variables with newly bound variables from this MATCH
+          legacyBoundVariables.addAll(matchVariables);
         } else {
           // Phase 1: Use raw pattern string - create a simple stub
           final ResultInternal stubResult = new ResultInternal();

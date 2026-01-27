@@ -121,11 +121,12 @@ public class Issue3218Test {
       // Query with multiple OPTIONAL MATCH - this creates Cartesian product
       // Without DISTINCT: 10 NER × 5 THEME = 50 intermediate rows
       // With collect(DISTINCT ...): should get 1 chunk, 1 doc, 10 NERs, 5 themes
+      // Note: Labels can now be repeated on bound variables (bug fix for label filtering)
       final ResultSet rs = database.command("opencypher",
           "MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) IN $_ids " +
-              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk) " +
-              "OPTIONAL MATCH (searchedChunk)<-[chunkNerOneRel:in]-(nerOne:NER) " +
-              "OPTIONAL MATCH (searchedChunk)<-[themeToChunkRel:topic]-(theme:THEME) " +
+              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) " +
+              "OPTIONAL MATCH (searchedChunk:CHUNK)<-[chunkNerOneRel:in]-(nerOne:NER) " +
+              "OPTIONAL MATCH (searchedChunk:CHUNK)<-[themeToChunkRel:topic]-(theme:THEME) " +
               "RETURN " +
               "  collect(DISTINCT searchedChunk) AS searchedChunks, " +
               "  collect(DISTINCT sourceDoc) AS sourceDocs, " +
@@ -188,12 +189,11 @@ public class Issue3218Test {
     });
 
     database.transaction(() -> {
-      // Note: We don't repeat the label in OPTIONAL MATCH as there's a known bug
-      // where repeating the label breaks pattern matching (returns null instead of matching nodes)
+      // Labels can now be repeated on bound variables (bug fix for label filtering)
       final ResultSet rs = database.command("opencypher",
           "MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) = $_id " +
-              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk) " +
-              "OPTIONAL MATCH (searchedChunk)<-[chunkNerOneRel:in]-(nerOne:NER) " +
+              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) " +
+              "OPTIONAL MATCH (searchedChunk:CHUNK)<-[chunkNerOneRel:in]-(nerOne:NER) " +
               "RETURN " +
               "  collect(DISTINCT searchedChunk) AS searchedChunks, " +
               "  collect(DISTINCT sourceDoc) AS sourceDocs, " +
@@ -249,12 +249,12 @@ public class Issue3218Test {
 
     database.transaction(() -> {
       // Without DISTINCT, we should see the Cartesian product: 5 * 3 = 15 rows
-      // Note: Don't repeat labels after first declaration due to known bug
+      // Labels can now be repeated on bound variables (bug fix for label filtering)
       final ResultSet rs = database.query("opencypher",
           "MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) = $_id " +
-              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk) " +
-              "OPTIONAL MATCH (searchedChunk)<-[chunkNerOneRel:in]-(nerOne:NER) " +
-              "OPTIONAL MATCH (searchedChunk)<-[themeToChunkRel:topic]-(theme:THEME) " +
+              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) " +
+              "OPTIONAL MATCH (searchedChunk:CHUNK)<-[chunkNerOneRel:in]-(nerOne:NER) " +
+              "OPTIONAL MATCH (searchedChunk:CHUNK)<-[themeToChunkRel:topic]-(theme:THEME) " +
               "RETURN count(*) as rowCount",
           Map.of("_id", chunkId));
 
