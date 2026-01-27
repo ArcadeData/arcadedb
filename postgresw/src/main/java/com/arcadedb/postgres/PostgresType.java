@@ -204,6 +204,36 @@ public enum PostgresType {
   }
 
   /**
+   * Maps an ArcadeDB schema Type to a PostgreSQL type.
+   *
+   * @param arcadeType The ArcadeDB schema type
+   * @return The corresponding PostgreSQL type
+   */
+  public static PostgresType getTypeFromArcade(com.arcadedb.schema.Type arcadeType) {
+    if (arcadeType == null) {
+      return PostgresType.VARCHAR;
+    }
+
+    return switch (arcadeType) {
+      case BOOLEAN -> PostgresType.BOOLEAN;
+      case INTEGER -> PostgresType.INTEGER;
+      case SHORT -> PostgresType.SMALLINT;
+      case LONG -> PostgresType.LONG;
+      case FLOAT -> PostgresType.REAL;
+      case DOUBLE -> PostgresType.DOUBLE;
+      case BYTE -> PostgresType.SMALLINT;
+      case STRING -> PostgresType.VARCHAR;
+      case DATETIME, DATE -> PostgresType.DATE;
+      case BINARY -> PostgresType.VARCHAR; // No direct binary type, use VARCHAR
+      case LIST -> PostgresType.ARRAY_TEXT;
+      case MAP, EMBEDDED -> PostgresType.JSON;
+      case LINK -> PostgresType.VARCHAR;
+      case DECIMAL -> PostgresType.DOUBLE;
+      default -> PostgresType.VARCHAR;
+    };
+  }
+
+  /**
    * Serializes a value as text format into the provided Binary buffer.
    *
    * @param pgType     The PostgreSQL type
@@ -439,10 +469,9 @@ public enum PostgresType {
 
     return switch (type) {
       case VARCHAR -> {
-        int length = buffer.getInt();
-        byte[] bytes = new byte[length];
-        buffer.get(bytes);
-        yield new String(bytes);
+        // In PostgreSQL binary format, VARCHAR/TEXT is just the raw bytes
+        // The length is already provided in the Bind message's parameter size
+        yield new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
       }
       case SMALLINT -> buffer.getShort();
       case INTEGER -> buffer.getInt();

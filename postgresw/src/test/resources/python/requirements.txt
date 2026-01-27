@@ -1,0 +1,4 @@
+# Python dependencies for PostgreSQL wire protocol tests
+# Install with: pip install -r requirements.txt
+
+asyncpg>=0.29.0
