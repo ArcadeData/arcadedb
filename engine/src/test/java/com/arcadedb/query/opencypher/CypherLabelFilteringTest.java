@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests for correct label filtering in Cypher MATCH and OPTIONAL MATCH clauses.
@@ -122,21 +122,22 @@ public class CypherLabelFilteringTest {
               "RETURN chunk.name AS chunkName, collect(DISTINCT target) AS targets",
           Map.of("_id", chunkId));
 
-      assertThat(rs.hasNext()).isTrue();
+      assertTrue(rs.hasNext());
       Result result = rs.next();
 
-      assertThat(result.getProperty("chunkName")).isEqualTo("chunk1");
+      assertEquals("chunk1", result.getProperty("chunkName"));
       List<?> targets = (List<?>) result.getProperty("targets");
       // Should only get NER vertices (3), not DOCUMENT vertices
-      assertThat(targets).hasSize(3);
+      assertEquals(3, targets.size(), "Expected 3 NER targets, got " + targets.size());
 
       // Verify all targets are NER type
       for (Object target : targets) {
-        assertThat(target).isInstanceOf(Vertex.class);
-        assertThat(((Vertex) target).getTypeName()).isEqualTo("NER");
+        assertInstanceOf(Vertex.class, target);
+        assertEquals("NER", ((Vertex) target).getTypeName(),
+            "Target should be NER, not " + ((Vertex) target).getTypeName());
       }
 
-      assertThat(rs.hasNext()).isFalse();
+      assertFalse(rs.hasNext());
     });
   }
 
@@ -155,14 +156,14 @@ public class CypherLabelFilteringTest {
               "RETURN searchedChunk.name AS chunkName, sourceDoc.name AS docName",
           Map.of("_id", chunkId));
 
-      assertThat(rs.hasNext()).isTrue();
+      assertTrue(rs.hasNext());
       Result result = rs.next();
 
-      assertThat(result.getProperty("chunkName")).isEqualTo("chunk1");
-      assertThat(result.getProperty("docName")).isEqualTo("doc1");
+      assertEquals("chunk1", result.getProperty("chunkName"));
+      assertEquals("doc1", result.getProperty("docName"));
 
       // Should be exactly 1 result, not a Cartesian product
-      assertThat(rs.hasNext()).isFalse();
+      assertFalse(rs.hasNext());
     });
   }
 
@@ -191,7 +192,7 @@ public class CypherLabelFilteringTest {
               "  collect(DISTINCT theme) AS themes",
           Map.of("_ids", List.of(chunkId)));
 
-      assertThat(rs.hasNext()).isTrue();
+      assertTrue(rs.hasNext());
       Result result = rs.next();
 
       List<?> searchedChunks = (List<?>) result.getProperty("searchedChunks");
@@ -201,26 +202,26 @@ public class CypherLabelFilteringTest {
       List<?> themes = (List<?>) result.getProperty("themes");
 
       // searchedChunks should contain exactly 1 CHUNK vertex
-      assertThat(searchedChunks).hasSize(1);
-      assertThat(((Vertex) searchedChunks.get(0)).getTypeName()).isEqualTo("CHUNK");
+      assertEquals(1, searchedChunks.size(), "Expected 1 CHUNK in searchedChunks");
+      assertEquals("CHUNK", ((Vertex) searchedChunks.get(0)).getTypeName());
 
       // sourceDocs should contain exactly 1 DOCUMENT vertex
-      assertThat(sourceDocs).hasSize(1);
+      assertEquals(1, sourceDocs.size(), "Expected 1 DOCUMENT in sourceDocs");
 
       // nerOnes should contain 3 NER vertices
-      assertThat(nerOnes).hasSize(3);
+      assertEquals(3, nerOnes.size(), "Expected 3 NER in nerOnes");
       for (Object ner : nerOnes) {
-        assertThat(((Vertex) ner).getTypeName()).isEqualTo("NER");
+        assertEquals("NER", ((Vertex) ner).getTypeName());
       }
 
       // nerTwos should contain 1 NER vertex (ner2, connected from ner1 via "related")
-      assertThat(nerTwos).hasSize(1);
-      assertThat(((Vertex) nerTwos.get(0)).getTypeName()).isEqualTo("NER");
+      assertEquals(1, nerTwos.size(), "Expected 1 NER in nerTwos");
+      assertEquals("NER", ((Vertex) nerTwos.get(0)).getTypeName());
 
       // themes should contain 2 THEME vertices
-      assertThat(themes).hasSize(2);
+      assertEquals(2, themes.size(), "Expected 2 THEME in themes");
 
-      assertThat(rs.hasNext()).isFalse();
+      assertFalse(rs.hasNext());
     });
   }
 
@@ -241,23 +242,22 @@ public class CypherLabelFilteringTest {
               "  collect(DISTINCT nerOne) AS nerOnes",
           Map.of("_ids", List.of(chunkId)));
 
-      assertThat(rs.hasNext()).isTrue();
+      assertTrue(rs.hasNext());
       Result result = rs.next();
 
       List<?> searchedChunks = (List<?>) result.getProperty("searchedChunks");
       List<?> nerOnes = (List<?>) result.getProperty("nerOnes");
 
       // searchedChunks must ONLY contain CHUNK vertices - never NER nodes
-      assertThat(searchedChunks).hasSize(1);
+      assertEquals(1, searchedChunks.size(), "Expected 1 CHUNK in searchedChunks");
       for (Object obj : searchedChunks) {
-        assertThat(obj).isInstanceOf(Vertex.class);
-        assertThat(((Vertex) obj).getTypeName())
-            .as("searchedChunks should only contain CHUNK vertices, not %s", ((Vertex) obj).getTypeName())
-            .isEqualTo("CHUNK");
+        assertInstanceOf(Vertex.class, obj);
+        assertEquals("CHUNK", ((Vertex) obj).getTypeName(),
+            "searchedChunks should only contain CHUNK vertices, not " + ((Vertex) obj).getTypeName());
       }
 
       // nerOnes should contain exactly 3 NER vertices
-      assertThat(nerOnes).hasSize(3);
+      assertEquals(3, nerOnes.size(), "Expected 3 NER in nerOnes");
     });
   }
 }
