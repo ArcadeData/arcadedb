@@ -762,6 +762,51 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/668">...</a>
+   * Test multiple parameterized queries similar to what asyncpg does
+   *
+   * asyncpg sends paramFormatCount=0 in BIND messages, meaning "use text format
+   * for all parameters". This test verifies the fix handles various parameter scenarios.
+   */
+  @Test
+  void multipleParameterizedQueries() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE TestAsync");
+        st.execute("INSERT INTO TestAsync SET id = 'async1', value = 100, name = 'First'");
+        st.execute("INSERT INTO TestAsync SET id = 'async2', value = 200, name = 'Second'");
+      }
+
+      // Test multiple parameters with different types
+      try (var pst = conn.prepareStatement("SELECT FROM TestAsync WHERE id = ? AND value = ?")) {
+        pst.setString(1, "async1");
+        pst.setInt(2, 100);
+        try (var rs = pst.executeQuery()) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("id")).isEqualTo("async1");
+          assertThat(rs.getInt("value")).isEqualTo(100);
+          assertThat(rs.next()).isFalse();
+        }
+      }
+
+      // Test with single parameter multiple times (re-use prepared statement)
+      try (var pst = conn.prepareStatement("SELECT FROM TestAsync WHERE id = ?")) {
+        pst.setString(1, "async1");
+        try (var rs = pst.executeQuery()) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("name")).isEqualTo("First");
+        }
+
+        pst.setString(1, "async2");
+        try (var rs = pst.executeQuery()) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("name")).isEqualTo("Second");
+        }
+      }
+    }
+  }
+
   @Test
   void arrayOfFloatsPropertyRoundTrip() throws SQLException, ClassNotFoundException {
     try (var conn = getConnection()) {

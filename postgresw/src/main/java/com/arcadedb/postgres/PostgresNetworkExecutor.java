@@ -233,10 +233,13 @@ public class PostgresNetworkExecutor extends Thread {
     writeReadyForQueryMessage();
   }
 
-  private void flushCommand() {
+  private void flushCommand() throws IOException {
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: flush (thread=%s)", Thread.currentThread().getId());
-    writeReadyForQueryMessage();
+    // Flush message does NOT generate any response according to PostgreSQL protocol.
+    // It just forces the backend to deliver any data pending in its output buffers.
+    // See: https://www.postgresql.org/docs/current/protocol-message-formats.html
+    channel.flush();
   }
 
   private void closeCommand() throws IOException {
@@ -283,14 +286,32 @@ public class PostgresNetworkExecutor extends Thread {
           portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
           portal.columns = getColumns(portal.cachedResultSet);
           writeRowDescription(portal.columns);
+          portal.rowDescriptionSent = true;
         } else
           writeNoData();
       } else {
-        if (portal.columns != null)
+        if (portal.columns != null) {
           writeRowDescription(portal.columns);
+          portal.rowDescriptionSent = true;
+        }
       }
     } else if (type == 'S') {
-      writeNoData();
+      // Describe Statement: send ParameterDescription followed by RowDescription/NoData
+      // This tells the client how many parameters the prepared statement expects
+      writeParameterDescription(portal);
+
+      // Now send RowDescription or NoData
+      // For SELECT queries, we need to determine the columns from the type schema
+      if (portal.isExpectingResult && portal.columns == null) {
+        portal.columns = getColumnsFromQuerySchema(portal.query);
+      }
+
+      if (portal.columns != null && !portal.columns.isEmpty()) {
+        writeRowDescription(portal.columns);
+        portal.rowDescriptionSent = true;
+      } else {
+        writeNoData();
+      }
     } else
       throw new PostgresProtocolException("Unexpected describe type '" + type + "'");
   }
@@ -328,23 +349,40 @@ public class PostgresNetworkExecutor extends Thread {
           portal.executed = true;
           if (portal.isExpectingResult) {
             portal.cachedResultSet = browseAndCacheResultSet(resultSet, limit);
-            portal.columns = getColumns(portal.cachedResultSet);
-            writeRowDescription(portal.columns);
+            // Only send RowDescription if not already sent during DESCRIBE
+            // But always use columns from actual result for DataRows consistency
+            if (!portal.rowDescriptionSent) {
+              portal.columns = getColumns(portal.cachedResultSet);
+              writeRowDescription(portal.columns);
+              portal.rowDescriptionSent = true;
+            }
           }
         }
 
         if (portal.isExpectingResult) {
-          if (portal.columns == null)
-            portal.columns = getColumns(portal.cachedResultSet);
+          // Always use columns from actual result to ensure DataRows match
+          final Map<String, PostgresType> dataRowColumns = getColumns(portal.cachedResultSet);
 
-          writeDataRows(portal.cachedResultSet, portal.columns);
+          // Verify column count matches what was sent in RowDescription
+          if (portal.columns != null && portal.columns.size() != dataRowColumns.size()) {
+            // Column count mismatch - use the original columns from DESCRIBE
+            // This can happen if sample query returned different properties than actual query
+            if (DEBUG)
+              LogManager.instance().log(this, Level.WARNING,
+                  "PSQL: Column count mismatch - RowDesc=%d, DataRow=%d (thread=%s)",
+                  portal.columns.size(), dataRowColumns.size(), Thread.currentThread().threadId());
+          }
+
+          // Use the columns that were sent in RowDescription for consistency
+          final Map<String, PostgresType> columnsToUse = portal.columns != null ? portal.columns : dataRowColumns;
+          writeDataRows(portal.cachedResultSet, columnsToUse);
           writeCommandComplete(portal.query, portal.cachedResultSet == null ? 0 : portal.cachedResultSet.size());
         } else
           writeNoData();
       }
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
     } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
@@ -402,7 +440,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + e.getCause().getMessage(), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
     } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), "XX000");
@@ -502,6 +540,87 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     return columns;
+  }
+
+  /**
+   * Extract column schema from a SELECT query by parsing the type name and querying for a sample row.
+   * This is used during DESCRIBE Statement to return RowDescription before the query is executed.
+   * ArcadeDB is schema-less so we need to query actual data to discover dynamically-added properties.
+   */
+  private Map<String, PostgresType> getColumnsFromQuerySchema(final String query) {
+    if (query == null || query.isEmpty()) {
+      return null;
+    }
+
+    // Try to extract the type name from the query
+    // Patterns: "SELECT FROM TypeName", "SELECT * FROM TypeName", "SELECT ... FROM TypeName"
+    final String upperQuery = query.toUpperCase();
+    final int fromIndex = upperQuery.indexOf(" FROM ");
+    if (fromIndex < 0) {
+      return null;
+    }
+
+    String afterFrom = query.substring(fromIndex + 6).trim();
+
+    // Extract type name (ends at WHERE, LIMIT, ORDER, or end of string)
+    String typeName = afterFrom;
+    for (String terminator : new String[]{" WHERE ", " LIMIT ", " ORDER ", " GROUP ", ";"}) {
+      final int idx = typeName.toUpperCase().indexOf(terminator);
+      if (idx > 0) {
+        typeName = typeName.substring(0, idx);
+      }
+    }
+    typeName = typeName.trim();
+
+    // Skip schema: prefix if present
+    if (typeName.toLowerCase().startsWith("schema:")) {
+      return null; // Schema queries have different structure
+    }
+
+    try {
+      // First verify the type exists
+      final DocumentType docType = database.getSchema().getType(typeName);
+      if (docType == null) {
+        return null;
+      }
+
+      // Query for a sample row to discover all properties (including dynamically-added ones)
+      // Use LIMIT 1 to minimize overhead
+      final String sampleQuery = "SELECT FROM " + typeName + " LIMIT 1";
+      final ResultSet resultSet = database.query("sql", sampleQuery, server.getConfiguration());
+      final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1);
+
+      if (!sampleRows.isEmpty()) {
+        // Use the sample row to discover columns
+        return getColumns(sampleRows);
+      }
+
+      // If no rows exist, fall back to schema-defined properties
+      final Map<String, PostgresType> columns = new LinkedHashMap<>();
+
+      // Add system properties first (these are returned for document/vertex types)
+      columns.put(RID_PROPERTY, PostgresType.VARCHAR);
+      columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
+      columns.put(CAT_PROPERTY, PostgresType.CHAR);
+
+      // Add all defined properties from the type
+      for (final String propName : docType.getPropertyNames()) {
+        final com.arcadedb.schema.Property prop = docType.getProperty(propName);
+        if (prop != null && prop.getType() != null) {
+          columns.put(propName, PostgresType.getTypeFromArcade(prop.getType()));
+        } else {
+          columns.put(propName, PostgresType.VARCHAR);
+        }
+      }
+
+      return columns;
+
+    } catch (Exception e) {
+      if (DEBUG)
+        LogManager.instance().log(this, Level.WARNING, "PSQL: failed to get columns from schema for query '%s': %s",
+            query, e.getMessage());
+      return null;
+    }
   }
 
   private void writeRowDescription(final Map<String, PostgresType> columns) {
@@ -618,7 +737,13 @@ public class PostgresNetworkExecutor extends Thread {
       final String portalName = readString();
       final String sourcePreparedStatement = readString();
 
-      final PostgresPortal portal = getPortal(portalName, false);
+      // Look up the prepared statement (stored during PARSE)
+      // The portal name may be different (often empty for unnamed portal)
+      PostgresPortal portal = getPortal(sourcePreparedStatement, false);
+      if (portal == null) {
+        // Try with portal name as fallback for backwards compatibility
+        portal = getPortal(portalName, false);
+      }
       if (portal == null) {
         writeMessage("bind complete", null, '2', 4);
         return;
@@ -630,6 +755,9 @@ public class PostgresNetworkExecutor extends Thread {
                 Thread.currentThread().getId());
 
       final int paramFormatCount = channel.readShort();
+      if (DEBUG)
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind paramFormatCount=%d (thread=%s)",
+            paramFormatCount, Thread.currentThread().getId());
       if (paramFormatCount > 0) {
         portal.parameterFormats = new ArrayList<>(paramFormatCount);
         for (int i = 0; i < paramFormatCount; i++) {
@@ -639,12 +767,21 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       final int paramValuesCount = channel.readShort();
+      if (DEBUG)
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind paramValuesCount=%d (thread=%s)",
+            paramValuesCount, Thread.currentThread().getId());
       if (paramValuesCount > 0) {
         portal.parameterValues = new ArrayList<>(paramValuesCount);
         for (int i = 0; i < paramValuesCount; i++) {
+          if (DEBUG)
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().threadId());
           final long paramSize = channel.readUnsignedInt();
+          if (DEBUG)
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
           final byte[] paramValue = new byte[(int) paramSize];
           channel.readBytes(paramValue);
+          if (DEBUG)
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d value read (thread=%s)", i, Thread.currentThread().threadId());
 
           // Determine format code according to PostgreSQL protocol:
           // - If paramFormatCount == 0: all parameters use text format (0)
@@ -664,10 +801,17 @@ public class PostgresNetworkExecutor extends Thread {
               ? portal.parameterTypes.get(i)
               : 0L; // UNSPECIFIED type
 
+          if (DEBUG)
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind deserializing param %d typeCode=%d formatCode=%d (thread=%s)",
+                i, typeCode, formatCode, Thread.currentThread().getId());
           portal.parameterValues.add(PostgresType.deserialize(typeCode, formatCode, paramValue));
+          if (DEBUG)
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d deserialized (thread=%s)", i, Thread.currentThread().threadId());
         }
       }
 
+      if (DEBUG)
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind reading resultFormatCount (thread=%s)", Thread.currentThread().threadId());
       final int resultFormatCount = channel.readShort();
       if (resultFormatCount > 0) {
         portal.resultFormats = new ArrayList<>(resultFormatCount);
@@ -679,6 +823,16 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (errorInTransaction)
         return;
+
+      // Store the portal under the portal name (which may be empty for unnamed portal)
+      // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name
+      // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it
+      if (!portalName.equals(sourcePreparedStatement)) {
+        portals.put(portalName, portal);
+        if (DEBUG)
+          LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
+              portalName, Thread.currentThread().getId());
+      }
 
       writeMessage("bind complete", null, '2', 4);
 
@@ -704,12 +858,25 @@ public class PostgresNetworkExecutor extends Thread {
           final long param = channel.readUnsignedInt();
           portal.parameterTypes.add(param);
         }
+      } else {
+        // Client sent paramCount=0 (e.g., asyncpg, node-postgres)
+        // Detect $N placeholders in the query to determine actual parameter count
+        final int detectedParams = detectParameterPlaceholders(query.query);
+        if (detectedParams > 0) {
+          portal.parameterTypes = new ArrayList<>(detectedParams);
+          for (int i = 0; i < detectedParams; i++) {
+            // Use VARCHAR (OID 1043) as default type instead of 0 (unspecified)
+            // This prevents asyncpg from trying to introspect unknown types via pg_type
+            portal.parameterTypes.add((long) PostgresType.VARCHAR.code);
+          }
+        }
       }
 
+      final int actualParamCount = portal.parameterTypes != null ? portal.parameterTypes.size() : 0;
       if (DEBUG)
         LogManager.instance()
-            .log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d) (errorInTransaction=%s thread=%s)", portalName,
-                portal.query, paramCount, errorInTransaction, Thread.currentThread().getId());
+            .log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d, detected=%d) (errorInTransaction=%s thread=%s)",
+                portalName, portal.query, paramCount, actualParamCount, errorInTransaction, Thread.currentThread().threadId());
 
       if (errorInTransaction)
         return;
@@ -895,7 +1062,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       setErrorInTx();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + e.getCause().getMessage(), "42601");
+      writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), "42601");
     } catch (final Exception e) {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), "XX000");
@@ -1213,6 +1380,43 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void writeNoData() {
     writeMessage("no data", null, 'n', 4);
+  }
+
+  /**
+   * Writes ParameterDescription message ('t') describing the parameters of a prepared statement.
+   * This is required by the PostgreSQL extended query protocol for DESCRIBE 'S' (Statement).
+   */
+  private void writeParameterDescription(final PostgresPortal portal) {
+    final int paramCount = portal.parameterTypes != null ? portal.parameterTypes.size() : 0;
+    // Message format: 't' + int32 length + int16 param count + int32[] type OIDs
+    final int messageLength = 4 + 2 + (paramCount * 4);
+
+    writeMessage("parameter description", () -> {
+      channel.writeShort((short) paramCount);
+      if (portal.parameterTypes != null) {
+        for (final Long typeOid : portal.parameterTypes) {
+          channel.writeUnsignedInt(typeOid != null ? typeOid.intValue() : 0); // 0 = unspecified type
+        }
+      }
+    }, 't', messageLength);
+  }
+
+  /**
+   * Detects $N style parameter placeholders in a query and returns the count.
+   * PostgreSQL uses $1, $2, etc. for positional parameters.
+   * Returns the highest parameter number found (e.g., "$3" returns 3).
+   */
+  private int detectParameterPlaceholders(final String query) {
+    int maxParam = 0;
+    final Pattern pattern = Pattern.compile("\\$(\\d+)");
+    final Matcher matcher = pattern.matcher(query);
+    while (matcher.find()) {
+      final int paramNum = Integer.parseInt(matcher.group(1));
+      if (paramNum > maxParam) {
+        maxParam = paramNum;
+      }
+    }
+    return maxParam;
   }
 
   private PostgresPortal getPortal(final String name, final boolean remove) {
