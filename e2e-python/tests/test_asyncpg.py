@@ -85,6 +85,21 @@ async def connection():
         await conn.close()
 
 
+@pytest_asyncio.fixture(scope="module")
+async def test_type_setup():
+    """Create AsyncpgTest type once per module"""
+    params = get_connection_params(arcadedb)
+    conn = await asyncpg.connect(**params)
+    try:
+        # Create type (ignore error if already exists)
+        try:
+            await conn.execute("CREATE DOCUMENT TYPE AsyncpgTest")
+        except Exception:
+            pass  # Type may already exist from previous run
+    finally:
+        await conn.close()
+
+
 @pytest.mark.asyncio
 async def test_connection_fixture(connection):
     """Verify connection fixture works."""
@@ -109,3 +124,19 @@ async def test_simple_query(connection):
     assert isinstance(rows, list)
     # Schema should have at least some built-in types
     assert len(rows) > 0
+
+
+@pytest.mark.asyncio
+async def test_create_type_and_insert(connection, test_type_setup):
+    """Test 3: Create document type and insert data"""
+    # Insert test data
+    await connection.execute(
+        "INSERT INTO AsyncpgTest SET id = 'test1', name = 'Alice', value = 100"
+    )
+    await connection.execute(
+        "INSERT INTO AsyncpgTest SET id = 'test2', name = 'Bob', value = 200"
+    )
+
+    # Verify insertion
+    rows = await connection.fetch("SELECT FROM AsyncpgTest WHERE id IN ('test1', 'test2')")
+    assert len(rows) == 2
