@@ -646,9 +646,25 @@ public class PostgresNetworkExecutor extends Thread {
           final byte[] paramValue = new byte[(int) paramSize];
           channel.readBytes(paramValue);
 
-          portal.parameterValues.add(//
-              PostgresType.deserialize(portal.parameterTypes.get(i), portal.parameterFormats.get(i), paramValue)//
-          );
+          // Determine format code according to PostgreSQL protocol:
+          // - If paramFormatCount == 0: all parameters use text format (0)
+          // - If paramFormatCount == 1: all parameters use that single format code
+          // - Otherwise: each parameter uses its corresponding format code
+          final int formatCode;
+          if (portal.parameterFormats == null || portal.parameterFormats.isEmpty()) {
+            formatCode = 0; // Default to text format
+          } else if (portal.parameterFormats.size() == 1) {
+            formatCode = portal.parameterFormats.get(0); // Single format for all
+          } else {
+            formatCode = portal.parameterFormats.get(i); // Per-parameter format
+          }
+
+          // Determine type code - use UNSPECIFIED (0) if not declared in PARSE
+          final long typeCode = (portal.parameterTypes != null && i < portal.parameterTypes.size())
+              ? portal.parameterTypes.get(i)
+              : 0L; // UNSPECIFIED type
+
+          portal.parameterValues.add(PostgresType.deserialize(typeCode, formatCode, paramValue));
         }
       }
 

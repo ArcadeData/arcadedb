@@ -734,6 +734,34 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/1630">...</a>
+   * "Error on parsing bind message: null" when using node-postgres driver
+   *
+   * This test verifies that parameterized SELECT queries work correctly.
+   */
+  @Test
+  void selectWithParameterizedQuery() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE User");
+        st.execute("INSERT INTO User SET id = 'test', name = 'Test User'");
+        st.execute("INSERT INTO User SET id = 'other', name = 'Other User'");
+      }
+
+      // This is similar to the node-postgres query: pool.query('select from User where id=$1',['test'])
+      try (var pst = conn.prepareStatement("SELECT FROM User WHERE id = ?")) {
+        pst.setString(1, "test");
+        try (var rs = pst.executeQuery()) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("id")).isEqualTo("test");
+          assertThat(rs.getString("name")).isEqualTo("Test User");
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
+
   @Test
   void arrayOfFloatsPropertyRoundTrip() throws SQLException, ClassNotFoundException {
     try (var conn = getConnection()) {
