@@ -140,3 +140,67 @@ async def test_create_type_and_insert(connection, test_type_setup):
     # Verify insertion
     rows = await connection.fetch("SELECT FROM AsyncpgTest WHERE id IN ('test1', 'test2')")
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_parameterized_select(connection, test_type_setup):
+    """Test 4: Parameterized SELECT query (Issue #1630)
+
+    This test verifies the fix for bind message parsing issues with asyncpg.
+    Related: https://github.com/ArcadeData/arcadedb/issues/1630
+    """
+    # Ensure test data exists
+    await connection.execute(
+        "INSERT INTO AsyncpgTest SET id = 'param_test1', name = 'Alice', value = 100"
+    )
+
+    # This is the key test - parameterized query with $1 placeholder
+    rows = await connection.fetch(
+        "SELECT FROM AsyncpgTest WHERE id = $1",
+        "param_test1"
+    )
+
+    assert len(rows) == 1
+    # Verify we got the right record
+    row = rows[0]
+    assert 'Alice' in str(row)
+
+
+@pytest.mark.asyncio
+async def test_multiple_parameters(connection, test_type_setup):
+    """Test 5: Query with multiple parameters"""
+    # Ensure test data exists
+    await connection.execute(
+        "INSERT INTO AsyncpgTest SET id = 'multi_param1', name = 'Alice', value = 100"
+    )
+
+    # Note: Using strings for all params since ArcadeDB declares VARCHAR for all param types
+    rows = await connection.fetch(
+        "SELECT FROM AsyncpgTest WHERE name = $1 AND value = $2",
+        "Alice", "100"
+    )
+
+    assert len(rows) >= 1
+    # Verify at least one row matches our criteria
+    assert any('Alice' in str(row) for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_parameterized_insert(connection, test_type_setup):
+    """Test 6: INSERT with parameters"""
+    # Note: Using strings for all params since ArcadeDB declares VARCHAR for all param types
+    await connection.execute(
+        "INSERT INTO AsyncpgTest SET id = $1, name = $2, value = $3",
+        "test_param_insert", "Charlie", "300"
+    )
+
+    # Verify insertion
+    rows = await connection.fetch(
+        "SELECT FROM AsyncpgTest WHERE id = $1",
+        "test_param_insert"
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert 'Charlie' in str(row)
+    assert '300' in str(row)
