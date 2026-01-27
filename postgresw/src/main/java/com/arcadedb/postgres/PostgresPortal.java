@@ -34,9 +34,10 @@ public class PostgresPortal {
   public List<Integer>             resultFormats;
   public List<Result>              cachedResultSet;
   public Map<String, PostgresType> columns;
-  public boolean                   ignoreExecution = false;
+  public boolean                   ignoreExecution      = false;
   public boolean                   isExpectingResult;
-  public boolean                   executed        = false;
+  public boolean                   executed             = false;
+  public boolean                   rowDescriptionSent   = false;
 
   public PostgresPortal(final String query, String language) {
     this.query = query;
