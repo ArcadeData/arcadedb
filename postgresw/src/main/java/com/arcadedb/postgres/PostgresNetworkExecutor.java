@@ -414,7 +414,7 @@ public class PostgresNetworkExecutor extends Thread {
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
 
       final ResultSet resultSet;
-      if (query.query.startsWith("SET ")) {
+      if (query.query.toUpperCase(Locale.ENGLISH).startsWith("SET ")) {
         setConfiguration(query.query);
         resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
       } else if (query.query.equals("SELECT VERSION()"))
@@ -479,7 +479,7 @@ public class PostgresNetworkExecutor extends Thread {
   private Object[] getParams(PostgresPortal portal) {
     Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
 
-    if (portal.language.equals("cypher")) {
+    if (portal.language.equals("cypher") || portal.language.equals("opencypher")) {
       Object[] parametersCypher = new Object[parameters.length * 2];
       for (int i = 0; i < parameters.length; i++) {
         parametersCypher[i * 2] = "" + (i + 1);
@@ -1070,10 +1070,21 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void setConfiguration(final String query) {
-    final String q = query.substring("SET ".length());
+    final int setLength = "SET ".length();
+    // Use original query to preserve case of values
+    final String q = query.substring(setLength);
+
+    // Try to split by either '=' or ' TO ' (case-insensitive)
     String[] parts = q.split("=");
-    if (parts.length < 2)
-      parts = q.split(" TO ");
+    if (parts.length < 2) {
+      // Try case-insensitive split for " TO "
+      parts = q.split("(?i)\\s+TO\\s+");
+    }
+
+    if (parts.length < 2) {
+      LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", query);
+      return;
+    }
 
     parts[0] = parts[0].trim();
     parts[1] = parts[1].trim();
@@ -1081,14 +1092,16 @@ public class PostgresNetworkExecutor extends Thread {
     if (parts[1].startsWith("'") || parts[1].startsWith("\""))
       parts[1] = parts[1].substring(1, parts[1].length() - 1);
 
-    if (parts[0].equals("datestyle")) {
-      if (parts[1].equals("ISO"))
+    // Use case-insensitive comparison for parameter names
+    final String paramName = parts[0].toLowerCase(Locale.ENGLISH);
+    if (paramName.equals("datestyle")) {
+      if (parts[1].equalsIgnoreCase("ISO"))
         database.getSchema().setDateTimeFormat(DateUtils.DATE_TIME_ISO_8601_FORMAT);
       else
         LogManager.instance().log(this, Level.INFO, "datestyle '%s' not supported", parts[1]);
     }
 
-    connectionProperties.put(parts[0], parts[1]);
+    connectionProperties.put(paramName, parts[1]);
   }
 
   private void setEmptyResultSet(final PostgresPortal portal) {
