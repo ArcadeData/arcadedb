@@ -854,6 +854,98 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Test for GitHub issue #1582 - UNWIND with @rid projection using STUDIO serializer
+   * This is the specific case that affects Studio web UI which uses the "studio" serializer.
+   * The bug: Studio serializer was deduplicating records based on RID, causing UNWIND to return only 1 record.
+   */
+  @Test
+  void testUnwindWithRidProjectionWithStudioSerializer_Issue1582() throws Exception {
+    final String className = "TestUnwindRidStudio1582";
+
+    testEachServer((serverIndex) -> {
+      // Setup: Create test type with list property and insert document
+      HttpURLConnection setupConnection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      setupConnection.setRequestMethod("POST");
+      setupConnection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(setupConnection, "sql", "CREATE DOCUMENT TYPE " + className + " IF NOT EXISTS", null, new HashMap<>());
+      setupConnection.getInputStream().close();
+      setupConnection.disconnect();
+
+      setupConnection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      setupConnection.setRequestMethod("POST");
+      setupConnection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(setupConnection, "sql", "INSERT INTO " + className + " SET lst = [1,2,3]", null, new HashMap<>());
+      setupConnection.getInputStream().close();
+      setupConnection.disconnect();
+
+      // Test: SELECT @rid FROM doc UNWIND lst with "studio" serializer - should return 3 results
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, "sql", "SELECT @rid FROM " + className + " UNWIND lst", "studio", new HashMap<>());
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        assertThat(connection.getResponseMessage()).isEqualTo("OK");
+
+        final JSONObject responseJson = new JSONObject(response);
+        final JSONObject result = responseJson.getJSONObject("result");
+        final JSONArray records = result.getJSONArray("records");
+
+        // Should return 3 records (one per list element), NOT just 1
+        // This was the bug: studio serializer was deduplicating based on RID
+        assertThat(records.length()).as("SELECT @rid FROM doc UNWIND lst with studio serializer should return 3 results").isEqualTo(3);
+
+        // Each result should have @rid
+        for (int i = 0; i < records.length(); i++) {
+          assertThat(records.getJSONObject(i).has("@rid")).as("Each result should have @rid").isTrue();
+        }
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // Also test with lst unwound field included in projection
+      final HttpURLConnection connection2 = (HttpURLConnection) new URL(
+          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+
+      connection2.setRequestMethod("POST");
+      connection2.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection2, "sql", "SELECT @rid, lst FROM " + className + " UNWIND lst", "studio", new HashMap<>());
+
+      try {
+        final String response2 = readResponse(connection2);
+        final JSONObject responseJson2 = new JSONObject(response2);
+        final JSONObject result2 = responseJson2.getJSONObject("result");
+        final JSONArray records2 = result2.getJSONArray("records");
+
+        // Should return 3 records with different lst values
+        assertThat(records2.length()).as("SELECT @rid, lst FROM doc UNWIND lst with studio serializer should return 3 results").isEqualTo(3);
+
+        // Verify the lst values are different (unwound)
+        Set<Integer> lstValues = new HashSet<>();
+        for (int i = 0; i < records2.length(); i++) {
+          lstValues.add(records2.getJSONObject(i).getInt("lst"));
+        }
+        assertThat(lstValues).as("UNWIND should produce different values for lst").containsExactlyInAnyOrder(1, 2, 3);
+
+      } finally {
+        connection2.disconnect();
+      }
+    });
+  }
+
   @Override
   protected void populateDatabase() {
     final Database database = getDatabase(0);
