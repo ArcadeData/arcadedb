@@ -49,19 +49,9 @@ public class CypherQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
-    ArcadeCypher cypher = arcadeGraph.cypher(query);
-
-    return new AnalyzedQuery() {
-      @Override
-      public boolean isIdempotent() {
-        return false;
-      }
-
-      @Override
-      public boolean isDDL() {
-        return false;
-      }
-    };
+    // Use parse() which compiles the Cypher to Gremlin and analyzes the traversal steps
+    // to determine if the query is read-only (checking for Mutating steps)
+    return arcadeGraph.cypher(query).parse();
   }
 
   @Override

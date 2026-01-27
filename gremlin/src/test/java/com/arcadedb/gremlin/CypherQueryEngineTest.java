@@ -19,7 +19,9 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -196,6 +198,42 @@ class CypherQueryEngineTest {
           assertThat(columns.get(2)).isEqualTo("foo.field1");
         }
       });
+    } finally {
+      graph.drop();
+    }
+  }
+
+  /**
+   * Test that CypherQueryEngine.analyze() properly analyzes queries for idempotency.
+   * This tests that the engine delegates to ArcadeCypher.parse() which checks for
+   * Mutating steps in the translated Gremlin traversal.
+   */
+  @Test
+  void analyzeQueryIdempotency() {
+    final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
+    try (final BasicDatabase database = graph.getDatabase()) {
+      final QueryEngine cypherEngine = ((Database) database).getQueryEngine("cypher");
+
+      // Read-only queries should be idempotent
+      QueryEngine.AnalyzedQuery readOnlyAnalysis = cypherEngine.analyze("MATCH (n:Person) RETURN n");
+      assertThat(readOnlyAnalysis.isIdempotent()).isTrue();
+      assertThat(readOnlyAnalysis.isDDL()).isFalse();
+
+      // Read-only query with WHERE clause should also be idempotent
+      QueryEngine.AnalyzedQuery readOnlyWithWhereAnalysis = cypherEngine.analyze("MATCH (p:Person) WHERE p.age >= 25 RETURN p.name");
+      assertThat(readOnlyWithWhereAnalysis.isIdempotent()).isTrue();
+      assertThat(readOnlyWithWhereAnalysis.isDDL()).isFalse();
+
+      // Queries with CREATE should NOT be idempotent
+      QueryEngine.AnalyzedQuery createAnalysis = cypherEngine.analyze("CREATE (n:Person) RETURN n");
+      assertThat(createAnalysis.isIdempotent()).isFalse();
+      assertThat(createAnalysis.isDDL()).isFalse();
+
+      // Cypher doesn't have DDL statements (schema operations)
+      // isDDL() should always return false for Cypher queries
+      assertThat(readOnlyAnalysis.isDDL()).isFalse();
+      assertThat(createAnalysis.isDDL()).isFalse();
+
     } finally {
       graph.drop();
     }
