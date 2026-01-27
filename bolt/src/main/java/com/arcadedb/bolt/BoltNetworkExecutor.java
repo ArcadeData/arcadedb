@@ -80,7 +80,11 @@ public class BoltNetworkExecutor extends Thread {
   // Transaction state
   private boolean explicitTransaction = false;
 
-  // Current result set for streaming
+  /**
+   * Current result set for streaming results.
+   * Thread-safety: This class is designed to handle a single connection in a dedicated thread.
+   * All state variables are accessed only by the executor thread and do not require synchronization.
+   */
   private ResultSet      currentResultSet;
   private List<String>   currentFields;
   private Result         firstResult; // Buffered first result for field name extraction
@@ -275,16 +279,7 @@ public class BoltNetworkExecutor extends Thread {
 
     // Try to authenticate
     if ("basic".equals(scheme) && principal != null && credentials != null) {
-      try {
-        user = server.getSecurity().authenticate(principal, credentials, databaseName);
-        if (user == null) {
-          sendFailure(BoltException.AUTHENTICATION_ERROR, "Invalid credentials");
-          state = State.FAILED;
-          return;
-        }
-      } catch (final ServerSecurityException e) {
-        sendFailure(BoltException.AUTHENTICATION_ERROR, e.getMessage());
-        state = State.FAILED;
+      if (!authenticateUser(principal, credentials)) {
         return;
       }
     } else if ("none".equals(scheme)) {
@@ -294,16 +289,7 @@ public class BoltNetworkExecutor extends Thread {
       return;
     } else if (principal != null && credentials != null) {
       // Try basic auth even without explicit scheme
-      try {
-        user = server.getSecurity().authenticate(principal, credentials, databaseName);
-        if (user == null) {
-          sendFailure(BoltException.AUTHENTICATION_ERROR, "Invalid credentials");
-          state = State.FAILED;
-          return;
-        }
-      } catch (final ServerSecurityException e) {
-        sendFailure(BoltException.AUTHENTICATION_ERROR, e.getMessage());
-        state = State.FAILED;
+      if (!authenticateUser(principal, credentials)) {
         return;
       }
     }
@@ -331,19 +317,8 @@ public class BoltNetworkExecutor extends Thread {
     final String principal = message.getPrincipal();
     final String credentials = message.getCredentials();
 
-    if (principal != null && credentials != null) {
-      try {
-        user = server.getSecurity().authenticate(principal, credentials, databaseName);
-        if (user == null) {
-          sendFailure(BoltException.AUTHENTICATION_ERROR, "Invalid credentials");
-          state = State.FAILED;
-          return;
-        }
-      } catch (final ServerSecurityException e) {
-        sendFailure(BoltException.AUTHENTICATION_ERROR, e.getMessage());
-        state = State.FAILED;
-        return;
-      }
+    if (!authenticateUser(principal, credentials)) {
+      return;
     }
 
     sendSuccess(Map.of());
@@ -370,6 +345,15 @@ public class BoltNetworkExecutor extends Thread {
    * Handle RESET message - reset to initial state.
    */
   private void handleReset() throws IOException {
+    // Close any open result set
+    if (currentResultSet != null) {
+      try {
+        currentResultSet.close();
+      } catch (final Exception e) {
+        // Ignore
+      }
+    }
+
     // Rollback any open transaction
     if (explicitTransaction && database != null) {
       try {
@@ -435,7 +419,8 @@ public class BoltNetworkExecutor extends Thread {
       // Build success response with query metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
       metadata.put("fields", currentFields);
-      metadata.put("t_first", 0L); // Time to first record (placeholder)
+      // TODO: Implement actual time to first record calculation for accurate performance monitoring
+      metadata.put("t_first", 0L);
 
       sendSuccess(metadata);
       state = explicitTransaction ? State.TX_STREAMING : State.STREAMING;
@@ -508,8 +493,15 @@ public class BoltNetworkExecutor extends Thread {
       // Build success metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
       if (!hasMore) {
-        metadata.put("type", "r"); // Read-only query type
-        metadata.put("t_last", 0L); // Time to last record
+        // TODO: Determine query type dynamically (r=read, w=write, rw=read-write, s=schema)
+        metadata.put("type", "r");
+        // TODO: Implement actual time to last record calculation for accurate performance metrics
+        metadata.put("t_last", 0L);
+        try {
+          currentResultSet.close();
+        } catch (final Exception e) {
+          // Ignore
+        }
         currentResultSet = null;
         currentFields = null;
         firstResult = null;
@@ -545,6 +537,11 @@ public class BoltNetworkExecutor extends Thread {
     if (currentResultSet != null) {
       while (currentResultSet.hasNext()) {
         currentResultSet.next();
+      }
+      try {
+        currentResultSet.close();
+      } catch (final Exception e) {
+        // Ignore
       }
     }
 
@@ -646,6 +643,13 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     try {
+      if (currentResultSet != null) {
+        try {
+          currentResultSet.close();
+        } catch (final Exception e) {
+          // Ignore
+        }
+      }
       if (database != null) {
         database.rollback();
       }
@@ -678,7 +682,7 @@ public class BoltNetworkExecutor extends Thread {
     final String address = host + ":" + port;
 
     final Map<String, Object> rt = new LinkedHashMap<>();
-    rt.put("ttl", 300L); // 5 minute TTL
+    rt.put("ttl", GlobalConfiguration.BOLT_ROUTING_TTL.getValueAsLong());
     rt.put("db", message.getDatabase() != null ? message.getDatabase() : databaseName);
 
     final List<Map<String, Object>> servers = new ArrayList<>();
@@ -715,7 +719,8 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     if (databaseName == null || databaseName.isEmpty()) {
-      // Try to get default database or first available
+      // TODO: Consider making default database selection configurable or requiring explicit database name
+      // to avoid unpredictable behavior in multi-database environments
       final Collection<String> databases = server.getDatabaseNames();
       if (databases.isEmpty()) {
         sendFailure(BoltException.DATABASE_ERROR, "No database available");
@@ -785,6 +790,34 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
+   * Authenticate user with provided credentials.
+   *
+   * @param principal the username
+   * @param credentials the password
+   * @return true if authentication succeeded, false otherwise (failure already sent)
+   * @throws IOException if sending failure message fails
+   */
+  private boolean authenticateUser(final String principal, final String credentials) throws IOException {
+    if (principal == null || credentials == null) {
+      return false;
+    }
+
+    try {
+      user = server.getSecurity().authenticate(principal, credentials, databaseName);
+      if (user == null) {
+        sendFailure(BoltException.AUTHENTICATION_ERROR, "Invalid credentials");
+        state = State.FAILED;
+        return false;
+      }
+      return true;
+    } catch (final ServerSecurityException e) {
+      sendFailure(BoltException.AUTHENTICATION_ERROR, e.getMessage());
+      state = State.FAILED;
+      return false;
+    }
+  }
+
+  /**
    * Send a SUCCESS response message.
    */
   private void sendSuccess(final Map<String, Object> metadata) throws IOException {
@@ -833,8 +866,26 @@ public class BoltNetworkExecutor extends Thread {
    */
   private void cleanup() {
     try {
+      if (currentResultSet != null) {
+        currentResultSet.close();
+        currentResultSet = null;
+      }
+    } catch (final Exception e) {
+      // Ignore
+    }
+
+    try {
       if (explicitTransaction && database != null) {
         database.rollback();
+      }
+    } catch (final Exception e) {
+      // Ignore
+    }
+
+    try {
+      if (database != null) {
+        database.close();
+        database = null;
       }
     } catch (final Exception e) {
       // Ignore

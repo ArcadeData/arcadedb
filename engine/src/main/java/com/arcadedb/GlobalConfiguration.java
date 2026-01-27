@@ -518,6 +518,9 @@ public enum GlobalConfiguration {
   BOLT_DEBUG("arcadedb.bolt.debug", SCOPE.SERVER,
       "Enables the printing of BOLT protocol to the console. Default is false", Boolean.class, false),
 
+  BOLT_ROUTING_TTL("arcadedb.bolt.routing.ttl", SCOPE.SERVER,
+      "Time-to-live (in seconds) for BOLT routing table entries. Default is 300 (5 minutes)", Long.class, 300L),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),

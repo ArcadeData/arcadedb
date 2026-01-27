@@ -22,13 +22,14 @@ import com.arcadedb.exception.ArcadeDBException;
 
 /**
  * Exception for BOLT protocol errors.
+ * Error codes are defined in {@link BoltErrorCodes}.
  */
 public class BoltException extends ArcadeDBException {
   private final String errorCode;
 
   public BoltException(final String message) {
     super(message);
-    this.errorCode = "Neo.DatabaseError.General.UnknownError";
+    this.errorCode = BoltErrorCodes.DATABASE_ERROR;
   }
 
   public BoltException(final String errorCode, final String message) {
@@ -38,7 +39,7 @@ public class BoltException extends ArcadeDBException {
 
   public BoltException(final String message, final Throwable cause) {
     super(message, cause);
-    this.errorCode = "Neo.DatabaseError.General.UnknownError";
+    this.errorCode = BoltErrorCodes.DATABASE_ERROR;
   }
 
   public BoltException(final String errorCode, final String message, final Throwable cause) {
@@ -50,12 +51,26 @@ public class BoltException extends ArcadeDBException {
     return errorCode;
   }
 
-  // Common Neo4j error codes
-  public static final String AUTHENTICATION_ERROR = "Neo.ClientError.Security.Unauthorized";
-  public static final String SYNTAX_ERROR         = "Neo.ClientError.Statement.SyntaxError";
-  public static final String SEMANTIC_ERROR       = "Neo.ClientError.Statement.SemanticError";
-  public static final String DATABASE_ERROR       = "Neo.DatabaseError.General.UnknownError";
-  public static final String TRANSACTION_ERROR    = "Neo.ClientError.Transaction.TransactionNotFound";
-  public static final String FORBIDDEN_ERROR      = "Neo.ClientError.Security.Forbidden";
-  public static final String PROTOCOL_ERROR       = "Neo.ClientError.Request.Invalid";
+  // Deprecated: Use BoltErrorCodes constants instead
+  /** @deprecated Use {@link BoltErrorCodes#AUTHENTICATION_ERROR} */
+  @Deprecated
+  public static final String AUTHENTICATION_ERROR = BoltErrorCodes.AUTHENTICATION_ERROR;
+  /** @deprecated Use {@link BoltErrorCodes#SYNTAX_ERROR} */
+  @Deprecated
+  public static final String SYNTAX_ERROR = BoltErrorCodes.SYNTAX_ERROR;
+  /** @deprecated Use {@link BoltErrorCodes#SEMANTIC_ERROR} */
+  @Deprecated
+  public static final String SEMANTIC_ERROR = BoltErrorCodes.SEMANTIC_ERROR;
+  /** @deprecated Use {@link BoltErrorCodes#DATABASE_ERROR} */
+  @Deprecated
+  public static final String DATABASE_ERROR = BoltErrorCodes.DATABASE_ERROR;
+  /** @deprecated Use {@link BoltErrorCodes#TRANSACTION_ERROR} */
+  @Deprecated
+  public static final String TRANSACTION_ERROR = BoltErrorCodes.TRANSACTION_ERROR;
+  /** @deprecated Use {@link BoltErrorCodes#FORBIDDEN_ERROR} */
+  @Deprecated
+  public static final String FORBIDDEN_ERROR = BoltErrorCodes.FORBIDDEN_ERROR;
+  /** @deprecated Use {@link BoltErrorCodes#PROTOCOL_ERROR} */
+  @Deprecated
+  public static final String PROTOCOL_ERROR = BoltErrorCodes.PROTOCOL_ERROR;
 }

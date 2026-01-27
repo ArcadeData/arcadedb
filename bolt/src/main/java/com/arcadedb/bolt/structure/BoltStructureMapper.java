@@ -307,7 +307,12 @@ public class BoltStructureMapper {
     if (rid == null) {
       return -1;
     }
+    final int bucketId = rid.getBucketId();
+    // Validate bucket ID to prevent overflow (max 16 bits)
+    if (bucketId < 0 || bucketId > 0xFFFF) {
+      throw new IllegalArgumentException("Bucket ID out of range for BOLT ID conversion: " + bucketId);
+    }
     // Combine bucket ID (high bits) and position (low bits)
-    return ((long) rid.getBucketId() << 48) | (rid.getPosition() & 0xFFFFFFFFFFFFL);
+    return ((long) bucketId << 48) | (rid.getPosition() & 0xFFFFFFFFFFFFL);
   }
 }
