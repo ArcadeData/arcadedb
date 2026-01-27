@@ -162,6 +162,66 @@ public class OpenCypherMergeTest {
   }
 
   /**
+   * Test that MERGE with label only (no properties) finds existing node instead of creating duplicates.
+   * This is the pattern: MERGE (n:PIPELINE_CONFIG) ON CREATE SET n.pipelines = ["miaou"] ON MATCH SET n.pipelines = ["miaou"]
+   */
+  @Test
+  void testMergeLabelOnlyFindsExistingNode() {
+    database.getSchema().createVertexType("PIPELINE_CONFIG");
+
+    // First MERGE should create the node
+    database.transaction(() -> {
+      final ResultSet result = database.command("opencypher",
+          "MERGE (n:PIPELINE_CONFIG) ON CREATE SET n.pipelines = ['miaou'] ON MATCH SET n.pipelines = ['miaou'] RETURN n.pipelines as pipelines");
+      assertThat(result.hasNext()).isTrue();
+      result.next();
+    });
+
+    // Second MERGE should find the existing node, not create a duplicate
+    database.transaction(() -> {
+      final ResultSet result = database.command("opencypher",
+          "MERGE (n:PIPELINE_CONFIG) ON CREATE SET n.pipelines = ['miaou'] ON MATCH SET n.pipelines = ['miaou'] RETURN n.pipelines as pipelines");
+      assertThat(result.hasNext()).isTrue();
+      result.next();
+    });
+
+    // Verify only one node exists
+    final ResultSet verify = database.query("opencypher",
+        "MATCH (n:PIPELINE_CONFIG) RETURN n");
+    int count = 0;
+    while (verify.hasNext()) {
+      verify.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(1);
+  }
+
+  /**
+   * Test that MERGE with label only (no properties) correctly triggers ON CREATE SET on first call
+   * and ON MATCH SET on subsequent calls.
+   */
+  @Test
+  void testMergeLabelOnlyWithOnCreateAndOnMatchSet() {
+    database.getSchema().createVertexType("SINGLETON");
+
+    // First MERGE should create and apply ON CREATE SET
+    ResultSet result = database.command("opencypher",
+        "MERGE (n:SINGLETON) ON CREATE SET n.status = 'created', n.count = 1 ON MATCH SET n.status = 'matched', n.count = 2 RETURN n");
+    assertThat(result.hasNext()).isTrue();
+    Vertex v = (Vertex) result.next().getProperty("n");
+    assertThat(v.get("status")).isEqualTo("created");
+    assertThat(((Number) v.get("count")).intValue()).isEqualTo(1);
+
+    // Second MERGE should match and apply ON MATCH SET
+    result = database.command("opencypher",
+        "MERGE (n:SINGLETON) ON CREATE SET n.status = 'created', n.count = 1 ON MATCH SET n.status = 'matched', n.count = 2 RETURN n");
+    assertThat(result.hasNext()).isTrue();
+    v = (Vertex) result.next().getProperty("n");
+    assertThat(v.get("status")).isEqualTo("matched");
+    assertThat(((Number) v.get("count")).intValue()).isEqualTo(2);
+  }
+
+  /**
    * Test for issue #3217: Backticks in relationship types should be treated as escape characters,
    * not included in the relationship type name.
    */
