@@ -59,6 +59,12 @@ public class RedisNetworkExecutor extends Thread {
   private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
   private          DatabaseInternal    selectedDatabase = null;
 
+  /**
+   * Holds the resolved key and database from key resolution.
+   */
+  private record ResolvedKey(String key, DatabaseInternal database) {
+  }
+
   public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
     this.server = server;
@@ -255,18 +261,21 @@ public class RedisNetworkExecutor extends Thread {
     final String bucketName = (String) list.get(1);
 
     final int pos = bucketName.indexOf(".");
-    int deleted = 0;
+    final int[] deleted = {0};
 
     if (pos < 0) {
-      // Transient mode: delete from globalVariables
+      // Transient mode: delete from globalVariables atomically
       final DatabaseInternal database = (DatabaseInternal) server.getDatabase(bucketName);
-      for (int i = 2; i < list.size(); i++) {
-        final String key = (String) list.get(i);
-        if (database.getGlobalVariable(key) != null) {
-          database.setGlobalVariable(key, null);
-          ++deleted;
+      database.transaction(() -> {
+        for (int i = 2; i < list.size(); i++) {
+          final String key = (String) list.get(i);
+          // Use setGlobalVariable which atomically returns the previous value
+          final Object previous = database.setGlobalVariable(key, null);
+          if (previous != null) {
+            deleted[0]++;
+          }
         }
-      }
+      });
     } else {
       // Persistent mode: delete from database
       final String databaseName = bucketName.substring(0, pos);
@@ -276,7 +285,7 @@ public class RedisNetworkExecutor extends Thread {
 
       if (keyType.startsWith("#")) {
         new RID(database, keyType).getRecord().delete();
-        ++deleted;
+        deleted[0]++;
       } else {
         final Index index = database.getSchema().getIndexByName(keyType);
 
@@ -294,13 +303,13 @@ public class RedisNetworkExecutor extends Thread {
           final IndexCursor cursor = index.get(keys);
           if (cursor.hasNext()) {
             cursor.next().getRecord().delete();
-            ++deleted;
+            deleted[0]++;
           }
         }
       }
     }
     value.append(":");
-    value.append(deleted);
+    value.append(deleted[0]);
   }
 
   private void hExists(final List<Object> list) {
@@ -383,20 +392,22 @@ public class RedisNetworkExecutor extends Thread {
 
     // Check if transient mode: second argument is JSON (starts with '{')
     if (secondArg.startsWith("{")) {
-      // Transient mode: store JSON objects in globalVariables
+      // Transient mode: store JSON objects in globalVariables atomically
       final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
-      int stored = 0;
-      for (int i = 2; i < list.size(); i++) {
-        final JSONObject json = new JSONObject((String) list.get(i));
-        if (!json.has("id")) {
-          throw new RedisException("JSON object must have an 'id' field for transient storage");
+      final int[] stored = {0};
+      database.transaction(() -> {
+        for (int i = 2; i < list.size(); i++) {
+          final JSONObject json = new JSONObject((String) list.get(i));
+          if (!json.has("id")) {
+            throw new RedisException("JSON object must have an 'id' field for transient storage");
+          }
+          final String key = json.get("id").toString();
+          database.setGlobalVariable(key, json.toString());
+          stored[0]++;
         }
-        final String key = json.get("id").toString();
-        database.setGlobalVariable(key, json.toString());
-        stored++;
-      }
+      });
       value.append(":");
-      value.append(stored);
+      value.append(stored[0]);
     } else {
       // Persistent mode: store documents in database type
       final String typeName = secondArg;
@@ -469,9 +480,13 @@ public class RedisNetworkExecutor extends Thread {
 
   private void select(final List<Object> list) {
     final String dbName = (String) list.get(1);
-    this.selectedDatabase = (DatabaseInternal) server.getDatabase(dbName);
-    value.append("+");
-    value.append("OK");
+    try {
+      this.selectedDatabase = (DatabaseInternal) server.getDatabase(dbName);
+      value.append("+");
+      value.append("OK");
+    } catch (final Exception e) {
+      throw new RedisException("Database '" + dbName + "' not found");
+    }
   }
 
   /**
@@ -479,70 +494,64 @@ public class RedisNetworkExecutor extends Thread {
    * Priority: key prefix (dbname.key) > SELECT > default config > connection-local bucket.
    *
    * @param key the key which may contain a database prefix (e.g., "mydb.mykey")
-   * @return array of [resolvedKey, database] where database may be null if using local bucket
+   * @return ResolvedKey containing the resolved key and database (database may be null if using local bucket)
    */
-  private Object[] resolveKeyAndDatabase(final String key) {
+  private ResolvedKey resolveKeyAndDatabase(final String key) {
     // Check for database prefix (dbname.key)
     final int dotPos = key.indexOf('.');
     if (dotPos > 0) {
       final String dbName = key.substring(0, dotPos);
       final String actualKey = key.substring(dotPos + 1);
       try {
-        return new Object[]{actualKey, (DatabaseInternal) server.getDatabase(dbName)};
+        return new ResolvedKey(actualKey, (DatabaseInternal) server.getDatabase(dbName));
       } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE,
+            "Could not resolve database '%s' from key '%s'. Treating as a regular key. Error: %s", e, dbName, key,
+            e.getMessage());
         // Not a valid database prefix, treat as regular key
       }
     }
 
     // Use selected database (from SELECT command or default config)
-    return new Object[]{key, selectedDatabase};
+    return new ResolvedKey(key, selectedDatabase);
   }
 
   private Object getVariable(final String key) {
-    final Object[] resolved = resolveKeyAndDatabase(key);
-    final String actualKey = (String) resolved[0];
-    final DatabaseInternal db = (DatabaseInternal) resolved[1];
+    final ResolvedKey resolved = resolveKeyAndDatabase(key);
 
-    if (db != null) {
-      return db.getGlobalVariable(actualKey);
+    if (resolved.database() != null) {
+      return resolved.database().getGlobalVariable(resolved.key());
     }
-    return defaultBucket.get(actualKey);
+    return defaultBucket.get(resolved.key());
   }
 
   private void setVariable(final String key, final Object value) {
-    final Object[] resolved = resolveKeyAndDatabase(key);
-    final String actualKey = (String) resolved[0];
-    final DatabaseInternal db = (DatabaseInternal) resolved[1];
+    final ResolvedKey resolved = resolveKeyAndDatabase(key);
 
-    if (db != null) {
-      db.setGlobalVariable(actualKey, value);
+    if (resolved.database() != null) {
+      resolved.database().setGlobalVariable(resolved.key(), value);
     } else {
-      defaultBucket.put(actualKey, value);
+      defaultBucket.put(resolved.key(), value);
     }
   }
 
   private Object removeVariable(final String key) {
-    final Object[] resolved = resolveKeyAndDatabase(key);
-    final String actualKey = (String) resolved[0];
-    final DatabaseInternal db = (DatabaseInternal) resolved[1];
+    final ResolvedKey resolved = resolveKeyAndDatabase(key);
 
-    if (db != null) {
-      final Object oldValue = db.getGlobalVariable(actualKey);
-      db.setGlobalVariable(actualKey, null);
-      return oldValue;
+    if (resolved.database() != null) {
+      // Use setGlobalVariable which atomically returns the previous value
+      return resolved.database().setGlobalVariable(resolved.key(), null);
     }
-    return defaultBucket.remove(actualKey);
+    return defaultBucket.remove(resolved.key());
   }
 
   private boolean containsVariable(final String key) {
-    final Object[] resolved = resolveKeyAndDatabase(key);
-    final String actualKey = (String) resolved[0];
-    final DatabaseInternal db = (DatabaseInternal) resolved[1];
+    final ResolvedKey resolved = resolveKeyAndDatabase(key);
 
-    if (db != null) {
-      return db.getGlobalVariable(actualKey) != null;
+    if (resolved.database() != null) {
+      return resolved.database().getGlobalVariable(resolved.key()) != null;
     }
-    return defaultBucket.containsKey(actualKey);
+    return defaultBucket.containsKey(resolved.key());
   }
 
   private Object parseNext() throws IOException {
@@ -663,14 +672,13 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   /**
-   * Gets a record by RID, index, or from globalVariables (transient).
+   * Gets a record by RID or index.
    * Formats:
    * - bucketName = database, key = #rid -> get by RID
-   * - bucketName = database, key = id (not starting with #) -> get from globalVariables (transient)
    * - bucketName = database.indexName, key = value -> get by index
    *
-   * @return the record, or null if not found. For transient mode, returns null but the value
-   * can be retrieved via getTransientValue() if needed for special handling.
+   * @return the record, or null if not found
+   * @throws RedisException if key is not a RID when bucketName has no dot
    */
   private Record getRecord(final String bucketName, final String key) {
     final Record record;
@@ -682,9 +690,8 @@ public class RedisNetworkExecutor extends Thread {
         // BY RID
         record = new RID(database, key).asDocument();
       } else {
-        // TRANSIENT MODE: get from globalVariables
-        // Return null here - caller should use getTransientValue for the actual value
-        record = null;
+        throw new RedisException(
+            "Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. Example: #13:432");
       }
     } else {
       // BY INDEX

@@ -316,9 +316,8 @@ public class RedisQueryEngine implements QueryEngine {
       throw new CommandParsingException("GETDEL requires a key: GETDEL <key>");
     }
     final String key = parts.get(1);
-    final Object value = database.getGlobalVariable(key);
-    database.setGlobalVariable(key, null); // Setting to null removes the variable
-    return value;
+    // Use setGlobalVariable which atomically returns the previous value
+    return database.setGlobalVariable(key, null);
   }
 
   private int exists(final List<String> parts) {
