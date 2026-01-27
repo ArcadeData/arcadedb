@@ -23,6 +23,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerDatabase;
@@ -48,7 +49,8 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final JSONObject response = new JSONObject().put("user", user != null ? user.getName() : null)
                                                 .put("version", Constants.getVersion())
-                                                .put("serverName", httpServer.getServer().getServerName());
+                                                .put("serverName", httpServer.getServer().getServerName())
+                                                .put("languages", new QueryEngineManager().getAvailableLanguages());
 
     final String mode = getQueryParameter(exchange, "mode", "default");
 
