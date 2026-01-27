@@ -508,6 +508,16 @@ public enum GlobalConfiguration {
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
 
+  // BOLT (Neo4j)
+  BOLT_PORT("arcadedb.bolt.port", SCOPE.SERVER,
+      "TCP/IP port number used for incoming connections for BOLT plugin. Default is 7687", Integer.class, 7687),
+
+  BOLT_HOST("arcadedb.bolt.host", SCOPE.SERVER,
+      "TCP/IP host name used for incoming connections for BOLT plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+
+  BOLT_DEBUG("arcadedb.bolt.debug", SCOPE.SERVER,
+      "Enables the printing of BOLT protocol to the console. Default is false", Boolean.class, false),
+
   // REDIS
   REDIS_PORT("arcadedb.redis.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),
