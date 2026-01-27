@@ -443,13 +443,13 @@ public class BoltNetworkExecutor extends Thread {
       state = explicitTransaction ? State.TX_STREAMING : State.STREAMING;
 
     } catch (final CommandParsingException e) {
-      final String message = e.getMessage() != null ? e.getMessage() : "Query parsing error";
-      sendFailure(BoltException.SYNTAX_ERROR, message);
+      final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
+      sendFailure(BoltException.SYNTAX_ERROR, parseMsg);
       state = State.FAILED;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "BOLT query error", e);
-      final String message = e.getMessage() != null ? e.getMessage() : "Database error";
-      sendFailure(BoltException.DATABASE_ERROR, message);
+      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
+      sendFailure(BoltException.DATABASE_ERROR, errorMsg);
       state = State.FAILED;
     }
   }
@@ -536,8 +536,8 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "BOLT PULL error", e);
-      final String message = e.getMessage() != null ? e.getMessage() : "Error fetching records";
-      sendFailure(BoltException.DATABASE_ERROR, message);
+      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
+      sendFailure(BoltException.DATABASE_ERROR, errorMsg);
       state = State.FAILED;
     }
   }
@@ -545,7 +545,7 @@ public class BoltNetworkExecutor extends Thread {
   /**
    * Handle DISCARD message - discard remaining records.
    */
-  private void handleDiscard(final DiscardMessage message) throws IOException {
+  private void handleDiscard(final DiscardMessage discardMessage) throws IOException {
     if (state == State.FAILED) {
       sendIgnored();
       return;
@@ -583,7 +583,7 @@ public class BoltNetworkExecutor extends Thread {
   /**
    * Handle BEGIN message - start explicit transaction.
    */
-  private void handleBegin(final BeginMessage message) throws IOException {
+  private void handleBegin(final BeginMessage beginMessage) throws IOException {
     if (state == State.FAILED) {
       sendIgnored();
       return;
@@ -596,7 +596,7 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     // Get database from message if specified
-    final String db = message.getDatabase();
+    final String db = beginMessage.getDatabase();
     if (db != null && !db.isEmpty()) {
       databaseName = db;
     }
@@ -613,8 +613,8 @@ public class BoltNetworkExecutor extends Thread {
       state = State.TX_READY;
 
     } catch (final Exception e) {
-      final String message = e.getMessage() != null ? e.getMessage() : "Transaction error";
-      sendFailure(BoltException.TRANSACTION_ERROR, message);
+      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Transaction error";
+      sendFailure(BoltException.TRANSACTION_ERROR, errorMsg);
       state = State.FAILED;
     }
   }

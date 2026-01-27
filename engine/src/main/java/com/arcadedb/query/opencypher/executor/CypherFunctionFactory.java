@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
@@ -245,8 +246,8 @@ public class CypherFunctionFactory {
         throw new CommandExecutionException("labels() requires exactly one argument");
       }
       if (args[0] instanceof Vertex vertex) {
-        // Use the new Vertex.getLabels() method which handles composite types
-        return vertex.getLabels();
+        // Use the Labels helper class which handles composite types
+        return Labels.getLabels(vertex);
       }
       return Collections.emptyList();
     }

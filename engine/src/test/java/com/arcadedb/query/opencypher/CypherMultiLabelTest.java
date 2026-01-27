@@ -284,10 +284,10 @@ public class CypherMultiLabelTest {
 
       final Vertex v = (Vertex) result.next().getProperty("n");
 
-      // Test hasLabel method
-      assertThat(v.hasLabel("Person")).isTrue();
-      assertThat(v.hasLabel("Developer")).isTrue();
-      assertThat(v.hasLabel("Manager")).isFalse();
+      // Test hasLabel via Labels helper
+      assertThat(Labels.hasLabel(v, "Person")).isTrue();
+      assertThat(Labels.hasLabel(v, "Developer")).isTrue();
+      assertThat(Labels.hasLabel(v, "Manager")).isFalse();
     });
   }
 
