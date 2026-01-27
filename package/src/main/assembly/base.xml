@@ -95,9 +95,10 @@
         </file>
     </files>
     <!--
-     | all artifacts in a /lib dir, excluding optional modules
+     | all artifacts in a /lib dir, except plugins which go to /lib/plugins
     -->
     <dependencySets>
+        <!-- Main libraries -->
         <dependencySet>
             <outputDirectory>lib</outputDirectory>
             <includes>
@@ -106,15 +107,16 @@
             <excludes>
                 <exclude>com.arcadedb:arcadedb-console</exclude>
                 <exclude>com.arcadedb:arcadedb-gremlin</exclude>
-                <exclude>com.arcadedb:arcadedb-redisw</exclude>
+                <exclude>com.arcadedb:arcadedb-postgresw</exclude>
                 <exclude>com.arcadedb:arcadedb-mongodbw</exclude>
+                <exclude>com.arcadedb:arcadedb-redisw</exclude>
+                <exclude>com.arcadedb:arcadedb-grpcw</exclude>
                 <exclude>com.arcadedb:arcadedb-graphql</exclude>
                 <exclude>com.arcadedb:arcadedb-studio</exclude>
-                <exclude>com.arcadedb:arcadedb-postgresw</exclude>
-                <exclude>com.arcadedb:arcadedb-grpcw</exclude>
                 <exclude>com.arcadedb:arcadedb-metrics</exclude>
             </excludes>
         </dependencySet>
+        <!-- Plugin modules in separate directory (none for base) -->
     </dependencySets>
 
 </assembly>
