@@ -66,12 +66,4 @@ public class FailureMessage extends BoltMessage {
   public String toString() {
     return "FAILURE{code=" + getCode() + ", message=" + getMessage() + "}";
   }
-
-  // Common Neo4j error codes
-  public static final String AUTHENTICATION_ERROR = "Neo.ClientError.Security.Unauthorized";
-  public static final String SYNTAX_ERROR         = "Neo.ClientError.Statement.SyntaxError";
-  public static final String SEMANTIC_ERROR       = "Neo.ClientError.Statement.SemanticError";
-  public static final String DATABASE_ERROR       = "Neo.DatabaseError.General.UnknownError";
-  public static final String TRANSACTION_ERROR    = "Neo.ClientError.Transaction.TransactionNotFound";
-  public static final String FORBIDDEN_ERROR      = "Neo.ClientError.Security.Forbidden";
 }
