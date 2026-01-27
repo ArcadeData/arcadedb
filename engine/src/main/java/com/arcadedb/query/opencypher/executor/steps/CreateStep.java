@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -226,14 +227,23 @@ public class CreateStep extends AbstractExecutionStep {
 
   /**
    * Creates a vertex from a node pattern.
+   * <p>
+   * Supports multi-label vertices. When multiple labels are specified
+   * (e.g., CREATE (n:Person:Developer)), a composite type is automatically
+   * created that extends all label types.
    */
   private Vertex createVertex(final NodePattern nodePattern, final Result currentResult) {
-    final String label = nodePattern.hasLabels() ? nodePattern.getFirstLabel() : "Vertex";
+    final List<String> labels = nodePattern.hasLabels()
+        ? nodePattern.getLabels()
+        : List.of("Vertex");
 
-    // Ensure vertex type exists (Cypher auto-creates types)
-    context.getDatabase().getSchema().getOrCreateVertexType(label);
+    // Get or create the appropriate type (composite if multiple labels)
+    final String typeName = Labels.ensureCompositeType(
+        context.getDatabase().getSchema(),
+        labels
+    );
 
-    final MutableVertex vertex = context.getDatabase().newVertex(label);
+    final MutableVertex vertex = context.getDatabase().newVertex(typeName);
 
     // Set properties from pattern
     if (nodePattern.hasProperties()) {

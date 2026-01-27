@@ -306,24 +306,32 @@ public class MergeStep extends AbstractExecutionStep {
    * @return matching vertex or null
    */
   private Vertex findNode(final NodePattern nodePattern, final Result result) {
-    if (!nodePattern.hasLabels() || !nodePattern.hasProperties()) {
-      // Can't match without label and properties
+    if (!nodePattern.hasLabels()) {
+      // Can't match without a label
       return null;
     }
 
     final String label = nodePattern.getFirstLabel();
+
+    // Check if the type exists in the schema before iterating
+    if (!context.getDatabase().getSchema().existsType(label)) {
+      return null;
+    }
+
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
 
-    // Evaluate property expressions against current result context
-    final Map<String, Object> evaluatedProperties = evaluateProperties(nodePattern.getProperties(), result);
+    // Evaluate property expressions against current result context (may be empty)
+    final Map<String, Object> evaluatedProperties = nodePattern.hasProperties()
+        ? evaluateProperties(nodePattern.getProperties(), result)
+        : null;
 
-    // Find first vertex matching all properties
+    // Find first vertex matching all properties (or any vertex if no properties specified)
     while (iterator.hasNext()) {
       final Identifiable identifiable = iterator.next();
       if (identifiable instanceof Vertex) {
         final Vertex vertex = (Vertex) identifiable;
-        if (matchesProperties(vertex, evaluatedProperties)) {
+        if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties)) {
           return vertex;
         }
       }

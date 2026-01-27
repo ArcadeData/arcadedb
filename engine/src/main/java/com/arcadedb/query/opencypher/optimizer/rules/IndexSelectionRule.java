@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.optimizer.rules;
 
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
@@ -101,12 +102,17 @@ public class IndexSelectionRule implements OptimizationRule {
    * @return physical operator (NodeIndexSeek, NodeIndexRangeScan, or NodeByLabelScan)
    */
   public PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
+    // Determine the label/type to use for iteration
+    // For multi-label nodes, use the composite type name
+    final List<String> labels = anchor.getNode().getLabels();
+    final String labelToUse = Labels.getCompositeTypeName(labels);
+
     if (anchor.useIndex()) {
       if (anchor.isRangeScan()) {
         // RANGE SCAN - pass predicates for runtime parameter resolution
         return new NodeIndexRangeScan(
             anchor.getVariable(),
-            anchor.getNode().getFirstLabel(),
+            labelToUse,
             anchor.getPropertyName(),
             anchor.getRangePredicates(),
             anchor.getIndex().getIndexName(),
@@ -118,7 +124,7 @@ public class IndexSelectionRule implements OptimizationRule {
         final Object propertyValue = anchor.getPropertyValue();
         return new NodeIndexSeek(
             anchor.getVariable(),
-            anchor.getNode().getFirstLabel(),
+            labelToUse,
             anchor.getPropertyName(),
             propertyValue,
             anchor.getIndex().getIndexName(),
@@ -130,7 +136,7 @@ public class IndexSelectionRule implements OptimizationRule {
       // FULL SCAN
       return new NodeByLabelScan(
           anchor.getVariable(),
-          anchor.getNode().getFirstLabel(),
+          labelToUse,
           anchor.getEstimatedCost(),
           anchor.getEstimatedCardinality()
       );
