@@ -157,4 +157,14 @@ public interface CypherStatement {
   default List<CallClause> getCallClauses() {
     return List.of();
   }
+
+  /**
+   * Returns the REMOVE clauses if present.
+   * REMOVE clauses remove properties from nodes/edges or labels from nodes.
+   *
+   * @return list of REMOVE clauses (may be empty)
+   */
+  default List<RemoveClause> getRemoveClauses() {
+    return List.of();
+  }
 }

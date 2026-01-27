@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
 import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
+import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
@@ -185,11 +186,12 @@ public class CypherExecutionPlan {
     final ResultSet resultSet = rootStep.syncPull(context, 100);
 
     // IMPORTANT: For write operations, we need to materialize the ResultSet immediately
-    // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE
+    // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE/REMOVE
     // operations to actually execute, even when there's a RETURN clause.
     final boolean hasWriteOps = statement.getCreateClause() != null ||
                                  (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) ||
                                  (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) ||
+                                 !statement.getRemoveClauses().isEmpty() ||
                                  statement.getMergeClause() != null;
 
     if (hasWriteOps) {
@@ -403,6 +405,16 @@ public class CypherExecutionPlan {
           new DeleteStep(statement.getDeleteClause(), context);
       deleteStep.setPrevious(currentStep);
       currentStep = deleteStep;
+    }
+
+    // Step 4a: REMOVE clauses (if any)
+    for (final RemoveClause removeClause : statement.getRemoveClauses()) {
+      if (!removeClause.isEmpty()) {
+        final RemoveStep removeStep =
+            new RemoveStep(removeClause, context);
+        removeStep.setPrevious(currentStep);
+        currentStep = removeStep;
+      }
     }
 
     // Step 5: MERGE clause (if any)
@@ -665,6 +677,16 @@ public class CypherExecutionPlan {
                 new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
             currentStep = setStep;
+          }
+          break;
+
+        case REMOVE:
+          final RemoveClause removeClause = entry.getTypedClause();
+          if (!removeClause.isEmpty() && currentStep != null) {
+            final RemoveStep removeStep =
+                new RemoveStep(removeClause, context);
+            removeStep.setPrevious(currentStep);
+            currentStep = removeStep;
           }
           break;
 
@@ -1327,6 +1349,15 @@ public class CypherExecutionPlan {
       currentStep = deleteStep;
     }
 
+    // Step 6a: REMOVE clauses - remove properties
+    for (final RemoveClause removeClause : statement.getRemoveClauses()) {
+      if (!removeClause.isEmpty() && currentStep != null) {
+        final RemoveStep removeStep = new RemoveStep(removeClause, context);
+        removeStep.setPrevious(currentStep);
+        currentStep = removeStep;
+      }
+    }
+
     // Step 7: RETURN clause - project results or aggregate
     if (statement.getReturnClause() != null && currentStep != null) {
       // Check if RETURN contains aggregation functions
@@ -1519,6 +1550,9 @@ public class CypherExecutionPlan {
       return null;
 
     if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty())
+      return null;
+
+    if (!statement.getRemoveClauses().isEmpty())
       return null;
 
     if (statement.getMergeClause() != null)

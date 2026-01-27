@@ -35,6 +35,7 @@ public class ClauseEntry {
     CREATE,
     MERGE,
     SET,
+    REMOVE,
     DELETE,
     RETURN,
     CALL

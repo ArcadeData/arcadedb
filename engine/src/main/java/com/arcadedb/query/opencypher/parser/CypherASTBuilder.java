@@ -127,6 +127,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<UnwindClause> unwindClauses = new ArrayList<>();
     final List<WithClause> withClauses = new ArrayList<>();
     final List<CallClause> callClauses = new ArrayList<>();
+    final List<RemoveClause> removeClauses = new ArrayList<>();
     final List<ClauseEntry> clausesInOrder = new ArrayList<>();
     WhereClause whereClause = null;
     ReturnClause returnClause = null;
@@ -194,6 +195,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final CallClause call = visitCallClause(clauseCtx.callClause());
         callClauses.add(call);
         clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.CALL, call, clauseOrder++));
+      } else if (clauseCtx.removeClause() != null) {
+        final RemoveClause remove = visitRemoveClause(clauseCtx.removeClause());
+        removeClauses.add(remove);
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.REMOVE, remove, clauseOrder++));
       }
     }
 
@@ -207,6 +212,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final boolean hasCreate = createClause != null;
     final boolean hasMerge = mergeClause != null;
     final boolean hasDelete = deleteClause != null;
+    final boolean hasRemove = !removeClauses.isEmpty();
 
     return new SimpleCypherStatement(
         "", // Original query string (we'll set this later)
@@ -223,10 +229,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         unwindClauses,
         withClauses,
         callClauses,
+        removeClauses,
         clausesInOrder,
         hasCreate,
         hasMerge,
-        hasDelete
+        hasDelete,
+        hasRemove
     );
   }
 
@@ -280,6 +288,34 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         .collect(Collectors.toList());
 
     return new DeleteClause(variables, detach);
+  }
+
+  public RemoveClause visitRemoveClause(final Cypher25Parser.RemoveClauseContext ctx) {
+    final List<RemoveClause.RemoveItem> items = new ArrayList<>();
+
+    for (final Cypher25Parser.RemoveItemContext itemCtx : ctx.removeItem()) {
+      if (itemCtx instanceof Cypher25Parser.RemovePropContext) {
+        // REMOVE n.property
+        final Cypher25Parser.RemovePropContext propCtx = (Cypher25Parser.RemovePropContext) itemCtx;
+        final String propExpr = propCtx.propertyExpression().getText();
+
+        // Parse property expression: variable.property
+        if (propExpr.contains(".")) {
+          final String[] parts = propExpr.split("\\.", 2);
+          items.add(new RemoveClause.RemoveItem(parts[0], parts[1]));
+        }
+      } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext) {
+        // REMOVE n:Label (not yet fully implemented)
+        final Cypher25Parser.RemoveLabelsContext labelsCtx = (Cypher25Parser.RemoveLabelsContext) itemCtx;
+        final String variable = stripBackticks(labelsCtx.variable().getText());
+        final List<String> labels = new ArrayList<>();
+        // TODO: Extract labels from nodeLabels context
+        items.add(new RemoveClause.RemoveItem(variable, labels));
+      }
+      // TODO: Handle RemoveDynamicProp and RemoveLabelsIs
+    }
+
+    return new RemoveClause(items);
   }
 
   @Override
