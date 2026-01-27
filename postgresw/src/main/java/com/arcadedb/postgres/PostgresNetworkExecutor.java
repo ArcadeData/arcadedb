@@ -479,7 +479,7 @@ public class PostgresNetworkExecutor extends Thread {
   private Object[] getParams(PostgresPortal portal) {
     Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
 
-    if (portal.language.equals("cypher")) {
+    if (portal.language.equals("cypher") || portal.language.equals("opencypher")) {
       Object[] parametersCypher = new Object[parameters.length * 2];
       for (int i = 0; i < parameters.length; i++) {
         parametersCypher[i * 2] = "" + (i + 1);
@@ -1070,8 +1070,6 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void setConfiguration(final String query) {
-    // Make the parsing case-insensitive for the SET command
-    final String upperQuery = query.toUpperCase(Locale.ENGLISH);
     final int setLength = "SET ".length();
     // Use original query to preserve case of values
     final String q = query.substring(setLength);
