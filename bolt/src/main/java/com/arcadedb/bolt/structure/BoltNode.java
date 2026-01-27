@@ -28,7 +28,8 @@ import java.util.Map;
 /**
  * BOLT Node structure representing a graph vertex.
  * Structure signature: 0x4E
- * Fields: id (Integer), labels (List<String>), properties (Map), element_id (String)
+ * Fields (BOLT v4.x): id (Integer), labels (List<String>), properties (Map)
+ * Note: element_id was added in BOLT v5.0, but we use v4.x format for compatibility
  */
 public class BoltNode implements PackStreamStructure {
   public static final byte SIGNATURE = 0x4E;
@@ -52,16 +53,17 @@ public class BoltNode implements PackStreamStructure {
 
   @Override
   public int getFieldCount() {
-    return 4; // id, labels, properties, element_id
+    return 3; // id, labels, properties (v4.x format)
   }
 
   @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
-    writer.writeStructureHeader(SIGNATURE, 4);
+    // Use BOLT v4.x format with 3 fields for compatibility
+    writer.writeStructureHeader(SIGNATURE, 3);
     writer.writeInteger(id);
     writer.writeList(labels);
     writer.writeMap(properties);
-    writer.writeString(elementId);
+    // Note: element_id is omitted for v4.x compatibility
   }
 
   public long getId() {

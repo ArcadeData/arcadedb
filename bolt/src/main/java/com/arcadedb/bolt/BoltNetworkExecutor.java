@@ -422,8 +422,13 @@ public class BoltNetworkExecutor extends Thread {
         LogManager.instance().log(this, Level.INFO, "BOLT executing: %s with params %s", query, params);
       }
 
-      // Execute using native OpenCypher engine
-      currentResultSet = database.query("opencypher", query, params);
+      // Determine if this is a write query by checking for write keywords
+      // Use command() for writes, query() for reads
+      if (isWriteQuery(query)) {
+        currentResultSet = database.command("opencypher", query, params);
+      } else {
+        currentResultSet = database.query("opencypher", query, params);
+      }
       currentFields = extractFieldNames(currentResultSet);
       recordsStreamed = 0;
 
@@ -752,6 +757,24 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     return List.of();
+  }
+
+  /**
+   * Determine if a Cypher query contains write operations.
+   * This checks for common write keywords in the query.
+   */
+  private boolean isWriteQuery(final String query) {
+    if (query == null || query.isEmpty()) {
+      return false;
+    }
+    final String normalized = query.toUpperCase().trim();
+    // Check for write keywords - these indicate modifying operations
+    return normalized.contains("CREATE") ||
+           normalized.contains("DELETE") ||
+           normalized.contains("SET ") ||
+           normalized.contains("REMOVE") ||
+           normalized.contains("MERGE") ||
+           normalized.contains("DETACH");
   }
 
   /**

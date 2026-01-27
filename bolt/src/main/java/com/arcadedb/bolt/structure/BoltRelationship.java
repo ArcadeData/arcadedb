@@ -27,7 +27,8 @@ import java.util.Map;
 /**
  * BOLT Relationship structure representing a graph edge.
  * Structure signature: 0x52
- * Fields: id, startNodeId, endNodeId, type, properties, element_id, start_node_element_id, end_node_element_id
+ * Fields (BOLT v4.x): id, startNodeId, endNodeId, type, properties
+ * Note: element_id fields were added in BOLT v5.0, but we use v4.x format for compatibility
  */
 public class BoltRelationship implements PackStreamStructure {
   public static final byte SIGNATURE = 0x52;
@@ -61,20 +62,19 @@ public class BoltRelationship implements PackStreamStructure {
 
   @Override
   public int getFieldCount() {
-    return 8;
+    return 5; // BOLT v4.x format
   }
 
   @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
-    writer.writeStructureHeader(SIGNATURE, 8);
+    // Use BOLT v4.x format with 5 fields for compatibility
+    writer.writeStructureHeader(SIGNATURE, 5);
     writer.writeInteger(id);
     writer.writeInteger(startNodeId);
     writer.writeInteger(endNodeId);
     writer.writeString(type);
     writer.writeMap(properties);
-    writer.writeString(elementId);
-    writer.writeString(startNodeElementId);
-    writer.writeString(endNodeElementId);
+    // Note: element_id fields are omitted for v4.x compatibility
   }
 
   public long getId() {

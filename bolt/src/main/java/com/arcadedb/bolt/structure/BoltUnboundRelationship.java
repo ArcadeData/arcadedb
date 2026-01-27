@@ -28,7 +28,8 @@ import java.util.Map;
  * BOLT UnboundRelationship structure used in paths.
  * Unlike Relationship, it doesn't include start/end node IDs (they're implicit in the path).
  * Structure signature: 0x72
- * Fields: id, type, properties, element_id
+ * Fields (BOLT v4.x): id, type, properties
+ * Note: element_id was added in BOLT v5.0, but we use v4.x format for compatibility
  */
 public class BoltUnboundRelationship implements PackStreamStructure {
   public static final byte SIGNATURE = 0x72;
@@ -52,16 +53,17 @@ public class BoltUnboundRelationship implements PackStreamStructure {
 
   @Override
   public int getFieldCount() {
-    return 4;
+    return 3; // BOLT v4.x format
   }
 
   @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
-    writer.writeStructureHeader(SIGNATURE, 4);
+    // Use BOLT v4.x format with 3 fields for compatibility
+    writer.writeStructureHeader(SIGNATURE, 3);
     writer.writeInteger(id);
     writer.writeString(type);
     writer.writeMap(properties);
-    writer.writeString(elementId);
+    // Note: element_id is omitted for v4.x compatibility
   }
 
   public long getId() {

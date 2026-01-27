@@ -24,9 +24,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.neo4j.driver.*;
 import org.neo4j.driver.exceptions.ClientException;
+import org.neo4j.driver.summary.ResultSummary;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -111,18 +115,17 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void testCreateAndMatchVertex() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        // Create a vertex
-        session.run("CREATE VERTEX TYPE Person IF NOT EXISTS");
-        session.run("CREATE (n:Person {name: 'Bob', age: 25})");
+        // Create a vertex - ArcadeDB auto-creates types
+        session.run("CREATE (n:BoltPerson {name: 'Bob', age: 25})");
 
         // Match and return
-        final Result result = session.run("MATCH (n:Person {name: 'Bob'}) RETURN n");
+        final Result result = session.run("MATCH (n:BoltPerson {name: 'Bob'}) RETURN n");
         assertThat(result.hasNext()).isTrue();
         final org.neo4j.driver.Record record = result.next();
         final var node = record.get("n").asNode();
         assertThat(node.get("name").asString()).isEqualTo("Bob");
         assertThat(node.get("age").asLong()).isEqualTo(25L);
-        assertThat(node.labels()).contains("Person");
+        assertThat(node.labels()).contains("BoltPerson");
       }
     }
   }
@@ -131,17 +134,15 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void testCreateAndMatchEdge() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        // Create types and vertices
-        session.run("CREATE VERTEX TYPE Person IF NOT EXISTS");
-        session.run("CREATE EDGE TYPE KNOWS IF NOT EXISTS");
-        session.run("CREATE (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})");
+        // Create vertices - ArcadeDB auto-creates types
+        session.run("CREATE (a:EdgePerson {name: 'EdgeAlice'}), (b:EdgePerson {name: 'EdgeBob'})");
 
         // Create edge
-        session.run("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:KNOWS {since: 2020}]->(b)");
+        session.run("MATCH (a:EdgePerson {name: 'EdgeAlice'}), (b:EdgePerson {name: 'EdgeBob'}) CREATE (a)-[:KNOWS {since: 2020}]->(b)");
 
         // Query edge
         final Result result = session.run(
-            "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE a.name = 'Alice' AND b.name = 'Bob' RETURN r"
+            "MATCH (a:EdgePerson)-[r:KNOWS]->(b:EdgePerson) WHERE a.name = 'EdgeAlice' AND b.name = 'EdgeBob' RETURN r"
         );
         assertThat(result.hasNext()).isTrue();
         final org.neo4j.driver.Record record = result.next();
@@ -156,17 +157,14 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void testTransaction() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        // Create type first
-        session.run("CREATE VERTEX TYPE Counter IF NOT EXISTS");
-
-        // Begin transaction
+        // Begin transaction - ArcadeDB auto-creates types
         try (Transaction tx = session.beginTransaction()) {
-          tx.run("CREATE (n:Counter {value: 1})");
+          tx.run("CREATE (n:TxCounter {value: 1})");
           tx.commit();
         }
 
         // Verify data was committed
-        final Result result = session.run("MATCH (n:Counter) RETURN n.value AS value");
+        final Result result = session.run("MATCH (n:TxCounter) RETURN n.value AS value");
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().get("value").asLong()).isEqualTo(1L);
       }
@@ -177,21 +175,21 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void testTransactionRollback() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        // Create type first
-        session.run("CREATE VERTEX TYPE TempData IF NOT EXISTS");
+        // First create a committed record so the type exists
+        session.run("CREATE (n:RollbackData {marker: 'initial'})");
 
-        // Count before
-        final long countBefore = session.run("MATCH (n:TempData) RETURN count(n) AS cnt")
+        // Count before - should be 1
+        final long countBefore = session.run("MATCH (n:RollbackData) RETURN count(n) AS cnt")
             .next().get("cnt").asLong();
 
         // Begin transaction and rollback
         try (Transaction tx = session.beginTransaction()) {
-          tx.run("CREATE (n:TempData {value: 'test'})");
+          tx.run("CREATE (n:RollbackData {value: 'test'})");
           tx.rollback();
         }
 
-        // Count should be the same
-        final long countAfter = session.run("MATCH (n:TempData) RETURN count(n) AS cnt")
+        // Count should be the same (rollback should have reverted the create)
+        final long countAfter = session.run("MATCH (n:RollbackData) RETURN count(n) AS cnt")
             .next().get("cnt").asLong();
         assertThat(countAfter).isEqualTo(countBefore);
       }
@@ -202,15 +200,13 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void testMultipleStatements() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        session.run("CREATE VERTEX TYPE Item IF NOT EXISTS");
-
-        // Run multiple statements
+        // Run multiple statements - ArcadeDB auto-creates types
         for (int i = 0; i < 5; i++) {
-          session.run("CREATE (n:Item {index: $i})", Map.of("i", i));
+          session.run("CREATE (n:MultiItem {index: $i})", Map.of("i", i));
         }
 
         // Count all
-        final Result result = session.run("MATCH (n:Item) RETURN count(n) AS count");
+        final Result result = session.run("MATCH (n:MultiItem) RETURN count(n) AS count");
         assertThat(result.next().get("count").asLong()).isGreaterThanOrEqualTo(5L);
       }
     }
@@ -266,9 +262,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void testLargeResultSet() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        session.run("CREATE VERTEX TYPE LargeData IF NOT EXISTS");
-
-        // Create many records
+        // Create many records - ArcadeDB auto-creates types
         try (Transaction tx = session.beginTransaction()) {
           for (int i = 0; i < 100; i++) {
             tx.run("CREATE (n:LargeData {index: $i})", Map.of("i", i));
@@ -308,6 +302,496 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         Result result = session.run("RETURN 3.14159 AS pi");
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().get("pi").asDouble()).isCloseTo(3.14159, org.assertj.core.data.Offset.offset(0.00001));
+      }
+    }
+  }
+
+  // ========== Additional Tests for Protocol Coverage ==========
+
+  @Test
+  void testNegativeIntegers() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN -42 AS negative, -1000000 AS bigNegative");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("negative").asLong()).isEqualTo(-42L);
+        assertThat(record.get("bigNegative").asLong()).isEqualTo(-1000000L);
+      }
+    }
+  }
+
+  @Test
+  void testLargeIntegers() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Test with large integers that require different encoding sizes
+        Result result = session.run("RETURN 127 AS tiny, 32767 AS small, 2147483647 AS medium, 9223372036854775807 AS large");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("tiny").asLong()).isEqualTo(127L);
+        assertThat(record.get("small").asLong()).isEqualTo(32767L);
+        assertThat(record.get("medium").asLong()).isEqualTo(2147483647L);
+        assertThat(record.get("large").asLong()).isEqualTo(Long.MAX_VALUE);
+      }
+    }
+  }
+
+  @Test
+  void testUnicodeStrings() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN '你好世界' AS chinese, 'Привет' AS russian, '🌍🚀' AS emoji");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("chinese").asString()).isEqualTo("你好世界");
+        assertThat(record.get("russian").asString()).isEqualTo("Привет");
+        assertThat(record.get("emoji").asString()).isEqualTo("🌍🚀");
+      }
+    }
+  }
+
+  @Test
+  void testEmptyString() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN '' AS empty");
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("empty").asString()).isEmpty();
+      }
+    }
+  }
+
+  @Test
+  void testLongString() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create a string longer than 255 characters to test STRING_8/STRING_16 encoding
+        String longString = "a".repeat(500);
+        Result result = session.run("RETURN $s AS longString", Map.of("s", longString));
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("longString").asString()).isEqualTo(longString);
+      }
+    }
+  }
+
+  @Test
+  void testEmptyResultSet() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create a type first, then query with impossible filter
+        session.run("CREATE (n:EmptyTest {marker: 'exists'})");
+        // Query with filter that won't match anything
+        Result result = session.run("MATCH (n:EmptyTest {marker: 'does_not_exist_12345'}) RETURN n");
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void testMultipleFieldsInResult() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN 1 AS a, 2 AS b, 3 AS c, 4 AS d, 5 AS e");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("a").asLong()).isEqualTo(1L);
+        assertThat(record.get("b").asLong()).isEqualTo(2L);
+        assertThat(record.get("c").asLong()).isEqualTo(3L);
+        assertThat(record.get("d").asLong()).isEqualTo(4L);
+        assertThat(record.get("e").asLong()).isEqualTo(5L);
+        assertThat(record.keys()).containsExactlyInAnyOrder("a", "b", "c", "d", "e");
+      }
+    }
+  }
+
+  @Test
+  void testSessionReuse() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Execute multiple queries on the same session
+        Result r1 = session.run("RETURN 1 AS v");
+        assertThat(r1.next().get("v").asLong()).isEqualTo(1L);
+
+        Result r2 = session.run("RETURN 2 AS v");
+        assertThat(r2.next().get("v").asLong()).isEqualTo(2L);
+
+        Result r3 = session.run("RETURN 3 AS v");
+        assertThat(r3.next().get("v").asLong()).isEqualTo(3L);
+      }
+    }
+  }
+
+  @Test
+  void testMultipleTransactionsInSequence() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // First transaction - ArcadeDB auto-creates types
+        try (Transaction tx = session.beginTransaction()) {
+          tx.run("CREATE (n:SeqTest {seq: 1})");
+          tx.commit();
+        }
+
+        // Second transaction
+        try (Transaction tx = session.beginTransaction()) {
+          tx.run("CREATE (n:SeqTest {seq: 2})");
+          tx.commit();
+        }
+
+        // Third transaction
+        try (Transaction tx = session.beginTransaction()) {
+          tx.run("CREATE (n:SeqTest {seq: 3})");
+          tx.commit();
+        }
+
+        // Verify all were committed
+        Result result = session.run("MATCH (n:SeqTest) RETURN count(n) AS cnt");
+        assertThat(result.next().get("cnt").asLong()).isGreaterThanOrEqualTo(3L);
+      }
+    }
+  }
+
+  @Test
+  void testQueryAfterErrorRecovery() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // First, execute a failing query
+        try {
+          session.run("INVALID SYNTAX HERE").consume();
+        } catch (ClientException e) {
+          // Expected
+        }
+
+        // Session should recover and be able to execute new queries
+        Result result = session.run("RETURN 'recovered' AS status");
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("status").asString()).isEqualTo("recovered");
+      }
+    }
+  }
+
+  @Test
+  void testListParameter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        List<Long> numbers = List.of(1L, 2L, 3L, 4L, 5L);
+        Result result = session.run("RETURN $nums AS numbers", Map.of("nums", numbers));
+        assertThat(result.hasNext()).isTrue();
+        List<Object> returned = result.next().get("numbers").asList();
+        assertThat(returned).containsExactly(1L, 2L, 3L, 4L, 5L);
+      }
+    }
+  }
+
+  @Test
+  void testMapParameter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Map<String, Object> person = Map.of("name", "John", "age", 35L);
+        Result result = session.run("RETURN $person AS p", Map.of("person", person));
+        assertThat(result.hasNext()).isTrue();
+        Map<String, Object> returned = result.next().get("p").asMap();
+        assertThat(returned).containsEntry("name", "John");
+        assertThat(returned).containsEntry("age", 35L);
+      }
+    }
+  }
+
+  @Test
+  void testNestedList() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Test nested list
+        Result result = session.run("RETURN [[1, 2], [3, 4], [5, 6]] AS matrix");
+        assertThat(result.hasNext()).isTrue();
+        List<Object> matrix = result.next().get("matrix").asList();
+        assertThat(matrix).hasSize(3);
+      }
+    }
+  }
+
+  @Test
+  void testArithmeticExpressions() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN 10 + 5 AS sum, 10 - 5 AS diff, 10 * 5 AS product, 10 / 5 AS quotient");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("sum").asLong()).isEqualTo(15L);
+        assertThat(record.get("diff").asLong()).isEqualTo(5L);
+        assertThat(record.get("product").asLong()).isEqualTo(50L);
+        assertThat(record.get("quotient").asLong()).isEqualTo(2L);
+      }
+    }
+  }
+
+  @Test
+  void testStringConcatenation() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Test string concatenation which is supported
+        Result result = session.run("RETURN 'hello' + ' ' + 'world' AS greeting");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("greeting").asString()).isEqualTo("hello world");
+      }
+    }
+  }
+
+  @Test
+  void testQueryWithLimit() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create 10 records - ArcadeDB auto-creates types
+        try (Transaction tx = session.beginTransaction()) {
+          for (int i = 0; i < 10; i++) {
+            tx.run("CREATE (n:LimitTest {idx: $i})", Map.of("i", i));
+          }
+          tx.commit();
+        }
+
+        // Query with LIMIT
+        Result result = session.run("MATCH (n:LimitTest) RETURN n LIMIT 5");
+        int count = 0;
+        while (result.hasNext()) {
+          result.next();
+          count++;
+        }
+        assertThat(count).isEqualTo(5);
+      }
+    }
+  }
+
+  @Test
+  void testQueryWithSkipAndLimit() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create records with sequential indices - ArcadeDB auto-creates types
+        try (Transaction tx = session.beginTransaction()) {
+          for (int i = 0; i < 20; i++) {
+            tx.run("CREATE (n:SkipTest {idx: $i})", Map.of("i", i));
+          }
+          tx.commit();
+        }
+
+        // Query with SKIP and LIMIT
+        Result result = session.run("MATCH (n:SkipTest) RETURN n.idx AS idx ORDER BY n.idx SKIP 5 LIMIT 5");
+        List<Long> indices = new ArrayList<>();
+        while (result.hasNext()) {
+          indices.add(result.next().get("idx").asLong());
+        }
+        assertThat(indices).hasSize(5);
+        assertThat(indices).containsExactly(5L, 6L, 7L, 8L, 9L);
+      }
+    }
+  }
+
+  @Test
+  void testNodeWithMultipleProperties() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // ArcadeDB auto-creates types
+        session.run("CREATE (n:MultiProp {" +
+            "stringProp: 'hello', " +
+            "intProp: 42, " +
+            "floatProp: 3.14, " +
+            "boolProp: true, " +
+            "listProp: [1, 2, 3]" +
+            "})");
+
+        Result result = session.run("MATCH (n:MultiProp) RETURN n");
+        assertThat(result.hasNext()).isTrue();
+        var node = result.next().get("n").asNode();
+        assertThat(node.get("stringProp").asString()).isEqualTo("hello");
+        assertThat(node.get("intProp").asLong()).isEqualTo(42L);
+        assertThat(node.get("floatProp").asDouble()).isCloseTo(3.14, org.assertj.core.data.Offset.offset(0.001));
+        assertThat(node.get("boolProp").asBoolean()).isTrue();
+        assertThat(node.get("listProp").asList()).containsExactly(1L, 2L, 3L);
+      }
+    }
+  }
+
+  @Test
+  void testNodeAndRelationshipInSameResult() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // ArcadeDB auto-creates types
+        session.run("CREATE (a:NodeA {name: 'A'})-[:LINKS {weight: 10}]->(b:NodeB {name: 'B'})");
+
+        Result result = session.run(
+            "MATCH (a:NodeA)-[r:LINKS]->(b:NodeB) RETURN a, r, b"
+        );
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+
+        var nodeA = record.get("a").asNode();
+        var rel = record.get("r").asRelationship();
+        var nodeB = record.get("b").asNode();
+
+        assertThat(nodeA.get("name").asString()).isEqualTo("A");
+        assertThat(nodeA.labels()).contains("NodeA");
+        assertThat(rel.type()).isEqualTo("LINKS");
+        assertThat(rel.get("weight").asLong()).isEqualTo(10L);
+        assertThat(nodeB.get("name").asString()).isEqualTo("B");
+        assertThat(nodeB.labels()).contains("NodeB");
+      }
+    }
+  }
+
+  @Test
+  void testConsumeResultSummary() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN 1 AS value");
+        ResultSummary summary = result.consume();
+        assertThat(summary).isNotNull();
+        // The summary should be available after consuming
+      }
+    }
+  }
+
+  @Test
+  void testMultipleRecordsInResult() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Create multiple records - ArcadeDB auto-creates types
+        try (Transaction tx = session.beginTransaction()) {
+          for (int i = 1; i <= 5; i++) {
+            tx.run("CREATE (n:MultiRecord {value: $v})", Map.of("v", i));
+          }
+          tx.commit();
+        }
+
+        // Query all and iterate
+        Result result = session.run("MATCH (n:MultiRecord) RETURN n.value AS v ORDER BY n.value");
+        List<Long> values = new ArrayList<>();
+        while (result.hasNext()) {
+          values.add(result.next().get("v").asLong());
+        }
+        assertThat(values).containsExactly(1L, 2L, 3L, 4L, 5L);
+      }
+    }
+  }
+
+  @Test
+  void testAuthenticationFailure() {
+    try (Driver driver = GraphDatabase.driver(
+        "bolt://localhost:7687",
+        AuthTokens.basic("root", "wrong_password"),
+        Config.builder().withoutEncryption().build()
+    )) {
+      assertThatThrownBy(driver::verifyConnectivity)
+          .isInstanceOf(Exception.class);
+    }
+  }
+
+  @Test
+  void testDriverConnectionPooling() {
+    // Test that driver can handle multiple sessions using connection pooling
+    try (Driver driver = getDriver()) {
+      for (int i = 0; i < 5; i++) {
+        try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+          Result result = session.run("RETURN $i AS iteration", Map.of("i", i));
+          assertThat(result.next().get("iteration").asLong()).isEqualTo((long) i);
+        }
+      }
+    }
+  }
+
+  @Test
+  void testMixedNullAndValues() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN 1 AS a, null AS b, 'text' AS c, null AS d");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("a").asLong()).isEqualTo(1L);
+        assertThat(record.get("b").isNull()).isTrue();
+        assertThat(record.get("c").asString()).isEqualTo("text");
+        assertThat(record.get("d").isNull()).isTrue();
+      }
+    }
+  }
+
+  @Test
+  void testTransactionReadOperation() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // ArcadeDB auto-creates types
+        session.run("CREATE (n:ReadTest {value: 'test'})");
+
+        // Read operation within transaction
+        try (Transaction tx = session.beginTransaction()) {
+          Result result = tx.run("MATCH (n:ReadTest) RETURN n.value AS v");
+          assertThat(result.hasNext()).isTrue();
+          assertThat(result.next().get("v").asString()).isEqualTo("test");
+          tx.commit();
+        }
+      }
+    }
+  }
+
+  @Test
+  void testEmptyList() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN [] AS empty");
+        assertThat(result.hasNext()).isTrue();
+        List<Object> list = result.next().get("empty").asList();
+        assertThat(list).isEmpty();
+      }
+    }
+  }
+
+  @Test
+  void testEmptyMap() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN {} AS empty");
+        assertThat(result.hasNext()).isTrue();
+        Map<String, Object> map = result.next().get("empty").asMap();
+        assertThat(map).isEmpty();
+      }
+    }
+  }
+
+  @Test
+  void testZeroValue() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        Result result = session.run("RETURN 0 AS zero, 0.0 AS zeroFloat");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("zero").asLong()).isEqualTo(0L);
+        assertThat(record.get("zeroFloat").asDouble()).isEqualTo(0.0);
+      }
+    }
+  }
+
+  @Test
+  void testVerySmallFloat() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Test very small float value
+        Result result = session.run("RETURN 0.000001 AS small, -0.000001 AS negSmall");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("small").asDouble()).isCloseTo(0.000001, org.assertj.core.data.Offset.offset(0.0000001));
+        assertThat(record.get("negSmall").asDouble()).isCloseTo(-0.000001, org.assertj.core.data.Offset.offset(0.0000001));
+      }
+    }
+  }
+
+  @Test
+  void testVeryLargeFloat() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Test large float value
+        Result result = session.run("RETURN 1.0E100 AS large, -1.0E100 AS negLarge");
+        assertThat(result.hasNext()).isTrue();
+        org.neo4j.driver.Record record = result.next();
+        assertThat(record.get("large").asDouble()).isEqualTo(1.0E100);
+        assertThat(record.get("negLarge").asDouble()).isEqualTo(-1.0E100);
       }
     }
   }
