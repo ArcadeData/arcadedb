@@ -43,6 +43,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.ServerPathUtils;
@@ -79,6 +80,7 @@ public class ArcadeDBServer {
   private             FileServerEventLog                    eventLog;
   private final       Map<String, ServerPlugin>             plugins                              =
       new LinkedHashMap<>();
+  private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
   private             HAServer                              haServer;
   private             ServerSecurity                        security;
@@ -139,8 +141,11 @@ public class ArcadeDBServer {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
+    // Discover plugins from lib/plugins directory
+    pluginManager.discoverPlugins();
+
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
-        GlobalConfiguration.SERVER_MODE.getValueAsString(), getPluginNames());
+        GlobalConfiguration.SERVER_MODE.getValueAsString(), getAllPluginNames());
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
@@ -172,6 +177,7 @@ public class ArcadeDBServer {
     httpServer = new HttpServer(this);
 
     registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON);
+    pluginManager.startPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON);
 
     httpServer.startService();
 
@@ -181,6 +187,7 @@ public class ArcadeDBServer {
     }
 
     registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_HTTP_ON);
+    pluginManager.startPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_HTTP_ON);
 
     loadDefaultDatabases();
 
@@ -188,6 +195,7 @@ public class ArcadeDBServer {
     loadDatabases();
 
     registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN);
+    pluginManager.startPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
 
@@ -276,6 +284,16 @@ public class ArcadeDBServer {
     return result;
   }
 
+  private Set<String> getAllPluginNames() {
+    final Set<String> result = new LinkedHashSet<>();
+    // Add legacy plugins
+    result.addAll(getPluginNames());
+    // Add PluginManager plugins
+    if (pluginManager != null)
+      result.addAll(pluginManager.getPluginNames());
+    return result;
+  }
+
   private void registerPlugins(final ServerPlugin.INSTALLATION_PRIORITY installationPriority) {
     final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
@@ -354,6 +372,11 @@ public class ArcadeDBServer {
 
     status = STATUS.SHUTTING_DOWN;
 
+    // Stop plugins managed by PluginManager first
+    if (pluginManager != null)
+      pluginManager.stopPlugins();
+
+    // Stop legacy plugins
     for (final Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
       CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(),
@@ -395,7 +418,10 @@ public class ArcadeDBServer {
   }
 
   public Collection<ServerPlugin> getPlugins() {
-    return Collections.unmodifiableCollection(plugins.values());
+    final List<ServerPlugin> allPlugins = new ArrayList<>(plugins.values());
+    if (pluginManager != null)
+      allPlugins.addAll(pluginManager.getPlugins());
+    return Collections.unmodifiableCollection(allPlugins);
   }
 
   public ServerDatabase getDatabase(final String databaseName) {
@@ -745,6 +771,7 @@ public class ArcadeDBServer {
 
   private void init() {
     eventLog = new FileServerEventLog(this);
+    pluginManager = new PluginManager(this, configuration);
 
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       // Mark logger as shutting down to prevent NPE when handlers are closed (issue #2813)
