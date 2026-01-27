@@ -99,7 +99,6 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           .setExpandVertexEdges(false);
       serializerImpl.setUseCollectionSize(false).setUseCollectionSizeForEdges(true);
 
-      final Set<RID> includedRecords = new HashSet<>();
       final Set<RID> includedVertices = new HashSet<>();
       final Set<RID> includedEdges = new HashSet<>();
       final JSONArray vertices = new JSONArray();
@@ -110,39 +109,29 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         final Result row = qResult.next();
 
         try {
-          boolean recordIncluded = true;
-          if (row.getIdentity().isPresent()) {
-            final RID rid = row.getIdentity().get();
-            recordIncluded = includedRecords.add(rid);
-            if (recordIncluded)
-              records.put(serializerImpl.serializeResult(database, row));
-          } else
-            records.put(serializerImpl.serializeResult(database, row));
+          // Always add to records without deduplication - UNWIND queries can legitimately
+          // return the same RID multiple times with different values (issue #1582)
+          records.put(serializerImpl.serializeResult(database, row));
 
           if (row.isVertex()) {
-            if (recordIncluded) {
-              final Vertex v = row.getVertex().get();
-              if (includedVertices.add(v.getIdentity()))
-                vertices.put(serializerImpl.serializeGraphElement(v));
-            }
+            final Vertex v = row.getVertex().get();
+            if (includedVertices.add(v.getIdentity()))
+              vertices.put(serializerImpl.serializeGraphElement(v));
           } else if (row.isEdge()) {
             final Edge e = row.getEdge().get();
-            if (recordIncluded)
-              if (includedEdges.add(e.getIdentity())) {
-                edges.put(serializerImpl.serializeGraphElement(e));
-                try {
-                  if (includedVertices.add(e.getIn())) {
-                    includedRecords.add(e.getIn());
-                    vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
-                  }
-                  if (includedVertices.add(e.getOut())) {
-                    includedRecords.add(e.getOut());
-                    vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
-                  }
-                } catch (RecordNotFoundException ex) {
-                  LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
+            if (includedEdges.add(e.getIdentity())) {
+              edges.put(serializerImpl.serializeGraphElement(e));
+              try {
+                if (includedVertices.add(e.getIn())) {
+                  vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
                 }
+                if (includedVertices.add(e.getOut())) {
+                  vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+                }
+              } catch (RecordNotFoundException ex) {
+                LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
               }
+            }
           } else {
             analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
           }
