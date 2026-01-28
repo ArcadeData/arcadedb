@@ -33,6 +33,7 @@
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-events" class="nav-link" id="tab-server-events-sel">Events</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-metrics" class="nav-link" id="tab-metrics-sel">Metrics</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-settings" class="nav-link" id="tab-server-settings-sel">Server Settings</a></li>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-server-backup" class="nav-link" id="tab-server-backup-sel">Backup</a></li>
       </ul>
     </div>
   </div>
@@ -171,6 +172,135 @@
         <div class="col-12">
           <div class="table-responsive">
             <table id="serverSettings" class="table table-striped table-sm" style="width: 100%; table-layout: fixed"></table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-pane fade" id="tab-server-backup" role="tabpanel">
+      <div class="row mb-3">
+        <div class="col-12">
+          <div class="d-flex justify-content-between align-items-center">
+            <h5><i class="fa fa-archive"></i> Auto-Backup Configuration</h5>
+            <div>
+              <button class="btn btn-sm btn-outline-primary" onclick="loadBackupConfig()">
+                <i class="fa fa-sync"></i> Refresh
+              </button>
+              <button class="btn btn-sm btn-success" onclick="saveBackupConfig()">
+                <i class="fa fa-save"></i> Save Configuration
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="backupConfigStatus" class="row mb-3">
+        <div class="col-12">
+          <div class="alert alert-info" role="alert">
+            <span id="backupStatusMessage">Loading backup configuration...</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="backupConfigForm" style="display: none;">
+        <div class="card mb-3">
+          <div class="card-header">General Settings</div>
+          <div class="card-body">
+            <div class="row">
+              <div class="col-md-4 mb-3">
+                <label for="backupEnabled" class="form-label">Auto-Backup Enabled</label>
+                <select id="backupEnabled" class="form-select">
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </div>
+              <div class="col-md-4 mb-3">
+                <label for="backupDirectory" class="form-label">Backup Directory</label>
+                <input type="text" class="form-control" id="backupDirectory" value="./backups">
+              </div>
+              <div class="col-md-4 mb-3">
+                <label for="backupRunOnServer" class="form-label">Run On Server</label>
+                <select id="backupRunOnServer" class="form-select">
+                  <option value="$leader">Leader Only ($leader)</option>
+                  <option value="*">All Servers (*)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-header">Schedule</div>
+          <div class="card-body">
+            <div class="row">
+              <div class="col-md-3 mb-3">
+                <label for="backupScheduleType" class="form-label">Schedule Type</label>
+                <select id="backupScheduleType" class="form-select" onchange="toggleBackupScheduleFields()">
+                  <option value="frequency">Frequency-based</option>
+                  <option value="cron">CRON Expression</option>
+                </select>
+              </div>
+              <div class="col-md-3 mb-3" id="backupFrequencyGroup">
+                <label for="backupFrequency" class="form-label">Frequency (minutes)</label>
+                <input type="number" class="form-control" id="backupFrequency" value="60" min="1">
+              </div>
+              <div class="col-md-3 mb-3" id="backupCronGroup" style="display: none;">
+                <label for="backupCron" class="form-label">CRON Expression</label>
+                <input type="text" class="form-control" id="backupCron" placeholder="0 0 2 * * ?">
+                <small class="text-muted">sec min hour dom mon dow</small>
+              </div>
+              <div class="col-md-3 mb-3">
+                <label for="backupWindowStart" class="form-label">Time Window Start</label>
+                <input type="time" class="form-control" id="backupWindowStart">
+              </div>
+              <div class="col-md-3 mb-3">
+                <label for="backupWindowEnd" class="form-label">Time Window End</label>
+                <input type="time" class="form-control" id="backupWindowEnd">
+                <small class="text-muted">Leave empty for any time</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-header">Retention Policy</div>
+          <div class="card-body">
+            <div class="row align-items-end">
+              <div class="col-md-2 mb-3">
+                <label for="backupMaxFiles" class="form-label">Max Backup Files</label>
+                <input type="number" class="form-control" id="backupMaxFiles" value="10" min="1">
+              </div>
+              <div class="col-md-2 mb-3">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="backupUseTiered" onchange="toggleTieredRetention()">
+                  <label class="form-check-label" for="backupUseTiered">Use Tiered Retention</label>
+                </div>
+              </div>
+              <div id="tieredRetentionGroup" class="col-md-8" style="display: none;">
+                <div class="row">
+                  <div class="col mb-3">
+                    <label for="backupHourly" class="form-label small">Hourly</label>
+                    <input type="number" class="form-control form-control-sm" id="backupHourly" value="24" min="0">
+                  </div>
+                  <div class="col mb-3">
+                    <label for="backupDaily" class="form-label small">Daily</label>
+                    <input type="number" class="form-control form-control-sm" id="backupDaily" value="7" min="0">
+                  </div>
+                  <div class="col mb-3">
+                    <label for="backupWeekly" class="form-label small">Weekly</label>
+                    <input type="number" class="form-control form-control-sm" id="backupWeekly" value="4" min="0">
+                  </div>
+                  <div class="col mb-3">
+                    <label for="backupMonthly" class="form-label small">Monthly</label>
+                    <input type="number" class="form-control form-control-sm" id="backupMonthly" value="12" min="0">
+                  </div>
+                  <div class="col mb-3">
+                    <label for="backupYearly" class="form-label small">Yearly</label>
+                    <input type="number" class="form-control form-control-sm" id="backupYearly" value="3" min="0">
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

@@ -664,6 +664,209 @@ function startServerRefreshTimer(userChange) {
   if (userChange) globalSetCookie("serverRefreshTimeoutInSecs", serverRefreshTimeoutInSecs, 365);
 }
 
+// Backup configuration data
+var backupConfigData = null;
+var backupConfigLoaded = false;
+
+function loadBackupConfig() {
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/server",
+      data: JSON.stringify({ command: "get backup config" }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      backupConfigData = data;
+      backupConfigLoaded = true;
+
+      if (data.config == null || data.config === "null") {
+        $("#backupStatusMessage").html(
+          'Auto-backup is not configured. <a href="#" onclick="enableBackupConfig()">Click here</a> to create a default configuration.'
+        );
+        $("#backupConfigForm").hide();
+        $("#backupConfigStatus").show();
+      } else {
+        // Config exists - show it
+        if (!data.enabled && data.message) {
+          // Config saved but plugin not active
+          $("#backupStatusMessage").html(
+            '<i class="fa fa-exclamation-triangle text-warning"></i> ' + escapeHtml(data.message)
+          );
+          $("#backupConfigStatus").show();
+        } else if (data.enabled) {
+          $("#backupConfigStatus").hide();
+        } else {
+          $("#backupStatusMessage").html(
+            '<i class="fa fa-info-circle text-info"></i> Configuration saved. Restart server to enable auto-backup.'
+          );
+          $("#backupConfigStatus").show();
+        }
+        $("#backupConfigForm").show();
+        populateBackupConfigForm(data.config);
+      }
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      $("#backupStatusMessage").html("Error loading backup configuration: " + escapeHtml(jqXHR.responseText));
+      backupConfigLoaded = false;
+    });
+}
+
+function enableBackupConfig() {
+  // Create default config
+  backupConfigData = {
+    enabled: true,
+    config: {
+      version: 1,
+      enabled: true,
+      backupDirectory: "./backups",
+      defaults: {
+        enabled: true,
+        runOnServer: "$leader",
+        schedule: {
+          type: "frequency",
+          frequencyMinutes: 60,
+        },
+        retention: {
+          maxFiles: 10,
+        },
+      },
+    },
+  };
+
+  $("#backupConfigStatus").hide();
+  $("#backupConfigForm").show();
+  populateBackupConfigForm(backupConfigData.config);
+}
+
+function populateBackupConfigForm(config) {
+  $("#backupEnabled").val(config.enabled ? "true" : "false");
+  $("#backupDirectory").val(config.backupDirectory || "./backups");
+
+  if (config.defaults) {
+    var defaults = config.defaults;
+    $("#backupRunOnServer").val(defaults.runOnServer || "$leader");
+
+    if (defaults.schedule) {
+      var schedType = defaults.schedule.type || "frequency";
+      $("#backupScheduleType").val(schedType);
+      toggleBackupScheduleFields();
+
+      if (schedType === "frequency") {
+        $("#backupFrequency").val(defaults.schedule.frequencyMinutes || 60);
+      } else if (schedType === "cron") {
+        $("#backupCron").val(defaults.schedule.expression || "");
+      }
+
+      if (defaults.schedule.timeWindow) {
+        $("#backupWindowStart").val(defaults.schedule.timeWindow.start || "");
+        $("#backupWindowEnd").val(defaults.schedule.timeWindow.end || "");
+      }
+    }
+
+    if (defaults.retention) {
+      $("#backupMaxFiles").val(defaults.retention.maxFiles || 10);
+
+      if (defaults.retention.tiered) {
+        $("#backupUseTiered").prop("checked", true);
+        toggleTieredRetention();
+        $("#backupHourly").val(defaults.retention.tiered.hourly || 24);
+        $("#backupDaily").val(defaults.retention.tiered.daily || 7);
+        $("#backupWeekly").val(defaults.retention.tiered.weekly || 4);
+        $("#backupMonthly").val(defaults.retention.tiered.monthly || 12);
+        $("#backupYearly").val(defaults.retention.tiered.yearly || 3);
+      }
+    }
+  }
+}
+
+function toggleBackupScheduleFields() {
+  var schedType = $("#backupScheduleType").val();
+  if (schedType === "frequency") {
+    $("#backupFrequencyGroup").show();
+    $("#backupCronGroup").hide();
+  } else {
+    $("#backupFrequencyGroup").hide();
+    $("#backupCronGroup").show();
+  }
+}
+
+function toggleTieredRetention() {
+  if ($("#backupUseTiered").is(":checked")) {
+    $("#tieredRetentionGroup").show();
+  } else {
+    $("#tieredRetentionGroup").hide();
+  }
+}
+
+function saveBackupConfig() {
+  var config = {
+    version: 1,
+    enabled: $("#backupEnabled").val() === "true",
+    backupDirectory: $("#backupDirectory").val(),
+    defaults: {
+      enabled: true,
+      runOnServer: $("#backupRunOnServer").val(),
+      schedule: {
+        type: $("#backupScheduleType").val(),
+      },
+      retention: {
+        maxFiles: parseInt($("#backupMaxFiles").val()),
+      },
+    },
+  };
+
+  // Add schedule-specific fields
+  if (config.defaults.schedule.type === "frequency") {
+    config.defaults.schedule.frequencyMinutes = parseInt($("#backupFrequency").val());
+  } else if (config.defaults.schedule.type === "cron") {
+    config.defaults.schedule.expression = $("#backupCron").val();
+  }
+
+  // Add time window if specified
+  var windowStart = $("#backupWindowStart").val();
+  var windowEnd = $("#backupWindowEnd").val();
+  if (windowStart && windowEnd) {
+    config.defaults.schedule.timeWindow = {
+      start: windowStart,
+      end: windowEnd,
+    };
+  }
+
+  // Add tiered retention if enabled
+  if ($("#backupUseTiered").is(":checked")) {
+    config.defaults.retention.tiered = {
+      hourly: parseInt($("#backupHourly").val()),
+      daily: parseInt($("#backupDaily").val()),
+      weekly: parseInt($("#backupWeekly").val()),
+      monthly: parseInt($("#backupMonthly").val()),
+      yearly: parseInt($("#backupYearly").val()),
+    };
+  }
+
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/server",
+      data: JSON.stringify({
+        command: "set backup config",
+        config: config,
+      }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      globalNotify("Backup Configuration", "Configuration saved successfully", "success");
+      loadBackupConfig();
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      globalNotifyError(jqXHR.responseText);
+    });
+}
+
 document.addEventListener("DOMContentLoaded", function (event) {
   $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
     var activeTab = this.id;
@@ -671,6 +874,10 @@ document.addEventListener("DOMContentLoaded", function (event) {
       loadServerSessions();
     } else if (activeTab == "tab-server-events-sel") {
       getServerEvents();
+    } else if (activeTab == "tab-server-backup-sel") {
+      if (!backupConfigLoaded) {
+        loadBackupConfig();
+      }
     }
   });
 
