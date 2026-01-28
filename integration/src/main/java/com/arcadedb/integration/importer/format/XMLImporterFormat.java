@@ -152,12 +152,19 @@ public class XMLImporterFormat implements FormatImporter {
         case XMLStreamReader.CDATA:
           final String text = xmlReader.getText();
           if (!text.isEmpty() && !text.equals("\n")) {
-            if (settings.trimText)
-              lastContent = text.trim();
-            else
-              lastContent = text;
-          } else
-            lastContent = null;
+            final String trimmedText = text.trim();
+            // Only update lastContent if there's actual non-whitespace content
+            // This prevents whitespace between elements from erasing previously captured content
+            if (!trimmedText.isEmpty()) {
+              if (settings.trimText)
+                lastContent = trimmedText;
+              else
+                lastContent = text;
+            }
+            // If trimmedText is empty (whitespace-only), keep the previous lastContent value
+          }
+          // Note: We no longer set lastContent to null for empty/newline-only text
+          // This preserves content when there's formatting whitespace in the XML
           break;
 
         default:
@@ -276,12 +283,19 @@ public class XMLImporterFormat implements FormatImporter {
         case XMLStreamReader.CDATA:
           final String text = xmlReader.getText();
           if (!text.isEmpty() && !text.equals("\n")) {
-            if (settings.trimText)
-              lastContent = text.trim();
-            else
-              lastContent = text;
-          } else
-            lastContent = null;
+            final String trimmedText = text.trim();
+            // Only update lastContent if there's actual non-whitespace content
+            // This prevents whitespace between elements from erasing previously captured content
+            if (!trimmedText.isEmpty()) {
+              if (settings.trimText)
+                lastContent = trimmedText;
+              else
+                lastContent = text;
+            }
+            // If trimmedText is empty (whitespace-only), keep the previous lastContent value
+          }
+          // Note: We no longer set lastContent to null for empty/newline-only text
+          // This preserves content when there's formatting whitespace in the XML
           break;
 
         default:
