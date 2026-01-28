@@ -320,11 +320,11 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         st.execute("CREATE VERTEX TYPE PersonVertex;");
 
         for (int i = 0; i < 100; i++) {
-          st.execute("{cypher} MATCH (n) DETACH DELETE n;");
-          st.execute("{cypher} CREATE (james:PersonVertex {name: \"James\", height: 1.9});");
-          st.execute("{cypher} CREATE (henry:PersonVertex {name: \"Henry\"});");
+          st.execute("{opencypher} MATCH (n) DETACH DELETE n;");
+          st.execute("{opencypher} CREATE (james:PersonVertex {name: \"James\", height: 1.9});");
+          st.execute("{opencypher} CREATE (henry:PersonVertex {name: \"Henry\"});");
 
-          var rs = st.executeQuery("{cypher} MATCH (person:PersonVertex) RETURN person.name, person.height;");
+          var rs = st.executeQuery("{opencypher} MATCH (person:PersonVertex) RETURN person.name, person.height;");
 
           int numberOfPeople = 0;
           while (rs.next()) {
@@ -747,13 +747,13 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         pst.execute();
       }
 
-      try (var st = conn.prepareStatement("{cypher} CREATE (n:City {id: ? }) RETURN n")) {
+      try (var st = conn.prepareStatement("{opencypher} CREATE (n:City {id: ? }) RETURN n")) {
         st.setString(1, "C2");
         boolean execute = st.execute();
         assertThat(execute).isTrue();
 
       }
-      try (var st = conn.prepareStatement("{cypher} MATCH (n:City) WHERE n.id = ? RETURN n")) {
+      try (var st = conn.prepareStatement("{opencypher} MATCH (n:City) WHERE n.id = ? RETURN n")) {
         st.setString(1, "C2");
         try (var rs = st.executeQuery()) {
           assertThat(rs.next()).isTrue();
@@ -771,15 +771,15 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       try (var st = conn.createStatement()) {
         st.execute("create vertex type CHUNK");
         // Create test vertices directly
-        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk1'})");
-        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk2'})");
-        st.execute("{cypher} CREATE (n:CHUNK {text: 'chunk3'})");
+        st.execute("{opencypher} CREATE (n:CHUNK {text: 'chunk1'})");
+        st.execute("{opencypher} CREATE (n:CHUNK {text: 'chunk2'})");
+        st.execute("{opencypher} CREATE (n:CHUNK {text: 'chunk3'})");
       }
 
       // Get all RIDs
       String[] rids = new String[3];
       try (var st = conn.createStatement()) {
-        try (var rs = st.executeQuery("{cypher} MATCH (n:CHUNK) RETURN ID(n) ORDER BY n.text")) {
+        try (var rs = st.executeQuery("{opencypher} MATCH (n:CHUNK) RETURN ID(n) ORDER BY n.text")) {
           int idx = 0;
           while (rs.next() && idx < 3) {
             rids[idx++] = rs.getString(1);
@@ -788,7 +788,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       }
 
       // Now query with IN clause using array parameter - this should reproduce the ClassCastException
-      try (var pst = conn.prepareStatement("{cypher} MATCH (n:CHUNK) WHERE ID(n) IN ? RETURN n.text as text ORDER BY n.text")) {
+      try (var pst = conn.prepareStatement("{opencypher} MATCH (n:CHUNK) WHERE ID(n) IN ? RETURN n.text as text ORDER BY n.text")) {
         Array array = conn.createArrayOf("text", rids);
         pst.setArray(1, array);
 
