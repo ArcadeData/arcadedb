@@ -28,10 +28,11 @@ import java.util.*;
  */
 public class DDLExecutionPlan implements InternalExecutionPlan {
 
-  private final DDLStatement   statement;
-  private final CommandContext context;
-
-  boolean executed = false;
+  private final DDLStatement       statement;
+  private final CommandContext     context;
+  private final List<Result>       results  = new ArrayList<>();
+  private       int                next     = 0;
+  private       boolean            executed = false;
 
   public DDLExecutionPlan(final CommandContext context, final DDLStatement stm) {
     this.context = context;
@@ -40,11 +41,19 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public ResultSet fetchNext(final int n) {
-    return new InternalResultSet();
+    if (next >= results.size())
+      return new InternalResultSet(); // empty
+
+    final IteratorResultSet nextBlock = new IteratorResultSet(
+        results.subList(next, Math.min(next + n, results.size())).iterator());
+    next += n;
+    return nextBlock;
   }
 
   public void reset(final CommandContext context) {
     executed = false;
+    results.clear();
+    next = 0;
   }
 
   @Override
@@ -61,7 +70,11 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
     if (result instanceof InternalResultSet set) {
       set.plan = this;
     }
-    return result;
+    // Store results for later retrieval via fetchNext()
+    while (result.hasNext()) {
+      results.add(result.next());
+    }
+    return new IteratorResultSet(results.iterator());
   }
 
   @Override
