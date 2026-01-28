@@ -1,3 +1,41 @@
+#
+# Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+"""
+ArcadeDB asyncpg Test Suite
+
+Tests PostgreSQL wire protocol compatibility with Python asyncpg driver.
+Related issues:
+- https://github.com/ArcadeData/arcadedb/issues/1630 (bind message parsing)
+- https://github.com/ArcadeData/arcadedb/issues/668 (asyncpg compatibility)
+
+This module uses pytest and testcontainers to automatically manage the
+ArcadeDB container lifecycle for testing.
+
+Usage:
+    # Run all asyncpg tests
+    pytest tests/test_asyncpg.py -v
+
+    # Run specific test
+    pytest tests/test_asyncpg.py::test_parameterized_select -v
+
+    # Run with asyncio debugging
+    pytest tests/test_asyncpg.py -v --log-cli-level=DEBUG
+"""
+
 import time
 import pytest
 import pytest_asyncio
@@ -71,6 +109,28 @@ def setup(request):
         yield
     finally:
         arcadedb.stop()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def cleanup_after_module():
+    """Cleanup test data after all tests complete"""
+    yield  # Run all tests first
+
+    # Cleanup
+    import asyncio
+
+    async def cleanup():
+        try:
+            params = get_connection_params(arcadedb)
+            conn = await asyncpg.connect(**params)
+            try:
+                await conn.execute("DELETE FROM AsyncpgTest")
+            finally:
+                await conn.close()
+        except Exception:
+            pass  # Ignore cleanup errors
+
+    asyncio.run(cleanup())
 
 
 @pytest_asyncio.fixture
