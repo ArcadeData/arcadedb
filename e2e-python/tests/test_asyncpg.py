@@ -117,6 +117,9 @@ def cleanup_after_module():
     """Cleanup test data after all tests complete"""
     yield  # Run all tests first
 
+    # Cleanup
+    import asyncio
+
     async def cleanup():
         try:
             params = get_connection_params(arcadedb)
