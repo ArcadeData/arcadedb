@@ -117,9 +117,6 @@ def cleanup_after_module():
     """Cleanup test data after all tests complete"""
     yield  # Run all tests first
 
-    # Cleanup
-    import asyncio
-
     async def cleanup():
         try:
             params = get_connection_params(arcadedb)
@@ -222,7 +219,7 @@ async def test_parameterized_select(connection, test_type_setup):
     assert len(rows) == 1
     # Verify we got the right record
     row = rows[0]
-    assert 'Alice' in str(row)
+    assert row['name'] == 'Alice'
 
 
 @pytest.mark.asyncio
@@ -241,7 +238,7 @@ async def test_multiple_parameters(connection, test_type_setup):
 
     assert len(rows) >= 1
     # Verify at least one row matches our criteria
-    assert any('Alice' in str(row) for row in rows)
+    assert any(row['name'] == 'Alice' for row in rows)
 
 
 @pytest.mark.asyncio
@@ -251,9 +248,7 @@ async def test_parameterized_insert(connection, test_type_setup):
     # Known issue: ArcadeDB PostgreSQL protocol has a bug where parameterized INSERT
     # returns data but doesn't properly describe the columns, causing a protocol error.
     # We test the functionality with a workaround using string interpolation for now.
-    import asyncpg
 
-    inserted = False
     try:
         # Try the ideal approach first (parameterized query)
         await connection.execute(
@@ -273,7 +268,6 @@ async def test_parameterized_insert(connection, test_type_setup):
             await connection.execute(
                 "INSERT INTO AsyncpgTest SET id = 'test_param_insert', name = 'Charlie', value = '300'"
             )
-        inserted = True
 
     # Verify insertion using parameterized SELECT (which works correctly)
     rows = await connection.fetch(
@@ -283,9 +277,8 @@ async def test_parameterized_insert(connection, test_type_setup):
 
     assert len(rows) == 1
     row = rows[0]
-    assert 'Charlie' in str(row)
-    assert '300' in str(row)
-
+    assert row['name'] == 'Charlie'
+    assert str(row['value']) == '300'
 
 @pytest.mark.asyncio
 async def test_transaction(connection, test_type_setup):
@@ -303,5 +296,5 @@ async def test_transaction(connection, test_type_setup):
 
     assert len(rows) == 1
     row = rows[0]
-    assert 'TxTest' in str(row)
-    assert '999' in str(row)
+    assert row['name'] == 'TxTest'
+    assert row['value'] == '999'
