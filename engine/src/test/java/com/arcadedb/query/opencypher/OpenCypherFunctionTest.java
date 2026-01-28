@@ -257,7 +257,9 @@ public class OpenCypherFunctionTest {
 
     assertTrue(resultSet.hasNext());
     final Result result = resultSet.next();
-    final Object source = result.getProperty("source");
+    // Single-variable RETURN with Document result is unwrapped to element
+    assertTrue(result.isElement());
+    final Object source = result.toElement();
 
     assertNotNull(source);
     assertTrue(source instanceof Vertex);
@@ -270,7 +272,9 @@ public class OpenCypherFunctionTest {
 
     assertTrue(resultSet.hasNext());
     final Result result = resultSet.next();
-    final Object target = result.getProperty("target");
+    // Single-variable RETURN with Document result is unwrapped to element
+    assertTrue(result.isElement());
+    final Object target = result.toElement();
 
     assertNotNull(target);
     assertTrue(target instanceof Vertex);
