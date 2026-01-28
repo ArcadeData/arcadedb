@@ -26,9 +26,12 @@ dependencies = [
     "testcontainers>=4.9.1",
     "pytest>=8.3.4",
     "pytest-check>=2.5.0",
+    "pytest-asyncio>=0.23.0",
     "docker>=7.1.0",
     "psycopg>=3.2.5",
     "psycopg-binary>=3.2.5",
+    "asyncpg>=0.29.0",
+    "requests>=2.31.0"
 ]
 
 [build-system]
@@ -37,3 +40,20 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["tests"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+markers = [
+    "asyncio: mark test as asyncio test",
+]
+# Show test durations
+addopts = [
+    "-v",
+    "--durations=10",
+    "--strict-markers",
+]

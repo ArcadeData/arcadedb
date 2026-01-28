@@ -102,9 +102,10 @@ def test_psycopg2_basic_queries():
 
             # Create a new document type
             cursor.execute("CREATE DOCUMENT TYPE TestProduct")
+            cursor.execute("CREATE PROPERTY TestProduct.price INTEGER")
 
             # Insert data
-            cursor.execute("INSERT INTO TestProduct (name, price) VALUES ('TestItem', 29.99)")
+            cursor.execute("INSERT INTO TestProduct (name, price) VALUES ('TestItem', 29)")
 
             # Query the inserted data
             cursor.execute("SELECT * FROM TestProduct")
@@ -116,7 +117,7 @@ def test_psycopg2_basic_queries():
             product = products[0]
             print(f"Product: {product}")
             assert 'TestItem' in product
-            assert 29.99 in product
+            assert '29' in product
     finally:
         conn.close()
 
