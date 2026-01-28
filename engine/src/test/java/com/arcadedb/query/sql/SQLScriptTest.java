@@ -394,6 +394,77 @@ public class SQLScriptTest extends TestHelper {
     });
   }
 
+  /**
+   * Test for issue #2496: ALTER TYPE should return a result in SQLScript
+   * https://github.com/ArcadeData/arcadedb/issues/2496
+   * <p>
+   * SQLScript always returns the result of the last executed command (unless an explicit RETURN statement is present).
+   * DDL statements like ALTER TYPE were returning empty results because DDLExecutionPlan.fetchNext() returned an empty ResultSet.
+   */
+  @Test
+  void alterTypeReturnsResultInSqlScript() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("TestAlterType");
+
+      // Test that ALTER TYPE returns a result in SQLScript without explicit RETURN
+      String script = """
+          ALTER TYPE TestAlterType ALIASES x, y;
+          """;
+      ResultSet result = database.command("SQLScript", script);
+
+      assertThat(result.hasNext()).as("ALTER TYPE should return a result in SQLScript").isTrue();
+      Result res = result.next();
+      assertThat(res.<String>getProperty("operation")).isEqualTo("ALTER TYPE");
+      assertThat(res.<String>getProperty("typeName")).isEqualTo("TestAlterType");
+      assertThat(res.<String>getProperty("result")).isEqualTo("OK");
+      assertThat(result.hasNext()).isFalse();
+    });
+  }
+
+  /**
+   * Test for issue #2496: SQLScript returns last command result
+   * <p>
+   * Verify that SQLScript returns the result of the last executed command when no explicit RETURN is present.
+   */
+  @Test
+  void sqlScriptReturnsLastCommandResult() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("TestLastCmd");
+
+      // Multiple statements - should return the result of the last one (ALTER TYPE)
+      String script = """
+          INSERT INTO TestLastCmd SET name = 'test';
+          ALTER TYPE TestLastCmd ALIASES z;
+          """;
+      ResultSet result = database.command("SQLScript", script);
+
+      assertThat(result.hasNext()).as("SQLScript should return last command result").isTrue();
+      Result res = result.next();
+      // Should be the ALTER TYPE result, not the INSERT result
+      assertThat(res.<String>getProperty("operation")).isEqualTo("ALTER TYPE");
+      assertThat(res.<String>getProperty("typeName")).isEqualTo("TestLastCmd");
+    });
+  }
+
+  /**
+   * Test for issue #2496: CREATE TYPE also returns a result in SQLScript
+   */
+  @Test
+  void createTypeReturnsResultInSqlScript() {
+    database.transaction(() -> {
+      // Test that CREATE TYPE returns a result in SQLScript without explicit RETURN
+      String script = """
+          CREATE VERTEX TYPE TestCreateType;
+          """;
+      ResultSet result = database.command("SQLScript", script);
+
+      assertThat(result.hasNext()).as("CREATE TYPE should return a result in SQLScript").isTrue();
+      Result res = result.next();
+      assertThat(res.<String>getProperty("operation")).isEqualTo("create vertex type");
+      assertThat(res.<String>getProperty("typeName")).isEqualTo("TestCreateType");
+    });
+  }
+
   @Test
   void testUninitializedVariables() {
     // Test case for issue #1939: https://github.com/ArcadeData/arcadedb/issues/1939
