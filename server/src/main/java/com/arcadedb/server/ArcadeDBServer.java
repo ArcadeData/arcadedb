@@ -305,6 +305,38 @@ public class ArcadeDBServer {
         }
       }
     }
+
+    // Auto-register backup scheduler plugin if backup.json exists and not already registered
+    if (installationPriority == ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN
+        && !plugins.containsKey("auto-backup")) {
+      registerAutoBackupPluginIfConfigured();
+    }
+  }
+
+  private void registerAutoBackupPluginIfConfigured() {
+    final File backupConfigFile = java.nio.file.Paths.get(serverRootPath, "config", "backup.json").toFile();
+    if (backupConfigFile.exists()) {
+      try {
+        final Class<ServerPlugin> c = (Class<ServerPlugin>) Class.forName(
+            "com.arcadedb.server.backup.AutoBackupSchedulerPlugin");
+        final ServerPlugin pluginInstance = c.getConstructor().newInstance();
+
+        pluginInstance.configure(this, configuration);
+        pluginInstance.startService();
+
+        plugins.put("auto-backup", pluginInstance);
+
+        LogManager.instance().log(this, Level.INFO, "- auto-backup plugin started (auto-detected config/backup.json)");
+
+      } catch (final ClassNotFoundException e) {
+        // Plugin class not available, skip silently
+        LogManager.instance().log(this, Level.FINE,
+            "Auto-backup plugin class not found, skipping auto-registration");
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error auto-registering backup plugin", e);
+      }
+    }
   }
 
   public synchronized void stop() {

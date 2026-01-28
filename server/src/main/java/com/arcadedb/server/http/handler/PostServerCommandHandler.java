@@ -29,6 +29,11 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.backup.AutoBackupConfig;
+import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
+import com.arcadedb.server.backup.BackupRetentionManager;
+import com.arcadedb.server.backup.DatabaseBackupConfig;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
 import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
@@ -37,13 +42,18 @@ import com.arcadedb.server.ha.message.ServerShutdownRequest;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.FileUtils;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.StatusCodes;
 
 import java.io.*;
+import java.nio.file.*;
 import java.rmi.*;
+import java.time.*;
+import java.time.format.*;
 import java.util.*;
+import java.util.regex.*;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String LIST_DATABASES       = "list databases";
@@ -60,6 +70,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String SET_SERVER_SETTING   = "set server setting";
   private static final String GET_SERVER_EVENTS    = "get server events";
   private static final String ALIGN_DATABASE       = "align database";
+  private static final String GET_BACKUP_CONFIG    = "get backup config";
+  private static final String SET_BACKUP_CONFIG    = "set backup config";
+  private static final String LIST_BACKUPS         = "list backups";
+  private static final String TRIGGER_BACKUP       = "trigger backup";
 
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -114,6 +128,14 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       response.put("result", getServerEvents(extractTarget(command, GET_SERVER_EVENTS)));
     else if (command_lc.startsWith(ALIGN_DATABASE))
       alignDatabase(extractTarget(command, ALIGN_DATABASE));
+    else if (command_lc.equals(GET_BACKUP_CONFIG))
+      return getBackupConfig();
+    else if (command_lc.equals(SET_BACKUP_CONFIG))
+      return setBackupConfig(payload);
+    else if (command_lc.startsWith(LIST_BACKUPS))
+      return listBackups(extractTarget(command, LIST_BACKUPS));
+    else if (command_lc.startsWith(TRIGGER_BACKUP))
+      return triggerBackup(extractTarget(command, TRIGGER_BACKUP));
     else {
       Metrics.counter("http.server-command.invalid").increment();
 
@@ -329,6 +351,275 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     Metrics.counter("http.align-database").increment();
 
     database.command("sql", "align database");
+  }
+
+  private ExecutionResponse getBackupConfig() {
+    Metrics.counter("http.get-backup-config").increment();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
+
+    final JSONObject response = new JSONObject();
+
+    if (plugin != null && plugin.isEnabled()) {
+      response.put("enabled", true);
+      final AutoBackupConfig config = plugin.getBackupConfig();
+      response.put("config", config != null ? config.toJSON() : JSONObject.NULL);
+    } else {
+      // Plugin not enabled at startup - try to read config from file directly
+      final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+      if (Files.exists(configPath)) {
+        try {
+          final String content = Files.readString(configPath);
+          final JSONObject configJson = new JSONObject(content);
+          response.put("enabled", false); // Plugin not running, but config exists
+          response.put("config", configJson);
+          response.put("message", "Configuration saved but requires server restart to take effect");
+        } catch (final IOException e) {
+          response.put("enabled", false);
+          response.put("config", JSONObject.NULL);
+        }
+      } else {
+        response.put("enabled", false);
+        response.put("config", JSONObject.NULL);
+      }
+    }
+
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  private ExecutionResponse setBackupConfig(final JSONObject payload) throws IOException {
+    Metrics.counter("http.set-backup-config").increment();
+
+    if (!payload.has("config"))
+      throw new IllegalArgumentException("Missing 'config' in payload");
+
+    final JSONObject configJson = payload.getJSONObject("config");
+
+    // Validate backup directory - must be relative path without traversal
+    if (configJson.has("backupDirectory")) {
+      final String backupDir = configJson.getString("backupDirectory");
+      validateBackupDirectory(backupDir);
+    }
+
+    final ArcadeDBServer server = httpServer.getServer();
+
+    // Save configuration to file
+    final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+
+    // Ensure config directory exists
+    final Path configDir = configPath.getParent();
+    if (!Files.exists(configDir))
+      Files.createDirectories(configDir);
+
+    // Write configuration
+    Files.writeString(configPath, configJson.toString(2));
+
+    // Reload configuration in the plugin
+    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
+    if (plugin != null && plugin.isEnabled())
+      plugin.reloadConfiguration();
+
+    final JSONObject response = new JSONObject().put("result", "ok");
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  private void validateBackupDirectory(final String backupDir) {
+    if (backupDir == null || backupDir.isEmpty())
+      throw new IllegalArgumentException("Backup directory cannot be empty");
+
+    // Check for absolute paths
+    final Path path = Paths.get(backupDir);
+    if (path.isAbsolute())
+      throw new IllegalArgumentException("Backup directory must be a relative path, not absolute: " + backupDir);
+
+    // Check for path traversal attempts
+    if (backupDir.contains(".."))
+      throw new IllegalArgumentException("Backup directory cannot contain path traversal (..): " + backupDir);
+
+    // Normalize and verify the path doesn't escape
+    final Path normalized = path.normalize();
+    if (normalized.startsWith(".."))
+      throw new IllegalArgumentException("Backup directory cannot escape server root: " + backupDir);
+  }
+
+  private ExecutionResponse listBackups(final String databaseName) {
+    if (databaseName.isEmpty())
+      throw new IllegalArgumentException("Database name empty");
+
+    Metrics.counter("http.list-backups").increment();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
+
+    final JSONArray backups = new JSONArray();
+
+    if (plugin != null && plugin.isEnabled()) {
+      final AutoBackupConfig config = plugin.getBackupConfig();
+      if (config != null) {
+        // Resolve backup directory
+        String backupDirectory = config.getBackupDirectory();
+        final Path backupPath = Paths.get(backupDirectory);
+        if (!backupPath.isAbsolute())
+          backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
+
+        final Path dbBackupDir = Paths.get(backupDirectory, databaseName);
+        if (Files.exists(dbBackupDir) && Files.isDirectory(dbBackupDir)) {
+          final Pattern pattern = Pattern.compile(".*-backup-(\\d{8})-(\\d{6})\\.zip$");
+          final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
+          try (var stream = Files.list(dbBackupDir)) {
+            stream.filter(p -> p.toString().endsWith(".zip") && p.getFileName().toString().contains("-backup-"))
+                .sorted(Comparator.reverseOrder())
+                .forEach(p -> {
+                  final JSONObject backup = new JSONObject();
+                  backup.put("fileName", p.getFileName().toString());
+                  try {
+                    backup.put("size", Files.size(p));
+                    backup.put("lastModified", Files.getLastModifiedTime(p).toMillis());
+                  } catch (final IOException e) {
+                    backup.put("size", 0);
+                    backup.put("lastModified", 0);
+                  }
+
+                  // Parse timestamp from filename
+                  final Matcher matcher = pattern.matcher(p.getFileName().toString());
+                  if (matcher.matches()) {
+                    try {
+                      final String timestampStr = matcher.group(1) + "-" + matcher.group(2);
+                      final LocalDateTime timestamp = LocalDateTime.parse(timestampStr, formatter);
+                      backup.put("timestamp", timestamp.toString());
+                    } catch (final Exception e) {
+                      backup.put("timestamp", JSONObject.NULL);
+                    }
+                  }
+
+                  backups.put(backup);
+                });
+          } catch (final IOException e) {
+            throw new RuntimeException("Error listing backups for database '" + databaseName + "'", e);
+          }
+        }
+      }
+    }
+
+    final JSONObject response = new JSONObject();
+    response.put("database", databaseName);
+    response.put("backups", backups);
+
+    // Get retention manager stats if available
+    if (plugin != null && plugin.getRetentionManager() != null) {
+      final BackupRetentionManager retentionManager = plugin.getRetentionManager();
+      response.put("totalSize", retentionManager.getBackupSizeBytes(databaseName));
+      response.put("totalCount", retentionManager.getBackupCount(databaseName));
+    }
+
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  private ExecutionResponse triggerBackup(final String databaseName) {
+    if (databaseName.isEmpty())
+      throw new IllegalArgumentException("Database name empty");
+
+    Metrics.counter("http.trigger-backup").increment();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
+
+    // Try to get backup directory from config (plugin or file)
+    String backupDirectory = null;
+
+    if (plugin != null && plugin.isEnabled()) {
+      final AutoBackupConfig config = plugin.getBackupConfig();
+      backupDirectory = config != null ? config.getBackupDirectory() : null;
+    }
+
+    // If plugin not enabled, try to read from config file directly
+    if (backupDirectory == null) {
+      final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+      if (Files.exists(configPath)) {
+        try {
+          final String content = Files.readString(configPath);
+          final JSONObject configJson = new JSONObject(content);
+          if (configJson.has("backupDirectory"))
+            backupDirectory = configJson.getString("backupDirectory");
+        } catch (final IOException ignored) {
+        }
+      }
+    }
+
+    // Use config directory if available
+    if (backupDirectory != null) {
+      try {
+        // Validate the directory
+        validateBackupDirectory(backupDirectory);
+
+        // Resolve relative path
+        final Path backupPath = Paths.get(backupDirectory);
+        if (!backupPath.isAbsolute())
+          backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
+
+        // Perform backup using reflection (same as BackupTask)
+        final Database database = server.getDatabase(databaseName);
+        final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
+
+        final String timestamp = java.time.LocalDateTime.now()
+            .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
+
+        final String dbBackupDir = Paths.get(backupDirectory, databaseName).toString();
+        final File backupDirFile = new File(dbBackupDir);
+        if (!backupDirFile.exists())
+          backupDirFile.mkdirs();
+
+        final Object backup = clazz.getConstructor(Database.class, String.class)
+            .newInstance(database, backupFileName);
+        clazz.getMethod("setDirectory", String.class).invoke(backup, dbBackupDir);
+        clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
+
+        final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+
+        final JSONObject response = new JSONObject();
+        response.put("result", "ok");
+        response.put("backupFile", backupFile);
+        return new ExecutionResponse(200, response.toString());
+
+      } catch (final ClassNotFoundException e) {
+        throw new RuntimeException("Backup libs not found in classpath. Make sure arcadedb-integration module is included.", e);
+      } catch (final Exception e) {
+        final Throwable cause = e.getCause() != null ? e.getCause() : e;
+        throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + cause.getMessage(), cause);
+      }
+    }
+
+    // Fallback: use SQL command (uses GlobalConfiguration.SERVER_BACKUP_DIRECTORY)
+    try {
+      final Database database = server.getDatabase(databaseName);
+      final Object result = database.command("sql", "backup database");
+
+      final JSONObject response = new JSONObject();
+      response.put("result", "ok");
+      if (result instanceof Iterable) {
+        for (final Object r : (Iterable<?>) result) {
+          if (r instanceof Map) {
+            final Map<?, ?> map = (Map<?, ?>) r;
+            if (map.containsKey("backupFile"))
+              response.put("backupFile", map.get("backupFile").toString());
+          }
+        }
+      }
+      return new ExecutionResponse(200, response.toString());
+    } catch (final Exception e) {
+      throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + e.getMessage(), e);
+    }
+  }
+
+  private AutoBackupSchedulerPlugin getBackupPlugin(final ArcadeDBServer server) {
+    for (final ServerPlugin plugin : server.getPlugins()) {
+      if (plugin instanceof AutoBackupSchedulerPlugin)
+        return (AutoBackupSchedulerPlugin) plugin;
+    }
+    return null;
   }
 
   private void checkServerIsLeaderIfInHA() {

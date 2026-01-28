@@ -39,6 +39,14 @@ a.vertical-tab.nav-link.active.show {
   border-top-right-radius: 0;
 }
 
+.nav-label {
+  font-size: 0.65rem;
+  margin-top: 2px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 a.nav-link.active.show {
   background-color: #f7f7f7;
   border-bottom-color: #f7f7f7;

@@ -1139,3 +1139,218 @@ function updateDatabaseSetting(key, value) {
     }
   });
 }
+
+// Database backup functionality
+var dbBackupsLoaded = false;
+
+function loadDatabaseBackups() {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
+    globalNotify("Error", "No database selected", "danger");
+    return;
+  }
+
+  // Reset loaded flag when explicitly refreshing
+  dbBackupsLoaded = true;
+
+  // Load backup config first
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/server",
+      data: JSON.stringify({ command: "get backup config" }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      if (data.config == null || data.config === "null") {
+        $("#dbBackupConfigInfo").html(
+          '<p class="text-warning">Auto-backup is not configured. Go to Server &gt; Backup tab to configure it.</p>'
+        );
+      } else {
+        displayDbBackupConfig(data.config, data.enabled, data.message);
+      }
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      $("#dbBackupConfigInfo").html('<p class="text-danger">Error loading configuration</p>');
+    });
+
+  // Load backup list
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/server",
+      data: JSON.stringify({ command: "list backups " + database }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      displayDbBackupList(data);
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      globalNotifyError(jqXHR.responseText);
+    });
+}
+
+function displayDbBackupConfig(config, pluginEnabled, message) {
+  let html = "";
+
+  if (!pluginEnabled && message) {
+    html += '<div class="alert alert-warning mb-2"><i class="fa fa-exclamation-triangle"></i> ' + escapeHtml(message) + "</div>";
+  } else if (!pluginEnabled) {
+    html += '<div class="alert alert-info mb-2"><i class="fa fa-info-circle"></i> Configuration saved. Restart server to enable auto-backup.</div>';
+  }
+
+  html += "<table class='table table-sm'>";
+  html += "<tr><td><strong>Enabled</strong></td><td>" + (config.enabled ? "Yes" : "No") + "</td></tr>";
+  html += "<tr><td><strong>Backup Directory</strong></td><td>" + escapeHtml(config.backupDirectory || "./backups") + "</td></tr>";
+
+  if (config.defaults) {
+    let defaults = config.defaults;
+    html += "<tr><td><strong>Run On Server</strong></td><td>" + escapeHtml(defaults.runOnServer || "$leader") + "</td></tr>";
+
+    if (defaults.schedule) {
+      let sched = defaults.schedule;
+      if (sched.type === "frequency") {
+        html += "<tr><td><strong>Schedule</strong></td><td>Every " + sched.frequencyMinutes + " minutes</td></tr>";
+      } else if (sched.type === "cron") {
+        html += "<tr><td><strong>Schedule</strong></td><td>CRON: " + escapeHtml(sched.expression || "") + "</td></tr>";
+      }
+
+      if (sched.timeWindow) {
+        html +=
+          "<tr><td><strong>Time Window</strong></td><td>" +
+          escapeHtml(sched.timeWindow.start || "") +
+          " - " +
+          escapeHtml(sched.timeWindow.end || "") +
+          "</td></tr>";
+      }
+    }
+
+    if (defaults.retention) {
+      let ret = defaults.retention;
+      html += "<tr><td><strong>Max Files</strong></td><td>" + ret.maxFiles + "</td></tr>";
+      if (ret.tiered) {
+        html +=
+          "<tr><td><strong>Tiered Retention</strong></td><td>Hourly: " +
+          ret.tiered.hourly +
+          ", Daily: " +
+          ret.tiered.daily +
+          ", Weekly: " +
+          ret.tiered.weekly +
+          ", Monthly: " +
+          ret.tiered.monthly +
+          ", Yearly: " +
+          ret.tiered.yearly +
+          "</td></tr>";
+      }
+    }
+  }
+
+  html += "</table>";
+  $("#dbBackupConfigInfo").html(html);
+}
+
+function displayDbBackupList(data) {
+  // Update statistics
+  $("#dbBackupTotalCount").text(data.totalCount || data.backups.length);
+  $("#dbBackupTotalSize").text(globalFormatSpace(data.totalSize || 0));
+
+  // Setup DataTable
+  if ($.fn.dataTable.isDataTable("#dbBackupList")) {
+    try {
+      $("#dbBackupList").DataTable().destroy();
+      $("#dbBackupList").empty();
+    } catch (e) {}
+  }
+
+  let tableRecords = [];
+
+  for (let i in data.backups) {
+    let backup = data.backups[i];
+
+    let record = [];
+    record.push(escapeHtml(backup.fileName));
+    record.push(backup.timestamp ? formatBackupTimestamp(backup.timestamp) : "-");
+    record.push(globalFormatSpace(backup.size));
+    tableRecords.push(record);
+  }
+
+  $("#dbBackupList").DataTable({
+    paging: true,
+    ordering: true,
+    order: [[1, "desc"]],
+    pageLength: 25,
+    columns: [
+      { title: "File Name", width: "50%" },
+      { title: "Timestamp", width: "30%" },
+      { title: "Size", width: "20%" },
+    ],
+    data: tableRecords,
+  });
+}
+
+function formatBackupTimestamp(timestamp) {
+  if (!timestamp) return "-";
+  try {
+    let date = new Date(timestamp);
+    return (
+      date.toLocaleDateString() +
+      " " +
+      date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    );
+  } catch (e) {
+    return timestamp;
+  }
+}
+
+function triggerDatabaseBackup() {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
+    globalNotify("Error", "No database selected", "danger");
+    return;
+  }
+
+  globalConfirm(
+    "Trigger Backup",
+    "Are you sure you want to trigger an immediate backup for database '" + escapeHtml(database) + "'?",
+    "info",
+    function () {
+      jQuery
+        .ajax({
+          type: "POST",
+          url: "api/v1/server",
+          data: JSON.stringify({ command: "trigger backup " + database }),
+          beforeSend: function (xhr) {
+            xhr.setRequestHeader("Authorization", globalCredentials);
+          },
+        })
+        .done(function (data) {
+          let msg = "Backup completed successfully for database '" + escapeHtml(database) + "'";
+          if (data.backupFile) {
+            msg += "<br><small>File: " + escapeHtml(data.backupFile) + "</small>";
+          }
+          globalNotify("Backup", msg, "success");
+          // Reload the backup list to show the new backup
+          loadDatabaseBackups();
+        })
+        .fail(function (jqXHR, textStatus, errorThrown) {
+          globalNotifyError(jqXHR.responseText);
+        });
+    }
+  );
+}
+
+// Register tab change handler for database backup tab
+$(document).ready(function () {
+  $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
+    var activeTab = this.id;
+    if (activeTab == "tab-db-backup-sel") {
+      if (!dbBackupsLoaded) {
+        loadDatabaseBackups();
+      }
+    }
+  });
+});
