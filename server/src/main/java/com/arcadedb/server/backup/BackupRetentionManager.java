@@ -104,17 +104,25 @@ public class BackupRetentionManager {
 
     // Delete files not in the keep set
     int deletedCount = 0;
+    int failedCount = 0;
     for (final BackupFileInfo info : backupFiles) {
       if (!filesToKeep.contains(info.file)) {
-        if (info.file.delete()) {
+        try {
+          java.nio.file.Files.delete(info.file.toPath());
           deletedCount++;
           LogManager.instance().log(this, Level.INFO,
               "Deleted old backup: %s", info.file.getName());
-        } else {
+        } catch (final java.io.IOException e) {
+          failedCount++;
           LogManager.instance().log(this, Level.WARNING,
-              "Failed to delete old backup: %s", info.file.getName());
+              "Failed to delete old backup '%s': %s", info.file.getName(), e.getMessage());
         }
       }
+    }
+
+    if (failedCount > 0) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Retention for database '%s' completed with %d deletion failures", databaseName, failedCount);
     }
 
     LogManager.instance().log(this, Level.INFO,
@@ -124,13 +132,23 @@ public class BackupRetentionManager {
     return deletedCount;
   }
 
+  // Maximum number of backup files to process to prevent unbounded memory usage
+  private static final int MAX_BACKUP_FILES_TO_PROCESS = 10000;
+
   /**
    * Gets all backup files for a database directory, sorted by timestamp.
+   * Limited to MAX_BACKUP_FILES_TO_PROCESS to prevent unbounded memory usage.
    */
   private List<BackupFileInfo> getBackupFiles(final File dbBackupDir) {
     final File[] files = dbBackupDir.listFiles(BACKUP_FILE_FILTER);
     if (files == null || files.length == 0)
       return Collections.emptyList();
+
+    if (files.length > MAX_BACKUP_FILES_TO_PROCESS) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Database backup directory contains %d files, processing only the most recent %d",
+          files.length, MAX_BACKUP_FILES_TO_PROCESS);
+    }
 
     final List<BackupFileInfo> backupFiles = new ArrayList<>();
     for (final File file : files) {
@@ -141,6 +159,13 @@ public class BackupRetentionManager {
 
     // Sort by timestamp (oldest first)
     backupFiles.sort(Comparator.comparing(info -> info.timestamp));
+
+    // Limit to most recent files if too many
+    if (backupFiles.size() > MAX_BACKUP_FILES_TO_PROCESS) {
+      final int startIndex = backupFiles.size() - MAX_BACKUP_FILES_TO_PROCESS;
+      return new ArrayList<>(backupFiles.subList(startIndex, backupFiles.size()));
+    }
+
     return backupFiles;
   }
 

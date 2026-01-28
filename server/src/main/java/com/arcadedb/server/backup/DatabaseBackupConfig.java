@@ -53,7 +53,21 @@ public class DatabaseBackupConfig {
     if (json.has("retention"))
       config.retention = RetentionConfig.fromJSON(json.getJSONObject("retention"));
 
+    // Validate the configuration
+    config.validate();
+
     return config;
+  }
+
+  /**
+   * Validates the configuration and throws IllegalArgumentException if invalid.
+   */
+  public void validate() {
+    if (schedule != null)
+      schedule.validate();
+
+    if (retention != null)
+      retention.validate();
   }
 
   public void mergeWithDefaults(final DatabaseBackupConfig defaults) {
@@ -214,6 +228,27 @@ public class DatabaseBackupConfig {
     }
 
     /**
+     * Validates the schedule configuration.
+     */
+    public void validate() {
+      if (type == Type.FREQUENCY) {
+        if (frequencyMinutes < 1)
+          throw new IllegalArgumentException("Backup frequency must be at least 1 minute, got: " + frequencyMinutes);
+        if (frequencyMinutes > 525600) // 1 year in minutes
+          throw new IllegalArgumentException("Backup frequency cannot exceed 1 year (525600 minutes), got: " + frequencyMinutes);
+      } else if (type == Type.CRON) {
+        if (cronExpression == null || cronExpression.trim().isEmpty())
+          throw new IllegalArgumentException("CRON expression is required when schedule type is CRON");
+        // Validate CRON expression by parsing it
+        try {
+          new CronScheduleParser(cronExpression);
+        } catch (final Exception e) {
+          throw new IllegalArgumentException("Invalid CRON expression '" + cronExpression + "': " + e.getMessage(), e);
+        }
+      }
+    }
+
+    /**
      * Converts this schedule configuration to a JSON object.
      */
     public JSONObject toJSON() {
@@ -280,6 +315,19 @@ public class DatabaseBackupConfig {
 
     public boolean hasTieredRetention() {
       return tiered != null;
+    }
+
+    /**
+     * Validates the retention configuration.
+     */
+    public void validate() {
+      if (maxFiles < 1)
+        throw new IllegalArgumentException("Max backup files must be at least 1, got: " + maxFiles);
+      if (maxFiles > 10000)
+        throw new IllegalArgumentException("Max backup files cannot exceed 10000, got: " + maxFiles);
+
+      if (tiered != null)
+        tiered.validate();
     }
 
     /**
@@ -361,6 +409,28 @@ public class DatabaseBackupConfig {
 
     public void setYearly(final int yearly) {
       this.yearly = yearly;
+    }
+
+    /**
+     * Validates the tiered retention configuration.
+     */
+    public void validate() {
+      if (hourly < 0)
+        throw new IllegalArgumentException("Hourly retention cannot be negative: " + hourly);
+      if (daily < 0)
+        throw new IllegalArgumentException("Daily retention cannot be negative: " + daily);
+      if (weekly < 0)
+        throw new IllegalArgumentException("Weekly retention cannot be negative: " + weekly);
+      if (monthly < 0)
+        throw new IllegalArgumentException("Monthly retention cannot be negative: " + monthly);
+      if (yearly < 0)
+        throw new IllegalArgumentException("Yearly retention cannot be negative: " + yearly);
+
+      // Limit maximum values to prevent unbounded memory usage
+      final int maxRetention = 1000;
+      if (hourly > maxRetention || daily > maxRetention || weekly > maxRetention ||
+          monthly > maxRetention || yearly > maxRetention)
+        throw new IllegalArgumentException("Tiered retention values cannot exceed " + maxRetention);
     }
 
     /**

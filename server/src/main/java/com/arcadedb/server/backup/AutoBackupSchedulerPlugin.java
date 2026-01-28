@@ -26,6 +26,10 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.event.ServerEventLog;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Set;
 import java.util.logging.Level;
 
@@ -88,40 +92,19 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
       return;
     }
 
-    // Validate and resolve backup directory
+    // Validate and resolve backup directory using consolidated security validation
     String backupDirectory = backupConfig.getBackupDirectory();
-    final java.nio.file.Path backupPath = java.nio.file.Paths.get(backupDirectory);
+    final Path serverRoot = Paths.get(server.getRootPath()).toAbsolutePath().normalize();
 
-    // Reject absolute paths for security
-    if (backupPath.isAbsolute()) {
-      throw new IllegalArgumentException(
-          "Backup directory must be a relative path, not absolute: " + backupDirectory);
-    }
+    // Validate and get the resolved, secure path
+    final Path resolvedPath = validateAndResolveBackupPath(backupDirectory, serverRoot);
+    backupDirectory = resolvedPath.toString();
 
-    // Reject path traversal attempts
-    if (backupDirectory.contains("..")) {
-      throw new IllegalArgumentException(
-          "Backup directory cannot contain path traversal (..): " + backupDirectory);
-    }
-
-    // Resolve relative path against server root
-    backupDirectory = java.nio.file.Paths.get(server.getRootPath(), backupDirectory).toString();
-
-    // Final validation: ensure resolved path is within server root
-    final java.nio.file.Path resolvedPath = java.nio.file.Paths.get(backupDirectory).toAbsolutePath().normalize();
-    final java.nio.file.Path serverRoot = java.nio.file.Paths.get(server.getRootPath()).toAbsolutePath().normalize();
-
-    if (!resolvedPath.startsWith(serverRoot)) {
-      throw new IllegalArgumentException(
-          "Backup directory must be within server root path for security reasons: " + backupDirectory);
-    }
-
-    // Ensure backup directory exists
-    final File backupDir = new File(backupDirectory);
-    if (!backupDir.exists()) {
-      if (!backupDir.mkdirs()) {
-        throw new RuntimeException("Failed to create backup directory: " + backupDirectory);
-      }
+    // Ensure backup directory exists - use Files.createDirectories to avoid TOCTOU
+    try {
+      Files.createDirectories(resolvedPath);
+    } catch (final IOException e) {
+      throw new RuntimeException("Failed to create backup directory: " + backupDirectory, e);
     }
 
     // Initialize retention manager
@@ -269,5 +252,61 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     }
 
     LogManager.instance().log(this, Level.INFO, "Auto-backup configuration reloaded");
+  }
+
+  /**
+   * Validates and resolves a backup directory path with comprehensive security checks.
+   * <p>
+   * Security checks performed:
+   * 1. Reject absolute paths
+   * 2. Normalize path and reject if it escapes via ..
+   * 3. Resolve against server root
+   * 4. Verify final path is within server root
+   * 5. Check for symlinks that could escape the root
+   *
+   * @param backupDir  The backup directory path from configuration
+   * @param serverRoot The server root directory (absolute, normalized)
+   * @return The validated, resolved absolute path
+   * @throws IllegalArgumentException if the path fails security validation
+   */
+  public static Path validateAndResolveBackupPath(final String backupDir, final Path serverRoot) {
+    if (backupDir == null || backupDir.isEmpty())
+      throw new IllegalArgumentException("Backup directory cannot be empty");
+
+    final Path inputPath = Paths.get(backupDir);
+
+    // 1. Reject absolute paths
+    if (inputPath.isAbsolute())
+      throw new IllegalArgumentException(
+          "Backup directory must be a relative path, not absolute: " + backupDir);
+
+    // 2. Normalize and check for path traversal
+    final Path normalizedInput = inputPath.normalize();
+    if (normalizedInput.startsWith(".."))
+      throw new IllegalArgumentException(
+          "Backup directory cannot escape server root via path traversal: " + backupDir);
+
+    // 3. Resolve against server root
+    final Path resolvedPath = serverRoot.resolve(normalizedInput).normalize();
+
+    // 4. Verify resolved path is within server root
+    if (!resolvedPath.startsWith(serverRoot))
+      throw new IllegalArgumentException(
+          "Backup directory must be within server root path: " + backupDir);
+
+    // 5. If path exists, check for symlinks that could escape the root
+    if (Files.exists(resolvedPath)) {
+      try {
+        final Path realPath = resolvedPath.toRealPath();
+        if (!realPath.startsWith(serverRoot))
+          throw new IllegalArgumentException(
+              "Backup directory symlink resolves outside server root: " + backupDir);
+      } catch (final IOException e) {
+        throw new IllegalArgumentException(
+            "Cannot resolve backup directory path: " + backupDir, e);
+      }
+    }
+
+    return resolvedPath;
   }
 }
