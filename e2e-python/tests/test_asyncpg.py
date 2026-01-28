@@ -10,8 +10,7 @@ arcadedb = (DockerContainer("arcadedata/arcadedb:latest")
             .with_exposed_ports(2480, 5432)
             .with_env("JAVA_OPTS",
                       "-Darcadedb.server.rootPassword=playwithdata "
-                      "-Darcadedb.server.defaultDatabases=asyncpg_testdb[root]{} "
-                      "-Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin"))
+                      "-Darcadedb.server.defaultDatabases=asyncpg_testdb[root]{}"))
 
 
 def get_connection_params(container):
@@ -204,3 +203,23 @@ async def test_parameterized_insert(connection, test_type_setup):
     row = rows[0]
     assert 'Charlie' in str(row)
     assert '300' in str(row)
+
+
+@pytest.mark.asyncio
+async def test_transaction(connection, test_type_setup):
+    """Test 7: Transaction support"""
+    async with connection.transaction():
+        await connection.execute(
+            "INSERT INTO AsyncpgTest SET id = 'tx_test', name = 'TxTest', value = 999"
+        )
+
+    # Verify commit
+    rows = await connection.fetch(
+        "SELECT FROM AsyncpgTest WHERE id = $1",
+        "tx_test"
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert 'TxTest' in str(row)
+    assert '999' in str(row)
