@@ -54,24 +54,24 @@ public class LabelsTest extends TestHelper {
   @Test
   public void testGetCompositeTypeNameWithTwoLabels() {
     // Should be sorted alphabetically
-    assertThat(Labels.getCompositeTypeName(List.of("Person", "Developer"))).isEqualTo("Developer_Person");
+    assertThat(Labels.getCompositeTypeName(List.of("Person", "Developer"))).isEqualTo("Developer~Person");
   }
 
   @Test
   public void testGetCompositeTypeNameWithTwoLabelsReversed() {
     // Should produce same result regardless of order
-    assertThat(Labels.getCompositeTypeName(List.of("Developer", "Person"))).isEqualTo("Developer_Person");
+    assertThat(Labels.getCompositeTypeName(List.of("Developer", "Person"))).isEqualTo("Developer~Person");
   }
 
   @Test
   public void testGetCompositeTypeNameWithThreeLabels() {
-    assertThat(Labels.getCompositeTypeName(List.of("C", "A", "B"))).isEqualTo("A_B_C");
+    assertThat(Labels.getCompositeTypeName(List.of("C", "A", "B"))).isEqualTo("A~B~C");
   }
 
   @Test
   public void testGetCompositeTypeNamePreservesCase() {
     // Case-sensitive sorting: uppercase letters come before lowercase
-    assertThat(Labels.getCompositeTypeName(List.of("person", "Developer"))).isEqualTo("Developer_person");
+    assertThat(Labels.getCompositeTypeName(List.of("person", "Developer"))).isEqualTo("Developer~person");
   }
 
   // Tests for isCompositeTypeName()
@@ -88,7 +88,7 @@ public class LabelsTest extends TestHelper {
 
   @Test
   public void testIsCompositeTypeNameWithCompositeLabel() {
-    assertThat(Labels.isCompositeTypeName("Developer_Person")).isTrue();
+    assertThat(Labels.isCompositeTypeName("Developer~Person")).isTrue();
   }
 
   // Tests for ensureCompositeType()
@@ -114,18 +114,18 @@ public class LabelsTest extends TestHelper {
   public void testEnsureCompositeTypeWithMultipleLabels() {
     database.transaction(() -> {
       String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Developer"));
-      assertThat(typeName).isEqualTo("Developer_Person");
+      assertThat(typeName).isEqualTo("Developer~Person");
 
       // Verify composite type exists
-      assertThat(database.getSchema().existsType("Developer_Person")).isTrue();
+      assertThat(database.getSchema().existsType("Developer~Person")).isTrue();
 
       // Verify base types exist
       assertThat(database.getSchema().existsType("Person")).isTrue();
       assertThat(database.getSchema().existsType("Developer")).isTrue();
 
       // Verify inheritance
-      assertThat(database.getSchema().getType("Developer_Person").instanceOf("Person")).isTrue();
-      assertThat(database.getSchema().getType("Developer_Person").instanceOf("Developer")).isTrue();
+      assertThat(database.getSchema().getType("Developer~Person").instanceOf("Person")).isTrue();
+      assertThat(database.getSchema().getType("Developer~Person").instanceOf("Developer")).isTrue();
     });
   }
 
@@ -137,7 +137,7 @@ public class LabelsTest extends TestHelper {
 
       // Call again - should return the same type name
       String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("B", "A"));
-      assertThat(typeName).isEqualTo("A_B");
+      assertThat(typeName).isEqualTo("A~B");
     });
   }
 
@@ -162,7 +162,7 @@ public class LabelsTest extends TestHelper {
       // Create composite type
       Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Developer"));
 
-      MutableVertex vertex = database.newVertex("Developer_Person");
+      MutableVertex vertex = database.newVertex("Developer~Person");
       vertex.set("name", "Alice");
       vertex.save();
 
@@ -190,7 +190,7 @@ public class LabelsTest extends TestHelper {
       // Create composite type
       Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Developer"));
 
-      MutableVertex vertex = database.newVertex("Developer_Person");
+      MutableVertex vertex = database.newVertex("Developer~Person");
       vertex.set("name", "Alice");
       vertex.save();
 
@@ -208,7 +208,7 @@ public class LabelsTest extends TestHelper {
       Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Developer"));
 
       // Create a vertex with composite type
-      MutableVertex vertex = database.newVertex("Developer_Person");
+      MutableVertex vertex = database.newVertex("Developer~Person");
       vertex.set("name", "Alice");
       vertex.save();
 
@@ -233,16 +233,16 @@ public class LabelsTest extends TestHelper {
     database.transaction(() -> {
       // Create composite type with three labels
       String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Manager", "Developer", "Person"));
-      assertThat(typeName).isEqualTo("Developer_Manager_Person");
+      assertThat(typeName).isEqualTo("Developer~Manager~Person");
 
       // Verify type exists and has correct inheritance
-      assertThat(database.getSchema().existsType("Developer_Manager_Person")).isTrue();
-      assertThat(database.getSchema().getType("Developer_Manager_Person").instanceOf("Person")).isTrue();
-      assertThat(database.getSchema().getType("Developer_Manager_Person").instanceOf("Developer")).isTrue();
-      assertThat(database.getSchema().getType("Developer_Manager_Person").instanceOf("Manager")).isTrue();
+      assertThat(database.getSchema().existsType("Developer~Manager~Person")).isTrue();
+      assertThat(database.getSchema().getType("Developer~Manager~Person").instanceOf("Person")).isTrue();
+      assertThat(database.getSchema().getType("Developer~Manager~Person").instanceOf("Developer")).isTrue();
+      assertThat(database.getSchema().getType("Developer~Manager~Person").instanceOf("Manager")).isTrue();
 
       // Create vertex and verify labels
-      MutableVertex vertex = database.newVertex("Developer_Manager_Person");
+      MutableVertex vertex = database.newVertex("Developer~Manager~Person");
       vertex.set("name", "Alice");
       vertex.save();
 
