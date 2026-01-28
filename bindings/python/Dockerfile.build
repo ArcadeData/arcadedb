@@ -3,16 +3,19 @@
 # Excludes JARs listed in jar_exclusions.txt to optimize size
 #
 # REQUIRED BUILD ARGS (passed from build.sh):
+#   PYTHON_VERSION - Python version for wheel (e.g., 3.11, 3.12, 3.13, 3.14)
 #   PACKAGE_NAME - always: arcadedb-embedded
 #   PACKAGE_DESCRIPTION - package description
-#   ARCADEDB_TAG - version tag from pom.xml (e.g., 25.10.1-SNAPSHOT)
-#                  Default below is fallback; build.sh extracts and passes actual version
 #   TARGET_PLATFORM - target platform for JRE (e.g., linux-x64, linux-arm64, darwin-x64)
 
+ARG PYTHON_VERSION=3.12
 ARG PACKAGE_NAME=arcadedb-embedded
 ARG PACKAGE_DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
-ARG ARCADEDB_TAG=25.10.1-SNAPSHOT
+ARG ARCADEDB_TAG
 ARG TARGET_PLATFORM=linux-x64
+# When set to 1, prefer jars provided in bindings/python/local-jars/lib from the build context.
+# If no local jars are present, the build fails fast to avoid silently falling back.
+ARG USE_LOCAL_JARS=0
 
 # Stage 1: Use prebuilt ArcadeDB image to obtain compiled JARs
 # JARs are filtered based on jar_exclusions.txt in later stages
@@ -21,15 +24,30 @@ FROM arcadedata/arcadedb:${ARCADEDB_TAG} AS java-builder
 # nothing to do here; jars will be copied from /home/arcadedb/lib in the python-builder stage
 
 # Stage 2: Build minimal JRE with jlink
-FROM eclipse-temurin:21-jdk-jammy AS jre-builder
+FROM eclipse-temurin:25-jdk-jammy AS jre-builder
 
 ARG TARGET_PLATFORM
+ARG USE_LOCAL_JARS
 
 WORKDIR /build
 
-# Copy JARs from ArcadeDB image
-RUN mkdir -p /build/jars
-COPY --from=java-builder /home/arcadedb/lib /build/jars/
+# Stash upstream jars from the ArcadeDB image
+RUN mkdir -p /build/upstream-jars /build/jars /build/local-jars
+COPY --from=java-builder /home/arcadedb/lib /build/upstream-jars/
+
+# Optionally bring in locally built jars from the repo (bindings/python/local-jars/lib)
+COPY bindings/python/local-jars/lib/ /build/local-jars/
+
+# Select jar source: local when requested and available; otherwise fall back to upstream image
+RUN if [ "$USE_LOCAL_JARS" = "1" ]; then \
+            if [ -d /build/local-jars ] && [ "$(ls -1 /build/local-jars | wc -l)" -gt 0 ]; then \
+                echo "📦 Using local jars from build context" && cp /build/local-jars/* /build/jars/; \
+            else \
+                echo "❌ USE_LOCAL_JARS=1 but no jars found in bindings/python/local-jars/lib" && exit 1; \
+            fi; \
+        else \
+            echo "📦 Using ArcadeDB image jars" && cp /build/upstream-jars/* /build/jars/; \
+        fi
 
 # Copy JAR exclusion list
 COPY bindings/python/jar_exclusions.txt /build/jar_exclusions.txt
@@ -47,26 +65,43 @@ RUN echo "🗑️  Removing excluded JARs..." && \
     done < /build/jar_exclusions.txt && \
     echo "📋 JAR count after exclusion: $(ls -1 /build/jars/*.jar | wc -l)"
 
-# Build minimal JRE with jlink (21 modules)
-# Based on analysis of ArcadeDB dependencies
-# Note: jdk.zipfs is required for JPype JAR filesystem support
-RUN echo "🔨 Building minimal JRE for platform: ${TARGET_PLATFORM}" && \
-    REQUIRED_MODULES="java.base,java.compiler,java.desktop,java.logging,java.management,java.naming,java.prefs,java.rmi,java.scripting,java.security.jgss,java.security.sasl,java.sql,java.transaction.xa,java.xml,jdk.incubator.vector,jdk.internal.vm.ci,jdk.jfr,jdk.management,jdk.sctp,jdk.unsupported,jdk.zipfs" && \
-    echo "📦 Required modules (21):" && \
+# Build minimal JRE with jlink
+# Automatically detect modules with jdeps, plus ensure jdk.zipfs (for JPype) and jdk.unsupported are included
+# We exclude jboss/wildfly JARs because they have broken module descriptors that fail analysis.
+# We also do NOT provide a classpath, forcing jdeps to ignore all missing dependencies (intra-jar or external).
+RUN echo "🔍 Analyzing JARs with jdeps..." && \
+    DETECTED_MODULES=$(find /build/jars -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 | grep -v "Warning" | tr ',' '\n' | grep -v "Warning" | grep -v ":" | grep -v "/" | sort -u | paste -sd "," -) && \
+    REQUIRED_MODULES="${DETECTED_MODULES},jdk.zipfs,jdk.unsupported" && \
+    echo "🔨 Building minimal JRE for platform: ${TARGET_PLATFORM}" && \
+    echo "📦 Detected modules: ${DETECTED_MODULES}" && \
+    echo "📦 Final modules list: ${REQUIRED_MODULES}" && \
+    echo "📦 Required modules:" && \
     echo "$REQUIRED_MODULES" | tr ',' '\n' | sed 's/^/   - /' && \
-    echo "" && \
-    echo "🔨 Running jlink..." && \
-    jlink \
-        --module-path "${JAVA_HOME}/jmods" \
-        --add-modules "${REQUIRED_MODULES}" \
-        --ignore-signing-information \
-        --strip-debug \
-        --no-man-pages \
-        --no-header-files \
-        --compress zip-9 \
-        --output /build/jre && \
-    echo "" && \
-    echo "✅ JRE build complete!" && \
+    JMODS_DIR="${JAVA_HOME}/jmods" && \
+    if [ ! -d "$JMODS_DIR" ]; then JMODS_DIR="${JAVA_HOME}/lib/jmods"; fi && \
+    if [ -d "$JMODS_DIR" ]; then \
+        echo "" ; \
+        echo "🔨 Running jlink..." ; \
+        jlink \
+            --module-path "$JMODS_DIR" \
+            --add-modules "${REQUIRED_MODULES}" \
+            --ignore-signing-information \
+            --strip-debug \
+            --no-man-pages \
+            --no-header-files \
+            --compress zip-9 \
+            --output /build/jre ; \
+        echo "" ; \
+        echo "✅ JRE build complete!" ; \
+    else \
+        echo "⚠️  jmods directory not found under ${JAVA_HOME}. Falling back to copying full JDK runtime." ; \
+        mkdir -p /build/jre ; \
+        cp -a ${JAVA_HOME}/bin /build/jre/bin ; \
+        cp -a ${JAVA_HOME}/lib /build/jre/lib ; \
+        cp -a ${JAVA_HOME}/conf /build/jre/conf || true ; \
+        cp -a ${JAVA_HOME}/release /build/jre/release || true ; \
+        echo "✅ Fallback JRE created from full JDK runtime." ; \
+    fi && \
     echo "" && \
     JRE_SIZE=$(du -sh /build/jre | cut -f1) && \
     echo "📊 JRE size: $JRE_SIZE" && \
@@ -82,16 +117,19 @@ RUN echo "🔨 Building minimal JRE for platform: ${TARGET_PLATFORM}" && \
 
 # Stage 3: Build Python wheel
 
-FROM python:3.11-slim AS python-builder
+FROM python:${PYTHON_VERSION}-slim AS python-builder
 
-# Install system dependencies (JDK needed for JPype at build/test time)
+# Install minimal build tooling (no external JDK needed; we use bundled JRE)
 RUN apt-get update && apt-get install -y \
-    openjdk-21-jdk \
+    build-essential \
+    curl \
+    file \
+    patchelf \
     && rm -rf /var/lib/apt/lists/*
 
-# Set JAVA_HOME
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-ENV PATH=$PATH:$JAVA_HOME/bin
+# Install uv for faster, deterministic installs
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && uv --version
 
 WORKDIR /build
 
@@ -117,7 +155,7 @@ COPY bindings/python/README.md ./
 COPY ../../pom.xml /arcadedb/pom.xml
 
 # Install Python build dependencies
-RUN pip install --no-cache-dir build wheel setuptools jpype1
+RUN uv pip install --system build wheel setuptools jpype1 auditwheel
 
 # Re-declare build args for this stage (required after FROM)
 ARG PACKAGE_NAME
@@ -150,7 +188,30 @@ RUN if [ -n "${BUILD_VERSION}" ]; then \
     sed -i 's|^name = .*|name = "'"${PACKAGE_NAME}"'"|' pyproject.toml && \
     sed -i 's|^version = .*|version = "'"${ARCADEDB_VERSION}"'"|' pyproject.toml && \
     sed -i 's|^description = .*|description = "'"${PACKAGE_DESCRIPTION}"'"|' pyproject.toml && \
-    python3 -m build --wheel && \
+    if echo "${TARGET_PLATFORM}" | grep -q '^linux-'; then \
+        if [ "${TARGET_PLATFORM}" = "linux-x64" ]; then \
+            WHEEL_PLAT="manylinux_2_35_x86_64"; \
+        elif [ "${TARGET_PLATFORM}" = "linux-arm64" ]; then \
+            WHEEL_PLAT="manylinux_2_35_aarch64"; \
+        else \
+            WHEEL_PLAT=""; \
+        fi; \
+        if [ -n "${WHEEL_PLAT}" ]; then \
+            echo "🏷️  Building wheel with platform tag: ${WHEEL_PLAT}"; \
+            python3 -m build --wheel --config-setting=--build-option=--plat-name=${WHEEL_PLAT}; \
+        else \
+            python3 -m build --wheel; \
+        fi; \
+    else \
+        python3 -m build --wheel; \
+    fi && \
+    if echo "${TARGET_PLATFORM}" | grep -q '^linux-'; then \
+        if [ -n "${WHEEL_PLAT}" ] && ! ls /build/dist/*${WHEEL_PLAT}*.whl 1> /dev/null 2>&1; then \
+            echo "❌ Expected manylinux wheel (${WHEEL_PLAT}) not found"; \
+            ls -lh /build/dist; \
+            exit 1; \
+        fi; \
+    fi && \
     echo "✅ Wheel built successfully!" && \
     ls -lh dist/
 
@@ -160,15 +221,18 @@ FROM python-builder AS export
 # The dist directory is preserved from python-builder stage
 
 # Stage 5: Test the built wheel
-FROM python:3.11-slim AS tester
+FROM python:${PYTHON_VERSION}-slim AS tester
 
-# Install Java runtime for JPype
+# No external JRE needed in tester; the wheel includes a bundled JRE
+# Keep build-essential in case pytest or wheels need compilation on some platforms
 RUN apt-get update && apt-get install -y \
-    openjdk-21-jre-headless \
+    build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-ENV PATH=$PATH:$JAVA_HOME/bin
+# Install uv for faster, deterministic installs
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && uv --version
 
 WORKDIR /test
 
@@ -176,7 +240,7 @@ WORKDIR /test
 COPY --from=python-builder /build/dist/*.whl /tmp/
 
 # Install the wheel and test dependencies
-RUN pip install --no-cache-dir /tmp/*.whl pytest pytest-cov
+RUN uv pip install --system /tmp/*.whl pytest pytest-cov
 
 # Copy tests
 COPY --from=python-builder /build/tests ./tests/
@@ -205,7 +269,7 @@ try:\n\
         \n\
         result = db.query("sql", "SELECT FROM TestDoc")\n\
         for record in result:\n\
-            print(f"✅ Query result: {record.get_property('\''name'\'')} = {record.get_property('\''value'\'')}")\n\
+            print(f"✅ Query result: {record.get('\''name'\'')} = {record.get('\''value'\'')}")\n\
     \n\
     print("🎉 All tests passed!")\n\
 finally:\n\

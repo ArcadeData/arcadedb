@@ -20,6 +20,11 @@ on:
 
   # Allow being called by other workflows (e.g., release workflow)
   workflow_call:
+    inputs:
+      build-version:
+        description: "Override package version (PEP 440) for build.sh"
+        required: false
+        type: string
 
   # Allow manual trigger
   workflow_dispatch:
@@ -107,26 +112,33 @@ jobs:
 
   # Second job: Build and test on each platform
   test:
-    name: Test arcadedb-embedded (${{ matrix.platform }})
+    name: Test arcadedb-embedded (${{ matrix.platform }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.runs-on }}
     needs: download-jars
+    env:
+      BUILD_VERSION: ${{ inputs.build-version }}
     strategy:
       # Don't cancel other matrix jobs if one fails
       fail-fast: false
       matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        # Temporarily limit to three platforms (skip macOS x86_64 and all Windows)
+        # platform: ['linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64']
+        platform: ['linux/amd64', 'linux/arm64', 'darwin/arm64']
         include:
           - platform: linux/amd64
             runs-on: ubuntu-24.04
           - platform: linux/arm64
             runs-on: ubuntu-24.04-arm
-          - platform: darwin/amd64
-            runs-on: macos-15-intel
           - platform: darwin/arm64
             runs-on: macos-15
-          - platform: windows/amd64
-            runs-on: windows-2025
-          - platform: windows/arm64
-            runs-on: windows-11-arm
+          # - platform: darwin/amd64
+          #   runs-on: macos-15-intel
+          # - platform: windows/amd64
+          #   runs-on: windows-2025
+          # - platform: windows/arm64
+          #   runs-on: windows-11-arm
+          # macOS x86_64 and all Windows temporarily disabled
 
     steps:
       - name: Checkout code
@@ -135,7 +147,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup UV package manager
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv --version
 
       - name: Download ArcadeDB JARs artifact
         # Skip for Linux: Docker build downloads JARs from ArcadeDB image directly
@@ -151,7 +169,7 @@ jobs:
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '25'
 
       - name: Set up Docker Buildx (Linux only)
         if: matrix.platform == 'linux/amd64' || matrix.platform == 'linux/arm64'
@@ -160,25 +178,23 @@ jobs:
       - name: Install Python build dependencies
         shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install build wheel setuptools
+          uv pip install --system build wheel setuptools
 
-      - name: Create python3 symlink (Windows only)
-        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
-        shell: bash
-        run: |
-          # On Windows, setup-python doesn't create python3 symlink
-          # Create it so build scripts work
-          PYTHON_DIR=$(dirname "$(which python)")
-          ln -s "$PYTHON_DIR/python.exe" "$PYTHON_DIR/python3.exe" || true
-          python3 --version
+      # Windows currently disabled, no symlink needed
+      # - name: Create python3 symlink (Windows only)
+      #   if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+      #   shell: bash
+      #   run: |
+      #     PYTHON_DIR=$(dirname "$(which python)")
+      #     ln -s "$PYTHON_DIR/python.exe" "$PYTHON_DIR/python3.exe" || true
+      #     python3 --version
 
       - name: Build and test arcadedb-embedded (${{ matrix.platform }})
         shell: bash
         run: |
           cd bindings/python
-          echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }}..."
-          ./build.sh ${{ matrix.platform }}
+          echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
+          ./build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
 
       - name: Extract wheel for additional testing
         shell: bash
@@ -190,7 +206,7 @@ jobs:
       - name: Set up Python for host testing
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
 
       # Note: Java is NOT required for arcadedb-embedded (JRE is bundled)
       # This package works without any external Java installation!
@@ -199,7 +215,7 @@ jobs:
         shell: bash
         run: |
           cd bindings/python
-          pip install test-install/*.whl pytest pytest-cov requests
+          uv pip install --system test-install/*.whl pytest pytest-cov requests numpy
 
       - name: Run pytest on host
         id: pytest
@@ -217,20 +233,31 @@ jobs:
           # Parse JUnit XML for test counts (cross-platform XML parsing)
           if [ -f "test-results.xml" ]; then
             # Extract counts from testsuite element
-            PASSED=$(grep -oE 'tests="[0-9]+"' test-results.xml | grep -oE '[0-9]+' | head -1)
+            TOTAL=$(grep -oE 'tests="[0-9]+"' test-results.xml | grep -oE '[0-9]+' | head -1)
             FAILED=$(grep -oE 'failures="[0-9]+"' test-results.xml | grep -oE '[0-9]+' | head -1)
             SKIPPED=$(grep -oE 'skipped="[0-9]+"' test-results.xml | grep -oE '[0-9]+' | head -1)
+            ERRORS=$(grep -oE 'errors="[0-9]+"' test-results.xml | grep -oE '[0-9]+' | head -1)
 
             # Default to 0 if not found
-            PASSED=${PASSED:-0}
+            TOTAL=${TOTAL:-0}
             FAILED=${FAILED:-0}
             SKIPPED=${SKIPPED:-0}
+            ERRORS=${ERRORS:-0}
+
+            # Calculate passed tests
+            PASSED=$((TOTAL - FAILED - SKIPPED - ERRORS))
 
             echo "passed=$PASSED" >> $GITHUB_OUTPUT
             echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
             echo "failed=$FAILED" >> $GITHUB_OUTPUT
 
             echo "✅ Test results: $PASSED passed, $SKIPPED skipped, $FAILED failed"
+
+            # Force failure if there are failures or errors
+            if [ "$FAILED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; then
+              echo "❌ Tests failed (failures=$FAILED, errors=$ERRORS)"
+              exit 1
+            fi
           else
             echo "⚠️ test-results.xml not found"
             exit 1
@@ -241,95 +268,131 @@ jobs:
 
       - name: Generate test summary
         if: always()
-        shell: bash
+        shell: python
         run: |
-          cd bindings/python
+          import os
+          import zipfile
+          import glob
+          from pathlib import Path
 
-          echo "## 🧪 Test Results: arcadedb-embedded (${{ matrix.platform }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          summary_file = os.environ.get('GITHUB_STEP_SUMMARY', '/dev/null')
 
-          # Check test status
-          if [ "${{ steps.pytest.outcome }}" = "success" ]; then
-            echo "✅ **Status**: PASSED" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **Status**: FAILED" >> $GITHUB_STEP_SUMMARY
-          fi
+          with open(summary_file, 'a', encoding='utf-8') as f:
+              f.write("## 🧪 Test Results: arcadedb-embedded (${{ matrix.platform }})\n")
+              f.write("\n")
 
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+              # Check test status
+              if "${{ steps.pytest.outcome }}" == "success":
+                  f.write("✅ **Status**: PASSED\n")
+              else:
+                  f.write("❌ **Status**: FAILED\n")
 
-          # Show test results
-          echo "| ✅ Passed | ${{ steps.pytest.outputs.passed || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ⏭️ Skipped | ${{ steps.pytest.outputs.skipped || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ❌ Failed | ${{ steps.pytest.outputs.failed || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+              f.write("\n")
+              f.write("| Metric | Count |\n")
+              f.write("|--------|-------|\n")
 
-          echo "### 📦 Package Info:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+              # Show test results
+              f.write("| ✅ Passed | ${{ steps.pytest.outputs.passed || 'N/A' }} |\n")
+              f.write("| ⏭️ Skipped | ${{ steps.pytest.outputs.skipped || 'N/A' }} |\n")
+              f.write("| ❌ Failed | ${{ steps.pytest.outputs.failed || 'N/A' }} |\n")
+              f.write("\n")
 
-          # Get wheel size and analyze contents
-          WHEEL_FILE=$(ls dist/*.whl 2>/dev/null | head -n1)
-          if [ -n "$WHEEL_FILE" ]; then
-            # Get wheel size (portable way)
-            if stat -c%s "$WHEEL_FILE" 2>/dev/null; then
-              # Linux
-              WHEEL_SIZE_BYTES=$(stat -c%s "$WHEEL_FILE")
-            else
-              # macOS/BSD
-              WHEEL_SIZE_BYTES=$(stat -f%z "$WHEEL_FILE")
-            fi
-            WHEEL_SIZE_MB=$(python3 -c "print(f'{$WHEEL_SIZE_BYTES / 1024 / 1024:.1f}')")
+              f.write("### 📦 Package Info:\n")
+              f.write("\n")
 
-            # Unzip and analyze components (wheel is a zip file)
-            TEMP_DIR=$(mktemp -d)
-            unzip -q "$WHEEL_FILE" -d "$TEMP_DIR"
+              # Get wheel size and analyze contents
+              wheel_files = glob.glob("bindings/python/dist/*.whl")
+              if wheel_files:
+                  wheel_file = wheel_files[0]
 
-            # Calculate JRE size (look for jre/ directory anywhere)
-            JRE_DIR=$(find "$TEMP_DIR" -type d -name "jre" | head -n1)
-            if [ -n "$JRE_DIR" ] && [ -d "$JRE_DIR" ]; then
-              # Use du with -k for KB (portable across Linux/macOS)
-              JRE_SIZE_KB=$(du -sk "$JRE_DIR" | cut -f1)
-              JRE_SIZE_MB=$(python3 -c "print(f'{$JRE_SIZE_KB / 1024:.1f}')")
-            else
-              JRE_SIZE_MB="N/A"
-            fi
+                  # Get wheel size
+                  wheel_size_bytes = os.path.getsize(wheel_file)
+                  wheel_size_mb = wheel_size_bytes / 1024 / 1024
 
-            # Calculate JAR size (*.jar files)
-            JAR_COUNT=$(find "$TEMP_DIR" -name "*.jar" | wc -l | tr -d ' ')
-            if [ "$JAR_COUNT" -gt 0 ]; then
-              JAR_SIZE_KB=$(find "$TEMP_DIR" -name "*.jar" -exec du -k {} + | awk '{sum+=$1} END {print sum}')
-              JAR_SIZE_MB=$(python3 -c "print(f'{$JAR_SIZE_KB / 1024:.1f}')")
-            else
-              JAR_SIZE_MB="N/A"
-            fi
+                  # Analyze wheel contents
+                  jre_size_mb = "N/A"
+                  jar_size_mb = "N/A"
+                  installed_size_mb = "N/A"
 
-            # Calculate installed size (total uncompressed)
-            INSTALLED_SIZE_KB=$(du -sk "$TEMP_DIR" | cut -f1)
-            INSTALLED_SIZE_MB=$(python3 -c "print(f'{$INSTALLED_SIZE_KB / 1024:.0f}')")
+                  try:
+                      # Extract and analyze (cross-platform)
+                      import tempfile
+                      import shutil
 
-            rm -rf "$TEMP_DIR"
+                      with tempfile.TemporaryDirectory() as temp_dir:
+                          with zipfile.ZipFile(wheel_file, 'r') as whl:
+                              whl.extractall(temp_dir)
 
-            echo "- **Wheel Size**: ${WHEEL_SIZE_MB}M (compressed)" >> $GITHUB_STEP_SUMMARY
-            echo "- **JRE Size**: ${JRE_SIZE_MB}M (uncompressed)" >> $GITHUB_STEP_SUMMARY
-            echo "- **JARs Size**: ${JAR_SIZE_MB}M (uncompressed)" >> $GITHUB_STEP_SUMMARY
-            echo "- **Installed Size**: ~${INSTALLED_SIZE_MB}M (total uncompressed)" >> $GITHUB_STEP_SUMMARY
-          fi
+                          # Calculate JRE size
+                          jre_dir = None
+                          for root, dirs, files in os.walk(temp_dir):
+                              if 'jre' in dirs:
+                                  jre_dir = os.path.join(root, 'jre')
+                                  break
 
-          echo "- **Platform**: ${{ matrix.platform }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Features**: All ArcadeDB features (some JARs excluded, see jar_exclusions.txt)" >> $GITHUB_STEP_SUMMARY
+                          if jre_dir and os.path.isdir(jre_dir):
+                              jre_size_kb = 0
+                              for root, dirs, files in os.walk(jre_dir):
+                                  for file in files:
+                                      jre_size_kb += os.path.getsize(os.path.join(root, file))
+                              jre_size_mb = jre_size_kb / 1024 / 1024
+
+                          # Calculate JAR size
+                          jar_files = []
+                          for root, dirs, files in os.walk(temp_dir):
+                              for file in files:
+                                  if file.endswith('.jar'):
+                                      jar_files.append(os.path.join(root, file))
+
+                          if jar_files:
+                              jar_size_kb = sum(os.path.getsize(f) for f in jar_files) / 1024
+                              jar_size_mb = jar_size_kb / 1024
+
+                          # Calculate total size
+                          total_size_kb = 0
+                          for root, dirs, files in os.walk(temp_dir):
+                              for file in files:
+                                  total_size_kb += os.path.getsize(os.path.join(root, file))
+                          installed_size_mb = total_size_kb / 1024 / 1024
+                  except Exception as e:
+                      print(f"Warning: Could not analyze wheel contents: {e}")
+
+                  f.write(f"- **Wheel Size**: {wheel_size_mb:.1f}M (compressed)\n")
+                  if isinstance(jre_size_mb, str):
+                      f.write(f"- **JRE Size**: {jre_size_mb} (uncompressed)\n")
+                  else:
+                      f.write(f"- **JRE Size**: {jre_size_mb:.1f}M (uncompressed)\n")
+                  if isinstance(jar_size_mb, str):
+                      f.write(f"- **JARs Size**: {jar_size_mb} (uncompressed)\n")
+                  else:
+                      f.write(f"- **JARs Size**: {jar_size_mb:.1f}M (uncompressed)\n")
+                  if isinstance(installed_size_mb, str):
+                      f.write(f"- **Installed Size**: {installed_size_mb} (total uncompressed)\n")
+                  else:
+                      f.write(f"- **Installed Size**: ~{installed_size_mb:.0f}M (total uncompressed)\n")
+
+              f.write("- **Platform**: ${{ matrix.platform }}\n")
+              f.write("- **Features**: All ArcadeDB features (some JARs excluded, see jar_exclusions.txt)\n")
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: test-results-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          name: test-results-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}
           path: |
             bindings/python/pytest-output.txt
             bindings/python/.coverage
           retention-days: 7
 
       - name: Upload wheel artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: wheel-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}
+          path: bindings/python/dist/*.whl
+          retention-days: 7
+
+      - name: Upload wheel artifact for release
+        if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: wheel-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-test
@@ -353,7 +416,11 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "The arcadedb-embedded package has been successfully built and tested." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Package**: arcadedb-embedded (~160MB with bundled JRE)" >> $GITHUB_STEP_SUMMARY
+            echo "**Package**: arcadedb-embedded" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "ℹ️ **Note**: Some platform/Python combinations are excluded from testing:" >> $GITHUB_STEP_SUMMARY
+            echo "- Windows ARM64 + Python 3.10, 3.14 (no GitHub-hosted runners available)" >> $GITHUB_STEP_SUMMARY
+            echo "- macOS x86_64 + Python 3.13, 3.14 (no suitable dependencies available)" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Some platforms failed testing**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

@@ -1,11 +1,10 @@
 """
 Tests for ArcadeDB data import functionality.
-Tests CSV, JSON, and JSONL import capabilities.
+Tests CSV, JSON, and JSONL import capabilities with complex data types and NULL handling.
 """
 
 import os
 import tempfile
-from pathlib import Path
 
 import arcadedb_embedded as arcadedb
 import pytest
@@ -53,9 +52,8 @@ def sample_csv_vertices_path():
 def test_csv_import_as_documents(temp_db_path, sample_csv_path):
     """Test importing CSV as documents."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Create schema
-        with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Person")
+        # Create schema (auto-transactional)
+        db.schema.create_document_type("Person")
 
         # Import CSV
         stats = arcadedb.import_csv(db, sample_csv_path, "Person")
@@ -69,17 +67,16 @@ def test_csv_import_as_documents(temp_db_path, sample_csv_path):
         records = list(result)
 
         assert len(records) == 3
-        assert records[0].get_property("name") == "Alice"
-        assert records[0].get_property("age") == 30
-        assert records[0].get_property("city") == "New York"
+        assert records[0].get("name") == "Alice"
+        assert records[0].get("age") == 30
+        assert records[0].get("city") == "New York"
 
 
 def test_csv_import_as_vertices(temp_db_path, sample_csv_vertices_path):
     """Test importing CSV as vertices."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Create schema
-        with db.transaction():
-            db.command("sql", "CREATE VERTEX TYPE Product")
+        # Create schema (auto-transactional)
+        db.schema.create_vertex_type("Product")
 
         # Import CSV as vertices
         stats = arcadedb.import_csv(
@@ -100,8 +97,8 @@ def test_csv_import_as_vertices(temp_db_path, sample_csv_vertices_path):
         vertices = list(result)
 
         assert len(vertices) == 3
-        assert vertices[0].get_property("name") == "Product A"
-        assert vertices[0].get_property("category") == "Electronics"
+        assert vertices[0].get("name") == "Product A"
+        assert vertices[0].get("category") == "Electronics"
 
 
 def test_csv_import_with_custom_delimiter(temp_db_path):
@@ -115,9 +112,8 @@ def test_csv_import_with_custom_delimiter(temp_db_path):
 
     try:
         with arcadedb.create_database(temp_db_path) as db:
-            # Create schema
-            with db.transaction():
-                db.command("sql", "CREATE DOCUMENT TYPE Item")
+            # Create schema (auto-transactional)
+            db.schema.create_document_type("Item")
 
             # Import TSV with tab delimiter
             stats = arcadedb.import_csv(db, temp_file.name, "Item", delimiter="\t")
@@ -125,12 +121,49 @@ def test_csv_import_with_custom_delimiter(temp_db_path):
             # Verify
             assert stats["documents"] == 2
 
-            result = db.query("sql", "SELECT FROM Item ORDER BY name")
+            result = db.query("sql", "SELECT FROM `Item` ORDER BY name")
             records = list(result)
 
             assert len(records) == 2
-            assert records[0].get_property("name") == "Item1"
-            assert records[0].get_property("value") == 100
+            assert records[0].get("name") == "Item1"
+            assert records[0].get("value") == 100
+    finally:
+        os.unlink(temp_file.name)
+
+
+def test_xml_import_as_documents(temp_db_path):
+    """Test importing XML as documents with attributes and child elements."""
+    temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".xml", delete=False)
+    temp_file.write(
+        """
+        <people>
+          <person id="1" name="Alice"><city>New York</city></person>
+          <person id="2" name="Bob"><city>London</city></person>
+        </people>
+        """
+    )
+    temp_file.close()
+
+    try:
+        with arcadedb.create_database(temp_db_path) as db:
+            stats = arcadedb.import_xml(
+                db,
+                temp_file.name,
+                import_type="documents",
+                objectNestLevel=1,
+            )
+
+            assert stats["documents"] == 2
+            assert stats["errors"] == 0
+
+            result = db.query("sql", "SELECT FROM person ORDER BY id")
+            records = list(result)
+
+            assert len(records) == 2
+            assert records[0].get("name") == "Alice"
+            assert records[0].get("city") == "New York"
+            assert records[1].get("name") == "Bob"
+            assert records[1].get("city") == "London"
     finally:
         os.unlink(temp_file.name)
 
@@ -138,9 +171,8 @@ def test_csv_import_with_custom_delimiter(temp_db_path):
 def test_importer_class_api(temp_db_path, sample_csv_path):
     """Test using Importer class directly."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Create schema
-        with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Person")
+        # Create schema (auto-transactional)
+        db.schema.create_document_type("Person")
 
         # Use Importer class
         importer = arcadedb.Importer(db)
@@ -156,7 +188,7 @@ def test_importer_class_api(temp_db_path, sample_csv_path):
 
         # Verify data
         result = db.query("sql", "SELECT count(*) as cnt FROM Person")
-        count = list(result)[0].get_property("cnt")
+        count = list(result)[0].get("cnt")
         assert count == 3
 
 
@@ -171,9 +203,8 @@ def test_csv_type_inference(temp_db_path):
 
     try:
         with arcadedb.create_database(temp_db_path) as db:
-            # Create schema
-            with db.transaction():
-                db.command("sql", "CREATE DOCUMENT TYPE Product")
+            # Schema operations are auto-transactional
+            db.schema.create_document_type("Product")
 
             # Import
             stats = arcadedb.import_csv(db, temp_file.name, "Product")
@@ -185,9 +216,9 @@ def test_csv_type_inference(temp_db_path):
             record = list(result)[0]
 
             # Check that types were inferred correctly
-            count = record.get_property("count")
-            price = record.get_property("price")
-            active = record.get_property("active")
+            count = record.get("count")
+            price = record.get("price")
+            active = record.get("active")
 
             assert isinstance(count, int)
             assert count == 42
@@ -210,8 +241,8 @@ def test_csv_import_with_nulls(temp_db_path):
 
     try:
         with arcadedb.create_database(temp_db_path) as db:
-            with db.transaction():
-                db.command("sql", "CREATE DOCUMENT TYPE Person")
+            # Schema operations are auto-transactional
+            db.schema.create_document_type("Person")
 
             stats = arcadedb.import_csv(db, temp_file.name, "Person")
 
@@ -222,7 +253,7 @@ def test_csv_import_with_nulls(temp_db_path):
             alice = list(result)[0]
 
             # Empty string should be converted to None
-            city = alice.get_property("city")
+            city = alice.get("city")
             assert city is None or city == ""
     finally:
         os.unlink(temp_file.name)
@@ -255,8 +286,8 @@ def test_csv_import_without_type_name(temp_db_path, sample_csv_path):
 def test_format_auto_detection(temp_db_path, sample_csv_path):
     """Test that file format is auto-detected from extension."""
     with arcadedb.create_database(temp_db_path) as db:
-        with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Person")
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("Person")
 
         importer = arcadedb.Importer(db)
 
@@ -269,8 +300,8 @@ def test_format_auto_detection(temp_db_path, sample_csv_path):
 def test_import_statistics(temp_db_path, sample_csv_path):
     """Test that import statistics are returned correctly."""
     with arcadedb.create_database(temp_db_path) as db:
-        with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Person")
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("Person")
 
         stats = arcadedb.import_csv(db, sample_csv_path, "Person")
 
@@ -300,8 +331,8 @@ def test_large_csv_batch_commit(temp_db_path):
 
     try:
         with arcadedb.create_database(temp_db_path) as db:
-            with db.transaction():
-                db.command("sql", "CREATE DOCUMENT TYPE Record")
+            # Schema operations are auto-transactional
+            db.schema.create_document_type("Record")
 
             # Import with small batch size
             stats = arcadedb.import_csv(
@@ -311,8 +342,8 @@ def test_large_csv_batch_commit(temp_db_path):
             assert stats["documents"] == 100
 
             # Verify all records imported
-            result = db.query("sql", "SELECT count(*) as cnt FROM Record")
-            count = list(result)[0].get_property("cnt")
+            result = db.query("sql", "SELECT count(*) as cnt FROM `Record`")
+            count = list(result)[0].get("cnt")
             assert count == 100
     finally:
         os.unlink(temp_file.name)
@@ -330,9 +361,8 @@ def test_csv_import_integration(temp_db_path):
 
     try:
         with arcadedb.create_database(temp_db_path) as db:
-            # Create schema
-            with db.transaction():
-                db.command("sql", "CREATE DOCUMENT TYPE Employee")
+            # Schema operations are auto-transactional
+            db.schema.create_document_type("Employee")
 
             # Import data
             stats = arcadedb.import_csv(db, temp_file.name, "Employee")
@@ -346,7 +376,7 @@ def test_csv_import_integration(temp_db_path):
             )
             eng_employees = list(result)
             assert len(eng_employees) == 2
-            assert eng_employees[0].get_property("name") == "Alice"
+            assert eng_employees[0].get("name") == "Alice"
 
             # 2. Aggregate by department
             result = db.query(
@@ -362,6 +392,153 @@ def test_csv_import_integration(temp_db_path):
             )
             high_earners = list(result)
             assert len(high_earners) == 2
-            assert high_earners[0].get_property("name") == "Charlie"
+            assert high_earners[0].get("name") == "Charlie"
+    finally:
+        os.unlink(temp_file.name)
+
+
+def test_csv_complex_data_types(temp_db_path):
+    """Test CSV import with various data types including edge cases."""
+    temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+    temp_file.write("id,name,count,price,ratio,active,tags,notes\n")
+    temp_file.write("1,Item A,100,19.99,0.85,true,tag1;tag2,Normal item\n")
+    temp_file.write("2,Item B,0,-5.50,1.0,false,tag3,Negative price\n")
+    temp_file.write("3,Item C,999999,0.01,0.0,true,,Empty tags\n")
+    temp_file.write(
+        '4,"Item ""D""",42,1234.5678,0.123456789,false,tag1,"Quoted, value"\n'
+    )
+    temp_file.close()
+
+    try:
+        with arcadedb.create_database(temp_db_path) as db:
+            # Schema operations are auto-transactional
+            db.schema.create_document_type("ComplexItem")
+
+            stats = arcadedb.import_csv(db, temp_file.name, "ComplexItem")
+            assert stats["documents"] == 4
+
+            # Verify complex values
+            result = db.query("sql", "SELECT FROM ComplexItem ORDER BY id")
+            items = list(result)
+
+            # Item with quotes in name
+            assert items[3].get("name") == 'Item "D"'
+            assert items[3].get("notes") == "Quoted, value"
+
+            # Zero values
+            assert items[1].get("count") == 0
+            assert items[2].get("ratio") == 0.0
+
+            # Large numbers
+            assert items[2].get("count") == 999999
+            assert items[3].get("price") == 1234.5678
+
+            # Empty string (CSV treats as empty string, not null)
+            tags = items[2].get("tags")
+            assert tags == "" or tags is None
+    finally:
+        os.unlink(temp_file.name)
+
+
+def test_csv_null_and_empty_values(temp_db_path):
+    """Test CSV handling of NULL, empty strings, and missing values."""
+    temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+    temp_file.write("id,name,value,description\n")
+    temp_file.write("1,Item 1,,Empty value\n")  # Empty value field
+    temp_file.write("2,Item 2,42,\n")  # Empty description
+    temp_file.write("3,,99,No name\n")  # Empty name
+    temp_file.write('4,"",0,""\n')  # Explicitly empty quoted fields
+    temp_file.close()
+
+    try:
+        with arcadedb.create_database(temp_db_path) as db:
+            # Schema operations are auto-transactional
+            db.schema.create_document_type("NullTest")
+
+            stats = arcadedb.import_csv(db, temp_file.name, "NullTest")
+            assert stats["documents"] == 4
+
+            result = db.query("sql", "SELECT FROM NullTest ORDER BY id")
+            items = list(result)
+
+            # CSV empty values can be imported as empty strings OR None
+            # depending on the schema inference
+            for item in items:
+                for prop in item.get_property_names():
+                    val = item.get(prop)
+                    # Value can be None, empty string, or actual value
+                    # Just verify it doesn't raise an exception
+                    assert val is None or isinstance(val, (str, int, float, bool))
+    finally:
+        os.unlink(temp_file.name)
+
+
+def test_csv_unicode_and_special_chars(temp_db_path):
+    """Test CSV import with Unicode and special characters."""
+    temp_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", delete=False, encoding="utf-8"
+    )
+    temp_file.write("id,name,description\n")
+    temp_file.write("1,Café,French café ☕\n")
+    temp_file.write("2,日本,Japanese text 🇯🇵\n")
+    temp_file.write("3,Москва,Russian city 🏛️\n")
+    temp_file.write("4,Math,Formula: x² + y² = z²\n")
+    temp_file.write("5,Emoji,Hearts: ❤️💙💚\n")
+    temp_file.close()
+
+    try:
+        with arcadedb.create_database(temp_db_path) as db:
+            # Schema operations are auto-transactional
+            db.schema.create_document_type("UnicodeTest")
+
+            stats = arcadedb.import_csv(db, temp_file.name, "UnicodeTest")
+            assert stats["documents"] == 5
+
+            result = db.query("sql", "SELECT FROM UnicodeTest ORDER BY id")
+            items = list(result)
+
+            assert "Café" in items[0].get("name")
+            assert "☕" in items[0].get("description")
+            assert "日本" in items[1].get("name")
+            assert "🇯🇵" in items[1].get("description")
+            assert "²" in items[3].get("description")
+            assert "❤️" in items[4].get("description")
+    finally:
+        os.unlink(temp_file.name)
+
+
+def test_large_dataset_performance(temp_db_path):
+    """Test import performance with larger dataset."""
+    # Create a CSV with 1000 records
+    temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+    temp_file.write("id,name,value,timestamp\n")
+    for i in range(1000):
+        temp_file.write(f"{i},Item {i},{i * 1.5},2024-01-{(i % 28) + 1:02d}\n")
+    temp_file.close()
+
+    try:
+        with arcadedb.create_database(temp_db_path) as db:
+            # Schema operations are auto-transactional
+            db.schema.create_document_type("LargeTest")
+
+            # Import with custom batch size
+            stats = arcadedb.import_csv(
+                db, temp_file.name, "LargeTest", commitEvery=100
+            )
+
+            assert stats["documents"] == 1000
+            assert stats["errors"] == 0
+            assert stats["duration_ms"] >= 0
+
+            # Verify random sampling
+            result = db.query("sql", "SELECT count(*) as cnt FROM LargeTest")
+            count = list(result)[0].get("cnt")
+            assert count == 1000
+
+            # Verify some values
+            result = db.query("sql", "SELECT FROM LargeTest WHERE id = 500")
+            item = list(result)[0]
+            assert item.get("name") == "Item 500"
+            assert abs(item.get("value") - 750.0) < 0.01
     finally:
         os.unlink(temp_file.name)

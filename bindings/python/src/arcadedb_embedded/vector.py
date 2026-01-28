@@ -73,12 +73,48 @@ def to_python_array(java_vector, use_numpy=True):
 
 class VectorIndex:
     """
-    Wrapper for ArcadeDB vector index.
+    Wrapper for ArcadeDB vector index (JVector-based implementation).
+
+    This is the default and recommended implementation for vector search.
+    It uses JVector (a graph index combining HNSW hierarchy with Vamana/DiskANN
+    algorithms) which provides:
+    - No max_items limit (grows dynamically)
+    - Faster index construction
+    - Automatic indexing of existing records
+    - Concurrent construction support
 
     Provides a Pythonic interface for creating and searching vector indexes,
     with native support for NumPy arrays.
 
-    Note: This class is deprecated. Use SQL commands to create and query LSMVector indexes directly.
+    Distance Calculation:
+        The metric used depends on the `distance_function` parameter during index creation:
+
+        1. **EUCLIDEAN** (Default):
+           - Returns **Similarity Score** (Higher is better).
+           - Formula: $1 / (1 + d^2)$ where $d$ is Euclidean distance.
+           - Range: (0.0, 1.0]
+           - 1.0: Identical vectors
+           - ~0.0: Very distant vectors
+
+        2. **COSINE**:
+           - Returns **Normalized Distance** (Lower is better).
+           - Formula: $(1 - \\cos(\\theta)) / 2$
+           - Range: [0.0, 1.0]
+           - 0.0: Identical vectors (angle 0)
+           - 0.5: Orthogonal vectors (angle 90)
+           - 1.0: Opposite vectors (angle 180)
+
+        3. **DOT_PRODUCT**:
+           - Returns **Negative Dot Product** (Lower is better).
+           - Formula: $- (A \\cdot B)$
+           - Range: (-inf, +inf)
+           - Lower values indicate higher similarity (larger positive dot product).
+
+    Quantization:
+        The index supports vector quantization to reduce memory usage and speed up search:
+        - **NONE** (Default): Full precision (float32).
+        - **INT8**: 8-bit integer quantization.
+        - **BINARY**: 1-bit quantization (for high-dimensional binary vectors).
     """
 
     def __init__(self, java_index, database):
@@ -86,61 +122,253 @@ class VectorIndex:
         Initialize VectorIndex wrapper.
 
         Args:
-            java_index: Java vector index object
+            java_index: Java LSMVectorIndex object
             database: Parent Database object
         """
         self._java_index = java_index
         self._database = database
 
-    def find_nearest(self, query_vector, k=10, use_numpy=True):
+    def find_nearest(
+        self,
+        query_vector,
+        k=10,
+        overquery_factor=4,
+        allowed_rids=None,
+    ):
         """
         Find k nearest neighbors to the query vector.
 
         Args:
             query_vector: Query vector as Python list, NumPy array, or array-like
-            k: Number of nearest neighbors to return (default: 10)
-            use_numpy: Return vectors as NumPy arrays if available (default: True)
+            k: Number of nearest neighbors to return (final k). Default is 10.
+            overquery_factor: Multiplier for search-time over-querying (implicit efSearch).
+                              Default is 4, chosen based on benchmarks to balance recall and speed.
+            allowed_rids: Optional list of RID strings (e.g. ["#1:0", "#2:5"]) to restrict search
 
         Returns:
-            List of tuples: [(vertex, distance), ...]
-            where vertex is the matched vertex object and distance is the
-            similarity score
-        """
-        # Convert query vector to Java float array
-        java_vector = to_java_float_array(query_vector)
-
-        # Perform search (None = no filtering callback)
-        results = self._java_index.findNearest(java_vector, k, None)
-
-        # Convert results to Python format
-        neighbors = []
-        for result in results:
-            vertex = result.item()
-            distance = result.distance()
-            neighbors.append((vertex, float(distance)))
-
-        return neighbors
-
-    def add_vertex(self, vertex):
-        """
-        Add a single vertex to the index.
-
-        Args:
-            vertex: Vertex object to add (must have vector property)
+            List of tuples: [(record, score), ...]
+            - record: The matching ArcadeDB record (Vertex, Document, or Edge)
+            - score: The similarity score/distance
         """
         try:
-            self._java_index.add(vertex)
+            # Convert query vector to Java float array
+            java_vector = to_java_float_array(query_vector)
+
+            # Import Document wrapper and Java classes once
+            from com.arcadedb.database import RID
+            from java.util import HashSet
+
+            from .graph import Document
+
+            # Prepare RID filter if provided
+            allowed_rids_set = None
+            if allowed_rids:
+                allowed_rids_set = HashSet()
+                for rid_str in allowed_rids:
+                    allowed_rids_set.add(RID(self._database._java_db, rid_str))
+
+            # Search-time over-querying
+            search_k = k * max(1, int(overquery_factor))
+
+            all_results = []
+
+            def process_index(idx):
+                if "LSMVectorIndex" in idx.getClass().getName():
+                    if allowed_rids_set:
+                        pairs = idx.findNeighborsFromVector(
+                            java_vector, search_k, allowed_rids_set
+                        )
+                    else:
+                        pairs = idx.findNeighborsFromVector(java_vector, search_k)
+
+                    for pair in pairs:
+                        rid = pair.getFirst()
+                        score = pair.getSecond()
+                        record = self._database._java_db.lookupByRID(rid, True)
+                        # Wrap the record in Python wrapper
+                        wrapped_record = Document.wrap(record)
+                        all_results.append((wrapped_record, float(score)))
+
+            # Handle TypeIndex (multiple buckets)
+            if "TypeIndex" in self._java_index.getClass().getName():
+                for sub in self._java_index.getSubIndexes():
+                    process_index(sub)
+            else:
+                process_index(self._java_index)
+
+            # Determine sort order
+            reverse_sort = False
+            try:
+                idx_to_check = None
+                if "LSMVectorIndex" in self._java_index.getClass().getName():
+                    idx_to_check = self._java_index
+                elif "TypeIndex" in self._java_index.getClass().getName():
+                    subs = self._java_index.getSubIndexes()
+                    if not subs.isEmpty():
+                        idx_to_check = subs[0]
+
+                if idx_to_check:
+                    if str(idx_to_check.getSimilarityFunction()) == "EUCLIDEAN":
+                        reverse_sort = True
+            except Exception:
+                pass
+
+            all_results.sort(key=lambda x: x[1], reverse=reverse_sort)
+
+            # Final k truncation
+            return all_results[:k]
+
         except Exception as e:
-            raise ArcadeDBError(f"Failed to add vertex to index: {e}") from e
+            # print(f"Debug VectorIndex: ERROR in find_nearest: {e}")
+            # import traceback
+            # traceback.print_exc()
+            return []
 
-    def remove_vertex(self, vertex_id):
+    def get_size(self):
         """
-        Remove a vertex from the index.
+        Get the current number of items in the index.
 
-        Args:
-            vertex_id: ID of the vertex to remove
+        Returns:
+            int: Number of items currently indexed
         """
         try:
-            self._java_index.remove(vertex_id)
+            # Both TypeIndex and LSMVectorIndex support countEntries()
+            return self._java_index.countEntries()
         except Exception as e:
-            raise ArcadeDBError(f"Failed to remove vertex from index: {e}") from e
+            raise ArcadeDBError(f"Failed to get index size: {e}") from e
+
+    def find_nearest_approximate(
+        self,
+        query_vector,
+        k=10,
+        overquery_factor=1,
+        allowed_rids=None,
+    ):
+        """
+        Find k nearest neighbors using Product Quantization (PQ) approximate search.
+
+        Args:
+            query_vector: Query vector as Python list, NumPy array, or array-like
+            k: Number of nearest neighbors to return (final k)
+            overquery_factor: Multiplier for over-querying before truncation (approx efSearch analogue).
+            allowed_rids: Optional list of RID strings (e.g. ["#1:0", "#2:5"]) to restrict search
+
+        Returns:
+            List of tuples: [(record, score), ...]
+        """
+        try:
+            quantization = self.get_quantization()
+            if quantization != "PRODUCT":
+                raise ArcadeDBError(
+                    "Approximate search requires quantization=PRODUCT (PQ)"
+                )
+
+            java_vector = to_java_float_array(query_vector)
+            search_k = k * max(1, int(overquery_factor))
+
+            from com.arcadedb.database import RID
+            from java.util import HashSet
+
+            from .graph import Document
+
+            allowed_rids_set = None
+            if allowed_rids:
+                allowed_rids_set = HashSet()
+                for rid_str in allowed_rids:
+                    allowed_rids_set.add(RID(self._database._java_db, rid_str))
+
+            all_results = []
+
+            def process_index(idx):
+                if "LSMVectorIndex" in idx.getClass().getName():
+                    if allowed_rids_set:
+                        pairs = idx.findNeighborsFromVectorApproximate(
+                            java_vector, search_k, allowed_rids_set
+                        )
+                    else:
+                        pairs = idx.findNeighborsFromVectorApproximate(
+                            java_vector, search_k
+                        )
+
+                    for pair in pairs:
+                        rid = pair.getFirst()
+                        score = pair.getSecond()
+                        record = self._database._java_db.lookupByRID(rid, True)
+                        wrapped_record = Document.wrap(record)
+                        all_results.append((wrapped_record, float(score)))
+
+            if "TypeIndex" in self._java_index.getClass().getName():
+                for sub in self._java_index.getSubIndexes():
+                    process_index(sub)
+            else:
+                process_index(self._java_index)
+
+            reverse_sort = False
+            try:
+                idx_to_check = None
+                if "LSMVectorIndex" in self._java_index.getClass().getName():
+                    idx_to_check = self._java_index
+                elif "TypeIndex" in self._java_index.getClass().getName():
+                    subs = self._java_index.getSubIndexes()
+                    if not subs.isEmpty():
+                        idx_to_check = subs[0]
+
+                if idx_to_check:
+                    if str(idx_to_check.getSimilarityFunction()) == "EUCLIDEAN":
+                        reverse_sort = True
+            except Exception:
+                pass
+
+            all_results.sort(key=lambda x: x[1], reverse=reverse_sort)
+            return all_results[:k]
+
+        except Exception as e:
+            raise ArcadeDBError(f"Approximate search failed: {e}") from e
+
+    def get_quantization(self):
+        """
+        Get the quantization type of the index.
+
+        Returns:
+            str: "NONE", "INT8", or "BINARY"
+        """
+        try:
+            idx_to_check = None
+            if "LSMVectorIndex" in self._java_index.getClass().getName():
+                idx_to_check = self._java_index
+            elif "TypeIndex" in self._java_index.getClass().getName():
+                sub_indexes = self._java_index.getSubIndexes()
+                if not sub_indexes.isEmpty():
+                    idx_to_check = sub_indexes.get(0)
+
+            if idx_to_check:
+                return str(idx_to_check.getMetadata().quantizationType)
+            return "NONE"
+        except Exception:
+            return "NONE"
+
+    def build_graph_now(self):
+        """
+        Trigger an immediate rebuild of the underlying vector graph.
+
+        Useful after bulk inserts/updates to avoid waiting for a search-triggered lazy build.
+        For TypeIndex wrappers, rebuilds all underlying LSMVectorIndex instances.
+        """
+        try:
+            if "LSMVectorIndex" in self._java_index.getClass().getName():
+                self._java_index.buildVectorGraphNow()
+                return
+
+            if "TypeIndex" in self._java_index.getClass().getName():
+                sub_indexes = self._java_index.getSubIndexes()
+                if sub_indexes and not sub_indexes.isEmpty():
+                    for sub in sub_indexes:
+                        if "LSMVectorIndex" in sub.getClass().getName():
+                            sub.buildVectorGraphNow()
+                return
+
+            raise ArcadeDBError(
+                "Underlying index does not support vector graph rebuild"
+            )
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to rebuild vector graph: {e}") from e

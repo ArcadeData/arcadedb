@@ -6,5 +6,11 @@
 # Format: One pattern per line, comments start with #
 # Empty lines are ignored
 
-# gRPC wire protocol (~40MB) - not commonly needed for Python use cases
+arcadedb-gremlin-*.jar
 arcadedb-grpcw-*.jar
+js-language-*.jar
+icu4j-*.jar
+truffle-*.jar
+regex-*.jar
+arcadedb-metrics-*.jar
+arcadedb-mongodbw-*.jar

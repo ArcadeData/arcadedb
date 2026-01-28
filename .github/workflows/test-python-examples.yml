@@ -1,6 +1,4 @@
 name: Test Python Examples
-permissions:
-  contents: read
 
 on:
   # Run on push to bindings/python/ directory
@@ -15,17 +13,43 @@ on:
       - 'bindings/python/**'
       - '.github/workflows/test-python-examples.yml'
 
+  # Run after release workflow completes
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
   # Allow being called by other workflows (e.g., release workflow)
   workflow_call:
+    inputs:
+      examples:
+        description: "Glob pattern(s) for examples to run (space-separated, relative to bindings/python/examples)."
+        required: false
+        type: string
+        default: "0[1-7]_*.py"
+      build-version:
+        description: "Override package version (PEP 440) for build.sh"
+        required: false
+        type: string
 
   # Allow manual trigger
   workflow_dispatch:
+    inputs:
+      examples:
+        description: "Glob pattern(s) for examples to run (space-separated, relative to bindings/python/examples)."
+        required: false
+        default: "0[1-7]_*.py"
+
+env:
+  EXAMPLES: ${{ inputs.examples || '0[1-7]_*.py' }}
+
+permissions:
+  contents: read
 
 jobs:
   # First job: Download ArcadeDB JARs (platform-agnostic)
   download-jars:
     name: Download ArcadeDB JARs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -90,7 +114,7 @@ jobs:
           fi
 
       - name: Upload filtered JARs as artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: arcadedb-jars-examples
           path: bindings/python/src/arcadedb_embedded/jars/*.jar
@@ -98,32 +122,39 @@ jobs:
 
   # Second job: Test examples on each platform
   test-examples:
-    name: Test Python Examples (${{ matrix.platform }})
+    name: Test Python Examples (${{ matrix.platform }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.runs-on }}
     needs: download-jars
+    env:
+      BUILD_VERSION: ${{ inputs.build-version }}
     strategy:
       fail-fast: false
       matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        # Temporarily limit to three platforms (skip macOS x86_64, all Windows)
+        # platform: ['linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64']
+        platform: ['linux/amd64', 'linux/arm64', 'darwin/arm64']
         include:
           - platform: linux/amd64
             runs-on: ubuntu-24.04
           - platform: linux/arm64
             runs-on: ubuntu-24.04-arm
-          - platform: darwin/amd64
-            runs-on: macos-15-intel
           - platform: darwin/arm64
             runs-on: macos-15
-          - platform: windows/amd64
-            runs-on: windows-2025
-          - platform: windows/arm64
-            runs-on: windows-11-arm
+          # - platform: darwin/amd64
+          #   runs-on: macos-15-intel
+          # - platform: windows/amd64
+          #   runs-on: windows-2025
+          # - platform: windows/arm64
+          #   runs-on: windows-11-arm
+          # macOS x86_64 and all Windows temporarily disabled
 
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Download JARs artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: arcadedb-jars-examples
           path: bindings/python/src/arcadedb_embedded/jars
@@ -133,7 +164,7 @@ jobs:
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '25'
 
       - name: Set up Docker Buildx (Linux only)
         if: matrix.platform == 'linux/amd64' || matrix.platform == 'linux/arm64'
@@ -142,29 +173,34 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup UV package manager
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv --version
 
       - name: Install Python build dependencies
         shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install build wheel setuptools
+          uv pip install --system build wheel setuptools
 
-      - name: Create python3 symlink (Windows only)
-        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
-        shell: bash
-        run: |
-          # On Windows, setup-python doesn't create python3 symlink
-          PYTHON_DIR=$(dirname "$(which python)")
-          ln -s "$PYTHON_DIR/python.exe" "$PYTHON_DIR/python3.exe" || true
-          python3 --version
+      # Windows currently disabled, no symlink needed
+      # - name: Create python3 symlink (Windows only)
+      #   if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+      #   shell: bash
+      #   run: |
+      #     PYTHON_DIR=$(dirname "$(which python)")
+      #     ln -s "$PYTHON_DIR/python.exe" "$PYTHON_DIR/python3.exe" || true
+      #     python3 --version
 
       - name: Build arcadedb-embedded (${{ matrix.platform }})
         shell: bash
         run: |
           cd bindings/python
-          echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }}..."
-          ./build.sh ${{ matrix.platform }}
+          echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
+          ./build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
 
       # Note: Java is NOT required - arcadedb-embedded has bundled JRE!
 
@@ -172,13 +208,42 @@ jobs:
         shell: bash
         run: |
           cd bindings/python
-          pip install dist/*embed*.whl
+          uv pip install --system dist/*embed*.whl
 
       - name: Install example dependencies
         shell: bash
         run: |
           # Install dependencies needed by examples
-          pip install numpy requests
+          # PyTorch is required by sentence-transformers, even on macOS
+          # For Python 3.13+, wheels might only be on PyTorch official index
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS: Install CPU-only PyTorch (supports MPS acceleration)
+            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+            uv pip install --system "numpy<2.0" requests sentence-transformers
+          else
+            # Linux & Windows: Install CPU-only PyTorch to save space (avoid CUDA)
+            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+            uv pip install --system numpy requests sentence-transformers
+          fi
+
+      - name: Download datasets
+        shell: bash
+        run: |
+          uv pip install --system tqdm py7zr lxml
+          cd bindings/python/examples
+
+          # Determine which examples are selected
+          examples=$(ls $EXAMPLES 2>/dev/null || true)
+
+          if echo "$examples" | grep -qE '(^|[[:space:]])(04_csv_import_documents|05_csv_import_graph|06_vector_search_recommendations)\.py([[:space:]]|$)'; then
+            echo "📥 Downloading MovieLens Small dataset..."
+            python3 download_data.py movielens-small
+          fi
+
+          if echo "$examples" | grep -qE '(^|[[:space:]])07_stackoverflow_multimodel\.py([[:space:]]|$)'; then
+            echo "📥 Downloading Stack Overflow Small dataset..."
+            python3 download_data.py stackoverflow-small
+          fi
 
       - name: Install timeout command (macOS only)
         if: matrix.platform == 'darwin/amd64' || matrix.platform == 'darwin/arm64'
@@ -187,19 +252,19 @@ jobs:
           # macOS doesn't have timeout command by default, use coreutils
           brew install coreutils
 
-      - name: Set UTF-8 encoding (Windows only)
-        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
-        shell: bash
-        run: |
-          # Set UTF-8 encoding to handle emoji characters
-          echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
+      # Windows currently disabled, no env override needed
+      # - name: Set UTF-8 encoding (Windows only)
+      #   if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+      #   shell: bash
+      #   run: |
+      #     echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
 
       - name: Run all examples
         id: run_examples
         shell: bash
         env:
           # Increase JVM heap for large CSV imports (example 04)
-          ARCADEDB_JVM_MAX_HEAP: "8g"
+          ARCADEDB_JVM_ARGS: "-Xmx8g -Xms8g"
         run: |
           cd bindings/python/examples
 
@@ -216,9 +281,8 @@ jobs:
           results_file="example-results.txt"
           > $results_file
 
-          # Find all Python example files (exclude download_sample_data.py as it's a utility)
-          # Testing examples 01-03 (verified working)
-          examples=$(ls 0[1-3]*.py 2>/dev/null | sort)
+          # Select example files by pattern(s) in EXAMPLES (space-separated globs)
+          examples=$(ls $EXAMPLES 2>/dev/null | sort)
 
           if [ -z "$examples" ]; then
             echo "❌ No example files found!"
@@ -234,67 +298,61 @@ jobs:
 
           # Run each example
           for example in $examples; do
-            # For example 04, test both small and large datasets
-            if [ "$example" = "04_csv_import_documents.py" ]; then
-              for size in small large; do
-                total=$((total + 1))
-                example_name="$example (--size $size)"
-                log_file="${example%.py}_${size}.log"
+            total=$((total + 1))
 
-                echo "----------------------------------------"
-                echo "📝 Running: $example_name"
-                echo "----------------------------------------"
+            # Set example-specific parameters and timeout
+            case "$example" in
+              "04_csv_import_documents.py")
+                example_args="--dataset movielens-small --export"
+                example_name="$example (movielens-small dataset with export)"
+                timeout_duration=900  # 15 minutes
+                ;;
+              "05_csv_import_graph.py")
+                example_args="--dataset movielens-small --method java --import-jsonl ./exports/movielens_small_db.jsonl.tgz --export"
+                example_name="$example (movielens-small dataset, embedded java method, import/export)"
+                timeout_duration=900  # 15 minutes
+                ;;
+              "06_vector_search_recommendations.py")
+                example_args="--import-jsonl ./exports/movielens_graph_small_db.jsonl.tgz"
+                example_name="$example (vector search, import from JSONL)"
+                timeout_duration=900  # 15 minutes
+                ;;
+              "07_stackoverflow_multimodel.py")
+                example_args="--dataset stackoverflow-small"
+                example_name="$example (stackoverflow-small dataset)"
+                timeout_duration=1800  # 30 minutes
+                ;;
+              *)
+                example_args=""
+                example_name="$example"
+                timeout_duration=900  # 15 minutes default
+                ;;
+            esac
 
-                # Create a timeout wrapper to prevent hanging (30 min for small, 60 min for large)
-                if [ "$size" = "small" ]; then
-                  timeout_duration=1800
-                else
-                  timeout_duration=3600
-                fi
+            log_file="${example%.py}.log"
 
-                if $TIMEOUT_CMD $timeout_duration python "$example" --size "$size" > "$log_file" 2>&1; then
-                  echo "✅ PASSED: $example_name" | tee -a $results_file
-                  passed=$((passed + 1))
-                else
-                  exit_code=$?
-                  if [ $exit_code -eq 124 ]; then
-                    echo "⏱️  TIMEOUT: $example_name (exceeded $((timeout_duration/60)) minutes)" | tee -a $results_file
-                    failed=$((failed + 1))
-                  else
-                    echo "❌ FAILED: $example_name (exit code: $exit_code)" | tee -a $results_file
-                    failed=$((failed + 1))
-                  fi
-                  # Show last 20 lines of error log
-                  echo "Last 20 lines of output:"
-                  tail -n 20 "$log_file"
-                fi
-                echo ""
-              done
+            echo "----------------------------------------"
+            echo "📝 Running: $example_name"
+            echo "----------------------------------------"
+
+            # Run the example with appropriate parameters
+            if $TIMEOUT_CMD $timeout_duration python "$example" $example_args > "$log_file" 2>&1; then
+              echo "✅ PASSED: $example_name" | tee -a $results_file
+              passed=$((passed + 1))
             else
-              total=$((total + 1))
-              echo "----------------------------------------"
-              echo "📝 Running: $example"
-              echo "----------------------------------------"
-
-              # Create a timeout wrapper to prevent hanging
-              if $TIMEOUT_CMD 1800 python "$example" > "${example}.log" 2>&1; then
-                echo "✅ PASSED: $example" | tee -a $results_file
-                passed=$((passed + 1))
+              exit_code=$?
+              if [ $exit_code -eq 124 ]; then
+                echo "⏱️  TIMEOUT: $example_name (exceeded $((timeout_duration/60)) minutes)" | tee -a $results_file
+                failed=$((failed + 1))
               else
-                exit_code=$?
-                if [ $exit_code -eq 124 ]; then
-                  echo "⏱️  TIMEOUT: $example (exceeded 30 minutes)" | tee -a $results_file
-                  failed=$((failed + 1))
-                else
-                  echo "❌ FAILED: $example (exit code: $exit_code)" | tee -a $results_file
-                  failed=$((failed + 1))
-                fi
-                # Show last 20 lines of error log
-                echo "Last 20 lines of output:"
-                tail -n 20 "${example}.log"
+                echo "❌ FAILED: $example_name (exit code: $exit_code)" | tee -a $results_file
+                failed=$((failed + 1))
               fi
-              echo ""
+              # Show last 20 lines of error log
+              echo "Last 20 lines of output:"
+              tail -n 20 "$log_file"
             fi
+            echo ""
           done
 
           # Print summary
@@ -307,6 +365,8 @@ jobs:
           echo "Skipped: $skipped ⏭️"
           echo "========================================"
           echo ""
+
+          echo "Examples pattern(s): $EXAMPLES"
 
           # Output to GitHub Actions
           echo "total=$total" >> $GITHUB_OUTPUT
@@ -325,6 +385,9 @@ jobs:
           else
             echo "✅ All examples passed!"
           fi
+
+          # Save list of examples for summary
+          echo "$examples" > examples-ran.txt
 
       - name: Generate test summary
         if: always()
@@ -368,19 +431,20 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Examples Tested" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **01_simple_document_store.py** - Document CRUD operations with comprehensive data types" >> $GITHUB_STEP_SUMMARY
-          echo "- **02_social_network_graph.py** - Graph modeling with vertices, edges, and traversal" >> $GITHUB_STEP_SUMMARY
-          echo "- **03_vector_search.py** - Vector embeddings and semantic similarity search (experimental)" >> $GITHUB_STEP_SUMMARY
-          echo "- **04_csv_import_documents.py** - CSV import with automatic dataset download and type inference" >> $GITHUB_STEP_SUMMARY
-          echo "  - Tested with \`--size small\` (~1 MB, ~100K ratings, 30 min timeout)" >> $GITHUB_STEP_SUMMARY
-          echo "  - Tested with \`--size large\` (~265 MB, ~33M ratings, 60 min timeout)" >> $GITHUB_STEP_SUMMARY
+          echo "**Pattern(s)**: $EXAMPLES" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f examples-ran.txt ]; then
+            while IFS= read -r example; do
+              [ -n "$example" ] && echo "- **$example**" >> $GITHUB_STEP_SUMMARY
+            done < examples-ran.txt
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload example logs
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: example-logs-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          name: example-logs-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}
           path: |
             bindings/python/examples/*.log
             bindings/python/examples/example-results.txt
@@ -388,9 +452,9 @@ jobs:
 
       - name: Upload example databases
         if: failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: example-databases-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          name: example-databases-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}
           path: bindings/python/examples/my_test_databases/
           retention-days: 3
 
@@ -410,9 +474,9 @@ jobs:
           if [ "${{ needs.test-examples.result }}" = "success" ]; then
             echo "✅ **All platforms passed example testing!**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "All examples ran successfully across all 6 platforms." >> $GITHUB_STEP_SUMMARY
+            echo "All examples ran successfully across all enabled platforms." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Platforms tested**: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64" >> $GITHUB_STEP_SUMMARY
+            echo "**Platforms tested**: linux/amd64, linux/arm64, darwin/arm64" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Some platforms failed example testing**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

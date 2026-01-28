@@ -2,20 +2,19 @@
 
 Comprehensive test suite for the ArcadeDB Python embedded bindings.
 
-!!! info "📚 Full Documentation"
-    For detailed test documentation, examples, and best practices, see the **[Testing Guide](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/)**
+For detailed test documentation, examples, and best practices, see the **[Testing Guide](https://docs.humem.ai/arcadedb/latest/development/testing/)**
 
 ## Quick Stats
 
-- **107 tests** across 6 test files
-- ✅ **Current package**: 107 passed, 0 skipped
-- Package includes all ArcadeDB features (SQL, Cypher, Gremlin, Studio)
+- **258 tests** across 20 test files
+- ✅ **Current package**: 258 passed, 6 skipped
+- Package includes all ArcadeDB features (SQL, OpenCypher, Studio)
 
 ## Running Tests
 
 ```bash
 # Install dependencies
-pip install pytest pytest-cov
+uv pip install pytest pytest-cov
 
 # Run all tests
 pytest
@@ -39,18 +38,18 @@ pytest -k "transaction" -v
 | `test_concurrency.py` | 4 | File locking, thread safety, multi-process |
 | `test_server_patterns.py` | 6 | Embedded, server-managed, HTTP performance |
 | `test_importer.py` | 13 | CSV, JSON, JSONL, Neo4j import |
-| `test_gremlin.py` | 1 | Gremlin query language |
+| `test_cypher.py` | 1 | OpenCypher query language |
 
 ## Documentation Links
 
-- **[Testing Overview](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/overview/)** - Quick start guide
-- **[Core Tests](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/test-core/)** - Database operations
-- **[Server Tests](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/test-server/)** - HTTP API
-- **[Concurrency Tests](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/test-concurrency/)** - Multi-process, threads
-- **[Server Patterns](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/test-server-patterns/)** - Best practices
-- **[Data Import Tests](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/test-importer/)** - CSV, JSON import
-- **[Gremlin Tests](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/test-gremlin/)** - Graph queries
-- **[Best Practices](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/best-practices/)** - Summary checklist
+- **[Testing Overview](https://docs.humem.ai/arcadedb/latest/development/testing/overview/)** - Quick start guide
+- **[Core Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-core/)** - Database operations
+- **[Server Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-server/)** - HTTP API
+- **[Concurrency Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-concurrency/)** - Multi-process, threads
+- **[Server Patterns](https://docs.humem.ai/arcadedb/latest/development/testing/test-server-patterns/)** - Best practices
+- **[Data Import Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-importer/)** - CSV, JSON import
+- **[OpenCypher Tests](https://docs.humem.ai/arcadedb/latest/development/testing/test-opencypher/)** - Graph queries
+- **[Best Practices](https://docs.humem.ai/arcadedb/latest/development/testing/best-practices/)** - Summary checklist
 
 ## Common Patterns
 
@@ -74,8 +73,9 @@ for t in threads: t.join()
 # Multiple processes CANNOT access same database file
 # Solution: Use server mode
 
-server = arcadedb.create_server(root_path="./databases")
+server = arcadedb.create_server("./databases")
 server.start()
+# "mydb" will be created at ./databases/databases/mydb
 db = server.create_database("mydb")
 
 # Now HTTP clients from other processes can connect!
@@ -84,8 +84,9 @@ db = server.create_database("mydb")
 ### Server Best Practice ⭐
 ```python
 # Pattern 2: Start server first (recommended)
-server = arcadedb.create_server(root_path="./databases")
+server = arcadedb.create_server("./databases")
 server.start()
+# "mydb" will be created at ./databases/databases/mydb
 db = server.create_database("mydb")
 
 # Both embedded + HTTP work immediately
@@ -94,6 +95,6 @@ db = server.create_database("mydb")
 
 ## Need Help?
 
-- **Questions?** See the [Testing Guide](https://humemai.github.io/arcadedb-embedded-python/latest/development/testing/)
-- **Found a bug?** [Open an issue](https://github.com/humemai/arcadedb/issues)
-- **Contributing?** Read [Contributing Guide](https://github.com/humemai/arcadedb/blob/python-embedded/CONTRIBUTING.md)
+- **Questions?** See the [Testing Guide](https://docs.humem.ai/arcadedb/latest/development/testing/)
+- **Found a bug?** [Open an issue](https://github.com/humemai/arcadedb-embedded-python/issues)
+- **Contributing?** Read [Contributing Guide](https://docs.humem.ai/arcadedb/latest/development/contributing/)

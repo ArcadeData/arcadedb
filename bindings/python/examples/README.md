@@ -33,14 +33,14 @@ Perfect introduction to ArcadeDB basics:
 ---
 
 ### 🔗 [02_social_network_graph.py](./02_social_network_graph.py) ✅ **COMPLETE**
-**Vertex Types | Edge Types | Graph Traversal | SQL MATCH vs Cypher | NULL Handling**
+**Vertex Types | Edge Types | Graph Traversal | SQL MATCH vs OpenCypher | NULL Handling**
 
 Complete social network modeling with graph database:
 - Creating vertex types (Person) and edge types (FRIEND_OF) with rich properties
 - NULL value handling for optional fields (email, phone, reputation)
 - Bidirectional relationships with metadata (since, closeness)
 - Graph traversal patterns (friends, friends-of-friends, mutual connections)
-- Comparing SQL MATCH vs Cypher query languages
+- Comparing SQL MATCH vs OpenCypher query languages
 - Variable-length path queries (`*1..3`) and graph aggregations
 - NULL filtering (IS NULL queries for missing contact info)
 - Relationship property queries (closeness filtering)
@@ -48,6 +48,94 @@ Complete social network modeling with graph database:
 **Learn:** Graph schema design, relationship modeling, multi-language querying, NULL handling in graphs
 
 **Status:** ✅ Fully functional - 8 people, 24 bidirectional edges, comprehensive queries
+
+
+### 🔍 [03_vector_search.py](./03_vector_search.py) ✅ **COMPLETE**
+**Vector Embeddings | HNSW (JVector) Index | Semantic Search | Performance Analysis**
+
+Semantic similarity search with AI/ML:
+**Status:** ✅ Fully functional - Demonstrates vector search capabilities
+
+---
+
+### 📄 [04_csv_import_documents.py](./04_csv_import_documents.py) ✅ **COMPLETE**
+**CSV Import | Schema Definition | Batch Processing | Type Inference**
+
+High-performance CSV import for document data:
+- Importing MovieLens dataset (movies.csv)
+- Automatic schema creation with type inference
+- Handling NULL values and data cleaning
+- Batch processing for optimal performance
+- Index creation strategies
+
+**Learn:** ETL patterns, bulk import, schema management, performance tuning
+
+**Status:** ✅ Fully functional - Imports 100K+ records efficiently
+---
+
+### 🕸️ [05_csv_import_graph.py](./05_csv_import_graph.py) ✅ **COMPLETE**
+**Graph Import | Edge Creation | Foreign Keys | Performance Benchmarking**
+
+Complex graph construction from CSV data:
+- Importing Users, Movies, and Ratings
+- Creating edges (User-[RATED]->Movie) from foreign keys
+- Handling large-scale edge creation (millions of edges)
+- Benchmarking different import strategies (Sync vs Async vs Batch)
+- Memory management for large graphs
+
+**Learn:** Graph ETL, edge creation patterns, performance optimization, memory management
+
+**Status:** ✅ Fully functional - Benchmarks show optimal import strategies
+
+---
+
+### 🎬 [06_vector_search_recommendations.py](./06_vector_search_recommendations.py) ✅ **COMPLETE**
+**Hybrid Search | Recommendation Engine | Vector + Graph | Real-world Use Case**
+
+Building a movie recommendation engine:
+- Generating embeddings for movies (Title + Genres)
+- Combining vector similarity with graph relationships
+- "More like this" functionality
+- Hybrid queries (Vector Search + SQL Filtering)
+- Personalized recommendations based on user history
+
+**Learn:** Recommendation systems, hybrid search, vector+graph integration
+
+**Status:** ✅ Fully functional - Generates relevant movie recommendations
+
+---
+
+### 📚 [07_stackoverflow_multimodel.py](./07_stackoverflow_multimodel.py) ✅ **COMPLETE**
+**Multi-Model | Complex Schema | Advanced Analytics | Full Pipeline**
+
+Comprehensive Stack Overflow dataset analysis:
+- **Phase 1 (Document):** Import Posts, Users, Tags, Comments, Votes
+- **Phase 2 (Graph):** Create relationships (ASKED, ANSWERED, HAS_TAG, VOTED)
+- **Phase 3 (Vector):** Semantic search for questions and tags
+- **Phase 4 (Analytics):** Complex multi-model queries and aggregations
+- Handling large datasets (XML parsing, batching)
+- Advanced schema design with inheritance and polymorphism
+
+**Learn:** Multi-model architecture, complex ETL, advanced querying, full-stack analytics
+
+**Status:** ✅ Fully functional - Validated on Stack Exchange datasets
+
+---
+
+### 🌐 [08_server_mode_rest_api.py](./08_server_mode_rest_api.py) ✅ **COMPLETE**
+**Server Mode | HTTP API | Studio UI | Concurrency | Polyglot Querying**
+
+Running ArcadeDB as a server with concurrent client simulation:
+- Starting the embedded server programmatically
+- **Concurrent Load Testing:** Simulating multiple HTTP clients using `ThreadPoolExecutor`
+- **Polyglot Workload:** Executing mixed SQL and OpenCypher queries in parallel
+- Accessing the **Studio Web UI** for visual exploration
+- Using the **HTTP REST API** (via `requests`) for remote interaction
+- Validating complex graph patterns and aggregations under load
+
+**Learn:** Server management, concurrency patterns, HTTP API integration, mixed SQL/OpenCypher workloads
+
+**Status:** ✅ Fully functional - Simulates 6 concurrent clients executing 30+ diverse queries
 
 ---
 

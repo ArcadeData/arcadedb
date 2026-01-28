@@ -8,6 +8,10 @@ with automatic configuration, progress tracking, and error handling.
 import sys
 from typing import Any, Callable, Dict, List, Optional
 
+from .graph import Vertex
+from .type_conversion import convert_python_to_java
+from .vector import to_java_float_array
+
 
 class BatchContext:
     """
@@ -40,7 +44,7 @@ class BatchContext:
         batch_size: int = 5000,
         parallel: int = 4,
         use_wal: bool = True,
-        back_pressure: int = 0,
+        back_pressure: int = 50,
         progress: bool = False,
         progress_desc: str = "Processing",
     ):
@@ -52,7 +56,7 @@ class BatchContext:
             batch_size: Auto-commit every N operations (default: 5000)
             parallel: Number of parallel worker threads 1-16 (default: 4)
             use_wal: Enable Write-Ahead Log (default: True)
-            back_pressure: Queue back-pressure threshold 0-100 (default: 0)
+            back_pressure: Queue back-pressure threshold 0-100 (default: 50)
             progress: Enable progress tracking (default: False)
             progress_desc: Description for progress bar (default: "Processing")
         """
@@ -221,6 +225,16 @@ class BatchContext:
 
         vertex = self.db.new_vertex(type_name)
         for key, value in properties.items():
+            # Auto-convert numpy arrays to Java float arrays
+            if hasattr(value, "dtype") and hasattr(value, "tolist"):
+                try:
+                    import numpy as np
+
+                    if np.issubdtype(value.dtype, np.floating):
+                        value = to_java_float_array(value)
+                except ImportError:
+                    pass
+
             vertex.set(key, value)
 
         cb = self._make_callback(callback)
@@ -245,6 +259,16 @@ class BatchContext:
 
         document = self.db.new_document(type_name)
         for key, value in properties.items():
+            # Auto-convert numpy arrays to Java float arrays
+            if hasattr(value, "dtype") and hasattr(value, "tolist"):
+                try:
+                    import numpy as np
+
+                    if np.issubdtype(value.dtype, np.floating):
+                        value = to_java_float_array(value)
+                except ImportError:
+                    pass
+
             document.set(key, value)
 
         cb = self._make_callback(callback)
@@ -261,14 +285,17 @@ class BatchContext:
         """
         Create an edge synchronously within the batch context.
 
-        Note: Edge creation with newEdge() is synchronous and immediately
+        Note: Edge creation with new_edge() is synchronous and immediately
         persists the edge, so it cannot be queued asynchronously like
         vertex/document creation. The edge is created immediately but
         within the batch context's transaction.
 
+        Bidirectionality is determined by the EdgeType schema definition,
+        not by a per-call parameter.
+
         Args:
-            from_vertex: Source vertex (Java vertex object)
-            to_vertex: Destination vertex (Java vertex object)
+            from_vertex: Source vertex (Python Vertex or Java vertex object)
+            to_vertex: Destination vertex (Python Vertex or Java vertex object)
             edge_type: Edge type name
             callback: Optional callback for success (called immediately after creation)
             **properties: Edge properties as keyword arguments
@@ -279,11 +306,28 @@ class BatchContext:
         if self.async_exec is None:
             raise RuntimeError("BatchContext not entered")
 
-        # Edge creation is synchronous - newEdge() persists immediately
-        edge = from_vertex.newEdge(edge_type, to_vertex, True)
+        java_from = (
+            from_vertex._java_document
+            if isinstance(from_vertex, Vertex)
+            else from_vertex
+        )
+        java_to = (
+            to_vertex._java_document if isinstance(to_vertex, Vertex) else to_vertex
+        )
+
+        # Convert properties to Java format
+        props = {}
         for key, value in properties.items():
-            edge.set(key, value)
-        edge.save()
+            props[key] = convert_python_to_java(value)
+
+        # Edge creation is synchronous - new_edge() persists immediately
+        # Use Pythonic API (bidirectionality determined by EdgeType schema)
+        if not isinstance(java_from, Vertex):
+            from_vertex_wrapped = Vertex(java_from)
+        else:
+            from_vertex_wrapped = java_from
+
+        edge = from_vertex_wrapped.new_edge(edge_type, java_to, **props)
 
         # Update progress tracking
         self._update_progress()
