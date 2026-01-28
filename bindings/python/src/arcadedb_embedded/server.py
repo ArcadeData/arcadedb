@@ -59,10 +59,10 @@ class ArcadeDBServer:
         context_config.setValue("arcadedb.server.mode", mode)
 
         host = self._config.get("host", "0.0.0.0")
-        context_config.setValue("arcadedb.server.httpIncoming.host", host)
+        context_config.setValue("arcadedb.server.httpIncomingHost", host)
 
         http_port = self._config.get("http_port", 2480)
-        context_config.setValue("arcadedb.server.httpIncoming.port", http_port)
+        context_config.setValue("arcadedb.server.httpIncomingPort", http_port)
 
         # Apply any additional configuration
         for key, value in self._config.items():

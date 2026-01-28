@@ -25,6 +25,8 @@ from typing import Any, Callable, Optional
 
 import jpype
 
+from .graph import Document
+
 
 class AsyncExecutor:
     """
@@ -200,6 +202,7 @@ class AsyncExecutor:
         Args:
             record: MutableDocument or MutableVertex to create
                    (as returned by db.new_vertex() or db.new_document())
+                   Can also be a Python wrapper (Document, Vertex, Edge)
             callback: Optional success callback, receives created record
             error_callback: Optional error callback, receives exception
 
@@ -211,6 +214,10 @@ class AsyncExecutor:
             >>> vertex.set("id", 123)
             >>> async_exec.create_record(vertex, on_success)
         """
+        # Unwrap Python wrapper if provided
+        if isinstance(record, Document):
+            record = record._java_document
+
         # Java API requires callbacks, so create them even if not provided
         java_callback = self._create_new_record_callback(callback, error_callback)
         self._java_async.createRecord(record, java_callback)
@@ -225,6 +232,7 @@ class AsyncExecutor:
 
         Args:
             record: MutableDocument or MutableVertex to update
+                   Can also be a Python wrapper (Document, Vertex, Edge)
             callback: Optional success callback, receives updated record
 
         Example:
@@ -235,6 +243,12 @@ class AsyncExecutor:
             Callbacks use UpdatedRecordCallback which receives the updated record.
             Per-operation callbacks work reliably.
         """
+        # Unwrap Python wrapper if provided
+        from .graph import Document
+
+        if isinstance(record, Document):
+            record = record._java_document
+
         if callback is None:
             # Use null callback
             self._java_async.updateRecord(record, None)
@@ -252,7 +266,7 @@ class AsyncExecutor:
         Schedule async record deletion.
 
         Args:
-            record: Document or Vertex to delete
+            record: Document, Vertex, or Edge to delete
             callback: Optional success callback (no args)
 
         Example:
@@ -262,6 +276,12 @@ class AsyncExecutor:
             Callbacks use DeletedRecordCallback which takes no arguments.
             Per-operation callbacks work reliably.
         """
+        # Unwrap Python wrapper if provided
+        from .graph import Document
+
+        if isinstance(record, Document):
+            record = record._java_document
+
         if callback is None:
             # Use null callback
             self._java_async.deleteRecord(record, None)
@@ -290,7 +310,7 @@ class AsyncExecutor:
 
         Example:
             >>> def process_row(row):
-            ...     print(row.get_property("name"))
+            ...     print(row.get("name"))
             >>>
             >>> async_exec.query("sql", "SELECT FROM User", process_row)
             >>> async_exec.wait_completion()

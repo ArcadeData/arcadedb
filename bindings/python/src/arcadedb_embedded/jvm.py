@@ -65,7 +65,34 @@ def get_bundled_jre_lib_path() -> str:
 
 
 def start_jvm():
-    """Start the JVM with ArcadeDB JARs if not already started."""
+    """
+    Start the JVM with ArcadeDB JARs if not already started.
+
+    JVM Memory Configuration (via environment variables):
+    -----------------------------------------------------
+    ARCADEDB_JVM_ARGS (optional)
+        JVM arguments for memory and JVM-wide options (space-separated).
+        If not specified, defaults to: "-Xmx4g -Djava.awt.headless=true".
+
+        Common options to set here (JVM-wide only):
+            -Xmx<size> / -Xms<size>   Heap sizing (must be set before JVM start)
+            -XX:MaxDirectMemorySize=<size>   Direct buffer cap
+            -Djava.util.concurrent.ForkJoinPool.common.parallelism=<count>   Limit
+                common pool threads if you want fewer threads for graph builds
+
+        Examples:
+            # Production with 8GB heap
+            export ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g -XX:MaxDirectMemorySize=8g"
+
+            # Development/testing (smaller memory)
+            export ARCADEDB_JVM_ARGS="-Xmx2g -Xms2g"
+
+    ARCADEDB_JVM_ERROR_FILE (optional)
+        Path for JVM crash logs (default: ./log/hs_err_pid%p.log)
+
+    Note: Environment variables must be set BEFORE importing arcadedb_embedded,
+          as the JVM can only be configured once per Python process.
+    """
     if jpype.isJVMStarted():
         return
 
@@ -83,34 +110,61 @@ def start_jvm():
     # Get bundled JRE's JVM library path
     jvm_path = get_bundled_jre_lib_path()
 
-    # Allow customization via environment variables
-    max_heap = os.environ.get("ARCADEDB_JVM_MAX_HEAP", "4g")
-
-    # Prepare JVM arguments
-    jvm_args = [
-        f"-Xmx{max_heap}",  # Max heap (default 4g, override with env var)
-        "-Djava.awt.headless=true",  # Headless mode for server use
-    ]
-
-    # Configure JVM error log location (hs_err_pid*.log files)
-    # Default: ./log/hs_err_pid%p.log (keeps crash logs with application logs)
-    error_file = os.environ.get("ARCADEDB_JVM_ERROR_FILE")
-    if error_file:
-        jvm_args.append(f"-XX:ErrorFile={error_file}")
-    else:
-        # Set sensible default: put JVM crash logs in ./log/ directory
-        jvm_args.append("-XX:ErrorFile=./log/hs_err_pid%p.log")
-
-    # Allow additional custom JVM arguments
-    extra_args = os.environ.get("ARCADEDB_JVM_ARGS")
-    if extra_args:
-        jvm_args.extend(extra_args.split())
+    jvm_args = _build_jvm_args()
 
     try:
         # Always use bundled JRE
         jpype.startJVM(jvm_path, *jvm_args, classpath=classpath)
     except Exception as e:
         raise ArcadeDBError(f"Failed to start JVM: {e}") from e
+
+
+def _build_jvm_args() -> list[str]:
+    """Helper to construct JVM arguments from env vars and defaults."""
+    # JVM arguments: use env or defaults
+    jvm_args_str = os.environ.get("ARCADEDB_JVM_ARGS")
+    if jvm_args_str:
+        jvm_args = jvm_args_str.split()
+
+        # Merge mandatory defaults if missing from user arguments
+
+        # 1. Enable vector module if not present (Critical for performance)
+        # Check for --add-modules flag containing jdk.incubator.vector
+        has_vector_module = any(
+            arg.startswith("--add-modules") and "jdk.incubator.vector" in arg
+            for arg in jvm_args
+        )
+        if not has_vector_module:
+            jvm_args.append("--add-modules=jdk.incubator.vector")
+
+        # 2. Headless mode if not set (Critical for server environments)
+        if not any(arg.startswith("-Djava.awt.headless=") for arg in jvm_args):
+            jvm_args.append("-Djava.awt.headless=true")
+
+        # 3. Default heap if user did not set one
+        if not any(arg.startswith("-Xmx") for arg in jvm_args):
+            jvm_args.append("-Xmx4g")
+
+        # 4. Allow native access for JPype (required by newer JDKs)
+        if not any(arg.startswith("--enable-native-access") for arg in jvm_args):
+            jvm_args.append("--enable-native-access=ALL-UNNAMED")
+    else:
+        # Default: 4GB heap, headless mode, SIMD vector support
+        jvm_args = [
+            "-Xmx4g",
+            "-Djava.awt.headless=true",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+        ]
+
+    # Configure JVM crash log location (hs_err_pid*.log files)
+    error_file = os.environ.get("ARCADEDB_JVM_ERROR_FILE")
+    if error_file:
+        jvm_args.append(f"-XX:ErrorFile={error_file}")
+    else:
+        jvm_args.append("-XX:ErrorFile=./log/hs_err_pid%p.log")
+
+    return jvm_args
 
 
 def shutdown_jvm():

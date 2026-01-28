@@ -6,6 +6,9 @@ ResultSet and Result classes for wrapping query results.
 
 from typing import Any, Dict, Iterator, List, Optional
 
+import jpype
+
+from .graph import Document, Edge, Vertex
 from .type_conversion import convert_java_to_python
 
 
@@ -68,7 +71,7 @@ class ResultSet:
         except ImportError:
             raise ImportError(
                 "pandas is required for to_dataframe(). "
-                "Install with: pip install pandas"
+                "Install with: uv pip install pandas"
             )
 
         return pd.DataFrame(self.to_list(convert_types=convert_types))
@@ -130,7 +133,7 @@ class ResultSet:
         Example:
             >>> user = db.query("sql", "SELECT FROM User WHERE id = 1").first()
             >>> if user:
-            ...     print(user.get_property("name"))
+            ...     print(user.get("name"))
         """
         try:
             return next(iter(self))
@@ -150,7 +153,7 @@ class ResultSet:
         Example:
             >>> user = db.query("sql", "SELECT FROM User WHERE email = ?",
             ...                 "alice@example.com").one()
-            >>> print(user.get_property("name"))
+            >>> print(user.get("name"))
         """
         iterator = iter(self)
         try:
@@ -184,11 +187,11 @@ class Result:
         Example:
             >>> result = db.query("sql", "SELECT FROM User LIMIT 1").first()
             >>> if result.has_property("email"):
-            ...     print(result.get_property("email"))
+            ...     print(result.get("email"))
         """
         return self._java_result.hasProperty(name)
 
-    def get_property(self, name: str) -> Any:
+    def get(self, name: str) -> Any:
         """
         Get a property value from the result with automatic type conversion.
 
@@ -196,15 +199,78 @@ class Result:
             name: Property name
 
         Returns:
-            Property value as Python type (int, str, Decimal, datetime, etc.)
+            Property value as Python type (int, str, Decimal, datetime, etc.), or None if not found
 
         Example:
             >>> result = db.query("sql", "SELECT FROM User WHERE id = 1").first()
-            >>> age = result.get_property("age")  # Returns Python int
-            >>> email = result.get_property("email")  # Returns Python str
+            >>> age = result.get("age")  # Returns Python int
+            >>> email = result.get("email")  # Returns Python str
+            >>> phone = result.get("phone")  # Returns None if not found
+            >>> phone = result.get("phone") or "unknown"  # Use default pattern
         """
+        if not self.has_property(name):
+            return None
         value = self._java_result.getProperty(name)
         return convert_java_to_python(value)
+
+    def get_rid(self) -> Optional[str]:
+        """
+        Get the Record ID (RID) if available.
+
+        Returns:
+            RID string (e.g., "#10:5") or None
+
+        Example:
+            >>> result = db.query("sql", "SELECT FROM User LIMIT 1").first()
+            >>> print(result.get_rid())
+            #10:5
+        """
+        identity = self._java_result.getIdentity()
+        if identity.isPresent():
+            return str(identity.get().toString())
+        return None
+
+    def get_vertex(self) -> Optional[Vertex]:
+        """
+        Get the underlying Vertex object if available.
+
+        Returns:
+            Vertex object or None
+        """
+        vertex = self._java_result.getVertex()
+        if vertex.isPresent():
+            return Vertex(vertex.get())
+        return None
+
+    def get_edge(self) -> Optional[Edge]:
+        """
+        Get the underlying Edge object if available.
+
+        Returns:
+            Edge object or None
+        """
+        edge = self._java_result.getEdge()
+        if edge.isPresent():
+            return Edge(edge.get())
+        return None
+
+    def get_element(self) -> Optional[Document]:
+        """
+        Get the underlying Element (Document, Vertex, or Edge) if available.
+
+        Returns:
+            Document, Vertex, or Edge object or None
+        """
+        element = self._java_result.getElement()
+        if element.isPresent():
+            java_element = element.get()
+            # Determine specific type
+            if isinstance(java_element, jpype.JClass("com.arcadedb.graph.Vertex")):
+                return Vertex(java_element)
+            elif isinstance(java_element, jpype.JClass("com.arcadedb.graph.Edge")):
+                return Edge(java_element)
+            return Document(java_element)
+        return None
 
     def get_property_names(self) -> List[str]:
         """
@@ -258,7 +324,7 @@ class Result:
                 for name in self.property_names
             }
 
-        return {name: self.get_property(name) for name in self.property_names}
+        return {name: self.get(name) for name in self.property_names}
 
     def to_json(self) -> str:
         """

@@ -67,15 +67,17 @@ def test_server_database_operations(temp_server_root):
         assert db.is_open()
 
         # Use database
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("Person")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Person")
             db.command("sql", "INSERT INTO Person SET name = 'Alice', age = 30")
 
         # Query
         result = db.query("sql", "SELECT FROM Person")
         records = list(result)
         assert len(records) == 1
-        assert records[0].get_property("name") == "Alice"
+        assert records[0].get("name") == "Alice"
 
         # Close database
         db.close()

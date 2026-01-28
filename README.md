@@ -84,6 +84,7 @@ ArcadeDB understands multiple languages:
 ArcadeDB can be used as:
 
 - Embedded from any language on top of the Java Virtual Machine
+- Embedded from Python via bindings: https://github.com/humemai/arcadedb-embedded-python
 - Remotely by using [HTTP/JSON](https://docs.arcadedb.com#HTTP-API)
 - Remotely by using a [Postgres driver](https://docs.arcadedb.com#Postgres-Driver) (ArcadeDB implements Postgres Wire protocol)
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)

@@ -8,10 +8,11 @@ import arcadedb_embedded as arcadedb
 def test_count_type(temp_db_path):
     """Test Database.count_type() method."""
     with arcadedb.create_database(temp_db_path) as db:
-        with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE User")
-            db.command("sql", "CREATE DOCUMENT TYPE Product")
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("User")
+        db.schema.create_document_type("Product")
 
+        with db.transaction():
             # Insert users
             for i in range(10):
                 db.command("sql", f"INSERT INTO User SET name = 'User{i}'")
@@ -52,15 +53,15 @@ def test_drop_database(temp_db_path):
     db = arcadedb.create_database(temp_db_path)
 
     # Create some data
+    # Schema operations are auto-transactional
+    db.schema.create_document_type("Test")
     with db.transaction():
-        db.command("sql", "CREATE DOCUMENT TYPE Test")
         db.command("sql", "INSERT INTO Test SET value = 1")
 
-    # Verify data exists
-    with db.transaction():
-        result = db.query("sql", "SELECT count(*) as count FROM Test")
-        count = result.first().get_property("count")
-        assert count == 1
+    # Verify data exists (read-only, no transaction needed)
+    result = db.query("sql", "SELECT count(*) as count FROM Test")
+    count = result.first().get("count")
+    assert count == 1
 
     # Drop the database
     db.drop()
@@ -72,9 +73,9 @@ def test_drop_database(temp_db_path):
 def test_database_methods_integration(temp_db_path):
     """Test using multiple database methods together."""
     with arcadedb.create_database(temp_db_path) as db:
-        with db.transaction():
-            db.command("sql", "CREATE VERTEX TYPE Person")
-            db.command("sql", "CREATE EDGE TYPE Knows")
+        # Schema operations are auto-transactional
+        db.schema.create_vertex_type("Person")
+        db.schema.create_edge_type("Knows")
 
         # Insert data
         with db.transaction():
@@ -95,7 +96,7 @@ def test_database_methods_integration(temp_db_path):
 
         # Test first()
         first_person = result.first()
-        assert first_person.get_property("name") == "Alice"
+        assert first_person.get("name") == "Alice"
 
         # New query for to_list()
         result2 = db.query("sql", "SELECT FROM Person ORDER BY name")

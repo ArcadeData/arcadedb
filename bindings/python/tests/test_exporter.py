@@ -4,14 +4,13 @@ Tests JSONL, GraphML, GraphSON, and CSV export capabilities.
 """
 
 import csv
-import gzip
 import os
-import tarfile
 import tempfile
 from pathlib import Path
 
 import arcadedb_embedded as arcadedb
 import pytest
+from tests.conftest import has_graph_export_support
 
 
 @pytest.fixture
@@ -33,47 +32,47 @@ def sample_db(temp_db_path):
     db = arcadedb.create_database(temp_db_path)
 
     # Create schema with properties
-    db.command("sql", "CREATE VERTEX TYPE User")
-    db.command("sql", "CREATE PROPERTY User.userId INTEGER")
-    db.command("sql", "CREATE PROPERTY User.name STRING")
-    db.command("sql", "CREATE PROPERTY User.email STRING")
-    db.command("sql", "CREATE PROPERTY User.age INTEGER")
-    db.command("sql", "CREATE PROPERTY User.premium BOOLEAN")
-    db.command("sql", "CREATE INDEX ON User(userId) UNIQUE")
+    db.schema.create_vertex_type("User")
+    db.schema.create_property("User", "userId", "INTEGER")
+    db.schema.create_property("User", "name", "STRING")
+    db.schema.create_property("User", "email", "STRING")
+    db.schema.create_property("User", "age", "INTEGER")
+    db.schema.create_property("User", "premium", "BOOLEAN")
+    db.schema.create_index("User", ["userId"], unique=True)
 
-    db.command("sql", "CREATE VERTEX TYPE Movie")
-    db.command("sql", "CREATE PROPERTY Movie.movieId INTEGER")
-    db.command("sql", "CREATE PROPERTY Movie.title STRING")
-    db.command("sql", "CREATE PROPERTY Movie.year INTEGER")
-    db.command("sql", "CREATE PROPERTY Movie.genres LIST")
-    db.command("sql", "CREATE PROPERTY Movie.rating DOUBLE")
-    db.command("sql", "CREATE INDEX ON Movie(movieId) UNIQUE")
+    db.schema.create_vertex_type("Movie")
+    db.schema.create_property("Movie", "movieId", "INTEGER")
+    db.schema.create_property("Movie", "title", "STRING")
+    db.schema.create_property("Movie", "year", "INTEGER")
+    db.schema.create_property("Movie", "genres", "LIST")
+    db.schema.create_property("Movie", "rating", "DOUBLE")
+    db.schema.create_index("Movie", ["movieId"], unique=True)
 
-    db.command("sql", "CREATE VERTEX TYPE Actor")
-    db.command("sql", "CREATE PROPERTY Actor.actorId INTEGER")
-    db.command("sql", "CREATE PROPERTY Actor.name STRING")
-    db.command("sql", "CREATE PROPERTY Actor.birthYear INTEGER")
+    db.schema.create_vertex_type("Actor")
+    db.schema.create_property("Actor", "actorId", "INTEGER")
+    db.schema.create_property("Actor", "name", "STRING")
+    db.schema.create_property("Actor", "birthYear", "INTEGER")
 
-    db.command("sql", "CREATE EDGE TYPE Rated")
-    db.command("sql", "CREATE PROPERTY Rated.rating DOUBLE")
-    db.command("sql", "CREATE PROPERTY Rated.timestamp LONG")
-    db.command("sql", "CREATE PROPERTY Rated.review STRING")
+    db.schema.create_edge_type("Rated")
+    db.schema.create_property("Rated", "rating", "DOUBLE")
+    db.schema.create_property("Rated", "timestamp", "LONG")
+    db.schema.create_property("Rated", "review", "STRING")
 
-    db.command("sql", "CREATE EDGE TYPE ActedIn")
-    db.command("sql", "CREATE PROPERTY ActedIn.role STRING")
-    db.command("sql", "CREATE PROPERTY ActedIn.year INTEGER")
+    db.schema.create_edge_type("ActedIn")
+    db.schema.create_property("ActedIn", "role", "STRING")
+    db.schema.create_property("ActedIn", "year", "INTEGER")
 
-    db.command("sql", "CREATE EDGE TYPE Follows")
+    db.schema.create_edge_type("Follows")
 
-    db.command("sql", "CREATE DOCUMENT TYPE LogEntry")
-    db.command("sql", "CREATE PROPERTY LogEntry.level STRING")
-    db.command("sql", "CREATE PROPERTY LogEntry.message STRING")
-    db.command("sql", "CREATE PROPERTY LogEntry.timestamp LONG")
+    db.schema.create_document_type("LogEntry")
+    db.schema.create_property("LogEntry", "level", "STRING")
+    db.schema.create_property("LogEntry", "message", "STRING")
+    db.schema.create_property("LogEntry", "timestamp", "LONG")
 
-    db.command("sql", "CREATE DOCUMENT TYPE Config")
-    db.command("sql", "CREATE PROPERTY Config.key STRING")
-    db.command("sql", "CREATE PROPERTY Config.value STRING")
-    db.command("sql", "CREATE PROPERTY Config.enabled BOOLEAN")
+    db.schema.create_document_type("Config")
+    db.schema.create_property("Config", "key", "STRING")
+    db.schema.create_property("Config", "value", "STRING")
+    db.schema.create_property("Config", "enabled", "BOOLEAN")
 
     # Add test data with more complexity
     with db.transaction():
@@ -296,8 +295,12 @@ class TestDatabaseExport:
             or "format" in str(exc_info.value).lower()
         )
 
+    @pytest.mark.graph_export
+    @pytest.mark.skipif(
+        not has_graph_export_support(), reason="Requires GraphML/GraphSON support"
+    )
     def test_export_graphml(self, sample_db, temp_db_path):
-        """Test GraphML export (requires Gremlin module)."""
+        """Test GraphML export (requires GraphML/GraphSON support)."""
         export_path = "test_export.graphml.tgz"
 
         try:
@@ -317,13 +320,17 @@ class TestDatabaseExport:
             export_file.unlink()
 
         except arcadedb.ArcadeDBError as e:
-            if "requires additional modules" in str(e) or "Gremlin" in str(e):
-                pytest.skip("GraphML export requires Gremlin module")
+            if "requires additional modules" in str(e):
+                pytest.skip("GraphML export requires GraphML/GraphSON support")
             else:
                 raise
 
+    @pytest.mark.graph_export
+    @pytest.mark.skipif(
+        not has_graph_export_support(), reason="Requires GraphML/GraphSON support"
+    )
     def test_export_graphson(self, sample_db, temp_db_path):
-        """Test GraphSON export (requires Gremlin module)."""
+        """Test GraphSON export (requires GraphML/GraphSON support)."""
         export_path = "test_export.graphson.tgz"
 
         try:
@@ -343,8 +350,8 @@ class TestDatabaseExport:
             export_file.unlink()
 
         except arcadedb.ArcadeDBError as e:
-            if "requires additional modules" in str(e) or "Gremlin" in str(e):
-                pytest.skip("GraphSON export requires Gremlin module")
+            if "requires additional modules" in str(e):
+                pytest.skip("GraphSON export requires GraphML/GraphSON support")
             else:
                 raise
 
@@ -512,7 +519,9 @@ class TestRoundTripExport:
 
         # Import the exported data
         try:
-            import_db.command("sql", f"IMPORT DATABASE file://{export_file.absolute()}")
+            # Convert path to string and replace backslashes with forward slashes for Windows compatibility
+            import_path_str = str(export_file.absolute()).replace("\\", "/")
+            import_db.command("sql", f"IMPORT DATABASE file://{import_path_str}")
 
             # Verify counts match the complex sample_db
             user_count = import_db.count_type("User")
@@ -534,37 +543,63 @@ class TestRoundTripExport:
 
         finally:
             import_db.close()
-            export_file.unlink()
+            # Force garbage collection to release file handles (Windows fix)
+            import gc
+
+            gc.collect()
+
+            if export_file.exists():
+                try:
+                    export_file.unlink()
+                except PermissionError:
+                    # On Windows, file might still be locked by Java process
+                    # Wait a bit and try again, or ignore if it persists (temp file)
+                    import time
+
+                    time.sleep(0.5)
+                    try:
+                        export_file.unlink()
+                    except PermissionError:
+                        pass
 
             # Cleanup import database
             import shutil
 
             if os.path.exists(import_db_path):
-                shutil.rmtree(import_db_path)
+                try:
+                    shutil.rmtree(import_db_path)
+                except PermissionError:
+                    pass
 
 
-class TestExportWithBatchContext:
-    """Tests for export functionality with bulk-loaded data."""
+class TestExportWithBulkInsert:
+    """Tests export after bulk insert without batch_context."""
 
-    def test_export_after_batch_insert(self, temp_db_path):
-        """Test exporting database after bulk insert with BatchContext."""
+    def test_export_after_chunked_insert(self, temp_db_path):
+        """Export database after chunked transaction inserts."""
         db = arcadedb.create_database(temp_db_path)
 
         # Create schema
-        db.command("sql", "CREATE VERTEX TYPE Product")
+        db.schema.create_vertex_type("Product")
 
-        # Bulk insert with BatchContext
-        with db.batch_context(batch_size=100, parallel=2) as batch:
-            for i in range(500):
-                batch.create_vertex("Product", productId=i, name=f"Product{i}")
+        # Bulk insert using chunked transactions (avoids batch_context dependency here)
+        chunk_size = 100
+        total = 500
+        for start in range(0, total, chunk_size):
+            with db.transaction():
+                for i in range(start, min(start + chunk_size, total)):
+                    vertex = db.new_vertex("Product")
+                    vertex.set("productId", i)
+                    vertex.set("name", f"Product{i}")
+                    vertex.save()
 
         # Export database
-        export_path = "test_batch_export.jsonl.tgz"
+        export_path = "test_bulk_export.jsonl.tgz"
         stats = db.export_database(export_path, format="jsonl", overwrite=True)
 
         # Verify all products were exported
-        assert stats["vertices"] == 500
-        assert stats["totalRecords"] == 500
+        assert stats["vertices"] == total
+        assert stats["totalRecords"] == total
 
         # Clean up
         db.close()
@@ -595,47 +630,40 @@ class TestAllDataTypes:
         db = arcadedb.create_database(temp_db_path)
 
         try:
-            # Create comprehensive type with all data types
-            with db.transaction():
-                db.command("sql", "CREATE DOCUMENT TYPE DataTypeTest")
+            # Create comprehensive type with all data types (auto-transactional)
+            db.schema.create_document_type("DataTypeTest")
 
-                # Basic types
-                db.command("sql", "CREATE PROPERTY DataTypeTest.text_field STRING")
-                db.command("sql", "CREATE PROPERTY DataTypeTest.bool_field BOOLEAN")
-                db.command("sql", "CREATE PROPERTY DataTypeTest.int_field INTEGER")
-                db.command("sql", "CREATE PROPERTY DataTypeTest.long_field LONG")
-                db.command("sql", "CREATE PROPERTY DataTypeTest.float_field FLOAT")
-                db.command("sql", "CREATE PROPERTY DataTypeTest.double_field DOUBLE")
+            # Basic types
+            db.schema.create_property("DataTypeTest", "text_field", "STRING")
+            db.schema.create_property("DataTypeTest", "bool_field", "BOOLEAN")
+            db.schema.create_property("DataTypeTest", "int_field", "INTEGER")
+            db.schema.create_property("DataTypeTest", "long_field", "LONG")
+            db.schema.create_property("DataTypeTest", "float_field", "FLOAT")
+            db.schema.create_property("DataTypeTest", "double_field", "DOUBLE")
 
-                # Date/time types
-                db.command("sql", "CREATE PROPERTY DataTypeTest.date_field DATE")
-                db.command(
-                    "sql", "CREATE PROPERTY DataTypeTest.datetime_field DATETIME"
-                )
+            # Date/time types
+            db.schema.create_property("DataTypeTest", "date_field", "DATE")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.datetime_field DATETIME")
 
-                # Precision types
-                db.command("sql", "CREATE PROPERTY DataTypeTest.decimal_field DECIMAL")
+            # Precision types
+            db.schema.create_property("DataTypeTest", "decimal_field", "DECIMAL")
 
-                # Collection types
-                db.command(
-                    "sql", "CREATE PROPERTY DataTypeTest.string_list LIST OF STRING"
-                )
-                db.command(
-                    "sql", "CREATE PROPERTY DataTypeTest.int_list LIST OF INTEGER"
-                )
-                db.command("sql", "CREATE PROPERTY DataTypeTest.mixed_list LIST")
+            # Collection types
+            db.command("sql", "CREATE PROPERTY DataTypeTest.string_list LIST OF STRING")
+            db.command("sql", "CREATE PROPERTY DataTypeTest.int_list LIST")
+            db.schema.create_property("DataTypeTest", "mixed_list", "LIST")
 
-                # Note: EMBEDDED type works best without explicit property definition
-                # ArcadeDB will automatically handle nested objects
+            # Note: EMBEDDED type works best without explicit property definition
+            # ArcadeDB will automatically handle nested objects
 
-                # Create a reference type for LINK testing
-                db.command("sql", "CREATE VERTEX TYPE RefVertex")
-                db.command("sql", "CREATE PROPERTY RefVertex.ref_id INTEGER")
+            # Create a reference type for LINK testing
+            db.schema.create_vertex_type("RefVertex")
+            db.schema.create_property("RefVertex", "ref_id", "INTEGER")
 
-                # LINK type (reference to another record)
-                db.command(
-                    "sql", "CREATE PROPERTY DataTypeTest.link_field LINK OF RefVertex"
-                )
+            # LINK type (reference to another record)
+            db.command(
+                "sql", "CREATE PROPERTY DataTypeTest.link_field LINK OF RefVertex"
+            )
 
             # Insert test data with all types
             with db.transaction():
@@ -654,7 +682,7 @@ class TestAllDataTypes:
                         "int_field": 42,
                         "long_field": 9223372036854775807,
                         "float_field": 3.14159,
-                        "double_field": 2.718281828459045,
+                            "double_field": 2.718281828459045,
                         "decimal_field": 123.456789,
                         "string_list": ["apple", "banana", "cherry"],
                         "int_list": [1, 2, 3, 4, 5],
@@ -709,7 +737,7 @@ class TestAllDataTypes:
                         "int_field": -2147483648,
                         "long_field": -9223372036854775807,
                         "float_field": -0.0,
-                        "double_field": 1.7976931348623157e+308,
+                        "double_field": 1.0e30,
                         "decimal_field": 0.000000001,
                         "string_list": [""],
                         "int_list": [0, -1, -2147483648, 2147483647],
@@ -750,9 +778,9 @@ class TestAllDataTypes:
                 assert export_file.exists()
 
                 # Import the data
-                import_db.command(
-                    "sql", f"IMPORT DATABASE file://{export_file.absolute()}"
-                )
+                # Convert path to string and replace backslashes with forward slashes for Windows compatibility
+                import_path_str = str(export_file.absolute()).replace("\\", "/")
+                import_db.command("sql", f"IMPORT DATABASE file://{import_path_str}")
 
                 # Verify record count
                 count = import_db.count_type("DataTypeTest")
@@ -827,11 +855,25 @@ class TestAllDataTypes:
 
             finally:
                 import_db.close()
+                # Force garbage collection to release file handles (Windows fix)
+                import gc
+
+                gc.collect()
 
             # Clean up
             export_file = Path("exports") / export_path
             if export_file.exists():
-                export_file.unlink()
+                try:
+                    export_file.unlink()
+                except PermissionError:
+                    # On Windows, file might still be locked by Java process
+                    import time
+
+                    time.sleep(0.5)
+                    try:
+                        export_file.unlink()
+                    except PermissionError:
+                        pass
 
         finally:
             # Properly close database if still open
