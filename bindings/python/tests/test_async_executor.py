@@ -18,10 +18,11 @@ def test_async_executor_basic_create():
         db = arcadedb.create_database(str(db_path))
 
         # Create schema - use VERTEX type for vertices
-        db.command("sql", "CREATE VERTEX TYPE User")
+        db.schema.create_vertex_type("User")
 
         # Get async executor
         async_exec = db.async_executor()
+        async_exec.set_commit_every(25)  # Explicit transaction cadence for writes
         assert async_exec is not None
 
         # Create records asynchronously
@@ -39,7 +40,7 @@ def test_async_executor_basic_create():
 
         # Verify all records created
         result = db.query("sql", "SELECT count(*) as count FROM User")
-        count = result.first().get_property("count")
+        count = result.first().get("count")
         assert count == 100
 
         db.close()
@@ -53,7 +54,7 @@ def test_async_executor_with_commit_every():
 
     try:
         db = arcadedb.create_database(str(db_path))
-        db.command("sql", "CREATE VERTEX TYPE Item")
+        db.schema.create_vertex_type("Item")
 
         # Configure async executor with auto-commit
         async_exec = db.async_executor()
@@ -85,7 +86,7 @@ def test_async_executor_with_parallel_level():
 
     try:
         db = arcadedb.create_database(str(db_path))
-        db.command("sql", "CREATE VERTEX TYPE Product")
+        db.schema.create_vertex_type("Product")
 
         # Configure with 4 parallel workers
         async_exec = db.async_executor()
@@ -123,7 +124,7 @@ def test_async_executor_method_chaining():
 
     try:
         db = arcadedb.create_database(str(db_path))
-        db.command("sql", "CREATE VERTEX TYPE Task")
+        db.schema.create_vertex_type("Task")
 
         # Chain configuration methods
         async_exec = (
@@ -158,7 +159,7 @@ def test_async_executor_is_pending():
 
     try:
         db = arcadedb.create_database(str(db_path))
-        db.command("sql", "CREATE VERTEX TYPE Message")
+        db.schema.create_vertex_type("Message")
 
         async_exec = db.async_executor()
         async_exec.set_commit_every(100)
@@ -196,7 +197,7 @@ def test_async_executor_callback(temp_db):
     db = temp_db
 
     # Create a type
-    db.command("sql", "CREATE VERTEX TYPE User")
+    db.schema.create_vertex_type("User")
 
     # Track callback invocations
     created_ids = []
@@ -232,7 +233,7 @@ def test_async_executor_callback(temp_db):
 def test_async_executor_global_callback(temp_db):
     """Test that per-operation callbacks work (global callbacks have JPype proxy issues)."""
     db = temp_db
-    db.command("sql", "CREATE VERTEX TYPE Log")
+    db.schema.create_vertex_type("Log")
 
     success_count = [0]  # Use list to allow mutation in closure
 
@@ -241,6 +242,7 @@ def test_async_executor_global_callback(temp_db):
         success_count[0] += 1
 
     async_exec = db.async_executor()
+    async_exec.set_commit_every(10)
 
     # NOTE: Global callbacks via on_ok() have JPype proxy creation issues
     # Use per-operation callbacks instead as a workaround
@@ -264,7 +266,7 @@ def test_async_vs_sync_performance():
 
     try:
         db = arcadedb.create_database(str(db_path))
-        db.command("sql", "CREATE VERTEX TYPE Benchmark")
+        db.schema.create_vertex_type("Benchmark")
 
         # Test synchronous
         sync_start = time.time()
@@ -301,12 +303,12 @@ def test_async_vs_sync_performance():
         sync_count = (
             db.query("sql", "SELECT count(*) as c FROM Benchmark WHERE type = 'sync'")
             .first()
-            .get_property("c")
+            .get("c")
         )
         async_count = (
             db.query("sql", "SELECT count(*) as c FROM Benchmark WHERE type = 'async'")
             .first()
-            .get_property("c")
+            .get("c")
         )
 
         assert sync_count == 0  # We deleted sync records

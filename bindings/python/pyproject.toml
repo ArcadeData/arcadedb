@@ -3,17 +3,17 @@ requires = ["build>=0.7.0", "setuptools>=61.0", "wheel", "jpype1"]
 build-backend = "setuptools.build_meta"
 
 # This file defines the package metadata for arcadedb-embedded.
-# During build, the version is extracted from parent pom.xml via extract_version.py
+# During build, the version is overwritten from parent pom.xml via extract_version.py
 
 [project]
 name = "arcadedb-embedded"
-version = "25.10.1.dev0"
+version = "0.0.0"
 description = "ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [
-    { name = "Arcade Data Ltd", email = "info@arcadedata.com" }
+    { name = "Taewoon Kim", email = "taewoon@humem.ai" }
 ]
 keywords = ["database", "graph", "document", "multi-model", "nosql", "arcadedb", "embedded", "jre", "java"]
 classifiers = [
@@ -21,11 +21,11 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -38,6 +38,7 @@ dependencies = [
 test = [
     "pytest>=7.0.0",
     "pytest-cov",
+    "numpy>=1.20.0",
 ]
 dev = [
     "black",
@@ -45,14 +46,18 @@ dev = [
     "mypy",
     "pytest>=7.0.0",
     "pytest-cov",
+    "numpy>=1.20.0",
 ]
 vector = [
     "numpy>=1.20.0",
 ]
+examples = [
+    "py7zr>=0.20.0",  # Required for Stack Exchange data downloads (Example 07)
+]
 
 [project.urls]
 Homepage = "https://github.com/humemai/arcadedb-embedded-python"
-Documentation = "https://humemai.github.io/arcadedb-embedded-python/"
+Documentation = "https://docs.humem.ai/arcadedb/"
 Repository = "https://github.com/humemai/arcadedb-embedded-python"
 "Bug Tracker" = "https://github.com/humemai/arcadedb-embedded-python/issues"
 "ArcadeDB Upstream" = "https://github.com/ArcadeData/arcadedb"

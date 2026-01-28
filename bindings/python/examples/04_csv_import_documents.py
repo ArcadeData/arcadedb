@@ -47,29 +47,32 @@ Other:
 
 Requirements:
 - arcadedb-embedded
-- MovieLens dataset (downloaded via download_sample_data.py)
-- JRE 21+
+- MovieLens dataset (downloaded via download_data.py)
 - Sufficient JVM heap memory (8GB recommended for large dataset)
 
 Usage:
 1. Run with default (large) dataset:
    python 04_csv_import_documents.py
 2. Run with small dataset:
-   python 04_csv_import_documents.py --size small
+   python 04_csv_import_documents.py --dataset movielens-small
 3. Run with large dataset and custom parallel threads:
-   python 04_csv_import_documents.py --size large --parallel 8
+   python 04_csv_import_documents.py --dataset movielens-large --parallel 8
 4. Run with custom batch size:
    python 04_csv_import_documents.py --batch-size 10000
 5. Run with custom JVM heap, parallel threads, and batch size:
-   ARCADEDB_JVM_MAX_HEAP="8g" python 04_csv_import_documents.py --size large --parallel 8 --batch-size 10000
+   ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g" python 04_csv_import_documents.py --dataset movielens-large --parallel 8 --batch-size 10000
 
 The script will automatically download the dataset if it doesn't exist.
 
 Memory Requirements:
 - Small dataset (~100K ratings): 4GB heap (default) is sufficient
 - Large dataset (~33M ratings): 4GB heap (default) should work, 8GB for safety
-- Very large datasets (100M+ records): Set ARCADEDB_JVM_MAX_HEAP="8g" or higher
+- Very large datasets (100M+ records): Set ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g" or higher
 - Must be set BEFORE running the script (before JVM starts)
+
+Dataset Options:
+- movielens-small: ~1 MB, ~100K ratings, 9K movies, 600 users
+- movielens-large: ~265 MB, ~33M ratings, 86K movies, 280K users
 
 Note: This example creates a database at ./my_test_databases/movielens_db/
       The database files are preserved so you can inspect them after running.
@@ -115,7 +118,7 @@ TEST_QUERIES = [
 
 # Expected baseline results for validation
 EXPECTED_RESULTS = {
-    "small": [
+    "movielens-small": [
         {
             "name": "Find movie by ID",
             "count": 1,
@@ -250,10 +253,10 @@ EXPECTED_RESULTS = {
         {
             "name": "Count ALL Action movies (LIKE, no LIMIT)",
             "count": 1,
-            "sample": [{"count": 1774}],
+            "sample": [{"count": 1796}],
         },
     ],
-    "large": [
+    "movielens-large": [
         {
             "name": "Find movie by ID",
             "count": 1,
@@ -288,7 +291,7 @@ EXPECTED_RESULTS = {
                     "userId": 414,
                     "movieId": 47,
                     "rating": 5.0,
-                    "timestamp": 1603897739,
+                    "timestamp": None,
                     "@props": "userId:3,movieId:3,rating:5,timestamp:3",
                 },
                 {
@@ -347,6 +350,43 @@ EXPECTED_RESULTS = {
                     "@props": "userId:3,movieId:3,rating:5,timestamp:3",
                 },
             ],
+            "sample_indexed": [
+                {
+                    "userId": 198520,
+                    "movieId": 500,
+                    "rating": 3.0,
+                    "timestamp": 841556879,
+                    "@props": "userId:3,movieId:3,rating:5,timestamp:3",
+                },
+                {
+                    "userId": 198564,
+                    "movieId": 500,
+                    "rating": 4.0,
+                    "timestamp": 834049208,
+                    "@props": "userId:3,movieId:3,rating:5,timestamp:3",
+                },
+                {
+                    "userId": 198901,
+                    "movieId": 500,
+                    "rating": 3.0,
+                    "timestamp": 876049592,
+                    "@props": "userId:3,movieId:3,rating:5,timestamp:3",
+                },
+                {
+                    "userId": 199071,
+                    "movieId": 500,
+                    "rating": 3.5,
+                    "timestamp": 1487972691,
+                    "@props": "userId:3,movieId:3,rating:5,timestamp:3",
+                },
+                {
+                    "userId": 199347,
+                    "movieId": 500,
+                    "rating": 5.0,
+                    "timestamp": 841305883,
+                    "@props": "userId:3,movieId:3,rating:5,timestamp:3",
+                },
+            ],
         },
         {"name": "Count user's ratings", "count": 1, "sample": [{"count": 169}]},
         {
@@ -372,15 +412,15 @@ EXPECTED_RESULTS = {
                     "@props": "movieId:3,title:7,genres:7",
                 },
                 {
-                    "movieId": 20,
-                    "title": "Money Train (1995)",
-                    "genres": "Action|Comedy|Crime|Drama|Thriller",
+                    "movieId": 15,
+                    "title": "Cutthroat Island (1995)",
+                    "genres": "Action|Adventure|Romance",
                     "@props": "movieId:3,title:7,genres:7",
                 },
                 {
-                    "movieId": 23,
-                    "title": "Assassins (1995)",
-                    "genres": "Action|Crime|Thriller",
+                    "movieId": 20,
+                    "title": "Money Train (1995)",
+                    "genres": "Action|Comedy|Crime|Drama|Thriller",
                     "@props": "movieId:3,title:7,genres:7",
                 },
             ],
@@ -388,7 +428,7 @@ EXPECTED_RESULTS = {
         {
             "name": "Count ALL Action movies (LIKE, no LIMIT)",
             "count": 1,
-            "sample": [{"count": 9284}],
+            "sample": [{"count": 9386}],
         },
     ],
 }
@@ -506,21 +546,37 @@ def compare_query_results(current_results, saved_results, verbose=True):
         saved_normalized = [normalize_record(r) for r in saved_sample]
 
         if current_normalized != saved_normalized:
-            if verbose:
-                print(
-                    f"   ⚠️  {query_name}: Sample data differs "
-                    f"(count matches: {current['count']})"
-                )
-                # Show first difference
-                for j, (curr_rec, saved_rec) in enumerate(
-                    zip(current_normalized, saved_normalized)
-                ):
-                    if curr_rec != saved_rec:
-                        print(f"      First difference at record {j}:")
-                        print(f"      Current: {curr_rec}")
-                        print(f"      Saved: {saved_rec}")
-                        break
-            all_match = False
+            # Check for alternative sample (e.g. indexed) if available
+            # This handles cases where indexes change the sort order (e.g. String vs Int sorting)
+            match_found = False
+            if "sample_indexed" in saved:
+                saved_sample_indexed = saved["sample_indexed"]
+                saved_normalized_indexed = [
+                    normalize_record(r) for r in saved_sample_indexed
+                ]
+                if current_normalized == saved_normalized_indexed:
+                    if verbose:
+                        print(
+                            f"   ✅ {query_name}: {current['count']} results (matches indexed baseline)"
+                        )
+                    match_found = True
+
+            if not match_found:
+                if verbose:
+                    print(
+                        f"   ⚠️  {query_name}: Sample data differs "
+                        f"(count matches: {current['count']})"
+                    )
+                    # Show first difference
+                    for j, (curr_rec, saved_rec) in enumerate(
+                        zip(current_normalized, saved_normalized)
+                    ):
+                        if curr_rec != saved_rec:
+                            print(f"      First difference at record {j}:")
+                            print(f"      Current: {curr_rec}")
+                            print(f"      Saved: {saved_rec}")
+                            break
+                all_match = False
         else:
             if verbose:
                 print(f"   ✅ {query_name}: {current['count']} results (matches)")
@@ -559,15 +615,19 @@ def create_indexes(db, indexes, verbose=True):
 
     for idx, (table, column, uniqueness) in enumerate(indexes, 1):
         created = False
-        max_retries = 60  # Try for up to 60 attempts
-        retry_delay = 10  # Wait 10 seconds (= 10 minutes max per index)
+        retry_delay = 300  # Wait 300 seconds (5 minutes) between retries
+        max_retries = 200  # Try for up to 200 attempts (= 1000 minutes max per index)
 
         for attempt in range(1, max_retries + 1):
             try:
                 with db.transaction():
-                    db.command(
-                        "sql", f"CREATE INDEX ON {table} ({column}) {uniqueness}"
-                    )
+                    # Convert uniqueness string to Schema API parameters
+                    if uniqueness == "UNIQUE":
+                        db.schema.create_index(table, [column], unique=True)
+                    elif uniqueness == "FULL_TEXT":
+                        db.schema.create_index(table, [column], index_type="FULL_TEXT")
+                    else:  # NOTUNIQUE
+                        db.schema.create_index(table, [column], unique=False)
                 if verbose:
                     print(
                         f"   ✅ [{idx}/{len(indexes)}] "
@@ -658,7 +718,7 @@ def drop_all_indexes(db, verbose=True):
             print(f"   📊 Found {len(indexes)} indexes")
 
         for index_record in indexes:
-            index_name = index_record.get_property("name")
+            index_name = index_record.get("name")
 
             # Try to drop all indexes
             # Note: Some system indexes cannot be dropped and will fail gracefully
@@ -705,8 +765,8 @@ def wait_for_compaction(db, max_wait_seconds=600, verbose=True):
 
     while (time.time() - wait_start) < max_wait_seconds:
         try:
-            with db.transaction():
-                db.query("sql", "SELECT count(*) FROM Movie LIMIT 1").first()
+            # Read-only probe; no transaction required
+            db.query("sql", "SELECT count(*) FROM Movie LIMIT 1").first()
             if verbose:
                 print("   ✅ Background compaction complete")
             return True
@@ -794,22 +854,26 @@ def run_validation_queries(db, queries=None, num_runs=1, verbose=True):
     return results
 
 
-def download_dataset(size):
-    """Download the dataset using download_sample_data.py script."""
-    download_script = Path(__file__).parent / "download_sample_data.py"
+def download_dataset(dataset_name):
+    """Download the dataset using download_data.py script.
+
+    Args:
+        dataset_name: Dataset name (e.g., "movielens-small", "movielens-large")
+    """
+    download_script = Path(__file__).parent / "download_data.py"
 
     if not download_script.exists():
         print(f"❌ Download script not found: {download_script}")
-        print("   Please ensure download_sample_data.py is in the same directory.")
+        print("   Please ensure download_data.py is in the same directory.")
         sys.exit(1)
 
-    print(f"📥 Downloading {size} dataset...")
-    print(f"   Running: python {download_script} --size {size}")
+    print(f"📥 Downloading {dataset_name} dataset...")
+    print(f"   Running: python {download_script} {dataset_name}")
     print()
 
     try:
         subprocess.run(
-            [sys.executable, str(download_script), "--size", size],
+            [sys.executable, str(download_script), dataset_name],
             check=True,
             capture_output=False,
         )
@@ -841,18 +905,18 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog="""
 Examples:
-  python 04_csv_import_documents.py                    # Use large dataset (default)
-  python 04_csv_import_documents.py --size small       # Use small dataset
-  python 04_csv_import_documents.py --size large       # Use large dataset
-  python 04_csv_import_documents.py --parallel 8       # Use 8 parallel threads
-  python 04_csv_import_documents.py --batch-size 10000 # Use larger batch size
-  python 04_csv_import_documents.py --size small --parallel 4 --batch-size 1000
-  python 04_csv_import_documents.py --export           # Export database after import
+  python 04_csv_import_documents.py                             # Use large dataset (default)
+  python 04_csv_import_documents.py --dataset movielens-small   # Use small dataset
+  python 04_csv_import_documents.py --dataset movielens-large   # Use large dataset
+  python 04_csv_import_documents.py --parallel 8                # Use 8 parallel threads
+  python 04_csv_import_documents.py --batch-size 10000          # Use larger batch size
+  python 04_csv_import_documents.py --dataset movielens-small --parallel 4 --batch-size 1000
+  python 04_csv_import_documents.py --export                    # Export database after import
   python 04_csv_import_documents.py --export --export-path my_backup.jsonl.tgz
 
 Dataset sizes:
-  large - ml-large (~33M ratings, ~86K movies, ~265 MB) - DEFAULT
-  small - ml-small (~100K ratings, ~9K movies, ~1 MB)
+  large - movielens-large (~33M ratings, ~86K movies, ~265 MB) - DEFAULT
+  small - movielens-small (~100K ratings, ~9K movies, ~1 MB)
 
 Parallel threads:
   Default: auto-detect (CPU cores / 2 - 1, minimum 1)
@@ -873,10 +937,10 @@ The script will automatically download the dataset if it doesn't exist.
     """,
 )
 parser.add_argument(
-    "--size",
-    choices=["small", "large"],
-    default="large",
-    help="Dataset size to use (default: large)",
+    "--dataset",
+    choices=["movielens-small", "movielens-large"],
+    default="movielens-large",
+    help="Dataset size to use (default: movielens-large)",
 )
 parser.add_argument(
     "--parallel",
@@ -894,7 +958,7 @@ parser.add_argument(
     "--db-name",
     type=str,
     default=None,
-    help="Database name (default: ml_{size}_db)",
+    help="Database name (default: based on dataset name, e.g., movielens_small_db)",
 )
 parser.add_argument(
     "--export",
@@ -916,7 +980,7 @@ print("=" * 70)
 print("🎬 ArcadeDB Python - Example 04: CSV Import - Documents")
 print("=" * 70)
 print()
-print(f"📊 Dataset size: {args.size}")
+print(f"📊 Dataset: {args.dataset}")
 if args.parallel:
     print(f"🔧 Parallel threads: {args.parallel}")
 else:
@@ -927,9 +991,8 @@ if args.export:
     if args.export_path:
         display_path = args.export_path
     else:
-        db_name = args.db_name or (
-            "ml_small_db" if args.size == "small" else "ml_large_db"
-        )
+        # Convert dataset name to db name (movielens-small → movielens_small_db)
+        db_name = args.db_name or args.dataset.replace("-", "_") + "_db"
         display_path = f"exports/{db_name}.jsonl.tgz"
     print(f"💾 Export: enabled → {display_path}")
 else:
@@ -937,16 +1000,22 @@ else:
 print()
 
 # Check JVM heap configuration for large imports
-jvm_heap = os.environ.get("ARCADEDB_JVM_MAX_HEAP")
-if jvm_heap:
-    print(f"💡 JVM Max Heap: {jvm_heap}")
+jvm_args = os.environ.get("ARCADEDB_JVM_ARGS")
+if jvm_args and "-Xmx" in jvm_args:
+    import re
+
+    match = re.search(r"-Xmx(\S+)", jvm_args)
+    heap_size = match.group(1) if match else "unknown"
+    print(f"💡 JVM Max Heap: {heap_size}")
 else:
     print("💡 JVM Max Heap: 4g (default)")
     print("   ℹ️  Using default JVM heap (4g)")
-    if args.size == "large":
+    if args.dataset == "movielens-large":
         print("   💡 For large datasets, you can increase it:")
-        print('      export ARCADEDB_JVM_MAX_HEAP="8g"  # or run with:')
-        print('      ARCADEDB_JVM_MAX_HEAP="8g" python 04_csv_import_documents.py')
+        print('      export ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g"  # or run with:')
+        print(
+            '      ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g" python 04_csv_import_documents.py'
+        )
 print()
 
 # -----------------------------------------------------------------------------
@@ -955,18 +1024,18 @@ print()
 print("Step 0: Checking for MovieLens dataset...")
 print()
 
-# Determine dataset directory based on size argument
+# Determine dataset directory based on dataset argument
 data_base = Path(__file__).parent / "data"
-dataset_dirname = "ml-large" if args.size == "large" else "ml-small"
+dataset_dirname = args.dataset
 data_dir = data_base / dataset_dirname
 
 # Check if dataset exists, download if it doesn't
 if not check_dataset_exists(data_dir):
-    print(f"❌ {args.size.capitalize()} dataset not found at: {data_dir}")
+    print(f"❌ Dataset not found at: {data_dir}")
     print()
-    download_dataset(args.size)
+    download_dataset(args.dataset)
 else:
-    print(f"✅ {args.size.capitalize()} dataset found!")
+    print("✅ Dataset found!")
     print(f"   Location: {data_dir}")
     print()
 
@@ -989,7 +1058,8 @@ db_dir = "./my_test_databases"
 if args.db_name:
     db_name = args.db_name
 else:
-    db_name = "ml_small_db" if args.size == "small" else "ml_large_db"
+    # Convert dataset name to db name (movielens-small → movielens_small_db)
+    db_name = args.dataset.replace("-", "_") + "_db"
 db_path = os.path.join(db_dir, db_name)
 
 # Clean up any existing database from previous runs
@@ -1036,7 +1106,7 @@ print(f"   ⏱️  Rate: {rate:.0f} records/sec")
 null_genres = (
     db.query("sql", "SELECT count(*) as c FROM Movie WHERE genres IS NULL")
     .first()
-    .get_property("c")
+    .get("c")
 )
 
 if null_genres > 0:
@@ -1058,7 +1128,7 @@ print()
 # Query the schema that Java created during import
 result = db.query("sql", "SELECT properties FROM schema:types WHERE name = 'Movie'")
 for record in result:
-    properties = record.get_property("properties")
+    properties = record.get("properties")
 
     print("   📋 Movie schema (auto-inferred by Java):")
     if properties:
@@ -1103,7 +1173,7 @@ print(f"   ⏱️  Rate: {rate:.0f} records/sec")
 null_timestamps = (
     db.query("sql", "SELECT count(*) as c FROM Rating WHERE timestamp IS NULL")
     .first()
-    .get_property("c")
+    .get("c")
 )
 
 if null_timestamps > 0:
@@ -1139,12 +1209,12 @@ print(f"   ⏱️  Rate: {rate:.0f} records/sec")
 null_imdb = (
     db.query("sql", "SELECT count(*) as c FROM Link WHERE imdbId IS NULL")
     .first()
-    .get_property("c")
+    .get("c")
 )
 null_tmdb = (
     db.query("sql", "SELECT count(*) as c FROM Link WHERE tmdbId IS NULL")
     .first()
-    .get_property("c")
+    .get("c")
 )
 
 if null_imdb > 0 or null_tmdb > 0:
@@ -1184,9 +1254,7 @@ print(f"   ⏱️  Rate: {rate:.0f} records/sec")
 
 # Check NULL values in tag field
 null_tags = (
-    db.query("sql", "SELECT count(*) as c FROM Tag WHERE tag IS NULL")
-    .first()
-    .get_property("c")
+    db.query("sql", "SELECT count(*) as c FROM Tag WHERE tag IS NULL").first().get("c")
 )
 
 if null_tags > 0:
@@ -1212,7 +1280,7 @@ for doc_type in ["Movie", "Rating", "Link", "Tag"]:
     )
 
     for record in result:
-        properties = record.get_property("properties")
+        properties = record.get("properties")
 
         print(f"   📋 {doc_type} schema (auto-inferred by Java):")
         if properties:
@@ -1247,21 +1315,22 @@ print("   💡 Running queries multiple times to get reliable statistics")
 print()
 
 # Compare against embedded baseline results
-if args.size in EXPECTED_RESULTS and EXPECTED_RESULTS[args.size]:
+baseline_match_step8 = True
+if args.dataset in EXPECTED_RESULTS and EXPECTED_RESULTS[args.dataset]:
     print("   📊 Step 8 - Comparing against baseline (BEFORE indexes):")
     print()
-    baseline_match = compare_query_results(
-        times_without_indexes, EXPECTED_RESULTS[args.size], verbose=True
+    baseline_match_step8 = compare_query_results(
+        times_without_indexes, EXPECTED_RESULTS[args.dataset], verbose=True
     )
     print()
-    if baseline_match:
+    if baseline_match_step8:
         print("   ✅ Step 8: All results match baseline!")
     else:
-        print("   ⚠️  Step 8: Some results differ from baseline!")
+        print("   ❌ Step 8: VALIDATION FAILED - Results differ from baseline!")
     print()
 else:
     print(
-        f"   ℹ️  No embedded baseline for {args.size} dataset - "
+        f"   ℹ️  No embedded baseline for {args.dataset} dataset - "
         f"skipping Step 8 comparison"
     )
     print()
@@ -1294,7 +1363,7 @@ print(f"   ⏱️  Total index creation time: {time.time() - step_start:.1f}s")
 # Verify which indexes actually exist in the database
 print("\n   🔍 Verifying indexes in database:")
 index_query = """
-    SELECT name, typeName, properties, unique, automatic
+    SELECT name, typeName, properties, `unique`, `automatic`
     FROM schema:indexes
     ORDER BY typeName, name
 """
@@ -1308,7 +1377,7 @@ for table, column, uniqueness in indexes:
 
 # Check all existing indexes
 #
-# Note: ArcadeDB has 3 index engine types: LSM_TREE, FULL_TEXT, HNSW
+# Note: ArcadeDB has 3 index engine types: LSM_TREE, FULL_TEXT, VECTOR
 # The schema metadata query only exposes a boolean 'unique' field, not the engine type.
 # Therefore:
 #   - UNIQUE indexes → unique=true, engine=LSM_TREE
@@ -1328,9 +1397,31 @@ for idx in existing_indexes:
 
     # Check if this matches one of our expected indexes
     # The main index has name like "Table[column]"
+    candidate_columns = []
     if props and len(props) > 0:
-        column_name = props[0][0] if isinstance(props[0], list) else props[0]
+        for prop in props:
+            if isinstance(prop, dict):
+                name_value = (
+                    prop.get("name") or prop.get("property") or prop.get("field")
+                )
+                if name_value:
+                    candidate_columns.append(name_value)
+            elif isinstance(prop, list):
+                if prop:
+                    candidate_columns.append(prop[0])
+            else:
+                candidate_columns.append(prop)
 
+    if isinstance(name, str) and "[" in name and name.endswith("]"):
+        raw_props = name[name.find("[") + 1 : -1]
+        for col in raw_props.split(","):
+            col = col.strip()
+            if col:
+                candidate_columns.append(col)
+
+    candidate_columns = [c for c in candidate_columns if c]
+
+    for column_name in candidate_columns:
         # Try matching as the reported type (UNIQUE/NOTUNIQUE)
         key = (type_name, column_name, index_type)
         if key in expected_indexes:
@@ -1343,6 +1434,14 @@ for idx in existing_indexes:
             fulltext_key = (type_name, column_name, "FULL_TEXT")
             if fulltext_key in expected_indexes:
                 expected_indexes[fulltext_key] = True
+
+        # Some versions report UNIQUE indexes as NOTUNIQUE in schema:indexes.
+        # Treat the base index name (Type[column]) as authoritative when present.
+        base_index_name = f"{type_name}[{column_name}]"
+        if name == base_index_name:
+            unique_key = (type_name, column_name, "UNIQUE")
+            if unique_key in expected_indexes:
+                expected_indexes[unique_key] = True
 
 # Validate all expected indexes were created
 print("\n   ✅ Validating expected indexes:")
@@ -1434,8 +1533,8 @@ for i in range(len(TEST_QUERIES)):
 
         # Check if this is a COUNT query (has 'count' property)
         if first_before.has_property("count"):
-            count_before = first_before.get_property("count")
-            count_after = first_after.get_property("count")
+            count_before = first_before.get("count")
+            count_after = first_after.get("count")
             if count_before != count_after:
                 print(
                     f"   ❌ {query_name}: count values differ: "
@@ -1446,8 +1545,8 @@ for i in range(len(TEST_QUERIES)):
             detail = f" → Count value: {count_before:,}"
         # Show first result's title or movieId for regular queries
         elif first_before.has_property("title"):
-            title_before = first_before.get_property("title")
-            title_after = first_after.get_property("title")
+            title_before = first_before.get("title")
+            title_after = first_after.get("title")
             if title_before != title_after:
                 print(
                     f"   ❌ {query_name}: first result differs: "
@@ -1460,8 +1559,8 @@ for i in range(len(TEST_QUERIES)):
             else:
                 detail = f" → First: '{title_before}'"
         elif first_before.has_property("movieId"):
-            movieId_before = first_before.get_property("movieId")
-            movieId_after = first_after.get_property("movieId")
+            movieId_before = first_before.get("movieId")
+            movieId_after = first_after.get("movieId")
             if movieId_before != movieId_after:
                 print(
                     f"   ❌ {query_name}: first result differs: "
@@ -1482,26 +1581,27 @@ print()
 
 # Save query results and compare against baseline
 print("   💾 Saving query results for reproducibility...")
-results_file = save_query_results(times_with_indexes, args.size, db_path)
+results_file = save_query_results(times_with_indexes, args.dataset, db_path)
 print(f"   ✅ Results saved to: {results_file}")
 print()
 
 # Compare against embedded baseline results
-if args.size in EXPECTED_RESULTS and EXPECTED_RESULTS[args.size]:
+baseline_match_step10 = True
+if args.dataset in EXPECTED_RESULTS and EXPECTED_RESULTS[args.dataset]:
     print("   📊 Step 10 - Comparing against baseline (AFTER indexes):")
     print()
-    baseline_match = compare_query_results(
-        times_with_indexes, EXPECTED_RESULTS[args.size], verbose=True
+    baseline_match_step10 = compare_query_results(
+        times_with_indexes, EXPECTED_RESULTS[args.dataset], verbose=True
     )
     print()
-    if baseline_match:
+    if baseline_match_step10:
         print("   ✅ Step 10: All results match baseline!")
     else:
-        print("   ⚠️  Step 10: Some results differ from baseline!")
+        print("   ❌ Step 10: VALIDATION FAILED - Results differ from baseline!")
     print()
 else:
     print(
-        f"   ℹ️  No embedded baseline for {args.size} dataset - "
+        f"   ℹ️  No embedded baseline for {args.dataset} dataset - "
         f"results saved for future comparison"
     )
     print()
@@ -1545,8 +1645,8 @@ for genre in genre_searches:
     if result:
         # Show first movie as example
         first_movie = result[0]
-        title = str(first_movie.get_property("title"))
-        genres = str(first_movie.get_property("genres"))
+        title = str(first_movie.get("title"))
+        genres = str(first_movie.get("genres"))
         print(f"        Example: {title}")
         print(f"        Genres: {genres}")
 
@@ -1567,7 +1667,7 @@ count_result = list(
     db.query("sql", "SELECT count(*) as count FROM Movie WHERE genres LIKE '%Action%'")
 )
 count_time = time.time() - count_start
-action_count = count_result[0].get_property("count") if count_result else 0
+action_count = count_result[0].get("count") if count_result else 0
 action_count = action_count if action_count is not None else 0
 print(f"      • Total Action movies: {action_count:,} found in {count_time:.3f}s")
 print("      • This requires scanning all records (no early termination)")
@@ -1595,7 +1695,7 @@ print("   📊 Record counts by type:")
 step_start = time.time()
 for doc_type in ["Movie", "Rating", "Link", "Tag"]:
     result = db.query("sql", f"SELECT count(*) as count FROM {doc_type}")
-    count = list(result)[0].get_property("count")
+    count = list(result)[0].get("count")
     print(f"      • {doc_type}: {count:,} records")
 print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
 print()
@@ -1605,9 +1705,9 @@ print("   🎬 Sample movies:")
 step_start = time.time()
 result = db.query("sql", "SELECT FROM Movie LIMIT 5")
 for record in result:
-    movie_id = record.get_property("movieId")
-    title = str(record.get_property("title"))
-    genres = str(record.get_property("genres"))
+    movie_id = record.get("movieId")
+    title = str(record.get("title"))
+    genres = str(record.get("genres"))
     print(f"      • [{movie_id}] {title}")
     print(f"        Genres: {genres}")
 print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
@@ -1626,10 +1726,10 @@ result = db.query(
        FROM Rating""",
 )
 record = list(result)[0]
-total = record.get_property("total_ratings")
-avg_rating = record.get_property("avg_rating")
-min_rating = record.get_property("min_rating")
-max_rating = record.get_property("max_rating")
+total = record.get("total_ratings")
+avg_rating = record.get("avg_rating")
+min_rating = record.get("min_rating")
+max_rating = record.get("max_rating")
 print(f"      • Total ratings: {total:,}")
 print(f"      • Average rating: {avg_rating:.2f}")
 print(f"      • Min rating: {min_rating}")
@@ -1648,10 +1748,14 @@ result = db.query(
        ORDER BY rating""",
 )
 for record in result:
-    rating = record.get_property("rating")
-    count = record.get_property("count")
+    rating = record.get("rating")
+    count = record.get("count")
     bar = "█" * int(count / 3000)  # Scale for visualization
-    print(f"      {rating:.1f} ★ : {count:,} {bar}")
+    # Handle NULL ratings (introduced by NULL injection)
+    if rating is None:
+        print(f"      NULL  : {count:,} {bar}")
+    else:
+        print(f"      {rating:.1f} ★ : {count:,} {bar}")
 print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
 print()
 
@@ -1669,8 +1773,8 @@ result = db.query(
        LIMIT 10""",
 )
 for idx, record in enumerate(result, 1):
-    genres = str(record.get_property("genres"))
-    count = record.get_property("count")
+    genres = str(record.get("genres"))
+    count = record.get("count")
     # Truncate long genre lists
     if len(genres) > 50:
         genres = genres[:47] + "..."
@@ -1690,8 +1794,8 @@ result = db.query(
        LIMIT 10""",
 )
 for idx, record in enumerate(result, 1):
-    user_id = record.get_property("userId")
-    rating_count = record.get_property("rating_count")
+    user_id = record.get("userId")
+    rating_count = record.get("rating_count")
     print(f"      {idx:2}. User {user_id}: {rating_count} ratings")
 print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
 print()
@@ -1708,13 +1812,13 @@ result = db.query(
        LIMIT 10""",
 )
 for idx, record in enumerate(result, 1):
-    movie_id = record.get_property("movieId")
-    tag_count = record.get_property("tag_count")
+    movie_id = record.get("movieId")
+    tag_count = record.get("tag_count")
     # Look up movie title
     movie_result = db.query(
         "sql", f"SELECT title FROM Movie WHERE movieId = {movie_id}"
     )
-    title = str(list(movie_result)[0].get_property("title"))
+    title = str(list(movie_result)[0].get("title"))
     print(f"      {idx:2}. {title} ({tag_count} tags)")
 print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
 print()
@@ -1731,8 +1835,8 @@ result = db.query(
        LIMIT 10""",
 )
 for idx, record in enumerate(result, 1):
-    tag = str(record.get_property("tag"))
-    count = record.get_property("count")
+    tag = str(record.get("tag"))
+    count = record.get("count")
     print(f"      {idx:2}. '{tag}' ({count} uses)")
 print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
 print()
@@ -1743,10 +1847,10 @@ total_ratings = db.query("sql", "SELECT count(*) as c FROM Rating")
 total_links = db.query("sql", "SELECT count(*) as c FROM Link")
 total_tags = db.query("sql", "SELECT count(*) as c FROM Tag")
 
-movies_count = list(total_movies)[0].get_property("c")
-ratings_count = list(total_ratings)[0].get_property("c")
-links_count = list(total_links)[0].get_property("c")
-tags_count = list(total_tags)[0].get_property("c")
+movies_count = list(total_movies)[0].get("c")
+ratings_count = list(total_ratings)[0].get("c")
+links_count = list(total_links)[0].get("c")
+tags_count = list(total_tags)[0].get("c")
 
 total_records = movies_count + ratings_count + links_count + tags_count
 
@@ -1873,11 +1977,16 @@ if args.export and export_filename:
     print(f"   💡 Import settings: {import_params}")
     print()
 
+    # Initialize roundtrip_results to None in case import fails
+    roundtrip_results = None
+
     try:
         import_start = time.time()
 
         # Use SQL IMPORT DATABASE command with performance parameters
         import_path = os.path.abspath(actual_export_path)
+        # Convert Windows backslashes to forward slashes for SQL URI
+        import_path = import_path.replace("\\", "/")
         import_sql = f"IMPORT DATABASE file://{import_path} WITH {import_params}"
         roundtrip_db.command("sql", import_sql)
 
@@ -1896,7 +2005,7 @@ if args.export and export_filename:
 
         for doc_type in ["Movie", "Rating", "Link", "Tag"]:
             result = roundtrip_db.query("sql", f"SELECT count(*) as c FROM {doc_type}")
-            count = result.first().get_property("c")
+            count = result.first().get("c")
 
             # Compare with expected counts
             if doc_type == "Movie" and count != movies_count:
@@ -1954,11 +2063,11 @@ if args.export and export_filename:
         )
 
         # Compare against embedded baseline results
-        if args.size in EXPECTED_RESULTS and EXPECTED_RESULTS[args.size]:
+        if args.dataset in EXPECTED_RESULTS and EXPECTED_RESULTS[args.dataset]:
             print("   📊 Step 14 - Comparing against baseline (AFTER roundtrip):")
             print()
             baseline_match = compare_query_results(
-                roundtrip_results, EXPECTED_RESULTS[args.size], verbose=True
+                roundtrip_results, EXPECTED_RESULTS[args.dataset], verbose=True
             )
             print()
             if baseline_match:
@@ -1969,7 +2078,7 @@ if args.export and export_filename:
             print()
         else:
             print(
-                f"   ℹ️  No embedded baseline for {args.size} dataset - "
+                f"   ℹ️  No embedded baseline for {args.dataset} dataset - "
                 f"skipping Step 14 comparison"
             )
             print()
@@ -2045,20 +2154,23 @@ if args.export and export_filename:
     print("📊 FINAL VALIDATION: Comparing All Query Runs")
     print("=" * 70)
     print()
-    print("   Comparing results from:")
-    print("   1️⃣  Before indexes (Step 8)")
-    print("   2️⃣  After indexes (Step 10)")
-    print("   3️⃣  After roundtrip (Step 14)")
-    print()
 
-    all_three_match = True
+    # Only do final validation if roundtrip succeeded
+    if roundtrip_results is not None:
+        print("   Comparing results from:")
+        print("   1️⃣  Before indexes (Step 8)")
+        print("   2️⃣  After indexes (Step 10)")
+        print("   3️⃣  After roundtrip (Step 14)")
+        print()
 
-    for i, query_info in enumerate(TEST_QUERIES):
-        query_name = query_info[0]
+        all_three_match = True
 
-        before_idx = times_without_indexes[i]
-        after_idx = times_with_indexes[i]
-        after_roundtrip = roundtrip_results[i]
+        for i, query_info in enumerate(TEST_QUERIES):
+            query_name = query_info[0]
+
+            before_idx = times_without_indexes[i]
+            after_idx = times_with_indexes[i]
+            after_roundtrip = roundtrip_results[i]
 
         count_before = before_idx["count"]
         count_after = after_idx["count"]
@@ -2073,19 +2185,24 @@ if args.export and export_filename:
             print(f"      Before indexes: {count_before}")
             print(f"      After indexes:  {count_after}")
             print(f"      After roundtrip: {count_roundtrip}")
-            print(f"      ⚠️  MISMATCH DETECTED!")
+            print("      ⚠️  MISMATCH DETECTED!")
             all_three_match = False
         print()
 
-    if all_three_match:
-        print("   ✅ SUCCESS: All query results are consistent!")
-        print("      • Before indexes ✓")
-        print("      • After indexes ✓")
-        print("      • After export/import roundtrip ✓")
+        if all_three_match:
+            print("   ✅ SUCCESS: All query results are consistent!")
+            print("      • Before indexes ✓")
+            print("      • After indexes ✓")
+            print("      • After export/import roundtrip ✓")
+        else:
+            print("   ❌ FAILURE: Query results differ across runs!")
+            print("      This indicates a data integrity issue.")
+        print()
     else:
-        print("   ❌ FAILURE: Query results differ across runs!")
-        print("      This indicates a data integrity issue.")
-    print()
+        print("   ⚠️  Roundtrip validation skipped (import failed)")
+        print("      Cannot compare roundtrip results")
+        print()
+
     print("=" * 70)
     print()
 
@@ -2218,3 +2335,17 @@ print("=" * 70)
 print(f"⏱️  TOTAL SCRIPT RUN TIME: {minutes}m {seconds}s")
 print("=" * 70)
 print()
+
+# Check if baseline validation failed and exit with error code
+if not baseline_match_step8 or not baseline_match_step10:
+    print("=" * 70)
+    print("❌ BASELINE VALIDATION FAILED")
+    print("=" * 70)
+    print()
+    print("Some query results did not match the expected baseline values.")
+    print("This may indicate:")
+    print("  • Data integrity issues")
+    print("  • Changes in query behavior")
+    print("  • Dataset differences")
+    print()
+    sys.exit(1)

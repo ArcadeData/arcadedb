@@ -74,7 +74,7 @@ def test_thread_safety(cleanup_db):
 
     print("\n1. Creating database with test data...")
     db = arcadedb.create_database(db_path)
-    db.command("sql", "CREATE DOCUMENT TYPE Person")
+    db.schema.create_document_type("Person")
 
     with db.transaction():
         for i in range(20):
@@ -115,7 +115,8 @@ def test_sequential_access(cleanup_db):
 
     print("\n1. First access - Create and populate...")
     db1 = arcadedb.create_database(db_path)
-    db1.command("sql", "CREATE DOCUMENT TYPE Message")
+    # Use Schema API for embedded setup (auto-transactional)
+    db1.schema.create_document_type("Message")
     with db1.transaction():
         db1.command("sql", "INSERT INTO Message SET text = 'First access'")
     print("   ✅ Database created and populated")

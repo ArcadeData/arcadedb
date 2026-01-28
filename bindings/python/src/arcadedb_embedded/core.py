@@ -4,9 +4,10 @@ ArcadeDB Python Bindings - Core Database Classes
 Database and DatabaseFactory classes for embedded database access.
 """
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from .exceptions import ArcadeDBError
+from .graph import Document, Edge, Vertex
 from .jvm import start_jvm
 from .results import ResultSet
 from .transactions import TransactionContext
@@ -31,7 +32,17 @@ class Database:
         self._check_not_closed()
         try:
             if args:
-                java_result = self._java_db.query(language, command, *args)
+                # Convert NumPy arrays to Java float arrays
+                converted_args = []
+                for arg in args:
+                    if (
+                        hasattr(arg, "__class__")
+                        and arg.__class__.__name__ == "ndarray"
+                    ):
+                        converted_args.append(to_java_float_array(arg))
+                    else:
+                        converted_args.append(arg)
+                java_result = self._java_db.query(language, command, *converted_args)
             else:
                 java_result = self._java_db.query(language, command)
             return ResultSet(java_result)
@@ -43,7 +54,17 @@ class Database:
         self._check_not_closed()
         try:
             if args:
-                java_result = self._java_db.command(language, command, *args)
+                # Convert NumPy arrays to Java float arrays
+                converted_args = []
+                for arg in args:
+                    if (
+                        hasattr(arg, "__class__")
+                        and arg.__class__.__name__ == "ndarray"
+                    ):
+                        converted_args.append(to_java_float_array(arg))
+                    else:
+                        converted_args.append(arg)
+                java_result = self._java_db.command(language, command, *converted_args)
             else:
                 java_result = self._java_db.command(language, command)
 
@@ -81,21 +102,21 @@ class Database:
         """Create a transaction context manager."""
         return TransactionContext(self)
 
-    def new_vertex(self, type_name: str):
+    def new_vertex(self, type_name: str) -> Vertex:
         """Create a new vertex."""
         self._check_not_closed()
         try:
-            return self._java_db.newVertex(type_name)
+            return Vertex(self._java_db.newVertex(type_name))
         except Exception as e:
             raise ArcadeDBError(
                 f"Failed to create vertex of type '{type_name}': {e}"
             ) from e
 
-    def new_document(self, type_name: str):
+    def new_document(self, type_name: str) -> Document:
         """Create a new document."""
         self._check_not_closed()
         try:
-            return self._java_db.newDocument(type_name)
+            return Document(self._java_db.newDocument(type_name))
         except Exception as e:
             raise ArcadeDBError(
                 f"Failed to create document of type '{type_name}': {e}"
@@ -138,6 +159,240 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to get database path: {e}") from e
 
+    def lookup_by_key(self, type_name: str, keys: List[str], values: List[Any]):
+        """
+        Lookup records by indexed key (O(1) index-based lookup).
+
+        Args:
+            type_name: Type name
+            keys: List of property names (must be indexed)
+            values: List of property values
+
+        Returns:
+            Python-wrapped records or None
+
+        Example:
+            >>> records = list(db.lookup_by_key("User", ["email"], ["alice@example.com"]))
+            >>> if records:
+            ...     user = records[0]
+        """
+        self._check_not_closed()
+        try:
+            import jpype
+
+            # Convert to Java arrays
+            keys_array = jpype.JArray(jpype.JString)(keys)
+            values_array = jpype.JArray(jpype.JObject)(values)
+
+            cursor = self._java_db.lookupByKey(type_name, keys_array, values_array)
+
+            # Return first result wrapped, or None
+            if cursor.hasNext():
+                java_record = cursor.next().getRecord()
+                return Document.wrap(java_record)
+            return None
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to lookup by key in '{type_name}': {e}") from e
+
+    def lookup_by_rid(self, rid: str) -> Any:
+        """
+        Lookup a record by its RID.
+
+        Args:
+            rid: Record ID string (e.g. "#10:5")
+
+        Returns:
+            Record object (Vertex, Document, or Edge) or None if not found
+
+        Example:
+            >>> record = db.lookup_by_rid("#10:5")
+            >>> if record:
+            ...     print(record.get("name"))
+        """
+        self._check_not_closed()
+        try:
+            import jpype
+            from com.arcadedb.database import RID
+
+            java_rid = RID(self._java_db, rid)
+            java_record = self._java_db.lookupByRID(java_rid, True)
+
+            if java_record is None:
+                return None
+
+            # Wrap in appropriate Python class
+            if isinstance(java_record, jpype.JClass("com.arcadedb.graph.Vertex")):
+                return Vertex(java_record)
+            elif isinstance(java_record, jpype.JClass("com.arcadedb.graph.Edge")):
+                return Edge(java_record)
+            elif isinstance(
+                java_record, jpype.JClass("com.arcadedb.database.Document")
+            ):
+                return Document(java_record)
+
+            return java_record
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to lookup RID '{rid}': {e}") from e
+
+    def create_vector_index(
+        self,
+        vertex_type: str,
+        vector_property: str,
+        dimensions: int,
+        distance_function: str = "cosine",
+        max_connections: int = 16,
+        beam_width: int = 100,
+        quantization: str = "INT8",
+        location_cache_size: Optional[int] = None,
+        graph_build_cache_size: Optional[int] = None,
+        mutations_before_rebuild: Optional[int] = None,
+        store_vectors_in_graph: bool = False,
+        add_hierarchy: Optional[bool] = True,
+        pq_subspaces: Optional[int] = None,
+        pq_clusters: Optional[int] = None,
+        pq_center_globally: Optional[bool] = None,
+        pq_training_limit: Optional[int] = None,
+    ) -> "VectorIndex":
+        """
+        Create a vector index for similarity search (JVector implementation).
+
+        This uses JVector (graph index combining HNSW hierarchy with Vamana/DiskANN)
+        which provides:
+        - No max_items limit (grows dynamically)
+        - Fast index construction
+        - Automatic indexing of existing records
+        - Concurrent construction support
+
+        Args:
+            vertex_type: Name of the vertex type
+            vector_property: Name of the property containing vectors
+            dimensions: Vector dimensionality (e.g., 768 for BERT)
+            distance_function: "cosine", "euclidean", or "inner_product"
+            max_connections: Max connections per node (default: 16).
+                             Maps to `maxConnections` in JVector.
+            beam_width: Beam width for search/construction (default: 100).
+                        Maps to `beamWidth` in JVector.
+            quantization: Vector quantization type (default: INT8).
+                          Options: "INT8", "BINARY", "PRODUCT" (PQ).
+                          Reduces memory usage and speeds up search at the cost of
+                          some precision. "PRODUCT" enables PQ data for
+                          approximate search (zero-disk-I/O path).
+            location_cache_size: Per-index override for vector location cache size
+                (maps to Java metadata key "locationCacheSize"; uses
+                GlobalConfiguration default if None). Typical ranges by corpus size
+                (vectors):
+                - ~100K: 50k–100k
+                - ~1M: 100k–200k
+                - ~10M: 300k–500k
+                - ~100M: 500k–800k (scale with heap)
+            graph_build_cache_size: Per-index override for graph build cache size
+                (maps to Java metadata key "graphBuildCacheSize"; uses
+                GlobalConfiguration default if None). Typical ranges (higher = faster
+                build, more RAM):
+                - ~100K: 10k–30k
+                - ~1M: 30k–75k
+                - ~10M: 75k–150k
+                - ~100M: 150k–250k (only if heap allows)
+            mutations_before_rebuild: Per-index override for mutations threshold
+                before triggering a graph rebuild (maps to Java metadata key
+                "mutationsBeforeRebuild"; uses GlobalConfiguration default if None).
+                Typical ranges: 100–300 for freshness-heavy workloads; 300–800 for
+                write-heavy workloads and larger graphs.
+            pq_subspaces: Number of PQ subspaces (M). Requires quantization="PRODUCT".
+            pq_clusters: Clusters per subspace (K). Requires quantization="PRODUCT".
+            pq_center_globally: Whether to globally center vectors before PQ.
+                Requires quantization="PRODUCT".
+            pq_training_limit: Max vectors to use for PQ training. Requires
+                quantization="PRODUCT".
+            store_vectors_in_graph: Whether to store vectors inline in the graph
+                structure (default: False). If True, increases disk usage but
+                significantly speeds up search for large datasets by avoiding document
+                lookups.
+            add_hierarchy: Whether to build hierarchical layers in the HNSW graph
+                (Default is True). If None, uses the engine default. Set explicitly to
+                True/False to force the behavior.
+
+        Returns:
+            VectorIndex object
+        """
+        self._check_not_closed()
+        from .schema import IndexType
+
+        # Create the index using the Java Builder API directly to pass configuration
+        try:
+            import jpype
+
+            if any(
+                val is not None
+                for val in (
+                    pq_subspaces,
+                    pq_clusters,
+                    pq_center_globally,
+                    pq_training_limit,
+                )
+            ):
+                if not quantization or quantization.upper() != "PRODUCT":
+                    raise ValueError("PQ parameters require quantization='PRODUCT'")
+
+            java_schema = self.schema._java_schema
+
+            # Convert property names to Java array
+            java_props = jpype.JArray(jpype.JString)([vector_property])
+
+            # Build the index
+            builder = java_schema.buildTypeIndex(vertex_type, java_props)
+
+            # Set type to LSM_VECTOR (this returns TypeLSMVectorIndexBuilder)
+            INDEX_TYPE = jpype.JPackage("com").arcadedb.schema.Schema.INDEX_TYPE
+            builder = builder.withType(INDEX_TYPE.LSM_VECTOR)
+
+            # Configure
+            builder.withDimensions(dimensions)
+            builder.withSimilarity(distance_function)
+            builder.withMaxConnections(max_connections)
+            builder.withBeamWidth(beam_width)
+
+            if quantization:
+                builder.withQuantization(quantization)
+
+            if pq_subspaces is not None:
+                builder.withPQSubspaces(int(pq_subspaces))
+            if pq_clusters is not None:
+                builder.withPQClusters(int(pq_clusters))
+            if pq_center_globally is not None:
+                builder.withPQCenterGlobally(bool(pq_center_globally))
+            if pq_training_limit is not None:
+                builder.withPQTrainingLimit(int(pq_training_limit))
+
+            metadata_cfg = {}
+            if store_vectors_in_graph:
+                metadata_cfg["storeVectorsInGraph"] = True
+            if add_hierarchy is not None:
+                metadata_cfg["addHierarchy"] = bool(add_hierarchy)
+            if location_cache_size is not None:
+                metadata_cfg["locationCacheSize"] = int(location_cache_size)
+            if graph_build_cache_size is not None:
+                metadata_cfg["graphBuildCacheSize"] = int(graph_build_cache_size)
+            if mutations_before_rebuild is not None:
+                metadata_cfg["mutationsBeforeRebuild"] = int(mutations_before_rebuild)
+
+            if metadata_cfg:
+                # Use JSON configuration to avoid JPype overload ambiguity on put()
+                import json
+
+                JSONObject = jpype.JPackage("com").arcadedb.serializer.json.JSONObject
+                json_cfg = JSONObject(json.dumps(metadata_cfg))
+                builder.withMetadata(json_cfg)
+
+            # Create
+            java_index = builder.create()
+
+            from .vector import VectorIndex
+
+            return VectorIndex(java_index, self)
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to create vector index: {e}") from e
+
     def count_type(self, type_name: str) -> int:
         """
         Count records of a specific type.
@@ -168,7 +423,7 @@ class Database:
         WARNING: This deletes all data permanently!
 
         Example:
-            >>> db = arcade.open_database("/tmp/test_db")
+            >>> db = arcade.open_database("./test_db")
             >>> db.drop()  # Database is deleted
         """
         self._check_not_closed()
@@ -196,9 +451,95 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to check transaction status: {e}") from e
 
+    def set_wal_flush(self, mode: str):
+        """
+        Configure Write-Ahead Log (WAL) flush strategy.
+
+        Controls how aggressively changes are flushed to disk. This affects the
+        durability/performance trade-off for transactions.
+
+        Args:
+            mode: WAL flush mode, one of:
+                - 'no': No flush, maximum performance (default)
+                - 'yes_nometadata': Flush data but not metadata
+                - 'yes_full': Flush everything, maximum durability
+
+        Raises:
+            ValueError: If mode is not valid
+
+        Example:
+            >>> db.set_wal_flush('yes_full')  # Maximum durability
+            >>> db.set_wal_flush('no')  # Maximum performance
+        """
+        self._check_not_closed()
+        import jpype
+
+        valid_modes = {
+            "no": "NO",
+            "yes_nometadata": "YES_NOMETADATA",
+            "yes_full": "YES_FULL",
+        }
+        if mode not in valid_modes:
+            raise ValueError(
+                f"Invalid WAL flush mode: {mode}. "
+                f"Must be one of: {list(valid_modes.keys())}"
+            )
+
+        try:
+            WALFile = jpype.JPackage("com").arcadedb.engine.WALFile
+            flush_type = getattr(WALFile.FlushType, valid_modes[mode])
+            self._java_db.setWALFlush(flush_type)
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to set WAL flush mode: {e}") from e
+
+    def set_read_your_writes(self, enabled: bool):
+        """
+        Enable or disable read-your-writes consistency.
+
+        When enabled, uncommitted changes in the current transaction are visible
+        in subsequent reads. Disabling can improve concurrency but may show stale data.
+
+        Args:
+            enabled: True to enable read-your-writes, False to disable
+
+        Example:
+            >>> db.set_read_your_writes(True)  # Default behavior
+            >>> db.set_read_your_writes(False)  # Better concurrency
+        """
+        self._check_not_closed()
+        try:
+            self._java_db.setReadYourWrites(enabled)
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to set read-your-writes: {e}") from e
+
+    def set_auto_transaction(self, enabled: bool):
+        """
+        Enable or disable automatic transaction management.
+
+        When enabled, ArcadeDB automatically begins a transaction for operations
+        that require one. When disabled, you must manually call begin_transaction().
+
+        Args:
+            enabled: True to enable auto-transaction, False to disable
+
+        Example:
+            >>> db.set_auto_transaction(False)  # Manual transaction control
+            >>> db.begin_transaction()
+            >>> # ... do work ...
+            >>> db.commit()
+            >>> db.set_auto_transaction(True)  # Restore default
+        """
+        self._check_not_closed()
+        try:
+            self._java_db.setAutoTransaction(enabled)
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to set auto-transaction: {e}") from e
+
     def async_executor(self):
         """
         Get async executor for parallel operations.
+
+        Experimental: not advised for production use yet.
 
         Returns async executor that enables:
         - Parallel record creation (3-5x faster bulk inserts)
@@ -235,17 +576,54 @@ class Database:
         # JPype converts 'async' to 'async_' to avoid Python keyword collision
         return AsyncExecutor(self._java_db.async_())
 
+    @property
+    def schema(self):
+        """
+        Get the schema manipulation API for this database.
+
+        The schema API provides type-safe access to schema operations:
+        - Type management (document, vertex, edge types)
+        - Property management (create, drop properties)
+        - Index management (create, drop indexes)
+
+        Returns:
+            Schema instance for this database
+
+        Example:
+            >>> # Create a vertex type with properties
+            >>> db.schema.create_vertex_type("User")
+            >>> db.schema.create_property("User", "name", PropertyType.STRING)
+            >>> db.schema.create_property("User", "age", PropertyType.INTEGER)
+            >>>
+            >>> # Create an index
+            >>> db.schema.create_index("User", ["name"], unique=True)
+            >>>
+            >>> # Create edge type
+            >>> db.schema.create_edge_type("Follows")
+
+        Note:
+            Schema changes are immediately persisted and visible to all
+            database connections. Schema modifications should be done
+            carefully in production environments.
+        """
+        self._check_not_closed()
+        from .schema import Schema
+
+        return Schema(self._java_db.getSchema(), self)
+
     def batch_context(
         self,
         batch_size: int = 5000,
         parallel: int = 4,
         use_wal: bool = True,
-        back_pressure: int = 0,
+        back_pressure: int = 50,
         progress: bool = False,
         progress_desc: str = "Processing",
     ):
         """
         Create a batch processing context manager.
+
+        Experimental: not advised for production use yet.
 
         Provides a high-level interface for bulk operations with automatic
         async executor configuration, progress tracking, and error handling.
@@ -254,7 +632,7 @@ class Database:
             batch_size: Auto-commit every N operations (default: 5000)
             parallel: Number of parallel worker threads 1-16 (default: 4)
             use_wal: Enable Write-Ahead Log (default: True)
-            back_pressure: Queue back-pressure threshold 0-100 (default: 0)
+            back_pressure: Queue back-pressure threshold 0-100 (default: 50)
             progress: Enable progress tracking (default: False)
             progress_desc: Description for progress bar (default: "Processing")
 

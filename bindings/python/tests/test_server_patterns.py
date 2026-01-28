@@ -88,8 +88,10 @@ def test_server_pattern_recommended(cleanup_test_dirs):
     print("\n2. Creating database through server...")
     db = server.create_database("mydb")
 
+    # Schema operations are auto-transactional
+    db.schema.create_document_type("Product")
+
     with db.transaction():
-        db.command("sql", "CREATE DOCUMENT TYPE Product")
         db.command("sql", "INSERT INTO Product SET name = 'Laptop', price = 999")
         db.command("sql", "INSERT INTO Product SET name = 'Mouse', price = 29")
 
@@ -99,8 +101,8 @@ def test_server_pattern_recommended(cleanup_test_dirs):
     print("\n3. Querying via embedded access...")
     result = db.query("sql", "SELECT FROM Product WHERE name = 'Laptop'")
     record = list(result)[0]
-    name = record.get_property("name")
-    price = record.get_property("price")
+    name = record.get("name")
+    price = record.get("price")
     print(f"   ✅ Found: {name} costs ${price}")
 
     # Step 4: HTTP access would work here too
@@ -137,10 +139,12 @@ def test_server_thread_safety(cleanup_test_dirs):
 
     db = server.create_database("testdb")
 
+    # Schema operations are auto-transactional
+    db.schema.create_document_type("Item")
+
     with db.transaction():
-        db.command("sql", "CREATE DOCUMENT TYPE Item")
         for i in range(20):
-            db.command("sql", f"INSERT INTO Item SET id = {i}, value = {i * 10}")
+            db.command("sql", f"INSERT INTO `Item` SET id = {i}, value = {i * 10}")
 
     print("   ✅ Created 20 items")
 
@@ -156,7 +160,7 @@ def test_server_thread_safety(cleanup_test_dirs):
             start = thread_id * 4
             end = start + 4
             result = db.query(
-                "sql", f"SELECT FROM Item WHERE id >= {start} AND id < {end}"
+                "sql", f"SELECT FROM `Item` WHERE id >= {start} AND id < {end}"
             )
             count = len(list(result))
             results.append(f"   Thread {thread_id}: Found {count} items")
@@ -207,12 +211,14 @@ def test_server_context_manager(cleanup_test_dirs):
 
         db = server.create_database("contextdb")
 
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("Note")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Note")
             db.command("sql", "INSERT INTO Note SET text = 'Test'")
 
         result = db.query("sql", "SELECT count(*) as count FROM Note")
-        count = list(result)[0].get_property("count")
+        count = list(result)[0].get("count")
         print(f"   ✅ Created {count} notes")
 
         db.close()
@@ -246,13 +252,15 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
     print("\n1. Creating database with embedded API...")
     db = arcadedb.create_database(db_path)
 
+    # Schema operations are auto-transactional
+    db.schema.create_document_type("Person")
+
     with db.transaction():
-        db.command("sql", "CREATE DOCUMENT TYPE Person")
         db.command("sql", "INSERT INTO Person SET name = 'Alice', age = 30")
         db.command("sql", "INSERT INTO Person SET name = 'Bob', age = 25")
 
     result = db.query("sql", "SELECT count(*) as count FROM Person")
-    count = list(result)[0].get_property("count")
+    count = list(result)[0].get("count")
     print(f"   ✅ Created database with {count} records")
 
     # Step 2: MUST close database to release file lock
@@ -284,8 +292,8 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
 
     result = db.query("sql", "SELECT FROM Person WHERE name = 'Alice'")
     record = list(result)[0]
-    name = record.get_property("name")
-    age = record.get_property("age")
+    name = record.get("name")
+    age = record.get("age")
     print(f"   ✅ Retrieved via server: {name}, age {age}")
 
     # Step 6: Add more data through server
@@ -294,7 +302,7 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
         db.command("sql", "INSERT INTO Person SET name = 'Charlie', age = 35")
 
     result = db.query("sql", "SELECT count(*) as count FROM Person")
-    count = list(result)[0].get_property("count")
+    count = list(result)[0].get("count")
     print(f"   ✅ Total records now: {count}")
 
     # Step 7: Both embedded and HTTP access now available
@@ -671,7 +679,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
 
     # Create same test type (already exists, but included for fair comparison)
     try:
-        db.command("sql", "CREATE DOCUMENT TYPE BenchItem")
+        db.schema.create_document_type("BenchItem")
     except Exception:
         pass  # Already exists
 

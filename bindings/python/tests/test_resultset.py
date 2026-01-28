@@ -8,8 +8,10 @@ import arcadedb_embedded as arcadedb
 def test_resultset_to_list(temp_db_path):
     """Test ResultSet.to_list() method."""
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("User")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE User")
             db.command("sql", "INSERT INTO User SET name = 'Alice', age = 30")
             db.command("sql", "INSERT INTO User SET name = 'Bob', age = 25")
             db.command("sql", "INSERT INTO User SET name = 'Charlie', age = 35")
@@ -42,8 +44,10 @@ def test_resultset_to_dataframe(temp_db_path):
         return
 
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("Product")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Product")
             db.command(
                 "sql",
                 "INSERT INTO Product SET name = 'Widget', price = 9.99, stock = 100",
@@ -81,17 +85,19 @@ def test_resultset_to_dataframe(temp_db_path):
 def test_resultset_iter_chunks(temp_db_path):
     """Test ResultSet.iter_chunks() for memory-efficient iteration."""
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("Item")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Item")
             # Insert 250 items
             for i in range(250):
                 db.command(
                     "sql",
-                    f"INSERT INTO Item SET id = {i}, value = {i * 10}, "
+                    f"INSERT INTO `Item` SET id = {i}, value = {i * 10}, "
                     f"batchNum = {i // 100}",
                 )
 
-        result = db.query("sql", "SELECT FROM Item ORDER BY id")
+        result = db.query("sql", "SELECT FROM `Item` ORDER BY id")
 
         # Test chunked iteration with chunk size 100
         chunks = list(result.iter_chunks(size=100))
@@ -115,8 +121,10 @@ def test_resultset_iter_chunks(temp_db_path):
 def test_resultset_count(temp_db_path):
     """Test ResultSet.count() method."""
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("Counter")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Counter")
             for i in range(50):
                 db.command("sql", f"INSERT INTO Counter SET num = {i}")
 
@@ -130,8 +138,10 @@ def test_resultset_count(temp_db_path):
 def test_resultset_first(temp_db_path):
     """Test ResultSet.first() method."""
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("FirstTest")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE FirstTest")
             db.command("sql", "INSERT INTO FirstTest SET value = 'first'")
             db.command("sql", "INSERT INTO FirstTest SET value = 'second'")
             db.command("sql", "INSERT INTO FirstTest SET value = 'third'")
@@ -141,7 +151,7 @@ def test_resultset_first(temp_db_path):
         first_record = result.first()
 
         assert first_record is not None
-        assert first_record.get_property("value") == "first"
+        assert first_record.get("value") == "first"
 
         # Test first() returns None for empty results
         result_empty = db.query(
@@ -154,8 +164,10 @@ def test_resultset_first(temp_db_path):
 def test_resultset_one(temp_db_path):
     """Test ResultSet.one() method."""
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("OneTest")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE OneTest")
             db.command("sql", "INSERT INTO OneTest SET id = 1, value = 'unique'")
             db.command("sql", "INSERT INTO OneTest SET id = 2, value = 'multiple'")
             db.command("sql", "INSERT INTO OneTest SET id = 3, value = 'multiple'")
@@ -164,7 +176,7 @@ def test_resultset_one(temp_db_path):
         result = db.query("sql", "SELECT FROM OneTest WHERE value = 'unique'")
         record = result.one()
         assert record is not None
-        assert record.get_property("value") == "unique"
+        assert record.get("value") == "unique"
 
         # Test one() raises error for empty results
         try:
@@ -190,14 +202,16 @@ def test_resultset_one(temp_db_path):
 def test_resultset_iteration_patterns(temp_db_path):
     """Test various iteration patterns with ResultSet."""
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("IterTest")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE IterTest")
             for i in range(10):
                 db.command("sql", f"INSERT INTO IterTest SET num = {i}")
 
         # Test traditional iteration
         result = db.query("sql", "SELECT FROM IterTest ORDER BY num")
-        nums_iter = [r.get_property("num") for r in result]
+        nums_iter = [r.get("num") for r in result]
         assert len(nums_iter) == 10
         assert nums_iter[0] == 0
         assert nums_iter[9] == 9
@@ -210,14 +224,16 @@ def test_resultset_iteration_patterns(temp_db_path):
         # Test first on iterated result
         result3 = db.query("sql", "SELECT FROM IterTest ORDER BY num DESC")
         first = result3.first()
-        assert first.get_property("num") == 9  # Descending order
+        assert first.get("num") == 9  # Descending order
 
 
 def test_result_representation(temp_db_path):
     """Test Result.__repr__() for better debugging."""
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("ReprTest")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE ReprTest")
             db.command(
                 "sql",
                 "INSERT INTO ReprTest SET name = 'test', value = 42, active = true",
@@ -237,11 +253,12 @@ def test_result_representation(temp_db_path):
 def test_resultset_with_complex_queries(temp_db_path):
     """Test ResultSet methods with complex queries."""
     with arcadedb.create_database(temp_db_path) as db:
-        with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE Sales")
-            db.command("sql", "CREATE PROPERTY Sales.amount DECIMAL")
-            db.command("sql", "CREATE PROPERTY Sales.region STRING")
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("Sales")
+        db.schema.create_property("Sales", "amount", "DECIMAL")
+        db.schema.create_property("Sales", "region", "STRING")
 
+        with db.transaction():
             # Insert sample data
             regions = ["North", "South", "East", "West"]
             for i in range(100):
@@ -277,14 +294,14 @@ def test_resultset_with_complex_queries(temp_db_path):
         )
         highest_north = result2.first()
         assert highest_north is not None
-        assert highest_north.get_property("region") == "North"
+        assert highest_north.get("region") == "North"
 
 
 def test_resultset_empty_handling(temp_db_path):
     """Test ResultSet methods with empty results."""
     with arcadedb.create_database(temp_db_path) as db:
-        with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE EmptyTest")
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("EmptyTest")
 
         # Query empty table
         result = db.query("sql", "SELECT FROM EmptyTest")
@@ -312,8 +329,10 @@ def test_resultset_empty_handling(temp_db_path):
 def test_resultset_reusability(temp_db_path):
     """Test that ResultSet can only be iterated once (Java ResultSet behavior)."""
     with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_document_type("ReuseTest")
+
         with db.transaction():
-            db.command("sql", "CREATE DOCUMENT TYPE ReuseTest")
             db.command("sql", "INSERT INTO ReuseTest SET value = 1")
             db.command("sql", "INSERT INTO ReuseTest SET value = 2")
 
@@ -331,3 +350,48 @@ def test_resultset_reusability(temp_db_path):
         result2 = db.query("sql", "SELECT FROM ReuseTest")
         fresh_list = list(result2)
         assert len(fresh_list) == 2
+
+
+def test_result_get_rid_and_vertex(temp_db_path):
+    """Test get_rid() and get_vertex() methods on Result."""
+    with arcadedb.create_database(temp_db_path) as db:
+        # Schema operations are auto-transactional
+        db.schema.create_vertex_type("Person")
+
+        with db.transaction():
+            db.command("sql", "INSERT INTO Person SET name = 'Alice'")
+
+        result = db.query("sql", "SELECT FROM Person").first()
+
+        # Test get_rid()
+        rid = result.get_rid()
+        assert rid is not None
+        assert isinstance(rid, str)
+        assert rid.startswith("#")
+
+        # Test get_vertex()
+        vertex = result.get_vertex()
+        assert vertex is not None
+        # It should be a Java object
+        assert "Vertex" in str(vertex) or "Vertex" in vertex.getClass().getName()
+
+        # Verify we can use the vertex object
+        assert vertex.get("name") == "Alice"
+
+
+def test_result_to_json_with_arrays(temp_db_path):
+    """Result.to_json() should serialize list properties as JSON arrays."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.schema.create_document_type("JsonArrayTest")
+
+        with db.transaction():
+            db.command(
+                "sql",
+                "INSERT INTO JsonArrayTest SET tags = ['a', 'b', 'c']",
+            )
+
+        result = db.query("sql", "SELECT FROM JsonArrayTest").first()
+        json_str = result.to_json()
+
+        assert '"tags"' in json_str
+        assert '["a","b","c"]' in json_str or '["a", "b", "c"]' in json_str

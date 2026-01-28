@@ -61,7 +61,7 @@ def export_database(
         ... )
 
     Note:
-        - GraphML and GraphSON formats require Gremlin module
+        - GraphML and GraphSON formats require GraphSON support
         - Files are saved to 'exports/' directory by default
         - JSONL format is recommended for full backup/restore
         - Exported files are compressed (.tgz format)
@@ -133,7 +133,7 @@ def export_database(
         if "Format not supported" in error_msg or "not found" in error_msg:
             raise ArcadeDBError(
                 f"Export format '{format}' requires additional modules. "
-                f"GraphML and GraphSON require Gremlin module. Error: {error_msg}"
+                f"GraphML and GraphSON support is unavailable. Error: {error_msg}"
             ) from e
         elif "already exists" in error_msg or "cannot be overwritten" in error_msg:
             raise ArcadeDBError(
