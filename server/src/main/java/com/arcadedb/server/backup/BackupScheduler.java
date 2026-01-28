@@ -22,6 +22,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.logging.Level;
@@ -153,7 +155,8 @@ public class BackupScheduler {
         task.run();
       } finally {
         // Schedule the next execution only if still running and parser is still registered
-        if (running && cronParsers.containsKey(databaseName)) {
+        // Use atomic get to avoid race condition between containsKey and get
+        if (running) {
           final CronScheduleParser currentParser = cronParsers.get(databaseName);
           if (currentParser != null)
             scheduleNextCronExecution(databaseName, task, currentParser);
@@ -202,8 +205,9 @@ public class BackupScheduler {
   public void stop() {
     running = false;
 
-    // Cancel all scheduled tasks
-    for (final ScheduledFuture<?> future : scheduledTasks.values())
+    // Cancel all scheduled tasks - create copy to avoid ConcurrentModificationException
+    final List<ScheduledFuture<?>> tasksToCancel = new ArrayList<>(scheduledTasks.values());
+    for (final ScheduledFuture<?> future : tasksToCancel)
       future.cancel(false);
     scheduledTasks.clear();
     cronParsers.clear();

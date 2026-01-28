@@ -25,8 +25,9 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 
-import java.io.File;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -39,6 +40,15 @@ import java.util.logging.Level;
  */
 public class BackupTask implements Runnable {
   private static final DateTimeFormatter BACKUP_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
+  // Cached reflection objects for better performance
+  private static volatile Class<?>                     backupClass;
+  private static volatile Constructor<?>               backupConstructor;
+  private static volatile Method                       setDirectoryMethod;
+  private static volatile Method                       setVerboseLevelMethod;
+  private static volatile Method                       backupDatabaseMethod;
+  private static volatile boolean                      reflectionInitialized;
+  private static final    Object                       REFLECTION_LOCK = new Object();
 
   private final ArcadeDBServer         server;
   private final String                 databaseName;
@@ -150,45 +160,76 @@ public class BackupTask implements Runnable {
 
   /**
    * Performs the actual backup using the integration Backup class.
+   * <p>
+   * Note: The backup mechanism in ArcadeDB reads from immutable pages and handles
+   * consistency internally. The transaction check is a safety warning but does not
+   * block new transactions - the backup is designed to be non-blocking.
    */
   private String performBackup() throws Exception {
     final Database database = server.getDatabase(databaseName);
 
-    // Check for active transaction - never automatically rollback as it could cause data loss
-    if (database.isTransactionActive() && ((DatabaseInternal) database).getTransaction().hasChanges()) {
-      throw new BackupException("Cannot perform backup for database '" + databaseName +
-          "': active transaction with pending changes detected. Please commit or rollback the transaction manually.");
+    // Check for active transaction - warn but don't block
+    // ArcadeDB backup is designed to work on immutable pages, so this is informational
+    if (database.isTransactionActive()) {
+      final DatabaseInternal dbInternal = (DatabaseInternal) database;
+      if (dbInternal.getTransaction().hasChanges()) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Backup for database '%s' starting with active transaction - uncommitted changes will not be included",
+            databaseName);
+      }
     }
 
     // Generate backup filename
     final String timestamp = LocalDateTime.now().format(BACKUP_TIMESTAMP_FORMAT);
     final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
 
-    // Prepare backup directory for this database
-    final String dbBackupDir = java.nio.file.Paths.get(backupDirectory, databaseName).toString();
-    final File backupDirFile = new File(dbBackupDir);
-    if (!backupDirFile.exists()) {
-      if (!backupDirFile.mkdirs()) {
-        throw new BackupException("Failed to create backup directory for database '" + databaseName + "': " + dbBackupDir);
-      }
-    }
-
+    // Prepare backup directory for this database - use Files.createDirectories to avoid TOCTOU
+    final java.nio.file.Path dbBackupPath = java.nio.file.Paths.get(backupDirectory, databaseName);
     try {
-      final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
-      final Object backup = clazz.getConstructor(Database.class, String.class)
-          .newInstance(database, backupFileName);
+      java.nio.file.Files.createDirectories(dbBackupPath);
+    } catch (final java.io.IOException e) {
+      throw new BackupException("Failed to create backup directory for database '" + databaseName + "': " + dbBackupPath, e);
+    }
+    final String dbBackupDir = dbBackupPath.toString();
 
-      clazz.getMethod("setDirectory", String.class).invoke(backup, dbBackupDir);
-      clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
+    // Perform backup using cached reflection for better performance
+    try {
+      initializeReflection();
 
-      final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
-      return backupFile;
+      final Object backup = backupConstructor.newInstance(database, backupFileName);
+      setDirectoryMethod.invoke(backup, dbBackupDir);
+      setVerboseLevelMethod.invoke(backup, 1);
 
-    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+      return (String) backupDatabaseMethod.invoke(backup);
+
+    } catch (final IllegalAccessException | InstantiationException e) {
       throw new BackupException("Backup libs not found in classpath. Make sure arcadedb-integration module is " +
           "included.", e);
     } catch (final InvocationTargetException e) {
       throw new BackupException("Error performing backup for database '" + databaseName + "'", e.getTargetException());
+    }
+  }
+
+  /**
+   * Initializes the cached reflection objects for the Backup class.
+   * Uses double-checked locking for thread-safe lazy initialization.
+   */
+  private static void initializeReflection() throws BackupException {
+    if (!reflectionInitialized) {
+      synchronized (REFLECTION_LOCK) {
+        if (!reflectionInitialized) {
+          try {
+            backupClass = Class.forName("com.arcadedb.integration.backup.Backup");
+            backupConstructor = backupClass.getConstructor(Database.class, String.class);
+            setDirectoryMethod = backupClass.getMethod("setDirectory", String.class);
+            setVerboseLevelMethod = backupClass.getMethod("setVerboseLevel", Integer.TYPE);
+            backupDatabaseMethod = backupClass.getMethod("backupDatabase");
+            reflectionInitialized = true;
+          } catch (final ClassNotFoundException | NoSuchMethodException e) {
+            throw new BackupException("Backup libs not found in classpath. Make sure arcadedb-integration module is included.", e);
+          }
+        }
+      }
     }
   }
 

@@ -139,10 +139,11 @@ public class CronScheduleParser {
     LocalDateTime next = from.plusSeconds(1).withNano(0);
 
     // Find next matching time by incrementing fields
-    int iterations = 0;
-    final int maxIterations = 366 * 24 * 60 * 60; // One year of seconds max
+    // Use a reasonable limit: 4 years should cover any valid CRON expression
+    // This prevents potential infinite loops from impossible CRON expressions
+    final LocalDateTime maxDate = from.plusYears(4);
 
-    while (iterations++ < maxIterations) {
+    while (next.isBefore(maxDate)) {
       // Check month
       if (!months.get(next.getMonthValue())) {
         next = next.plusMonths(1).withDayOfMonth(1).withHour(0).withMinute(0).withSecond(0);
@@ -184,7 +185,9 @@ public class CronScheduleParser {
       return next;
     }
 
-    throw new IllegalStateException("Could not find next execution time for CRON expression: " + expression);
+    throw new IllegalStateException(
+        "Could not find next execution time within 4 years for CRON expression '" + expression +
+            "'. The expression may be invalid or specify an impossible schedule.");
   }
 
   /**

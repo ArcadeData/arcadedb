@@ -425,22 +425,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private void validateBackupDirectory(final String backupDir) {
-    if (backupDir == null || backupDir.isEmpty())
-      throw new IllegalArgumentException("Backup directory cannot be empty");
-
-    // Check for absolute paths
-    final Path path = Paths.get(backupDir);
-    if (path.isAbsolute())
-      throw new IllegalArgumentException("Backup directory must be a relative path, not absolute: " + backupDir);
-
-    // Check for path traversal attempts
-    if (backupDir.contains(".."))
-      throw new IllegalArgumentException("Backup directory cannot contain path traversal (..): " + backupDir);
-
-    // Normalize and verify the path doesn't escape
-    final Path normalized = path.normalize();
-    if (normalized.startsWith(".."))
-      throw new IllegalArgumentException("Backup directory cannot escape server root: " + backupDir);
+    // Use consolidated validation from AutoBackupSchedulerPlugin
+    final Path serverRoot = Paths.get(httpServer.getServer().getRootPath()).toAbsolutePath().normalize();
+    AutoBackupSchedulerPlugin.validateAndResolveBackupPath(backupDir, serverRoot);
   }
 
   private ExecutionResponse listBackups(final String databaseName) {
@@ -567,10 +554,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
             .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
 
-        final String dbBackupDir = Paths.get(backupDirectory, databaseName).toString();
-        final File backupDirFile = new File(dbBackupDir);
-        if (!backupDirFile.exists())
-          backupDirFile.mkdirs();
+        final Path dbBackupPath = Paths.get(backupDirectory, databaseName);
+        // Use Files.createDirectories to avoid TOCTOU race condition
+        Files.createDirectories(dbBackupPath);
+        final String dbBackupDir = dbBackupPath.toString();
 
         final Object backup = clazz.getConstructor(Database.class, String.class)
             .newInstance(database, backupFileName);
