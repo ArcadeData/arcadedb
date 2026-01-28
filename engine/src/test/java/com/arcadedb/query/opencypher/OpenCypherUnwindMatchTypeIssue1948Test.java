@@ -122,19 +122,19 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
     // Get the RIDs
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'chunk1'}) RETURN c")) {
       assertTrue(rs.hasNext(), "CHUNK vertex should exist");
-      Vertex chunk = (Vertex) rs.next().getProperty("c");
+      Vertex chunk = (Vertex) rs.next().toElement();
       chunkRid = chunk.getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (t:TARGET {name: 'target1'}) RETURN t")) {
       assertTrue(rs.hasNext(), "TARGET1 vertex should exist");
-      Vertex target1 = (Vertex) rs.next().getProperty("t");
+      Vertex target1 = (Vertex) rs.next().toElement();
       target1Rid = target1.getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (t:TARGET {name: 'target2'}) RETURN t")) {
       assertTrue(rs.hasNext(), "TARGET2 vertex should exist");
-      Vertex target2 = (Vertex) rs.next().getProperty("t");
+      Vertex target2 = (Vertex) rs.next().toElement();
       target2Rid = target2.getIdentity();
     }
 
@@ -192,19 +192,19 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
     // Get the RIDs
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'chunk2'}) RETURN c")) {
       assertTrue(rs.hasNext(), "CHUNK vertex should exist");
-      Vertex chunk = (Vertex) rs.next().getProperty("c");
+      Vertex chunk = (Vertex) rs.next().toElement();
       chunkRid = chunk.getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (t:TARGET {name: 'target3'}) RETURN t")) {
       assertTrue(rs.hasNext(), "TARGET vertex should exist");
-      Vertex target1 = (Vertex) rs.next().getProperty("t");
+      Vertex target1 = (Vertex) rs.next().toElement();
       target1Rid = target1.getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (t:TARGET {name: 'target4'}) RETURN t")) {
       assertTrue(rs.hasNext(), "TARGET vertex should exist");
-      Vertex target2 = (Vertex) rs.next().getProperty("t");
+      Vertex target2 = (Vertex) rs.next().toElement();
       target2Rid = target2.getIdentity();
     }
 
@@ -255,7 +255,7 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
     final RID chunkRid;
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'simple_chunk'}) RETURN c")) {
       assertTrue(rs.hasNext());
-      chunkRid = ((Vertex) rs.next().getProperty("c")).getIdentity();
+      chunkRid = ((Vertex) rs.next().toElement()).getIdentity();
     }
 
     // Create batch with 3 entries all referencing the same CHUNK
@@ -299,12 +299,12 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
 
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'diff_chunk1'}) RETURN c")) {
       assertTrue(rs.hasNext());
-      chunk1Rid = ((Vertex) rs.next().getProperty("c")).getIdentity();
+      chunk1Rid = ((Vertex) rs.next().toElement()).getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'diff_chunk2'}) RETURN c")) {
       assertTrue(rs.hasNext());
-      chunk2Rid = ((Vertex) rs.next().getProperty("c")).getIdentity();
+      chunk2Rid = ((Vertex) rs.next().toElement()).getIdentity();
     }
 
     // Create batch with 2 entries with DIFFERENT source_ids

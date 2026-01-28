@@ -63,7 +63,7 @@ public class OrderByDebugTest {
     int count = 0;
     while (result.hasNext()) {
       final Result r = result.next();
-      final Vertex v = (Vertex) r.getProperty("n");
+      final Vertex v = (Vertex) r.toElement();
       //System.out.println("Result " + count + ": name=" + v.get("name") + ", age=" + v.get("age"));
       count++;
     }

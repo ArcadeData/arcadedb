@@ -67,7 +67,8 @@ public class OpenCypherBasicTest {
 
     final Result firstResult = result.next();
     assertThat((Object) firstResult).isNotNull();
-    assertThat((Object) firstResult.getProperty("n")).isNotNull();
+    // Single-variable RETURN should unwrap the element directly
+    assertThat(firstResult.isElement()).as("RETURN n should produce element results, not projections").isTrue();
   }
 
   @Test

@@ -83,7 +83,7 @@ public class OpenCypherRemoveTest {
     final ResultSet verify = database.query("opencypher",
         "MATCH (n:Person {name: 'Charlie Sheen'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex person = (Vertex) verify.next().getProperty("n");
+    final Vertex person = (Vertex) verify.next().toElement();
     assertThat(person.get("name")).isEqualTo("Charlie Sheen");
     // The _temp_created property should NOT exist
     assertThat(person.has("_temp_created")).isFalse();
@@ -102,7 +102,7 @@ public class OpenCypherRemoveTest {
           "MATCH (n:Person {name: 'Alice'}) REMOVE n.temp RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex person = (Vertex) result.next().getProperty("n");
+      final Vertex person = (Vertex) result.next().toElement();
       assertThat(person.get("name")).isEqualTo("Alice");
       assertThat(person.get("age")).isEqualTo(30);
       assertThat(person.has("temp")).isFalse();
@@ -111,7 +111,7 @@ public class OpenCypherRemoveTest {
     // Verify persistence
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Alice'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex person = (Vertex) verify.next().getProperty("n");
+    final Vertex person = (Vertex) verify.next().toElement();
     assertThat(person.has("temp")).isFalse();
     assertThat(person.get("name")).isEqualTo("Alice");
   }
@@ -130,7 +130,7 @@ public class OpenCypherRemoveTest {
           "MATCH (n:Person {name: 'Bob'}) REMOVE n.temp1, n.temp2 RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex person = (Vertex) result.next().getProperty("n");
+      final Vertex person = (Vertex) result.next().toElement();
       assertThat(person.get("name")).isEqualTo("Bob");
       assertThat(person.get("age")).isEqualTo(25);
       assertThat(person.has("temp1")).isFalse();
@@ -151,7 +151,7 @@ public class OpenCypherRemoveTest {
           "MATCH (n:Person {name: 'Charlie'}) REMOVE n.nonexistent RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex person = (Vertex) result.next().getProperty("n");
+      final Vertex person = (Vertex) result.next().toElement();
       assertThat(person.get("name")).isEqualTo("Charlie");
     });
   }
@@ -173,7 +173,7 @@ public class OpenCypherRemoveTest {
               "RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex person = (Vertex) result.next().getProperty("n");
+      final Vertex person = (Vertex) result.next().toElement();
       assertThat(person.get("name")).isEqualTo("David");
       // Property should be removed even though it was set earlier in the same query
       assertThat(person.has("temp")).isFalse();
@@ -196,7 +196,7 @@ public class OpenCypherRemoveTest {
     // Verify property was removed
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Eve'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex person = (Vertex) verify.next().getProperty("n");
+    final Vertex person = (Vertex) verify.next().toElement();
     assertThat(person.has("temp")).isFalse();
   }
 
@@ -216,7 +216,7 @@ public class OpenCypherRemoveTest {
 
       int count = 0;
       while (result.hasNext()) {
-        final Vertex person = (Vertex) result.next().getProperty("n");
+        final Vertex person = (Vertex) result.next().toElement();
         assertThat(person.has("temp")).isFalse();
         count++;
       }
@@ -226,7 +226,7 @@ public class OpenCypherRemoveTest {
     // Verify all have temp removed
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN n");
     while (verify.hasNext()) {
-      final Vertex person = (Vertex) verify.next().getProperty("n");
+      final Vertex person = (Vertex) verify.next().toElement();
       assertThat(person.has("temp")).isFalse();
     }
   }
@@ -245,7 +245,7 @@ public class OpenCypherRemoveTest {
           "MATCH (a:Person)-[r:KNOWS]->(b:Person) REMOVE r.temp RETURN r");
 
       assertThat(result.hasNext()).isTrue();
-      final com.arcadedb.graph.Edge edge = (com.arcadedb.graph.Edge) result.next().getProperty("r");
+      final com.arcadedb.graph.Edge edge = (com.arcadedb.graph.Edge) result.next().toElement();
       assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2020);
       assertThat(edge.has("temp")).isFalse();
     });
@@ -262,7 +262,7 @@ public class OpenCypherRemoveTest {
               "RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex person = (Vertex) result.next().getProperty("n");
+      final Vertex person = (Vertex) result.next().toElement();
       assertThat(person.get("name")).isEqualTo("Frank");
       assertThat(person.has("temp")).isFalse();
     });

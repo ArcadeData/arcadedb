@@ -123,10 +123,10 @@ public class OpenCypherDeleteTest {
     // Verify only Charlie deleted, Alice and Bob remain
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN n ORDER BY n.name");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex v1 = (Vertex) verify.next().getProperty("n");
+    final Vertex v1 = (Vertex) verify.next().toElement();
     assertThat((String) v1.get("name")).isEqualTo("Alice");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex v2 = (Vertex) verify.next().getProperty("n");
+    final Vertex v2 = (Vertex) verify.next().toElement();
     assertThat((String) v2.get("name")).isEqualTo("Bob");
     assertThat(verify.hasNext()).isFalse();
   }

@@ -69,14 +69,14 @@ public class OpenCypherSetTest {
           "MATCH (n:Person {name: 'Alice'}) SET n.age = 31 RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat(((Number) v.get("age")).intValue()).isEqualTo(31);
     });
 
     // Verify persistence
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Alice'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex v = (Vertex) verify.next().getProperty("n");
+    final Vertex v = (Vertex) verify.next().toElement();
     assertThat(((Number) v.get("age")).intValue()).isEqualTo(31);
   }
 
@@ -93,7 +93,7 @@ public class OpenCypherSetTest {
           "MATCH (n:Person {name: 'Bob'}) SET n.age = 26, n.city = 'NYC' RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat(((Number) v.get("age")).intValue()).isEqualTo(26);
       assertThat((String) v.get("city")).isEqualTo("NYC");
     });
@@ -101,7 +101,7 @@ public class OpenCypherSetTest {
     // Verify persistence
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Bob'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex v = (Vertex) verify.next().getProperty("n");
+    final Vertex v = (Vertex) verify.next().toElement();
     assertThat(((Number) v.get("age")).intValue()).isEqualTo(26);
     assertThat((String) v.get("city")).isEqualTo("NYC");
   }
@@ -122,7 +122,7 @@ public class OpenCypherSetTest {
 
       int count = 0;
       while (result.hasNext()) {
-        final Vertex v = (Vertex) result.next().getProperty("n");
+        final Vertex v = (Vertex) result.next().toElement();
         assertThat((Boolean) v.get("senior")).isTrue();
         count++;
       }
@@ -133,7 +133,7 @@ public class OpenCypherSetTest {
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN n ORDER BY n.age");
     int seniorCount = 0;
     while (verify.hasNext()) {
-      final Vertex v = (Vertex) verify.next().getProperty("n");
+      final Vertex v = (Vertex) verify.next().toElement();
       if (v.get("senior") != null && (Boolean) v.get("senior")) {
         seniorCount++;
       }
@@ -154,7 +154,7 @@ public class OpenCypherSetTest {
           "MATCH (n:Person {name: 'Alice'}) SET n.email = 'alice@example.com' RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat((String) v.get("email")).isEqualTo("alice@example.com");
     });
   }
@@ -172,7 +172,7 @@ public class OpenCypherSetTest {
           "MATCH (n:Person {name: 'Bob'}) SET n.age = 42, n.salary = 75000.50 RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat(((Number) v.get("age")).intValue()).isEqualTo(42);
       assertThat((Double) v.get("salary")).isEqualTo(75000.50);
     });
@@ -191,7 +191,7 @@ public class OpenCypherSetTest {
           "MATCH (n:Person {name: 'Charlie'}) SET n.active = true RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat((Boolean) v.get("active")).isTrue();
     });
 
@@ -201,7 +201,7 @@ public class OpenCypherSetTest {
           "MATCH (n:Person {name: 'Charlie'}) SET n.active = false RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat((Boolean) v.get("active")).isFalse();
     });
   }
@@ -219,14 +219,14 @@ public class OpenCypherSetTest {
           "MATCH (n:Person {name: 'David'}) SET n.age = null RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat(v.get("age")).isNull();
     });
 
     // Verify property is null
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'David'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex v = (Vertex) verify.next().getProperty("n");
+    final Vertex v = (Vertex) verify.next().toElement();
     assertThat(v.get("age")).isNull();
   }
 
@@ -246,7 +246,7 @@ public class OpenCypherSetTest {
 
       int count = 0;
       while (result.hasNext()) {
-        final Vertex v = (Vertex) result.next().getProperty("n");
+        final Vertex v = (Vertex) result.next().toElement();
         assertThat((Boolean) v.get("verified")).isTrue();
         count++;
       }
@@ -257,7 +257,7 @@ public class OpenCypherSetTest {
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN n");
     int count = 0;
     while (verify.hasNext()) {
-      final Vertex v = (Vertex) verify.next().getProperty("n");
+      final Vertex v = (Vertex) verify.next().toElement();
       assertThat((Boolean) v.get("verified")).isTrue();
       count++;
     }
@@ -279,7 +279,7 @@ public class OpenCypherSetTest {
     // Verify update persisted
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Eve'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex v = (Vertex) verify.next().getProperty("n");
+    final Vertex v = (Vertex) verify.next().toElement();
     assertThat(((Number) v.get("age")).intValue()).isEqualTo(29);
   }
 
@@ -298,7 +298,7 @@ public class OpenCypherSetTest {
 
       assertThat(result.hasNext()).isTrue();
       final Result res = result.next();
-      final Edge edge = (Edge) res.getProperty("r");
+      final Edge edge = (Edge) res.toElement();
       assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2021);
       assertThat((String) edge.get("role")).isEqualTo("Engineer");
     });
@@ -307,7 +307,7 @@ public class OpenCypherSetTest {
     final ResultSet verify = database.query("opencypher",
         "MATCH (a:Person)-[r:WORKS_AT]->(c:Company) RETURN r");
     assertThat(verify.hasNext()).isTrue();
-    final Edge edge = (Edge) verify.next().getProperty("r");
+    final Edge edge = (Edge) verify.next().toElement();
     assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2021);
     assertThat((String) edge.get("role")).isEqualTo("Engineer");
   }
@@ -320,7 +320,7 @@ public class OpenCypherSetTest {
           "CREATE (n:Person {name: 'Frank'}) SET n.age = 40 RETURN n");
 
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat((String) v.get("name")).isEqualTo("Frank");
       assertThat(((Number) v.get("age")).intValue()).isEqualTo(40);
     });
@@ -328,7 +328,7 @@ public class OpenCypherSetTest {
     // Verify both properties persisted
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Frank'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex v = (Vertex) verify.next().getProperty("n");
+    final Vertex v = (Vertex) verify.next().toElement();
     assertThat(((Number) v.get("age")).intValue()).isEqualTo(40);
   }
 }

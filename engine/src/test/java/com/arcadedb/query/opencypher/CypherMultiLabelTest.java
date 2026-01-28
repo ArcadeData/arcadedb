@@ -61,7 +61,7 @@ public class CypherMultiLabelTest {
       assertThat(result.hasNext()).isTrue();
 
       final Result r = result.next();
-      final Object vertex = r.getProperty("n");
+      final Object vertex = r.toElement();
       assertThat(vertex).isInstanceOf(Vertex.class);
 
       final Vertex v = (Vertex) vertex;
@@ -82,7 +82,7 @@ public class CypherMultiLabelTest {
       assertThat(result.hasNext()).isTrue();
 
       final Result r = result.next();
-      final Vertex v = (Vertex) r.getProperty("n");
+      final Vertex v = (Vertex) r.toElement();
       // Same composite type regardless of order
       assertThat(v.getTypeName()).isEqualTo("Developer_Person");
     });
@@ -98,7 +98,7 @@ public class CypherMultiLabelTest {
       assertThat(result.hasNext()).isTrue();
 
       final Result r = result.next();
-      final Vertex v = (Vertex) r.getProperty("n");
+      final Vertex v = (Vertex) r.toElement();
       // Alphabetically sorted
       assertThat(v.getTypeName()).isEqualTo("Developer_Manager_Person");
     });
@@ -116,7 +116,7 @@ public class CypherMultiLabelTest {
         "MATCH (n:Person) RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex v = (Vertex) result.next().getProperty("n");
+    final Vertex v = (Vertex) result.next().toElement();
     assertThat((String) v.get("name")).isEqualTo("Alice");
     assertThat(result.hasNext()).isFalse();
   }
@@ -133,7 +133,7 @@ public class CypherMultiLabelTest {
         "MATCH (n:Developer) RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex v = (Vertex) result.next().getProperty("n");
+    final Vertex v = (Vertex) result.next().toElement();
     assertThat((String) v.get("name")).isEqualTo("Alice");
     assertThat(result.hasNext()).isFalse();
   }
@@ -150,7 +150,7 @@ public class CypherMultiLabelTest {
         "MATCH (n:Person:Developer) RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex v = (Vertex) result.next().getProperty("n");
+    final Vertex v = (Vertex) result.next().toElement();
     assertThat((String) v.get("name")).isEqualTo("Alice");
     assertThat(result.hasNext()).isFalse();
   }
@@ -167,7 +167,7 @@ public class CypherMultiLabelTest {
         "MATCH (n:Developer:Person) RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex v = (Vertex) result.next().getProperty("n");
+    final Vertex v = (Vertex) result.next().toElement();
     assertThat((String) v.get("name")).isEqualTo("Alice");
     assertThat(result.hasNext()).isFalse();
   }
@@ -282,7 +282,7 @@ public class CypherMultiLabelTest {
       final ResultSet result = database.command("opencypher",
           "CREATE (n:Person:Developer {name: 'Alice'}) RETURN n");
 
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
 
       // Test hasLabel via Labels helper
       assertThat(Labels.hasLabel(v, "Person")).isTrue();
