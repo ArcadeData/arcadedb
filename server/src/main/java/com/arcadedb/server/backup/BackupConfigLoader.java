@@ -37,15 +37,15 @@ public class BackupConfigLoader {
   private final String databasesPath;
 
   public BackupConfigLoader(final String configPath, final String databasesPath) {
-    this.configPath = configPath.endsWith(File.separator) ? configPath : configPath + File.separator;
-    this.databasesPath = databasesPath.endsWith(File.separator) ? databasesPath : databasesPath + File.separator;
+    this.configPath = java.nio.file.Paths.get(configPath).toString();
+    this.databasesPath = java.nio.file.Paths.get(databasesPath).toString();
   }
 
   /**
    * Checks if the backup configuration file exists.
    */
   public boolean configExists() {
-    final File configFile = new File(configPath + AutoBackupConfig.CONFIG_FILE_NAME);
+    final File configFile = java.nio.file.Paths.get(configPath, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
     return configFile.exists();
   }
 
@@ -55,7 +55,7 @@ public class BackupConfigLoader {
    * @return AutoBackupConfig or null if configuration doesn't exist
    */
   public AutoBackupConfig loadConfig() {
-    final File configFile = new File(configPath + AutoBackupConfig.CONFIG_FILE_NAME);
+    final File configFile = java.nio.file.Paths.get(configPath, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
 
     if (!configFile.exists()) {
       LogManager.instance().log(this, Level.FINE, "Backup config file not found: %s", configFile.getAbsolutePath());
@@ -85,8 +85,7 @@ public class BackupConfigLoader {
    * @return DatabaseBackupConfig or null if no database-specific config exists
    */
   public DatabaseBackupConfig loadDatabaseConfig(final String databaseName) {
-    final File dbConfigFile =
-        new File(databasesPath + databaseName + File.separator + AutoBackupConfig.CONFIG_FILE_NAME);
+    final File dbConfigFile = java.nio.file.Paths.get(databasesPath, databaseName, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
 
     if (!dbConfigFile.exists())
       return null;

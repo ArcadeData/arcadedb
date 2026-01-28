@@ -121,6 +121,15 @@ public class BackupTask implements Runnable {
 
   /**
    * Checks if the current time is within the configured time window.
+   * The time window is inclusive on both ends - backups are allowed at exactly
+   * the start time and at exactly the end time.
+   * <p>
+   * For example, with a window of 02:00-04:00:
+   * - 01:59:59 - not allowed
+   * - 02:00:00 - allowed (inclusive)
+   * - 03:00:00 - allowed
+   * - 04:00:00 - allowed (inclusive)
+   * - 04:00:01 - not allowed
    */
   private boolean isWithinTimeWindow() {
     final DatabaseBackupConfig.ScheduleConfig schedule = config.getSchedule();
@@ -132,9 +141,10 @@ public class BackupTask implements Runnable {
     final LocalTime end = schedule.getWindowEnd();
 
     if (start.isBefore(end))
+      // Normal window (e.g., 02:00 to 04:00) - inclusive on both ends
       return !now.isBefore(start) && !now.isAfter(end);
     else
-      // Window spans midnight (e.g., 22:00 to 04:00)
+      // Window spans midnight (e.g., 22:00 to 04:00) - inclusive on both ends
       return !now.isBefore(start) || !now.isAfter(end);
   }
 
@@ -144,11 +154,10 @@ public class BackupTask implements Runnable {
   private String performBackup() throws Exception {
     final Database database = server.getDatabase(databaseName);
 
-    // Check for active transaction
+    // Check for active transaction - never automatically rollback as it could cause data loss
     if (database.isTransactionActive() && ((DatabaseInternal) database).getTransaction().hasChanges()) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Found pending transaction for database '%s'. Rolling back before backup...", databaseName);
-      database.rollback();
+      throw new BackupException("Cannot perform backup for database '" + databaseName +
+          "': active transaction with pending changes detected. Please commit or rollback the transaction manually.");
     }
 
     // Generate backup filename
@@ -156,10 +165,13 @@ public class BackupTask implements Runnable {
     final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
 
     // Prepare backup directory for this database
-    final String dbBackupDir = backupDirectory + File.separator + databaseName;
+    final String dbBackupDir = java.nio.file.Paths.get(backupDirectory, databaseName).toString();
     final File backupDirFile = new File(dbBackupDir);
-    if (!backupDirFile.exists())
-      backupDirFile.mkdirs();
+    if (!backupDirFile.exists()) {
+      if (!backupDirFile.mkdirs()) {
+        throw new BackupException("Failed to create backup directory for database '" + databaseName + "': " + dbBackupDir);
+      }
+    }
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");

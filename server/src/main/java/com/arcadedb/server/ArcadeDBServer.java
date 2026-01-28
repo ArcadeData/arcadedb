@@ -314,7 +314,7 @@ public class ArcadeDBServer {
   }
 
   private void registerAutoBackupPluginIfConfigured() {
-    final File backupConfigFile = new File(serverRootPath + File.separator + "config" + File.separator + "backup.json");
+    final File backupConfigFile = java.nio.file.Paths.get(serverRootPath, "config", "backup.json").toFile();
     if (backupConfigFile.exists()) {
       try {
         final Class<ServerPlugin> c = (Class<ServerPlugin>) Class.forName(

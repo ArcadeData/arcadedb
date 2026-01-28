@@ -33,6 +33,8 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class BackupScheduler {
+  private static final int DEFAULT_THREAD_POOL_SIZE = 2;
+
   private final    ArcadeDBServer                  server;
   private final    ScheduledExecutorService        executor;
   private final    Map<String, ScheduledFuture<?>> scheduledTasks;
@@ -46,7 +48,7 @@ public class BackupScheduler {
     this.server = server;
     this.backupDirectory = backupDirectory;
     this.retentionManager = retentionManager;
-    this.executor = Executors.newScheduledThreadPool(2, r -> {
+    this.executor = Executors.newScheduledThreadPool(DEFAULT_THREAD_POOL_SIZE, r -> {
       final Thread t = new Thread(r, "ArcadeDB-AutoBackup");
       t.setDaemon(true);
       return t;
@@ -150,9 +152,12 @@ public class BackupScheduler {
       try {
         task.run();
       } finally {
-        // Schedule the next execution
-        if (running)
-          scheduleNextCronExecution(databaseName, task, parser);
+        // Schedule the next execution only if still running and parser is still registered
+        if (running && cronParsers.containsKey(databaseName)) {
+          final CronScheduleParser currentParser = cronParsers.get(databaseName);
+          if (currentParser != null)
+            scheduleNextCronExecution(databaseName, task, currentParser);
+        }
       }
     }, delayMillis, TimeUnit.MILLISECONDS);
 

@@ -88,16 +88,48 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
       return;
     }
 
-    // Resolve backup directory (relative to server root)
+    // Resolve backup directory (relative to server root) and validate path
     String backupDirectory = backupConfig.getBackupDirectory();
-    if (!backupDirectory.startsWith("/") && !backupDirectory.startsWith(File.separator) && !backupDirectory.contains(
-        ":"))
-      backupDirectory = server.getRootPath() + File.separator + backupDirectory;
+    final java.nio.file.Path backupPath = java.nio.file.Paths.get(backupDirectory);
+
+    if (!backupPath.isAbsolute()) {
+      // Relative path - resolve against server root
+      backupDirectory = java.nio.file.Paths.get(server.getRootPath(), backupDirectory).toString();
+    }
+
+    // Validate that the resolved path doesn't escape server root (path traversal protection)
+    try {
+      final java.nio.file.Path resolvedPath = java.nio.file.Paths.get(backupDirectory).toRealPath(
+          java.nio.file.LinkOption.NOFOLLOW_LINKS);
+      final java.nio.file.Path serverRoot = java.nio.file.Paths.get(server.getRootPath()).toRealPath(
+          java.nio.file.LinkOption.NOFOLLOW_LINKS);
+
+      if (!resolvedPath.startsWith(serverRoot)) {
+        throw new IllegalArgumentException(
+            "Backup directory must be within server root path for security reasons: " + backupDirectory);
+      }
+    } catch (final java.io.IOException e) {
+      // Path doesn't exist yet - validate against canonical path instead
+      try {
+        final java.nio.file.Path canonicalPath = java.nio.file.Paths.get(backupDirectory).toAbsolutePath().normalize();
+        final java.nio.file.Path serverRoot = java.nio.file.Paths.get(server.getRootPath()).toAbsolutePath().normalize();
+
+        if (!canonicalPath.startsWith(serverRoot)) {
+          throw new IllegalArgumentException(
+              "Backup directory must be within server root path for security reasons: " + backupDirectory);
+        }
+      } catch (final Exception ex) {
+        throw new IllegalArgumentException("Invalid backup directory path: " + backupDirectory, ex);
+      }
+    }
 
     // Ensure backup directory exists
     final File backupDir = new File(backupDirectory);
-    if (!backupDir.exists())
-      backupDir.mkdirs();
+    if (!backupDir.exists()) {
+      if (!backupDir.mkdirs()) {
+        throw new RuntimeException("Failed to create backup directory: " + backupDirectory);
+      }
+    }
 
     // Initialize retention manager
     this.retentionManager = new BackupRetentionManager(backupDirectory);

@@ -87,7 +87,7 @@ public class BackupRetentionManager {
       return 0;
     }
 
-    final File dbBackupDir = new File(backupDirectory + File.separator + databaseName);
+    final File dbBackupDir = java.nio.file.Paths.get(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 
@@ -239,9 +239,9 @@ public class BackupRetentionManager {
     if (count <= 0)
       return selected;
 
-    // Group by year-week
+    // Group by year-week (using ISO week definition for consistent behavior across locales)
     final Map<String, List<BackupFileInfo>> buckets = new LinkedHashMap<>();
-    final WeekFields weekFields = WeekFields.of(Locale.getDefault());
+    final WeekFields weekFields = WeekFields.ISO;
 
     for (final BackupFileInfo info : backupFiles) {
       final int year = info.timestamp.getYear();
@@ -340,7 +340,7 @@ public class BackupRetentionManager {
    * Gets the total size of all backup files for a database.
    */
   public long getBackupSizeBytes(final String databaseName) {
-    final File dbBackupDir = new File(backupDirectory + File.separator + databaseName);
+    final File dbBackupDir = java.nio.file.Paths.get(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 
@@ -358,7 +358,7 @@ public class BackupRetentionManager {
    * Gets the count of backup files for a database.
    */
   public int getBackupCount(final String databaseName) {
-    final File dbBackupDir = new File(backupDirectory + File.separator + databaseName);
+    final File dbBackupDir = java.nio.file.Paths.get(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 
