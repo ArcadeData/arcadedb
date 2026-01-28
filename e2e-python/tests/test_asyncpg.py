@@ -45,10 +45,11 @@ from time import sleep
 from testcontainers.core.container import DockerContainer
 
 arcadedb = (DockerContainer("arcadedata/arcadedb:latest")
-            .with_exposed_ports(2480, 5432)
+            .with_exposed_ports(2480, 2424, 5432)
             .with_env("JAVA_OPTS",
                       "-Darcadedb.server.rootPassword=playwithdata "
-                      "-Darcadedb.server.defaultDatabases=asyncpg_testdb[root]{}"))
+                      "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
+                      "-Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin,PrometheusMetrics:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"))
 
 
 def get_connection_params(container):
