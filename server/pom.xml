@@ -37,7 +37,7 @@
         <metrics.version>4.2.19</metrics.version>
         <undertow-core.version>2.3.20.Final</undertow-core.version>
         <micrometer.version>1.16.2</micrometer.version>
-        <swagger.version>2.2.41</swagger.version>
+        <swagger.version>2.2.42</swagger.version>
         <swagger-parser.version>2.1.37</swagger-parser.version>
     </properties>
 
