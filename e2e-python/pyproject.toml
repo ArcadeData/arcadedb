@@ -40,3 +40,20 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["tests"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+markers = [
+    "asyncio: mark test as asyncio test",
+]
+# Show test durations
+addopts = [
+    "-v",
+    "--durations=10",
+    "--strict-markers",
+]
