@@ -36,13 +36,13 @@ Usage:
     pytest tests/test_asyncpg.py -v --log-cli-level=DEBUG
 """
 
-import time
+import asyncpg
 import pytest
 import pytest_asyncio
-import asyncpg
 import requests
-from testcontainers.core.container import DockerContainer
+import time
 from time import sleep
+from testcontainers.core.container import DockerContainer
 
 arcadedb = (DockerContainer("arcadedata/arcadedb:latest")
             .with_exposed_ports(2480, 5432)
