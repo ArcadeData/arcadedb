@@ -933,6 +933,10 @@ public class CypherExecutionPlan {
           matchVariables.add(pathVariable);
         }
 
+        // Track current source variable through multi-hop patterns
+        // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
+        String currentSourceVar = sourceVar;
+
         for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
           final RelationshipPattern relPattern = pathPattern.getRelationship(i);
           final NodePattern targetNode = pathPattern.getNode(i + 1);
@@ -946,13 +950,16 @@ public class CypherExecutionPlan {
 
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
-            nextStep = new ExpandPathStep(sourceVar, pathVariable, targetVar, relPattern, context);
+            nextStep = new ExpandPathStep(currentSourceVar, pathVariable, targetVar, relPattern, context);
           } else {
             // Pass target node pattern for label filtering and bound variables
             // for identity checking on already-bound target variables
-            nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable,
+            nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
                 targetNode, boundVariables, context);
           }
+
+          // Update source for next hop in multi-hop patterns
+          currentSourceVar = targetVar;
 
           if (isOptional && matchChainStart == null) {
             matchChainStart = nextStep;
@@ -1157,6 +1164,10 @@ public class CypherExecutionPlan {
               matchVariables.add(pathVariable); // Track path variable
             }
 
+            // Track current source variable through multi-hop patterns
+            // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
+            String currentSourceVar = sourceVar;
+
             for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
               final RelationshipPattern relPattern = pathPattern.getRelationship(i);
               final NodePattern targetNode = pathPattern.getNode(i + 1);
@@ -1172,12 +1183,15 @@ public class CypherExecutionPlan {
               AbstractExecutionStep nextStep;
               if (relPattern.isVariableLength()) {
                 // Variable-length path - pass path variable for named path support
-                nextStep = new ExpandPathStep(sourceVar, pathVariable, targetVar, relPattern, context);
+                nextStep = new ExpandPathStep(currentSourceVar, pathVariable, targetVar, relPattern, context);
               } else {
                 // Fixed-length relationship - pass path variable, target node pattern, and bound variables
-                nextStep = new MatchRelationshipStep(sourceVar, relVar, targetVar, relPattern, pathVariable,
+                nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
                     targetNode, legacyBoundVariables, context);
               }
+
+              // Update source for next hop in multi-hop patterns
+              currentSourceVar = targetVar;
 
               // Chain the relationship step
               if (isOptional && matchChainStart == null) {
