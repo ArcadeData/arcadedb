@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -221,5 +222,114 @@ public class CypherMultiHopMatchTest {
     assertFalse(results.isEmpty(),
         "Should find DateEntity through multi-hop with property filter");
     assertEquals("DateEntity", results.get(0).getProperty("name"));
+  }
+
+  /**
+   * Test COLLECT with map literal containing function calls.
+   * This tests the bug where {typeR: type(r)} would be incorrectly parsed as just type(r).
+   */
+  @Test
+  public void testCollectWithMapLiteralContainingFunction() {
+    ResultSet result = database.query("opencypher",
+        "MATCH (n:NER {subtype: 'DATE'})-[r]-(m:NER) " +
+            "RETURN COLLECT(DISTINCT {typeO: n.subtype, nameO: n.name, typeR: type(r)}) AS relations");
+
+    assertTrue(result.hasNext(), "Should return results");
+    Result row = result.next();
+    result.close();
+
+    Object relationsObj = row.getProperty("relations");
+    assertNotNull(relationsObj, "relations should not be null");
+    assertTrue(relationsObj instanceof List, "relations should be a list");
+
+    @SuppressWarnings("unchecked")
+    List<Object> relations = (List<Object>) relationsObj;
+    assertFalse(relations.isEmpty(), "relations list should not be empty");
+
+    // Each item should be a map, not just a string
+    Object firstRelation = relations.get(0);
+    assertTrue(firstRelation instanceof Map,
+        "Each relation should be a map, but got: " + firstRelation.getClass().getName());
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> relMap = (Map<String, Object>) firstRelation;
+    assertTrue(relMap.containsKey("typeO"), "Map should contain typeO");
+    assertTrue(relMap.containsKey("nameO"), "Map should contain nameO");
+    assertTrue(relMap.containsKey("typeR"), "Map should contain typeR");
+  }
+
+  /**
+   * Test HEAD(COLLECT(...)) - wrapper function around aggregation.
+   * This tests the bug where HEAD(COLLECT(...)) returned null because HEAD was not
+   * recognized as containing an aggregation.
+   */
+  @Test
+  public void testHeadCollectWrappedAggregation() {
+    ResultSet result = database.query("opencypher",
+        "MATCH (n:NER {subtype: 'DATE'})--(chunk:CHUNK)--(doc:DOCUMENT) " +
+            "RETURN n.name AS name, " +
+            "HEAD(COLLECT(DISTINCT {text: chunk.name, doc_name: doc.name})) AS context");
+
+    assertTrue(result.hasNext(), "Should return results");
+    Result row = result.next();
+    result.close();
+
+    assertEquals("DateEntity", row.getProperty("name"));
+
+    Object contextObj = row.getProperty("context");
+    assertNotNull(contextObj, "context should not be null - HEAD(COLLECT(...)) should work");
+    assertTrue(contextObj instanceof Map, "context should be a map");
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> contextMap = (Map<String, Object>) contextObj;
+    assertTrue(contextMap.containsKey("text"), "Map should contain text");
+    assertTrue(contextMap.containsKey("doc_name"), "Map should contain doc_name");
+  }
+
+  /**
+   * Test the exact query from the bug report with all features combined:
+   * - Multiple MATCH clauses
+   * - Multi-hop patterns
+   * - COLLECT with map literals containing type()
+   * - HEAD(COLLECT(...))
+   */
+  @Test
+  public void testFullQueryFromBugReport() {
+    ResultSet result = database.query("opencypher",
+        "MATCH (n {subtype: 'DATE'}) " +
+            "MATCH (n)-[r]-(m:NER) " +
+            "MATCH (n)--(chunk:CHUNK)--(document:DOCUMENT) " +
+            "RETURN n.name AS name, " +
+            "COLLECT(DISTINCT {typeO: n.subtype, nameO: n.name, typeR: type(r), typeT: m.subtype, nameT: m.name}) AS relations, " +
+            "HEAD(COLLECT(DISTINCT {text: chunk.name, doc_name: document.name})) AS context");
+
+    List<Result> results = new ArrayList<>();
+    while (result.hasNext()) {
+      results.add(result.next());
+    }
+    result.close();
+
+    assertFalse(results.isEmpty(), "Query should return results");
+
+    Result row = results.get(0);
+    assertEquals("DateEntity", row.getProperty("name"));
+
+    // Check relations
+    Object relationsObj = row.getProperty("relations");
+    assertNotNull(relationsObj, "relations should not be null");
+    assertTrue(relationsObj instanceof List, "relations should be a list");
+
+    @SuppressWarnings("unchecked")
+    List<Object> relations = (List<Object>) relationsObj;
+    if (!relations.isEmpty()) {
+      Object firstRelation = relations.get(0);
+      assertTrue(firstRelation instanceof Map,
+          "Each relation should be a map with typeO, nameO, typeR, typeT, nameT");
+    }
+
+    // Check context
+    Object contextObj = row.getProperty("context");
+    assertNotNull(contextObj, "context should not be null");
+    assertTrue(contextObj instanceof Map, "context should be a map");
   }
 }

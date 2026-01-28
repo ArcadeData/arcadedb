@@ -88,6 +88,22 @@ class CypherExpressionBuilder {
       }
     }
 
+    // Check for map projections BEFORE function invocations
+    // Map projections have syntax: n{.name, .age} and can contain function calls inside
+    // We must check this first to avoid recursively finding inner functions
+    final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
+    if (mapProjCtx != null) {
+      return parseMapProjection(mapProjCtx);
+    }
+
+    // Check for map literals BEFORE function invocations
+    // Map literals can contain function calls inside, e.g., {typeR: type(r)}
+    // If we check function invocations first, we'd find the inner type(r) instead of the outer map
+    final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
+    if (mapCtx != null) {
+      return parseMapLiteralExpression(mapCtx);
+    }
+
     // Check for function invocations BEFORE list literals
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
@@ -99,20 +115,6 @@ class CypherExpressionBuilder {
     final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
     if (listCtx != null) {
       return parseListLiteral(listCtx);
-    }
-
-    // Check for map projections BEFORE arithmetic expressions
-    // Map projections have syntax: n{.name, .age} and can contain arithmetic inside
-    final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
-    if (mapProjCtx != null) {
-      return parseMapProjection(mapProjCtx);
-    }
-
-    // Check for map literals BEFORE arithmetic expressions
-    // Map literals can contain arithmetic expressions inside, e.g., {doubled: n.age * 2}
-    final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
-    if (mapCtx != null) {
-      return parseMapLiteralExpression(mapCtx);
     }
 
     // Check for arithmetic expressions (+ - * / % ^)
