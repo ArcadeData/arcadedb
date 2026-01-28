@@ -72,11 +72,22 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // Identify grouping keys (non-aggregated expressions) and aggregations
     final List<GroupingKey> groupingKeys = new ArrayList<>();
     final List<AggregationItem> aggregationItems = new ArrayList<>();
+    // Wrapped aggregations: non-aggregation functions that wrap aggregations, e.g., HEAD(COLLECT(...))
+    final List<WrappedAggregationItem> wrappedAggregationItems = new ArrayList<>();
 
     for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
       final Expression expr = item.getExpression();
       if (expr.isAggregation() && expr instanceof FunctionCallExpression) {
         aggregationItems.add(new AggregationItem(item.getOutputName(), (FunctionCallExpression) expr));
+      } else if (expr instanceof FunctionCallExpression) {
+        // Check if this is a wrapper around an aggregation, e.g., HEAD(COLLECT(...))
+        final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
+        final FunctionCallExpression innerAgg = findInnerAggregation(funcExpr);
+        if (innerAgg != null) {
+          wrappedAggregationItems.add(new WrappedAggregationItem(item.getOutputName(), funcExpr, innerAgg));
+        } else {
+          groupingKeys.add(new GroupingKey(item.getOutputName(), expr));
+        }
       } else {
         groupingKeys.add(new GroupingKey(item.getOutputName(), expr));
       }
@@ -112,8 +123,17 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         aggregators.put(aggItem.outputName, executor);
       }
 
+      // Create aggregators for wrapped aggregations (using the inner aggregation function)
+      final Map<String, CypherFunctionExecutor> wrappedAggregators = new HashMap<>();
+      for (final WrappedAggregationItem wrappedItem : wrappedAggregationItems) {
+        final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(
+            wrappedItem.innerAggregation.getFunctionName(), wrappedItem.innerAggregation.isDistinct());
+        wrappedAggregators.put(wrappedItem.outputName, executor);
+      }
+
       // Process all rows in this group
       for (final Result groupRow : groupRows) {
+        // Process regular aggregations
         for (final AggregationItem aggItem : aggregationItems) {
           final CypherFunctionExecutor executor = aggregators.get(aggItem.outputName);
 
@@ -121,6 +141,20 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           final Object[] args = new Object[aggItem.funcExpr.getArguments().size()];
           for (int i = 0; i < args.length; i++) {
             args[i] = evaluator.evaluate(aggItem.funcExpr.getArguments().get(i), groupRow, context);
+          }
+
+          // Feed this row's data to the aggregator
+          executor.execute(args, context);
+        }
+
+        // Process inner aggregations for wrapped aggregation items
+        for (final WrappedAggregationItem wrappedItem : wrappedAggregationItems) {
+          final CypherFunctionExecutor executor = wrappedAggregators.get(wrappedItem.outputName);
+
+          // Evaluate arguments for the inner aggregation
+          final Object[] args = new Object[wrappedItem.innerAggregation.getArguments().size()];
+          for (int i = 0; i < args.length; i++) {
+            args[i] = evaluator.evaluate(wrappedItem.innerAggregation.getArguments().get(i), groupRow, context);
           }
 
           // Feed this row's data to the aggregator
@@ -140,6 +174,16 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       for (final Map.Entry<String, CypherFunctionExecutor> entry : aggregators.entrySet()) {
         final Object aggregatedValue = entry.getValue().getAggregatedResult();
         groupResult.setProperty(entry.getKey(), aggregatedValue);
+      }
+
+      // Add wrapped aggregated values (apply wrapper function to aggregated result)
+      for (final WrappedAggregationItem wrappedItem : wrappedAggregationItems) {
+        final Object innerAggregatedValue = wrappedAggregators.get(wrappedItem.outputName).getAggregatedResult();
+        // Apply the wrapper function to the aggregated result
+        final CypherFunctionExecutor wrapperExecutor = functionFactory.getFunctionExecutor(
+            wrappedItem.wrapperFunction.getFunctionName());
+        final Object wrappedValue = wrapperExecutor.execute(new Object[]{innerAggregatedValue}, context);
+        groupResult.setProperty(wrappedItem.outputName, wrappedValue);
       }
 
       results.add(groupResult);
@@ -255,5 +299,45 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     public int hashCode() {
       return Objects.hash(values);
     }
+  }
+
+  /**
+   * Represents a wrapped aggregation item - a non-aggregation function that wraps an aggregation.
+   * Example: HEAD(COLLECT(...)) where HEAD is the wrapper and COLLECT is the inner aggregation.
+   */
+  private static class WrappedAggregationItem {
+    final String outputName;
+    final FunctionCallExpression wrapperFunction;
+    final FunctionCallExpression innerAggregation;
+
+    WrappedAggregationItem(final String outputName, final FunctionCallExpression wrapperFunction,
+        final FunctionCallExpression innerAggregation) {
+      this.outputName = outputName;
+      this.wrapperFunction = wrapperFunction;
+      this.innerAggregation = innerAggregation;
+    }
+  }
+
+  /**
+   * Find an inner aggregation function in a function call expression.
+   * Returns the first aggregation function found in the arguments, or null if none.
+   * This is used to detect patterns like HEAD(COLLECT(...)) where the outer function
+   * is not an aggregation but wraps one.
+   */
+  private static FunctionCallExpression findInnerAggregation(final FunctionCallExpression funcExpr) {
+    for (final Expression arg : funcExpr.getArguments()) {
+      if (arg instanceof FunctionCallExpression) {
+        final FunctionCallExpression argFunc = (FunctionCallExpression) arg;
+        if (argFunc.isAggregation()) {
+          return argFunc;
+        }
+        // Recursively check for nested function calls
+        final FunctionCallExpression nested = findInnerAggregation(argFunc);
+        if (nested != null) {
+          return nested;
+        }
+      }
+    }
+    return null;
   }
 }
