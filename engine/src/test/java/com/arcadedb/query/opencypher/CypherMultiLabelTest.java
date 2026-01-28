@@ -66,7 +66,7 @@ public class CypherMultiLabelTest {
 
       final Vertex v = (Vertex) vertex;
       // Composite type name should be alphabetically sorted
-      assertThat(v.getTypeName()).isEqualTo("Developer_Person");
+      assertThat(v.getTypeName()).isEqualTo("Developer~Person");
       assertThat((String) v.get("name")).isEqualTo("Alice");
     });
   }
@@ -84,7 +84,7 @@ public class CypherMultiLabelTest {
       final Result r = result.next();
       final Vertex v = (Vertex) r.toElement();
       // Same composite type regardless of order
-      assertThat(v.getTypeName()).isEqualTo("Developer_Person");
+      assertThat(v.getTypeName()).isEqualTo("Developer~Person");
     });
   }
 
@@ -100,7 +100,7 @@ public class CypherMultiLabelTest {
       final Result r = result.next();
       final Vertex v = (Vertex) r.toElement();
       // Alphabetically sorted
-      assertThat(v.getTypeName()).isEqualTo("Developer_Manager_Person");
+      assertThat(v.getTypeName()).isEqualTo("Developer~Manager~Person");
     });
   }
 
@@ -266,13 +266,13 @@ public class CypherMultiLabelTest {
     });
 
     // Verify schema has correct type hierarchy
-    assertThat(database.getSchema().existsType("Developer_Person")).isTrue();
+    assertThat(database.getSchema().existsType("Developer~Person")).isTrue();
     assertThat(database.getSchema().existsType("Person")).isTrue();
     assertThat(database.getSchema().existsType("Developer")).isTrue();
 
     // Verify inheritance
-    assertThat(database.getSchema().getType("Developer_Person").instanceOf("Person")).isTrue();
-    assertThat(database.getSchema().getType("Developer_Person").instanceOf("Developer")).isTrue();
+    assertThat(database.getSchema().getType("Developer~Person").instanceOf("Person")).isTrue();
+    assertThat(database.getSchema().getType("Developer~Person").instanceOf("Developer")).isTrue();
   }
 
   @Test

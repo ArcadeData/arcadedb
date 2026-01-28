@@ -29,10 +29,18 @@ import java.util.*;
  * <p>
  * Provides methods to manage composite types for vertices with multiple labels.
  * When a vertex has multiple labels (e.g., Person, Developer), a composite type
- * is automatically created (Developer_Person) that extends all label types.
+ * is automatically created (Developer~Person) that extends all label types.
  * <p>
  * Labels are sorted alphabetically to ensure consistent naming regardless of
  * the order in which labels are specified.
+ * <p>
+ * The tilde (~) separator was chosen because it:
+ * <ul>
+ *   <li>Is rarely used in type/class names by users</li>
+ *   <li>Is valid in SQL identifiers (can be quoted with backticks if needed)</li>
+ *   <li>Visually suggests "combining" or "together"</li>
+ *   <li>Does not conflict with common naming conventions (unlike underscore)</li>
+ * </ul>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -40,8 +48,9 @@ public final class Labels {
 
   /**
    * Separator used between label names in composite type names.
+   * Uses tilde (~) to avoid conflicts with user type names that may contain underscores.
    */
-  public static final String LABEL_SEPARATOR = "_";
+  public static final String LABEL_SEPARATOR = "~";
 
   /**
    * Private constructor to prevent instantiation.
@@ -55,9 +64,9 @@ public final class Labels {
    * Examples:
    * <ul>
    *   <li>["Person"] → "Person"</li>
-   *   <li>["Person", "Developer"] → "Developer_Person"</li>
-   *   <li>["Developer", "Person"] → "Developer_Person" (same, sorted)</li>
-   *   <li>["A", "B", "C"] → "A_B_C"</li>
+   *   <li>["Person", "Developer"] → "Developer~Person"</li>
+   *   <li>["Developer", "Person"] → "Developer~Person" (same, sorted)</li>
+   *   <li>["A", "B", "C"] → "A~B~C"</li>
    * </ul>
    *
    * @param labels list of label names
@@ -104,7 +113,7 @@ public final class Labels {
    * Checks if a vertex has a specific label.
    * <p>
    * Uses type inheritance (instanceOf) for checking, so a vertex with
-   * composite type Developer_Person will return true for both "Developer"
+   * composite type Developer~Person will return true for both "Developer"
    * and "Person" labels.
    *
    * @param vertex the vertex to check
@@ -139,12 +148,14 @@ public final class Labels {
 
     final String compositeTypeName = getCompositeTypeName(labels);
 
-    if (!schema.existsType(compositeTypeName)) {
-      // Ensure all base types exist first
-      for (final String label : labels) {
-        schema.getOrCreateVertexType(label);
-      }
+    // Always ensure all base types exist first, regardless of whether
+    // the composite type already exists. This fixes GitHub issue #3266
+    // where pre-existing composite types would prevent label type creation.
+    for (final String label : labels) {
+      schema.getOrCreateVertexType(label);
+    }
 
+    if (!schema.existsType(compositeTypeName)) {
       // Create composite type extending all labels
       // Use the builder to add multiple supertypes
       var builder = schema.buildVertexType()
@@ -156,6 +167,17 @@ public final class Labels {
       }
 
       builder.create();
+    } else {
+      // Composite type already exists - ensure it has correct supertypes
+      // This handles the case where the type was created manually without inheritance
+      final var existingType = schema.getType(compositeTypeName);
+      boolean modified = false;
+      for (final String label : labels) {
+        if (!existingType.instanceOf(label)) {
+          existingType.addSuperType(label);
+          modified = true;
+        }
+      }
     }
 
     return compositeTypeName;
@@ -164,9 +186,8 @@ public final class Labels {
   /**
    * Checks if a type name appears to be a composite type name.
    * <p>
-   * This is a heuristic check based on the presence of the label separator.
-   * Note: This may return true for single-label types that contain underscores
-   * in their name.
+   * This is a heuristic check based on the presence of the label separator (~).
+   * Type names with underscores are no longer falsely detected as composite types.
    *
    * @param typeName the type name to check
    * @return true if the type name contains the label separator
