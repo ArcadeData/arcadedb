@@ -46,7 +46,7 @@ public class OpenCypherCreateTest {
       assertThat(result.hasNext()).isTrue();
 
       final Result r = result.next();
-      final Object vertex = r.getProperty("n");
+      final Object vertex = r.toElement();
       assertThat(vertex).isInstanceOf(Vertex.class);
 
       final Vertex v = (Vertex) vertex;
@@ -110,7 +110,7 @@ public class OpenCypherCreateTest {
       assertThat(result.hasNext()).isTrue();
 
       final Result r = result.next();
-      final Object edge = r.getProperty("r");
+      final Object edge = r.toElement();
       assertThat(edge).isInstanceOf(Edge.class);
 
       final Edge e = (Edge) edge;
@@ -175,7 +175,7 @@ public class OpenCypherCreateTest {
     final ResultSet verify = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b)-[:KNOWS]->(c:Person {name: 'Charlie'}) RETURN b");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex bob = (Vertex) verify.next().getProperty("b");
+    final Vertex bob = (Vertex) verify.next().toElement();
     assertThat((String) bob.get("name")).isEqualTo("Bob");
   }
 
@@ -191,7 +191,7 @@ public class OpenCypherCreateTest {
       assertThat(result.hasNext()).isTrue();
 
       final Result r = result.next();
-      final Vertex v = (Vertex) r.getProperty("n");
+      final Vertex v = (Vertex) r.toElement();
       assertThat(v.getTypeName()).isEqualTo("Vertex");
       assertThat((String) v.get("name")).isEqualTo("Test");
     });

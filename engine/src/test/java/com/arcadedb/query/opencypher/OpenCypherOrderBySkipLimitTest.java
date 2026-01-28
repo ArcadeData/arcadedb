@@ -109,7 +109,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(3);
 
     for (final Result r : results) {
-      final Object vertex = r.getProperty("n");
+      final Object vertex = r.toElement();
       assertThat(vertex).isInstanceOf(Vertex.class);
     }
   }
@@ -125,7 +125,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(3);
 
     for (final Result r : results) {
-      final Object vertex = r.getProperty("n");
+      final Object vertex = r.toElement();
       assertThat(vertex).isInstanceOf(Vertex.class);
     }
   }
@@ -141,7 +141,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(2);
 
     for (final Result r : results) {
-      final Object vertex = r.getProperty("n");
+      final Object vertex = r.toElement();
       assertThat(vertex).isInstanceOf(Vertex.class);
     }
   }

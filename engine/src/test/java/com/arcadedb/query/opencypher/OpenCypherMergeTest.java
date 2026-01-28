@@ -64,7 +64,7 @@ public class OpenCypherMergeTest {
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Alice'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex v = (Vertex) verify.next().getProperty("n");
+    final Vertex v = (Vertex) verify.next().toElement();
     assertThat((String) v.get("name")).isEqualTo("Alice");
   }
 
@@ -95,7 +95,7 @@ public class OpenCypherMergeTest {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher", "MERGE (n:Person {name: 'Charlie'}) RETURN n");
       assertThat(result.hasNext()).isTrue();
-      final Vertex v = (Vertex) result.next().getProperty("n");
+      final Vertex v = (Vertex) result.next().toElement();
       assertThat((String) v.get("name")).isEqualTo("Charlie");
     });
   }
@@ -210,7 +210,7 @@ public class OpenCypherMergeTest {
     ResultSet result = database.command("opencypher",
         "MERGE (n:SINGLETON) ON CREATE SET n.status = 'created', n.count = 1 ON MATCH SET n.status = 'matched', n.count = 2 RETURN n");
     assertThat(result.hasNext()).isTrue();
-    Vertex v = (Vertex) result.next().getProperty("n");
+    Vertex v = (Vertex) result.next().toElement();
     assertThat(v.get("status")).isEqualTo("created");
     assertThat(((Number) v.get("count")).intValue()).isEqualTo(1);
 
@@ -218,7 +218,7 @@ public class OpenCypherMergeTest {
     result = database.command("opencypher",
         "MERGE (n:SINGLETON) ON CREATE SET n.status = 'created', n.count = 1 ON MATCH SET n.status = 'matched', n.count = 2 RETURN n");
     assertThat(result.hasNext()).isTrue();
-    v = (Vertex) result.next().getProperty("n");
+    v = (Vertex) result.next().toElement();
     assertThat(v.get("status")).isEqualTo("matched");
     assertThat(((Number) v.get("count")).intValue()).isEqualTo(2);
   }

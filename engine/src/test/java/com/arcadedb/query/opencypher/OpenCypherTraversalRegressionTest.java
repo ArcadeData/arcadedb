@@ -80,7 +80,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
       final Set<RID> uniqueResults = new HashSet<>();
       int count = 0;
       while (result.hasNext()) {
-        final Vertex v = result.next().getProperty("b");
+        final Vertex v = (Vertex) result.next().toElement();
         uniqueResults.add(v.getIdentity());
         count++;
 
@@ -114,7 +114,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
       int count = 0;
 
       while (result.hasNext()) {
-        final Vertex v = result.next().getProperty("b");
+        final Vertex v = (Vertex) result.next().toElement();
         ids.add((Integer) v.get("id"));
         uniqueResults.add(v.getIdentity());
         count++;
@@ -161,7 +161,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
       int count = 0;
 
       while (result.hasNext()) {
-        final Vertex v = result.next().getProperty("b");
+        final Vertex v = (Vertex) result.next().toElement();
         uniqueResults.add(v.getIdentity());
         count++;
 
@@ -176,7 +176,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
       assertEquals(1, uniqueResults.size(), "REGRESSION: Found duplicate results!");
 
       final Vertex target = (Vertex) database.query("opencypher", "MATCH (a:Node {id: 0})-[:Link*4]->(b) RETURN b")
-          .next().getProperty("b");
+          .next().toElement();
       assertEquals(4, target.get("id"), "Should reach vertex 4 at depth 4");
     } finally {
       database.commit();
@@ -216,7 +216,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
       int count = 0;
 
       while (result.hasNext()) {
-        final Vertex v = result.next().getProperty("b");
+        final Vertex v = (Vertex) result.next().toElement();
         uniqueResults.add(v.getIdentity());
         ids.add((Integer) v.get("id"));
         count++;

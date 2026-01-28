@@ -89,7 +89,7 @@ public class OpenCypherExecutionTest {
     assertThat(results).hasSize(3);
 
     for (final Result r : results) {
-      final Object vertex = r.getProperty("n");
+      final Object vertex = r.toElement();
       assertThat(vertex).isInstanceOf(Vertex.class);
       final Vertex v = (Vertex) vertex;
       assertThat(v.getTypeName()).isEqualTo("Person");
@@ -107,7 +107,7 @@ public class OpenCypherExecutionTest {
     assertThat(results).hasSize(2);
 
     for (final Result r : results) {
-      final Vertex vertex = (Vertex) r.getProperty("n");
+      final Vertex vertex = (Vertex) r.toElement();
       final int age = (int) vertex.get("age");
       assertThat(age).isGreaterThan(28);
     }
@@ -142,7 +142,7 @@ public class OpenCypherExecutionTest {
     assertThat(results).hasSize(2);
 
     for (final Result r : results) {
-      final Vertex vertex = (Vertex) r.getProperty("c");
+      final Vertex vertex = (Vertex) r.toElement();
       assertThat(vertex.getTypeName()).isEqualTo("Company");
     }
   }

@@ -81,7 +81,7 @@ class Issue3128BasicTest {
     int count = 0;
     while (result.hasNext()) {
       Result r = result.next();
-      Vertex v = (Vertex) r.getProperty("a");
+      Vertex v = (Vertex) r.toElement();
       //System.out.println("Matched: " + v.get("name"));
       count++;
     }
@@ -96,7 +96,7 @@ class Issue3128BasicTest {
     count = 0;
     while (result.hasNext()) {
       Result r = result.next();
-      Vertex v = (Vertex) r.getProperty("b");
+      Vertex v = (Vertex) r.toElement();
       //System.out.println("Matched: " + v.get("name"));
       count++;
     }
