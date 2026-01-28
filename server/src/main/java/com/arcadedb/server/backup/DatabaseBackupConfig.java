@@ -108,6 +108,23 @@ public class DatabaseBackupConfig {
   }
 
   /**
+   * Converts this configuration to a JSON object.
+   */
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+    json.put("enabled", enabled);
+    json.put("runOnServer", runOnServer);
+
+    if (schedule != null)
+      json.put("schedule", schedule.toJSON());
+
+    if (retention != null)
+      json.put("retention", retention.toJSON());
+
+    return json;
+  }
+
+  /**
    * Schedule configuration supporting frequency-based or CRON scheduling.
    */
   public static class ScheduleConfig {
@@ -195,6 +212,30 @@ public class DatabaseBackupConfig {
     public boolean hasTimeWindow() {
       return windowStart != null && windowEnd != null;
     }
+
+    /**
+     * Converts this schedule configuration to a JSON object.
+     */
+    public JSONObject toJSON() {
+      final JSONObject json = new JSONObject();
+      json.put("type", type.name().toLowerCase());
+
+      if (type == Type.FREQUENCY)
+        json.put("frequencyMinutes", frequencyMinutes);
+      else if (type == Type.CRON && cronExpression != null)
+        json.put("expression", cronExpression);
+
+      if (windowStart != null || windowEnd != null) {
+        final JSONObject window = new JSONObject();
+        if (windowStart != null)
+          window.put("start", windowStart.toString());
+        if (windowEnd != null)
+          window.put("end", windowEnd.toString());
+        json.put("timeWindow", window);
+      }
+
+      return json;
+    }
   }
 
   /**
@@ -239,6 +280,19 @@ public class DatabaseBackupConfig {
 
     public boolean hasTieredRetention() {
       return tiered != null;
+    }
+
+    /**
+     * Converts this retention configuration to a JSON object.
+     */
+    public JSONObject toJSON() {
+      final JSONObject json = new JSONObject();
+      json.put("maxFiles", maxFiles);
+
+      if (tiered != null)
+        json.put("tiered", tiered.toJSON());
+
+      return json;
     }
   }
 
@@ -307,6 +361,19 @@ public class DatabaseBackupConfig {
 
     public void setYearly(final int yearly) {
       this.yearly = yearly;
+    }
+
+    /**
+     * Converts this tiered retention configuration to a JSON object.
+     */
+    public JSONObject toJSON() {
+      final JSONObject json = new JSONObject();
+      json.put("hourly", hourly);
+      json.put("daily", daily);
+      json.put("weekly", weekly);
+      json.put("monthly", monthly);
+      json.put("yearly", yearly);
+      return json;
     }
   }
 }

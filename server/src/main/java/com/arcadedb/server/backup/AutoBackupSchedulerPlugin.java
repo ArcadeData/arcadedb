@@ -88,39 +88,32 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
       return;
     }
 
-    // Resolve backup directory (relative to server root) and validate path
+    // Validate and resolve backup directory
     String backupDirectory = backupConfig.getBackupDirectory();
     final java.nio.file.Path backupPath = java.nio.file.Paths.get(backupDirectory);
 
-    if (!backupPath.isAbsolute()) {
-      // Relative path - resolve against server root
-      backupDirectory = java.nio.file.Paths.get(server.getRootPath(), backupDirectory).toString();
+    // Reject absolute paths for security
+    if (backupPath.isAbsolute()) {
+      throw new IllegalArgumentException(
+          "Backup directory must be a relative path, not absolute: " + backupDirectory);
     }
 
-    // Validate that the resolved path doesn't escape server root (path traversal protection)
-    try {
-      final java.nio.file.Path resolvedPath = java.nio.file.Paths.get(backupDirectory).toRealPath(
-          java.nio.file.LinkOption.NOFOLLOW_LINKS);
-      final java.nio.file.Path serverRoot = java.nio.file.Paths.get(server.getRootPath()).toRealPath(
-          java.nio.file.LinkOption.NOFOLLOW_LINKS);
+    // Reject path traversal attempts
+    if (backupDirectory.contains("..")) {
+      throw new IllegalArgumentException(
+          "Backup directory cannot contain path traversal (..): " + backupDirectory);
+    }
 
-      if (!resolvedPath.startsWith(serverRoot)) {
-        throw new IllegalArgumentException(
-            "Backup directory must be within server root path for security reasons: " + backupDirectory);
-      }
-    } catch (final java.io.IOException e) {
-      // Path doesn't exist yet - validate against canonical path instead
-      try {
-        final java.nio.file.Path canonicalPath = java.nio.file.Paths.get(backupDirectory).toAbsolutePath().normalize();
-        final java.nio.file.Path serverRoot = java.nio.file.Paths.get(server.getRootPath()).toAbsolutePath().normalize();
+    // Resolve relative path against server root
+    backupDirectory = java.nio.file.Paths.get(server.getRootPath(), backupDirectory).toString();
 
-        if (!canonicalPath.startsWith(serverRoot)) {
-          throw new IllegalArgumentException(
-              "Backup directory must be within server root path for security reasons: " + backupDirectory);
-        }
-      } catch (final Exception ex) {
-        throw new IllegalArgumentException("Invalid backup directory path: " + backupDirectory, ex);
-      }
+    // Final validation: ensure resolved path is within server root
+    final java.nio.file.Path resolvedPath = java.nio.file.Paths.get(backupDirectory).toAbsolutePath().normalize();
+    final java.nio.file.Path serverRoot = java.nio.file.Paths.get(server.getRootPath()).toAbsolutePath().normalize();
+
+    if (!resolvedPath.startsWith(serverRoot)) {
+      throw new IllegalArgumentException(
+          "Backup directory must be within server root path for security reasons: " + backupDirectory);
     }
 
     // Ensure backup directory exists

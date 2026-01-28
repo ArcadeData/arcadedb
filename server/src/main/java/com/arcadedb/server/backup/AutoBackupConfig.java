@@ -151,4 +151,26 @@ public class AutoBackupConfig {
   public void addDatabaseConfig(final String databaseName, final DatabaseBackupConfig config) {
     databases.put(databaseName, config);
   }
+
+  /**
+   * Converts this configuration to a JSON object.
+   */
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+    json.put("version", version);
+    json.put("enabled", enabled);
+    json.put("backupDirectory", backupDirectory);
+
+    if (defaults != null)
+      json.put("defaults", defaults.toJSON());
+
+    if (!databases.isEmpty()) {
+      final JSONObject dbs = new JSONObject();
+      for (final Map.Entry<String, DatabaseBackupConfig> entry : databases.entrySet())
+        dbs.put(entry.getKey(), entry.getValue().toJSON());
+      json.put("databases", dbs);
+    }
+
+    return json;
+  }
 }
