@@ -64,14 +64,14 @@ public class OpenCypherMergeActionsTest {
         "MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = true RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex person = (Vertex) result.next().getProperty("n");
+    final Vertex person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("Alice");
     assertThat((Boolean) person.get("created")).isTrue();
 
     // Verify persistence
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Alice'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    final Vertex verifyPerson = (Vertex) verify.next().getProperty("n");
+    final Vertex verifyPerson = (Vertex) verify.next().toElement();
     assertThat((Boolean) verifyPerson.get("created")).isTrue();
   }
 
@@ -85,7 +85,7 @@ public class OpenCypherMergeActionsTest {
         "MERGE (n:Person {name: 'Bob'}) ON MATCH SET n.visits = 2 RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex person = (Vertex) result.next().getProperty("n");
+    final Vertex person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("Bob");
     assertThat(((Number) person.get("visits")).intValue()).isEqualTo(2);
   }
@@ -100,7 +100,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    Vertex person = (Vertex) result.next().getProperty("n");
+    Vertex person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("Charlie");
     assertThat((Boolean) person.get("created")).isTrue();
     assertThat(((Number) person.get("count")).intValue()).isEqualTo(1);
@@ -113,7 +113,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    person = (Vertex) result.next().getProperty("n");
+    person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("Charlie");
     assertThat((Boolean) person.get("created")).isTrue();
     assertThat(((Number) person.get("count")).intValue()).isEqualTo(2);
@@ -128,7 +128,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex person = (Vertex) result.next().getProperty("n");
+    final Vertex person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("David");
     assertThat(((Number) person.get("age")).intValue()).isEqualTo(30);
     assertThat(person.get("city")).isEqualTo("NYC");
@@ -147,7 +147,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex person = (Vertex) result.next().getProperty("n");
+    final Vertex person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("Eve");
     assertThat(((Number) person.get("age")).intValue()).isEqualTo(26);
     assertThat(((Number) person.get("visits")).intValue()).isEqualTo(5);
@@ -162,7 +162,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex person = (Vertex) result.next().getProperty("n");
+    final Vertex person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("Frank");
     assertThat(person.get("stringProp")).isEqualTo("hello");
     assertThat(((Number) person.get("intProp")).intValue()).isEqualTo(42);
@@ -206,7 +206,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN r");
 
     assertThat(result.hasNext()).isTrue();
-    final Edge edge = (Edge) result.next().getProperty("r");
+    final Edge edge = (Edge) result.next().toElement();
     assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2020);
     assertThat(edge.get("role")).isEqualTo("Engineer");
   }
@@ -225,7 +225,7 @@ public class OpenCypherMergeActionsTest {
             "RETURN r");
 
     assertThat(result.hasNext()).isTrue();
-    final Edge edge = (Edge) result.next().getProperty("r");
+    final Edge edge = (Edge) result.next().toElement();
     assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2021);
     assertThat((Boolean) edge.get("promoted")).isTrue();
   }

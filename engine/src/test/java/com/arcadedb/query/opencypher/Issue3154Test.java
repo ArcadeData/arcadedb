@@ -83,7 +83,7 @@ class Issue3154Test {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    final Vertex vertex = (Vertex) row.getProperty("p");
+    final Vertex vertex = (Vertex) row.toElement();
 
     // These should be the actual values, not the string "entry.name" or "entry.age"
     assertThat((String) vertex.get("user_name")).isEqualTo("Alice");
@@ -104,7 +104,7 @@ class Issue3154Test {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    final Vertex vertex = (Vertex) row.getProperty("n");
+    final Vertex vertex = (Vertex) row.toElement();
 
     // The bug was that these were set to "node.user_name" and "node.right" as strings
     assertThat((String) vertex.get("user_name")).isEqualTo("root");
@@ -138,7 +138,7 @@ class Issue3154Test {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    final Vertex vertex = (Vertex) row.getProperty("p");
+    final Vertex vertex = (Vertex) row.toElement();
 
     // Should be the actual value 42, not the string "BatchEntry.value"
     assertThat((Integer) vertex.get("value")).isEqualTo(42);
@@ -172,7 +172,7 @@ class Issue3154Test {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    final Vertex vertex = (Vertex) row.getProperty("p");
+    final Vertex vertex = (Vertex) row.toElement();
 
     // Should be the actual vector array, not the string "BatchEntry.vector"
     final Object vectorProp = vertex.get("vector");
@@ -222,7 +222,7 @@ class Issue3154Test {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    final Vertex vertex = (Vertex) row.getProperty("p");
+    final Vertex vertex = (Vertex) row.toElement();
 
     // Verify the vector was stored correctly (not as string "BatchEntry.vector")
     final Object vectorProp = vertex.get("vector");
@@ -263,7 +263,7 @@ class Issue3154Test {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    final Vertex vertex = (Vertex) row.getProperty("p");
+    final Vertex vertex = (Vertex) row.toElement();
 
     // Verify vector was stored correctly - this was the exact error in #3211:
     // "Expected float array or ComparableVector as key for vector index, got class java.lang.String"

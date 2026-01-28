@@ -67,7 +67,7 @@ public class OpenCypherTransactionTest {
         "CREATE (n:Person {name: 'Alice', age: 30}) RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex person = (Vertex) result.next().getProperty("n");
+    final Vertex person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("Alice");
     assertThat(((Number) person.get("age")).intValue()).isEqualTo(30);
 
@@ -86,13 +86,13 @@ public class OpenCypherTransactionTest {
         "MATCH (n:Person {name: 'Bob'}) SET n.age = 26 RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex person = (Vertex) result.next().getProperty("n");
+    final Vertex person = (Vertex) result.next().toElement();
     assertThat(((Number) person.get("age")).intValue()).isEqualTo(26);
 
     // Verify persistence
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Bob'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    assertThat(((Number) ((Vertex) verify.next().getProperty("n")).get("age")).intValue()).isEqualTo(26);
+    assertThat(((Number) ((Vertex) verify.next().toElement()).get("age")).intValue()).isEqualTo(26);
   }
 
   @Test
@@ -115,7 +115,7 @@ public class OpenCypherTransactionTest {
         "MERGE (n:Person {name: 'David', age: 40}) RETURN n");
 
     assertThat(result.hasNext()).isTrue();
-    final Vertex person = (Vertex) result.next().getProperty("n");
+    final Vertex person = (Vertex) result.next().toElement();
     assertThat(person.get("name")).isEqualTo("David");
 
     // Verify persistence
@@ -153,13 +153,13 @@ public class OpenCypherTransactionTest {
       // Verify within transaction
       final ResultSet result = database.query("opencypher", "MATCH (n:Person {name: 'Grace'}) RETURN n");
       assertThat(result.hasNext()).isTrue();
-      assertThat(((Number) ((Vertex) result.next().getProperty("n")).get("age")).intValue()).isEqualTo(30);
+      assertThat(((Number) ((Vertex) result.next().toElement()).get("age")).intValue()).isEqualTo(30);
     });
 
     // Verify persistence
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Grace'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    assertThat(((Number) ((Vertex) verify.next().getProperty("n")).get("age")).intValue()).isEqualTo(30);
+    assertThat(((Number) ((Vertex) verify.next().toElement()).get("age")).intValue()).isEqualTo(30);
   }
 
   @Test
@@ -182,7 +182,7 @@ public class OpenCypherTransactionTest {
     // Verify rollback - age should still be 45
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Henry'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
-    assertThat(((Number) ((Vertex) verify.next().getProperty("n")).get("age")).intValue()).isEqualTo(45);
+    assertThat(((Number) ((Vertex) verify.next().toElement()).get("age")).intValue()).isEqualTo(45);
   }
 
   @Test

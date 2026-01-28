@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -114,8 +115,24 @@ public class FinalProjectionStep extends AbstractExecutionStep {
 
   /**
    * Filters the result to only include the requested properties.
+   * When the result contains a single property that is a Document (vertex/edge),
+   * returns it as an element result directly, matching the behavior of the
+   * Gremlin-based Cypher engine.
    */
   private ResultInternal filterResult(final Result inputResult) {
+    // When returning a single variable that resolves to an element (vertex/edge),
+    // return the element directly instead of wrapping it as {"varName": element}.
+    // This matches standard Cypher behavior: MATCH (n) RETURN n returns nodes, not maps.
+    if (requestedProperties.size() == 1) {
+      final String singleProp = requestedProperties.iterator().next();
+      if (inputResult.hasProperty(singleProp)) {
+        final Object value = inputResult.getProperty(singleProp);
+        if (value instanceof Document doc) {
+          return new ResultInternal(doc);
+        }
+      }
+    }
+
     final ResultInternal result = new ResultInternal();
 
     // Only include properties that were explicitly requested in the RETURN clause
