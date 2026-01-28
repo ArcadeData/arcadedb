@@ -109,6 +109,13 @@ class XMLImporterIT {
       final Vertex record = db.iterateType("v_record", true).next().asVertex();
       // The datafield element name becomes a property key, subfield content becomes value
       assertThat(record.has("datafield")).isTrue();
+      // Issue #1144: datafield value should NOT be null or empty
+      // With multiple <datafield> elements, the last one's subfield content is kept
+      // The last <datafield> contains "Chastain, Joel W.,"
+      final Object datafieldValue = record.get("datafield");
+      assertThat(datafieldValue).isNotNull();
+      assertThat(datafieldValue.toString()).isNotEmpty();
+      assertThat(datafieldValue.toString()).contains("Chastain");
     }
 
     TestHelper.checkActiveDatabases();
