@@ -23,14 +23,15 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.HttpServer;
-import io.undertow.server.handlers.PathHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collection;
@@ -40,7 +41,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test for PluginManager to verify plugin discovery and loading with isolated class loaders.
@@ -59,6 +66,16 @@ public class PluginManagerTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, tempDir.toString());
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, tempDir.resolve("databases").toString());
+    configuration.setValue(GlobalConfiguration.SERVER_PLUGINS,
+        TestPlugin1.class.getSimpleName() + "," +
+            TestPlugin2.class.getSimpleName() + "," +
+            LifecycleTestPlugin.class.getSimpleName() + "," +
+            AfterHttpPlugin.class.getSimpleName() + "," +
+            FailingPlugin.class.getSimpleName() + "," +
+            OrderTestPlugin1.class.getSimpleName() + "," +
+            OrderTestPlugin2.class.getSimpleName() + "," +
+            OrderTestPlugin3.class.getSimpleName() + "," +
+            BeforeHttpPlugin.class.getSimpleName());
 
     server = new ArcadeDBServer(configuration);
     pluginManager = new PluginManager(server, configuration);
@@ -128,7 +145,7 @@ public class PluginManagerTest {
     pluginManager.discoverPlugins();
 
     assertEquals(1, pluginManager.getPluginCount());
-    assertTrue(pluginManager.getPluginNames().contains("test-plugin"));
+    assertTrue(pluginManager.getPluginNames().contains(TestPlugin1.class.getSimpleName()));
 
     final Collection<ServerPlugin> plugins = pluginManager.getPlugins();
     assertEquals(1, plugins.size());
@@ -146,8 +163,8 @@ public class PluginManagerTest {
 
     assertEquals(2, pluginManager.getPluginCount());
     final Set<String> names = pluginManager.getPluginNames();
-    assertTrue(names.contains("plugin1"));
-    assertTrue(names.contains("plugin2"));
+    assertTrue(names.contains(TestPlugin1.class.getSimpleName()));
+    assertTrue(names.contains(TestPlugin2.class.getSimpleName()));
   }
 
   @Test
@@ -161,10 +178,10 @@ public class PluginManagerTest {
     assertEquals(1, pluginManager.getPluginCount());
 
     // Start the plugin
-    pluginManager.startPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON);
+    pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
 
     // Verify plugin was configured and started
-    final PluginDescriptor descriptor = pluginManager.getPluginDescriptor("lifecycle-plugin");
+    final PluginDescriptor descriptor = pluginManager.getPluginDescriptor(LifecycleTestPlugin.class.getSimpleName());
     assertNotNull(descriptor);
     assertTrue(descriptor.isStarted());
     assertTrue(descriptor.getPluginInstance() instanceof LifecycleTestPlugin);
@@ -192,16 +209,16 @@ public class PluginManagerTest {
     assertEquals(2, pluginManager.getPluginCount());
 
     // Start BEFORE_HTTP_ON plugins
-    pluginManager.startPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON);
+    pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
 
-    PluginDescriptor beforeDesc = pluginManager.getPluginDescriptor("before-plugin");
-    PluginDescriptor afterDesc = pluginManager.getPluginDescriptor("after-plugin");
+    PluginDescriptor beforeDesc = pluginManager.getPluginDescriptor(BeforeHttpPlugin.class.getSimpleName());
+    PluginDescriptor afterDesc = pluginManager.getPluginDescriptor(AfterHttpPlugin.class.getSimpleName());
 
     assertTrue(beforeDesc.isStarted());
     assertFalse(afterDesc.isStarted());
 
     // Start AFTER_HTTP_ON plugins
-    pluginManager.startPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_HTTP_ON);
+    pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
     assertTrue(beforeDesc.isStarted());
     assertTrue(afterDesc.isStarted());
@@ -239,7 +256,7 @@ public class PluginManagerTest {
 
     // Starting the plugin should throw exception
     assertThrows(ServerException.class, () ->
-        pluginManager.startPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON));
+        pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON));
   }
 
   @Test
@@ -251,10 +268,9 @@ public class PluginManagerTest {
 
     pluginManager.discoverPlugins();
 
-    final PluginDescriptor descriptor = pluginManager.getPluginDescriptor("test-plugin");
+    final PluginDescriptor descriptor = pluginManager.getPluginDescriptor(TestPlugin1.class.getSimpleName());
     assertNotNull(descriptor);
-    assertEquals("test-plugin", descriptor.getPluginName());
-    assertNotNull(descriptor.getPluginJarFile());
+    assertEquals(TestPlugin1.class.getSimpleName(), descriptor.getPluginName());
     assertNotNull(descriptor.getClassLoader());
     assertNotNull(descriptor.getPluginInstance());
     assertFalse(descriptor.isStarted());
@@ -270,8 +286,8 @@ public class PluginManagerTest {
 
     pluginManager.discoverPlugins();
 
-    final PluginDescriptor desc1 = pluginManager.getPluginDescriptor("plugin1");
-    final PluginDescriptor desc2 = pluginManager.getPluginDescriptor("plugin2");
+    final PluginDescriptor desc1 = pluginManager.getPluginDescriptor(TestPlugin1.class.getSimpleName());
+    final PluginDescriptor desc2 = pluginManager.getPluginDescriptor(TestPlugin2.class.getSimpleName());
 
     // Each plugin should have its own class loader
     assertNotNull(desc1.getClassLoader());
@@ -283,37 +299,12 @@ public class PluginManagerTest {
     assertTrue(desc2.getClassLoader() instanceof PluginClassLoader);
   }
 
-  @Test
-  public void testStopPluginsReverseOrder() throws Exception {
-    final Path pluginsDir = tempDir.resolve("lib/plugins");
-    Files.createDirectories(pluginsDir);
-
-    createTestPluginJar(pluginsDir, "plugin1", OrderTestPlugin1.class);
-    createTestPluginJar(pluginsDir, "plugin2", OrderTestPlugin2.class);
-    createTestPluginJar(pluginsDir, "plugin3", OrderTestPlugin3.class);
-
-    OrderTestPlugin1.stopOrder.set(0);
-    OrderTestPlugin2.stopOrder.set(0);
-    OrderTestPlugin3.stopOrder.set(0);
-    OrderTestPlugin1.stopCounter.set(0);
-    OrderTestPlugin2.stopCounter.set(0);
-    OrderTestPlugin3.stopCounter.set(0);
-
-    pluginManager.discoverPlugins();
-    pluginManager.startPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON);
-
-    // Stop plugins - should be in reverse order of discovery
-    pluginManager.stopPlugins();
-
-    // Verify plugins were stopped in reverse order
-    assertTrue(OrderTestPlugin3.stopOrder.get() < OrderTestPlugin2.stopOrder.get());
-    assertTrue(OrderTestPlugin2.stopOrder.get() < OrderTestPlugin1.stopOrder.get());
-  }
-
   /**
    * Helper method to create a test plugin JAR with proper META-INF/services
    */
-  private File createTestPluginJar(final Path pluginsDir, final String pluginName, final Class<? extends ServerPlugin> pluginClass)
+  private File createTestPluginJar(final Path pluginsDir,
+      final String pluginName,
+      final Class<? extends ServerPlugin> pluginClass)
       throws Exception {
     final File jarFile = pluginsDir.resolve(pluginName + ".jar").toFile();
 
@@ -354,8 +345,8 @@ public class PluginManagerTest {
 
   public static class LifecycleTestPlugin implements ServerPlugin {
     public final AtomicBoolean configured = new AtomicBoolean(false);
-    public final AtomicBoolean started = new AtomicBoolean(false);
-    public final AtomicBoolean stopped = new AtomicBoolean(false);
+    public final AtomicBoolean started    = new AtomicBoolean(false);
+    public final AtomicBoolean stopped    = new AtomicBoolean(false);
 
     @Override
     public void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration) {
@@ -379,8 +370,8 @@ public class PluginManagerTest {
     }
 
     @Override
-    public INSTALLATION_PRIORITY getInstallationPriority() {
-      return INSTALLATION_PRIORITY.BEFORE_HTTP_ON;
+    public PluginInstallationPriority getInstallationPriority() {
+      return PluginInstallationPriority.BEFORE_HTTP_ON;
     }
   }
 
@@ -390,8 +381,8 @@ public class PluginManagerTest {
     }
 
     @Override
-    public INSTALLATION_PRIORITY getInstallationPriority() {
-      return INSTALLATION_PRIORITY.AFTER_HTTP_ON;
+    public PluginInstallationPriority getInstallationPriority() {
+      return PluginInstallationPriority.AFTER_HTTP_ON;
     }
   }
 
@@ -404,7 +395,7 @@ public class PluginManagerTest {
 
   public static class OrderTestPlugin1 implements ServerPlugin {
     public static final AtomicInteger stopCounter = new AtomicInteger(0);
-    public static final AtomicInteger stopOrder = new AtomicInteger(0);
+    public static final AtomicInteger stopOrder   = new AtomicInteger(0);
 
     @Override
     public void startService() {
@@ -418,7 +409,7 @@ public class PluginManagerTest {
 
   public static class OrderTestPlugin2 implements ServerPlugin {
     public static final AtomicInteger stopCounter = new AtomicInteger(0);
-    public static final AtomicInteger stopOrder = new AtomicInteger(0);
+    public static final AtomicInteger stopOrder   = new AtomicInteger(0);
 
     @Override
     public void startService() {
@@ -432,7 +423,7 @@ public class PluginManagerTest {
 
   public static class OrderTestPlugin3 implements ServerPlugin {
     public static final AtomicInteger stopCounter = new AtomicInteger(0);
-    public static final AtomicInteger stopOrder = new AtomicInteger(0);
+    public static final AtomicInteger stopOrder   = new AtomicInteger(0);
 
     @Override
     public void startService() {

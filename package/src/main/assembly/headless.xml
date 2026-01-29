@@ -110,6 +110,7 @@
                 <exclude>com.arcadedb:arcadedb-grpcw</exclude>
                 <exclude>com.arcadedb:arcadedb-graphql</exclude>
                 <exclude>com.arcadedb:arcadedb-studio</exclude>
+                <exclude>com.arcadedb:arcadedb-metrics</exclude>
             </excludes>
         </dependencySet>
         <!-- Plugin modules in separate directory -->

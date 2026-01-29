@@ -109,17 +109,23 @@
                 <exclude>com.arcadedb:arcadedb-mongodbw</exclude>
                 <exclude>com.arcadedb:arcadedb-redisw</exclude>
                 <exclude>com.arcadedb:arcadedb-grpcw</exclude>
+                <exclude>com.arcadedb:arcadedb-graphql</exclude>
+                <exclude>com.arcadedb:arcadedb-studio</exclude>
+                <exclude>com.arcadedb:arcadedb-metrics</exclude>
             </excludes>
         </dependencySet>
         <!-- Plugin modules in separate directory -->
         <dependencySet>
             <outputDirectory>lib/plugins</outputDirectory>
             <includes>
-                <include>com.arcadedb:arcadedb-gremlin</include>
-                <include>com.arcadedb:arcadedb-postgresw</include>
-                <include>com.arcadedb:arcadedb-mongodbw</include>
-                <include>com.arcadedb:arcadedb-redisw</include>
-                <include>com.arcadedb:arcadedb-grpcw</include>
+                <exclude>com.arcadedb:arcadedb-gremlin</exclude>
+                <exclude>com.arcadedb:arcadedb-postgresw</exclude>
+                <exclude>com.arcadedb:arcadedb-mongodbw</exclude>
+                <exclude>com.arcadedb:arcadedb-redisw</exclude>
+                <exclude>com.arcadedb:arcadedb-grpcw</exclude>
+                <exclude>com.arcadedb:arcadedb-graphql</exclude>
+                <exclude>com.arcadedb:arcadedb-studio</exclude>
+                <exclude>com.arcadedb:arcadedb-metrics</exclude>
             </includes>
             <useTransitiveDependencies>false</useTransitiveDependencies>
         </dependencySet>

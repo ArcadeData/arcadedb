@@ -19,6 +19,7 @@
 package com.arcadedb.server.plugin;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
@@ -27,7 +28,15 @@ import com.arcadedb.utility.CodeUtils;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -38,16 +47,52 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PluginManager {
-  private final ArcadeDBServer                       server;
-  private final ContextConfiguration                 configuration;
-  private final String                               pluginsDirectory;
-  private final Map<String, PluginDescriptor>        plugins = new LinkedHashMap<>();
-  private final Map<ClassLoader, PluginDescriptor>   classLoaderMap = new ConcurrentHashMap<>();
+  private final ArcadeDBServer                     server;
+  private final ContextConfiguration               configuration;
+  private final String                             pluginsDirectory;
+  private final Map<String, PluginDescriptor>      plugins        = new LinkedHashMap<>();
+  private final Map<ClassLoader, PluginDescriptor> classLoaderMap = new ConcurrentHashMap<>();
+  private final Set<String>                        configuredPlugins;
 
   public PluginManager(final ArcadeDBServer server, final ContextConfiguration configuration) {
     this.server = server;
     this.configuration = configuration;
     this.pluginsDirectory = server.getRootPath() + File.separator + "lib" + File.separator + "plugins";
+    configuredPlugins = getConfiguredPlugins();
+
+  }
+
+  private Set<String> getConfiguredPlugins() {
+    final String configuration = this.configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
+    Set<String> configuredPlugins = new HashSet<>();
+    if (!configuration.isEmpty()) {
+      final String[] pluginEntries = configuration.split(",");
+      for (final String p : pluginEntries) {
+        final String[] pluginPair = p.split(":");
+
+        final String pluginName = pluginPair[0];
+        configuredPlugins.add(pluginName);
+        final String pluginClass = pluginPair.length > 1 ? pluginPair[1] : pluginPair[0];
+        configuredPlugins.add(pluginClass);
+      }
+    }
+    return configuredPlugins;
+  }
+
+  private void discoverPluginsOnMainClassLoader() {
+    final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, getClass().getClassLoader());
+
+    for (ServerPlugin pluginInstance : serviceLoader) {
+      String name = pluginInstance.getClass().getSimpleName();
+      if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getName())) {
+        // Register the plugin
+        final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
+        descriptor.setPluginInstance(pluginInstance);
+        plugins.put(name, descriptor);
+
+        LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s", name);
+      }
+    }
   }
 
   /**
@@ -55,6 +100,8 @@ public class PluginManager {
    * Each plugin JAR is loaded in its own isolated class loader.
    */
   public void discoverPlugins() {
+    discoverPluginsOnMainClassLoader();
+
     final File pluginsDir = new File(pluginsDirectory);
     if (!pluginsDir.exists() || !pluginsDir.isDirectory()) {
       LogManager.instance().log(this, Level.INFO, "Plugins directory not found: %s", pluginsDirectory);
@@ -80,6 +127,7 @@ public class PluginManager {
    * Load a plugin from a JAR file using an isolated class loader.
    */
   private void loadPlugin(final File pluginJar) throws Exception {
+
     final String jarName = pluginJar.getName();
     final String pluginName = jarName.substring(0, jarName.lastIndexOf('.'));
 
@@ -88,34 +136,41 @@ public class PluginManager {
     // Create isolated class loader for this plugin
     final PluginClassLoader classLoader = new PluginClassLoader(pluginName, pluginJar, getClass().getClassLoader());
 
-    // Create plugin descriptor
-    final PluginDescriptor descriptor = new PluginDescriptor(pluginName, pluginJar, classLoader);
-
     // Use ServiceLoader to discover plugin implementations
     final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, classLoader);
-    final Iterator<ServerPlugin> iterator = serviceLoader.iterator();
-
-    if (!iterator.hasNext()) {
-      LogManager.instance().log(this, Level.WARNING,
-          "No ServerPlugin implementation found in: %s (missing META-INF/services entry?)", pluginJar.getAbsolutePath());
-      return;
-    }
 
     // Load the first plugin implementation (typically only one per JAR)
-    final ServerPlugin pluginInstance = iterator.next();
-    descriptor.setPluginInstance(pluginInstance);
+    for (ServerPlugin pluginInstance : serviceLoader) {
+      // Create plugin descriptor
+      final PluginDescriptor descriptor = new PluginDescriptor(pluginInstance.getName(), classLoader);
+      descriptor.setPluginInstance(pluginInstance);
 
-    // Register the plugin
-    plugins.put(pluginName, descriptor);
-    classLoaderMap.put(classLoader, descriptor);
+      String name = pluginInstance.getName();
+      LogManager.instance().log(this, Level.FINE, "Discovered plugin class: %s", name);
 
-    LogManager.instance().log(this, Level.INFO, "Discovered plugin: %s from %s", pluginName, pluginJar.getName());
+      if (plugins.containsKey(name)) {
+        LogManager.instance().log(this, Level.WARNING, "Plugin with name '%s' is already loaded", name);
+        continue;
+      }
+
+      if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginName) || configuredPlugins.contains(
+          pluginInstance.getClass().getName())) {
+        // Register the plugin
+        plugins.put(name, descriptor);
+        classLoaderMap.put(classLoader, descriptor);
+
+        LogManager.instance().log(this, Level.INFO, "Loaded plugin: %s from %s", name, pluginJar.getName());
+      } else {
+        classLoader.close();
+        LogManager.instance().log(this, Level.INFO, "Skipping plugin: %s as not registered in configuration", name);
+      }
+    }
   }
 
   /**
    * Start plugins based on their installation priority.
    */
-  public void startPlugins(final ServerPlugin.INSTALLATION_PRIORITY priority) {
+  public void startPlugins(final ServerPlugin.PluginInstallationPriority priority) {
     for (final Map.Entry<String, PluginDescriptor> entry : plugins.entrySet()) {
       final String pluginName = entry.getKey();
       final PluginDescriptor descriptor = entry.getValue();

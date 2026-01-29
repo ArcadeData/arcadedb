@@ -20,7 +20,6 @@ package com.arcadedb.server.plugin;
 
 import com.arcadedb.server.ServerPlugin;
 
-import java.io.File;
 import java.util.Objects;
 
 /**
@@ -30,25 +29,19 @@ import java.util.Objects;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PluginDescriptor {
-  private final String        pluginName;
-  private final File          pluginJarFile;
-  private final ClassLoader   classLoader;
-  private       ServerPlugin  pluginInstance;
-  private       boolean       started;
+  private final String       pluginName;
+  private final ClassLoader  classLoader;
+  private       ServerPlugin pluginInstance;
+  private       boolean      started;
 
-  public PluginDescriptor(final String pluginName, final File pluginJarFile, final ClassLoader classLoader) {
+  public PluginDescriptor(final String pluginName, final ClassLoader classLoader) {
     this.pluginName = Objects.requireNonNull(pluginName, "Plugin name cannot be null");
-    this.pluginJarFile = Objects.requireNonNull(pluginJarFile, "Plugin JAR file cannot be null");
     this.classLoader = Objects.requireNonNull(classLoader, "Class loader cannot be null");
     this.started = false;
   }
 
   public String getPluginName() {
     return pluginName;
-  }
-
-  public File getPluginJarFile() {
-    return pluginJarFile;
   }
 
   public ClassLoader getClassLoader() {
@@ -75,7 +68,6 @@ public class PluginDescriptor {
   public String toString() {
     return "PluginDescriptor{" +
         "pluginName='" + pluginName + '\'' +
-        ", pluginJarFile=" + pluginJarFile +
         ", started=" + started +
         '}';
   }
