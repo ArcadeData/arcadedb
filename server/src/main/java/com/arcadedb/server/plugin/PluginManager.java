@@ -127,7 +127,6 @@ public class PluginManager {
    * Load a plugin from a JAR file using an isolated class loader.
    */
   private void loadPlugin(final File pluginJar) throws Exception {
-
     final String jarName = pluginJar.getName();
     final String pluginName = jarName.substring(0, jarName.lastIndexOf('.'));
 
@@ -135,34 +134,43 @@ public class PluginManager {
 
     // Create isolated class loader for this plugin
     final PluginClassLoader classLoader = new PluginClassLoader(pluginName, pluginJar, getClass().getClassLoader());
+    boolean registered = false;
 
-    // Use ServiceLoader to discover plugin implementations
-    final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, classLoader);
+    try {
+      // Use ServiceLoader to discover plugin implementations
+      final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, classLoader);
 
-    // Load the first plugin implementation (typically only one per JAR)
-    for (ServerPlugin pluginInstance : serviceLoader) {
-      // Create plugin descriptor
-      final PluginDescriptor descriptor = new PluginDescriptor(pluginInstance.getName(), classLoader);
-      descriptor.setPluginInstance(pluginInstance);
+      // Load the first plugin implementation (typically only one per JAR)
+      for (ServerPlugin pluginInstance : serviceLoader) {
+        // Create plugin descriptor
+        final PluginDescriptor descriptor = new PluginDescriptor(pluginInstance.getName(), classLoader);
+        descriptor.setPluginInstance(pluginInstance);
 
-      String name = pluginInstance.getName();
-      LogManager.instance().log(this, Level.FINE, "Discovered plugin class: %s", name);
+        String name = pluginInstance.getName();
+        LogManager.instance().log(this, Level.FINE, "Discovered plugin class: %s", name);
 
-      if (plugins.containsKey(name)) {
-        LogManager.instance().log(this, Level.WARNING, "Plugin with name '%s' is already loaded", name);
-        continue;
+        if (plugins.containsKey(name)) {
+          LogManager.instance().log(this, Level.WARNING, "Plugin with name '%s' is already loaded, skipping duplicate from %s",
+              name, pluginJar.getName());
+          break; // Exit loop - classloader will be closed in finally block
+        }
+
+        if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginName) || configuredPlugins.contains(
+            pluginInstance.getClass().getName())) {
+          // Register the plugin
+          plugins.put(name, descriptor);
+          classLoaderMap.put(classLoader, descriptor);
+          registered = true;
+
+          LogManager.instance().log(this, Level.INFO, "Loaded plugin: %s from %s", name, pluginJar.getName());
+        } else {
+          LogManager.instance().log(this, Level.INFO, "Skipping plugin: %s as not registered in configuration", name);
+        }
+        break; // Only load the first plugin from each JAR
       }
-
-      if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginName) || configuredPlugins.contains(
-          pluginInstance.getClass().getName())) {
-        // Register the plugin
-        plugins.put(name, descriptor);
-        classLoaderMap.put(classLoader, descriptor);
-
-        LogManager.instance().log(this, Level.INFO, "Loaded plugin: %s from %s", name, pluginJar.getName());
-      } else {
+    } finally {
+      if (!registered) {
         classLoader.close();
-        LogManager.instance().log(this, Level.INFO, "Skipping plugin: %s as not registered in configuration", name);
       }
     }
   }
@@ -202,7 +210,7 @@ public class PluginManager {
           currentThread.setContextClassLoader(originalClassLoader);
         }
       } catch (final Exception e) {
-        throw new ServerException("Error starting plugin: " + pluginName, e);
+        throw new ServerException("Error starting plugin: " + pluginName + " (priority: " + priority + ")", e);
       }
     }
   }
