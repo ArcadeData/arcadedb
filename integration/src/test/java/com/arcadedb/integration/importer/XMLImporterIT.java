@@ -200,8 +200,11 @@ class XMLImporterIT {
 
   /**
    * Test for issue #1278: RDF file import problems.
-   * RDF files have rdf:Description elements that should be imported as vertices
-   * with type v_Description (using local name, not namespace URI).
+   * RDF files have rdf:Description elements that should be imported as vertices.
+   * Namespace prefixes should be preserved in type names and property names.
+   * - Type: v_rdf_Description (with namespace prefix)
+   * - Attributes: rdf_about (namespace prefix + local name)
+   * - Properties: cd_artist, cd_country, etc. (namespace prefix + local name)
    */
   @Test
   void importRDFFile() throws Exception {
@@ -214,46 +217,78 @@ class XMLImporterIT {
     importer.load();
 
     try (final Database db = new DatabaseFactory(databasePath).open()) {
-      // Issue #1278: The type should be v_Description, NOT v_{http://www.w3.org/1999/02/22-rdf-syntax-ns#}Description
-      assertThat(db.getSchema().existsType("v_Description")).isTrue();
+      // Issue #1278: The type should be v_rdf_Description, with namespace prefix preserved
+      // NOT v_{http://www.w3.org/1999/02/22-rdf-syntax-ns#}Description (full namespace URI)
+      // NOT v_Description (missing namespace prefix)
+      assertThat(db.getSchema().existsType("v_rdf_Description")).isTrue();
 
-      // Verify the namespace URI type was NOT created (the bug)
+      // Verify the namespace URI type was NOT created (the original bug)
       assertThat(db.getSchema().existsType("v_{http://www.w3.org/1999/02/22-rdf-syntax-ns#}Description")).isFalse();
 
       // Should have 2 Description elements (two CDs)
-      assertThat(db.countType("v_Description", true)).isEqualTo(2);
+      assertThat(db.countType("v_rdf_Description", true)).isEqualTo(2);
 
       // Verify the records were created with properties from nested elements
-      // Properties from cd namespace should use local names (artist, country, etc.)
-      final Iterator<Vertex> descriptions = (Iterator<Vertex>) (Iterator<?>) db.iterateType("v_Description", true);
+      // Properties from cd namespace should preserve the namespace prefix
+      final Iterator<Vertex> descriptions = (Iterator<Vertex>) (Iterator<?>) db.iterateType("v_rdf_Description", true);
       boolean foundBobDylan = false;
       boolean foundBonnieTyler = false;
 
       while (descriptions.hasNext()) {
         final Vertex desc = descriptions.next();
-        // The 'about' attribute from rdf:about should be captured
-        assertThat(desc.has("about")).isTrue();
-        // Child elements like cd:artist should have local names as property keys
-        assertThat(desc.has("artist")).isTrue();
-        assertThat(desc.has("country")).isTrue();
-        assertThat(desc.has("company")).isTrue();
-        assertThat(desc.has("price")).isTrue();
-        assertThat(desc.has("year")).isTrue();
+        // The 'about' attribute from rdf:about should be captured with namespace prefix
+        assertThat(desc.has("rdf_about")).isTrue();
+        // Child elements like cd:artist should have namespace prefix in property keys
+        assertThat(desc.has("cd_artist")).isTrue();
+        assertThat(desc.has("cd_country")).isTrue();
+        assertThat(desc.has("cd_company")).isTrue();
+        assertThat(desc.has("cd_price")).isTrue();
+        assertThat(desc.has("cd_year")).isTrue();
 
-        String artist = desc.getString("artist");
+        String artist = desc.getString("cd_artist");
         if ("Bob Dylan".equals(artist)) {
           foundBobDylan = true;
-          assertThat(desc.getString("country")).isEqualTo("USA");
-          assertThat(desc.getString("year")).isEqualTo("1985");
+          assertThat(desc.getString("cd_country")).isEqualTo("USA");
+          assertThat(desc.getString("cd_year")).isEqualTo("1985");
         } else if ("Bonnie Tyler".equals(artist)) {
           foundBonnieTyler = true;
-          assertThat(desc.getString("country")).isEqualTo("UK");
-          assertThat(desc.getString("year")).isEqualTo("1988");
+          assertThat(desc.getString("cd_country")).isEqualTo("UK");
+          assertThat(desc.getString("cd_year")).isEqualTo("1988");
         }
       }
 
       assertThat(foundBobDylan).isTrue();
       assertThat(foundBonnieTyler).isTrue();
+    }
+
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * Test that XML files without namespace prefixes still work correctly.
+   * When elements have no namespace prefix, only the local name should be used.
+   */
+  @Test
+  void importXMLWithoutNamespacePrefix() throws Exception {
+    final String databasePath = "target/databases/test-import-xml-no-prefix";
+
+    Importer importer = new Importer(
+        ("-url file://src/test/resources/importer-simple.xml -database " + databasePath
+            + " -forceDatabaseCreate true").split(" "));
+    importer.load();
+
+    try (final Database db = new DatabaseFactory(databasePath).open()) {
+      // Without namespace prefix, type should be v_book (no extra prefix)
+      assertThat(db.getSchema().existsType("v_book")).isTrue();
+      assertThat(db.countType("v_book", true)).isEqualTo(2);
+
+      // Properties should have no prefix
+      final Vertex book = db.iterateType("v_book", true).next().asVertex();
+      assertThat(book.has("id")).isTrue();
+      assertThat(book.has("isbn")).isTrue();
+      assertThat(book.has("title")).isTrue();
+      assertThat(book.has("author")).isTrue();
+      assertThat(book.has("year")).isTrue();
     }
 
     TestHelper.checkActiveDatabases();
