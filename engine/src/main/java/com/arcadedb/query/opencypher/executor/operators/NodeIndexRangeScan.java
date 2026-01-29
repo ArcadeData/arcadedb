@@ -248,7 +248,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       }
     }
 
-    sb.append(", cost=").append(String.format("%.2f", estimatedCost));
+    sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
 

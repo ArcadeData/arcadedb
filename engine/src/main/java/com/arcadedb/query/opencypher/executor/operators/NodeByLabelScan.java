@@ -135,7 +135,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
 
     sb.append(indent).append("+ NodeByLabelScan");
     sb.append("(").append(variable).append(":").append(label).append(")");
-    sb.append(" [cost=").append(String.format("%.2f", estimatedCost));
+    sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
 

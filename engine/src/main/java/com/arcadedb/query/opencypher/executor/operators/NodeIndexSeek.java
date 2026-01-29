@@ -30,6 +30,7 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.NoSuchElementException;
 
 /**
@@ -152,7 +153,7 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     sb.append("(").append(variable).append(":").append(label).append(")");
     sb.append(" [index=").append(indexName);
     sb.append(", ").append(propertyName).append("=").append(propertyValue);
-    sb.append(", cost=").append(String.format("%.2f", estimatedCost));
+    sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
 

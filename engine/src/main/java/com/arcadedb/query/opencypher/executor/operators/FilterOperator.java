@@ -121,7 +121,7 @@ public class FilterOperator extends AbstractPhysicalOperator {
 
     sb.append(indent).append("+ Filter");
     sb.append(" [predicate=").append(predicate.getText());
-    sb.append(", cost=").append(String.format("%.2f", estimatedCost));
+    sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
 
