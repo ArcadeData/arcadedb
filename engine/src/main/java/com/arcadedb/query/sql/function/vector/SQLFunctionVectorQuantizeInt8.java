@@ -40,7 +40,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorQuantizeInt8";
+  public static final String NAME = "vector.quantizeInt8";
 
   public SQLFunctionVectorQuantizeInt8() {
     super(NAME);

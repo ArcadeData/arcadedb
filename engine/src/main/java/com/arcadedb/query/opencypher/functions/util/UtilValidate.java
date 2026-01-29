@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * util.validate(predicate, message) - Throws an exception if the predicate is false.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilValidate extends AbstractUtilFunction {
   @Override

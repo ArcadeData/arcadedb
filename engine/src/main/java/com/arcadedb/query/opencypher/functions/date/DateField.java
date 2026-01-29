@@ -27,7 +27,7 @@ import java.time.ZonedDateTime;
 /**
  * date.field(timestamp, field) - Extract a field from timestamp.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateField extends AbstractDateFunction {
   @Override

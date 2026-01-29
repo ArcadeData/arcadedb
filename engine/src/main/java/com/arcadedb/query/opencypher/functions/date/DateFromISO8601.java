@@ -27,7 +27,7 @@ import java.time.format.DateTimeParseException;
 /**
  * date.fromISO8601(dateStr) - Parse ISO 8601 string to timestamp.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateFromISO8601 extends AbstractDateFunction {
   @Override

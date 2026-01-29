@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorMax extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorMax";
+  public static final String NAME = "vector.max";
 
   private float[] maxVector;
   private int dimensions;

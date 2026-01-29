@@ -24,7 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 /**
  * convert.fromJsonList(json) - Parse JSON string to list.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class ConvertFromJsonList extends AbstractConvertFunction {
   @Override

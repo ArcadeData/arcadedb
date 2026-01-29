@@ -25,7 +25,7 @@ import java.util.Arrays;
 /**
  * text.format(format, args...) - Format string with arguments.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextFormat extends AbstractTextFunction {
   @Override

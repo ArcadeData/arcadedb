@@ -38,7 +38,7 @@ import static io.github.jbellis.jvector.vector.VectorUtil.cosine;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorCosineSimilarity extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorCosineSimilarity";
+  public static final String NAME = "vector.cosineSimilarity";
 
   public SQLFunctionVectorCosineSimilarity() {
     super(NAME);

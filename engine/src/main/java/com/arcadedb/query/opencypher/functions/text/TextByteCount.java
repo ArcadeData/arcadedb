@@ -26,7 +26,7 @@ import java.nio.charset.StandardCharsets;
 /**
  * text.byteCount(string, [charset]) - Get byte count of string.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextByteCount extends AbstractTextFunction {
   @Override

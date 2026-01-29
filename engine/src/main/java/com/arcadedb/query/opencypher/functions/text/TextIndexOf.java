@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * text.indexOf(string, substring, [start]) - Find position of substring.
  * Returns -1 if not found.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextIndexOf extends AbstractTextFunction {
   @Override

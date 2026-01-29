@@ -22,12 +22,13 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 /**
  * Abstract base class for aggregation functions.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractAggFunction implements CypherFunction {
   @Override
@@ -52,28 +53,30 @@ public abstract class AbstractAggFunction implements CypherFunction {
         }
       }
     } else if (input.getClass().isArray()) {
-      if (input instanceof double[]) {
-        for (final double d : (double[]) input) {
-          result.add(d);
+      switch (input) {
+        case double[] doubles -> {
+          for (final double d : doubles)
+            result.add(d);
         }
-      } else if (input instanceof int[]) {
-        for (final int i : (int[]) input) {
-          result.add((double) i);
+        case int[] ints -> {
+          for (final int i : ints)
+            result.add((double) i);
         }
-      } else if (input instanceof long[]) {
-        for (final long l : (long[]) input) {
-          result.add((double) l);
+        case long[] longs -> {
+          for (final long l : longs)
+            result.add((double) l);
         }
-      } else if (input instanceof Object[]) {
-        for (final Object item : (Object[]) input) {
-          if (item instanceof Number) {
-            result.add(((Number) item).doubleValue());
+        case Object[] objects -> {
+          for (final Object item : objects) {
+            if (item instanceof Number)
+              result.add(((Number) item).doubleValue());
           }
         }
+        default -> {
+        }
       }
-    } else if (input instanceof Number) {
+    } else if (input instanceof Number)
       result.add(((Number) input).doubleValue());
-    }
 
     return result;
   }
@@ -89,21 +92,23 @@ public abstract class AbstractAggFunction implements CypherFunction {
     if (input instanceof Collection) {
       result.addAll((Collection<?>) input);
     } else if (input.getClass().isArray()) {
-      if (input instanceof Object[]) {
-        for (final Object item : (Object[]) input) {
-          result.add(item);
+      switch (input) {
+        case Object[] objects -> {
+          Collections.addAll(result, objects);
         }
-      } else if (input instanceof int[]) {
-        for (final int i : (int[]) input) {
-          result.add(i);
+        case int[] ints -> {
+          for (final int i : ints)
+            result.add(i);
         }
-      } else if (input instanceof long[]) {
-        for (final long l : (long[]) input) {
-          result.add(l);
+        case long[] longs -> {
+          for (final long l : longs)
+            result.add(l);
         }
-      } else if (input instanceof double[]) {
-        for (final double d : (double[]) input) {
-          result.add(d);
+        case double[] doubles -> {
+          for (final double d : doubles)
+            result.add(d);
+        }
+        default -> {
         }
       }
     } else {

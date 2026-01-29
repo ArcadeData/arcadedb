@@ -34,7 +34,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorClip extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorClip";
+  public static final String NAME = "vector.clip";
 
   public SQLFunctionVectorClip() {
     super(NAME);

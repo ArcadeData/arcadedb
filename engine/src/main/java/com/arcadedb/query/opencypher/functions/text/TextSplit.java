@@ -27,7 +27,7 @@ import java.util.regex.Pattern;
 /**
  * text.split(string, delimiter) - Split string into list.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextSplit extends AbstractTextFunction {
   @Override

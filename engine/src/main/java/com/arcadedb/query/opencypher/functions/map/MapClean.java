@@ -29,7 +29,7 @@ import java.util.Set;
 /**
  * map.clean(map, keysToRemove, valuesToRemove) - Remove keys and values from map.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapClean extends AbstractMapFunction {
   @Override

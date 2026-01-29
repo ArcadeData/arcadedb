@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * text.decapitalize(string) - Lowercase first letter.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextDecapitalize extends AbstractTextFunction {
   @Override

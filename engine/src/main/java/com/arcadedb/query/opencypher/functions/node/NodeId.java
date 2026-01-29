@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * node.id(node) - Get the internal ID of a node.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class NodeId extends AbstractNodeFunction {
   @Override

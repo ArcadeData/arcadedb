@@ -33,7 +33,7 @@ import java.util.Map;
 /**
  * Abstract base class for algorithm procedures.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractAlgoProcedure implements CypherProcedure {
 

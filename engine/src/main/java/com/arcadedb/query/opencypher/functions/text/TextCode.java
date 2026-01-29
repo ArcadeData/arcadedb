@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * text.code(char) - Get Unicode code point of character.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextCode extends AbstractTextFunction {
   @Override

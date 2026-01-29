@@ -32,7 +32,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorScale extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorScale";
+  public static final String NAME = "vector.scale";
 
   public SQLFunctionVectorScale() {
     super(NAME);

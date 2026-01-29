@@ -40,7 +40,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorApproxDistance";
+  public static final String NAME = "vector.approxDistance";
 
   public enum QuantizationType {
     INT8,

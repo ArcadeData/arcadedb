@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * text.camelCase(string) - Convert to camelCase.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextCamelCase extends AbstractTextFunction {
   @Override

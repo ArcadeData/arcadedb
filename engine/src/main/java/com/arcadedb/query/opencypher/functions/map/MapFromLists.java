@@ -27,7 +27,7 @@ import java.util.Map;
 /**
  * map.fromLists(keys, values) - Create map from key and value lists.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapFromLists extends AbstractMapFunction {
   @Override

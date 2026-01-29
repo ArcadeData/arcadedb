@@ -168,7 +168,7 @@ class SQLFunctionPhase2Test extends TestHelper {
 
   @Test
   void sqlVectorAdd() {
-    String query = "SELECT vectorAdd( [1.0, 2.0, 3.0], [4.0, 5.0, 6.0] ) as sum";
+    String query = "SELECT `vector.add`( [1.0, 2.0, 3.0], [4.0, 5.0, 6.0] ) as sum";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -181,7 +181,7 @@ class SQLFunctionPhase2Test extends TestHelper {
 
   @Test
   void sqlVectorSubtract() {
-    String query = "SELECT vectorSubtract([5.0, 7.0, 9.0], [1.0, 2.0, 3.0]) as diff";
+    String query = "SELECT `vector.subtract`([5.0, 7.0, 9.0], [1.0, 2.0, 3.0]) as diff";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -194,7 +194,7 @@ class SQLFunctionPhase2Test extends TestHelper {
 
   @Test
   void sqlVectorMultiply() {
-    String query = "SELECT vectorMultiply([2.0, 3.0, 4.0], [1.0, 2.0, 3.0]) as prod";
+    String query = "SELECT `vector.multiply`([2.0, 3.0, 4.0], [1.0, 2.0, 3.0]) as prod";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -207,7 +207,7 @@ class SQLFunctionPhase2Test extends TestHelper {
 
   @Test
   void sqlVectorScale() {
-    String query = "SELECT vectorScale([1.0, 2.0, 3.0], 2.5) as scaled";
+    String query = "SELECT `vector.scale`([1.0, 2.0, 3.0], 2.5) as scaled";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -222,7 +222,7 @@ class SQLFunctionPhase2Test extends TestHelper {
   void sqlVectorArithmeticChained() {
     // (([1, 2] + [3, 4]) * 2) = [8, 12]
     String query = """
-        SELECT vectorScale(vectorAdd([1.0, 2.0], [3.0, 4.0]), 2.0) as result
+        SELECT `vector.scale`(`vector.add`([1.0, 2.0], [3.0, 4.0]), 2.0) as result
         """;
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
@@ -238,7 +238,7 @@ class SQLFunctionPhase2Test extends TestHelper {
   void sqlVectorArithmeticComplex() {
     // Complex: normalize(vectorAdd([1,0], [0,1])) should be approximately [0.707, 0.707]
     String query = """
-        SELECT vectorNormalize(vectorAdd([1.0, 0.0], [0.0, 1.0])) as normalized
+        SELECT `vector.normalize`(`vector.add`([1.0, 0.0], [0.0, 1.0])) as normalized
         """;
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
@@ -327,10 +327,10 @@ class SQLFunctionPhase2Test extends TestHelper {
   void sqlPhase2Combined() {
     String query = """
         SELECT
-          vectorAdd([1.0, 2.0], [3.0, 4.0]) as added,
-          vectorSubtract([5.0, 6.0], [1.0, 1.0]) as subtracted,
-          vectorScale([1.0, 2.0], 3.0) as scaled,
-          vectorMultiply([2.0, 3.0], [2.0, 2.0]) as multiplied
+          `vector.add`([1.0, 2.0], [3.0, 4.0]) as added,
+          `vector.subtract`([5.0, 6.0], [1.0, 1.0]) as subtracted,
+          `vector.scale`([1.0, 2.0], 3.0) as scaled,
+          `vector.multiply`([2.0, 3.0], [2.0, 2.0]) as multiplied
         """;
 
     try (ResultSet results = database.query("sql", query)) {

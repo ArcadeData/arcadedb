@@ -32,7 +32,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionSparseVectorToDense extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorSparseToDense";
+  public static final String NAME = "vector.sparseToDense";
 
   public SQLFunctionSparseVectorToDense() {
     super(NAME);

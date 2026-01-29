@@ -28,7 +28,7 @@ import java.util.Map;
 /**
  * path.slice(path, from, [to]) - Extract a subpath from a path.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class PathSlice extends AbstractPathFunction {
   @Override

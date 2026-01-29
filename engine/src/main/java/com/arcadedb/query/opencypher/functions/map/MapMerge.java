@@ -26,7 +26,7 @@ import java.util.Map;
 /**
  * map.merge(map1, map2) - Merge two maps into one. Values from map2 override map1.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapMerge extends AbstractMapFunction {
   @Override

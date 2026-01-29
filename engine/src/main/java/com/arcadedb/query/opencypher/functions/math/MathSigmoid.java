@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * math.sigmoid(x) - Sigmoid function: 1 / (1 + e^(-x))
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MathSigmoid extends AbstractMathFunction {
   @Override

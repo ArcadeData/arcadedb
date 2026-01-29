@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorMin extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorMin";
+  public static final String NAME = "vector.min";
 
   private float[] minVector;
   private int dimensions;

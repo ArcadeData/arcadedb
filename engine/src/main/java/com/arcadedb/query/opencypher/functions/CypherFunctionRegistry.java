@@ -59,7 +59,7 @@ import java.util.logging.Level;
  * </pre>
  * </p>
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public final class CypherFunctionRegistry {
   private static final String APOC_PREFIX = "apoc.";

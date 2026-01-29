@@ -28,7 +28,7 @@ import java.util.Map;
 /**
  * agg.statistics(list) - Return full statistics for a list of numbers.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggStatistics extends AbstractAggFunction {
   @Override

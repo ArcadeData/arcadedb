@@ -27,7 +27,7 @@ import java.security.NoSuchAlgorithmException;
 /**
  * Abstract base class for utility functions.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractUtilFunction implements CypherFunction {
   private static final char[] HEX_CHARS = "0123456789abcdef".toCharArray();

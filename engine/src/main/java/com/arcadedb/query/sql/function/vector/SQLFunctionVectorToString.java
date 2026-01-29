@@ -38,7 +38,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorToString extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorToString";
+  public static final String NAME = "vector.toString";
 
   public enum Format {
     COMPACT,

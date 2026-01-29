@@ -25,7 +25,7 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * text.random(length, [chars]) - Generate random string.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextRandom extends AbstractTextFunction {
   private static final String DEFAULT_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

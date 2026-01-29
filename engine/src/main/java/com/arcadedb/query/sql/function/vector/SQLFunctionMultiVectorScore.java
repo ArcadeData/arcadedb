@@ -37,7 +37,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorMultiScore";
+  public static final String NAME = "vector.multiScore";
 
   public enum FusionMethod {
     MAX,

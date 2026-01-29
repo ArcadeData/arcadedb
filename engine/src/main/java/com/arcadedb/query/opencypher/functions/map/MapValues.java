@@ -27,7 +27,7 @@ import java.util.Map;
 /**
  * map.values(map, keys) - Get values for specified keys in order.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapValues extends AbstractMapFunction {
   @Override

@@ -24,7 +24,7 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
  * Abstract base class for convert functions.
  * All convert functions share the "convert." namespace prefix.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractConvertFunction implements CypherFunction {
   protected static final String NAMESPACE = "convert";

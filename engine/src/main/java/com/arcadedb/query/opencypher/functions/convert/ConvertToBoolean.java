@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * convert.toBoolean(value) - Convert to boolean.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class ConvertToBoolean extends AbstractConvertFunction {
   @Override

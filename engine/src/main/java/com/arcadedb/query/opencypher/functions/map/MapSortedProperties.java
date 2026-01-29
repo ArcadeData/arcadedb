@@ -28,7 +28,7 @@ import java.util.Map;
 /**
  * map.sortedProperties(map) - Get sorted list of [key, value] pairs.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapSortedProperties extends AbstractMapFunction {
   @Override

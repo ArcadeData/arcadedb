@@ -23,7 +23,7 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
 /**
  * Abstract base class for create functions.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractCreateFunction implements CypherFunction {
   @Override

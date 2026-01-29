@@ -47,7 +47,7 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MetaGraph extends AbstractMetaProcedure {
   public static final String NAME = "meta.graph";

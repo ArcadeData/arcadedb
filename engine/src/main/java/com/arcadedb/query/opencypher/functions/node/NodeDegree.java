@@ -26,7 +26,7 @@ import java.util.Collection;
 /**
  * node.degree(node, [relTypes], [direction]) - Get the degree of a node.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class NodeDegree extends AbstractNodeFunction {
   @Override

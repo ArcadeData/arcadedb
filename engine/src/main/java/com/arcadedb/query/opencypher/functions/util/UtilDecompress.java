@@ -32,7 +32,7 @@ import java.util.zip.InflaterInputStream;
  * util.decompress(data, algorithm) - Decompress data using the specified algorithm.
  * Supported algorithms: "gzip", "deflate" (default: "gzip").
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilDecompress extends AbstractUtilFunction {
   @Override

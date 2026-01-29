@@ -25,7 +25,7 @@ import java.util.List;
 /**
  * agg.nth(list, n) - Return the nth element in the list (0-indexed).
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggNth extends AbstractAggFunction {
   @Override

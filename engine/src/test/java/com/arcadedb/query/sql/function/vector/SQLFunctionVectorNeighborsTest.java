@@ -93,7 +93,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
   void sqlVectorNeighborsWithRawVector() {
 
     // SQL query with raw vector
-    String query = "SELECT vectorNeighbors('Doc[embedding]', [0.0, 0.0, 1.0], 3) as neighbors";
+    String query = "SELECT `vector.neighbors`('Doc[embedding]', [0.0, 0.0, 1.0], 3) as neighbors";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).as("Query should return results").isTrue();
 
@@ -111,7 +111,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
   void sqlVectorNeighborsWithVertexId() {
 
     // SQL query with vertex identifier
-    String query = "SELECT vectorNeighbors('Doc[embedding]', 'docC', 2) as neighbors";
+    String query = "SELECT `vector.neighbors`('Doc[embedding]', 'docC', 2) as neighbors";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).as("Query should return results").isTrue();
 
@@ -128,9 +128,9 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
   @Test
   void sqlVectorNeighborsResultsAreSortedByDistance() {
 
-    // SQL query using vectorNeighbors in a subquery
+    // SQL query using `vector.neighbors` in a subquery
     String query = """
-        SELECT vectorNeighbors('Doc[embedding]', 'docA', 5) as neighbors
+        SELECT `vector.neighbors`('Doc[embedding]', 'docA', 5) as neighbors
         """;
 
     try (ResultSet results = database.query("sql", query)) {

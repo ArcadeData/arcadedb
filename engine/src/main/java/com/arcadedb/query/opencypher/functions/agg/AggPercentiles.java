@@ -27,7 +27,7 @@ import java.util.List;
 /**
  * agg.percentiles(list, percentiles) - Return the percentile values of a list of numbers.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggPercentiles extends AbstractAggFunction {
   @Override

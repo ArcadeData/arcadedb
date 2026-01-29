@@ -27,7 +27,7 @@ import java.util.Map;
 /**
  * map.fromPairs(pairs) - Create map from list of [key, value] pairs.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapFromPairs extends AbstractMapFunction {
   @Override

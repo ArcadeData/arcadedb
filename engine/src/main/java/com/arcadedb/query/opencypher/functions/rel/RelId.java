@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * rel.id(relationship) - Get the internal ID of a relationship.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class RelId extends AbstractRelFunction {
   @Override

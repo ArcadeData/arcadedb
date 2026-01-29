@@ -26,7 +26,7 @@ import java.util.Collection;
 /**
  * node.degree.in(node, [relTypes]) - Get the in-degree of a node.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class NodeDegreeIn extends AbstractNodeFunction {
   @Override

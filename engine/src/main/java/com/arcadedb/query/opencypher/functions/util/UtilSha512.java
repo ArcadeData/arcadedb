@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * util.sha512(value) - Compute SHA-512 hash.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilSha512 extends AbstractUtilFunction {
   @Override

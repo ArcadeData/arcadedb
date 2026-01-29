@@ -27,7 +27,7 @@ import java.util.regex.Pattern;
 /**
  * map.unflatten(map, delimiter) - Unflatten a map with key paths into nested maps.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapUnflatten extends AbstractMapFunction {
   @Override

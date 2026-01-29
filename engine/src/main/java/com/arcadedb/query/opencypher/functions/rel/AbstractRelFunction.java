@@ -25,7 +25,7 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
 /**
  * Abstract base class for relationship functions.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractRelFunction implements CypherFunction {
   @Override

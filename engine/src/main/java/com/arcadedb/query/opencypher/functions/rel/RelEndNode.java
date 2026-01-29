@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * rel.endNode(relationship) - Get the end node of a relationship.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class RelEndNode extends AbstractRelFunction {
   @Override

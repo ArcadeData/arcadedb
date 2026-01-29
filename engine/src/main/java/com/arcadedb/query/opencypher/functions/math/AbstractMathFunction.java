@@ -24,7 +24,7 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
  * Abstract base class for math functions.
  * All math functions share the "math." namespace prefix.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractMathFunction implements CypherFunction {
   protected static final String NAMESPACE = "math";

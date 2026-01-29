@@ -29,7 +29,7 @@ import java.util.Map;
 /**
  * path.combine(paths) - Combine multiple paths into a single path.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class PathCombine extends AbstractPathFunction {
   @Override

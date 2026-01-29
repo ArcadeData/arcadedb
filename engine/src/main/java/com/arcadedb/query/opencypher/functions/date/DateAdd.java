@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * date.add(timestamp, value, unit) - Add time to timestamp.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateAdd extends AbstractDateFunction {
   @Override

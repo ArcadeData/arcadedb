@@ -35,7 +35,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorNormalizeScores extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorNormalizeScores";
+  public static final String NAME = "vector.normalizeScores";
 
   public SQLFunctionVectorNormalizeScores() {
     super(NAME);

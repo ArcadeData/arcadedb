@@ -25,7 +25,7 @@ import java.util.List;
 /**
  * agg.product(list) - Return the product of all numbers in the list.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggProduct extends AbstractAggFunction {
   @Override

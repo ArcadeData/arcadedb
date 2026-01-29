@@ -27,7 +27,7 @@ import java.util.Map;
 /**
  * map.submap(map, keys) - Extract a submap containing only specified keys.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapSubmap extends AbstractMapFunction {
   @Override

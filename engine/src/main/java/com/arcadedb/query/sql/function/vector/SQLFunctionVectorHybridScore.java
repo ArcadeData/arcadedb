@@ -36,7 +36,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorHybridScore extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorHybridScore";
+  public static final String NAME = "vector.hybridScore";
 
   public SQLFunctionVectorHybridScore() {
     super(NAME);

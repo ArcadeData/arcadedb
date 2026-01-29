@@ -29,7 +29,7 @@ import java.util.List;
 /**
  * node.labels(node) - Get the labels of a node.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class NodeLabels extends AbstractNodeFunction {
   @Override

@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * rel.startNode(relationship) - Get the start node of a relationship.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class RelStartNode extends AbstractRelFunction {
   @Override

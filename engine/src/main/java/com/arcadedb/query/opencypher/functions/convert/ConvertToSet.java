@@ -29,7 +29,7 @@ import java.util.Set;
 /**
  * convert.toSet(list) - Convert list to set (remove duplicates).
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class ConvertToSet extends AbstractConvertFunction {
   @Override

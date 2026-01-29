@@ -28,7 +28,7 @@ import java.util.Map;
 /**
  * map.groupBy(list, key) - Group list of maps by a key value.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapGroupBy extends AbstractMapFunction {
   @Override

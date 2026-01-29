@@ -26,7 +26,7 @@ import java.util.List;
 /**
  * agg.median(list) - Return the median value of a list of numbers.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggMedian extends AbstractAggFunction {
   @Override

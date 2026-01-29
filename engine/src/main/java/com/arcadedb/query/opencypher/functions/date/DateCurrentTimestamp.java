@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * date.currentTimestamp() - Get current timestamp in milliseconds.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateCurrentTimestamp extends AbstractDateFunction {
   @Override

@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * text.levenshteinSimilarity(str1, str2) - Calculate similarity (0-1) based on edit distance.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextLevenshteinSimilarity extends AbstractTextFunction {
   @Override

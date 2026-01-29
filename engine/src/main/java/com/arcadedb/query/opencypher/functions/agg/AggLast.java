@@ -25,7 +25,7 @@ import java.util.List;
 /**
  * agg.last(list) - Return the last non-null element in the list.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggLast extends AbstractAggFunction {
   @Override

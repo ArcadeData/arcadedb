@@ -35,7 +35,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorLInfNorm extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorLInfNorm";
+  public static final String NAME = "vector.lInfNorm";
 
   public SQLFunctionVectorLInfNorm() {
     super(NAME);

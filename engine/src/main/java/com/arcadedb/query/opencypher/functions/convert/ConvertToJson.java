@@ -29,7 +29,7 @@ import java.util.Map;
 /**
  * convert.toJson(value) - Convert to JSON string.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class ConvertToJson extends AbstractConvertFunction {
   @Override

@@ -28,7 +28,7 @@ import java.util.Map;
 /**
  * agg.minItems(values, items) - Return all items corresponding to the minimum value.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggMinItems extends AbstractAggFunction {
   @Override

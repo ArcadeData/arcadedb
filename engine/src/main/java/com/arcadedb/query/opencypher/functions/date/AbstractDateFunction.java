@@ -31,7 +31,7 @@ import java.util.Date;
  * Abstract base class for date functions.
  * All date functions share the "date." namespace prefix.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractDateFunction implements CypherFunction {
   protected static final String NAMESPACE = "date";

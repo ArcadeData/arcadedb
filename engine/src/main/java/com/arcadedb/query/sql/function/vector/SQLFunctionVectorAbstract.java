@@ -24,13 +24,32 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 /**
  * Abstract base class for vector SQL functions providing common utility methods.
  * All vector functions should extend this class to reuse conversion and validation logic.
+ * <p>
+ * Functions with names starting with "vector." will automatically have an alias
+ * generated for backward compatibility. For example, "vector.cosineSimilarity"
+ * will also be available as "vectorCosineSimilarity".
+ * </p>
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
+  private static final String VECTOR_PREFIX = "vector.";
+  private final String alias;
 
   protected SQLFunctionVectorAbstract(final String name) {
     super(name);
+    // Auto-generate alias for backward compatibility: vector.xxx -> vectorXxx
+    if (name.startsWith(VECTOR_PREFIX)) {
+      final String suffix = name.substring(VECTOR_PREFIX.length());
+      this.alias = "vector" + Character.toUpperCase(suffix.charAt(0)) + suffix.substring(1);
+    } else {
+      this.alias = null;
+    }
+  }
+
+  @Override
+  public String getAlias() {
+    return alias;
   }
 
   /**

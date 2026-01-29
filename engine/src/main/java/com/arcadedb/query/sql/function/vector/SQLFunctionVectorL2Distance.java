@@ -37,7 +37,7 @@ import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorL2Distance extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorL2Distance";
+  public static final String NAME = "vector.l2Distance";
 
   public SQLFunctionVectorL2Distance() {
     super(NAME);

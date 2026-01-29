@@ -26,7 +26,7 @@ import java.util.Map;
 /**
  * map.removeKey(map, key) - Remove a key from the map.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapRemoveKey extends AbstractMapFunction {
   @Override

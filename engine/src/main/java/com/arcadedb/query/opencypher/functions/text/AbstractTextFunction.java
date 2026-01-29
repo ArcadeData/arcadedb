@@ -24,7 +24,7 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
  * Abstract base class for text functions.
  * All text functions share the "text." namespace prefix.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractTextFunction implements CypherFunction {
   protected static final String NAMESPACE = "text";

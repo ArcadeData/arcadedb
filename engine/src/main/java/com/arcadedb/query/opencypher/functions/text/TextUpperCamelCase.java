@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * text.upperCamelCase(string) - Convert to UpperCamelCase (PascalCase).
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextUpperCamelCase extends AbstractTextFunction {
   @Override

@@ -30,7 +30,7 @@ import java.util.Map;
 /**
  * Abstract base class for meta/schema procedures.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractMetaProcedure implements CypherProcedure {
 

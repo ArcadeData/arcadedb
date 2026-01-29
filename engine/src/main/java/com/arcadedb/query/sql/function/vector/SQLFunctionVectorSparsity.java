@@ -34,7 +34,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorSparsity extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorSparsity";
+  public static final String NAME = "vector.sparsity";
 
   public SQLFunctionVectorSparsity() {
     super(NAME);

@@ -32,7 +32,7 @@ import java.util.zip.GZIPOutputStream;
  * util.compress(data, algorithm) - Compress data using the specified algorithm.
  * Supported algorithms: "gzip", "deflate" (default: "gzip").
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilCompress extends AbstractUtilFunction {
   @Override

@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Tests for Cypher built-in functions and procedures.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherBuiltInFunctionsTest extends TestHelper {
 

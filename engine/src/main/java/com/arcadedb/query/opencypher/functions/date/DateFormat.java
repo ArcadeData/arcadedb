@@ -28,7 +28,7 @@ import java.time.format.DateTimeFormatter;
 /**
  * date.format(timestamp, unit, format) - Format timestamp to string.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateFormat extends AbstractDateFunction {
   @Override

@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * text.levenshteinDistance(str1, str2) - Calculate edit distance between strings.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextLevenshteinDistance extends AbstractTextFunction {
   @Override

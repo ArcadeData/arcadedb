@@ -32,7 +32,7 @@ import java.util.Map;
  * temporary data structures or for returning computed results.
  * </p>
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CreateVRelationship extends AbstractCreateFunction {
   private static long virtualIdCounter = 0;

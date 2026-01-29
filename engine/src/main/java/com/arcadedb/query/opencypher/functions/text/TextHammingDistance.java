@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * text.hammingDistance(str1, str2) - Calculate Hamming distance (strings must be equal length).
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextHammingDistance extends AbstractTextFunction {
   @Override

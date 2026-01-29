@@ -27,7 +27,7 @@ import java.util.UUID;
 /**
  * create.uuidBase64() - Generate a random UUID encoded as Base64.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CreateUuidBase64 extends AbstractCreateFunction {
   @Override

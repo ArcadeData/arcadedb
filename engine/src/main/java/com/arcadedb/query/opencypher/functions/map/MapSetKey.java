@@ -26,7 +26,7 @@ import java.util.Map;
 /**
  * map.setKey(map, key, value) - Set or add a key in the map.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapSetKey extends AbstractMapFunction {
   @Override

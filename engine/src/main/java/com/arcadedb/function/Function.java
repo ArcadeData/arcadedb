@@ -83,6 +83,20 @@ public interface Function {
   }
 
   /**
+   * Returns an optional alias name for backward compatibility.
+   * <p>
+   * When a function provides an alias, it will be registered under both
+   * its primary name and alias name. This allows for backward compatibility
+   * when renaming functions (e.g., vectorCosineSimilarity -> vector.cosineSimilarity).
+   * </p>
+   *
+   * @return the alias name, or null if no alias is provided
+   */
+  default String getAlias() {
+    return null;
+  }
+
+  /**
    * Validates the arguments before execution.
    * Default implementation checks argument count against min/max bounds.
    *

@@ -25,7 +25,7 @@ import java.util.List;
 /**
  * agg.first(list) - Return the first non-null element in the list.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggFirst extends AbstractAggFunction {
   @Override

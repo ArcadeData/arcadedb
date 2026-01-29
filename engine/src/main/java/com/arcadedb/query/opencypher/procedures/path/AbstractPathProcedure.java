@@ -36,7 +36,7 @@ import java.util.Set;
 /**
  * Abstract base class for path expansion procedures.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractPathProcedure implements CypherProcedure {
 

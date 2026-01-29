@@ -28,7 +28,7 @@ import java.util.Map;
 /**
  * agg.maxItems(values, items) - Return all items corresponding to the maximum value.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggMaxItems extends AbstractAggFunction {
   @Override

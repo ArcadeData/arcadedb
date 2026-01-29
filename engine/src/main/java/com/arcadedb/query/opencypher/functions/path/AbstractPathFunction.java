@@ -26,7 +26,7 @@ import java.util.Map;
 /**
  * Abstract base class for path functions.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractPathFunction implements CypherFunction {
   @Override

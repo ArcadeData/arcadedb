@@ -26,7 +26,7 @@ import java.util.Collection;
 /**
  * node.relationship.exists(node, [relTypes], [direction]) - Check if a node has relationships.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class NodeRelationshipExists extends AbstractNodeFunction {
   @Override

@@ -40,7 +40,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorDequantizeInt8";
+  public static final String NAME = "vector.dequantizeInt8";
 
   public SQLFunctionVectorDequantizeInt8() {
     super(NAME);

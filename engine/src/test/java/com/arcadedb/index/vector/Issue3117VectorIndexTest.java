@@ -58,7 +58,7 @@ class Issue3117VectorIndexTest extends TestHelper {
     database.transaction(() -> {
       final float[] queryVector1 = new float[] { 0.0f, 0.1f, 0.1f, 0.1f };
       final ResultSet result = database.query("sql",
-          "SELECT vectorNeighbors('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
+          "SELECT `vector.neighbors`('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
           queryVector1);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
@@ -79,7 +79,7 @@ class Issue3117VectorIndexTest extends TestHelper {
       boolean exceptionThrown = false;
       try {
         final ResultSet rs = database.query("sql",
-            "SELECT vectorNeighbors('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
+            "SELECT `vector.neighbors`('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
             queryVector2);
         // Trigger lazy evaluation by calling next()
         if (rs.hasNext()) {
@@ -101,7 +101,7 @@ class Issue3117VectorIndexTest extends TestHelper {
     database.transaction(() -> {
       final float[] queryVector3 = new float[] { 0.5f, 0.5f, 0.5f, 0.5f };
       final ResultSet result = database.query("sql",
-          "SELECT vectorNeighbors('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
+          "SELECT `vector.neighbors`('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
           queryVector3);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();

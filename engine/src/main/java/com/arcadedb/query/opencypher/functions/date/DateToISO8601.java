@@ -27,7 +27,7 @@ import java.time.format.DateTimeFormatter;
 /**
  * date.toISO8601(timestamp) - Convert timestamp to ISO 8601 string.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateToISO8601 extends AbstractDateFunction {
   private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_OFFSET_DATE_TIME;

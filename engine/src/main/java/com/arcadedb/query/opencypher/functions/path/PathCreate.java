@@ -29,7 +29,7 @@ import java.util.Map;
 /**
  * path.create(start, relationships) - Create a path from a start node and a list of relationships.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class PathCreate extends AbstractPathFunction {
   @Override

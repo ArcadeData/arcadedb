@@ -26,7 +26,7 @@ import java.util.Collection;
 /**
  * node.degree.out(node, [relTypes]) - Get the out-degree of a node.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class NodeDegreeOut extends AbstractNodeFunction {
   @Override

@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * rel.type(relationship) - Get the type of a relationship.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class RelType extends AbstractRelFunction {
   @Override

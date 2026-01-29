@@ -26,7 +26,7 @@ import java.util.Map;
  * Abstract base class for map functions.
  * All map functions share the "map." namespace prefix.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractMapFunction implements CypherFunction {
   protected static final String NAMESPACE = "map";

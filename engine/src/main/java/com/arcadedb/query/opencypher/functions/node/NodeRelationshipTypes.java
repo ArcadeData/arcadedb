@@ -31,7 +31,7 @@ import java.util.Set;
 /**
  * node.relationship.types(node, [direction]) - Get all relationship types connected to a node.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class NodeRelationshipTypes extends AbstractNodeFunction {
   @Override

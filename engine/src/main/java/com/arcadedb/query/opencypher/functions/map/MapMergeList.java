@@ -27,7 +27,7 @@ import java.util.Map;
 /**
  * map.mergeList(listOfMaps) - Merge a list of maps into one.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapMergeList extends AbstractMapFunction {
   @Override

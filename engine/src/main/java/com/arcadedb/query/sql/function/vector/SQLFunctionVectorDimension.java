@@ -31,7 +31,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorDimension extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorDimension";
+  public static final String NAME = "vector.dimension";
 
   public SQLFunctionVectorDimension() {
     super(NAME);

@@ -31,7 +31,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorSubtract extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorSubtract";
+  public static final String NAME = "vector.subtract";
 
   public SQLFunctionVectorSubtract() {
     super(NAME);

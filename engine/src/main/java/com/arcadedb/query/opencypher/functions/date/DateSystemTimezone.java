@@ -25,7 +25,7 @@ import java.time.ZoneId;
 /**
  * date.systemTimezone() - Get the system timezone.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateSystemTimezone extends AbstractDateFunction {
   @Override

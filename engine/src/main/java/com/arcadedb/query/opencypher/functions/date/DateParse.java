@@ -29,7 +29,7 @@ import java.time.format.DateTimeParseException;
 /**
  * date.parse(dateStr, unit, format) - Parse date string to timestamp.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateParse extends AbstractDateFunction {
   @Override

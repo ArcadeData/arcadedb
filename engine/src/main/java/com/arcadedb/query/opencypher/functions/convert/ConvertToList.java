@@ -28,7 +28,7 @@ import java.util.List;
 /**
  * convert.toList(value) - Convert to list.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class ConvertToList extends AbstractConvertFunction {
   @Override

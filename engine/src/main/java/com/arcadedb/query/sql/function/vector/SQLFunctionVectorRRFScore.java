@@ -34,7 +34,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorRRFScore";
+  public static final String NAME = "vector.rrfScore";
   private static final long DEFAULT_K = 60;
 
   public SQLFunctionVectorRRFScore() {

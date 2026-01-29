@@ -28,7 +28,7 @@ import java.util.Map;
 /**
  * path.elements(path) - Get all elements (nodes and relationships) from a path.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class PathElements extends AbstractPathFunction {
   @Override

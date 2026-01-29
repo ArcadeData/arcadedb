@@ -36,7 +36,7 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorAvg";
+  public static final String NAME = "vector.avg";
 
   private float[] sumVector;
   private long    count;

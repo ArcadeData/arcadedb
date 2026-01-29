@@ -27,7 +27,7 @@ import java.util.Map;
 /**
  * convert.toMap(value) - Convert to map.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class ConvertToMap extends AbstractConvertFunction {
   @Override

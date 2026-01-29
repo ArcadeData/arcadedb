@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
 /**
  * text.slug(string, [delimiter]) - Create URL-friendly slug.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextSlug extends AbstractTextFunction {
   private static final Pattern NON_ASCII = Pattern.compile("[^\\p{ASCII}]");

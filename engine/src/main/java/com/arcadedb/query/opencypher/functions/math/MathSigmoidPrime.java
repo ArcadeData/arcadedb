@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * math.sigmoidPrime(x) - Derivative of sigmoid: sigmoid(x) * (1 - sigmoid(x))
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MathSigmoidPrime extends AbstractMathFunction {
   @Override

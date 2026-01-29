@@ -26,7 +26,7 @@ import java.util.Set;
 /**
  * text.sorensenDiceSimilarity(str1, str2) - Calculate Sorensen-Dice coefficient.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextSorensenDiceSimilarity extends AbstractTextFunction {
   @Override

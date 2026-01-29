@@ -46,10 +46,17 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
    * Registers a function instance.
    * <p>
    * Also registers in the unified {@link FunctionRegistry} for cross-engine access.
+   * If the function provides an alias via {@link com.arcadedb.function.Function#getAlias()},
+   * it will also be registered under the alias name for backward compatibility.
    * </p>
    */
   public void register(final SQLFunction function) {
     functions.put(function.getName().toLowerCase(Locale.ENGLISH), function);
+    // Register alias if provided (for backward compatibility)
+    final String alias = function.getAlias();
+    if (alias != null) {
+      functions.put(alias.toLowerCase(Locale.ENGLISH), function);
+    }
     // Also register in the unified FunctionRegistry for cross-engine access
     FunctionRegistry.register(function);
   }
@@ -65,12 +72,19 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
    * If function is an instance, also registers in the unified {@link FunctionRegistry}.
    * Class-based registrations are not registered in FunctionRegistry since they
    * create new instances per call (for stateful functions).
+   * If the function provides an alias via {@link com.arcadedb.function.Function#getAlias()},
+   * it will also be registered under the alias name for backward compatibility.
    * </p>
    */
   public void register(final String name, final Object function) {
     functions.put(name.toLowerCase(Locale.ENGLISH), function);
-    // If it's an instance (not a class), also register in unified registry
+    // If it's an instance (not a class), also register in unified registry and handle alias
     if (function instanceof SQLFunction sqlFunction) {
+      // Register alias if provided (for backward compatibility)
+      final String alias = sqlFunction.getAlias();
+      if (alias != null) {
+        functions.put(alias.toLowerCase(Locale.ENGLISH), function);
+      }
       FunctionRegistry.register(sqlFunction);
     }
   }

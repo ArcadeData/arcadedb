@@ -26,7 +26,7 @@ import java.util.List;
 /**
  * agg.slice(list, from, to) - Return a sublist from index 'from' to 'to' (exclusive).
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class AggSlice extends AbstractAggFunction {
   @Override

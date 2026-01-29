@@ -36,7 +36,7 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorDotProduct extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorDotProduct";
+  public static final String NAME = "vector.dotProduct";
 
   public SQLFunctionVectorDotProduct() {
     super(NAME);

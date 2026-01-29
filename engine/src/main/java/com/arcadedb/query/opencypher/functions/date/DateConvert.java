@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * date.convert(timestamp, fromUnit, toUnit) - Convert timestamp between units.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateConvert extends AbstractDateFunction {
   @Override

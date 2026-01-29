@@ -25,7 +25,7 @@ import java.util.Arrays;
 /**
  * text.jaroWinklerDistance(str1, str2) - Calculate Jaro-Winkler similarity.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextJaroWinklerDistance extends AbstractTextFunction {
   private static final double WINKLER_PREFIX_WEIGHT = 0.1;

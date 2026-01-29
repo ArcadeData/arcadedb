@@ -26,7 +26,7 @@ import java.util.Map;
 /**
  * map.flatten(map, delimiter) - Flatten nested map with key paths.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class MapFlatten extends AbstractMapFunction {
   @Override

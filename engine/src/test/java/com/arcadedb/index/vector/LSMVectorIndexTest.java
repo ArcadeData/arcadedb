@@ -1261,7 +1261,7 @@ class LSMVectorIndexTest extends TestHelper {
     // Test 1: Find neighbors of first product (should find products 1-9 as nearest neighbors)
     database.transaction(() -> {
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('Product[embedding]', embedding, 5) as neighbors FROM Product WHERE name = 'Product_0'");
+          "SELECT name, `vector.neighbors`('Product[embedding]', embedding, 5) as neighbors FROM Product WHERE name = 'Product_0'");
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
       final var doc = result.next();
@@ -1272,28 +1272,28 @@ class LSMVectorIndexTest extends TestHelper {
 //      System.out.println("Neighbors of Product_0: " + doc.toJSON());
     });
 
-    // Test 2: Query using vectorNeighbors with arbitrary query vector
+    // Test 2: Query using `vector.neighbors` with arbitrary query vector
     database.transaction(() -> {
       // Create a query vector similar to cluster 1 (second cluster)
       final float[] queryVector = new float[128];
       queryVector[1] = 1.0f; // Similar to products 10-19
 
-      // Use vectorNeighbors to find nearest neighbors
+      // Use `vector.neighbors` to find nearest neighbors
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('Product[embedding]', ?, 5) as neighbors FROM Product LIMIT 1",
+          "SELECT name, `vector.neighbors`('Product[embedding]', ?, 5) as neighbors FROM Product LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
 //      System.out.println("VectorNeighbors result for cluster 1 query: " + result.next().toJSON());
     });
 
-    // Test 3: Test vectorNeighbors function with different k value
+    // Test 3: Test `vector.neighbors` function with different k value
     database.transaction(() -> {
       final float[] queryVector = new float[128];
       queryVector[2] = 1.0f; // Similar to products 20-29
 
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('Product[embedding]', ?, 10) as neighbors FROM Product LIMIT 1",
+          "SELECT name, `vector.neighbors`('Product[embedding]', ?, 10) as neighbors FROM Product LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
@@ -1305,7 +1305,7 @@ class LSMVectorIndexTest extends TestHelper {
     // Test 4: Query with specific product and find its nearest neighbors
     database.transaction(() -> {
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('Product[embedding]', embedding, 3) as neighbors " +
+          "SELECT name, `vector.neighbors`('Product[embedding]', embedding, 3) as neighbors " +
               "FROM Product WHERE name = 'Product_15'");
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
@@ -1323,7 +1323,7 @@ class LSMVectorIndexTest extends TestHelper {
       queryVector1[0] = 1.0f;
 
       final var result1 = database.query("sql",
-          "SELECT name, vectorNeighbors('Product[embedding]', ?, 3) as neighbors FROM Product LIMIT 1",
+          "SELECT name, `vector.neighbors`('Product[embedding]', ?, 3) as neighbors FROM Product LIMIT 1",
           queryVector1);
 
       assertThat(result1.hasNext()).as("First query should return results").isTrue();
@@ -1333,14 +1333,14 @@ class LSMVectorIndexTest extends TestHelper {
       queryVector2[1] = 1.0f;
 
       final var result2 = database.query("sql",
-          "SELECT name, vectorNeighbors('Product[embedding]', ?, 3) as neighbors FROM Product LIMIT 1",
+          "SELECT name, `vector.neighbors`('Product[embedding]', ?, 3) as neighbors FROM Product LIMIT 1",
           queryVector2);
 
       assertThat(result2.hasNext()).as("Second query should return results").isTrue();
 //      System.out.println("Query 2 result: " + result2.next().toJSON());
     });
 
-//    System.out.println("✓ All SQL vectorNeighbors tests passed!");
+//    System.out.println("✓ All SQL `vector.neighbors` tests passed!");
   }
 
   @Test
@@ -1402,7 +1402,7 @@ class LSMVectorIndexTest extends TestHelper {
       queryVector[0] = 5.0f; // Should be closest to small IDs 4-6
 
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('VectorDoc[embedding]', ?, 3) as neighbors FROM VectorDoc LIMIT 1",
+          "SELECT name, `vector.neighbors`('VectorDoc[embedding]', ?, 3) as neighbors FROM VectorDoc LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
@@ -1473,7 +1473,7 @@ class LSMVectorIndexTest extends TestHelper {
       Arrays.fill(queryVector, 0.5f);
 
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('OffsetTest[embedding]', ?, 5) as neighbors FROM OffsetTest LIMIT 1",
+          "SELECT name, `vector.neighbors`('OffsetTest[embedding]', ?, 5) as neighbors FROM OffsetTest LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
@@ -1541,7 +1541,7 @@ class LSMVectorIndexTest extends TestHelper {
       Arrays.fill(queryVector, 0.5f);
 
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('BoundaryTest[embedding]', ?, 10) as neighbors FROM BoundaryTest LIMIT 1",
+          "SELECT name, `vector.neighbors`('BoundaryTest[embedding]', ?, 10) as neighbors FROM BoundaryTest LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results across pages").isTrue();
@@ -1651,7 +1651,7 @@ class LSMVectorIndexTest extends TestHelper {
       queryVector[0] = 999.0f; // Should match the updated entries
 
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('CompactVar[embedding]', ?, 5) as neighbors FROM CompactVar LIMIT 1",
+          "SELECT name, `vector.neighbors`('CompactVar[embedding]', ?, 5) as neighbors FROM CompactVar LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should work").isTrue();
@@ -1718,7 +1718,7 @@ class LSMVectorIndexTest extends TestHelper {
       Arrays.fill(queryVector, 0.5f);
 
       final var result = database.query("sql",
-          "SELECT name, vectorNeighbors('HeaderTest[embedding]', ?, 10) as neighbors FROM HeaderTest LIMIT 1",
+          "SELECT name, `vector.neighbors`('HeaderTest[embedding]', ?, 10) as neighbors FROM HeaderTest LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should work with correct offsets").isTrue();

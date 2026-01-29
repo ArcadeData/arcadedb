@@ -32,7 +32,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorSum extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorSum";
+  public static final String NAME = "vector.sum";
 
   private float[] sumVector;
 

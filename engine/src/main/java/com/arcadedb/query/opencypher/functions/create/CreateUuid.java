@@ -25,7 +25,7 @@ import java.util.UUID;
 /**
  * create.uuid() - Generate a random UUID.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CreateUuid extends AbstractCreateFunction {
   @Override

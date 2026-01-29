@@ -26,7 +26,7 @@ import java.util.stream.Collectors;
 /**
  * text.join(list, delimiter) - Join list elements into a string.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextJoin extends AbstractTextFunction {
   @Override

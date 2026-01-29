@@ -30,7 +30,7 @@ import java.util.Map;
 /**
  * date.fields(dateStr, format) - Extract all fields from date string.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateFields extends AbstractDateFunction {
   @Override

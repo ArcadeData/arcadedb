@@ -24,7 +24,7 @@ import com.arcadedb.serializer.json.JSONObject;
 /**
  * Builder class for full-text indexes with analyzer configuration.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
 

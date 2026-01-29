@@ -25,7 +25,7 @@ import java.util.regex.Pattern;
 /**
  * text.regexReplace(string, regex, replace) - Replace using regular expression.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextRegexReplace extends AbstractTextFunction {
   @Override

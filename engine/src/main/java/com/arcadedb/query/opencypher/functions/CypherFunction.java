@@ -31,7 +31,7 @@ import com.arcadedb.function.StatelessFunction;
  * in the unified {@link com.arcadedb.function.FunctionRegistry}.
  * </p>
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see StatelessFunction
  * @see com.arcadedb.function.FunctionRegistry
  */

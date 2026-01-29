@@ -33,7 +33,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorHasNaN extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorHasNaN";
+  public static final String NAME = "vector.hasNaN";
 
   public SQLFunctionVectorHasNaN() {
     super(NAME);

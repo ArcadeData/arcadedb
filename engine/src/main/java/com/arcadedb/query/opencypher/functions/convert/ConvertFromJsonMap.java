@@ -24,7 +24,7 @@ import com.arcadedb.serializer.json.JSONObject;
 /**
  * convert.fromJsonMap(json) - Parse JSON string to map.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class ConvertFromJsonMap extends AbstractConvertFunction {
   @Override

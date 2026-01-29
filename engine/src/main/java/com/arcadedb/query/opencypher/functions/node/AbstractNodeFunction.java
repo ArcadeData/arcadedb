@@ -25,7 +25,7 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
 /**
  * Abstract base class for node functions.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractNodeFunction implements CypherFunction {
   @Override
