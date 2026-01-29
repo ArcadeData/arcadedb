@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.function.math;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 
 import java.util.*;
 
@@ -31,7 +31,7 @@ import java.util.*;
  *
  * @author Fabrizio Fortino
  */
-public class SQLFunctionMode extends SQLFunctionAbstract {
+public class SQLFunctionMode extends SQLAggregatedFunction {
 
   public static final String NAME = "mode";
 

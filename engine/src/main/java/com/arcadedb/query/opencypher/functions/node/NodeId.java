@@ -16,30 +16,43 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.function.coll;
+package com.arcadedb.query.opencypher.functions.node;
 
-import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * Abstract class for multi-value based function implementations.
+ * node.id(node) - Get the internal ID of a node.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author ArcadeDB Team
  */
-public abstract class SQLFunctionMultiValueAbstract<T> extends SQLFunctionConfigurableAbstract {
-
-  protected T context;
-
-  protected SQLFunctionMultiValueAbstract(final String iName) {
-    super(iName);
+public class NodeId extends AbstractNodeFunction {
+  @Override
+  protected String getSimpleName() {
+    return "id";
   }
 
   @Override
-  public boolean aggregateResults() {
-    return configuredParameters.length == 1;
+  public int getMinArgs() {
+    return 1;
   }
 
   @Override
-  public T getResult() {
-    return context;
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
+  public String getDescription() {
+    return "Get the internal record ID of a node";
+  }
+
+  @Override
+  public Object execute(final Object[] args, final CommandContext context) {
+    final Vertex vertex = toVertex(args[0]);
+    if (vertex == null)
+      return null;
+
+    return vertex.getIdentity().toString();
   }
 }

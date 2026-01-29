@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.function.math;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
 import java.math.*;
@@ -31,7 +32,7 @@ import java.math.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionAverage extends SQLFunctionMathAbstract {
+public class SQLFunctionAverage extends SQLAggregatedFunction {
   public static final String NAME = "avg";
 
   private Number sum;

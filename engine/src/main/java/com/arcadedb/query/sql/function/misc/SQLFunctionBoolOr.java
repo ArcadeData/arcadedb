@@ -21,14 +21,14 @@ package com.arcadedb.query.sql.function.misc;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 
 /**
  * Computes the aggregate "or" over a field.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionBoolOr extends SQLFunctionConfigurableAbstract {
+public class SQLFunctionBoolOr extends SQLAggregatedFunction {
   public static final String NAME = "bool_or";
 
   private Boolean or;

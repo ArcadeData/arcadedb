@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.function.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.function.SQLAggregatedCollectionFunction;
 
 import java.util.*;
 
@@ -30,7 +31,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> {
+public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object> {
   public static final String NAME = "intersect";
 
   public SQLFunctionIntersect() {

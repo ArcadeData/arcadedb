@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.function.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.function.SQLAggregatedCollectionFunction;
 
 import java.util.*;
 
@@ -29,7 +30,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionList extends SQLFunctionMultiValueAbstract<List<Object>> {
+public class SQLFunctionList extends SQLAggregatedCollectionFunction<List<Object>> {
   public static final String NAME = "list";
 
   public SQLFunctionList() {

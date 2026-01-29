@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
 import java.util.*;
@@ -30,7 +31,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionMax extends SQLFunctionMathAbstract {
+public class SQLFunctionMax extends SQLAggregatedFunction {
   public static final String NAME = "max";
 
   private Object context;

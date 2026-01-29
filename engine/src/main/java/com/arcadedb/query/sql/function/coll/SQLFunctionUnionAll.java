@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.function.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.function.SQLAggregatedCollectionFunction;
 import com.arcadedb.utility.MultiIterator;
 
 import java.util.*;
@@ -32,7 +33,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionUnionAll extends SQLFunctionMultiValueAbstract<Collection<Object>> {
+public class SQLFunctionUnionAll extends SQLAggregatedCollectionFunction<Collection<Object>> {
   public static final String NAME = "unionAll";
 
   public SQLFunctionUnionAll() {

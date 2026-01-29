@@ -20,9 +20,9 @@ package com.arcadedb.query.sql.function.text;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 
-public class SQLFunctionConcat extends SQLFunctionConfigurableAbstract {
+public class SQLFunctionConcat extends SQLAggregatedFunction {
   public static final String        NAME = "concat";
   private             StringBuilder sb;
 

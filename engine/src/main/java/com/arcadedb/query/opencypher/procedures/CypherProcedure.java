@@ -18,11 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures;
 
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-
-import java.util.List;
-import java.util.stream.Stream;
+import com.arcadedb.function.procedure.Procedure;
 
 /**
  * Interface for namespaced Cypher procedures (e.g., merge.relationship, algo.dijkstra).
@@ -36,99 +32,21 @@ import java.util.stream.Stream;
  * </ul>
  * </p>
  * <p>
+ * This interface extends {@link Procedure} making all Cypher procedures available
+ * in the unified {@link com.arcadedb.function.procedure.ProcedureRegistry}.
+ * </p>
+ * <p>
  * Example Cypher usage:
  * <pre>
  * CALL merge.relationship(a, 'KNOWS', {}, {since: 2020}, b) YIELD rel
  * </pre>
  * </p>
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @see Procedure
+ * @see com.arcadedb.function.procedure.ProcedureRegistry
  */
-public interface CypherProcedure {
-  /**
-   * Returns the fully qualified procedure name (e.g., "merge.relationship").
-   *
-   * @return the procedure name including namespace
-   */
-  String getName();
-
-  /**
-   * Returns the minimum number of arguments required.
-   *
-   * @return minimum argument count
-   */
-  int getMinArgs();
-
-  /**
-   * Returns the maximum number of arguments allowed.
-   *
-   * @return maximum argument count
-   */
-  int getMaxArgs();
-
-  /**
-   * Returns a description of the procedure for documentation.
-   *
-   * @return procedure description
-   */
-  String getDescription();
-
-  /**
-   * Returns the names of fields that can be yielded from this procedure.
-   * <p>
-   * Example: For merge.relationship, this would return ["rel"].
-   * For algo.dijkstra, this would return ["path", "weight"].
-   * </p>
-   *
-   * @return list of yield field names
-   */
-  List<String> getYieldFields();
-
-  /**
-   * Executes the procedure with the given arguments.
-   * <p>
-   * The procedure returns a Stream of Results, where each Result contains
-   * the yield fields. For single-result procedures (like merge.relationship),
-   * the stream will contain one element. For multi-result procedures
-   * (like algo.allSimplePaths), it may contain many elements.
-   * </p>
-   *
-   * @param args     the procedure arguments (already evaluated)
-   * @param inputRow the current input row (may be null for standalone CALL)
-   * @param context  the command execution context
-   * @return stream of results, each containing the yield fields
-   */
-  Stream<Result> execute(Object[] args, Result inputRow, CommandContext context);
-
-  /**
-   * Validates the arguments before execution.
-   * Default implementation checks argument count.
-   *
-   * @param args the arguments to validate
-   * @throws IllegalArgumentException if arguments are invalid
-   */
-  default void validateArgs(final Object[] args) {
-    if (args.length < getMinArgs() || args.length > getMaxArgs()) {
-      if (getMinArgs() == getMaxArgs()) {
-        throw new IllegalArgumentException(
-            getName() + "() requires exactly " + getMinArgs() + " argument(s), got " + args.length);
-      } else {
-        throw new IllegalArgumentException(
-            getName() + "() requires " + getMinArgs() + " to " + getMaxArgs() + " arguments, got " + args.length);
-      }
-    }
-  }
-
-  /**
-   * Returns whether this procedure modifies the database.
-   * <p>
-   * Write procedures (like merge.relationship) should return true.
-   * Read-only procedures (like algo.dijkstra) should return false.
-   * </p>
-   *
-   * @return true if the procedure can modify the database
-   */
-  default boolean isWriteProcedure() {
-    return false;
-  }
+public interface CypherProcedure extends Procedure {
+  // All methods inherited from Procedure
+  // Implementations remain compatible - no changes needed
 }

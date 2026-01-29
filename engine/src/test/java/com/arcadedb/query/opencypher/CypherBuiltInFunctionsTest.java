@@ -19,6 +19,11 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.Function;
+import com.arcadedb.function.FunctionRegistry;
+import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.procedure.Procedure;
+import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.query.opencypher.functions.CypherFunction;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
@@ -95,6 +100,71 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     assertTrue(CypherFunctionRegistry.hasFunction("text.capitalize"));
     assertTrue(CypherFunctionRegistry.hasFunction("text.camelCase"));
     assertTrue(CypherFunctionRegistry.hasFunction("text.levenshteinDistance"));
+  }
+
+  // ===================== UNIFIED REGISTRY TESTS =====================
+
+  @Test
+  public void testUnifiedFunctionRegistryHasCypherFunctions() {
+    // Verify Cypher functions are registered in unified FunctionRegistry
+    assertTrue(FunctionRegistry.hasFunction("text.indexOf"));
+    assertTrue(FunctionRegistry.hasFunction("map.merge"));
+    assertTrue(FunctionRegistry.hasFunction("math.sigmoid"));
+    assertTrue(FunctionRegistry.hasFunction("convert.toJson"));
+    assertTrue(FunctionRegistry.hasFunction("date.currentTimestamp"));
+    assertTrue(FunctionRegistry.hasFunction("util.md5"));
+    assertTrue(FunctionRegistry.hasFunction("agg.median"));
+
+    // Verify APOC prefix works with unified registry
+    assertTrue(FunctionRegistry.hasFunction("apoc.text.indexOf"));
+    assertTrue(FunctionRegistry.hasFunction("APOC.MAP.MERGE"));
+  }
+
+  @Test
+  public void testUnifiedFunctionRegistryReturnsStatelessFunction() {
+    // Verify functions from unified registry are StatelessFunction
+    Function fn = FunctionRegistry.get("text.indexOf");
+    assertNotNull(fn);
+    assertTrue(fn instanceof StatelessFunction);
+
+    // Verify stateless function can be executed
+    StatelessFunction sf = FunctionRegistry.getStateless("text.indexOf");
+    assertNotNull(sf);
+    assertEquals(0L, sf.execute(new Object[]{"hello", "h"}, null));
+  }
+
+  @Test
+  public void testUnifiedProcedureRegistryHasCypherProcedures() {
+    // Verify Cypher procedures are registered in unified ProcedureRegistry
+    assertTrue(ProcedureRegistry.hasProcedure("merge.relationship"));
+    assertTrue(ProcedureRegistry.hasProcedure("merge.node"));
+    assertTrue(ProcedureRegistry.hasProcedure("algo.dijkstra"));
+
+    // Verify APOC prefix works with unified registry
+    assertTrue(ProcedureRegistry.hasProcedure("apoc.merge.relationship"));
+    assertTrue(ProcedureRegistry.hasProcedure("APOC.MERGE.NODE"));
+  }
+
+  @Test
+  public void testUnifiedProcedureRegistryReturnsProcedure() {
+    // Verify procedures from unified registry implement Procedure interface
+    Procedure proc = ProcedureRegistry.get("merge.relationship");
+    assertNotNull(proc);
+    assertEquals("merge.relationship", proc.getName());
+    assertTrue(proc.isWriteProcedure());
+    assertEquals(List.of("rel"), proc.getYieldFields());
+  }
+
+  @Test
+  public void testCypherFunctionInstancesAreSameInBothRegistries() {
+    // Verify same instance is returned from both registries
+    CypherFunction cypherFn = CypherFunctionRegistry.get("text.indexOf");
+    Function unifiedFn = FunctionRegistry.get("text.indexOf");
+    assertSame(cypherFn, unifiedFn);
+
+    CypherProcedure cypherProc = CypherProcedureRegistry.get("merge.relationship");
+    Procedure unifiedProc = ProcedureRegistry.get("merge.relationship");
+    assertSame(cypherProc, unifiedProc);
   }
 
   @Test
@@ -690,6 +760,333 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     assertEquals(2, items.size());
     assertTrue(items.contains("c"));
     assertTrue(items.contains("e"));
+  }
+
+  // ===================== NODE FUNCTION TESTS =====================
+
+  @Test
+  public void testFunctionRegistryHasNodeFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("node.degree"));
+    assertTrue(CypherFunctionRegistry.hasFunction("node.degree.in"));
+    assertTrue(CypherFunctionRegistry.hasFunction("node.degree.out"));
+    assertTrue(CypherFunctionRegistry.hasFunction("node.labels"));
+    assertTrue(CypherFunctionRegistry.hasFunction("node.id"));
+    assertTrue(CypherFunctionRegistry.hasFunction("node.relationship.exists"));
+    assertTrue(CypherFunctionRegistry.hasFunction("node.relationship.types"));
+  }
+
+  @Test
+  public void testApocPrefixCompatibilityForNodeFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.node.degree"));
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.node.labels"));
+    assertSame(CypherFunctionRegistry.get("node.degree"), CypherFunctionRegistry.get("apoc.node.degree"));
+  }
+
+  // ===================== REL FUNCTION TESTS =====================
+
+  @Test
+  public void testFunctionRegistryHasRelFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("rel.id"));
+    assertTrue(CypherFunctionRegistry.hasFunction("rel.type"));
+    assertTrue(CypherFunctionRegistry.hasFunction("rel.startNode"));
+    assertTrue(CypherFunctionRegistry.hasFunction("rel.endNode"));
+  }
+
+  @Test
+  public void testApocPrefixCompatibilityForRelFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.rel.type"));
+    assertSame(CypherFunctionRegistry.get("rel.type"), CypherFunctionRegistry.get("apoc.rel.type"));
+  }
+
+  // ===================== PATH FUNCTION TESTS =====================
+
+  @Test
+  public void testFunctionRegistryHasPathFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("path.create"));
+    assertTrue(CypherFunctionRegistry.hasFunction("path.combine"));
+    assertTrue(CypherFunctionRegistry.hasFunction("path.slice"));
+    assertTrue(CypherFunctionRegistry.hasFunction("path.elements"));
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testPathCreate() {
+    final CypherFunction fn = CypherFunctionRegistry.get("path.create");
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(
+        new Object[]{"startNode", List.of("rel1", "rel2")}, null);
+
+    assertNotNull(result);
+    assertEquals("path", result.get("_type"));
+    assertEquals(2, result.get("length"));
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testPathElements() {
+    final CypherFunction createFn = CypherFunctionRegistry.get("path.create");
+    final Map<String, Object> path = (Map<String, Object>) createFn.execute(
+        new Object[]{"startNode", List.of("rel1")}, null);
+
+    final CypherFunction fn = CypherFunctionRegistry.get("path.elements");
+    final List<Object> elements = (List<Object>) fn.execute(new Object[]{path}, null);
+
+    assertNotNull(elements);
+    assertTrue(elements.size() >= 1);
+  }
+
+  // ===================== CREATE FUNCTION TESTS =====================
+
+  @Test
+  public void testFunctionRegistryHasCreateFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("create.uuid"));
+    assertTrue(CypherFunctionRegistry.hasFunction("create.uuidBase64"));
+    assertTrue(CypherFunctionRegistry.hasFunction("create.vNode"));
+    assertTrue(CypherFunctionRegistry.hasFunction("create.vRelationship"));
+  }
+
+  @Test
+  public void testCreateUuid() {
+    final CypherFunction fn = CypherFunctionRegistry.get("create.uuid");
+    final String uuid1 = (String) fn.execute(new Object[]{}, null);
+    final String uuid2 = (String) fn.execute(new Object[]{}, null);
+
+    assertNotNull(uuid1);
+    assertNotNull(uuid2);
+    assertNotEquals(uuid1, uuid2);
+    // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    assertTrue(uuid1.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
+  }
+
+  @Test
+  public void testCreateUuidBase64() {
+    final CypherFunction fn = CypherFunctionRegistry.get("create.uuidBase64");
+    final String uuid1 = (String) fn.execute(new Object[]{}, null);
+    final String uuid2 = (String) fn.execute(new Object[]{}, null);
+
+    assertNotNull(uuid1);
+    assertNotNull(uuid2);
+    assertNotEquals(uuid1, uuid2);
+    // Base64 UUID should be 22 characters (128 bits / 6 bits per char = ~22)
+    assertEquals(22, uuid1.length());
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testCreateVNode() {
+    final CypherFunction fn = CypherFunctionRegistry.get("create.vNode");
+    final Map<String, Object> vNode = (Map<String, Object>) fn.execute(
+        new Object[]{List.of("Person", "Employee"), Map.of("name", "John", "age", 30)}, null);
+
+    assertNotNull(vNode);
+    assertEquals("vNode", vNode.get("_type"));
+    assertEquals(List.of("Person", "Employee"), vNode.get("_labels"));
+    assertEquals("John", vNode.get("name"));
+    assertEquals(30, vNode.get("age"));
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testCreateVRelationship() {
+    final CypherFunction fn = CypherFunctionRegistry.get("create.vRelationship");
+    final Map<String, Object> vRel = (Map<String, Object>) fn.execute(
+        new Object[]{"node1", "KNOWS", "node2", Map.of("since", 2020)}, null);
+
+    assertNotNull(vRel);
+    assertEquals("vRelationship", vRel.get("_type"));
+    assertEquals("KNOWS", vRel.get("_relType"));
+    assertEquals(2020, vRel.get("since"));
+  }
+
+  // ===================== SPRINT 4: ALGORITHM PROCEDURE TESTS =====================
+
+  @Test
+  public void testProcedureRegistryHasAlgorithmProcedures() {
+    assertTrue(CypherProcedureRegistry.hasProcedure("algo.dijkstra"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("algo.astar"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("algo.allsimplepaths"));
+  }
+
+  @Test
+  public void testApocPrefixCompatibilityForAlgorithmProcedures() {
+    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.algo.dijkstra"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.algo.astar"));
+    assertSame(CypherProcedureRegistry.get("algo.dijkstra"), CypherProcedureRegistry.get("apoc.algo.dijkstra"));
+  }
+
+  @Test
+  public void testAlgoDijkstraProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("algo.dijkstra");
+    assertNotNull(proc);
+    assertEquals("algo.dijkstra", proc.getName());
+    assertEquals(4, proc.getMinArgs());
+    assertEquals(5, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("path"));
+    assertTrue(proc.getYieldFields().contains("weight"));
+  }
+
+  @Test
+  public void testAlgoAStarProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("algo.astar");
+    assertNotNull(proc);
+    assertEquals("algo.astar", proc.getName());
+    assertEquals(4, proc.getMinArgs());
+    assertEquals(6, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("path"));
+    assertTrue(proc.getYieldFields().contains("weight"));
+  }
+
+  @Test
+  public void testAlgoAllSimplePathsProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("algo.allsimplepaths");
+    assertNotNull(proc);
+    assertEquals("algo.allsimplepaths", proc.getName());
+    assertEquals(4, proc.getMinArgs());
+    assertEquals(4, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("path"));
+  }
+
+  // ===================== SPRINT 4: PATH EXPANSION PROCEDURE TESTS =====================
+
+  @Test
+  public void testProcedureRegistryHasPathProcedures() {
+    assertTrue(CypherProcedureRegistry.hasProcedure("path.expand"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("path.expandconfig"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("path.subgraphnodes"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("path.subgraphall"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("path.spanningtree"));
+  }
+
+  @Test
+  public void testApocPrefixCompatibilityForPathProcedures() {
+    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.path.expand"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.path.expandconfig"));
+    assertSame(CypherProcedureRegistry.get("path.expand"), CypherProcedureRegistry.get("apoc.path.expand"));
+  }
+
+  @Test
+  public void testPathExpandProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("path.expand");
+    assertNotNull(proc);
+    assertEquals("path.expand", proc.getName());
+    assertEquals(5, proc.getMinArgs());
+    assertEquals(5, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("path"));
+  }
+
+  @Test
+  public void testPathExpandConfigProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("path.expandconfig");
+    assertNotNull(proc);
+    assertEquals("path.expandconfig", proc.getName());
+    assertEquals(2, proc.getMinArgs());
+    assertEquals(2, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("path"));
+  }
+
+  @Test
+  public void testPathSubgraphNodesProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("path.subgraphnodes");
+    assertNotNull(proc);
+    assertEquals("path.subgraphnodes", proc.getName());
+    assertEquals(2, proc.getMinArgs());
+    assertEquals(2, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("node"));
+  }
+
+  @Test
+  public void testPathSubgraphAllProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("path.subgraphall");
+    assertNotNull(proc);
+    assertEquals("path.subgraphall", proc.getName());
+    assertEquals(2, proc.getMinArgs());
+    assertEquals(2, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("nodes"));
+    assertTrue(proc.getYieldFields().contains("relationships"));
+  }
+
+  @Test
+  public void testPathSpanningTreeProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("path.spanningtree");
+    assertNotNull(proc);
+    assertEquals("path.spanningtree", proc.getName());
+    assertEquals(2, proc.getMinArgs());
+    assertEquals(2, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("path"));
+  }
+
+  // ===================== SPRINT 4: META PROCEDURE TESTS =====================
+
+  @Test
+  public void testProcedureRegistryHasMetaProcedures() {
+    assertTrue(CypherProcedureRegistry.hasProcedure("meta.graph"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("meta.schema"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("meta.stats"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("meta.nodetypeproperties"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("meta.reltypeproperties"));
+  }
+
+  @Test
+  public void testApocPrefixCompatibilityForMetaProcedures() {
+    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.meta.graph"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.meta.schema"));
+    assertSame(CypherProcedureRegistry.get("meta.graph"), CypherProcedureRegistry.get("apoc.meta.graph"));
+  }
+
+  @Test
+  public void testMetaGraphProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("meta.graph");
+    assertNotNull(proc);
+    assertEquals("meta.graph", proc.getName());
+    assertEquals(0, proc.getMinArgs());
+    assertEquals(0, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("nodes"));
+    assertTrue(proc.getYieldFields().contains("relationships"));
+  }
+
+  @Test
+  public void testMetaSchemaProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("meta.schema");
+    assertNotNull(proc);
+    assertEquals("meta.schema", proc.getName());
+    assertEquals(0, proc.getMinArgs());
+    assertEquals(0, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("value"));
+  }
+
+  @Test
+  public void testMetaStatsProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("meta.stats");
+    assertNotNull(proc);
+    assertEquals("meta.stats", proc.getName());
+    assertEquals(0, proc.getMinArgs());
+    assertEquals(0, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("value"));
+  }
+
+  @Test
+  public void testMetaNodeTypePropertiesProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("meta.nodetypeproperties");
+    assertNotNull(proc);
+    assertEquals("meta.nodetypeproperties", proc.getName());
+    assertEquals(0, proc.getMinArgs());
+    assertEquals(0, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("nodeType"));
+    assertTrue(proc.getYieldFields().contains("propertyName"));
+    assertTrue(proc.getYieldFields().contains("propertyTypes"));
+    assertTrue(proc.getYieldFields().contains("mandatory"));
+  }
+
+  @Test
+  public void testMetaRelTypePropertiesProcedureMetadata() {
+    final CypherProcedure proc = CypherProcedureRegistry.get("meta.reltypeproperties");
+    assertNotNull(proc);
+    assertEquals("meta.reltypeproperties", proc.getName());
+    assertEquals(0, proc.getMinArgs());
+    assertEquals(0, proc.getMaxArgs());
+    assertTrue(proc.getYieldFields().contains("relType"));
+    assertTrue(proc.getYieldFields().contains("propertyName"));
+    assertTrue(proc.getYieldFields().contains("propertyTypes"));
+    assertTrue(proc.getYieldFields().contains("mandatory"));
   }
 
   // Note: Integration tests for Cypher queries with built-in functions

@@ -18,12 +18,17 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
+import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.functions.agg.*;
 import com.arcadedb.query.opencypher.functions.convert.*;
+import com.arcadedb.query.opencypher.functions.create.*;
 import com.arcadedb.query.opencypher.functions.date.*;
 import com.arcadedb.query.opencypher.functions.map.*;
 import com.arcadedb.query.opencypher.functions.math.*;
+import com.arcadedb.query.opencypher.functions.node.*;
+import com.arcadedb.query.opencypher.functions.path.*;
+import com.arcadedb.query.opencypher.functions.rel.*;
 import com.arcadedb.query.opencypher.functions.text.*;
 import com.arcadedb.query.opencypher.functions.util.*;
 
@@ -71,6 +76,9 @@ public final class CypherFunctionRegistry {
 
   /**
    * Registers a function in the registry.
+   * <p>
+   * Also registers the function in the unified {@link FunctionRegistry} for cross-engine access.
+   * </p>
    *
    * @param function the function to register
    * @throws IllegalArgumentException if a function with the same name is already registered
@@ -81,17 +89,25 @@ public final class CypherFunctionRegistry {
     if (existing != null) {
       LogManager.instance().log(CypherFunctionRegistry.class, Level.WARNING,
           "Function already registered, ignoring: " + name);
+    } else {
+      // Also register in the unified FunctionRegistry for cross-engine access
+      FunctionRegistry.register(function);
     }
   }
 
   /**
    * Registers a function, replacing any existing function with the same name.
+   * <p>
+   * Also registers the function in the unified {@link FunctionRegistry} for cross-engine access.
+   * </p>
    *
    * @param function the function to register
    */
   public static void registerOrReplace(final CypherFunction function) {
     final String name = function.getName().toLowerCase();
     FUNCTIONS.put(name, function);
+    // Also register in the unified FunctionRegistry for cross-engine access
+    FunctionRegistry.registerOrReplace(function);
   }
 
   /**
@@ -210,6 +226,12 @@ public final class CypherFunctionRegistry {
     registerUtilFunctions();
     // Agg functions
     registerAggFunctions();
+    // Node functions
+    registerNodeFunctions();
+    // Relationship functions
+    registerRelFunctions();
+    // Path functions
+    registerPathFunctions();
     // Create functions
     registerCreateFunctions();
   }
@@ -320,7 +342,34 @@ public final class CypherFunctionRegistry {
     register(new AggMaxItems());
   }
 
+  private static void registerNodeFunctions() {
+    register(new NodeDegree());
+    register(new NodeDegreeIn());
+    register(new NodeDegreeOut());
+    register(new NodeLabels());
+    register(new NodeId());
+    register(new NodeRelationshipExists());
+    register(new NodeRelationshipTypes());
+  }
+
+  private static void registerRelFunctions() {
+    register(new RelId());
+    register(new RelType());
+    register(new RelStartNode());
+    register(new RelEndNode());
+  }
+
+  private static void registerPathFunctions() {
+    register(new PathCreate());
+    register(new PathCombine());
+    register(new PathSlice());
+    register(new PathElements());
+  }
+
   private static void registerCreateFunctions() {
-    // Create functions will be registered here as they are implemented
+    register(new CreateUuid());
+    register(new CreateUuidBase64());
+    register(new CreateVNode());
+    register(new CreateVRelationship());
   }
 }

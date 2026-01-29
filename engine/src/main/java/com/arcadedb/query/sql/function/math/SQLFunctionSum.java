@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.function.math;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
 /**
@@ -29,7 +30,7 @@ import com.arcadedb.schema.Type;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionSum extends SQLFunctionMathAbstract {
+public class SQLFunctionSum extends SQLAggregatedFunction {
   public static final String NAME = "sum";
 
   private Number sum;

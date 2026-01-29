@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.function.StatelessFunction;
 
 /**
  * Interface for namespaced Cypher functions (e.g., text.indexOf, map.merge).
@@ -26,63 +26,16 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Functions are stateless operations that transform input values to output values.
  * For operations that modify the database or return multiple rows, use {@link com.arcadedb.query.opencypher.procedures.CypherProcedure} instead.
  * </p>
+ * <p>
+ * This interface extends {@link StatelessFunction} making all Cypher functions available
+ * in the unified {@link com.arcadedb.function.FunctionRegistry}.
+ * </p>
  *
  * @author ArcadeDB Team
+ * @see StatelessFunction
+ * @see com.arcadedb.function.FunctionRegistry
  */
-public interface CypherFunction {
-  /**
-   * Returns the fully qualified function name (e.g., "text.indexOf").
-   *
-   * @return the function name including namespace
-   */
-  String getName();
-
-  /**
-   * Returns the minimum number of arguments required.
-   *
-   * @return minimum argument count
-   */
-  int getMinArgs();
-
-  /**
-   * Returns the maximum number of arguments allowed.
-   *
-   * @return maximum argument count
-   */
-  int getMaxArgs();
-
-  /**
-   * Returns a description of the function for documentation.
-   *
-   * @return function description
-   */
-  String getDescription();
-
-  /**
-   * Executes the function with the given arguments.
-   *
-   * @param args    the function arguments (already evaluated)
-   * @param context the command execution context
-   * @return the function result
-   */
-  Object execute(Object[] args, CommandContext context);
-
-  /**
-   * Validates the arguments before execution.
-   * Default implementation checks argument count.
-   *
-   * @param args the arguments to validate
-   * @throws IllegalArgumentException if arguments are invalid
-   */
-  default void validateArgs(final Object[] args) {
-    if (args.length < getMinArgs() || args.length > getMaxArgs()) {
-      if (getMinArgs() == getMaxArgs()) {
-        throw new IllegalArgumentException(
-            getName() + "() requires exactly " + getMinArgs() + " argument(s), got " + args.length);
-      } else {
-        throw new IllegalArgumentException(
-            getName() + "() requires " + getMinArgs() + " to " + getMaxArgs() + " arguments, got " + args.length);
-      }
-    }
-  }
+public interface CypherFunction extends StatelessFunction {
+  // All methods inherited from StatelessFunction and Function
+  // Implementations remain compatible - no changes needed
 }

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.function.coll;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.function.SQLAggregatedCollectionFunction;
 
 import java.util.*;
 
@@ -28,7 +29,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<String, Object>> {
+public class SQLFunctionMap extends SQLAggregatedCollectionFunction<Map<String, Object>> {
   public static final String NAME = "map";
 
   public SQLFunctionMap() {

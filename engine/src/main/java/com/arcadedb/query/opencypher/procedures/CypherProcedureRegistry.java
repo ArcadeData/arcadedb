@@ -18,9 +18,23 @@
  */
 package com.arcadedb.query.opencypher.procedures;
 
+import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAStar;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAllSimplePaths;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoDijkstra;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
 import com.arcadedb.query.opencypher.procedures.merge.MergeRelationship;
+import com.arcadedb.query.opencypher.procedures.meta.MetaGraph;
+import com.arcadedb.query.opencypher.procedures.meta.MetaNodeTypeProperties;
+import com.arcadedb.query.opencypher.procedures.meta.MetaRelTypeProperties;
+import com.arcadedb.query.opencypher.procedures.meta.MetaSchema;
+import com.arcadedb.query.opencypher.procedures.meta.MetaStats;
+import com.arcadedb.query.opencypher.procedures.path.PathExpand;
+import com.arcadedb.query.opencypher.procedures.path.PathExpandConfig;
+import com.arcadedb.query.opencypher.procedures.path.PathSpanningTree;
+import com.arcadedb.query.opencypher.procedures.path.PathSubgraphAll;
+import com.arcadedb.query.opencypher.procedures.path.PathSubgraphNodes;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -66,6 +80,9 @@ public final class CypherProcedureRegistry {
 
   /**
    * Registers a procedure in the registry.
+   * <p>
+   * Also registers the procedure in the unified {@link ProcedureRegistry} for cross-engine access.
+   * </p>
    *
    * @param procedure the procedure to register
    * @throws IllegalArgumentException if a procedure with the same name is already registered
@@ -76,17 +93,25 @@ public final class CypherProcedureRegistry {
     if (existing != null) {
       LogManager.instance().log(CypherProcedureRegistry.class, Level.WARNING,
           "Procedure already registered, ignoring: " + name);
+    } else {
+      // Also register in the unified ProcedureRegistry for cross-engine access
+      ProcedureRegistry.register(procedure);
     }
   }
 
   /**
    * Registers a procedure, replacing any existing procedure with the same name.
+   * <p>
+   * Also registers the procedure in the unified {@link ProcedureRegistry} for cross-engine access.
+   * </p>
    *
    * @param procedure the procedure to register
    */
   public static void registerOrReplace(final CypherProcedure procedure) {
     final String name = procedure.getName().toLowerCase();
     PROCEDURES.put(name, procedure);
+    // Also register in the unified ProcedureRegistry for cross-engine access
+    ProcedureRegistry.registerOrReplace(procedure);
   }
 
   /**
@@ -207,14 +232,24 @@ public final class CypherProcedureRegistry {
   }
 
   private static void registerAlgorithmProcedures() {
-    // Algorithm procedures will be registered here as they are implemented
+    register(new AlgoDijkstra());
+    register(new AlgoAStar());
+    register(new AlgoAllSimplePaths());
   }
 
   private static void registerPathProcedures() {
-    // Path procedures will be registered here as they are implemented
+    register(new PathExpand());
+    register(new PathExpandConfig());
+    register(new PathSubgraphNodes());
+    register(new PathSubgraphAll());
+    register(new PathSpanningTree());
   }
 
   private static void registerMetaProcedures() {
-    // Meta procedures will be registered here as they are implemented
+    register(new MetaGraph());
+    register(new MetaSchema());
+    register(new MetaStats());
+    register(new MetaNodeTypeProperties());
+    register(new MetaRelTypeProperties());
   }
 }
