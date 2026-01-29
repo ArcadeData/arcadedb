@@ -351,6 +351,8 @@ class CypherExpressionBuilder {
 
   /**
    * Recursively find function invocation in the parse tree using depth-first search.
+   * Does NOT recurse into MapContext to avoid matching nested function calls inside map literals.
+   * This ensures that {typeR: type(r)} is recognized as a map, not as the type() function call.
    */
   Cypher25Parser.FunctionInvocationContext findFunctionInvocationRecursive(
       final ParseTree node) {
@@ -360,6 +362,12 @@ class CypherExpressionBuilder {
 
     if (node instanceof Cypher25Parser.FunctionInvocationContext) {
       return (Cypher25Parser.FunctionInvocationContext) node;
+    }
+
+    // Do NOT recurse into map literals - they should be recognized separately
+    // and their internal expressions (including function calls) parsed later
+    if (node instanceof Cypher25Parser.MapContext) {
+      return null;
     }
 
     for (int i = 0; i < node.getChildCount(); i++) {
@@ -541,6 +549,8 @@ class CypherExpressionBuilder {
 
   /**
    * Recursively find MapContext in the parse tree (for map literals like {name: 'Alice'})
+   * Does NOT recurse into FunctionInvocationContext to avoid matching map literals inside function arguments.
+   * This ensures that func({a: 1}) is recognized as a function call, not as the map literal.
    */
   Cypher25Parser.MapContext findMapRecursive(final ParseTree node) {
     if (node == null)
@@ -548,6 +558,11 @@ class CypherExpressionBuilder {
 
     if (node instanceof Cypher25Parser.MapContext)
       return (Cypher25Parser.MapContext) node;
+
+    // Do NOT recurse into function invocations - they should be recognized separately
+    // and their internal arguments (including map literals) parsed later
+    if (node instanceof Cypher25Parser.FunctionInvocationContext)
+      return null;
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.MapContext found = findMapRecursive(node.getChild(i));

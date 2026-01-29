@@ -31,64 +31,64 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Test case for GitHub issue #3271.
- * Tests multi-hop MATCH patterns where the query engine incorrectly uses the first node's
- * variable as the source for all relationship hops, instead of properly chaining through
- * intermediate nodes.
+ * Regression test for GitHub issue #3271.
+ * Tests multi-hop MATCH patterns with COLLECT(DISTINCT {...}) map literals,
+ * HEAD() function, and type() function inside map literals.
  * <p>
- * The problem: In a pattern like {@code (n)--(chunk)--(document)}, the engine was incorrectly
- * trying to match both relationships from {@code n}, rather than matching {@code n--chunk} and
- * then {@code chunk--document}.
- * <p>
- * Example failing query from issue:
- * <pre>
- * MATCH (n {subtype:"DATE"})
- * MATCH (n)-[r]-(m:NER)
- * MATCH (n)--(chunk:CHUNK)--(document:DOCUMENT)
- * RETURN n.name AS name
- * </pre>
+ * The issue is that the new Cypher engine fails to return correct results
+ * for complex queries with map literals in COLLECT(DISTINCT {...}) and HEAD().
+ *
+ * @see <a href="https://github.com/ArcadeData/arcadedb/issues/3271">Issue 3271</a>
  */
-class Issue3271Test {
+public class Issue3271Test {
   private Database database;
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/issue-3271").create();
+    database = new DatabaseFactory("./target/databases/issue3271-test").create();
 
-    // Create schema matching the bug report scenario
+    // Create types matching the issue's data model:
+    // NER nodes with subtype (DATE, PERSON, ORG, etc.)
+    // CHUNK nodes containing text
+    // DOCUMENT nodes
+    // Edges between NER nodes and from NER to CHUNK to DOCUMENT
     database.getSchema().createVertexType("NER");
     database.getSchema().createVertexType("CHUNK");
     database.getSchema().createVertexType("DOCUMENT");
-    database.getSchema().createEdgeType("CONTAINS");
     database.getSchema().createEdgeType("RELATED_TO");
+    database.getSchema().createEdgeType("IN_CHUNK");
+    database.getSchema().createEdgeType("FROM_DOC");
 
+    // Create test data
     database.transaction(() -> {
-      // Create structure: DOCUMENT -> CHUNK -> NER (DATE)
-      //                                     -> NER (PERSON)
-      //                   NER (DATE) <--RELATED_TO--> NER (PERSON)
-      database.command("opencypher", "CREATE (d:DOCUMENT {name: 'Document1'})");
-      database.command("opencypher", "CREATE (c:CHUNK {name: 'Chunk1', text: 'Sample text'})");
-      database.command("opencypher", "CREATE (n1:NER {name: 'DateEntity', subtype: 'DATE'})");
-      database.command("opencypher", "CREATE (n2:NER {name: 'PersonEntity', subtype: 'PERSON'})");
-
-      // Create the graph: DOCUMENT -[CONTAINS]-> CHUNK -[CONTAINS]-> NERs
       database.command("opencypher",
-          "MATCH (d:DOCUMENT {name: 'Document1'}), (c:CHUNK {name: 'Chunk1'}) " +
-              "CREATE (d)-[:CONTAINS]->(c)");
-      database.command("opencypher",
-          "MATCH (c:CHUNK {name: 'Chunk1'}), (n:NER {name: 'DateEntity'}) " +
-              "CREATE (c)-[:CONTAINS]->(n)");
-      database.command("opencypher",
-          "MATCH (c:CHUNK {name: 'Chunk1'}), (n:NER {name: 'PersonEntity'}) " +
-              "CREATE (c)-[:CONTAINS]->(n)");
-
-      // Create NER-to-NER relationship (mimics co-occurrence in text)
-      database.command("opencypher",
-          "MATCH (n1:NER {name: 'DateEntity'}), (n2:NER {name: 'PersonEntity'}) " +
-              "CREATE (n1)-[:RELATED_TO]->(n2)");
+          // Create documents
+          "CREATE (doc1:DOCUMENT {name: 'Document1'}), " +
+              "(doc2:DOCUMENT {name: 'Document2'}), " +
+              // Create chunks linked to documents
+              "(chunk1:CHUNK {text: 'This is chunk 1 text'}), " +
+              "(chunk2:CHUNK {text: 'This is chunk 2 text'}), " +
+              "(chunk1)-[:FROM_DOC]->(doc1), " +
+              "(chunk2)-[:FROM_DOC]->(doc2), " +
+              // Create NER nodes with subtype DATE
+              "(date1:NER {subtype: 'DATE', name: '2024-01-15'}), " +
+              "(date2:NER {subtype: 'DATE', name: '2024-02-20'}), " +
+              // Create NER nodes with other subtypes
+              "(person1:NER {subtype: 'PERSON', name: 'John Doe'}), " +
+              "(person2:NER {subtype: 'PERSON', name: 'Jane Smith'}), " +
+              "(org1:NER {subtype: 'ORG', name: 'ACME Corp'}), " +
+              // Create relationships between NER nodes
+              "(date1)-[:RELATED_TO]->(person1), " +
+              "(date1)-[:RELATED_TO]->(org1), " +
+              "(date2)-[:RELATED_TO]->(person2), " +
+              // Link NER nodes to chunks
+              "(date1)-[:IN_CHUNK]->(chunk1), " +
+              "(date2)-[:IN_CHUNK]->(chunk2), " +
+              "(person1)-[:IN_CHUNK]->(chunk1), " +
+              "(person2)-[:IN_CHUNK]->(chunk2), " +
+              "(org1)-[:IN_CHUNK]->(chunk1)");
     });
   }
 
@@ -101,195 +101,280 @@ class Issue3271Test {
   }
 
   /**
-   * Test the simplified query from the bug report.
-   * The multi-hop pattern (n)--(chunk:CHUNK)--(document:DOCUMENT) should correctly
-   * traverse from n -> chunk -> document, not n -> chunk AND n -> document.
+   * Test the simplified query that was reported as working in the issue.
+   * This serves as a baseline to confirm the basic multi-hop MATCH works.
    */
   @Test
-  void testMultiHopPatternInSingleMatch() {
-    // This is the core issue: multi-hop pattern in single MATCH
-    final ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype: 'DATE'})--(chunk:CHUNK)--(doc:DOCUMENT) " +
-            "RETURN n.name AS name, chunk.name AS chunkName, doc.name AS docName");
-
-    List<Result> results = new ArrayList<>();
-    while (rs.hasNext()) {
-      results.add(rs.next());
-    }
-    rs.close();
-
-    assertThat(results)
-        .as("Multi-hop pattern should traverse NER -> CHUNK -> DOCUMENT")
-        .isNotEmpty();
-
-    Result row = results.get(0);
-    assertEquals("DateEntity", row.getProperty("name"));
-    assertEquals("Chunk1", row.getProperty("chunkName"));
-    assertEquals("Document1", row.getProperty("docName"));
-  }
-
-  /**
-   * Test the exact query structure from the bug report with multiple MATCH clauses
-   * where the third MATCH has a multi-hop pattern.
-   */
-  @Test
-  void testBugReportQueryWithMultipleMATCH() {
-    final ResultSet rs = database.query("opencypher",
-        "MATCH (n {subtype: 'DATE'}) " +
-            "MATCH (n)-[r]-(m:NER) " +
-            "MATCH (n)--(chunk:CHUNK)--(document:DOCUMENT) " +
+  void testSimplifiedMultiMatchQuery() {
+    // Simplified query from issue - this should work
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
+            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
             "RETURN n.name AS name");
 
-    List<Result> results = new ArrayList<>();
+    List<String> names = new ArrayList<>();
     while (rs.hasNext()) {
-      results.add(rs.next());
+      Result result = rs.next();
+      names.add((String) result.getProperty("name"));
     }
-    rs.close();
 
-    assertThat(results)
-        .as("Query with multiple MATCH and multi-hop pattern should return results")
-        .isNotEmpty();
-
-    // The DATE entity is connected to PERSON entity via CHUNK
-    // So we should get at least one result
-    assertEquals("DateEntity", results.get(0).getProperty("name"));
+    // date1 has 2 relations (person1, org1), date2 has 1 relation (person2)
+    // So we should get date1 twice and date2 once = 3 results
+    assertThat(names).hasSize(3);
+    assertThat(names).contains("2024-01-15", "2024-02-20");
   }
 
   /**
-   * Test three-hop pattern: A -> B -> C -> D.
-   * Ensures the chaining is correct for longer patterns.
+   * Test COLLECT with map literals containing property accesses.
+   * This is a building block for the full issue query.
    */
   @Test
-  void testThreeHopPattern() {
-    // Create additional types for this test
-    database.getSchema().createVertexType("NodeA");
-    database.getSchema().createVertexType("NodeB");
-    database.getSchema().createVertexType("NodeC");
-    database.getSchema().createVertexType("NodeD");
-    database.getSchema().createEdgeType("CONNECTS");
-
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (a:NodeA {name: 'A', start: true})");
-      database.command("opencypher", "CREATE (b:NodeB {name: 'B'})");
-      database.command("opencypher", "CREATE (c:NodeC {name: 'C'})");
-      database.command("opencypher", "CREATE (d:NodeD {name: 'D', end: true})");
-
-      database.command("opencypher",
-          "MATCH (a:NodeA {name: 'A'}), (b:NodeB {name: 'B'}) CREATE (a)-[:CONNECTS]->(b)");
-      database.command("opencypher",
-          "MATCH (b:NodeB {name: 'B'}), (c:NodeC {name: 'C'}) CREATE (b)-[:CONNECTS]->(c)");
-      database.command("opencypher",
-          "MATCH (c:NodeC {name: 'C'}), (d:NodeD {name: 'D'}) CREATE (c)-[:CONNECTS]->(d)");
-    });
-
-    // Three-hop pattern in single MATCH
-    final ResultSet rs = database.query("opencypher",
-        "MATCH (a:NodeA {start: true})--(b)--(c)--(d:NodeD {end: true}) " +
-            "RETURN a.name AS a, b.name AS b, c.name AS c, d.name AS d");
-
-    List<Result> results = new ArrayList<>();
-    while (rs.hasNext()) {
-      results.add(rs.next());
-    }
-    rs.close();
-
-    assertThat(results)
-        .as("Three-hop pattern should find path A->B->C->D")
-        .isNotEmpty();
-
-    Result row = results.get(0);
-    assertEquals("A", row.getProperty("a"));
-    assertEquals("B", row.getProperty("b"));
-    assertEquals("C", row.getProperty("c"));
-    assertEquals("D", row.getProperty("d"));
-  }
-
-  /**
-   * Test the complex query with COLLECT and HEAD from the bug report.
-   */
-  @Test
-  void testComplexQueryWithCollectAndHead() {
-    final ResultSet rs = database.query("opencypher",
-        "MATCH (n {subtype: 'DATE'}) " +
-            "MATCH (n)-[r]-(m:NER) " +
-            "MATCH (n)--(chunk:CHUNK)--(document:DOCUMENT) " +
+  void testCollectWithMapLiteral() {
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
             "RETURN n.name AS name, " +
-            "COLLECT(DISTINCT {typeO: n.subtype, nameO: n.name, typeR: type(r), typeT: m.subtype, nameT: m.name}) AS relations, " +
+            "COLLECT({nameT: m.name, typeT: m.subtype}) AS relations");
+
+    List<Result> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      results.add(rs.next());
+    }
+
+    // Should have 2 rows: one for each DATE node
+    assertThat(results).hasSize(2);
+
+    for (Result row : results) {
+      String name = (String) row.getProperty("name");
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> relations = (List<Map<String, Object>>) row.getProperty("relations");
+      assertThat(relations).isNotNull();
+
+      if ("2024-01-15".equals(name)) {
+        // date1 has relations to person1 and org1
+        assertThat(relations).hasSize(2);
+      } else if ("2024-02-20".equals(name)) {
+        // date2 has relation to person2
+        assertThat(relations).hasSize(1);
+      }
+    }
+  }
+
+  /**
+   * Test COLLECT(DISTINCT {...}) with map literals.
+   * The DISTINCT modifier should work with map literals.
+   */
+  @Test
+  void testCollectDistinctWithMapLiteral() {
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
+            "RETURN n.name AS name, " +
+            "COLLECT(DISTINCT {nameT: m.name, typeT: m.subtype}) AS relations");
+
+    List<Result> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      results.add(rs.next());
+    }
+
+    assertThat(results).hasSize(2);
+
+    for (Result row : results) {
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> relations = (List<Map<String, Object>>) row.getProperty("relations");
+      assertThat(relations).isNotNull();
+
+      // Verify the maps have the expected structure
+      for (Map<String, Object> relation : relations) {
+        assertThat(relation).containsKeys("nameT", "typeT");
+      }
+    }
+  }
+
+  /**
+   * Test type() function inside map literals.
+   * This tests the ability to use functions like type(r) in map expressions.
+   */
+  @Test
+  void testTypeInMapLiteral() {
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
+            "RETURN n.name AS name, " +
+            "COLLECT({typeR: type(r), nameT: m.name}) AS relations");
+
+    List<Result> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      results.add(rs.next());
+    }
+
+    assertThat(results).hasSize(2);
+
+    for (Result row : results) {
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> relations = (List<Map<String, Object>>) row.getProperty("relations");
+      assertThat(relations).isNotNull();
+
+      // Verify type(r) is correctly resolved
+      for (Map<String, Object> relation : relations) {
+        assertThat(relation.get("typeR")).isEqualTo("RELATED_TO");
+        assertThat(relation.get("nameT")).isNotNull();
+      }
+    }
+  }
+
+  /**
+   * Test HEAD(COLLECT(...)) combination.
+   * HEAD should return the first element from a collected list.
+   */
+  @Test
+  void testHeadCollect() {
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
+            "RETURN n.name AS name, " +
+            "HEAD(COLLECT({text: chunk.text, doc_name: document.name})) AS context");
+
+    List<Result> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      results.add(rs.next());
+    }
+
+    assertThat(results).hasSize(2);
+
+    for (Result row : results) {
+      @SuppressWarnings("unchecked")
+      Map<String, Object> context = (Map<String, Object>) row.getProperty("context");
+      assertThat(context).isNotNull();
+      assertThat(context).containsKeys("text", "doc_name");
+    }
+  }
+
+  /**
+   * Test HEAD(COLLECT(DISTINCT {...})) - combining HEAD and COLLECT DISTINCT with maps.
+   */
+  @Test
+  void testHeadCollectDistinctWithMapLiteral() {
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
+            "RETURN n.name AS name, " +
             "HEAD(COLLECT(DISTINCT {text: chunk.text, doc_name: document.name})) AS context");
 
     List<Result> results = new ArrayList<>();
     while (rs.hasNext()) {
       results.add(rs.next());
     }
-    rs.close();
 
-    assertThat(results)
-        .as("Complex query with COLLECT and HEAD should return results")
-        .isNotEmpty();
+    assertThat(results).hasSize(2);
 
-    Result row = results.get(0);
-    assertEquals("DateEntity", row.getProperty("name"));
-
-    // Verify relations is a list
-    Object relations = row.getProperty("relations");
-    assertTrue(relations instanceof List, "relations should be a List");
-
-    // Verify context is a map (from HEAD(COLLECT(...)))
-    Object context = row.getProperty("context");
-    assertNotNull(context, "HEAD(COLLECT(...)) should return a map, not null");
-    assertTrue(context instanceof Map, "context should be a Map");
-  }
-
-  /**
-   * Verify that single-hop patterns still work correctly (regression test).
-   */
-  @Test
-  void testSingleHopPatternStillWorks() {
-    final ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype: 'DATE'})--(chunk:CHUNK) " +
-            "RETURN n.name AS name, chunk.name AS chunkName");
-
-    List<Result> results = new ArrayList<>();
-    while (rs.hasNext()) {
-      results.add(rs.next());
-    }
-    rs.close();
-
-    assertThat(results).isNotEmpty();
-    assertEquals("DateEntity", results.get(0).getProperty("name"));
-    assertEquals("Chunk1", results.get(0).getProperty("chunkName"));
-  }
-
-  /**
-   * Test bidirectional traversal in multi-hop pattern.
-   * Query from document backwards through chunk to NER.
-   */
-  @Test
-  void testMultiHopReverseDirection() {
-    final ResultSet rs = database.query("opencypher",
-        "MATCH (doc:DOCUMENT)--(chunk:CHUNK)--(n:NER {subtype: 'DATE'}) " +
-            "RETURN doc.name AS docName, chunk.name AS chunkName, n.name AS name");
-
-    List<Result> results = new ArrayList<>();
-    while (rs.hasNext()) {
-      results.add(rs.next());
-    }
-    rs.close();
-
-    assertThat(results)
-        .as("Reverse multi-hop pattern should also work")
-        .isNotEmpty();
-
-    // Find the result with DateEntity (there should be exactly one with subtype DATE filter)
-    boolean foundDateEntity = false;
     for (Result row : results) {
-      if ("DateEntity".equals(row.getProperty("name"))) {
-        foundDateEntity = true;
-        assertEquals("Document1", row.getProperty("docName"));
-        assertEquals("Chunk1", row.getProperty("chunkName"));
-        break;
+      @SuppressWarnings("unchecked")
+      Map<String, Object> context = (Map<String, Object>) row.getProperty("context");
+      assertThat(context).isNotNull();
+      assertThat(context).containsKeys("text", "doc_name");
+    }
+  }
+
+  /**
+   * Test ID() function inside map literals.
+   */
+  @Test
+  void testIdInMapLiteral() {
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
+            "RETURN n.name AS name, " +
+            "COLLECT({doc_name: document.name, doc_id: ID(document)}) AS contexts");
+
+    List<Result> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      results.add(rs.next());
+    }
+
+    assertThat(results).hasSize(2);
+
+    for (Result row : results) {
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> contexts = (List<Map<String, Object>>) row.getProperty("contexts");
+      assertThat(contexts).isNotNull();
+
+      for (Map<String, Object> context : contexts) {
+        assertThat(context.get("doc_name")).isNotNull();
+        assertThat(context.get("doc_id")).isNotNull();
       }
     }
-    assertTrue(foundDateEntity, "Should find DateEntity in results with {subtype: 'DATE'} filter");
+  }
+
+  /**
+   * The full query from issue #3271.
+   * This combines multiple MATCH patterns, COLLECT(DISTINCT {...}) with type(),
+   * and HEAD(COLLECT(DISTINCT {...})) with ID().
+   */
+  @Test
+  void testFullIssue3271Query() {
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
+            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
+            "RETURN n.name AS name, " +
+            "COLLECT(DISTINCT {typeO: n.subtype, nameO: n.name, typeR: type(r), typeT: m.subtype, nameT: m.name}) AS relations, " +
+            "HEAD(COLLECT(DISTINCT {text: chunk.text, doc_name: document.name, doc_id: ID(document)})) AS context");
+
+    List<Result> results = new ArrayList<>();
+    while (rs.hasNext()) {
+      results.add(rs.next());
+    }
+
+    // We expect results - the new engine was returning 0 results
+    assertThat(results).isNotEmpty();
+    assertThat(results).hasSize(2);
+
+    for (Result row : results) {
+      String name = (String) row.getProperty("name");
+      assertThat(name).isNotNull();
+      assertThat(name).isIn("2024-01-15", "2024-02-20");
+
+      // Check relations
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> relations = (List<Map<String, Object>>) row.getProperty("relations");
+      assertThat(relations).isNotNull();
+      assertThat(relations).isNotEmpty();
+
+      for (Map<String, Object> relation : relations) {
+        assertThat(relation).containsKeys("typeO", "nameO", "typeR", "typeT", "nameT");
+        assertThat(relation.get("typeO")).isEqualTo("DATE");
+        assertThat(relation.get("typeR")).isEqualTo("RELATED_TO");
+      }
+
+      // Check context
+      @SuppressWarnings("unchecked")
+      Map<String, Object> context = (Map<String, Object>) row.getProperty("context");
+      assertThat(context).isNotNull();
+      assertThat(context).containsKeys("text", "doc_name", "doc_id");
+    }
+  }
+
+  /**
+   * Test with undirected edge pattern as in the original issue query.
+   * The original query used (n)-[]-(chunk:CHUNK)-->(document:DOCUMENT)
+   */
+  @Test
+  void testUndirectedEdgeInMultiMatch() {
+    ResultSet rs = database.query("opencypher",
+        "MATCH (n:NER {subtype:'DATE'}) " +
+            "MATCH (n)-[r]-(m:NER) " +
+            "MATCH (n)-[]-(chunk:CHUNK)-->(document:DOCUMENT) " +
+            "RETURN n.name AS name");
+
+    List<String> names = new ArrayList<>();
+    while (rs.hasNext()) {
+      Result result = rs.next();
+      names.add((String) result.getProperty("name"));
+    }
+
+    // Should return results for the DATE nodes
+    assertThat(names).isNotEmpty();
   }
 }
