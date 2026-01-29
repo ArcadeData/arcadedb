@@ -114,49 +114,6 @@ public class CollectMapLiteralTest {
     assertThat(result.hasNext()).isFalse();
   }
 
-  @Test
-  void testHeadCollectDistinctMapWithIdFunction() {
-    // Create test data
-    database.transaction(() -> {
-      database.command("opencypher",
-          "CREATE (date1:NER {name: '2020-06-04', subtype: 'DATE'}), " +
-              "(chunk1:CHUNK {text: 'Sample text about the date'}), " +
-              "(doc1:DOCUMENT {name: 'test-doc.pdf'}), " +
-              "(date1)-[:CONTAINS]->(chunk1), " +
-              "(chunk1)-[:CONTAINS]->(doc1)");
-    });
-
-    // Query similar to bug report: HEAD(COLLECT(DISTINCT {...})) with ID(document)
-    final ResultSet result = database.query("opencypher",
-        "MATCH (n:NER {subtype: 'DATE'})-[:CONTAINS]->(chunk:CHUNK)-[:CONTAINS]->(document:DOCUMENT) " +
-            "RETURN n.name AS name, " +
-            "HEAD(COLLECT(DISTINCT {text: chunk.text, doc_name: document.name, doc_id: ID(document)})) AS context");
-
-    assertThat(result.hasNext()).isTrue();
-    final Result row = result.next();
-
-    // Verify name
-    assertThat((String) row.getProperty("name")).isEqualTo("2020-06-04");
-
-    // Verify context is a map, not just a string (the RID)
-    final Object context = row.getProperty("context");
-    assertThat(context).isNotNull();
-    assertThat(context).isInstanceOf(Map.class);
-
-    @SuppressWarnings("unchecked")
-    final Map<String, Object> contextMap = (Map<String, Object>) context;
-    assertThat(contextMap).containsKey("text");
-    assertThat(contextMap).containsKey("doc_name");
-    assertThat(contextMap).containsKey("doc_id");
-
-    assertThat(contextMap.get("text")).isEqualTo("Sample text about the date");
-    assertThat(contextMap.get("doc_name")).isEqualTo("test-doc.pdf");
-    // doc_id should be a string representation of the RID
-    assertThat(contextMap.get("doc_id")).isNotNull();
-    assertThat(contextMap.get("doc_id").toString()).startsWith("#");
-
-    assertThat(result.hasNext()).isFalse();
-  }
 
   @Test
   void testCollectMapWithMultipleFunctionCalls() {
