@@ -55,7 +55,12 @@ public class DateAdd extends AbstractDateFunction {
     final long value = args[1] instanceof Number ? ((Number) args[1]).longValue() : Long.parseLong(args[1].toString());
     final String unit = args[2] != null ? args[2].toString() : UNIT_MS;
 
-    final long addMillis = value * unitToMillis(unit);
-    return timestamp + addMillis;
+    try {
+      // Use Math.multiplyExact and Math.addExact to prevent integer overflow
+      final long addMillis = Math.multiplyExact(value, unitToMillis(unit));
+      return Math.addExact(timestamp, addMillis);
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException("Date arithmetic overflow: " + e.getMessage(), e);
+    }
   }
 }

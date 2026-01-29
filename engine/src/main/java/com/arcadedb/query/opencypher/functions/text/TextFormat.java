@@ -58,6 +58,10 @@ public class TextFormat extends AbstractTextFunction {
       return format;
 
     final Object[] formatArgs = Arrays.copyOfRange(args, 1, args.length);
-    return String.format(format, formatArgs);
+    try {
+      return String.format(format, formatArgs);
+    } catch (final java.util.IllegalFormatException e) {
+      throw new IllegalArgumentException("Invalid format string: " + e.getMessage(), e);
+    }
   }
 }

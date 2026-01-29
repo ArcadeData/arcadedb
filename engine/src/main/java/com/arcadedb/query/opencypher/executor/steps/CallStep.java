@@ -45,7 +45,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Execution step for CALL clause.
@@ -228,14 +227,17 @@ public class CallStep extends AbstractExecutionStep {
 
   /**
    * Executes a registered procedure.
+   * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory.
    */
   private Object executeProcedure(final CypherProcedure procedure, final Object[] args,
                                    final Result inputRow, final CommandContext context) {
     try {
       procedure.validateArgs(args);
+      // Return iterator for lazy evaluation instead of collecting to list
+      // This prevents memory exhaustion for procedures that yield many results
       return procedure.execute(args, inputRow, context)
           .map(this::convertProcedureResultToInternal)
-          .collect(Collectors.toList());
+          .iterator();
     } catch (final IllegalArgumentException e) {
       if (callClause.isOptional())
         return null;

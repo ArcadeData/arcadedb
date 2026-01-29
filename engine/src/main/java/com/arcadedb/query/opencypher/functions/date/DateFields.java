@@ -28,7 +28,14 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * date.fields(dateStr, format) - Extract all fields from date string.
+ * date.fields(dateStr, format, timezone) - Extract all fields from date string.
+ *
+ * <p><b>Parameters:</b></p>
+ * <ul>
+ *   <li>dateStr: The date string to parse</li>
+ *   <li>format: Optional date format pattern (defaults to ISO format)</li>
+ *   <li>timezone: Optional timezone ID (e.g., "UTC", "America/New_York", defaults to system timezone)</li>
+ * </ul>
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -45,12 +52,12 @@ public class DateFields extends AbstractDateFunction {
 
   @Override
   public int getMaxArgs() {
-    return 2;
+    return 3;
   }
 
   @Override
   public String getDescription() {
-    return "Parse a date string and extract all fields as a map";
+    return "Parse a date string and extract all fields as a map (supports optional timezone parameter)";
   }
 
   @Override
@@ -60,10 +67,23 @@ public class DateFields extends AbstractDateFunction {
 
     final String dateStr = args[0].toString();
     final String format = args.length > 1 && args[1] != null ? args[1].toString() : null;
+    final String timezoneStr = args.length > 2 && args[2] != null ? args[2].toString() : null;
+
+    // Validate and parse timezone if provided
+    final ZoneId zoneId;
+    if (timezoneStr != null) {
+      try {
+        zoneId = ZoneId.of(timezoneStr);
+      } catch (final java.time.DateTimeException e) {
+        throw new IllegalArgumentException("Invalid timezone ID: " + timezoneStr, e);
+      }
+    } else {
+      zoneId = ZoneId.systemDefault();
+    }
 
     final DateTimeFormatter formatter = getFormatter(format);
     final LocalDateTime localDateTime = LocalDateTime.parse(dateStr, formatter);
-    final ZonedDateTime dateTime = localDateTime.atZone(ZoneId.systemDefault());
+    final ZonedDateTime dateTime = localDateTime.atZone(zoneId);
 
     final Map<String, Object> fields = new HashMap<>();
     fields.put("year", (long) dateTime.getYear());

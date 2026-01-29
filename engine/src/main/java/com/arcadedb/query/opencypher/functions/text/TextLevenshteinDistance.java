@@ -23,9 +23,16 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * text.levenshteinDistance(str1, str2) - Calculate edit distance between strings.
  *
+ * <p><b>Performance:</b> O(n*m) time complexity and O(m) space complexity,
+ * where n and m are the lengths of the input strings. For large strings,
+ * this operation can be expensive.</p>
+ *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextLevenshteinDistance extends AbstractTextFunction {
+
+  private static final int MAX_STRING_LENGTH = 10000;
+
   @Override
   protected String getSimpleName() {
     return "levenshteinDistance";
@@ -43,7 +50,7 @@ public class TextLevenshteinDistance extends AbstractTextFunction {
 
   @Override
   public String getDescription() {
-    return "Calculate the Levenshtein edit distance between two strings";
+    return "Calculate the Levenshtein edit distance between two strings (O(n*m) complexity)";
   }
 
   @Override
@@ -54,11 +61,22 @@ public class TextLevenshteinDistance extends AbstractTextFunction {
     if (str1 == null || str2 == null)
       return null;
 
+    // Validate string lengths to prevent excessive computation
+    if (str1.length() > MAX_STRING_LENGTH) {
+      throw new IllegalArgumentException(
+          "String length exceeds maximum allowed for Levenshtein distance (" + MAX_STRING_LENGTH + "): " + str1.length());
+    }
+    if (str2.length() > MAX_STRING_LENGTH) {
+      throw new IllegalArgumentException(
+          "String length exceeds maximum allowed for Levenshtein distance (" + MAX_STRING_LENGTH + "): " + str2.length());
+    }
+
     return (long) levenshteinDistance(str1, str2);
   }
 
   /**
    * Calculate Levenshtein distance using dynamic programming.
+   * Time complexity: O(n*m), Space complexity: O(m) where n,m are string lengths.
    */
   public static int levenshteinDistance(final String s1, final String s2) {
     final int len1 = s1.length();

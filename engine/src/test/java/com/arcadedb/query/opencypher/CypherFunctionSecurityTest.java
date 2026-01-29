@@ -170,4 +170,168 @@ public class CypherFunctionSecurityTest {
     assertTrue(resultSet.hasNext());
     assertEquals("x    ", resultSet.next().getProperty("result"));
   }
+
+  @Test
+  public void testTextRegexReplaceCatastrophicBacktracking() {
+    // Test ReDoS protection - catastrophic backtracking pattern
+    final Exception exception = assertThrows(Exception.class, () -> {
+      database.query("opencypher", "RETURN text.regexReplace($str, $pattern, 'x') AS result",
+          "str", "aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "pattern", "(a+)+b");
+    });
+    assertTrue(exception.getMessage().contains("pattern") ||
+               exception.getMessage().contains("regex") ||
+               exception.getMessage().contains("timeout") ||
+               exception.getMessage().contains("too long"),
+        "Expected regex-related error but got: " + exception.getMessage());
+  }
+
+  @Test
+  public void testTextRegexReplaceTooLongPattern() {
+    // Test that excessively long patterns are rejected
+    final String longPattern = "a".repeat(1000);
+    final Exception exception = assertThrows(Exception.class, () -> {
+      database.query("opencypher", "RETURN text.regexReplace('test', $pattern, 'x') AS result",
+          "pattern", longPattern);
+    });
+    assertTrue(exception.getMessage().contains("pattern") ||
+               exception.getMessage().contains("regex") ||
+               exception.getMessage().contains("exceeds"),
+        "Expected pattern length error but got: " + exception.getMessage());
+  }
+
+  @Test
+  public void testTextRegexReplaceValidPattern() {
+    // Test that valid patterns work correctly
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN text.regexReplace('hello world', 'world', 'universe') AS result");
+    assertTrue(resultSet.hasNext());
+    assertEquals("hello universe", resultSet.next().getProperty("result"));
+  }
+
+  @Test
+  public void testDateAddOverflow() {
+    // Test that integer overflow is caught in date arithmetic
+    final Exception exception = assertThrows(Exception.class, () -> {
+      database.query("opencypher", "RETURN date.add(9223372036854775807, 1, 'ms') AS result");
+    });
+    assertTrue(exception.getMessage().contains("overflow") ||
+               exception.getMessage().contains("ArithmeticException"),
+        "Expected overflow error but got: " + exception.getMessage());
+  }
+
+  @Test
+  public void testDateAddMultiplicationOverflow() {
+    // Test that multiplication overflow is caught (large value * unit conversion)
+    final Exception exception = assertThrows(Exception.class, () -> {
+      database.query("opencypher", "RETURN date.add(0, 9223372036854775807, 'h') AS result");
+    });
+    assertTrue(exception.getMessage().contains("overflow") ||
+               exception.getMessage().contains("ArithmeticException"),
+        "Expected overflow error but got: " + exception.getMessage());
+  }
+
+  @Test
+  public void testDateAddValidOperation() {
+    // Test that valid date operations work
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN date.add(1000, 500, 'ms') AS result");
+    assertTrue(resultSet.hasNext());
+    assertEquals(1500L, resultSet.next().getProperty("result"));
+  }
+
+  @Test
+  public void testTextFormatInvalidFormat() {
+    // Test that invalid format strings are handled gracefully
+    final Exception exception = assertThrows(Exception.class, () -> {
+      database.query("opencypher", "RETURN text.format('%s %s', 'only one arg') AS result");
+    });
+    assertTrue(exception.getMessage().contains("format") ||
+               exception.getMessage().contains("MissingFormatArgumentException"),
+        "Expected format error but got: " + exception.getMessage());
+  }
+
+  @Test
+  public void testTextFormatIllegalFormatConversion() {
+    // Test that illegal format conversions are caught
+    final Exception exception = assertThrows(Exception.class, () -> {
+      database.query("opencypher", "RETURN text.format('%d', 'not a number') AS result");
+    });
+    assertTrue(exception.getMessage().contains("format") ||
+               exception.getMessage().contains("IllegalFormatConversionException"),
+        "Expected format conversion error but got: " + exception.getMessage());
+  }
+
+  @Test
+  public void testTextFormatValidUsage() {
+    // Test that valid formatting works
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN text.format('Hello %s, you are %d years old', 'Alice', 30) AS result");
+    assertTrue(resultSet.hasNext());
+    assertEquals("Hello Alice, you are 30 years old", resultSet.next().getProperty("result"));
+  }
+
+  @Test
+  public void testTextLevenshteinDistanceMaxLength() {
+    // Test that excessively long strings are rejected for Levenshtein distance
+    final String longString = "a".repeat(15000);
+    final Exception exception = assertThrows(Exception.class, () -> {
+      database.query("opencypher", "RETURN text.levenshteinDistance($str1, $str2) AS result",
+          "str1", longString,
+          "str2", "test");
+    });
+    assertTrue(exception.getMessage().contains("exceeds maximum allowed") ||
+               exception.getMessage().contains("String length"),
+        "Expected string length error but got: " + exception.getMessage());
+  }
+
+  @Test
+  public void testTextLevenshteinDistanceValidStrings() {
+    // Test that valid string comparison works
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN text.levenshteinDistance('kitten', 'sitting') AS result");
+    assertTrue(resultSet.hasNext());
+    assertEquals(3L, resultSet.next().getProperty("result"));
+  }
+
+  @Test
+  public void testDateFieldsInvalidTimezone() {
+    // Test that invalid timezone IDs are rejected
+    final Exception exception = assertThrows(Exception.class, () -> {
+      database.query("opencypher",
+          "RETURN date.fields('2024-01-15', 'yyyy-MM-dd', 'InvalidTimezone') AS result");
+    });
+    assertTrue(exception.getMessage().contains("timezone") ||
+               exception.getMessage().contains("Invalid"),
+        "Expected timezone error but got: " + exception.getMessage());
+  }
+
+  @Test
+  public void testDateFieldsValidTimezone() {
+    // Test that valid timezone handling works
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN date.fields('2024-01-15', 'yyyy-MM-dd', 'UTC') AS result");
+    assertTrue(resultSet.hasNext());
+    final Object result = resultSet.next().getProperty("result");
+    assertNotNull(result);
+    assertTrue(result instanceof java.util.Map);
+  }
+
+  @Test
+  public void testTextRegexReplaceNullHandling() {
+    // Test null handling in regex replace
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN text.regexReplace(null, 'pattern', 'replace') AS result");
+    assertTrue(resultSet.hasNext());
+    assertNull(resultSet.next().getProperty("result"));
+  }
+
+  @Test
+  public void testDateAddNullHandling() {
+    // Test null handling in date add
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN date.add(null, 100, 'ms') AS result");
+    assertTrue(resultSet.hasNext());
+    assertNull(resultSet.next().getProperty("result"));
+  }
 }

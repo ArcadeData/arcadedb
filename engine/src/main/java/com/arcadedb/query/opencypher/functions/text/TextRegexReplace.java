@@ -48,6 +48,8 @@ public class TextRegexReplace extends AbstractTextFunction {
     return "Replace all matches of a regular expression with replacement";
   }
 
+  private static final int MAX_PATTERN_LENGTH = 500;
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final String str = asString(args[0]);
@@ -60,6 +62,20 @@ public class TextRegexReplace extends AbstractTextFunction {
     if (regex == null)
       return str;
 
-    return Pattern.compile(regex).matcher(str).replaceAll(replacement == null ? "" : replacement);
+    // Validate pattern length to prevent ReDoS attacks
+    if (regex.length() > MAX_PATTERN_LENGTH) {
+      throw new IllegalArgumentException(
+          "Regex pattern exceeds maximum allowed length (" + MAX_PATTERN_LENGTH + "): " + regex.length());
+    }
+
+    try {
+      return Pattern.compile(regex).matcher(str).replaceAll(replacement == null ? "" : replacement);
+    } catch (final java.util.regex.PatternSyntaxException e) {
+      throw new IllegalArgumentException("Invalid regex pattern: " + e.getMessage(), e);
+    } catch (final StackOverflowError e) {
+      // Catastrophic backtracking can cause stack overflow
+      throw new IllegalArgumentException(
+          "Regex pattern caused stack overflow (possible catastrophic backtracking): " + regex, e);
+    }
   }
 }
