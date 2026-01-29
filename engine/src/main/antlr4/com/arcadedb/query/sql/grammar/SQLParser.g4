@@ -386,9 +386,10 @@ deleteStatement
 
 /**
  * DELETE FUNCTION statement
+ * Grammar: DELETE FUNCTION identifier DOT identifier
  */
 deleteFunctionStatement
-    : DELETE FUNCTION identifier
+    : DELETE FUNCTION identifier DOT identifier
     ;
 
 /**

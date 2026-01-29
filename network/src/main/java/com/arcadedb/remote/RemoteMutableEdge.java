@@ -49,10 +49,12 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   public MutableEdge save() {
     dirty = true;
+    final JSONObject json = toJSON();
+    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
     if (rid != null)
-      remoteDatabase.command("sql", "update " + rid + " content " + toJSON());
+      remoteDatabase.command("sql", "update " + rid + " content " + json);
     else
-      remoteDatabase.command("sql", "insert into " + getTypeName() + " content " + toJSON());
+      remoteDatabase.command("sql", "insert into " + getTypeName() + " content " + json);
     dirty = false;
     return this;
   }
@@ -62,7 +64,9 @@ public class RemoteMutableEdge extends MutableEdge {
     dirty = true;
     if (rid != null)
       throw new IllegalStateException("Cannot update a record in a custom bucket");
-    remoteDatabase.command("sql", "insert into " + getTypeName() + " bucket " + bucketName + " content " + toJSON());
+    final JSONObject json = toJSON();
+    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    remoteDatabase.command("sql", "insert into " + getTypeName() + " bucket " + bucketName + " content " + json);
     dirty = false;
     return this;
   }
@@ -91,6 +95,8 @@ public class RemoteMutableEdge extends MutableEdge {
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "e");
       result.put(Property.TYPE_PROPERTY, getTypeName());
+      result.put("@in", in);
+      result.put("@out", out);
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }
@@ -103,6 +109,8 @@ public class RemoteMutableEdge extends MutableEdge {
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "e");
       result.put(Property.TYPE_PROPERTY, getTypeName());
+      result.put("@in", in);
+      result.put("@out", out);
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }

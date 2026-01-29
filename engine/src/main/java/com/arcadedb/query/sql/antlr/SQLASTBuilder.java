@@ -5382,6 +5382,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Visit DELETE FUNCTION statement.
+   * Grammar: DELETE FUNCTION identifier DOT identifier
+   */
+  @Override
+  public DeleteFunctionStatement visitDeleteFunctionStmt(final SQLParser.DeleteFunctionStmtContext ctx) {
+    final DeleteFunctionStatement stmt = new DeleteFunctionStatement(-1);
+    final SQLParser.DeleteFunctionStatementContext bodyCtx = ctx.deleteFunctionStatement();
+
+    // Library name (first identifier)
+    stmt.libraryName = (Identifier) visit(bodyCtx.identifier(0));
+
+    // Function name (second identifier)
+    stmt.functionName = (Identifier) visit(bodyCtx.identifier(1));
+
+    return stmt;
+  }
+
+  /**
    * Visit REBUILD INDEX statement.
    * Grammar: REBUILD INDEX (identifier | STAR) (WITH identifier EQ expression (COMMA identifier EQ expression)*)?
    */
