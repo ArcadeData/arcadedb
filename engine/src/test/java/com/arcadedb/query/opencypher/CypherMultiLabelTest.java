@@ -330,4 +330,82 @@ public class CypherMultiLabelTest {
     assertThat((String) mgrResult.next().getProperty("n.name")).isEqualTo("Carol");
     assertThat(mgrResult.hasNext()).isFalse();
   }
+
+  // Tests for duplicate label deduplication (GitHub issue #3264)
+
+  @Test
+  void testCreateWithDuplicateLabels() {
+    // CREATE (n:Person:Kebab:Person) should create type Kebab~Person (not Kebab~Person~Person)
+    database.transaction(() -> {
+      final ResultSet result = database.command("opencypher",
+          "CREATE (n:Person:Kebab:Person {name: 'Person:Kebab:Person'}) RETURN n");
+
+      assertThat(result.hasNext()).isTrue();
+      final Vertex v = (Vertex) result.next().toElement();
+
+      // Type should be Kebab~Person (deduplicated and sorted)
+      assertThat(v.getTypeName()).isEqualTo("Kebab~Person");
+      assertThat((String) v.get("name")).isEqualTo("Person:Kebab:Person");
+    });
+
+    // Verify schema structure
+    assertThat(database.getSchema().existsType("Kebab~Person")).isTrue();
+    assertThat(database.getSchema().existsType("Person")).isTrue();
+    assertThat(database.getSchema().existsType("Kebab")).isTrue();
+    // Should NOT have the duplicated type
+    assertThat(database.getSchema().existsType("Kebab~Person~Person")).isFalse();
+  }
+
+  @Test
+  void testCreateWithAllDuplicateLabels() {
+    // CREATE (n:Kebab:Kebab) should create type Kebab (single label)
+    database.transaction(() -> {
+      final ResultSet result = database.command("opencypher",
+          "CREATE (n:Kebab:Kebab {name: 'Kebab:Kebab'}) RETURN n");
+
+      assertThat(result.hasNext()).isTrue();
+      final Vertex v = (Vertex) result.next().toElement();
+
+      // Type should be just Kebab (deduplicated to single label)
+      assertThat(v.getTypeName()).isEqualTo("Kebab");
+    });
+
+    // Verify schema structure - no composite type should be created
+    assertThat(database.getSchema().existsType("Kebab")).isTrue();
+    assertThat(database.getSchema().existsType("Kebab~Kebab")).isFalse();
+  }
+
+  @Test
+  void testMatchWithDuplicateLabels() {
+    // Create a Kebab vertex
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:Kebab {name: 'Kebab1'})");
+    });
+
+    // MATCH (n:Kebab:Kebab) should find all Kebab nodes (not look for Kebab~Kebab type)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (n:Kebab:Kebab) RETURN n.name");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat((String) result.next().getProperty("n.name")).isEqualTo("Kebab1");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void testLabelsWithDuplicateLabelsCreate() {
+    // CREATE (n:Person:Kebab:Person) should have labels [Kebab, Person]
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (n:Person:Kebab:Person {name: 'Test'})");
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "MATCH (n {name: 'Test'}) RETURN labels(n) as labels");
+
+    assertThat(result.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<String> labels = (List<String>) result.next().getProperty("labels");
+    // Should be deduplicated
+    assertThat(labels).containsExactlyInAnyOrder("Kebab", "Person");
+  }
 }
