@@ -19,8 +19,10 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.monitor.SimpleFileIndexWriter;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.disk.SimpleMappedReader;
+import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 
@@ -111,13 +113,12 @@ public class LSMVectorIndexPQFile {
         Files.createDirectories(parent);
       }
 
-      // Write using JVector's native serialization
-      try (DataOutputStream dos = new DataOutputStream(
-              new BufferedOutputStream(Files.newOutputStream(pqFilePath)))) {
+      // Write using JVector's native serialization with IndexWriter
+      try (SimpleFileIndexWriter writer = new SimpleFileIndexWriter(pqFilePath)) {
         // Write ProductQuantization codebook first
-        pq.write(dos);
+        pq.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
         // Write encoded vectors
-        vectors.write(dos);
+        vectors.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
       }
 
       // Update cached references
