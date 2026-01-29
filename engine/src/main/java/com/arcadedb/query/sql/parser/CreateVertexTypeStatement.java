@@ -37,13 +37,22 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
   @Override
   protected DocumentType createType(final Schema schema) {
     final VertexType type;
-    if (totalBucketNo != null)
-      type = schema.buildVertexType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue()).create();
-    else {
-      if (buckets == null || buckets.isEmpty())
-        type = schema.buildVertexType().withName(name.getStringValue()).create();
-      else {
-        type = schema.buildVertexType().withName(name.getStringValue()).withBuckets(getBuckets(schema)).create();
+    if (totalBucketNo != null) {
+      var builder = schema.buildVertexType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue());
+      if (pageSize != null)
+        builder = builder.withPageSize(pageSize.getValue().intValue());
+      type = builder.create();
+    } else {
+      if (buckets == null || buckets.isEmpty()) {
+        var builder = schema.buildVertexType().withName(name.getStringValue());
+        if (pageSize != null)
+          builder = builder.withPageSize(pageSize.getValue().intValue());
+        type = builder.create();
+      } else {
+        var builder = schema.buildVertexType().withName(name.getStringValue()).withBuckets(getBuckets(schema));
+        if (pageSize != null)
+          builder = builder.withPageSize(pageSize.getValue().intValue());
+        type = builder.create();
       }
     }
     return type;

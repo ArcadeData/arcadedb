@@ -416,6 +416,7 @@ createTypeBody
       (EXTENDS identifier (COMMA identifier)*)?
       (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
+      (PAGESIZE INTEGER_LITERAL)?
     ;
 
 /**
@@ -428,6 +429,7 @@ createEdgeTypeBody
       UNIDIRECTIONAL?
       (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
+      (PAGESIZE INTEGER_LITERAL)?
     ;
 
 /**
