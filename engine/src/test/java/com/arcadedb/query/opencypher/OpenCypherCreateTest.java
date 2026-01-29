@@ -9,6 +9,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -17,10 +18,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class OpenCypherCreateTest {
   private Database database;
+  private String databasePath;
 
   @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./target/databases/testopencypher-create").create();
+  void setUp(TestInfo testInfo) {
+    // Use unique database path per test method to avoid parallel execution conflicts
+    databasePath = "./target/databases/testopencypher-create-" + testInfo.getTestMethod().get().getName();
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
 
     // Create schema
     database.getSchema().createVertexType("Person");
@@ -40,7 +47,7 @@ public class OpenCypherCreateTest {
   @Test
   void testCreateSingleVertex() {
     database.transaction(() -> {
-      final ResultSet result = database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30})");
+      final ResultSet result = database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30}) RETURN n");
 
       assertThat((Object) result).isNotNull();
       assertThat(result.hasNext()).isTrue();
