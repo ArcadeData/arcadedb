@@ -46,6 +46,8 @@ public class UtilSleep extends AbstractUtilFunction {
     return "Sleep for the specified number of milliseconds";
   }
 
+  private static final long MAX_SLEEP_MS = 60000; // 1 minute maximum
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
@@ -60,6 +62,11 @@ public class UtilSleep extends AbstractUtilFunction {
 
     if (milliseconds <= 0)
       return null;
+
+    if (milliseconds > MAX_SLEEP_MS) {
+      throw new IllegalArgumentException(
+          "Sleep duration exceeds maximum allowed (" + MAX_SLEEP_MS + "ms): " + milliseconds + "ms");
+    }
 
     try {
       Thread.sleep(milliseconds);

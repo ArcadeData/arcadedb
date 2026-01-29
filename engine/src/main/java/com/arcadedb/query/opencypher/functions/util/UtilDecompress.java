@@ -55,6 +55,8 @@ public class UtilDecompress extends AbstractUtilFunction {
     return "Decompress base64-encoded data using the specified algorithm (gzip or deflate)";
   }
 
+  private static final int MAX_OUTPUT_SIZE = 100 * 1024 * 1024; // 100MB maximum output size
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
@@ -73,7 +75,13 @@ public class UtilDecompress extends AbstractUtilFunction {
         try (final GZIPInputStream gzis = new GZIPInputStream(bais)) {
           final byte[] buffer = new byte[1024];
           int len;
+          long totalBytesRead = 0;
           while ((len = gzis.read(buffer)) != -1) {
+            totalBytesRead += len;
+            if (totalBytesRead > MAX_OUTPUT_SIZE) {
+              throw new IllegalArgumentException(
+                  "Decompressed output size exceeds maximum allowed (" + MAX_OUTPUT_SIZE + " bytes). Potential zip bomb attack.");
+            }
             baos.write(buffer, 0, len);
           }
         }
@@ -82,7 +90,13 @@ public class UtilDecompress extends AbstractUtilFunction {
         try (final InflaterInputStream iis = new InflaterInputStream(bais)) {
           final byte[] buffer = new byte[1024];
           int len;
+          long totalBytesRead = 0;
           while ((len = iis.read(buffer)) != -1) {
+            totalBytesRead += len;
+            if (totalBytesRead > MAX_OUTPUT_SIZE) {
+              throw new IllegalArgumentException(
+                  "Decompressed output size exceeds maximum allowed (" + MAX_OUTPUT_SIZE + " bytes). Potential zip bomb attack.");
+            }
             baos.write(buffer, 0, len);
           }
         }
