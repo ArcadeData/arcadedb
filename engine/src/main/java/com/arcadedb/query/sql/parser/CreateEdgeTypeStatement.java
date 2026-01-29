@@ -39,16 +39,29 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   @Override
   protected DocumentType createType(final Schema schema) {
     final EdgeType type;
-    if (totalBucketNo != null)
-      type = schema.buildEdgeType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue())
-          .withBidirectional(!unidirectional).create();
-    else {
-      if (buckets == null || buckets.isEmpty())
-        type = schema.createEdgeType(name.getStringValue());
-      else {
+    if (totalBucketNo != null) {
+      var builder = schema.buildEdgeType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue())
+          .withBidirectional(!unidirectional);
+      if (pageSize != null)
+        builder = builder.withPageSize(pageSize.getValue().intValue());
+      type = builder.create();
+    } else {
+      if (buckets == null || buckets.isEmpty()) {
+        if (pageSize != null || unidirectional) {
+          var builder = schema.buildEdgeType().withName(name.getStringValue()).withBidirectional(!unidirectional);
+          if (pageSize != null)
+            builder = builder.withPageSize(pageSize.getValue().intValue());
+          type = builder.create();
+        } else {
+          type = schema.createEdgeType(name.getStringValue());
+        }
+      } else {
         // CHECK THE BUCKETS FIRST
-        type = schema.buildEdgeType().withName(name.getStringValue()).withBuckets(getBuckets(schema))
-            .withBidirectional(!unidirectional).create();
+        var builder = schema.buildEdgeType().withName(name.getStringValue()).withBuckets(getBuckets(schema))
+            .withBidirectional(!unidirectional);
+        if (pageSize != null)
+          builder = builder.withPageSize(pageSize.getValue().intValue());
+        type = builder.create();
       }
     }
     return type;

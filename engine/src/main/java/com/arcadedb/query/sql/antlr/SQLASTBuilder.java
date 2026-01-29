@@ -4651,6 +4651,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
+    // PAGESIZE clause
+    if (bodyCtx.PAGESIZE() != null) {
+      // Walk through all children to find INTEGER_LITERAL after PAGESIZE token
+      boolean foundPageSize = false;
+      for (int i = 0; i < bodyCtx.getChildCount(); i++) {
+        final ParseTree child = bodyCtx.getChild(i);
+        if (foundPageSize && child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+            final PInteger pInt = new PInteger(-1);
+            pInt.setValue(Integer.parseInt(termNode.getText()));
+            stmt.pageSize = pInt;
+            break;
+          }
+        }
+        if (child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.PAGESIZE) {
+            foundPageSize = true;
+          }
+        }
+      }
+    }
+
     return stmt;
   }
 
@@ -4704,6 +4728,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final TerminalNode termNode = (TerminalNode) child;
           if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
             foundBuckets = true;
+          }
+        }
+      }
+    }
+
+    // PAGESIZE clause
+    if (bodyCtx.PAGESIZE() != null) {
+      // Walk through all children to find INTEGER_LITERAL after PAGESIZE token
+      boolean foundPageSize = false;
+      for (int i = 0; i < bodyCtx.getChildCount(); i++) {
+        final ParseTree child = bodyCtx.getChild(i);
+        if (foundPageSize && child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+            final PInteger pInt = new PInteger(-1);
+            pInt.setValue(Integer.parseInt(termNode.getText()));
+            stmt.pageSize = pInt;
+            break;
+          }
+        }
+        if (child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.PAGESIZE) {
+            foundPageSize = true;
           }
         }
       }
@@ -4765,6 +4813,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final TerminalNode termNode = (TerminalNode) child;
           if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
             foundBuckets = true;
+          }
+        }
+      }
+    }
+
+    // PAGESIZE clause
+    if (bodyCtx.PAGESIZE() != null) {
+      // Walk through all children to find INTEGER_LITERAL after PAGESIZE token
+      boolean foundPageSize = false;
+      for (int i = 0; i < bodyCtx.getChildCount(); i++) {
+        final ParseTree child = bodyCtx.getChild(i);
+        if (foundPageSize && child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+            final PInteger pInt = new PInteger(-1);
+            pInt.setValue(Integer.parseInt(termNode.getText()));
+            stmt.pageSize = pInt;
+            break;
+          }
+        }
+        if (child instanceof TerminalNode) {
+          final TerminalNode termNode = (TerminalNode) child;
+          if (termNode.getSymbol().getType() == SQLParser.PAGESIZE) {
+            foundPageSize = true;
           }
         }
       }

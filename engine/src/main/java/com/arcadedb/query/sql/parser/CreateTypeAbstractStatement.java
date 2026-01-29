@@ -56,6 +56,11 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    */
   public PInteger totalBucketNo;
 
+  /**
+   * Page size for buckets of this type
+   */
+  public PInteger pageSize;
+
   public CreateTypeAbstractStatement(final int id) {
     super(id);
   }
@@ -150,6 +155,10 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       builder.append(" BUCKETS ");
       totalBucketNo.toString(params, builder);
     }
+    if (pageSize != null) {
+      builder.append(" PAGESIZE ");
+      pageSize.toString(params, builder);
+    }
   }
 
   protected CreateTypeAbstractStatement copy(final CreateTypeAbstractStatement result) {
@@ -157,6 +166,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     result.supertypes = supertypes == null ? null : supertypes.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.buckets = buckets == null ? null : buckets.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.totalBucketNo = totalBucketNo == null ? null : totalBucketNo.copy();
+    result.pageSize = pageSize == null ? null : pageSize.copy();
     result.ifNotExists = ifNotExists;
     return result;
   }
@@ -178,6 +188,8 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       return false;
     if (!Objects.equals(totalBucketNo, that.totalBucketNo))
       return false;
+    if (!Objects.equals(pageSize, that.pageSize))
+      return false;
     return ifNotExists == that.ifNotExists;
   }
 
@@ -187,6 +199,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     result = 31 * result + (supertypes != null ? supertypes.hashCode() : 0);
     result = 31 * result + (buckets != null ? buckets.hashCode() : 0);
     result = 31 * result + (totalBucketNo != null ? totalBucketNo.hashCode() : 0);
+    result = 31 * result + (pageSize != null ? pageSize.hashCode() : 0);
     return result;
   }
 
