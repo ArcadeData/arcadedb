@@ -237,7 +237,7 @@ public class CypherFunctionSecurityTest {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN date.add(1000, 500, 'ms') AS result");
     assertTrue(resultSet.hasNext());
-    assertEquals(1500L, resultSet.next().getProperty("result"));
+    assertEquals(1500L, resultSet.next().<Long>getProperty("result"));
   }
 
   @Test
@@ -291,7 +291,7 @@ public class CypherFunctionSecurityTest {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN text.levenshteinDistance('kitten', 'sitting') AS result");
     assertTrue(resultSet.hasNext());
-    assertEquals(3L, resultSet.next().getProperty("result"));
+    assertEquals(3L, resultSet.next().<Long>getProperty("result"));
   }
 
   @Test
