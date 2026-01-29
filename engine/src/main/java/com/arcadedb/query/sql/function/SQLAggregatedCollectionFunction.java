@@ -30,7 +30,7 @@ package com.arcadedb.query.sql.function;
  * </p>
  *
  * @param <T> the type of the aggregation context (e.g., List, Set, Map)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class SQLAggregatedCollectionFunction<T> extends SQLAggregatedFunction {
 

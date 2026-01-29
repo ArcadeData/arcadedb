@@ -31,7 +31,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *
  * Example: vectorRRFScore(1, 5, 10, 60) = 1/61 + 1/65 + 1/70 ≈ 0.0456
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorRRFScore";

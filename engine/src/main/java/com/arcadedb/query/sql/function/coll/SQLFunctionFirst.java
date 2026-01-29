@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 /**
  * Extract the first item of multi values (arrays, collections and maps) or return the same value for non multi-value types.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionFirst extends SQLFunctionConfigurableAbstract {
   public static final String NAME = "first";

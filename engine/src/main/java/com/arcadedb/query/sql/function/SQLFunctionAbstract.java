@@ -32,7 +32,7 @@ import java.util.List;
  * {@link com.arcadedb.function.RecordFunction}.
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class SQLFunctionAbstract implements SQLFunction {
   protected final String name;

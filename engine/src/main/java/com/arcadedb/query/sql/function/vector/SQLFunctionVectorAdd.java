@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Uses scalar implementation which is 7-11x faster than JVector for typical vector sizes (< 1024).
  * JVector overhead from object allocation and conversion dominates actual computation cost.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorAdd extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorAdd";

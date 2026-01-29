@@ -32,7 +32,7 @@ import java.util.*;
  * new instances per call for stateful functions).
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
 

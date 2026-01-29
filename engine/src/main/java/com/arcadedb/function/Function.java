@@ -32,7 +32,7 @@ package com.arcadedb.function;
  * Cypher and SQL query engines.
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see StatelessFunction
  * @see RecordFunction
  * @see FunctionRegistry

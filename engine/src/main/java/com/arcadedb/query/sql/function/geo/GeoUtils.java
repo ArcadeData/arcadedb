@@ -26,7 +26,7 @@ import org.locationtech.spatial4j.context.jts.JtsSpatialContextFactory;
 /**
  * Geospatial utility class.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class GeoUtils {
   static final JtsSpatialContextFactory FACTORY         = new JtsSpatialContextFactory();

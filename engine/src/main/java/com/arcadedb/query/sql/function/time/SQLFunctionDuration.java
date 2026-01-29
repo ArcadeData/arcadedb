@@ -28,7 +28,7 @@ import java.time.Duration;
 /**
  * Returns a java.time.Duration.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see {@link SQLFunctionSysdate}, {@link SQLFunctionDate}
  */
 public class SQLFunctionDuration extends SQLFunctionAbstract {

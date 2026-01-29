@@ -28,7 +28,7 @@ import java.util.List;
 
 /**
  * @author Christian Himpe
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodSort extends AbstractSQLMethod {
 

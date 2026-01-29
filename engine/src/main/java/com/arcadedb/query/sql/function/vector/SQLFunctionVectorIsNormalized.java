@@ -31,7 +31,7 @@ import java.util.List;
  *          vectorIsNormalized([1, 1]) = false (norm ≈ 1.414)
  *          vectorIsNormalized([0.6, 0.8], 0.01) = true (norm within tolerance)
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorIsNormalized extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorIsNormalized";

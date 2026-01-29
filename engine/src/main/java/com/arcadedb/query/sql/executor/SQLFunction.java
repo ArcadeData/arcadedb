@@ -30,7 +30,7 @@ import com.arcadedb.function.RecordFunction;
  * in the unified {@link com.arcadedb.function.FunctionRegistry}.
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see RecordFunction
  * @see com.arcadedb.function.FunctionRegistry
  */

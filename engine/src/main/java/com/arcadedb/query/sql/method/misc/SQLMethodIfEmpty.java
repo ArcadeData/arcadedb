@@ -28,7 +28,7 @@ import java.util.*;
 /**
  * Returns argument if result is empty else return result.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodIfEmpty extends AbstractSQLMethod {
 

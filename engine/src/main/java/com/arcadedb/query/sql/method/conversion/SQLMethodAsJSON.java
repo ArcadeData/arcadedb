@@ -33,7 +33,7 @@ import java.util.*;
  * Converts a document in JSON string.
  *
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodAsJSON extends AbstractSQLMethod {
 

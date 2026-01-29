@@ -31,7 +31,7 @@ import java.util.List;
  *
  * Example: vectorStdDev([1, 2, 3, 4, 5]) ≈ 1.414
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorStdDev extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorStdDev";

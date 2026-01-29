@@ -31,7 +31,7 @@ import java.io.*;
 /**
  * Evaluates a complex expression.
  *
- * @author Luca Garulli (l.garulli--(at)--orientdb.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionEval extends SQLFunctionMathAbstract {
   public static final String NAME = "eval";

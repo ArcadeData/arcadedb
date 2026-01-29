@@ -26,7 +26,7 @@ import com.arcadedb.schema.Type;
 /**
  * Haversine formula to compute the distance between 2 gro points.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionDistance extends SQLFunctionAbstract {
   public static final String NAME = "distance";

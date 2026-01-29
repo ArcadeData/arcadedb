@@ -27,7 +27,7 @@ import java.util.regex.*;
 
 /**
  * @author Christian Himpe (gramian)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodCapitalize extends AbstractSQLMethod {
 

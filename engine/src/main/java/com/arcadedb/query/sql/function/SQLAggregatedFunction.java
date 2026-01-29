@@ -36,7 +36,7 @@ import com.arcadedb.function.AggregatedFunction;
  * Subclasses can override {@link #aggregateResults()} for custom aggregation logic.
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see AggregatedFunction
  */
 public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstract implements AggregatedFunction {

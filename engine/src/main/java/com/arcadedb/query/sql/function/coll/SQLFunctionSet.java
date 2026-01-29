@@ -30,7 +30,7 @@ import java.util.*;
  * This operator add an item in a set. The set doesn't accept duplicates, so adding multiple times the same value has no effect: the
  * value is contained only once.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionSet extends SQLAggregatedCollectionFunction<Set<Object>> {
   public static final String NAME = "set";

@@ -34,7 +34,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * @author Luca Garulli (l.garulli--(at)--orientdb.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionConvertTest {
   public SQLFunctionConvertTest() {

@@ -37,7 +37,7 @@ import java.util.List;
  *
  * Example: vectorDequantizeInt8(quantized_bytes, 0.1, 0.9) → [0.1, 0.5, 0.9] (approximate)
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorDequantizeInt8";

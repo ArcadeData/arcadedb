@@ -30,7 +30,7 @@ import java.math.*;
  * Compute the average value for a field. Uses the context to save the last average number. When different Number class are used,
  * take the class with most precision.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionAverage extends SQLAggregatedFunction {
   public static final String NAME = "avg";

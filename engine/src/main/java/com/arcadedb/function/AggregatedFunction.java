@@ -34,7 +34,7 @@ package com.arcadedb.function;
  * </ol>
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see RecordFunction
  */
 public interface AggregatedFunction extends RecordFunction {

@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 /**
  * Transforms a string in a RID, if valid, otherwise null.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodAsRID extends AbstractSQLMethod {
 

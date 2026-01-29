@@ -33,7 +33,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Usage: vectorScoreTransform(score, 'method')
  * Example: vectorScoreTransform(0.5, 'SIGMOID') → 0.6225
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorScoreTransform extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorScoreTransform";

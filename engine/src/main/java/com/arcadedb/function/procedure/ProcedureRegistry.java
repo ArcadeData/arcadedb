@@ -41,7 +41,7 @@ import java.util.logging.Level;
  * Thread-safe: All operations use a ConcurrentHashMap for safe concurrent access.
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see Procedure
  */
 public final class ProcedureRegistry {

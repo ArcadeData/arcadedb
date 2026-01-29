@@ -35,7 +35,7 @@ import static io.github.jbellis.jvector.vector.VectorUtil.cosine;
  * Uses JVector's SIMD-optimized VectorUtil.cosine() for up to 6-7x performance improvement
  * when running on Java 20+ with Panama Vector API enabled (--add-modules jdk.incubator.vector).
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorCosineSimilarity extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorCosineSimilarity";

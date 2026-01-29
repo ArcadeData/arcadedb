@@ -28,7 +28,7 @@ import java.util.*;
  * This operator can work inline. Returns the DIFFERENCE between the collections received as parameters. Works also with no
  * collection values.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionDifference extends SQLAggregatedCollectionFunction<Set<Object>> {
   public static final String NAME = "difference";

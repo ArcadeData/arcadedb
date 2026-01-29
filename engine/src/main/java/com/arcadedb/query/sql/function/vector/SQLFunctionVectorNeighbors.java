@@ -37,7 +37,7 @@ import java.util.*;
 /**
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorNeighbors";

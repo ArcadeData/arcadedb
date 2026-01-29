@@ -42,7 +42,7 @@ import com.arcadedb.function.procedure.Procedure;
  * </pre>
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see Procedure
  * @see com.arcadedb.function.procedure.ProcedureRegistry
  */

@@ -34,7 +34,7 @@ import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
  * Uses JVector's SIMD-optimized VectorUtil.squareL2Distance() for up to 5-6x performance improvement
  * when running on Java 20+ with Panama Vector API enabled (--add-modules jdk.incubator.vector).
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorL2Distance extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorL2Distance";

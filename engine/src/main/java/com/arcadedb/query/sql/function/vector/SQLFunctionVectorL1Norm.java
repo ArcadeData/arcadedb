@@ -32,7 +32,7 @@ import java.util.List;
  * Example: vectorL1Norm([3, 4]) = 7
  *          vectorL1Norm([-1, -2, 3]) = 6
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorL1Norm extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorL1Norm";

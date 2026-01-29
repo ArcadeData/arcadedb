@@ -31,7 +31,7 @@ import java.util.List;
  *
  * Example: sparseVectorCreate([0, 2, 5], [0.5, 0.3, 0.8]) → SparseVector
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionSparseVectorCreate extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorSparseCreate";

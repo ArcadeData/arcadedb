@@ -40,7 +40,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * These functions are available in both Cypher and SQL query engines.
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see Function
  * @see RecordFunction
  */

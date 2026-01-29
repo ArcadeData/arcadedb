@@ -31,7 +31,7 @@ import java.util.List;
  *
  * Example: vectorVariance([1, 2, 3, 4, 5]) = 2.0
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorVariance extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorVariance";

@@ -35,7 +35,7 @@ import java.util.List;
  *
  * Example: vectorToString([0.5, 0.25, 0.75]) = "[0.5, 0.25, 0.75]"
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorToString extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorToString";

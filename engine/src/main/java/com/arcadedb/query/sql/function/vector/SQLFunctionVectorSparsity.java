@@ -31,7 +31,7 @@ import java.util.List;
  *
  * Example: vectorSparsity([0.01, 0.1, 0.05, 0.02], 0.06) = 0.75 (3 out of 4 below threshold)
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorSparsity extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorSparsity";

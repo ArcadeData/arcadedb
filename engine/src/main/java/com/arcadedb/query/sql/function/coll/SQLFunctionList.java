@@ -28,7 +28,7 @@ import java.util.*;
 /**
  * This operator add an item in a list. The list accepts duplicates.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionList extends SQLAggregatedCollectionFunction<List<Object>> {
   public static final String NAME = "list";

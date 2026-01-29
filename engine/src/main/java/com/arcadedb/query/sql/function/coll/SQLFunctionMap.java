@@ -27,7 +27,7 @@ import java.util.*;
 /**
  * This operator add an entry in a map. The entry is composed by a key and a value.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionMap extends SQLAggregatedCollectionFunction<Map<String, Object>> {
   public static final String NAME = "map";

@@ -30,7 +30,7 @@ import java.util.List;
  * Example: vectorHasNaN([1.0, 2.0, 3.0]) = false
  *          vectorHasNaN([1.0, NaN, 3.0]) = true
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorHasNaN extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorHasNaN";

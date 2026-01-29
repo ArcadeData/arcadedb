@@ -29,7 +29,7 @@ import java.util.*;
  * This operator can work as aggregate or inline. If only one argument is passed than aggregates, otherwise executes, and returns,
  * the INTERSECTION of the collections received as parameters.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object> {
   public static final String NAME = "intersect";

@@ -32,7 +32,7 @@ import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
  * should override this to return {@code false}.
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see com.arcadedb.query.sql.function.SQLAggregatedFunction
  */
 public abstract class SQLFunctionMathAbstract extends SQLFunctionConfigurableAbstract {

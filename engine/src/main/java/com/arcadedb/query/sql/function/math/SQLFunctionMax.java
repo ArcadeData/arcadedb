@@ -29,7 +29,7 @@ import java.util.*;
  * Compute the maximum value for a field. Uses the context to save the last maximum number. When different Number class are used,
  * take the class with most precision.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionMax extends SQLAggregatedFunction {
   public static final String NAME = "max";

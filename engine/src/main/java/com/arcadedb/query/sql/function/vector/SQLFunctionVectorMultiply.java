@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Performs element-wise vector multiplication (Hadamard product).
  * Returns a new vector where each component is the product of corresponding components.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorMultiply extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorMultiply";

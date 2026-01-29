@@ -40,7 +40,7 @@ import java.util.stream.Stream;
  * query engines that support procedure calls (e.g., Cypher CALL statements).
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see ProcedureRegistry
  */
 public interface Procedure {

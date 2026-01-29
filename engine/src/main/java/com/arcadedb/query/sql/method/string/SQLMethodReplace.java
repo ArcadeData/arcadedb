@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
  * Replaces all the occurrences.
  *
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodReplace extends AbstractSQLMethod {
 

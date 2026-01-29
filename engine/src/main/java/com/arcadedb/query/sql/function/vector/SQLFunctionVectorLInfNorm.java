@@ -32,7 +32,7 @@ import java.util.List;
  * Example: vectorLInfNorm([3, 4, 2]) = 4
  *          vectorLInfNorm([-1, -5, 3]) = 5
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorLInfNorm extends SQLFunctionVectorAbstract {
   public static final String NAME = "vectorLInfNorm";

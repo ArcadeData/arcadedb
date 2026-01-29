@@ -37,7 +37,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * </ul>
  * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see Function
  * @see StatelessFunction
  * @see AggregatedFunction

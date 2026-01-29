@@ -31,7 +31,7 @@ import java.util.*;
  * UNION of the collections received as parameters. Works also with no collection values. Does not remove duplication from the
  * result.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionUnionAll extends SQLAggregatedCollectionFunction<Collection<Object>> {
   public static final String NAME = "unionAll";

@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 /**
  * Remove all the occurrences of elements from a collection.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see SQLMethodRemove
  */
 public class SQLMethodRemoveAll extends AbstractSQLMethod {

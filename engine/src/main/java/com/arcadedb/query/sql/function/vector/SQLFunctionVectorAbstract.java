@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * Abstract base class for vector SQL functions providing common utility methods.
  * All vector functions should extend this class to reuse conversion and validation logic.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
 
