@@ -19,10 +19,13 @@
 package com.arcadedb.query.opencypher.functions;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.functions.agg.*;
 import com.arcadedb.query.opencypher.functions.convert.*;
+import com.arcadedb.query.opencypher.functions.date.*;
 import com.arcadedb.query.opencypher.functions.map.*;
 import com.arcadedb.query.opencypher.functions.math.*;
 import com.arcadedb.query.opencypher.functions.text.*;
+import com.arcadedb.query.opencypher.functions.util.*;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -38,16 +41,23 @@ import java.util.logging.Level;
  * The registry provides thread-safe access to function lookup and registration.
  * </p>
  * <p>
+ * For Neo4j/APOC compatibility, functions can also be accessed using the "apoc." prefix.
+ * For example, "apoc.text.indexOf" will automatically resolve to "text.indexOf".
+ * </p>
+ * <p>
  * Example usage:
  * <pre>
  * CypherFunctionRegistry.register(new TextIndexOf());
  * CypherFunction fn = CypherFunctionRegistry.get("text.indexOf");
+ * // APOC compatibility - same function
+ * CypherFunction fn2 = CypherFunctionRegistry.get("apoc.text.indexOf");
  * </pre>
  * </p>
  *
  * @author ArcadeDB Team
  */
 public final class CypherFunctionRegistry {
+  private static final String APOC_PREFIX = "apoc.";
   private static final Map<String, CypherFunction> FUNCTIONS = new ConcurrentHashMap<>();
 
   // Static initialization block to register built-in functions
@@ -86,22 +96,44 @@ public final class CypherFunctionRegistry {
 
   /**
    * Retrieves a function by its fully qualified name.
+   * <p>
+   * For APOC compatibility, the "apoc." prefix is automatically stripped.
+   * For example, "apoc.text.indexOf" resolves to "text.indexOf".
+   * </p>
    *
    * @param name the function name (case-insensitive)
    * @return the function, or null if not found
    */
   public static CypherFunction get(final String name) {
-    return FUNCTIONS.get(name.toLowerCase());
+    return FUNCTIONS.get(normalizeApocName(name));
   }
 
   /**
    * Checks if a function is registered.
+   * <p>
+   * For APOC compatibility, the "apoc." prefix is automatically stripped.
+   * </p>
    *
    * @param name the function name (case-insensitive)
    * @return true if the function is registered
    */
   public static boolean hasFunction(final String name) {
-    return FUNCTIONS.containsKey(name.toLowerCase());
+    return FUNCTIONS.containsKey(normalizeApocName(name));
+  }
+
+  /**
+   * Normalizes a function name by stripping the "apoc." prefix if present.
+   * This provides compatibility with Neo4j APOC procedure calls.
+   *
+   * @param name the function name
+   * @return the normalized name (lowercase, without apoc. prefix)
+   */
+  private static String normalizeApocName(final String name) {
+    final String lowerName = name.toLowerCase();
+    if (lowerName.startsWith(APOC_PREFIX)) {
+      return lowerName.substring(APOC_PREFIX.length());
+    }
+    return lowerName;
   }
 
   /**
@@ -133,12 +165,15 @@ public final class CypherFunctionRegistry {
 
   /**
    * Unregisters a function by name.
+   * <p>
+   * For APOC compatibility, the "apoc." prefix is automatically stripped.
+   * </p>
    *
    * @param name the function name to unregister
    * @return the unregistered function, or null if not found
    */
   public static CypherFunction unregister(final String name) {
-    return FUNCTIONS.remove(name.toLowerCase());
+    return FUNCTIONS.remove(normalizeApocName(name));
   }
 
   /**
@@ -169,6 +204,12 @@ public final class CypherFunctionRegistry {
     registerMathFunctions();
     // Convert functions
     registerConvertFunctions();
+    // Date functions
+    registerDateFunctions();
+    // Util functions
+    registerUtilFunctions();
+    // Agg functions
+    registerAggFunctions();
     // Create functions
     registerCreateFunctions();
   }
@@ -240,6 +281,43 @@ public final class CypherFunctionRegistry {
     register(new ConvertToBoolean());
     register(new ConvertToInteger());
     register(new ConvertToFloat());
+  }
+
+  private static void registerDateFunctions() {
+    register(new DateFormat());
+    register(new DateParse());
+    register(new DateAdd());
+    register(new DateConvert());
+    register(new DateField());
+    register(new DateFields());
+    register(new DateCurrentTimestamp());
+    register(new DateToISO8601());
+    register(new DateFromISO8601());
+    register(new DateSystemTimezone());
+  }
+
+  private static void registerUtilFunctions() {
+    register(new UtilMd5());
+    register(new UtilSha1());
+    register(new UtilSha256());
+    register(new UtilSha512());
+    register(new UtilCompress());
+    register(new UtilDecompress());
+    register(new UtilSleep());
+    register(new UtilValidate());
+  }
+
+  private static void registerAggFunctions() {
+    register(new AggFirst());
+    register(new AggLast());
+    register(new AggNth());
+    register(new AggSlice());
+    register(new AggMedian());
+    register(new AggPercentiles());
+    register(new AggStatistics());
+    register(new AggProduct());
+    register(new AggMinItems());
+    register(new AggMaxItems());
   }
 
   private static void registerCreateFunctions() {

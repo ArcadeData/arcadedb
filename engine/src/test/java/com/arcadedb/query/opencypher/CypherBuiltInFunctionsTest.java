@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -40,6 +41,51 @@ import static org.junit.jupiter.api.Assertions.*;
 public class CypherBuiltInFunctionsTest extends TestHelper {
 
   // ===================== REGISTRY TESTS =====================
+
+  @Test
+  public void testApocPrefixCompatibilityForFunctions() {
+    // Test that functions can be accessed with "apoc." prefix
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.text.indexOf"));
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.map.merge"));
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.math.sigmoid"));
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.convert.toJson"));
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.date.currentTimestamp"));
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.util.md5"));
+    assertTrue(CypherFunctionRegistry.hasFunction("apoc.agg.median"));
+
+    // Verify same function is returned with or without prefix
+    assertSame(CypherFunctionRegistry.get("text.indexOf"), CypherFunctionRegistry.get("apoc.text.indexOf"));
+    assertSame(CypherFunctionRegistry.get("map.merge"), CypherFunctionRegistry.get("apoc.map.merge"));
+
+    // Test case insensitivity
+    assertSame(CypherFunctionRegistry.get("TEXT.INDEXOF"), CypherFunctionRegistry.get("APOC.TEXT.INDEXOF"));
+  }
+
+  @Test
+  public void testApocPrefixCompatibilityForProcedures() {
+    // Test that procedures can be accessed with "apoc." prefix
+    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.merge.relationship"));
+    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.merge.node"));
+
+    // Verify same procedure is returned with or without prefix
+    assertSame(CypherProcedureRegistry.get("merge.relationship"), CypherProcedureRegistry.get("apoc.merge.relationship"));
+    assertSame(CypherProcedureRegistry.get("merge.node"), CypherProcedureRegistry.get("apoc.merge.node"));
+
+    // Test case insensitivity
+    assertSame(CypherProcedureRegistry.get("MERGE.RELATIONSHIP"), CypherProcedureRegistry.get("APOC.MERGE.RELATIONSHIP"));
+  }
+
+  @Test
+  public void testApocPrefixFunctionExecution() {
+    // Test that functions accessed via apoc prefix work correctly
+    final CypherFunction fn = CypherFunctionRegistry.get("apoc.text.indexOf");
+    assertNotNull(fn);
+    assertEquals(0L, fn.execute(new Object[]{"hello", "h"}, null));
+
+    final CypherFunction md5 = CypherFunctionRegistry.get("apoc.util.md5");
+    assertNotNull(md5);
+    assertEquals("5d41402abc4b2a76b9719d911017c592", md5.execute(new Object[]{"hello"}, null));
+  }
 
   @Test
   public void testFunctionRegistryHasTextFunctions() {
@@ -390,6 +436,260 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final CypherFunction fn = CypherFunctionRegistry.get("convert.toFloat");
     assertEquals(42.0, fn.execute(new Object[]{"42"}, null));
     assertEquals(42.5, fn.execute(new Object[]{"42.5"}, null));
+  }
+
+  // ===================== DATE FUNCTION TESTS =====================
+
+  @Test
+  public void testFunctionRegistryHasDateFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("date.format"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.parse"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.add"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.convert"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.field"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.fields"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.currentTimestamp"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.toISO8601"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.fromISO8601"));
+    assertTrue(CypherFunctionRegistry.hasFunction("date.systemTimezone"));
+  }
+
+  @Test
+  public void testDateCurrentTimestamp() {
+    final CypherFunction fn = CypherFunctionRegistry.get("date.currentTimestamp");
+    final long before = System.currentTimeMillis();
+    final long result = (Long) fn.execute(new Object[]{}, null);
+    final long after = System.currentTimeMillis();
+    assertTrue(result >= before && result <= after);
+  }
+
+  @Test
+  public void testDateSystemTimezone() {
+    final CypherFunction fn = CypherFunctionRegistry.get("date.systemTimezone");
+    final String result = (String) fn.execute(new Object[]{}, null);
+    assertNotNull(result);
+    assertFalse(result.isEmpty());
+  }
+
+  @Test
+  public void testDateFormat() {
+    final CypherFunction fn = CypherFunctionRegistry.get("date.format");
+    // Test with a known timestamp (2024-01-15T10:30:00 UTC = 1705314600000)
+    final String result = (String) fn.execute(new Object[]{1705314600000L, "ms", "yyyy-MM-dd"}, null);
+    assertNotNull(result);
+    assertTrue(result.matches("\\d{4}-\\d{2}-\\d{2}"));
+  }
+
+  @Test
+  public void testDateField() {
+    final CypherFunction fn = CypherFunctionRegistry.get("date.field");
+    // Test extracting year from a timestamp
+    final Long year = (Long) fn.execute(new Object[]{1705314600000L, "year"}, null);
+    assertEquals(2024L, year);
+  }
+
+  @Test
+  public void testDateConvert() {
+    final CypherFunction fn = CypherFunctionRegistry.get("date.convert");
+    // Convert 1000 ms to seconds
+    final Long result = (Long) fn.execute(new Object[]{1000L, "ms", "s"}, null);
+    assertEquals(1L, result);
+
+    // Convert 60 seconds to minutes
+    final Long result2 = (Long) fn.execute(new Object[]{60L, "s", "m"}, null);
+    assertEquals(1L, result2);
+  }
+
+  @Test
+  public void testDateAdd() {
+    final CypherFunction fn = CypherFunctionRegistry.get("date.add");
+    // Add 1 day (86400000 ms) to a timestamp
+    final long timestamp = 1705314600000L;
+    final Long result = (Long) fn.execute(new Object[]{timestamp, 1L, "d"}, null);
+    assertEquals(timestamp + 86400000L, result);
+  }
+
+  // ===================== UTIL FUNCTION TESTS =====================
+
+  @Test
+  public void testFunctionRegistryHasUtilFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("util.md5"));
+    assertTrue(CypherFunctionRegistry.hasFunction("util.sha1"));
+    assertTrue(CypherFunctionRegistry.hasFunction("util.sha256"));
+    assertTrue(CypherFunctionRegistry.hasFunction("util.sha512"));
+    assertTrue(CypherFunctionRegistry.hasFunction("util.compress"));
+    assertTrue(CypherFunctionRegistry.hasFunction("util.decompress"));
+    assertTrue(CypherFunctionRegistry.hasFunction("util.sleep"));
+    assertTrue(CypherFunctionRegistry.hasFunction("util.validate"));
+  }
+
+  @Test
+  public void testUtilMd5() {
+    final CypherFunction fn = CypherFunctionRegistry.get("util.md5");
+    final String result = (String) fn.execute(new Object[]{"hello"}, null);
+    assertEquals("5d41402abc4b2a76b9719d911017c592", result);
+  }
+
+  @Test
+  public void testUtilSha1() {
+    final CypherFunction fn = CypherFunctionRegistry.get("util.sha1");
+    final String result = (String) fn.execute(new Object[]{"hello"}, null);
+    assertEquals("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d", result);
+  }
+
+  @Test
+  public void testUtilSha256() {
+    final CypherFunction fn = CypherFunctionRegistry.get("util.sha256");
+    final String result = (String) fn.execute(new Object[]{"hello"}, null);
+    assertEquals("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", result);
+  }
+
+  @Test
+  public void testUtilSha512() {
+    final CypherFunction fn = CypherFunctionRegistry.get("util.sha512");
+    final String result = (String) fn.execute(new Object[]{"hello"}, null);
+    assertEquals("9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043", result);
+  }
+
+  @Test
+  public void testUtilCompressDecompress() {
+    final CypherFunction compress = CypherFunctionRegistry.get("util.compress");
+    final CypherFunction decompress = CypherFunctionRegistry.get("util.decompress");
+
+    final String original = "Hello, World! This is a test string for compression.";
+    final String compressed = (String) compress.execute(new Object[]{original, "gzip"}, null);
+    assertNotNull(compressed);
+
+    final String decompressed = (String) decompress.execute(new Object[]{compressed, "gzip"}, null);
+    assertEquals(original, decompressed);
+  }
+
+  @Test
+  public void testUtilValidateSuccess() {
+    final CypherFunction fn = CypherFunctionRegistry.get("util.validate");
+    final Boolean result = (Boolean) fn.execute(new Object[]{true, "Should not throw"}, null);
+    assertTrue(result);
+  }
+
+  @Test
+  public void testUtilValidateFailure() {
+    final CypherFunction fn = CypherFunctionRegistry.get("util.validate");
+    assertThrows(IllegalArgumentException.class, () -> {
+      fn.execute(new Object[]{false, "Validation failed!"}, null);
+    });
+  }
+
+  // ===================== AGG FUNCTION TESTS =====================
+
+  @Test
+  public void testFunctionRegistryHasAggFunctions() {
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.first"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.last"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.nth"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.slice"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.median"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.percentiles"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.statistics"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.product"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.minItems"));
+    assertTrue(CypherFunctionRegistry.hasFunction("agg.maxItems"));
+  }
+
+  @Test
+  public void testAggFirst() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.first");
+    assertEquals("a", fn.execute(new Object[]{List.of("a", "b", "c")}, null));
+    assertEquals("b", fn.execute(new Object[]{Arrays.asList(null, "b", "c")}, null));
+  }
+
+  @Test
+  public void testAggLast() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.last");
+    assertEquals("c", fn.execute(new Object[]{List.of("a", "b", "c")}, null));
+  }
+
+  @Test
+  public void testAggNth() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.nth");
+    assertEquals("b", fn.execute(new Object[]{List.of("a", "b", "c"), 1}, null));
+    assertNull(fn.execute(new Object[]{List.of("a", "b", "c"), 10}, null));
+  }
+
+  @Test
+  public void testAggSlice() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.slice");
+    @SuppressWarnings("unchecked")
+    final List<Object> result = (List<Object>) fn.execute(new Object[]{List.of(1, 2, 3, 4, 5), 1, 4}, null);
+    assertEquals(List.of(2, 3, 4), result);
+  }
+
+  @Test
+  public void testAggMedian() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.median");
+    // Odd number of elements
+    assertEquals(3.0, fn.execute(new Object[]{List.of(1, 2, 3, 4, 5)}, null));
+    // Even number of elements
+    assertEquals(2.5, fn.execute(new Object[]{List.of(1, 2, 3, 4)}, null));
+  }
+
+  @Test
+  public void testAggPercentiles() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.percentiles");
+    @SuppressWarnings("unchecked")
+    final List<Double> result = (List<Double>) fn.execute(
+        new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0), List.of(0.5)}, null);
+    assertEquals(1, result.size());
+    assertEquals(3.0, result.get(0), 0.001);
+  }
+
+  @Test
+  public void testAggStatistics() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.statistics");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(
+        new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0)}, null);
+
+    assertEquals(5L, result.get("count"));
+    assertEquals(1.0, result.get("min"));
+    assertEquals(5.0, result.get("max"));
+    assertEquals(15.0, result.get("sum"));
+    assertEquals(3.0, result.get("mean"));
+  }
+
+  @Test
+  public void testAggProduct() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.product");
+    assertEquals(120.0, fn.execute(new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0)}, null));
+  }
+
+  @Test
+  public void testAggMinItems() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.minItems");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(
+        new Object[]{List.of(3.0, 1.0, 2.0, 1.0, 4.0), List.of("c", "a", "b", "d", "e")}, null);
+
+    assertEquals(1.0, result.get("value"));
+    @SuppressWarnings("unchecked")
+    final List<Object> items = (List<Object>) result.get("items");
+    assertEquals(2, items.size());
+    assertTrue(items.contains("a"));
+    assertTrue(items.contains("d"));
+  }
+
+  @Test
+  public void testAggMaxItems() {
+    final CypherFunction fn = CypherFunctionRegistry.get("agg.maxItems");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(
+        new Object[]{List.of(3.0, 1.0, 5.0, 2.0, 5.0), List.of("a", "b", "c", "d", "e")}, null);
+
+    assertEquals(5.0, result.get("value"));
+    @SuppressWarnings("unchecked")
+    final List<Object> items = (List<Object>) result.get("items");
+    assertEquals(2, items.size());
+    assertTrue(items.contains("c"));
+    assertTrue(items.contains("e"));
   }
 
   // Note: Integration tests for Cypher queries with built-in functions

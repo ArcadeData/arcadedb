@@ -36,16 +36,23 @@ import java.util.logging.Level;
  * The registry provides thread-safe access to procedure lookup and registration.
  * </p>
  * <p>
+ * For Neo4j/APOC compatibility, procedures can also be accessed using the "apoc." prefix.
+ * For example, "apoc.merge.relationship" will automatically resolve to "merge.relationship".
+ * </p>
+ * <p>
  * Example usage:
  * <pre>
  * CypherProcedureRegistry.register(new MergeRelationship());
  * CypherProcedure proc = CypherProcedureRegistry.get("merge.relationship");
+ * // APOC compatibility - same procedure
+ * CypherProcedure proc2 = CypherProcedureRegistry.get("apoc.merge.relationship");
  * </pre>
  * </p>
  *
  * @author ArcadeDB Team
  */
 public final class CypherProcedureRegistry {
+  private static final String APOC_PREFIX = "apoc.";
   private static final Map<String, CypherProcedure> PROCEDURES = new ConcurrentHashMap<>();
 
   // Static initialization block to register built-in procedures
@@ -84,22 +91,44 @@ public final class CypherProcedureRegistry {
 
   /**
    * Retrieves a procedure by its fully qualified name.
+   * <p>
+   * For APOC compatibility, the "apoc." prefix is automatically stripped.
+   * For example, "apoc.merge.relationship" resolves to "merge.relationship".
+   * </p>
    *
    * @param name the procedure name (case-insensitive)
    * @return the procedure, or null if not found
    */
   public static CypherProcedure get(final String name) {
-    return PROCEDURES.get(name.toLowerCase());
+    return PROCEDURES.get(normalizeApocName(name));
   }
 
   /**
    * Checks if a procedure is registered.
+   * <p>
+   * For APOC compatibility, the "apoc." prefix is automatically stripped.
+   * </p>
    *
    * @param name the procedure name (case-insensitive)
    * @return true if the procedure is registered
    */
   public static boolean hasProcedure(final String name) {
-    return PROCEDURES.containsKey(name.toLowerCase());
+    return PROCEDURES.containsKey(normalizeApocName(name));
+  }
+
+  /**
+   * Normalizes a procedure name by stripping the "apoc." prefix if present.
+   * This provides compatibility with Neo4j APOC procedure calls.
+   *
+   * @param name the procedure name
+   * @return the normalized name (lowercase, without apoc. prefix)
+   */
+  private static String normalizeApocName(final String name) {
+    final String lowerName = name.toLowerCase();
+    if (lowerName.startsWith(APOC_PREFIX)) {
+      return lowerName.substring(APOC_PREFIX.length());
+    }
+    return lowerName;
   }
 
   /**
@@ -131,12 +160,15 @@ public final class CypherProcedureRegistry {
 
   /**
    * Unregisters a procedure by name.
+   * <p>
+   * For APOC compatibility, the "apoc." prefix is automatically stripped.
+   * </p>
    *
    * @param name the procedure name to unregister
    * @return the unregistered procedure, or null if not found
    */
   public static CypherProcedure unregister(final String name) {
-    return PROCEDURES.remove(name.toLowerCase());
+    return PROCEDURES.remove(normalizeApocName(name));
   }
 
   /**
