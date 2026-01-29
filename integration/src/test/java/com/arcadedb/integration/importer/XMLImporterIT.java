@@ -197,4 +197,65 @@ class XMLImporterIT {
 
     TestHelper.checkActiveDatabases();
   }
+
+  /**
+   * Test for issue #1278: RDF file import problems.
+   * RDF files have rdf:Description elements that should be imported as vertices
+   * with type v_Description (using local name, not namespace URI).
+   */
+  @Test
+  void importRDFFile() throws Exception {
+    final String databasePath = "target/databases/test-import-rdf";
+
+    // Import RDF file using default settings
+    Importer importer = new Importer(
+        ("-url file://src/test/resources/importer-rdf.xml -database " + databasePath
+            + " -forceDatabaseCreate true").split(" "));
+    importer.load();
+
+    try (final Database db = new DatabaseFactory(databasePath).open()) {
+      // Issue #1278: The type should be v_Description, NOT v_{http://www.w3.org/1999/02/22-rdf-syntax-ns#}Description
+      assertThat(db.getSchema().existsType("v_Description")).isTrue();
+
+      // Verify the namespace URI type was NOT created (the bug)
+      assertThat(db.getSchema().existsType("v_{http://www.w3.org/1999/02/22-rdf-syntax-ns#}Description")).isFalse();
+
+      // Should have 2 Description elements (two CDs)
+      assertThat(db.countType("v_Description", true)).isEqualTo(2);
+
+      // Verify the records were created with properties from nested elements
+      // Properties from cd namespace should use local names (artist, country, etc.)
+      final Iterator<Vertex> descriptions = (Iterator<Vertex>) (Iterator<?>) db.iterateType("v_Description", true);
+      boolean foundBobDylan = false;
+      boolean foundBonnieTyler = false;
+
+      while (descriptions.hasNext()) {
+        final Vertex desc = descriptions.next();
+        // The 'about' attribute from rdf:about should be captured
+        assertThat(desc.has("about")).isTrue();
+        // Child elements like cd:artist should have local names as property keys
+        assertThat(desc.has("artist")).isTrue();
+        assertThat(desc.has("country")).isTrue();
+        assertThat(desc.has("company")).isTrue();
+        assertThat(desc.has("price")).isTrue();
+        assertThat(desc.has("year")).isTrue();
+
+        String artist = desc.getString("artist");
+        if ("Bob Dylan".equals(artist)) {
+          foundBobDylan = true;
+          assertThat(desc.getString("country")).isEqualTo("USA");
+          assertThat(desc.getString("year")).isEqualTo("1985");
+        } else if ("Bonnie Tyler".equals(artist)) {
+          foundBonnieTyler = true;
+          assertThat(desc.getString("country")).isEqualTo("UK");
+          assertThat(desc.getString("year")).isEqualTo("1988");
+        }
+      }
+
+      assertThat(foundBobDylan).isTrue();
+      assertThat(foundBonnieTyler).isTrue();
+    }
+
+    TestHelper.checkActiveDatabases();
+  }
 }
