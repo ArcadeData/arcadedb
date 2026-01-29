@@ -104,6 +104,7 @@
             </includes>
             <excludes>
                 <exclude>com.arcadedb:arcadedb-gremlin</exclude>
+                <exclude>com.arcadedb:arcadedb-bolt</exclude>
                 <exclude>com.arcadedb:arcadedb-postgresw</exclude>
                 <exclude>com.arcadedb:arcadedb-mongodbw</exclude>
                 <exclude>com.arcadedb:arcadedb-redisw</exclude>

@@ -332,7 +332,7 @@ public class ArcadeDBServer {
     }
 
     // Auto-register backup scheduler plugin if backup.json exists and not already registered
-    if (installationPriority == ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN
+    if (installationPriority == ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN
         && !plugins.containsKey("auto-backup")) {
       registerAutoBackupPluginIfConfigured();
     }

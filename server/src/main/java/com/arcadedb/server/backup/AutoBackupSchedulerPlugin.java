@@ -193,9 +193,9 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
   }
 
   @Override
-  public INSTALLATION_PRIORITY getInstallationPriority() {
+  public PluginInstallationPriority getInstallationPriority() {
     // Install after databases are open so we can schedule backups for all databases
-    return INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN;
+    return PluginInstallationPriority.AFTER_DATABASES_OPEN;
   }
 
   /**
