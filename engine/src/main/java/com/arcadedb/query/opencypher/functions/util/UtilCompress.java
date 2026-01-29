@@ -55,6 +55,8 @@ public class UtilCompress extends AbstractUtilFunction {
     return "Compress data using the specified algorithm (gzip or deflate), returns base64-encoded string";
   }
 
+  private static final int MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10MB maximum input size
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
@@ -65,6 +67,13 @@ public class UtilCompress extends AbstractUtilFunction {
 
     try {
       final byte[] inputBytes = data.getBytes(StandardCharsets.UTF_8);
+
+      // Check input size to prevent DoS attacks
+      if (inputBytes.length > MAX_INPUT_SIZE) {
+        throw new IllegalArgumentException(
+            "Input size exceeds maximum allowed (" + MAX_INPUT_SIZE + " bytes): " + inputBytes.length + " bytes");
+      }
+
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
       switch (algorithm) {
