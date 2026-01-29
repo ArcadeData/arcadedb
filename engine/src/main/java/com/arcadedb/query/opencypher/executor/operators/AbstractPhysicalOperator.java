@@ -66,7 +66,7 @@ public abstract class AbstractPhysicalOperator implements PhysicalOperator {
     final String indent = "  ".repeat(depth);
 
     sb.append(indent).append("+ ").append(getOperatorType());
-    sb.append(" [cost=").append(String.format("%.2f", estimatedCost));
+    sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
 
@@ -79,7 +79,7 @@ public abstract class AbstractPhysicalOperator implements PhysicalOperator {
 
   @Override
   public String toString() {
-    return getOperatorType() + "{cost=" + String.format("%.2f", estimatedCost) +
+    return getOperatorType() + "{cost=" + String.format(Locale.US, "%.2f", estimatedCost) +
            ", cardinality=" + estimatedCardinality + "}";
   }
 

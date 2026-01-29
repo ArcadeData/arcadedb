@@ -231,7 +231,7 @@ public class ExpandInto extends AbstractPhysicalOperator {
     sb.append("]-");
     sb.append(direction == Direction.OUT ? ">" : direction == Direction.IN ? "<" : "");
     sb.append("(").append(targetVariable).append(")");
-    sb.append(" [cost=").append(String.format("%.2f", estimatedCost));
+    sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("] ⭐ SEMI-JOIN\n");
 

@@ -190,7 +190,7 @@ public class NodeHashJoin extends AbstractPhysicalOperator {
 
     sb.append(indent).append("+ NodeHashJoin");
     sb.append(" [on=").append(joinVariable);
-    sb.append(", cost=").append(String.format("%.2f", estimatedCost));
+    sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
 
