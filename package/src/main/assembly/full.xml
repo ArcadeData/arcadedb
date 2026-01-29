@@ -111,7 +111,6 @@
                 <exclude>com.arcadedb:arcadedb-redisw</exclude>
                 <exclude>com.arcadedb:arcadedb-grpcw</exclude>
                 <exclude>com.arcadedb:arcadedb-graphql</exclude>
-                <exclude>com.arcadedb:arcadedb-studio</exclude>
                 <exclude>com.arcadedb:arcadedb-metrics</exclude>
             </excludes>
         </dependencySet>
@@ -126,7 +125,6 @@
                 <include>com.arcadedb:arcadedb-redisw</include>
                 <include>com.arcadedb:arcadedb-grpcw</include>
                 <include>com.arcadedb:arcadedb-graphql</include>
-                <include>com.arcadedb:arcadedb-studio</include>
                 <include>com.arcadedb:arcadedb-metrics</include>
             </includes>
             <useTransitiveDependencies>false</useTransitiveDependencies>

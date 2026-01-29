@@ -192,7 +192,6 @@ public class ArcadeDBServer {
       haServer.startService();
     }
 
-//    registerPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
     loadDefaultDatabases();
@@ -200,7 +199,6 @@ public class ArcadeDBServer {
     // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
     loadDatabases();
 
-//    registerPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
