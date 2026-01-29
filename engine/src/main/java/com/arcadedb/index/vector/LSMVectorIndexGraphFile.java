@@ -190,10 +190,8 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       // Build graph with InlineVectors - dimension=0 when not storing vectors
       try (final OnDiskSequentialGraphIndexWriter indexWriter = new OnDiskSequentialGraphIndexWriter.Builder(graph, writer).with(
               new InlineVectors(storedDimension)).build()) {
-        // Write header with startOffset 0 (graph data starts at beginning of file)
-        indexWriter.writeHeader(graph.getView(), 0L);
-
-        // Write vectors (actual vectors when storeVectors=true, empty 0-dimension when false)
+        // Write graph with vectors (actual vectors when storeVectors=true, empty 0-dimension when false)
+        // Note: write() handles header/footer automatically in jvector 4.0.0+
         indexWriter.write(Map.of(FeatureId.INLINE_VECTORS,
                 (IntFunction<Feature.State>) ordinal -> {
                   if (storeVectors) {
