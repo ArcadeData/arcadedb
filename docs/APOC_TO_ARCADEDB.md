@@ -64,7 +64,13 @@ Functions are organized into the following namespaces:
 | `date.*` | Date/time operations |
 | `util.*` | Utility functions (hashing, compression, validation) |
 | `agg.*` | Aggregation and collection functions |
+| `node.*` | Node/vertex operations (degree, labels, relationships) |
+| `rel.*` | Relationship/edge operations (type, endpoints) |
+| `path.*` | Path operations (create, combine, slice) |
+| `create.*` | Creation functions (UUIDs, virtual nodes/relationships) |
 | `merge.*` | Merge procedures for nodes and relationships |
+| `algo.*` | Graph algorithms (Dijkstra, A*, shortest paths) |
+| `meta.*` | Schema and database introspection procedures |
 
 ---
 
@@ -192,12 +198,79 @@ This section provides a mapping from common APOC procedures to their ArcadeDB eq
 | `apoc.math.minLong` | `math.minLong` | Identical behavior |
 | `apoc.math.maxDouble` | `math.maxDouble` | Identical behavior |
 
+### Node Functions
+
+| APOC Function | ArcadeDB Function | Notes |
+|---------------|-------------------|-------|
+| `apoc.node.degree` | `node.degree` | Identical behavior |
+| `apoc.node.degree.in` | `node.degree.in` | Identical behavior |
+| `apoc.node.degree.out` | `node.degree.out` | Identical behavior |
+| `apoc.node.labels` | `node.labels` | Identical behavior |
+| `apoc.node.id` | `node.id` | Identical behavior |
+| `apoc.node.relationship.exists` | `node.relationship.exists` | Identical behavior |
+| `apoc.node.relationship.types` | `node.relationship.types` | Identical behavior |
+
+### Relationship Functions
+
+| APOC Function | ArcadeDB Function | Notes |
+|---------------|-------------------|-------|
+| `apoc.rel.id` | `rel.id` | Identical behavior |
+| `apoc.rel.type` | `rel.type` | Identical behavior |
+| `apoc.rel.startNode` | `rel.startNode` | Identical behavior |
+| `apoc.rel.endNode` | `rel.endNode` | Identical behavior |
+
+### Path Functions
+
+| APOC Function | ArcadeDB Function | Notes |
+|---------------|-------------------|-------|
+| `apoc.path.create` | `path.create` | Identical behavior |
+| `apoc.path.combine` | `path.combine` | Identical behavior |
+| `apoc.path.slice` | `path.slice` | Identical behavior |
+| `apoc.path.elements` | `path.elements` | Identical behavior |
+
+### Create Functions
+
+| APOC Function | ArcadeDB Function | Notes |
+|---------------|-------------------|-------|
+| `apoc.create.uuid` | `create.uuid` | Identical behavior |
+| `apoc.create.uuidBase64` | `create.uuidBase64` | Identical behavior |
+| `apoc.create.vNode` | `create.vNode` | Identical behavior |
+| `apoc.create.vRelationship` | `create.vRelationship` | Identical behavior |
+
 ### Merge Procedures
 
 | APOC Procedure | ArcadeDB Procedure | Notes |
 |----------------|-------------------|-------|
 | `apoc.merge.relationship` | `merge.relationship` | Compatible, uses per-row execution |
 | `apoc.merge.node` | `merge.node` | Compatible |
+
+### Algorithm Procedures
+
+| APOC Procedure | ArcadeDB Procedure | Notes |
+|----------------|-------------------|-------|
+| `apoc.algo.dijkstra` | `algo.dijkstra` | Weighted shortest path |
+| `apoc.algo.aStar` | `algo.astar` | A* with optional geographic heuristics |
+| `apoc.algo.allSimplePaths` | `algo.allsimplepaths` | Find all simple paths between nodes |
+
+### Path Expansion Procedures
+
+| APOC Procedure | ArcadeDB Procedure | Notes |
+|----------------|-------------------|-------|
+| `apoc.path.expand` | `path.expand` | Expand paths from start node |
+| `apoc.path.expandConfig` | `path.expandconfig` | Expand with configuration map |
+| `apoc.path.subgraphNodes` | `path.subgraphnodes` | Get all reachable nodes |
+| `apoc.path.subgraphAll` | `path.subgraphall` | Get all reachable nodes and relationships |
+| `apoc.path.spanningTree` | `path.spanningtree` | Get spanning tree paths |
+
+### Meta/Schema Procedures
+
+| APOC Procedure | ArcadeDB Procedure | Notes |
+|----------------|-------------------|-------|
+| `apoc.meta.graph` | `meta.graph` | Virtual graph of schema structure |
+| `apoc.meta.schema` | `meta.schema` | Detailed schema information |
+| `apoc.meta.stats` | `meta.stats` | Database statistics |
+| `apoc.meta.nodeTypeProperties` | `meta.nodetypeproperties` | Node type property information |
+| `apoc.meta.relTypeProperties` | `meta.reltypeproperties` | Relationship type property information |
 
 ---
 
@@ -1188,6 +1261,338 @@ RETURN node
 
 ---
 
+### Algorithm Procedures
+
+#### algo.dijkstra
+
+Find the shortest weighted path between two nodes using Dijkstra's algorithm.
+
+**Syntax:** `CALL algo.dijkstra(startNode, endNode, relType, weightProperty, [direction]) YIELD path, weight`
+
+**Parameters:**
+- `startNode` - Starting node
+- `endNode` - Target node
+- `relType` - Relationship type to traverse
+- `weightProperty` - Edge property to use as weight
+- `direction` (optional) - Traversal direction ("OUT", "IN", "BOTH", default: "BOTH")
+
+**Returns:**
+- `path` - The shortest path
+- `weight` - Total path weight
+
+**APOC Compatible:** `apoc.algo.dijkstra`
+
+**Examples:**
+```cypher
+MATCH (a:City {name: 'New York'}), (b:City {name: 'Los Angeles'})
+CALL algo.dijkstra(a, b, 'ROAD', 'distance') YIELD path, weight
+RETURN path, weight
+```
+
+---
+
+#### algo.astar
+
+Find the shortest path using A* algorithm with optional geographic heuristics.
+
+**Syntax:** `CALL algo.astar(startNode, endNode, relType, weightProperty, [latProperty], [lonProperty]) YIELD path, weight`
+
+**Parameters:**
+- `startNode` - Starting node
+- `endNode` - Target node
+- `relType` - Relationship type to traverse
+- `weightProperty` - Edge property to use as weight
+- `latProperty` (optional) - Node property for latitude (for geographic heuristic)
+- `lonProperty` (optional) - Node property for longitude (for geographic heuristic)
+
+**Returns:**
+- `path` - The shortest path
+- `weight` - Total path weight
+
+**APOC Compatible:** `apoc.algo.aStar`
+
+**Examples:**
+```cypher
+MATCH (a:City {name: 'Seattle'}), (b:City {name: 'Miami'})
+CALL algo.astar(a, b, 'FLIGHT', 'distance', 'lat', 'lon') YIELD path, weight
+RETURN path, weight
+```
+
+---
+
+#### algo.allSimplePaths
+
+Find all simple paths (without repeated nodes) between two nodes.
+
+**Syntax:** `CALL algo.allsimplepaths(startNode, endNode, relTypes, maxDepth) YIELD path`
+
+**Parameters:**
+- `startNode` - Starting node
+- `endNode` - Target node
+- `relTypes` - Relationship type(s) to traverse (string or list)
+- `maxDepth` - Maximum path length
+
+**Returns:** `path` - Each simple path found
+
+**APOC Compatible:** `apoc.algo.allSimplePaths`
+
+**Examples:**
+```cypher
+MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})
+CALL algo.allsimplepaths(a, b, 'KNOWS', 5) YIELD path
+RETURN path
+```
+
+---
+
+### Path Expansion Procedures
+
+#### path.expand
+
+Expand paths from a starting node following relationship types and node labels.
+
+**Syntax:** `CALL path.expand(startNode, relTypes, labelFilter, minDepth, maxDepth) YIELD path`
+
+**Parameters:**
+- `startNode` - Starting node
+- `relTypes` - Relationship types (pipe-separated string or list, e.g., "KNOWS|WORKS_WITH")
+- `labelFilter` - Node labels to include (pipe-separated string or list)
+- `minDepth` - Minimum path length (non-negative)
+- `maxDepth` - Maximum path length
+
+**Returns:** `path` - Each expanded path
+
+**APOC Compatible:** `apoc.path.expand`
+
+**Examples:**
+```cypher
+MATCH (a:Person {name: 'Alice'})
+CALL path.expand(a, 'KNOWS|WORKS_WITH', 'Person', 1, 3) YIELD path
+RETURN path
+```
+
+---
+
+#### path.expandConfig
+
+Expand paths using a configuration map for more control.
+
+**Syntax:** `CALL path.expandconfig(startNode, config) YIELD path`
+
+**Parameters:**
+- `startNode` - Starting node
+- `config` - Configuration map with options:
+  - `relationshipFilter` - Relationship types (string or list)
+  - `labelFilter` - Node labels (string or list)
+  - `minLevel` - Minimum depth (default: 0)
+  - `maxLevel` - Maximum depth (default: unlimited)
+  - `bfs` - Use BFS (true) or DFS (false) (default: true)
+  - `limit` - Maximum number of paths to return
+
+**Returns:** `path` - Each expanded path
+
+**APOC Compatible:** `apoc.path.expandConfig`
+
+**Examples:**
+```cypher
+MATCH (a:Person {name: 'Alice'})
+CALL path.expandconfig(a, {
+  relationshipFilter: 'KNOWS|WORKS_WITH',
+  labelFilter: 'Person',
+  minLevel: 1,
+  maxLevel: 3,
+  bfs: true,
+  limit: 100
+}) YIELD path
+RETURN path
+```
+
+---
+
+#### path.subgraphNodes
+
+Get all nodes reachable from a starting node within configured constraints.
+
+**Syntax:** `CALL path.subgraphnodes(startNode, config) YIELD node`
+
+**Parameters:**
+- `startNode` - Starting node
+- `config` - Configuration map:
+  - `relationshipFilter` - Relationship types
+  - `labelFilter` - Node labels
+  - `maxLevel` - Maximum depth
+
+**Returns:** `node` - Each reachable node
+
+**APOC Compatible:** `apoc.path.subgraphNodes`
+
+**Examples:**
+```cypher
+MATCH (a:Person {name: 'Alice'})
+CALL path.subgraphnodes(a, {relationshipFilter: 'KNOWS', maxLevel: 3}) YIELD node
+RETURN node.name
+```
+
+---
+
+#### path.subgraphAll
+
+Get all nodes and relationships reachable from a starting node.
+
+**Syntax:** `CALL path.subgraphall(startNode, config) YIELD nodes, relationships`
+
+**Parameters:**
+- `startNode` - Starting node
+- `config` - Configuration map (same as subgraphNodes)
+
+**Returns:**
+- `nodes` - List of all reachable nodes
+- `relationships` - List of all traversed relationships
+
+**APOC Compatible:** `apoc.path.subgraphAll`
+
+**Examples:**
+```cypher
+MATCH (a:Person {name: 'Alice'})
+CALL path.subgraphall(a, {relationshipFilter: 'KNOWS', maxLevel: 2}) YIELD nodes, relationships
+RETURN size(nodes) AS nodeCount, size(relationships) AS relCount
+```
+
+---
+
+#### path.spanningTree
+
+Get a spanning tree from the start node to all reachable nodes.
+
+**Syntax:** `CALL path.spanningtree(startNode, config) YIELD path`
+
+**Parameters:**
+- `startNode` - Starting node
+- `config` - Configuration map (same as subgraphNodes)
+
+**Returns:** `path` - Each path in the spanning tree
+
+**APOC Compatible:** `apoc.path.spanningTree`
+
+**Examples:**
+```cypher
+MATCH (root:Category {name: 'Root'})
+CALL path.spanningtree(root, {relationshipFilter: 'HAS_CHILD', maxLevel: 5}) YIELD path
+RETURN path
+```
+
+---
+
+### Meta/Schema Procedures
+
+#### meta.graph
+
+Get a virtual graph representing the database schema structure.
+
+**Syntax:** `CALL meta.graph() YIELD nodes, relationships`
+
+**Returns:**
+- `nodes` - Virtual nodes representing vertex types with their counts and properties
+- `relationships` - Virtual relationships representing edge types with their counts
+
+**APOC Compatible:** `apoc.meta.graph`
+
+**Examples:**
+```cypher
+CALL meta.graph() YIELD nodes, relationships
+RETURN nodes, relationships
+```
+
+---
+
+#### meta.schema
+
+Get detailed schema information including all types and properties.
+
+**Syntax:** `CALL meta.schema() YIELD value`
+
+**Returns:** `value` - Map containing:
+- `nodeLabels` - List of vertex types with their properties
+- `relationshipTypes` - List of edge types with their properties
+
+**APOC Compatible:** `apoc.meta.schema`
+
+**Examples:**
+```cypher
+CALL meta.schema() YIELD value
+RETURN value.nodeLabels AS nodeTypes
+```
+
+---
+
+#### meta.stats
+
+Get database statistics including counts of nodes and relationships.
+
+**Syntax:** `CALL meta.stats() YIELD value`
+
+**Returns:** `value` - Map containing:
+- `labelCount` - Number of node labels
+- `relTypeCount` - Number of relationship types
+- `nodeCount` - Total number of nodes
+- `relCount` - Total number of relationships
+- `labels` - Map of label to count
+- `relTypes` - Map of relationship type to count
+
+**APOC Compatible:** `apoc.meta.stats`
+
+**Examples:**
+```cypher
+CALL meta.stats() YIELD value
+RETURN value.nodeCount AS nodes, value.relCount AS relationships
+```
+
+---
+
+#### meta.nodeTypeProperties
+
+Get property information for each node type.
+
+**Syntax:** `CALL meta.nodetypeproperties() YIELD nodeType, propertyName, propertyTypes, mandatory`
+
+**Returns:**
+- `nodeType` - Name of the vertex type
+- `propertyName` - Name of the property
+- `propertyTypes` - List of property types
+- `mandatory` - Whether the property is required
+
+**APOC Compatible:** `apoc.meta.nodeTypeProperties`
+
+**Examples:**
+```cypher
+CALL meta.nodetypeproperties() YIELD nodeType, propertyName, propertyTypes
+RETURN nodeType, propertyName, propertyTypes
+```
+
+---
+
+#### meta.relTypeProperties
+
+Get property information for each relationship type.
+
+**Syntax:** `CALL meta.reltypeproperties() YIELD relType, propertyName, propertyTypes, mandatory`
+
+**Returns:**
+- `relType` - Name of the edge type
+- `propertyName` - Name of the property
+- `propertyTypes` - List of property types
+- `mandatory` - Whether the property is required
+
+**APOC Compatible:** `apoc.meta.relTypeProperties`
+
+**Examples:**
+```cypher
+CALL meta.reltypeproperties() YIELD relType, propertyName, propertyTypes
+RETURN relType, propertyName, propertyTypes
+```
+
+---
+
 ## Migration Guide
 
 ### Converting APOC Queries to ArcadeDB
@@ -1232,10 +1637,15 @@ If you prefer to use the cleaner ArcadeDB-native syntax, you can optionally remo
 
 Some APOC procedures are not yet implemented in ArcadeDB:
 
-- Graph algorithms (`apoc.algo.*`) - Use ArcadeDB's built-in graph traversal capabilities
 - Periodic/batch operations (`apoc.periodic.*`) - Use ArcadeDB's transaction API
-- Schema operations (`apoc.schema.*`) - Use ArcadeDB's Schema API
-- Database introspection (`apoc.meta.*`) - Use ArcadeDB's system commands
+- Schema modification operations (`apoc.schema.*`) - Use ArcadeDB's Schema API
+- Refactoring procedures (`apoc.refactor.*`) - Use ArcadeDB's native capabilities
+- Export/import procedures (`apoc.export.*`, `apoc.import.*`) - Use ArcadeDB's native import/export
+
+**Note:** Many common APOC functions are now supported, including:
+- Graph algorithms (`algo.dijkstra`, `algo.astar`, `algo.allsimplepaths`)
+- Path expansion (`path.expand`, `path.expandconfig`, `path.subgraphnodes`, etc.)
+- Schema introspection (`meta.graph`, `meta.schema`, `meta.stats`, etc.)
 
 ---
 
