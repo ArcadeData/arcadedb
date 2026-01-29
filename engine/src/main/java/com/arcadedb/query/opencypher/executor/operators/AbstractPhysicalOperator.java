@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import java.util.Locale;
+
 /**
  * Abstract base class for physical operators.
  * Provides common functionality for cost tracking and tree structure.
