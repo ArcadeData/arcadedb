@@ -22,7 +22,11 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Utility class for multi-label support in ArcadeDB.
@@ -59,7 +63,11 @@ public final class Labels {
   }
 
   /**
-   * Generates composite type name from labels (sorted alphabetically).
+   * Generates composite type name from labels (deduplicated and sorted alphabetically).
+   * <p>
+   * Duplicate labels are automatically removed, as labels represent set membership
+   * (a node either has a label or it doesn't - specifying the same label multiple
+   * times is redundant). This matches Neo4j's behavior.
    * <p>
    * Examples:
    * <ul>
@@ -67,9 +75,11 @@ public final class Labels {
    *   <li>["Person", "Developer"] → "Developer~Person"</li>
    *   <li>["Developer", "Person"] → "Developer~Person" (same, sorted)</li>
    *   <li>["A", "B", "C"] → "A~B~C"</li>
+   *   <li>["Person", "Kebab", "Person"] → "Kebab~Person" (duplicate removed)</li>
+   *   <li>["Kebab", "Kebab"] → "Kebab" (all duplicates removed)</li>
    * </ul>
    *
-   * @param labels list of label names
+   * @param labels list of label names (duplicates are ignored)
    * @return composite type name, or "V" if labels is null/empty
    */
   public static String getCompositeTypeName(final List<String> labels) {
@@ -78,9 +88,14 @@ public final class Labels {
     if (labels.size() == 1)
       return labels.get(0);
 
-    final List<String> sorted = new ArrayList<>(labels);
-    Collections.sort(sorted);
-    return String.join(LABEL_SEPARATOR, sorted);
+    // Use TreeSet to both deduplicate and sort alphabetically
+    final Set<String> uniqueSorted = new TreeSet<>(labels);
+
+    // After deduplication, if only one unique label, return it directly
+    if (uniqueSorted.size() == 1)
+      return uniqueSorted.iterator().next();
+
+    return String.join(LABEL_SEPARATOR, uniqueSorted);
   }
 
   /**
@@ -128,30 +143,37 @@ public final class Labels {
    * Ensures composite type exists, creating it if necessary.
    * Returns the type name to use for creating vertices.
    * <p>
-   * If a single label is provided, creates/returns that type directly.
-   * If multiple labels are provided, ensures all base types exist and
-   * creates a composite type that extends all of them.
+   * If a single label is provided (or after deduplication only one unique label remains),
+   * creates/returns that type directly. If multiple unique labels are provided,
+   * ensures all base types exist and creates a composite type that extends all of them.
+   * <p>
+   * Duplicate labels are automatically ignored, matching Neo4j's behavior
+   * (GitHub issue #3264).
    *
    * @param schema the database schema
-   * @param labels list of labels for the vertex
-   * @return the type name to use (composite type name if multiple labels)
+   * @param labels list of labels for the vertex (duplicates are ignored)
+   * @return the type name to use (composite type name if multiple unique labels)
    */
   public static String ensureCompositeType(final Schema schema, final List<String> labels) {
     if (labels == null || labels.isEmpty())
       return "V";
 
-    if (labels.size() == 1) {
-      final String label = labels.get(0);
+    // Deduplicate and sort labels using TreeSet
+    final Set<String> uniqueLabels = new TreeSet<>(labels);
+
+    // Handle single label case (including after deduplication)
+    if (uniqueLabels.size() == 1) {
+      final String label = uniqueLabels.iterator().next();
       schema.getOrCreateVertexType(label);
       return label;
     }
 
-    final String compositeTypeName = getCompositeTypeName(labels);
+    final String compositeTypeName = String.join(LABEL_SEPARATOR, uniqueLabels);
 
     // Always ensure all base types exist first, regardless of whether
     // the composite type already exists. This fixes GitHub issue #3266
     // where pre-existing composite types would prevent label type creation.
-    for (final String label : labels) {
+    for (final String label : uniqueLabels) {
       schema.getOrCreateVertexType(label);
     }
 
@@ -161,8 +183,8 @@ public final class Labels {
       var builder = schema.buildVertexType()
           .withName(compositeTypeName);
 
-      // Add each label as a supertype
-      for (final String label : labels) {
+      // Add each unique label as a supertype
+      for (final String label : uniqueLabels) {
         builder = builder.withSuperType(label);
       }
 
@@ -171,11 +193,9 @@ public final class Labels {
       // Composite type already exists - ensure it has correct supertypes
       // This handles the case where the type was created manually without inheritance
       final var existingType = schema.getType(compositeTypeName);
-      boolean modified = false;
-      for (final String label : labels) {
+      for (final String label : uniqueLabels) {
         if (!existingType.instanceOf(label)) {
           existingType.addSuperType(label);
-          modified = true;
         }
       }
     }

@@ -250,4 +250,59 @@ public class LabelsTest extends TestHelper {
       assertThat(labels).containsExactlyInAnyOrder("Developer", "Manager", "Person");
     });
   }
+
+  // Tests for duplicate label deduplication (GitHub issue #3264)
+
+  @Test
+  public void testGetCompositeTypeNameWithDuplicateLabels() {
+    // Duplicate labels should be deduplicated
+    // Person:Kebab:Person should become Kebab~Person (not Kebab~Person~Person)
+    assertThat(Labels.getCompositeTypeName(List.of("Person", "Kebab", "Person"))).isEqualTo("Kebab~Person");
+  }
+
+  @Test
+  public void testGetCompositeTypeNameWithAllDuplicateLabels() {
+    // Kebab:Kebab should become just Kebab
+    assertThat(Labels.getCompositeTypeName(List.of("Kebab", "Kebab"))).isEqualTo("Kebab");
+  }
+
+  @Test
+  public void testGetCompositeTypeNameWithMultipleDuplicates() {
+    // A:B:A:B:A should become A~B
+    assertThat(Labels.getCompositeTypeName(List.of("A", "B", "A", "B", "A"))).isEqualTo("A~B");
+  }
+
+  @Test
+  public void testEnsureCompositeTypeWithDuplicateLabels() {
+    database.transaction(() -> {
+      // Person:Kebab:Person should create Kebab~Person (with duplicates removed)
+      String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Kebab", "Person"));
+      assertThat(typeName).isEqualTo("Kebab~Person");
+
+      // Verify composite type exists (without duplicate)
+      assertThat(database.getSchema().existsType("Kebab~Person")).isTrue();
+
+      // Verify base types exist
+      assertThat(database.getSchema().existsType("Person")).isTrue();
+      assertThat(database.getSchema().existsType("Kebab")).isTrue();
+
+      // Verify inheritance
+      assertThat(database.getSchema().getType("Kebab~Person").instanceOf("Person")).isTrue();
+      assertThat(database.getSchema().getType("Kebab~Person").instanceOf("Kebab")).isTrue();
+    });
+  }
+
+  @Test
+  public void testEnsureCompositeTypeWithAllDuplicateLabels() {
+    database.transaction(() -> {
+      // Kebab:Kebab should just create/return Kebab (single label)
+      String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Kebab", "Kebab"));
+      assertThat(typeName).isEqualTo("Kebab");
+
+      // Verify only single type exists
+      assertThat(database.getSchema().existsType("Kebab")).isTrue();
+      // There should be no "Kebab~Kebab" type
+      assertThat(database.getSchema().existsType("Kebab~Kebab")).isFalse();
+    });
+  }
 }
