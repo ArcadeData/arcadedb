@@ -33,6 +33,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
 import javax.xml.XMLConstants;
+import javax.xml.namespace.QName;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
@@ -72,12 +73,12 @@ public class XMLImporterFormat implements FormatImporter {
 
         case XMLStreamReader.START_ELEMENT:
           if (nestLevel == objectNestLevel) {
-            // Use appropriate prefix based on entity type
-            final String localName = xmlReader.getName().getLocalPart();
+            // Use qualified name (with namespace prefix if present)
+            final String qualifiedName = getQualifiedName(xmlReader.getName());
             if (entityType == AnalyzedEntity.EntityType.DOCUMENT) {
-              entityName = localName;  // No prefix for documents
+              entityName = qualifiedName;  // No v_ prefix for documents
             } else {
-              entityName = "v_" + localName;  // v_ prefix for vertices (including DATABASE for backward compatibility)
+              entityName = "v_" + qualifiedName;  // v_ prefix for vertices (including DATABASE for backward compatibility)
             }
 
             // CLEAR THE MAP FOR THE NEW RECORD
@@ -85,15 +86,15 @@ public class XMLImporterFormat implements FormatImporter {
             lastName = null;
             lastContent = null;
 
-            // GET ELEMENT'S ATTRIBUTES AS PROPERTIES
+            // GET ELEMENT'S ATTRIBUTES AS PROPERTIES (with namespace prefix if present)
             for (int i = 0; i < xmlReader.getAttributeCount(); ++i)
-              object.put(xmlReader.getAttributeName(i).getLocalPart(), xmlReader.getAttributeValue(i));
+              object.put(getQualifiedName(xmlReader.getAttributeName(i)), xmlReader.getAttributeValue(i));
           } else if (nestLevel == objectNestLevel + 1) {
             // GET ELEMENT'S SUB-NODES AS PROPERTIES
             if (lastName != null)
               object.put(lastName, lastContent);
 
-            lastName = xmlReader.getName().getLocalPart();
+            lastName = getQualifiedName(xmlReader.getName());
           }
 
           ++nestLevel;
@@ -226,18 +227,18 @@ public class XMLImporterFormat implements FormatImporter {
                   nestLevel);
 
           if (nestLevel == objectNestLevel) {
-            // Use appropriate prefix based on entity type (consistent with load method)
-            final String localName = xmlReader.getName().getLocalPart();
+            // Use qualified name (with namespace prefix if present), consistent with load method
+            final String qualifiedName = getQualifiedName(xmlReader.getName());
             if (entityType == AnalyzedEntity.EntityType.DOCUMENT) {
-              entityName = localName;  // No prefix for documents
+              entityName = qualifiedName;  // No v_ prefix for documents
             } else {
-              entityName = "v_" + localName;  // v_ prefix for vertices (including DATABASE for backward compatibility)
+              entityName = "v_" + qualifiedName;  // v_ prefix for vertices (including DATABASE for backward compatibility)
             }
 
-            // GET ELEMENT'S ATTRIBUTES AS PROPERTIES
+            // GET ELEMENT'S ATTRIBUTES AS PROPERTIES (with namespace prefix if present)
             for (int i = 0; i < xmlReader.getAttributeCount(); ++i) {
               analyzedSchema.getOrCreateEntity(entityName, entityType)
-                  .getOrCreateProperty(xmlReader.getAttributeName(i).getLocalPart(), xmlReader.getAttributeValue(i));
+                  .getOrCreateProperty(getQualifiedName(xmlReader.getAttributeName(i)), xmlReader.getAttributeValue(i));
               lastName = null;
             }
           } else if (nestLevel == objectNestLevel + 1) {
@@ -245,7 +246,7 @@ public class XMLImporterFormat implements FormatImporter {
             if (lastName != null)
               analyzedSchema.getOrCreateEntity(entityName, entityType).getOrCreateProperty(lastName, lastContent);
 
-            lastName = xmlReader.getName().getLocalPart();
+            lastName = getQualifiedName(xmlReader.getName());
           }
 
           ++nestLevel;
@@ -323,5 +324,23 @@ public class XMLImporterFormat implements FormatImporter {
   @Override
   public String getFormat() {
     return "XML";
+  }
+
+  /**
+   * Gets the qualified name for an XML element or attribute.
+   * If the element has a namespace prefix, returns "prefix_localName".
+   * Otherwise, returns just the local name.
+   * This is important for RDF imports where namespace prefixes distinguish different vocabularies.
+   *
+   * @param qName the QName from the XML reader
+   * @return the qualified name with prefix if present, or just the local name
+   */
+  private static String getQualifiedName(final QName qName) {
+    final String prefix = qName.getPrefix();
+    final String localPart = qName.getLocalPart();
+    if (prefix != null && !prefix.isEmpty()) {
+      return prefix + "_" + localPart;
+    }
+    return localPart;
   }
 }
