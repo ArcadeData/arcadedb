@@ -116,7 +116,9 @@
         </dependencySet>
         <!-- Plugin modules in separate directory -->
         <dependencySet>
-            <outputDirectory>lib/plugins</outputDirectory>
+            <!-- waiting for fix on query engine-->
+            <outputDirectory>lib</outputDirectory>
+            <!--            <outputDirectory>lib/plugins</outputDirectory>-->
             <includes>
                 <include>com.arcadedb:arcadedb-postgresw</include>
             </includes>
