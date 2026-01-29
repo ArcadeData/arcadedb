@@ -104,7 +104,7 @@ class GraphRAGTest extends TestHelper {
       ResultSet result = database.query("sql", String.format("""
               SELECT title, content, $distance AS relevance
               FROM Publication
-              LET $distance = (1 - vectorCosineSimilarity(embedding, %s))
+              LET $distance = (1 - `vector.cosineSimilarity`(embedding, %s))
               WHERE $distance < 0.4
               ORDER BY $distance
               LIMIT 10;

@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 /**
  * Formats content.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionFormat extends SQLFunctionAbstract {
   public static final String NAME = "format";

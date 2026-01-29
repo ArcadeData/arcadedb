@@ -70,11 +70,13 @@ public class ReturnClause {
   }
 
   /**
-   * Check if any return item is an aggregation function.
+   * Check if any return item is or contains an aggregation function.
+   * This includes both direct aggregations (e.g., COLLECT(x)) and
+   * wrapped aggregations (e.g., HEAD(COLLECT(x))).
    */
   public boolean hasAggregations() {
     for (final ReturnItem item : items) {
-      if (item.getExpression().isAggregation()) {
+      if (containsAggregation(item.getExpression())) {
         return true;
       }
     }
@@ -84,11 +86,31 @@ public class ReturnClause {
   /**
    * Check if any return item is NOT an aggregation function.
    * Used to detect implicit GROUP BY (when RETURN has both aggregations and non-aggregations).
+   * Note: This checks for items that don't contain any aggregation, including wrapped ones.
    */
   public boolean hasNonAggregations() {
     for (final ReturnItem item : items) {
-      if (!item.getExpression().isAggregation()) {
+      if (!containsAggregation(item.getExpression())) {
         return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Check if an expression is or contains an aggregation function.
+   * This detects both direct aggregations and wrapped aggregations like HEAD(COLLECT(...)).
+   */
+  private static boolean containsAggregation(final Expression expr) {
+    if (expr.isAggregation()) {
+      return true;
+    }
+    // Check if this is a function that wraps an aggregation
+    if (expr instanceof FunctionCallExpression funcExpr) {
+      for (final Expression arg : funcExpr.getArguments()) {
+        if (containsAggregation(arg)) {
+          return true;
+        }
       }
     }
     return false;

@@ -27,7 +27,7 @@ import java.util.*;
 /**
  * Basic interface for commands. Manages the context variables during execution.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 @ExcludeFromJacocoGeneratedReport
 public interface CommandContext {

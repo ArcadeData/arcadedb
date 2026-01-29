@@ -19,12 +19,20 @@
 package com.arcadedb.query.sql.function;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 import java.util.*;
 
 /**
- * Created by frank on 25/05/2017.
+ * Template for SQL function factories.
+ * <p>
+ * Functions registered here are also registered in the unified {@link FunctionRegistry}
+ * when registered as instances (not as classes, since class-based registration creates
+ * new instances per call for stateful functions).
+ * </p>
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
 
@@ -34,16 +42,51 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
     functions = new HashMap<>();
   }
 
+  /**
+   * Registers a function instance.
+   * <p>
+   * Also registers in the unified {@link FunctionRegistry} for cross-engine access.
+   * If the function provides an alias via {@link com.arcadedb.function.Function#getAlias()},
+   * it will also be registered under the alias name for backward compatibility.
+   * </p>
+   */
   public void register(final SQLFunction function) {
     functions.put(function.getName().toLowerCase(Locale.ENGLISH), function);
+    // Register alias if provided (for backward compatibility)
+    final String alias = function.getAlias();
+    if (alias != null) {
+      functions.put(alias.toLowerCase(Locale.ENGLISH), function);
+    }
+    // Also register in the unified FunctionRegistry for cross-engine access
+    FunctionRegistry.register(function);
   }
 
   public void unregister(final String name) {
     functions.remove(name);
+    // Note: Not unregistering from FunctionRegistry to maintain cross-engine availability
   }
 
+  /**
+   * Registers a function by name.
+   * <p>
+   * If function is an instance, also registers in the unified {@link FunctionRegistry}.
+   * Class-based registrations are not registered in FunctionRegistry since they
+   * create new instances per call (for stateful functions).
+   * If the function provides an alias via {@link com.arcadedb.function.Function#getAlias()},
+   * it will also be registered under the alias name for backward compatibility.
+   * </p>
+   */
   public void register(final String name, final Object function) {
     functions.put(name.toLowerCase(Locale.ENGLISH), function);
+    // If it's an instance (not a class), also register in unified registry and handle alias
+    if (function instanceof SQLFunction sqlFunction) {
+      // Register alias if provided (for backward compatibility)
+      final String alias = sqlFunction.getAlias();
+      if (alias != null) {
+        functions.put(alias.toLowerCase(Locale.ENGLISH), function);
+      }
+      FunctionRegistry.register(sqlFunction);
+    }
   }
 
   @Override

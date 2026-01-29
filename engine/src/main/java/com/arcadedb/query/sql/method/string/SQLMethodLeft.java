@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
  * Returns the first characters from the beginning of the string.
  *
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodLeft extends AbstractSQLMethod {
 

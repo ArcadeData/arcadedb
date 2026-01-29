@@ -27,7 +27,7 @@ import org.locationtech.spatial4j.shape.Point;
 /**
  * Returns a rectangle shape with the 4 coordinates received as parameters.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionRectangle extends SQLFunctionAbstract {
   public static final String NAME = "rectangle";

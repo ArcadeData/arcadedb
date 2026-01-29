@@ -11,8 +11,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class DeleteFunctionStatement extends SimpleExecStatement {
-  protected Identifier libraryName;
-  protected Identifier functionName;
+  public Identifier libraryName;
+  public Identifier functionName;
 
   public DeleteFunctionStatement(final int id) {
     super(id);

@@ -16,30 +16,26 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.function.coll;
+package com.arcadedb.query.opencypher.functions.convert;
 
-import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
+import com.arcadedb.query.opencypher.functions.CypherFunction;
 
 /**
- * Abstract class for multi-value based function implementations.
+ * Abstract base class for convert functions.
+ * All convert functions share the "convert." namespace prefix.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class SQLFunctionMultiValueAbstract<T> extends SQLFunctionConfigurableAbstract {
+public abstract class AbstractConvertFunction implements CypherFunction {
+  protected static final String NAMESPACE = "convert";
 
-  protected T context;
-
-  protected SQLFunctionMultiValueAbstract(final String iName) {
-    super(iName);
-  }
-
-  @Override
-  public boolean aggregateResults() {
-    return configuredParameters.length == 1;
-  }
+  /**
+   * Returns the simple name without namespace prefix.
+   */
+  protected abstract String getSimpleName();
 
   @Override
-  public T getResult() {
-    return context;
+  public String getName() {
+    return NAMESPACE + "." + getSimpleName();
   }
 }

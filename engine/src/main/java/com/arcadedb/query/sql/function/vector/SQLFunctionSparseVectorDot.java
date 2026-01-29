@@ -33,10 +33,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *   sparseVectorCreate([1, 2], [0.2, 0.8])
  * ) → 0.3 * 0.8 = 0.24
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionSparseVectorDot extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorSparseDot";
+  public static final String NAME = "vector.sparseDot";
 
   public SQLFunctionSparseVectorDot() {
     super(NAME);

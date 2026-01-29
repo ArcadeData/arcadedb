@@ -33,10 +33,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *
  * Both scores are expected to be in [0, 1] range for meaningful results.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorHybridScore extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorHybridScore";
+  public static final String NAME = "vector.hybridScore";
 
   public SQLFunctionVectorHybridScore() {
     super(NAME);

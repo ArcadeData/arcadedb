@@ -28,7 +28,7 @@ import java.security.*;
 /**
  * Generates a random number integer between 0 and the number passed as parameter.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionRandomInt extends SQLFunctionAbstract {
   public static final  String       NAME   = "randomInt";

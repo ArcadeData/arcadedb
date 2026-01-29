@@ -76,7 +76,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
 
       // Normalize embeddings before indexing (blog post example)
       database.command("sql",
-          "INSERT INTO documents SELECT title, content, vectorNormalize(embedding) as embedding_norm FROM raw_documents");
+          "INSERT INTO documents SELECT title, content, `vector.normalize`(embedding) as embedding_norm FROM raw_documents");
     });
 
     database.transaction(() -> {
@@ -110,7 +110,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Calculate vector properties (blog post example)
       final ResultSet rs = database.query("sql",
-          "SELECT vectorDimension(embedding) as dimensions, vectorMagnitude(embedding) as length FROM documents");
+          "SELECT `vector.dimension`(embedding) as dimensions, `vector.magnitude`(embedding) as length FROM documents");
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
@@ -136,8 +136,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Compute similarity scores (blog post example)
       final ResultSet rs = database.query("sql",
-          "SELECT vectorDotProduct(v1_embedding, v2_embedding) as dot_prod, " +
-              "vectorCosineSimilarity(v1_embedding, v2_embedding) as cosine_sim " +
+          "SELECT `vector.dotProduct`(v1_embedding, v2_embedding) as dot_prod, " +
+              "`vector.cosineSimilarity`(v1_embedding, v2_embedding) as cosine_sim " +
               "FROM document_pairs");
 
       assertThat(rs.hasNext()).isTrue();
@@ -171,7 +171,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       // Combine text and image embeddings (blog post example)
       final ResultSet rs = database.query("sql",
           "SELECT document_id, " +
-              "vectorNormalize(vectorAdd(vectorScale(text_embedding, 0.7), vectorScale(image_embedding, 0.3))) as multi_modal_embedding "
+              "`vector.normalize`(`vector.add`(`vector.scale`(text_embedding, 0.7), `vector.scale`(image_embedding, 0.3))) as multi_modal_embedding "
               +
               "FROM documents");
 
@@ -218,7 +218,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Calculate cluster centroids (blog post example)
       final ResultSet rs = database.query("sql",
-          "SELECT category, vectorAvg(embedding) as centroid, COUNT(*) as documents FROM documents GROUP BY category");
+          "SELECT category, `vector.avg`(embedding) as centroid, COUNT(*) as documents FROM documents GROUP BY category");
 
       assertThat(rs.hasNext()).isTrue();
 
@@ -266,8 +266,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Element-wise operations (blog post example)
       final ResultSet rs = database.query("sql",
-          "SELECT vectorMultiply(embedding1, embedding2) as hadamard_product, " +
-              "vectorSubtract(embedding1, embedding2) as direction_vector " +
+          "SELECT `vector.multiply`(embedding1, embedding2) as hadamard_product, " +
+              "`vector.subtract`(embedding1, embedding2) as direction_vector " +
               "FROM comparisons");
 
       assertThat(rs.hasNext()).isTrue();
@@ -290,7 +290,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Test built-in hybrid scoring function (JavaScript functions require different setup)
       // This test validates the concept of hybrid search shown in the blog post
-      final ResultSet rs = database.query("sql", "SELECT vectorHybridScore(0.8, 0.5, 0.7) as score");
+      final ResultSet rs = database.query("sql", "SELECT `vector.hybridScore`(0.8, 0.5, 0.7) as score");
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
       assertThat(result.<Float>getProperty("score")).isNotNull();
@@ -315,9 +315,9 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     });
 
     database.transaction(() -> {
-      // Test vectorHybridScore function with literal values
+      // Test `vector.hybridScore` function with literal values
       final ResultSet rs = database.query("sql",
-          "SELECT vectorHybridScore(0.9, 0.5, 0.7) as hybrid_score");
+          "SELECT `vector.hybridScore`(0.9, 0.5, 0.7) as hybrid_score");
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
@@ -333,12 +333,12 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   @Test
   void testPhase4_StoreSparseEmbeddings() {
     database.transaction(() -> {
-      // Test that vectorSparseCreate works (sparse vectors are computed, not stored)
+      // Test that `vector.sparseCreate` works (sparse vectors are computed, not stored)
       final int[] tokenIds = new int[] { 5, 17, 42, 103 };
       final float[] weights = new float[] { 0.8f, 0.5f, 0.3f, 0.9f };
 
       final ResultSet rs = database.query("sql",
-          "SELECT vectorSparseCreate(?, ?) as sparse_emb", (Object) tokenIds, (Object) weights);
+          "SELECT `vector.sparseCreate`(?, ?) as sparse_emb", (Object) tokenIds, (Object) weights);
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
@@ -357,7 +357,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
 
       // Sparse dot product search (blog post example)
       final ResultSet rs = database.query("sql",
-          "SELECT vectorSparseDot(vectorSparseCreate(?, ?), vectorSparseCreate(?, ?)) as score",
+          "SELECT `vector.sparseDot`(`vector.sparseCreate`(?, ?), `vector.sparseCreate`(?, ?)) as score",
           (Object) indices1, (Object) values1, (Object) indices2, (Object) values2);
 
       assertThat(rs.hasNext()).isTrue();
@@ -370,11 +370,11 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   @Test
   void testPhase4_ConvertBetweenSparseAndDense() {
     database.transaction(() -> {
-      // Test vectorDenseToSparse conversion (blog post example)
+      // Test `vector.denseToSparse` conversion (blog post example)
       final float[] denseVec = new float[] { 1.0f, 0.0f, 0.5f, 0.3f, 0.0f, 0.8f };
 
       final ResultSet rs = database.query("sql",
-          "SELECT vectorDenseToSparse(?, 0.001) as sparse",
+          "SELECT `vector.denseToSparse`(?, 0.001) as sparse",
           (Object) denseVec);
 
       assertThat(rs.hasNext()).isTrue();
@@ -478,8 +478,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Manual quantization (blog post example)
       final ResultSet rs = database.query("sql",
-          "SELECT vectorQuantizeInt8(embedding) as int8_compressed, " +
-              "vectorQuantizeBinary(embedding) as binary_compressed " +
+          "SELECT `vector.quantizeInt8`(embedding) as int8_compressed, " +
+              "`vector.quantizeBinary`(embedding) as binary_compressed " +
               "FROM documents");
 
       assertThat(rs.hasNext()).isTrue();
@@ -515,8 +515,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       // Vector statistics (blog post example)
       final ResultSet rs = database.query("sql",
           "SELECT category, " +
-              "AVG(vectorMagnitude(embedding)) as avg_magnitude, " +
-              "AVG(vectorSparsity(embedding, 0.001)) as sparsity_pct " +
+              "AVG(`vector.magnitude`(embedding)) as avg_magnitude, " +
+              "AVG(`vector.sparsity`(embedding, 0.001)) as sparsity_pct " +
               "FROM documents GROUP BY category");
 
       assertThat(rs.hasNext()).isTrue();
@@ -556,8 +556,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Data quality checks - calculate flags in SELECT then filter
       final ResultSet rs = database.query("sql",
-          "SELECT document_id, title, vectorHasNaN(embedding) as hasNaN, vectorHasInf(embedding) as hasInf " +
-              "FROM documents WHERE vectorHasNaN(embedding) = true OR vectorHasInf(embedding) = true");
+          "SELECT document_id, title, `vector.hasNaN`(embedding) as hasNaN, `vector.hasInf`(embedding) as hasInf " +
+              "FROM documents WHERE `vector.hasNaN`(embedding) = true OR `vector.hasInf`(embedding) = true");
 
       int badDocs = 0;
       while (rs.hasNext()) {
@@ -589,8 +589,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Outlier detection (blog post example)
       final ResultSet rs = database.query("sql",
-          "SELECT document_id, vectorLInfNorm(embedding) as max_component, vectorL1Norm(embedding) as manhattan_norm " +
-              "FROM documents WHERE vectorLInfNorm(embedding) > 5.0");
+          "SELECT document_id, `vector.lInfNorm`(embedding) as max_component, `vector.l1Norm`(embedding) as manhattan_norm " +
+              "FROM documents WHERE `vector.lInfNorm`(embedding) > 5.0");
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
@@ -613,7 +613,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
     database.transaction(() -> {
       // Value clipping (blog post example)
       database.command("sql",
-          "UPDATE documents SET embedding = vectorClip(embedding, -3.0, 3.0) WHERE vectorLInfNorm(embedding) > 3.0");
+          "UPDATE documents SET embedding = `vector.clip`(embedding, -3.0, 3.0) WHERE `vector.lInfNorm`(embedding) > 3.0");
     });
 
     database.transaction(() -> {
@@ -781,8 +781,8 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       // Step 4: Dense vector search with hybrid scoring
       final float[] queryDense = normalizeVector(new float[] { 0.9f, 0.4f, 0.3f });
       final ResultSet rs = database.query("sql",
-          "SELECT title, vectorCosineSimilarity(dense_emb, ?) as similarity, " +
-              "vectorHybridScore(vectorCosineSimilarity(dense_emb, ?), 0.8, 0.7) as hybridScore " +
+          "SELECT title, `vector.cosineSimilarity`(dense_emb, ?) as similarity, " +
+              "`vector.hybridScore`(`vector.cosineSimilarity`(dense_emb, ?), 0.8, 0.7) as hybridScore " +
               "FROM SpladeDocument ORDER BY hybridScore DESC LIMIT 10",
           queryDense, queryDense);
 
@@ -839,7 +839,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       // Step 5: Use vector functions (from document data)
       final Object embeddingObj = topDoc.get("embedding");
       final ResultSet funcs = database.query("sql",
-          "SELECT vectorMagnitude(?) as magnitude, vectorDimension(?) as dims", embeddingObj, embeddingObj);
+          "SELECT `vector.magnitude`(?) as magnitude, `vector.dimension`(?) as dims", embeddingObj, embeddingObj);
 
       assertThat(funcs.hasNext()).isTrue();
       final Result funcResult = funcs.next();

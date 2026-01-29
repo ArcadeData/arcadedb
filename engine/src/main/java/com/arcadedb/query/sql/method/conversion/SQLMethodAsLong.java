@@ -30,7 +30,7 @@ import java.util.*;
  * Returns a number as a long (signed 32 bit representation).
  *
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodAsLong extends AbstractSQLMethod {
 

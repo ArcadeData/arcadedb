@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 /**
  * Returns a number as a byte (signed 8 bit representation).
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodAsByte extends AbstractSQLMethod {
 

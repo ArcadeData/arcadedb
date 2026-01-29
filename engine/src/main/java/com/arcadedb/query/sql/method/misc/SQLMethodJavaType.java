@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 /**
  * Returns the value's Java type.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodJavaType extends AbstractSQLMethod {
   public static final String NAME = "javatype";

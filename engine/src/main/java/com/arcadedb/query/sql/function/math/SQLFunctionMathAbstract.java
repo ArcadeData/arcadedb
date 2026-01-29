@@ -21,9 +21,19 @@ package com.arcadedb.query.sql.function.math;
 import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 
 /**
- * Abstract class for math function.
+ * Abstract class for non-aggregate math functions (abs, sqrt, pow, eval).
+ * <p>
+ * For aggregate math functions (sum, count, avg, min, max, etc.), use
+ * {@link com.arcadedb.query.sql.function.SQLAggregatedFunction} instead.
+ * </p>
+ * <p>
+ * This class provides a default {@link #aggregateResults()} implementation
+ * that aggregates when called with a single parameter. Non-aggregate functions
+ * should override this to return {@code false}.
+ * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * @see com.arcadedb.query.sql.function.SQLAggregatedFunction
  */
 public abstract class SQLFunctionMathAbstract extends SQLFunctionConfigurableAbstract {
 

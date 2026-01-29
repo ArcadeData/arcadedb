@@ -29,10 +29,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Example: sparseVectorToDense(sparseVectorCreate([0, 2], [0.5, 0.3]))
  * → [0.5, 0.0, 0.3]
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionSparseVectorToDense extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorSparseToDense";
+  public static final String NAME = "vector.sparseToDense";
 
   public SQLFunctionSparseVectorToDense() {
     super(NAME);

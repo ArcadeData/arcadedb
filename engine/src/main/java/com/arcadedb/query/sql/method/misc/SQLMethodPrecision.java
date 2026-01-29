@@ -36,7 +36,7 @@ import static java.time.temporal.ChronoUnit.MILLIS;
 /**
  * Modifies the precision of a datetime.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodPrecision extends AbstractSQLMethod {
 

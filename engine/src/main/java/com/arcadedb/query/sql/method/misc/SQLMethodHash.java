@@ -29,7 +29,7 @@ import java.security.*;
 /**
  * Hash a string supporting multiple algorithm, all those supported by JVM
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodHash extends AbstractSQLMethod {
 

@@ -25,7 +25,7 @@ import com.arcadedb.utility.FileUtils;
 
 /**
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodIndexOf extends AbstractSQLMethod {
 

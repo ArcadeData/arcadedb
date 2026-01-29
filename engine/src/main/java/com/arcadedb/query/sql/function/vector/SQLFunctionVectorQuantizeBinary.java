@@ -43,10 +43,10 @@ import java.util.List;
  *
  * Example: vectorQuantizeBinary([0.1, 0.5, 0.9]) → binary representation
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorQuantizeBinary extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorQuantizeBinary";
+  public static final String NAME = "vector.quantizeBinary";
 
   public SQLFunctionVectorQuantizeBinary() {
     super(NAME);

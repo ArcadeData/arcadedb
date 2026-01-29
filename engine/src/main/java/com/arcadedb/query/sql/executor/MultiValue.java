@@ -44,7 +44,7 @@ import java.util.stream.StreamSupport;
 /**
  * Handles Multi-value types such as Arrays, Collections and Maps. It recognizes special Arcade collections.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 @SuppressWarnings("unchecked")
 public class MultiValue {

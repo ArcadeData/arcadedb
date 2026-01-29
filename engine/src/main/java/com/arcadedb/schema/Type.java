@@ -47,7 +47,7 @@ import java.util.logging.*;
  * Generic representation of a type.<br>
  * allowAssignmentFrom accepts any class, but Array.class means that the type accepts generic Arrays.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public enum Type {
   BOOLEAN("Boolean", 0, BinaryTypes.TYPE_BOOLEAN, Boolean.class, new Class<?>[] { Number.class }),

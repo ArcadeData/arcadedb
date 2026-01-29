@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 /**
  * Extract the last item of multi values (arrays, collections and maps) or return the same value for non multi-value types.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionLast extends SQLFunctionConfigurableAbstract {
   public static final String NAME = "last";

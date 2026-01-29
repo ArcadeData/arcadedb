@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.function.math;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 
 /**
  * Compute the variance estimation for a given field.
@@ -48,7 +48,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * @author Fabrizio Fortino
  */
-public class SQLFunctionVariance extends SQLFunctionAbstract {
+public class SQLFunctionVariance extends SQLAggregatedFunction {
 
   public static final String NAME = "variance";
 

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.RecordFunction;
 
 /**
  * Interface that defines a SQL Function. Functions can be state-less if registered as instance, or state-full when registered as
@@ -26,50 +26,27 @@ import com.arcadedb.database.Identifiable;
  * instead, stores Implement it and register it with: {@literal OSQLParser.getInstance().registerFunction()} to being used by the
  * SQL engine.
  * <p>
- * ??? could it be possible to have a small piece of code here showing where to register a function using services ???
+ * This interface extends {@link RecordFunction} making all SQL functions available
+ * in the unified {@link com.arcadedb.function.FunctionRegistry}.
+ * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * @see RecordFunction
+ * @see com.arcadedb.function.FunctionRegistry
  */
-public interface SQLFunction {
-
-  /**
-   * Process a record.
-   *
-   * @param self
-   * @param currentRecord : current record
-   * @param currentResult TODO
-   * @param params        : function parameters, number is ensured to be within minParams and maxParams.
-   * @param context       : object calling this function
-   *
-   * @return function result, can be null. Special cases : can be null if function aggregate results, can be null if function filter
-   * results : this mean result is excluded
-   */
-  Object execute(Object self, Identifiable currentRecord, Object currentResult, Object[] params, CommandContext context);
+public interface SQLFunction extends RecordFunction {
 
   /**
    * Configure the function.
+   * <p>
+   * Returns the same function for chaining.
+   * </p>
    *
-   * @param configuredParameters
+   * @param configuredParameters the parameters to configure
+   * @return this function (for chaining)
    */
+  @Override
   SQLFunction config(Object[] configuredParameters);
-
-  /**
-   * A function can make calculation on several records before returning a result.
-   * <p>
-   * Example of such function : sum, count, max, min ...
-   * <p>
-   * The final result of the aggregation is obtained by calling {@link #getResult() }
-   *
-   * @return true if function aggregate results
-   */
-  boolean aggregateResults();
-
-  /**
-   * Function name, the name is used by the sql parser to identify a call this function.
-   *
-   * @return String , function name, never null or empty.
-   */
-  String getName();
 
   /**
    * Returns a convenient SQL String representation of the function.
@@ -84,12 +61,6 @@ public interface SQLFunction {
    *
    * @return String , never null.
    */
+  @Override
   String getSyntax();
-
-  /**
-   * Only called when function aggregates results after all records have been passed to the function.
-   *
-   * @return Aggregation result
-   */
-  Object getResult();
 }

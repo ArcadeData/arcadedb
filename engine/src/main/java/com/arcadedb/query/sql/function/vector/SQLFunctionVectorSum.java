@@ -29,10 +29,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * The accumulation uses simple float array operations which are already efficient.
  * For very large vectors, consider using multiple partial sums with VECTOR_AVG scaling.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorSum extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorSum";
+  public static final String NAME = "vector.sum";
 
   private float[] sumVector;
 

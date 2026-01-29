@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.method.conversion.SQLMethodAsJSON;
  * Deprecated, use `.asJSON()` instead.
  *
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 @Deprecated
 public class SQLMethodToJSON extends SQLMethodAsJSON {

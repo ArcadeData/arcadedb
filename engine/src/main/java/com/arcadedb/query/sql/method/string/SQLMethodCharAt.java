@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
  * Returns a character in a string.
  *
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodCharAt extends AbstractSQLMethod {
 

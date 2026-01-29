@@ -26,7 +26,7 @@ import org.locationtech.spatial4j.context.SpatialContext;
 /**
  * Returns a circle shape with the 3 coordinates received as parameters.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionCircle extends SQLFunctionAbstract {
   public static final String NAME = "circle";

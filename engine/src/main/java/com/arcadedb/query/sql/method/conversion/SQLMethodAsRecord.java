@@ -28,7 +28,7 @@ import java.util.*;
 /**
  * Returns the record from an Identifiable (a RID).
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodAsRecord extends AbstractSQLMethod {
 

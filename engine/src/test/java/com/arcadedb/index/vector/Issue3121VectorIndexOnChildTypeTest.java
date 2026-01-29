@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * When an index is created on a parent type (e.g., EMBEDDING), sub-indexes are automatically
  * created for each bucket, including buckets of child types. This test verifies that
- * vectorNeighbors() can search only within a specific child type's buckets by specifying
+ * `vector.neighbors`() can search only within a specific child type's buckets by specifying
  * the child type name (e.g., 'EMBEDDING_IMAGE[vector]').
  * <p>
  * Use case:
@@ -50,7 +50,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
   private static final int DIMENSIONS = 128;
 
   /**
-   * Test that vectorNeighbors() can search only within a specific child type's buckets
+   * Test that `vector.neighbors`() can search only within a specific child type's buckets
    * when the index was created on the parent type.
    */
   @Test
@@ -108,7 +108,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
 
       // Search ONLY in EMBEDDING_IMAGE by specifying the child type name
       ResultSet result = database.query("sql",
-          "SELECT vectorNeighbors('EMBEDDING_IMAGE[vector]', ?, 5) as neighbors FROM EMBEDDING_IMAGE LIMIT 1",
+          "SELECT `vector.neighbors`('EMBEDDING_IMAGE[vector]', ?, 5) as neighbors FROM EMBEDDING_IMAGE LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
@@ -137,7 +137,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
 
       // Search across ALL types by specifying the parent type name
       ResultSet result = database.query("sql",
-          "SELECT vectorNeighbors('EMBEDDING[vector]', ?, 15) as neighbors FROM EMBEDDING LIMIT 1",
+          "SELECT `vector.neighbors`('EMBEDDING[vector]', ?, 15) as neighbors FROM EMBEDDING LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
@@ -168,7 +168,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
       float[] queryVector = createTestVector(1, 5);
 
       ResultSet result = database.query("sql",
-          "SELECT vectorNeighbors('EMBEDDING_DOCUMENT[vector]', ?, 5) as neighbors FROM EMBEDDING_DOCUMENT LIMIT 1",
+          "SELECT `vector.neighbors`('EMBEDDING_DOCUMENT[vector]', ?, 5) as neighbors FROM EMBEDDING_DOCUMENT LIMIT 1",
           queryVector);
 
       assertThat(result.hasNext()).isTrue();
@@ -227,7 +227,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
       float[] queryVector = createTestVector(0, 2);
 
       ResultSet result = database.query("sql",
-          "SELECT vectorNeighbors('EMBEDDING_A[vector]', ?, 10) as neighbors FROM EMBEDDING_A LIMIT 1",
+          "SELECT `vector.neighbors`('EMBEDDING_A[vector]', ?, 10) as neighbors FROM EMBEDDING_A LIMIT 1",
           queryVector);
 
       List<Map<String, Object>> neighbors = result.next().getProperty("neighbors");

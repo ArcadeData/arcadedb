@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
 import java.util.*;
@@ -28,9 +29,9 @@ import java.util.*;
  * Compute the maximum value for a field. Uses the context to save the last maximum number. When different Number class are used,
  * take the class with most precision.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionMax extends SQLFunctionMathAbstract {
+public class SQLFunctionMax extends SQLAggregatedFunction {
   public static final String NAME = "max";
 
   private Object context;

@@ -57,7 +57,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>
  * This class is thread-safe. QueryParser instances are created per search() invocation.
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class FullTextQueryExecutor {
   private final LSMTreeFullTextIndex   index;

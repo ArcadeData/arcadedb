@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.sql.function;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 import java.util.List;
@@ -26,8 +28,12 @@ import java.util.Objects;
 
 /**
  * Abstract class to extend to build Custom SQL Functions.
+ * <p>
+ * Extends the unified function system via {@link SQLFunction} which implements
+ * {@link com.arcadedb.function.RecordFunction}.
+ * </p>
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class SQLFunctionAbstract implements SQLFunction {
   protected final String name;
@@ -41,6 +47,39 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
     return name;
   }
 
+  /**
+   * Returns the minimum number of arguments required.
+   * Subclasses should override this to specify their requirements.
+   *
+   * @return minimum argument count (default: 0)
+   */
+  @Override
+  public int getMinArgs() {
+    return 0;
+  }
+
+  /**
+   * Returns the maximum number of arguments allowed.
+   * Subclasses should override this to specify their requirements.
+   *
+   * @return maximum argument count (default: Integer.MAX_VALUE)
+   */
+  @Override
+  public int getMaxArgs() {
+    return Integer.MAX_VALUE;
+  }
+
+  /**
+   * Returns a description of the function for documentation.
+   * Subclasses should override this to provide meaningful documentation.
+   *
+   * @return function description (default: the syntax)
+   */
+  @Override
+  public String getDescription() {
+    return getSyntax();
+  }
+
   @Override
   public String toString() {
     return getSyntax();
@@ -49,16 +88,6 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
   @Override
   public SQLFunction config(final Object[] iConfiguredParameters) {
     return this;
-  }
-
-  @Override
-  public boolean aggregateResults() {
-    return false;
-  }
-
-  @Override
-  public Object getResult() {
-    return null;
   }
 
   /**

@@ -26,10 +26,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Aggregate function that computes element-wise minimum of vectors.
  * Returns a vector where each component is the minimum value of corresponding components across all input vectors.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorMin extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorMin";
+  public static final String NAME = "vector.min";
 
   private float[] minVector;
   private int dimensions;

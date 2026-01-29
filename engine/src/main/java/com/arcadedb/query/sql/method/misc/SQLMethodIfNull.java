@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 /**
  * Returns argument if result is null else return result.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodIfNull extends AbstractSQLMethod {
 
