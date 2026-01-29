@@ -30,7 +30,7 @@ import java.util.logging.*;
 /**
  * Converts a value to another type in Java or ArcadeDB's supported types.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodConvert extends AbstractSQLMethod {
 

@@ -68,7 +68,7 @@ import java.util.*;
  *
  * </blockquote>
  *
- * @author Luca Garulli (l.garulli--(at)--orientdb.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodInclude extends AbstractSQLMethod {
 

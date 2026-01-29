@@ -33,7 +33,7 @@ import java.util.Set;
 /**
  * Abstract class to find paths between nodes.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
   protected Set<Vertex>      unSettledNodes;

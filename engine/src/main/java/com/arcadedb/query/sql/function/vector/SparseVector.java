@@ -27,7 +27,7 @@ import java.util.*;
  * Storage: Map<Integer, Float> where key=index, value=non-zero value
  * Supports dynamic dimensionality (dimension inferred from max index or explicitly set).
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SparseVector {
   private final Map<Integer, Float> values;

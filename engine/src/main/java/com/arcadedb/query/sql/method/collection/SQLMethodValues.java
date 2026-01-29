@@ -31,7 +31,7 @@ import java.util.Map;
 /**
  * Returns the values of a map.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodValues extends AbstractSQLMethod {
 

@@ -34,10 +34,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *
  * Example (ColBERT): multiVectorScore([0.9, 0.7, 0.8], 'MAX') → 0.9
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorMultiScore";
+  public static final String NAME = "vector.multiScore";
 
   public enum FusionMethod {
     MAX,

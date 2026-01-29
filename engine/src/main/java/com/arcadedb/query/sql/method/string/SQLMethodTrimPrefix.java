@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodTrimPrefix extends AbstractSQLMethod {
 

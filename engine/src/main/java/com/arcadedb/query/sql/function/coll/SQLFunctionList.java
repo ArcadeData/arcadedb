@@ -21,15 +21,16 @@ package com.arcadedb.query.sql.function.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.function.SQLAggregatedCollectionFunction;
 
 import java.util.*;
 
 /**
  * This operator add an item in a list. The list accepts duplicates.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionList extends SQLFunctionMultiValueAbstract<List<Object>> {
+public class SQLFunctionList extends SQLAggregatedCollectionFunction<List<Object>> {
   public static final String NAME = "list";
 
   public SQLFunctionList() {

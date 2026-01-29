@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 /**
  * Returns a number as a double (signed 32 bit representation).
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodAsDouble extends AbstractSQLMethod {
 

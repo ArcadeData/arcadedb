@@ -31,4 +31,14 @@ class DefineFunctionStatementTestParserTest extends AbstractParserTest {
 
     checkWrongSyntax("DEFINE FUNCTION test \"print('\\nTest!')\"");
   }
+
+  @Test
+  void deleteFunction() {
+    checkRightSyntax("DELETE FUNCTION test.print");
+    checkRightSyntax("DELETE FUNCTION math.sum");
+    checkRightSyntax("delete function users.allUsersButAdmin");
+
+    checkWrongSyntax("DELETE FUNCTION test");  // Missing function name (only library)
+    checkWrongSyntax("DELETE FUNCTION");       // Missing both library and function name
+  }
 }

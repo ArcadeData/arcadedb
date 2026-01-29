@@ -130,10 +130,10 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
       // then use the function to combine them
       final ResultSet rs = database.query("sql", """
           SELECT title, content,
-            vectorCosineSimilarity(embedding, ?) as vecSim,
+            `vector.cosineSimilarity`(embedding, ?) as vecSim,
             (content LIKE '%keywords%') as hasTextMatch
           FROM DocTest
-          WHERE vectorCosineSimilarity(embedding, ?) > 0.3
+          WHERE `vector.cosineSimilarity`(embedding, ?) > 0.3
             OR content LIKE '%keywords%'
           """, queryVector, queryVector);
 
@@ -174,19 +174,19 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
           DEFINE FUNCTION Text.matchScore "return text.toLowerCase().includes(keywords.toLowerCase()) ? 1.0 : 0.0;" PARAMETERS [text, keywords] LANGUAGE js
           """);
 
-      // Step 2: Hybrid search using vectorHybridScore + textMatchScore
+      // Step 2: Hybrid search using `vector.hybridScore` + textMatchScore
       final float[] queryVector = normalizeVector(new float[] { 1.0f, 0.4f, 0.2f });
       final String keywords = "keywords";
 
       final ResultSet rs = database.query("sql", """
           SELECT title, content,
-            vectorHybridScore(
-              vectorCosineSimilarity(embedding, ?),
+            `vector.hybridScore`(
+              `vector.cosineSimilarity`(embedding, ?),
               `Text.matchScore`(content, ?),
               0.7
             ) as hybrid_score
           FROM DocTest
-          WHERE vectorCosineSimilarity(embedding, ?) > 0.3
+          WHERE `vector.cosineSimilarity`(embedding, ?) > 0.3
             OR content LIKE ?
           ORDER BY hybrid_score DESC
           LIMIT 10
@@ -205,7 +205,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   }
 
   // =============================================================================
-  // What DOES work: Built-in vectorHybridScore function
+  // What DOES work: Built-in `vector.hybridScore` function
   // =============================================================================
 
   @Test
@@ -213,9 +213,9 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
     setupDocuments();
 
     database.transaction(() -> {
-      // ✅ vectorHybridScore with literal values DOES work
+      // ✅ `vector.hybridScore` with literal values DOES work
       final ResultSet rs = database.query("sql",
-          "SELECT vectorHybridScore(0.8, 0.5, 0.7) as score");
+          "SELECT `vector.hybridScore`(0.8, 0.5, 0.7) as score");
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
@@ -224,7 +224,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
       // Expected: 0.8 * 0.7 + 0.5 * 0.3 = 0.56 + 0.15 = 0.71
       assertThat(score).isNotNull();
       assertThat(score).isCloseTo(0.71f, offset(0.01f));
-      // RESULT: ✅ Built-in vectorHybridScore function works
+      // RESULT: ✅ Built-in `vector.hybridScore` function works
     });
   }
 
@@ -235,7 +235,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
     database.transaction(() -> {
       // ✅ vectorDistance with literal arrays DOES work
       final ResultSet rs = database.query("sql",
-          "SELECT (1 - vectorCosineSimilarity([1.0, 0.0, 0.0], [1.0, 0.0, 0.0])) as dist");
+          "SELECT (1 - `vector.cosineSimilarity`([1.0, 0.0, 0.0], [1.0, 0.0, 0.0])) as dist");
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
@@ -278,12 +278,12 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
 
     database.transaction(() -> {
       // ✅ This is a WORKING alternative to the blog post example
-      // Step 1: Get vector candidates using vectorCosineSimilarity
+      // Step 1: Get vector candidates using `vector.cosineSimilarity`
       final float[] queryVector = normalizeVector(new float[] { 1.0f, 0.4f, 0.2f });
 
       final ResultSet rs = database.query("sql",
           "SELECT title, content, embedding, " +
-              "vectorCosineSimilarity(embedding, ?) as vecSim " +
+              "`vector.cosineSimilarity`(embedding, ?) as vecSim " +
               "FROM DocTest",
           (Object) queryVector);
 
@@ -313,13 +313,13 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
     setupDocuments();
 
     database.transaction(() -> {
-      // ✅ Use vectorHybridScore with calculated values
+      // ✅ Use `vector.hybridScore` with calculated values
       // NOTE: This test uses a simpler approach - calculating text score in Java
       final float[] queryVector = normalizeVector(new float[] { 1.0f, 0.4f, 0.2f });
 
       final ResultSet rs = database.query("sql",
           "SELECT title, content, " +
-              "vectorCosineSimilarity(embedding, ?) as vecSim " +
+              "`vector.cosineSimilarity`(embedding, ?) as vecSim " +
               "FROM DocTest " +
               "ORDER BY vecSim DESC " +
               "LIMIT 10",

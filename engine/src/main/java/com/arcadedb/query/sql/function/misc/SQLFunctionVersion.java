@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * Generates a UUID as a 128-bits value using the Leach-Salz variant. For more information look at:
  * http://docs.oracle.com/javase/6/docs/api/java/util/UUID.html.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVersion extends SQLFunctionAbstract {
   public static final String NAME = "version";

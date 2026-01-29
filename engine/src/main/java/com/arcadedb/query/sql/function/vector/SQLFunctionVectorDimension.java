@@ -28,10 +28,10 @@ import java.util.List;
  * Returns the number of dimensions in a vector.
  * Useful for validating vector dimensionality and compatibility.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorDimension extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorDimension";
+  public static final String NAME = "vector.dimension";
 
   public SQLFunctionVectorDimension() {
     super(NAME);

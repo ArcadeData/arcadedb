@@ -34,7 +34,7 @@ import java.util.Set;
 /**
  * Transform the element in a collections or map.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodTransform extends AbstractSQLMethod {
 

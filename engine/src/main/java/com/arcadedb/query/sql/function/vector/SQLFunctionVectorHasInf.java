@@ -30,10 +30,10 @@ import java.util.List;
  * Example: vectorHasInf([1.0, 2.0, 3.0]) = false
  *          vectorHasInf([1.0, Infinity, 3.0]) = true
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorHasInf extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorHasInf";
+  public static final String NAME = "vector.hasInf";
 
   public SQLFunctionVectorHasInf() {
     super(NAME);

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.function.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.function.SQLAggregatedCollectionFunction;
 
 import java.util.*;
 
@@ -28,9 +29,9 @@ import java.util.*;
  * This operator can work as aggregate or inline. If only one argument is passed than aggregates, otherwise executes, and returns,
  * the INTERSECTION of the collections received as parameters.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> {
+public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object> {
   public static final String NAME = "intersect";
 
   public SQLFunctionIntersect() {

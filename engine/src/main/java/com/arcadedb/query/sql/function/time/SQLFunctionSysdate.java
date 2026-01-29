@@ -29,7 +29,7 @@ import java.time.ZoneId;
 /**
  * Returns the current date time. If the `zoneid` parameter is passed, then a ZonedDateTime instance is returned, otherwise a LocalDateTime.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see SQLFunctionDate
  */
 public class SQLFunctionSysdate extends SQLFunctionAbstract {

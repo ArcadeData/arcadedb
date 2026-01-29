@@ -27,6 +27,10 @@ import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.functions.CypherFunction;
+import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -75,7 +79,12 @@ public class CallStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    // Execute the procedure/function
+    // Check if this is a chained CALL with a previous step
+    if (prev != null) {
+      return executeChainedCall(context, nRecords);
+    }
+
+    // Standalone CALL - execute once
     final Object result = executeCall(context);
 
     // Convert result to ResultSet
@@ -83,17 +92,101 @@ public class CallStep extends AbstractExecutionStep {
   }
 
   /**
+   * Executes the CALL for each row from the previous step (chained CALL).
+   * This enables patterns like:
+   * <pre>
+   * UNWIND $batch AS row
+   * MATCH (a), (b) WHERE elementId(a) = row.source_id AND elementId(b) = row.target_id
+   * CALL merge.relationship(a, row.rel_type, {}, row.props, b) YIELD rel
+   * RETURN elementId(rel) as id
+   * </pre>
+   */
+  private ResultSet executeChainedCall(final CommandContext context, final int nRecords) {
+    final List<ResultInternal> results = new ArrayList<>();
+
+    // Pull rows from previous step
+    final ResultSet prevResults = prev.syncPull(context, nRecords);
+
+    while (prevResults.hasNext()) {
+      final Result inputRow = prevResults.next();
+
+      // Execute the call with this row's context
+      final Object callResult = executeCall(context, inputRow);
+
+      // Convert and add results, merging with input row properties
+      if (callResult == null) {
+        // OPTIONAL CALL returned null - pass through input row
+        if (callClause.isOptional()) {
+          results.add(mergeWithInputRow(inputRow, null));
+        }
+        continue;
+      }
+
+      if (callResult instanceof Collection) {
+        for (final Object item : (Collection<?>) callResult) {
+          results.add(mergeWithInputRow(inputRow, convertItemToResult(item)));
+        }
+      } else if (callResult instanceof Iterator) {
+        final Iterator<?> iter = (Iterator<?>) callResult;
+        while (iter.hasNext()) {
+          results.add(mergeWithInputRow(inputRow, convertItemToResult(iter.next())));
+        }
+      } else {
+        results.add(mergeWithInputRow(inputRow, convertItemToResult(callResult)));
+      }
+    }
+
+    // Apply YIELD filtering if specified
+    if (callClause.hasYield() && !callClause.isYieldAll()) {
+      return applyYieldFiltering(results);
+    }
+
+    return new IteratorResultSet(results.iterator());
+  }
+
+  /**
+   * Merges the call result with the input row properties.
+   * The input row properties are preserved, and call result properties are added.
+   */
+  private ResultInternal mergeWithInputRow(final Result inputRow, final ResultInternal callResult) {
+    final ResultInternal merged = new ResultInternal();
+
+    // Copy input row properties
+    if (inputRow != null) {
+      for (final String prop : inputRow.getPropertyNames()) {
+        merged.setProperty(prop, inputRow.getProperty(prop));
+      }
+    }
+
+    // Add call result properties
+    if (callResult != null) {
+      for (final String prop : callResult.getPropertyNames()) {
+        merged.setProperty(prop, callResult.getProperty(prop));
+      }
+    }
+
+    return merged;
+  }
+
+  /**
    * Executes the CALL and returns the raw result.
    */
   private Object executeCall(final CommandContext context) {
+    return executeCall(context, null);
+  }
+
+  /**
+   * Executes the CALL with optional input row context.
+   */
+  private Object executeCall(final CommandContext context, final Result inputRow) {
     final String procedureName = callClause.getProcedureName();
     final String simpleName = callClause.getSimpleName();
     final String namespace = callClause.getNamespace();
 
-    // Evaluate arguments
+    // Evaluate arguments (with input row context for variable resolution)
     final List<Object> args = new ArrayList<>();
     for (final Expression argExpr : callClause.getArguments()) {
-      args.add(evaluator.evaluate(argExpr, null, context));
+      args.add(evaluator.evaluate(argExpr, inputRow, context));
     }
 
     // Handle built-in Cypher procedures
@@ -108,6 +201,18 @@ public class CallStep extends AbstractExecutionStep {
       case "db.schema.visualization":
         return getSchemaVisualization(context);
       default:
+        // Check the procedure registry first
+        final CypherProcedure procedure = CypherProcedureRegistry.get(procedureName);
+        if (procedure != null) {
+          return executeProcedure(procedure, args.toArray(), inputRow, context);
+        }
+
+        // Check the function registry
+        final CypherFunction function = CypherFunctionRegistry.get(procedureName);
+        if (function != null) {
+          return executeFunction(function, args.toArray(), context);
+        }
+
         // Try to call as custom function (DEFINE FUNCTION) first
         if (!namespace.isEmpty()) {
           final Object customResult = callCustomFunction(namespace, simpleName, args, context);
@@ -117,6 +222,63 @@ public class CallStep extends AbstractExecutionStep {
 
         // Fall back to ArcadeDB SQL function
         return callSQLFunction(simpleName, args, context);
+    }
+  }
+
+  /**
+   * Executes a registered procedure.
+   * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory.
+   */
+  private Object executeProcedure(final CypherProcedure procedure, final Object[] args,
+                                   final Result inputRow, final CommandContext context) {
+    try {
+      procedure.validateArgs(args);
+      // Return iterator for lazy evaluation instead of collecting to list
+      // This prevents memory exhaustion for procedures that yield many results
+      return procedure.execute(args, inputRow, context)
+          .map(this::convertProcedureResultToInternal)
+          .iterator();
+    } catch (final IllegalArgumentException e) {
+      if (callClause.isOptional())
+        return null;
+      throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
+    } catch (final Exception e) {
+      if (callClause.isOptional())
+        return null;
+      throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
+    }
+  }
+
+  /**
+   * Converts a procedure Result to ResultInternal for consistency.
+   */
+  private ResultInternal convertProcedureResultToInternal(final Result result) {
+    if (result instanceof ResultInternal) {
+      return (ResultInternal) result;
+    }
+    final ResultInternal internal = new ResultInternal();
+    for (final String prop : result.getPropertyNames()) {
+      internal.setProperty(prop, result.getProperty(prop));
+    }
+    return internal;
+  }
+
+  /**
+   * Executes a registered function.
+   */
+  private Object executeFunction(final CypherFunction function, final Object[] args,
+                                  final CommandContext context) {
+    try {
+      function.validateArgs(args);
+      return function.execute(args, context);
+    } catch (final IllegalArgumentException e) {
+      if (callClause.isOptional())
+        return null;
+      throw new CommandExecutionException("Error executing function: " + function.getName(), e);
+    } catch (final Exception e) {
+      if (callClause.isOptional())
+        return null;
+      throw new CommandExecutionException("Error executing function: " + function.getName(), e);
     }
   }
 

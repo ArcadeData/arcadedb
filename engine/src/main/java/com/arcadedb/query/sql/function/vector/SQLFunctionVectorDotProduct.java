@@ -33,10 +33,10 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
  * Uses conditional optimization: scalar for typical vectors (< 4096 elements),
  * JVector SIMD for large vectors (4096+) where 10.6x speedup is observed.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorDotProduct extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorDotProduct";
+  public static final String NAME = "vector.dotProduct";
 
   public SQLFunctionVectorDotProduct() {
     super(NAME);

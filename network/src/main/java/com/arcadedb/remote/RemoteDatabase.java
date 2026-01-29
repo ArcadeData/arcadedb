@@ -50,6 +50,7 @@ import java.util.*;
 import java.util.logging.*;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
+import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -581,10 +582,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     stats.createRecord.incrementAndGet();
 
     RID rid = record.getIdentity();
+    final JSONObject json = record.toJSON();
+    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
     if (rid != null)
-      command("sql", "update " + rid + " content " + record.toJSON());
+      command("sql", "update " + rid + " content " + json);
     else {
-      final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + record.toJSON());
+      final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + json);
       rid = result.next().getIdentity().get();
     }
     return rid;
@@ -597,8 +600,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (rid != null)
       throw new IllegalStateException("Cannot update a record in a custom bucket");
 
+    final JSONObject json = record.toJSON();
+    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
     final ResultSet result = command("sql",
-        "insert into " + record.getTypeName() + " bucket " + bucketName + " content " + record.toJSON());
+        "insert into " + record.getTypeName() + " bucket " + bucketName + " content " + json);
     return result.next().getIdentity().get();
   }
 

@@ -27,7 +27,7 @@ import org.locationtech.spatial4j.shape.SpatialRelation;
 /**
  * Returns true if a shape is inside another shape
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodIsWithin extends AbstractSQLMethod {
 

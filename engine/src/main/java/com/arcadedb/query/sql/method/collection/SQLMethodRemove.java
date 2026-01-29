@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 /**
  * Remove the first occurrence of elements from a collection.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see SQLMethodRemoveAll
  */
 public class SQLMethodRemove extends AbstractSQLMethod {

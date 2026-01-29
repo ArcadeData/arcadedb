@@ -27,7 +27,7 @@ import java.util.*;
 /**
  * Transforms current value in a Set.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodAsSet extends AbstractSQLMethod {
 

@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 /**
  * Splits a string using a delimiter.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodSplit extends AbstractSQLMethod {
 

@@ -32,10 +32,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Edge case: If all values are the same, returns array of 0.5 (midpoint).
  * If only one value, returns array of [1.0].
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorNormalizeScores extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorNormalizeScores";
+  public static final String NAME = "vector.normalizeScores";
 
   public SQLFunctionVectorNormalizeScores() {
     super(NAME);

@@ -30,7 +30,7 @@ import java.util.*;
 /**
  * Returns a polygon shape with the coordinates received as parameters.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionPolygon extends SQLFunctionAbstract {
   public static final String NAME = "polygon";

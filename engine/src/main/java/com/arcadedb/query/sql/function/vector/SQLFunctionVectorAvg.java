@@ -33,10 +33,10 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
  * Uses JVector's SIMD-optimized VectorUtil.scale() for the final averaging operation,
  * providing up to 2-3x performance improvement for large vectors on Java 20+ with Vector API enabled.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorAvg";
+  public static final String NAME = "vector.avg";
 
   private float[] sumVector;
   private long    count;

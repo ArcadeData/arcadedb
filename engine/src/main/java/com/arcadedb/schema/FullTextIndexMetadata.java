@@ -35,7 +35,7 @@ import java.util.Map;
  *   <li>Query parser options (leading wildcard, default operator)</li>
  * </ul>
  *
- * @author ArcadeDB Team
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class FullTextIndexMetadata extends IndexMetadata {
 

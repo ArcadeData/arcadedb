@@ -37,6 +37,8 @@ import java.util.regex.Pattern;
  * Also implements Cypher-specific functions that don't have SQL equivalents.
  */
 public class CypherFunctionFactory {
+  private static final String SQL_PREFIX = "sql.";
+
   private final DefaultSQLFunctionFactory sqlFunctionFactory;
   private final Map<String, String> cypherToSqlMapping;
 
@@ -100,6 +102,12 @@ public class CypherFunctionFactory {
   public boolean hasFunction(final String cypherFunctionName) {
     final String functionName = cypherFunctionName.toLowerCase();
 
+    // Check for sql. prefix - explicit SQL function access
+    if (functionName.startsWith(SQL_PREFIX)) {
+      final String sqlFunctionName = functionName.substring(SQL_PREFIX.length());
+      return sqlFunctionFactory.hasFunction(sqlFunctionName);
+    }
+
     // Check Cypher-specific functions
     if (isCypherSpecificFunction(functionName)) {
       return true;
@@ -130,6 +138,16 @@ public class CypherFunctionFactory {
    */
   public CypherFunctionExecutor getFunctionExecutor(final String cypherFunctionName, final boolean distinct) {
     final String functionName = cypherFunctionName.toLowerCase();
+
+    // Handle sql. prefix - explicit SQL function access
+    if (functionName.startsWith(SQL_PREFIX)) {
+      final String sqlFunctionName = functionName.substring(SQL_PREFIX.length());
+      if (sqlFunctionFactory.hasFunction(sqlFunctionName)) {
+        final SQLFunction sqlFunction = sqlFunctionFactory.getFunctionInstance(sqlFunctionName);
+        return new SQLFunctionBridge(sqlFunction, cypherFunctionName);
+      }
+      throw new CommandExecutionException("Unknown SQL function: " + sqlFunctionName);
+    }
 
     // Handle Cypher-specific functions
     if (isCypherSpecificFunction(functionName)) {

@@ -26,7 +26,7 @@ import com.arcadedb.schema.Type;
 /**
  * Returns the value's Arcadedb Type.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodType extends AbstractSQLMethod {
 

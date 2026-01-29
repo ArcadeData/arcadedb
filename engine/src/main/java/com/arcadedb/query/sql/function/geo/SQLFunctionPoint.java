@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 /**
  * Returns a point in space with X and Y as parameters.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionPoint extends SQLFunctionAbstract {
   public static final String NAME = "point";

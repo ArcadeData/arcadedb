@@ -35,7 +35,7 @@ import java.util.Map;
  * <p>
  * If property is not defined in edge or is null, distance between vertexes are 0.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
   public static final String NAME = "dijkstra";

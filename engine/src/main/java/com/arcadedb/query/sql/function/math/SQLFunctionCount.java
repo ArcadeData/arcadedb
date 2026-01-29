@@ -20,14 +20,15 @@ package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 
 /**
  * Count the record that contains a field. Use * to indicate the record instead of the field. Uses the context to save the counter
  * number. When different Number class are used, take the class with most precision.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionCount extends SQLFunctionMathAbstract {
+public class SQLFunctionCount extends SQLAggregatedFunction {
   public static final String NAME = "count";
 
   private long total = 0;

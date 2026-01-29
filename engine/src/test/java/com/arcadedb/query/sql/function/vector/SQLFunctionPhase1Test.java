@@ -249,7 +249,7 @@ class SQLFunctionPhase1Test extends TestHelper {
 
   @Test
   void sqlVectorNormalize() {
-    String query = "SELECT vectorNormalize([3.0, 4.0]) as normalized";
+    String query = "SELECT `vector.normalize`([3.0, 4.0]) as normalized";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -264,7 +264,7 @@ class SQLFunctionPhase1Test extends TestHelper {
 
   @Test
   void sqlVectorMagnitude() {
-    String query = "SELECT vectorMagnitude([3.0, 4.0]) as magnitude";
+    String query = "SELECT `vector.magnitude`([3.0, 4.0]) as magnitude";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -277,7 +277,7 @@ class SQLFunctionPhase1Test extends TestHelper {
 
   @Test
   void sqlVectorDimension() {
-    String query = "SELECT vectorDimension([1.0, 2.0, 3.0, 4.0, 5.0]) as dims";
+    String query = "SELECT `vector.dimension`([1.0, 2.0, 3.0, 4.0, 5.0]) as dims";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -290,7 +290,7 @@ class SQLFunctionPhase1Test extends TestHelper {
 
   @Test
   void sqlVectorDotProduct() {
-    String query = "SELECT vectorDotProduct([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) as dot";
+    String query = "SELECT `vector.dotProduct`([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) as dot";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -303,7 +303,7 @@ class SQLFunctionPhase1Test extends TestHelper {
 
   @Test
   void sqlVectorCosineSimilarity() {
-    String query = "SELECT vectorCosineSimilarity([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]) as similarity";
+    String query = "SELECT `vector.cosineSimilarity`([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]) as similarity";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -316,7 +316,7 @@ class SQLFunctionPhase1Test extends TestHelper {
 
   @Test
   void sqlVectorL2Distance() {
-    String query = "SELECT vectorL2Distance([0.0, 0.0], [3.0, 4.0]) as distance";
+    String query = "SELECT `vector.l2Distance`([0.0, 0.0], [3.0, 4.0]) as distance";
     try (ResultSet results = database.query("sql", query)) {
       assertThat(results.hasNext()).isTrue();
 
@@ -331,11 +331,11 @@ class SQLFunctionPhase1Test extends TestHelper {
   void sqlPhase1Combined() {
     String query = """
         SELECT
-          vectorDimension([1.0, 2.0, 3.0]) as dims,
-          vectorMagnitude([1.0, 2.0]) as magnitude,
-          vectorDotProduct([1.0, 2.0], [3.0, 4.0]) as dot,
-          vectorL2Distance([0.0, 0.0], [3.0, 4.0]) as distance,
-          vectorCosineSimilarity([1.0, 0.0], [1.0, 0.0]) as cosine
+          `vector.dimension`([1.0, 2.0, 3.0]) as dims,
+          `vector.magnitude`([1.0, 2.0]) as magnitude,
+          `vector.dotProduct`([1.0, 2.0], [3.0, 4.0]) as dot,
+          `vector.l2Distance`([0.0, 0.0], [3.0, 4.0]) as distance,
+          `vector.cosineSimilarity`([1.0, 0.0], [1.0, 0.0]) as cosine
         """;
 
     try (ResultSet results = database.query("sql", query)) {
@@ -389,5 +389,67 @@ class SQLFunctionPhase1Test extends TestHelper {
         context))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("dimension");
+  }
+
+  // ========== Backward Compatibility: Alias Tests ==========
+
+  @Test
+  void vectorFunctionAliasBackwardCompatibility() {
+    // Test that both the new namespaced name and old alias work
+    // New name: vector.cosineSimilarity
+    // Old alias: vectorCosineSimilarity (should still work for backward compatibility)
+
+    String newNameQuery = "SELECT `vector.cosineSimilarity`([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]) as similarity";
+    String aliasQuery = "SELECT vectorCosineSimilarity([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]) as similarity";
+
+    // Both queries should return the same result
+    try (ResultSet newNameResults = database.query("sql", newNameQuery);
+         ResultSet aliasResults = database.query("sql", aliasQuery)) {
+
+      assertThat(newNameResults.hasNext()).isTrue();
+      assertThat(aliasResults.hasNext()).isTrue();
+
+      var newNameResult = newNameResults.next();
+      var aliasResult = aliasResults.next();
+
+      assertThat(newNameResult.<Float>getProperty("similarity")).isCloseTo(1.0f, Offset.offset(0.001f));
+      assertThat(aliasResult.<Float>getProperty("similarity")).isCloseTo(1.0f, Offset.offset(0.001f));
+    }
+  }
+
+  @Test
+  void vectorFunctionAliasForMultipleFunctions() {
+    // Test alias backward compatibility for multiple vector functions
+    String queryWithAliases = """
+        SELECT
+          vectorDimension([1.0, 2.0, 3.0]) as dims,
+          vectorMagnitude([3.0, 4.0]) as magnitude,
+          vectorDotProduct([1.0, 2.0], [3.0, 4.0]) as dot
+        """;
+
+    try (ResultSet results = database.query("sql", queryWithAliases)) {
+      assertThat(results.hasNext()).isTrue();
+
+      var result = results.next();
+      assertThat(result.<Integer>getProperty("dims")).isEqualTo(3);
+      assertThat(result.<Float>getProperty("magnitude")).isCloseTo(5.0f, Offset.offset(0.001f));
+      assertThat(result.<Float>getProperty("dot")).isCloseTo(11.0f, Offset.offset(0.001f));
+    }
+  }
+
+  @Test
+  void vectorFunctionGetAliasReturnsCorrectValue() {
+    // Test that getAlias() returns the expected old name
+    final SQLFunctionVectorCosineSimilarity func = new SQLFunctionVectorCosineSimilarity();
+    assertThat(func.getName()).isEqualTo("vector.cosineSimilarity");
+    assertThat(func.getAlias()).isEqualTo("vectorCosineSimilarity");
+
+    final SQLFunctionVectorNormalize normFunc = new SQLFunctionVectorNormalize();
+    assertThat(normFunc.getName()).isEqualTo("vector.normalize");
+    assertThat(normFunc.getAlias()).isEqualTo("vectorNormalize");
+
+    final SQLFunctionVectorNeighbors neighborsFunc = new SQLFunctionVectorNeighbors();
+    assertThat(neighborsFunc.getName()).isEqualTo("vector.neighbors");
+    assertThat(neighborsFunc.getAlias()).isEqualTo("vectorNeighbors");
   }
 }

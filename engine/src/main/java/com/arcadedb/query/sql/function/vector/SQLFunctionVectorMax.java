@@ -26,10 +26,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Aggregate function that computes element-wise maximum of vectors.
  * Returns a vector where each component is the maximum value of corresponding components across all input vectors.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorMax extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorMax";
+  public static final String NAME = "vector.max";
 
   private float[] maxVector;
   private int dimensions;

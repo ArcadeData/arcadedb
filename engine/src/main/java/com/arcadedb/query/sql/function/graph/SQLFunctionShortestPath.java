@@ -45,7 +45,7 @@ import java.util.Set;
 /**
  * Shortest path algorithm to find the shortest path from one node to another node in a directed graph.
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   public static final String NAME            = "shortestPath";

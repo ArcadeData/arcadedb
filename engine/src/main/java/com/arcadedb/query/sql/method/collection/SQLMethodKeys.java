@@ -30,7 +30,7 @@ import java.util.Map;
 
 /**
  * @author Johann Sorel (Geomatys)
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodKeys extends AbstractSQLMethod {
   public static final String NAME = "keys";

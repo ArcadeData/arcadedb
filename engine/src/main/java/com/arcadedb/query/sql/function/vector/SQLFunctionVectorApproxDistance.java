@@ -37,10 +37,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *
  * Signature: vectorApproxDistance(quantized1, quantized2, 'INT8' | 'BINARY')
  *
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vectorApproxDistance";
+  public static final String NAME = "vector.approxDistance";
 
   public enum QuantizationType {
     INT8,

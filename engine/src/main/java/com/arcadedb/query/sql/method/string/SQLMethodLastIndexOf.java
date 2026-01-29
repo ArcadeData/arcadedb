@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.FileUtils;
 
 /**
- * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLMethodLastIndexOf extends AbstractSQLMethod {
 
