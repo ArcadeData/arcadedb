@@ -88,6 +88,23 @@ class CypherExpressionBuilder {
       }
     }
 
+    // Check for map projections BEFORE function invocations
+    // Map projections have syntax: n{.name, .age} and can contain functions inside
+    // e.g., n{.name, id: ID(n)} should be parsed as a map projection, not as ID(n)
+    final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
+    if (mapProjCtx != null) {
+      return parseMapProjection(mapProjCtx);
+    }
+
+    // Check for map literals BEFORE function invocations
+    // Map literals can contain function calls inside, e.g., {typeR: type(r), id: ID(n)}
+    // Without this check, findFunctionInvocationRecursive would find the inner function
+    // and return that instead of the map literal
+    final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
+    if (mapCtx != null) {
+      return parseMapLiteralExpression(mapCtx);
+    }
+
     // Check for function invocations BEFORE list literals
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
@@ -99,20 +116,6 @@ class CypherExpressionBuilder {
     final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
     if (listCtx != null) {
       return parseListLiteral(listCtx);
-    }
-
-    // Check for map projections BEFORE arithmetic expressions
-    // Map projections have syntax: n{.name, .age} and can contain arithmetic inside
-    final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
-    if (mapProjCtx != null) {
-      return parseMapProjection(mapProjCtx);
-    }
-
-    // Check for map literals BEFORE arithmetic expressions
-    // Map literals can contain arithmetic expressions inside, e.g., {doubled: n.age * 2}
-    final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
-    if (mapCtx != null) {
-      return parseMapLiteralExpression(mapCtx);
     }
 
     // Check for arithmetic expressions (+ - * / % ^)
@@ -540,7 +543,10 @@ class CypherExpressionBuilder {
   }
 
   /**
-   * Recursively find MapContext in the parse tree (for map literals like {name: 'Alice'})
+   * Recursively find MapContext in the parse tree (for map literals like {name: 'Alice'}).
+   * IMPORTANT: Does NOT recurse into function invocations, because maps inside function
+   * arguments (e.g., COLLECT({key: value})) should be handled by the function parser,
+   * not treated as top-level map expressions.
    */
   Cypher25Parser.MapContext findMapRecursive(final ParseTree node) {
     if (node == null)
@@ -548,6 +554,11 @@ class CypherExpressionBuilder {
 
     if (node instanceof Cypher25Parser.MapContext)
       return (Cypher25Parser.MapContext) node;
+
+    // Don't recurse into function invocations - maps inside functions are arguments,
+    // not top-level map literals. The function will parse its arguments separately.
+    if (node instanceof Cypher25Parser.FunctionInvocationContext)
+      return null;
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.MapContext found = findMapRecursive(node.getChild(i));
@@ -580,6 +591,8 @@ class CypherExpressionBuilder {
 
   /**
    * Recursively find MapProjectionContext in the parse tree.
+   * IMPORTANT: Does NOT recurse into function invocations, because map projections
+   * inside function arguments should be handled by the function parser.
    */
   Cypher25Parser.MapProjectionContext findMapProjectionRecursive(
       final ParseTree node) {
@@ -588,6 +601,11 @@ class CypherExpressionBuilder {
 
     if (node instanceof Cypher25Parser.MapProjectionContext)
       return (Cypher25Parser.MapProjectionContext) node;
+
+    // Don't recurse into function invocations - map projections inside functions
+    // are arguments, not top-level expressions.
+    if (node instanceof Cypher25Parser.FunctionInvocationContext)
+      return null;
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.MapProjectionContext found = findMapProjectionRecursive(node.getChild(i));
