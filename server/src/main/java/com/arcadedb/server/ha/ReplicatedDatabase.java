@@ -607,7 +607,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
                            final Object... args) {
     if (!isLeader()) {
-      final QueryEngine queryEngine = proxied.getQueryEngineManager().getInstance(language, this);
+      final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
         // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
         final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
@@ -633,7 +633,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
                            final Map<String, Object> args) {
     if (!isLeader()) {
-      final QueryEngine queryEngine = proxied.getQueryEngineManager().getInstance(language, this);
+      final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL()) {
         // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
         final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);

@@ -205,7 +205,7 @@ public class ArcadeDBServer {
     status = STATUS.ONLINE;
 
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s",
-        new QueryEngineManager().getAvailableLanguages());
+        QueryEngineManager.getInstance().getAvailableLanguages());
 
     final String mode = GlobalConfiguration.SERVER_MODE.getValueAsString();
 

@@ -29,9 +29,10 @@ import java.util.*;
 import java.util.logging.*;
 
 public class QueryEngineManager {
-  private final Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
+  private static final QueryEngineManager                         INSTANCE        = new QueryEngineManager();
+  private final        Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
 
-  public QueryEngineManager() {
+  private QueryEngineManager() {
     // REGISTER ALL THE SUPPORTED LANGUAGE FROM POLYGLOT ENGINE
     for (final String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())
       register(new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
@@ -49,6 +50,9 @@ public class QueryEngineManager {
     register("com.arcadedb.redis.query.RedisQueryEngineFactory");
   }
 
+  public static QueryEngineManager getInstance() {
+    return INSTANCE;
+  }
 
   public void register(final String className) {
     try {
@@ -63,7 +67,7 @@ public class QueryEngineManager {
     implementations.put(impl.getLanguage().toLowerCase(Locale.ENGLISH), impl);
   }
 
-  public QueryEngine getInstance(final String language, final DatabaseInternal database) {
+  public QueryEngine getEngine(final String language, final DatabaseInternal database) {
     final QueryEngine.QueryEngineFactory impl = implementations.get(language.toLowerCase(Locale.ENGLISH));
     if (impl == null)
       throw new IllegalArgumentException("Query engine '" + language + "' was not found. Check your configuration");
