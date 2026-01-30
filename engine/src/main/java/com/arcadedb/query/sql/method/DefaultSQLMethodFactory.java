@@ -82,13 +82,22 @@ import java.util.*;
 
 /**
  * Default method factory.
+ * <p>
+ * This is a singleton to ensure methods are registered only once.
+ * </p>
  *
  * @author Johann Sorel (Geomatys)
  */
-public class DefaultSQLMethodFactory implements SQLMethodFactory {
+public final class DefaultSQLMethodFactory implements SQLMethodFactory {
+  private static final DefaultSQLMethodFactory INSTANCE = new DefaultSQLMethodFactory();
+
   private final Map<String, Object> methods = new HashMap<>();
 
-  public DefaultSQLMethodFactory() {
+  public static DefaultSQLMethodFactory getInstance() {
+    return INSTANCE;
+  }
+
+  private DefaultSQLMethodFactory() {
     // Collections
     register(SQLMethodField.NAME, new SQLMethodField());
     register(SQLMethodJoin.NAME, new SQLMethodJoin());

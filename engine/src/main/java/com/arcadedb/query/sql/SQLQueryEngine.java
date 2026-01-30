@@ -69,8 +69,8 @@ public class SQLQueryEngine implements QueryEngine {
 
   protected SQLQueryEngine(final DatabaseInternal database) {
     this.database = database;
-    this.functions = new DefaultSQLFunctionFactory();
-    this.methods = new DefaultSQLMethodFactory();
+    this.functions = DefaultSQLFunctionFactory.getInstance();
+    this.methods = DefaultSQLMethodFactory.getInstance();
   }
 
   @Override
