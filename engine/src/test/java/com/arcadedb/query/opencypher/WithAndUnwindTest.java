@@ -110,7 +110,7 @@ class WithAndUnwindTest {
     while (result.hasNext()) {
       final var row = result.next();
       assertThat(row.<String>getProperty("name")).isEqualTo("Alice");
-      assertThat(row.<String>getProperty("x")).isNotNull();
+      assertThat(row.<Long>getProperty("x")).isNotNull();
       count++;
     }
     result.close();
@@ -139,7 +139,7 @@ class WithAndUnwindTest {
     while (result.hasNext()) {
       final var row = result.next();
       assertThat(row.<String>getProperty("name")).isNotNull();
-      assertThat(row.<String>getProperty("age")).isNotNull();
+      assertThat(row.<Integer>getProperty("age")).isNotNull();
       count++;
     }
     result.close();
@@ -248,7 +248,7 @@ class WithAndUnwindTest {
     while (result.hasNext()) {
       final var row = result.next();
       assertThat(row.<String>getProperty("name")).as("name should not be null").isNotNull();
-      assertThat(row.<String>getProperty("age")).as("age should not be null").isNotNull();
+      assertThat(row.<Integer>getProperty("age")).as("age should not be null").isNotNull();
       count++;
     }
     result.close();

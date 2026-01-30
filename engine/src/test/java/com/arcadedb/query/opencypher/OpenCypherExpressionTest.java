@@ -122,7 +122,7 @@ public class OpenCypherExpressionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.<Float>getProperty("halfAge")).isEqualTo(15.0);
+    assertThat(result.<Double>getProperty("halfAge")).isEqualTo(15.0);
     assertThat(resultSet.hasNext()).isFalse();
   }
 

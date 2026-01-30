@@ -105,7 +105,7 @@ public class OpenCypherMatchEnhancementsTest {
         """
             MATCH (a:Person)
             MATCH (b:Person)
-            RETURN a.name AS person, b.name AS person2
+            RETURN a.name AS person1, b.name AS person2
             ORDER BY person1, person2""");
 
     final List<Result> results = new ArrayList<>();
