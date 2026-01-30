@@ -69,14 +69,14 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testConnection() {
+  void connection() {
     try (Driver driver = getDriver()) {
       driver.verifyConnectivity();
     }
   }
 
   @Test
-  void testSimpleQuery() {
+  void simpleQuery() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run("RETURN 1 AS value");
@@ -89,7 +89,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testStringReturn() {
+  void stringReturn() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run("RETURN 'hello' AS greeting");
@@ -101,7 +101,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testParameterizedQuery() {
+  void parameterizedQuery() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run(
@@ -117,7 +117,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateAndMatchVertex() {
+  void createAndMatchVertex() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create a vertex - ArcadeDB auto-creates types
@@ -136,7 +136,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateAndMatchEdge() {
+  void createAndMatchEdge() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create vertices - ArcadeDB auto-creates types
@@ -159,7 +159,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testTransaction() {
+  void transaction() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Begin transaction - ArcadeDB auto-creates types
@@ -177,7 +177,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testTransactionRollback() {
+  void transactionRollback() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // First create a committed record so the type exists
@@ -202,7 +202,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMultipleStatements() {
+  void multipleStatements() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Run multiple statements - ArcadeDB auto-creates types
@@ -218,7 +218,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testNullHandling() {
+  void nullHandling() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run("RETURN null AS value");
@@ -229,7 +229,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testListReturn() {
+  void listReturn() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run("RETURN [1, 2, 3] AS numbers");
@@ -241,7 +241,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMapReturn() {
+  void mapReturn() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run("RETURN {name: 'Alice', age: 30} AS person");
@@ -254,7 +254,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testSyntaxError() {
+  void syntaxError() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         assertThatThrownBy(() -> session.run("INVALID CYPHER QUERY").consume())
@@ -264,7 +264,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLargeResultSet() {
+  void largeResultSet() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create many records - ArcadeDB auto-creates types
@@ -288,7 +288,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testBooleanValues() {
+  void booleanValues() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN true AS t, false AS f");
@@ -301,7 +301,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testFloatValues() {
+  void floatValues() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 3.14159 AS pi");
@@ -314,7 +314,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   // ========== Additional Tests for Protocol Coverage ==========
 
   @Test
-  void testNegativeIntegers() {
+  void negativeIntegers() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN -42 AS negative, -1000000 AS bigNegative");
@@ -327,7 +327,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLargeIntegers() {
+  void largeIntegers() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Test with large integers that require different encoding sizes
@@ -343,7 +343,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testUnicodeStrings() {
+  void unicodeStrings() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN '你好世界' AS chinese, 'Привет' AS russian, '🌍🚀' AS emoji");
@@ -357,7 +357,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testEmptyString() {
+  void emptyString() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN '' AS empty");
@@ -368,7 +368,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLongString() {
+  void longString() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create a string longer than 255 characters to test STRING_8/STRING_16 encoding
@@ -381,7 +381,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testEmptyResultSet() {
+  void emptyResultSet() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create a type first, then query with impossible filter
@@ -394,7 +394,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMultipleFieldsInResult() {
+  void multipleFieldsInResult() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 1 AS a, 2 AS b, 3 AS c, 4 AS d, 5 AS e");
@@ -411,7 +411,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testSessionReuse() {
+  void sessionReuse() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Execute multiple queries on the same session
@@ -428,7 +428,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMultipleTransactionsInSequence() {
+  void multipleTransactionsInSequence() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // First transaction - ArcadeDB auto-creates types
@@ -457,7 +457,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testQueryAfterErrorRecovery() {
+  void queryAfterErrorRecovery() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // First, execute a failing query
@@ -476,7 +476,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testListParameter() {
+  void listParameter() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         List<Long> numbers = List.of(1L, 2L, 3L, 4L, 5L);
@@ -489,7 +489,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMapParameter() {
+  void mapParameter() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Map<String, Object> person = Map.of("name", "John", "age", 35L);
@@ -503,7 +503,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testNestedList() {
+  void nestedList() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Test nested list
@@ -516,7 +516,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testArithmeticExpressions() {
+  void arithmeticExpressions() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 10 + 5 AS sum, 10 - 5 AS diff, 10 * 5 AS product, 10 / 5 AS quotient");
@@ -531,7 +531,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testStringConcatenation() {
+  void stringConcatenation() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Test string concatenation which is supported
@@ -544,7 +544,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testQueryWithLimit() {
+  void queryWithLimit() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create 10 records - ArcadeDB auto-creates types
@@ -568,7 +568,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testQueryWithSkipAndLimit() {
+  void queryWithSkipAndLimit() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create records with sequential indices - ArcadeDB auto-creates types
@@ -592,7 +592,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testNodeWithMultipleProperties() {
+  void nodeWithMultipleProperties() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // ArcadeDB auto-creates types
@@ -617,7 +617,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testNodeAndRelationshipInSameResult() {
+  void nodeAndRelationshipInSameResult() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // ArcadeDB auto-creates types
@@ -644,7 +644,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testConsumeResultSummary() {
+  void consumeResultSummary() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 1 AS value");
@@ -656,7 +656,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMultipleRecordsInResult() {
+  void multipleRecordsInResult() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create multiple records - ArcadeDB auto-creates types
@@ -679,7 +679,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testAuthenticationFailure() {
+  void authenticationFailure() {
     try (Driver driver = GraphDatabase.driver(
         "bolt://localhost:7687",
         AuthTokens.basic("root", "wrong_password"),
@@ -691,7 +691,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDriverConnectionPooling() {
+  void driverConnectionPooling() {
     // Test that driver can handle multiple sessions using connection pooling
     try (Driver driver = getDriver()) {
       for (int i = 0; i < 5; i++) {
@@ -704,7 +704,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMixedNullAndValues() {
+  void mixedNullAndValues() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 1 AS a, null AS b, 'text' AS c, null AS d");
@@ -719,7 +719,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testTransactionReadOperation() {
+  void transactionReadOperation() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // ArcadeDB auto-creates types
@@ -737,7 +737,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testEmptyList() {
+  void emptyList() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN [] AS empty");
@@ -749,7 +749,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testEmptyMap() {
+  void emptyMap() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN {} AS empty");
@@ -761,7 +761,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testZeroValue() {
+  void zeroValue() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 0 AS zero, 0.0 AS zeroFloat");
@@ -774,7 +774,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testVerySmallFloat() {
+  void verySmallFloat() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Test very small float value
@@ -788,7 +788,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testVeryLargeFloat() {
+  void veryLargeFloat() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Test large float value
@@ -804,7 +804,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   // ========== Additional Tests for Code Review Recommendations ==========
 
   @Test
-  void testDatabaseSwitchingBetweenQueries() {
+  void databaseSwitchingBetweenQueries() {
     // This test verifies that database selection persists across queries in the same session
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
@@ -820,7 +820,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testConcurrentSessions() throws InterruptedException {
+  void concurrentSessions() throws Exception {
     // Test that multiple concurrent sessions can work independently
     final List<Thread> threads = new ArrayList<>();
     final List<Throwable> errors = new ArrayList<>();
@@ -864,7 +864,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testInvalidDatabaseName() {
+  void invalidDatabaseName() {
     try (Driver driver = GraphDatabase.driver(
         "bolt://localhost:7687",
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
@@ -880,7 +880,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testConnectionPoolingWithManyQueries() {
+  void connectionPoolingWithManyQueries() {
     // Test that driver's connection pooling works correctly with many sequential queries
     try (Driver driver = getDriver()) {
       for (int i = 0; i < 20; i++) {
@@ -893,7 +893,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testTransactionIsolation() {
+  void transactionIsolation() {
     // Test that uncommitted changes in one transaction are not visible to another
     try (Driver driver = getDriver()) {
       // Session 1: Start transaction but don't commit
@@ -924,7 +924,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLargeParameterMap() {
+  void largeParameterMap() {
     // Test with many parameters to ensure parameter handling scales
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
@@ -950,7 +950,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testQueryWithNullParameter() {
+  void queryWithNullParameter() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN $param AS value", Map.of("param", Values.NULL));
@@ -961,7 +961,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMultipleErrorsInSequence() {
+  void multipleErrorsInSequence() {
     // Test that session can recover from multiple consecutive errors
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
@@ -987,7 +987,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testDatabasePersistsAfterConnectionClose() {
+  void databasePersistsAfterConnectionClose() {
     // CRITICAL TEST: Verify that closing one connection doesn't close the database for others
     // This test catches the bug where database.close() was incorrectly called in cleanup()
     try (Driver driver = getDriver()) {
@@ -1012,7 +1012,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testPathStructure() {
+  void pathStructure() {
     // Test returning path structures from Cypher queries
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
@@ -1032,7 +1032,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testConnectionLimit() {
+  void connectionLimit() {
     // Test that connection limiting works if configured
     final int maxConnections = GlobalConfiguration.BOLT_MAX_CONNECTIONS.getValueAsInteger();
 

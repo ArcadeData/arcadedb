@@ -67,7 +67,7 @@ class Issue3132Test {
   }
 
   @Test
-  void testIdFunctionInReturnClause() {
+  void idFunctionInReturnClause() {
     // Verify ID() function works in RETURN clause (baseline test)
     ResultSet result = database.query("opencypher", "MATCH (n:CHUNK) RETURN ID(n) AS id, n.text AS text");
 
@@ -85,7 +85,7 @@ class Issue3132Test {
   }
 
   @Test
-  void testIdFunctionInWhereClauseWithInOperator() {
+  void idFunctionInWhereClauseWithInOperator() {
     // Get all CHUNK node IDs
     ResultSet result = database.query("opencypher", "MATCH (n:CHUNK) RETURN ID(n) AS id");
     List<String> allIds = new ArrayList<>();
@@ -120,7 +120,7 @@ class Issue3132Test {
   }
 
   @Test
-  void testIdFunctionWithAllIds() {
+  void idFunctionWithAllIds() {
     // Get all IDs
     ResultSet result = database.query("opencypher", "MATCH (n:CHUNK) RETURN ID(n) AS id");
     List<String> allIds = new ArrayList<>();
@@ -149,7 +149,7 @@ class Issue3132Test {
   }
 
   @Test
-  void testIdFunctionWithTwoIds() {
+  void idFunctionWithTwoIds() {
     // Get all IDs
     ResultSet result = database.query("opencypher", "MATCH (n:CHUNK) RETURN ID(n) AS id ORDER BY id");
     List<String> allIds = new ArrayList<>();

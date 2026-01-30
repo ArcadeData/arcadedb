@@ -10,10 +10,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class LetDivisionBugTest extends TestHelper {
+class LetDivisionBugTest extends TestHelper {
 
   @Test
-  public void testLetDivisionEvaluation() {
+  void letDivisionEvaluation() {
     database.transaction(() -> {
       // Test the reported issue
       final ResultSet result1 = database.query("sql",
@@ -60,7 +60,7 @@ public class LetDivisionBugTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleDivision() {
+  void simpleDivision() {
     database.transaction(() -> {
       // Test simple division order
       final ResultSet result = database.query("sql",

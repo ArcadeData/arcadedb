@@ -39,7 +39,7 @@ import java.util.*;
  * Expected result: Dijkstra should outperform DuanSSSP on practical-sized graphs
  * due to DuanSSSP's large constant factors, despite better asymptotic complexity.
  */
-public class DuanSSSPBenchmark {
+class DuanSSSPBenchmark {
 
   private static final Random RANDOM = new Random(42); // Fixed seed for reproducibility
 

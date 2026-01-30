@@ -105,7 +105,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testIndexSeekOptimization() {
+  void indexSeekOptimization() {
     // Execute query
     final String query = "MATCH (p:Person) WHERE p.id = 50 RETURN p";
     final ResultSet results = database.query("opencypher", query);
@@ -133,7 +133,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testFullScanWhenNoIndex() {
+  void fullScanWhenNoIndex() {
     // Execute query (no index on age)
     final String query = "MATCH (p:Person) WHERE p.age > 30 RETURN p";
     final ResultSet results = database.query("opencypher", query);
@@ -158,7 +158,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testRelationshipTraversalWithIndexSeek() {
+  void relationshipTraversalWithIndexSeek() {
     // Execute query
     final String query = "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE a.id = 10 RETURN b";
     final ResultSet results = database.query("opencypher", query);
@@ -185,7 +185,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testMultiHopPattern() {
+  void multiHopPattern() {
     // Execute query
     final String query = "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) WHERE a.id = 5 RETURN c";
     final ResultSet results = database.query("opencypher", query);
@@ -211,7 +211,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testCrossTypeRelationship() {
+  void crossTypeRelationship() {
     // Execute query
     final String query = "MATCH (p:Person)-[r:WORKS_AT]->(c:Company) WHERE p.id = 25 RETURN c";
     final ResultSet results = database.query("opencypher", query);
@@ -238,7 +238,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testJoinOrderingOptimization() {
+  void joinOrderingOptimization() {
     // Execute query - should start from Company (fewer records)
     final String query = "MATCH (p:Person)-[:WORKS_AT]->(c:Company) WHERE c.name = 'Company5' RETURN p";
     final ResultSet results = database.query("opencypher", query);
@@ -266,7 +266,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testParameterizedQueryUsesIndex() {
+  void parameterizedQueryUsesIndex() {
     // Verify optimization detects indexed property with parameter
     final String query = "MATCH (p:Person) WHERE p.id = $personId RETURN p";
 
@@ -282,7 +282,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testComplexWhereClauseWithIndex() {
+  void complexWhereClauseWithIndex() {
     // Note: Complex WHERE clauses with AND/OR are not yet optimized
     // The optimizer currently only extracts equality predicates from simple comparisons
     // TODO: Future enhancement - extract predicates from LogicalExpression (AND/OR)
@@ -310,7 +310,7 @@ public class OpenCypherOptimizerVerificationTest {
   }
 
   @Test
-  void testSimpleEqualityUsesIndex() {
+  void simpleEqualityUsesIndex() {
     // Test that simple equality (without AND/OR) correctly uses index
     final String query = "MATCH (p:Person) WHERE p.id = 30 RETURN p";
     final ResultSet results = database.query("opencypher", query);

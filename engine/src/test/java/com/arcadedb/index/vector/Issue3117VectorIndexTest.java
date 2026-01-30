@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue3117VectorIndexTest extends TestHelper {
 
   @Test
-  void testVectorNeighborsWithZeroVector() {
+  void vectorNeighborsWithZeroVector() {
     // Step 1: Create schema and index
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE EmbeddingNode");

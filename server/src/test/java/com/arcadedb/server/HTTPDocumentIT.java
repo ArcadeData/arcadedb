@@ -688,7 +688,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
    * Test for GitHub issue #1825 - $parent.$current in subquery FROM clause via HTTP API
    */
   @Test
-  void testParentCurrentInSubqueryViaHttp_Issue1825() throws Exception {
+  void parentCurrentInSubqueryViaHttpIssue1825() throws Exception {
     final String className = "TestParentCurrent1825";
 
     testEachServer((serverIndex) -> {
@@ -778,7 +778,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
    * The bug: SELECT @rid FROM doc UNWIND lst should return 3 records, not 1.
    */
   @Test
-  void testUnwindWithRidProjectionViaHttp_Issue1582() throws Exception {
+  void unwindWithRidProjectionViaHttpIssue1582() throws Exception {
     final String className = "TestUnwindRid1582";
 
     testEachServer((serverIndex) -> {
@@ -860,7 +860,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
    * The bug: Studio serializer was deduplicating records based on RID, causing UNWIND to return only 1 record.
    */
   @Test
-  void testUnwindWithRidProjectionWithStudioSerializer_Issue1582() throws Exception {
+  void unwindWithRidProjectionWithStudioSerializerIssue1582() throws Exception {
     final String className = "TestUnwindRidStudio1582";
 
     testEachServer((serverIndex) -> {

@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Regression test for issue #774: When a bucket is added to a type AFTER indexes have been created,
@@ -40,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class Issue774AddBucketWithIndexTest extends TestHelper {
 
   @Test
-  void testAddBucketAfterIndexCreation() {
+  void addBucketAfterIndexCreation() {
     // Step 1: Create a document type with an indexed property
     database.transaction(() -> {
       final DocumentType dtOrders = database.getSchema().createDocumentType("Order");
@@ -68,8 +67,8 @@ class Issue774AddBucketWithIndexTest extends TestHelper {
         int count = 0;
         while (resultSet.hasNext()) {
           final Result result = resultSet.next();
-          assertEquals("PENDING", result.getProperty("p1"));
-          assertEquals("PENDING", result.getProperty("p2"));
+          assertThat(result.getProperty("p1")).isEqualTo("PENDING");
+          assertThat(result.getProperty("p2")).isEqualTo("PENDING");
           count++;
         }
         // Verify that the query returns both records (one from the new bucket, one from the default bucket)
@@ -83,8 +82,8 @@ class Issue774AddBucketWithIndexTest extends TestHelper {
         int count = 0;
         while (resultSet.hasNext()) {
           final Result result = resultSet.next();
-          assertEquals("PENDING", result.getProperty("p1"));
-          assertEquals("PENDING", result.getProperty("p2"));
+          assertThat(result.getProperty("p1")).isEqualTo("PENDING");
+          assertThat(result.getProperty("p2")).isEqualTo("PENDING");
           count++;
         }
         // Verify that the query from the specific bucket returns 1 record
@@ -98,8 +97,8 @@ class Issue774AddBucketWithIndexTest extends TestHelper {
         int count = 0;
         while (resultSet.hasNext()) {
           final Result result = resultSet.next();
-          assertEquals("PENDING", result.getProperty("p1"));
-          assertEquals("PENDING", result.getProperty("p2"));
+          assertThat(result.getProperty("p1")).isEqualTo("PENDING");
+          assertThat(result.getProperty("p2")).isEqualTo("PENDING");
           count++;
         }
         // Verify that queries with non-indexed properties also return both records

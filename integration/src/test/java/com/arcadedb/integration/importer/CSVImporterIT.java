@@ -120,7 +120,7 @@ class CSVImporterIT {
    * This test verifies that String IDs work correctly for both vertices and edges.
    */
   @Test
-  void testRegression_Issue1552_StringIdType() {
+  void regressionIssue1552StringIdType() {
     final String databasePath = "target/databases/test-import-graph-stringid";
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
@@ -239,7 +239,7 @@ class CSVImporterIT {
    * Actual (before fix): All edges are skipped because vertices are not in the in-memory index
    */
   @Test
-  void testRegression_Issue2267_SeparateVertexTypeImports() throws Exception {
+  void regressionIssue2267SeparateVertexTypeImports() throws Exception {
     final String databasePath = "target/databases/test-import-separate-types";
 
     final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);

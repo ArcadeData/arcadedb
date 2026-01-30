@@ -60,7 +60,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
       "8,   BINARY, 20",
       "16,  BINARY, 20"
   })
-  void testQuantizationAcrossDimensions(int dimensions, String quantizationType, int numVectors) {
+  void quantizationAcrossDimensions(int dimensions, String quantizationType, int numVectors) {
     // Test that quantization works correctly across various dimensions
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -116,7 +116,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
   }
 
   @Test
-  void testInt8QuantizationPersistence() {
+  void int8QuantizationPersistence() {
     // Test that INT8 quantization persists correctly across database reopen
     final int dimensions = 32;
     final int numVectors = 50;
@@ -167,7 +167,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
   }
 
   @Test
-  void testBinaryQuantizationPersistence() {
+  void binaryQuantizationPersistence() {
     // Test that BINARY quantization persists correctly across database reopen
     final int dimensions = 32;
     final int numVectors = 50;
@@ -218,7 +218,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
   }
 
   @Test
-  void testInt8QuantizationBasicSearch() {
+  void int8QuantizationBasicSearch() {
     // Test that INT8 quantization allows basic search functionality
     final int dimensions = 64;
     final int numVectors = 50;  // Reduced from 100
@@ -260,7 +260,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
   }
 
   @Test
-  void testBinaryQuantizationBasicSearch() {
+  void binaryQuantizationBasicSearch() {
     // Test that BINARY quantization allows basic search functionality
     final int dimensions = 64;
     final int numVectors = 30;  // Reduced for reliability
@@ -306,19 +306,19 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
   }
 
   @Test
-  void testVerySmallDimensionsInt8() {
+  void verySmallDimensionsInt8() {
     // Test edge case: very small dimensions (4)
-    testQuantizationAcrossDimensions(4, "INT8", 30);
+    quantizationAcrossDimensions(4, "INT8", 30);
   }
 
   @Test
-  void testVerySmallDimensionsBinary() {
+  void verySmallDimensionsBinary() {
     // Test edge case: very small dimensions (4)
-    testQuantizationAcrossDimensions(4, "BINARY", 30);
+    quantizationAcrossDimensions(4, "BINARY", 30);
   }
 
   @Test
-  void testLargeDimensionsInt8() {
+  void largeDimensionsInt8() {
     // Test with larger dimensions (128) to ensure no overflow issues
     final int dimensions = 128;
     final int numVectors = 30;  // Reduced to avoid timeout
@@ -359,7 +359,7 @@ class LSMVectorIndexQuantizationComprehensiveTest extends TestHelper {
   }
 
   @Test
-  void testLargeDimensionsBinary() {
+  void largeDimensionsBinary() {
     // Test with larger dimensions (128) to ensure no overflow issues
     final int dimensions = 128;
     final int numVectors = 30;  // Reduced to avoid timeout

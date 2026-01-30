@@ -43,7 +43,7 @@ class LSMVectorIndexSimpleUpdateTest extends TestHelper {
   private static final int EMBEDDING_DIM = 128;
 
   @Test
-  void testSimpleUpdateAndReopen() {
+  void simpleUpdateAndReopen() {
     final Random random = new Random(42);
 
     // Create schema

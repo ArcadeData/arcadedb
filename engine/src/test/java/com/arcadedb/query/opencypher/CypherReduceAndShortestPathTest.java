@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for Cypher reduce() function and shortestPath()/allShortestPaths() patterns.
@@ -38,11 +38,11 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CypherReduceAndShortestPathTest {
+class CypherReduceAndShortestPathTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./databases/test-reduce-shortestpath").create();
 
     // Create schema for graph tests
@@ -72,7 +72,7 @@ public class CypherReduceAndShortestPathTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null)
       database.drop();
   }
@@ -82,85 +82,85 @@ public class CypherReduceAndShortestPathTest {
   // ============================================================================
 
   @Test
-  public void testReduceSum() {
+  void reduceSum() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN reduce(total = 0, n IN [1, 2, 3, 4, 5] | total + n) AS sum");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(Long.valueOf(15L), (Long) result.getProperty("sum"));
-    assertFalse(resultSet.hasNext());
+    assertThat((Long) result.getProperty("sum")).isEqualTo(Long.valueOf(15L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testReduceProduct() {
+  void reduceProduct() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN reduce(product = 1, n IN [1, 2, 3, 4] | product * n) AS factorial");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(Long.valueOf(24L), (Long) result.getProperty("factorial"));
-    assertFalse(resultSet.hasNext());
+    assertThat((Long) result.getProperty("factorial")).isEqualTo(Long.valueOf(24L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testReduceStringConcat() {
+  void reduceStringConcat() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN reduce(s = '', x IN ['a', 'b', 'c'] | s + x) AS concat");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals("abc", result.getProperty("concat"));
-    assertFalse(resultSet.hasNext());
+    assertThat(result.getProperty("concat")).isEqualTo("abc");
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testReduceWithEmptyList() {
+  void reduceWithEmptyList() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN reduce(total = 100, n IN [] | total + n) AS sum");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     // Empty list should return initial value
-    assertEquals(Long.valueOf(100L), (Long) result.getProperty("sum"));
-    assertFalse(resultSet.hasNext());
+    assertThat((Long) result.getProperty("sum")).isEqualTo(Long.valueOf(100L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testReduceWithSingleElement() {
+  void reduceWithSingleElement() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN reduce(total = 10, n IN [5] | total + n) AS sum");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(Long.valueOf(15L), (Long) result.getProperty("sum"));
-    assertFalse(resultSet.hasNext());
+    assertThat((Long) result.getProperty("sum")).isEqualTo(Long.valueOf(15L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testReduceWithRange() {
+  void reduceWithRange() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN reduce(total = 0, n IN range(1, 10) | total + n) AS sum");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     // Sum of 1..10 = 55
-    assertEquals(Long.valueOf(55L), (Long) result.getProperty("sum"));
-    assertFalse(resultSet.hasNext());
+    assertThat((Long) result.getProperty("sum")).isEqualTo(Long.valueOf(55L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testReduceWithMatchResults() {
+  void reduceWithMatchResults() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) " +
         "WITH collect(p.id) AS ids " +
         "RETURN reduce(total = 0, id IN ids | total + id) AS sumIds");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     // Sum of person IDs: 1 + 2 + 3 + 4 + 5 + 6 = 21
-    assertEquals(Long.valueOf(21L), (Long) result.getProperty("sumIds"));
-    assertFalse(resultSet.hasNext());
+    assertThat((Long) result.getProperty("sumIds")).isEqualTo(Long.valueOf(21L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   // ============================================================================
@@ -168,86 +168,86 @@ public class CypherReduceAndShortestPathTest {
   // ============================================================================
 
   @Test
-  public void testShortestPathSimple() {
+  void shortestPathSimple() {
     // First verify the data is there
     ResultSet countResult = database.query("opencypher", "MATCH (p:Person) RETURN count(p) AS cnt");
-    assertTrue(countResult.hasNext());
+    assertThat(countResult.hasNext()).isTrue();
     long cnt = (Long) countResult.next().getProperty("cnt");
-    assertEquals(6, cnt); // We have 6 persons
+    assertThat(cnt).isEqualTo(6); // We have 6 persons
 
     // Also verify edges exist
     ResultSet edgeResult = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN b.name AS name");
-    assertTrue(edgeResult.hasNext());
+    assertThat(edgeResult.hasNext()).isTrue();
 
     // Find shortest path from Alice to David (Alice->Bob->Charlie->David)
     final ResultSet resultSet = database.query("opencypher",
         "MATCH p = shortestPath((a:Person {name: 'Alice'})-[:KNOWS*]-(d:Person {name: 'David'})) " +
         "RETURN p");
 
-    assertTrue(resultSet.hasNext(), "Expected shortest path result but got empty result set");
+    assertThat(resultSet.hasNext()).as("Expected shortest path result but got empty result set").isTrue();
     final Result result = resultSet.next();
 
     final Object path = result.getProperty("p");
-    assertNotNull(path);
-    assertTrue(path instanceof List);
+    assertThat(path).isNotNull();
+    assertThat(path).isInstanceOf(List.class);
 
     @SuppressWarnings("unchecked")
     final List<RID> pathList = (List<RID>) path;
     // Path should be: Alice, Bob, Charlie, David (4 nodes)
-    assertEquals(4, pathList.size());
+    assertThat(pathList.size()).isEqualTo(4);
 
-    assertFalse(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testShortestPathDirect() {
+  void shortestPathDirect() {
     // Find shortest path from Alice to Bob (direct connection)
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), " +
         "p = shortestPath((a)-[:KNOWS*]-(b)) " +
         "RETURN p");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
 
     final Object path = result.getProperty("p");
-    assertNotNull(path);
-    assertTrue(path instanceof List);
+    assertThat(path).isNotNull();
+    assertThat(path).isInstanceOf(List.class);
 
     @SuppressWarnings("unchecked")
     final List<RID> pathList = (List<RID>) path;
     // Path should be: Alice, Bob (2 nodes)
-    assertEquals(2, pathList.size());
+    assertThat(pathList.size()).isEqualTo(2);
 
-    assertFalse(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testShortestPathSameNode() {
+  void shortestPathSameNode() {
     // Path from a node to itself
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Alice'}), " +
         "p = shortestPath((a)-[:KNOWS*]-(b)) " +
         "RETURN p");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
 
     final Object path = result.getProperty("p");
-    assertNotNull(path);
-    assertTrue(path instanceof List);
+    assertThat(path).isNotNull();
+    assertThat(path).isInstanceOf(List.class);
 
     @SuppressWarnings("unchecked")
     final List<RID> pathList = (List<RID>) path;
     // Path to self should be just the node itself
-    assertEquals(1, pathList.size());
+    assertThat(pathList.size()).isEqualTo(1);
 
-    assertFalse(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testShortestPathNoConnection() {
+  void shortestPathNoConnection() {
     // Create an isolated node
     database.transaction(() -> {
       database.newVertex("Person").set("name", "Isolated").set("id", 99L).save();
@@ -263,12 +263,12 @@ public class CypherReduceAndShortestPathTest {
     if (resultSet.hasNext()) {
       final Result result = resultSet.next();
       final Object path = result.getProperty("p");
-      assertTrue(path == null || (path instanceof List && ((List<?>) path).isEmpty()));
+      assertThat(path == null || (path instanceof List && ((List<?>) path).isEmpty())).isTrue();
     }
   }
 
   @Test
-  public void testShortestPathWithDirectedEdges() {
+  void shortestPathWithDirectedEdges() {
     // Test with directed traversal (OUT direction)
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'}), (d:Person {name: 'David'}), " +
@@ -276,62 +276,62 @@ public class CypherReduceAndShortestPathTest {
         "RETURN p");
 
     // Should find path following edge direction
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object path = result.getProperty("p");
-    assertNotNull(path);
+    assertThat(path).isNotNull();
   }
 
   @Test
-  public void testShortestPathBetweenTwoHops() {
+  void shortestPathBetweenTwoHops() {
     // Find shortest path from Alice to Eve (Alice->Bob->Eve)
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'}), (e:Person {name: 'Eve'}), " +
         "p = shortestPath((a)-[:KNOWS*]-(e)) " +
         "RETURN p");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
 
     final Object path = result.getProperty("p");
-    assertNotNull(path);
-    assertTrue(path instanceof List);
+    assertThat(path).isNotNull();
+    assertThat(path).isInstanceOf(List.class);
 
     @SuppressWarnings("unchecked")
     final List<RID> pathList = (List<RID>) path;
     // Path should be: Alice, Bob, Eve (3 nodes)
-    assertEquals(3, pathList.size());
+    assertThat(pathList.size()).isEqualTo(3);
 
-    assertFalse(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testAllShortestPaths() {
+  void allShortestPaths() {
     // Test allShortestPaths (currently returns single path, but tests parsing)
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), " +
         "p = allShortestPaths((a)-[:KNOWS*]-(b)) " +
         "RETURN p");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object path = result.getProperty("p");
-    assertNotNull(path);
+    assertThat(path).isNotNull();
   }
 
   @Test
-  public void testShortestPathWithPathVariable() {
+  void shortestPathWithPathVariable() {
     // Test that path variable is properly bound
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'}), (d:Person {name: 'David'}), " +
         "path = shortestPath((a)-[:KNOWS*]-(d)) " +
         "RETURN path, length(path) AS pathLength");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
 
     final Object path = result.getProperty("path");
-    assertNotNull(path);
+    assertThat(path).isNotNull();
   }
 
   // ============================================================================
@@ -339,16 +339,16 @@ public class CypherReduceAndShortestPathTest {
   // ============================================================================
 
   @Test
-  public void testReduceInListComprehension() {
+  void reduceInListComprehension() {
     // Use reduce with collected values
     final ResultSet resultSet = database.query("opencypher",
         "WITH [1, 2, 3, 4, 5] AS numbers " +
         "RETURN reduce(sum = 0, x IN [n IN numbers WHERE n > 2] | sum + x) AS filteredSum");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     // Sum of 3 + 4 + 5 = 12
-    assertEquals(Long.valueOf(12L), (Long) result.getProperty("filteredSum"));
-    assertFalse(resultSet.hasNext());
+    assertThat((Long) result.getProperty("filteredSum")).isEqualTo(Long.valueOf(12L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 }

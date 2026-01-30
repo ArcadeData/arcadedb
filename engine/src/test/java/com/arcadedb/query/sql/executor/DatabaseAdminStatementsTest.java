@@ -14,18 +14,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Test database administration statements (ALIGN, IMPORT, EXPORT, BACKUP).
  * These tests verify that the parser correctly handles the admin statement syntax.
  */
-public class DatabaseAdminStatementsTest {
+class DatabaseAdminStatementsTest {
   private Database database;
   private StatementCache cache;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/DatabaseAdminStatementsTest").create();
     cache = new StatementCache(database, 100);
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -35,7 +35,7 @@ public class DatabaseAdminStatementsTest {
 
   // ALIGN DATABASE tests
   @Test
-  public void testAlignDatabaseBasic() {
+  void alignDatabaseBasic() {
     String sql = "ALIGN DATABASE";
 
     AlignDatabaseStatement stmt = (AlignDatabaseStatement) cache.get(sql);
@@ -43,7 +43,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testAlignDatabaseCaseInsensitive() {
+  void alignDatabaseCaseInsensitive() {
     String sql = "align database";
 
     AlignDatabaseStatement stmt = (AlignDatabaseStatement) cache.get(sql);
@@ -52,7 +52,7 @@ public class DatabaseAdminStatementsTest {
 
   // IMPORT DATABASE tests
   @Test
-  public void testImportDatabaseWithHttpUrl() {
+  void importDatabaseWithHttpUrl() {
     String sql = "IMPORT DATABASE 'http://www.example.com/data.json'";
 
     ImportDatabaseStatement stmt = (ImportDatabaseStatement) cache.get(sql);
@@ -62,7 +62,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testImportDatabaseWithFileUrl() {
+  void importDatabaseWithFileUrl() {
     String sql = "IMPORT DATABASE 'file:///path/to/data.json'";
 
     ImportDatabaseStatement stmt = (ImportDatabaseStatement) cache.get(sql);
@@ -72,7 +72,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testImportDatabaseWithDoubleQuotes() {
+  void importDatabaseWithDoubleQuotes() {
     String sql = "IMPORT DATABASE \"http://www.example.com/data.json\"";
 
     ImportDatabaseStatement stmt = (ImportDatabaseStatement) cache.get(sql);
@@ -82,7 +82,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testImportDatabaseCaseInsensitive() {
+  void importDatabaseCaseInsensitive() {
     String sql = "import database 'http://www.example.com/data.json'";
 
     ImportDatabaseStatement stmt = (ImportDatabaseStatement) cache.get(sql);
@@ -91,7 +91,7 @@ public class DatabaseAdminStatementsTest {
 
   // EXPORT DATABASE tests
   @Test
-  public void testExportDatabaseWithPath() {
+  void exportDatabaseWithPath() {
     String sql = "EXPORT DATABASE 'backup.json'";
 
     ExportDatabaseStatement stmt = (ExportDatabaseStatement) cache.get(sql);
@@ -101,7 +101,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testExportDatabaseWithFileUrl() {
+  void exportDatabaseWithFileUrl() {
     String sql = "EXPORT DATABASE 'file:///exports/backup.json'";
 
     ExportDatabaseStatement stmt = (ExportDatabaseStatement) cache.get(sql);
@@ -111,7 +111,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testExportDatabaseWithDoubleQuotes() {
+  void exportDatabaseWithDoubleQuotes() {
     String sql = "EXPORT DATABASE \"backup.jsonl.tgz\"";
 
     ExportDatabaseStatement stmt = (ExportDatabaseStatement) cache.get(sql);
@@ -121,7 +121,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testExportDatabaseCaseInsensitive() {
+  void exportDatabaseCaseInsensitive() {
     String sql = "export database 'backup.json'";
 
     ExportDatabaseStatement stmt = (ExportDatabaseStatement) cache.get(sql);
@@ -130,7 +130,7 @@ public class DatabaseAdminStatementsTest {
 
   // BACKUP DATABASE tests
   @Test
-  public void testBackupDatabaseWithPath() {
+  void backupDatabaseWithPath() {
     String sql = "BACKUP DATABASE 'mybackup.zip'";
 
     BackupDatabaseStatement stmt = (BackupDatabaseStatement) cache.get(sql);
@@ -140,7 +140,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testBackupDatabaseWithFileUrl() {
+  void backupDatabaseWithFileUrl() {
     String sql = "BACKUP DATABASE 'file:///backups/db-backup.zip'";
 
     BackupDatabaseStatement stmt = (BackupDatabaseStatement) cache.get(sql);
@@ -150,7 +150,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testBackupDatabaseWithDoubleQuotes() {
+  void backupDatabaseWithDoubleQuotes() {
     String sql = "BACKUP DATABASE \"mybackup.zip\"";
 
     BackupDatabaseStatement stmt = (BackupDatabaseStatement) cache.get(sql);
@@ -160,7 +160,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testBackupDatabaseCaseInsensitive() {
+  void backupDatabaseCaseInsensitive() {
     String sql = "backup database 'mybackup.zip'";
 
     BackupDatabaseStatement stmt = (BackupDatabaseStatement) cache.get(sql);
@@ -168,7 +168,7 @@ public class DatabaseAdminStatementsTest {
   }
 
   @Test
-  public void testBackupDatabaseWithoutUrl() {
+  void backupDatabaseWithoutUrl() {
     // This should work - the URL is optional and defaults to server backup directory
     String sql = "BACKUP DATABASE";
 

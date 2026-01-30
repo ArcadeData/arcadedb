@@ -29,7 +29,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 ;
 
@@ -43,7 +44,7 @@ public class OpenCypherVariableLengthPathTest {
   private Vertex alice, bob, charlie;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/databases/testopencypher-varlen-path").create();
 
     // Create schema
@@ -62,7 +63,7 @@ public class OpenCypherVariableLengthPathTest {
   }
 
   @AfterEach
-  public void cleanup() {
+  void cleanup() {
     if (database != null) {
       database.drop();
       database = null;
@@ -70,44 +71,44 @@ public class OpenCypherVariableLengthPathTest {
   }
 
   @Test
-  public void testNamedPathVariableLengthStoresPath() {
+  void namedPathVariableLengthStoresPath() {
     // Test that path variable IS being stored (even if there are duplicates)
     // This verifies the fix: passing pathVariable instead of relVar to ExpandPathStep
     final ResultSet result = database.query("opencypher",
         "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b:Person) " +
             "RETURN p AS path LIMIT 1");
 
-    assertTrue(result.hasNext(), "Should have at least one result");
+    assertThat(result.hasNext()).as("Should have at least one result").isTrue();
     final Result row = result.next();
 
     final Object pathObj = row.getProperty("path");
-    assertNotNull(pathObj, "Path variable should not be null - this was the bug!");
-    assertTrue(pathObj instanceof TraversalPath, "Path should be a TraversalPath");
+    assertThat(pathObj).as("Path variable should not be null - this was the bug!").isNotNull();
+    assertThat(pathObj).as("Path should be a TraversalPath").isInstanceOf(TraversalPath.class);
 
     final TraversalPath path = (TraversalPath) pathObj;
-    assertTrue(path.length() >= 1 && path.length() <= 2, "Path length should be 1 or 2");
-    assertEquals("Alice", path.getStartVertex().get("name"));
+    assertThat(path.length() >= 1 && path.length() <= 2).as("Path length should be 1 or 2").isTrue();
+    assertThat(path.getStartVertex().get("name")).isEqualTo("Alice");
 
     result.close();
   }
 
   @Test
-  public void testNamedPathSingleHop() {
+  void namedPathSingleHop() {
     // Single-hop paths should work correctly (no duplication bug)
     final ResultSet result = database.query("opencypher",
         "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) " +
             "RETURN p AS path");
 
-    assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
 
     final TraversalPath path = (TraversalPath) row.getProperty("path");
-    assertNotNull(path);
-    assertEquals(1, path.length());
-    assertEquals("Alice", path.getStartVertex().get("name"));
-    assertEquals("Bob", path.getEndVertex().get("name"));
+    assertThat(path).isNotNull();
+    assertThat(path.length()).isEqualTo(1);
+    assertThat(path.getStartVertex().get("name")).isEqualTo("Alice");
+    assertThat(path.getEndVertex().get("name")).isEqualTo("Bob");
 
-    assertFalse(result.hasNext(), "Single-hop should return exactly 1 result");
+    assertThat(result.hasNext()).as("Single-hop should return exactly 1 result").isFalse();
     result.close();
   }
 }

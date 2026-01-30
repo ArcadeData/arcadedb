@@ -563,16 +563,11 @@ public class BasicGraphTest extends BaseGraphTest {
     v1a.newEdge(EDGE2_TYPE_NAME, v2);
     database.rollback();
 
-    try {
+    assertThatThrownBy(() -> {
       v2 = database.newVertex(VERTEX1_TYPE_NAME);
       v2.set("rid", v1RID.get());
       v2.save();
-
-      Assertions.fail();
-
-    } catch (final RuntimeException e) {
-      // EXPECTED
-    }
+    }).isInstanceOf(RuntimeException.class);
 
     assertThat(v1a.isConnectedTo(v2)).isFalse();
   }
@@ -678,7 +673,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
   // https://github.com/ArcadeData/arcadedb/issues/3152
   @Test
-  void testRegression_Issue3152_EdgeIterableReuse() {
+  void regressionIssue3152EdgeIterableReuse() {
     database.transaction(() -> {
       // Create a source vertex and multiple target vertices with edges
       final MutableVertex source = database.newVertex(VERTEX1_TYPE_NAME).set("name", "Source").save();

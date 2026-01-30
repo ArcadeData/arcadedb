@@ -58,7 +58,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeOnCreateSet() {
+  void mergeOnCreateSet() {
     // MERGE with ON CREATE SET should set properties when creating new node
     final ResultSet result = database.command("opencypher",
         "MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = true RETURN n");
@@ -76,7 +76,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeOnMatchSet() {
+  void mergeOnMatchSet() {
     // Create initial person
     database.command("opencypher", "CREATE (n:Person {name: 'Bob', visits: 1})");
 
@@ -91,7 +91,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeOnCreateAndOnMatchSet() {
+  void mergeOnCreateAndOnMatchSet() {
     // First MERGE creates, should set created property
     ResultSet result = database.command("opencypher",
         "MERGE (n:Person {name: 'Charlie'}) " +
@@ -120,7 +120,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeOnCreateSetMultipleProperties() {
+  void mergeOnCreateSetMultipleProperties() {
     // MERGE with ON CREATE SET can set multiple properties
     final ResultSet result = database.command("opencypher",
         "MERGE (n:Person {name: 'David'}) " +
@@ -136,7 +136,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeOnMatchSetUpdatesExisting() {
+  void mergeOnMatchSetUpdatesExisting() {
     // Create person with initial properties
     database.command("opencypher", "CREATE (n:Person {name: 'Eve', age: 25, visits: 0})");
 
@@ -154,7 +154,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeOnCreateSetWithLiterals() {
+  void mergeOnCreateSetWithLiterals() {
     // Test different literal types in ON CREATE SET
     final ResultSet result = database.command("opencypher",
         "MERGE (n:Person {name: 'Frank'}) " +
@@ -172,7 +172,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeOnCreateSetWithPropertyReference() {
+  void mergeOnCreateSetWithPropertyReference() {
     // Create initial data
     database.command("opencypher", "CREATE (n:Person {name: 'Grace', age: 30})");
 
@@ -194,7 +194,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeRelationshipOnCreateSet() {
+  void mergeRelationshipOnCreateSet() {
     // Create vertices first
     database.command("opencypher", "CREATE (a:Person {name: 'Isaac'}), (b:Company {name: 'ArcadeDB'})");
 
@@ -212,7 +212,7 @@ public class OpenCypherMergeActionsTest {
   }
 
   @Test
-  void testMergeRelationshipOnMatchSet() {
+  void mergeRelationshipOnMatchSet() {
     // Create vertices and relationship
     database.command("opencypher",
         "CREATE (a:Person {name: 'Julia'})-[r:WORKS_AT {since: 2020}]->(b:Company {name: 'ArcadeDB'})");

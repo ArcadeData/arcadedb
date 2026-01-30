@@ -60,7 +60,7 @@ class Issue3154Test {
   }
 
   @Test
-  void testUnwindWithCreateSimple() {
+  void unwindWithCreateSimple() {
     // First create a CHUNK node to reference
     database.command("opencypher", "CREATE (c:CHUNK {name: 'test'})");
 
@@ -91,7 +91,7 @@ class Issue3154Test {
   }
 
   @Test
-  void testUnwindWithMergePropertyReferences() {
+  void unwindWithMergePropertyReferences() {
     // Test from Issue #3139
     final Map<String, Object> params = new HashMap<>();
     params.put("user_name", "root");
@@ -112,7 +112,7 @@ class Issue3154Test {
   }
 
   @Test
-  void testUnwindWithCreateAndMatch() {
+  void unwindWithCreateAndMatch() {
     // Create a CHUNK node first
     final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN ID(c) as rid");
     assertThat(createResult.hasNext()).isTrue();
@@ -145,7 +145,7 @@ class Issue3154Test {
   }
 
   @Test
-  void testUnwindWithCreateVectorProperty() {
+  void unwindWithCreateVectorProperty() {
     // Create a CHUNK node first
     final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN ID(c) as rid");
     assertThat(createResult.hasNext()).isTrue();
@@ -190,7 +190,7 @@ class Issue3154Test {
   }
 
   @Test
-  void testOriginalIssue3154Scenario() {
+  void originalIssue3154Scenario() {
     // Exact scenario from the original issue - create CHUNK node and use large vector
     final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN ID(c) as rid");
     assertThat(createResult.hasNext()).isTrue();
@@ -232,7 +232,7 @@ class Issue3154Test {
   }
 
   @Test
-  void testIssue3211Scenario() {
+  void issue3211Scenario() {
     // Issue #3211 - same problem as #3154, reported again after commit was reverted
     final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN ID(c) as rid");
     assertThat(createResult.hasNext()).isTrue();

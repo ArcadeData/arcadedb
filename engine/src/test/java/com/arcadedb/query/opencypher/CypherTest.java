@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CypherTest {
   @Test
-  void testRuntimeParams() {
+  void runtimeParams() {
     final Database database = new DatabaseFactory("./target/testcypher").create();
     try {
 

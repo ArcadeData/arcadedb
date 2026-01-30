@@ -61,7 +61,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void testMaxFilesRetention() throws IOException {
+  void maxFilesRetention() throws Exception {
     // Create 10 backup files
     final List<File> files = createBackupFiles(10, LocalDateTime.now().minusDays(10));
 
@@ -90,7 +90,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void testTieredRetentionHourly() throws IOException {
+  void tieredRetentionHourly() throws Exception {
     // Create backups for the last 48 hours (one per hour)
     final LocalDateTime now = LocalDateTime.now().withMinute(0).withSecond(0).withNano(0);
     final List<File> files = new ArrayList<>();
@@ -123,7 +123,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void testTieredRetentionDaily() throws IOException {
+  void tieredRetentionDaily() throws Exception {
     // Create backups for the last 14 days (one per day)
     final LocalDateTime now = LocalDateTime.now().withHour(2).withMinute(0).withSecond(0).withNano(0);
     final List<File> files = new ArrayList<>();
@@ -156,7 +156,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void testTieredRetentionCombined() throws IOException {
+  void tieredRetentionCombined() throws Exception {
     // Create multiple backups:
     // - Last 48 hours: one per hour
     // - Previous days: one per day for 7 more days
@@ -195,7 +195,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void testNoRetentionConfigured() {
+  void noRetentionConfigured() {
     final DatabaseBackupConfig config = new DatabaseBackupConfig(DATABASE_NAME);
     // No retention configured
 
@@ -207,7 +207,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void testEmptyBackupDirectory() {
+  void emptyBackupDirectory() {
     final DatabaseBackupConfig config = new DatabaseBackupConfig(DATABASE_NAME);
     final DatabaseBackupConfig.RetentionConfig retention = new DatabaseBackupConfig.RetentionConfig();
     retention.setMaxFiles(5);
@@ -221,14 +221,14 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void testNonExistentDatabase() {
+  void nonExistentDatabase() {
     // Should handle non-registered database
     final int deleted = retentionManager.applyRetention("non-existent-db");
     assertThat(deleted).isEqualTo(0);
   }
 
   @Test
-  void testGetBackupSize() throws IOException {
+  void getBackupSize() throws Exception {
     // Create some backup files
     createBackupFiles(3, LocalDateTime.now());
 
@@ -237,7 +237,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void testIgnoreNonBackupFiles() throws IOException {
+  void ignoreNonBackupFiles() throws Exception {
     // Create backup files
     createBackupFiles(5, LocalDateTime.now());
 

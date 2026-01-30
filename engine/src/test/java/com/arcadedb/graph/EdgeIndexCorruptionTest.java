@@ -29,10 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class EdgeIndexCorruptionTest extends TestHelper {
+class EdgeIndexCorruptionTest extends TestHelper {
 
   @Test
-  void testEdgeIndexCorruption() {
+  void edgeIndexCorruption() {
     // Transaction #1: Create schema
     database.transaction(() -> {
       database.command("sqlscript", """

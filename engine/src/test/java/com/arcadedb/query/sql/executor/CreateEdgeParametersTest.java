@@ -4,12 +4,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
-public class CreateEdgeParametersTest extends TestHelper {
+class CreateEdgeParametersTest extends TestHelper {
 
   @Test
-  public void testCreateEdgeWithPositionalParameters() {
+  void createEdgeWithPositionalParameters() {
     database.getSchema().createVertexType("V");
     database.getSchema().createEdgeType("E");
 
@@ -21,8 +21,8 @@ public class CreateEdgeParametersTest extends TestHelper {
 //      System.out.println("v2: " + v2);
 
       final var result = database.command("sql", "create edge E from ? to ?", v1, v2);
-      assertNotNull(result);
-      assertTrue(result.hasNext());
+      assertThat(result).isNotNull();
+      assertThat(result.hasNext()).isTrue();
 //      System.out.println("Edge created successfully!");
     });
   }

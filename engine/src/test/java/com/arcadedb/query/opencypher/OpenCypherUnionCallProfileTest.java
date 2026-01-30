@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class OpenCypherUnionCallProfileTest {
+class OpenCypherUnionCallProfileTest {
   private Database database;
 
   @BeforeEach
@@ -59,7 +59,7 @@ public class OpenCypherUnionCallProfileTest {
   // ============================================================
 
   @Test
-  void testUnionBasic() {
+  void unionBasic() {
     // Setup: Create Person and Company types with data
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Company");
@@ -88,7 +88,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testUnionDeduplicates() {
+  void unionDeduplicates() {
     // Setup: Create data with duplicates
     database.getSchema().createVertexType("Type1");
     database.getSchema().createVertexType("Type2");
@@ -115,7 +115,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testUnionAllKeepsDuplicates() {
+  void unionAllKeepsDuplicates() {
     // Setup: Create data with duplicates
     database.getSchema().createVertexType("Type1");
     database.getSchema().createVertexType("Type2");
@@ -142,7 +142,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testMultipleUnions() {
+  void multipleUnions() {
     // Setup
     database.getSchema().createVertexType("TypeA");
     database.getSchema().createVertexType("TypeB");
@@ -177,7 +177,7 @@ public class OpenCypherUnionCallProfileTest {
   // ============================================================
 
   @Test
-  void testCallDbLabels() {
+  void callDbLabels() {
     // Setup: Create some vertex types
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Company");
@@ -202,7 +202,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testCallDbRelationshipTypes() {
+  void callDbRelationshipTypes() {
     // Setup: Create vertex and edge types
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
@@ -221,7 +221,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testCallDbPropertyKeys() {
+  void callDbPropertyKeys() {
     // Setup: Create types with properties
     final var personType = database.getSchema().createVertexType("Person");
     personType.createProperty("name", String.class);
@@ -240,7 +240,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testCallCustomSQLFunction() {
+  void callCustomSQLFunction() {
     // Define a custom SQL function
     database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b AS result\" PARAMETERS [a,b] LANGUAGE sql");
 
@@ -256,7 +256,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testCallCustomFunctionWithStringParam() {
+  void callCustomFunctionWithStringParam() {
     // Define a custom SQL function that returns input
     database.command("sql", "DEFINE FUNCTION my.echo \"SELECT :input AS output\" PARAMETERS [input] LANGUAGE sql");
 
@@ -274,7 +274,7 @@ public class OpenCypherUnionCallProfileTest {
   // ============================================================
 
   @Test
-  void testProfileBasic() {
+  void profileBasic() {
     // Setup
     database.getSchema().createVertexType("Person");
 
@@ -305,7 +305,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testProfileShowsRowCount() {
+  void profileShowsRowCount() {
     // Setup
     database.getSchema().createVertexType("Item");
 
@@ -325,7 +325,7 @@ public class OpenCypherUnionCallProfileTest {
   }
 
   @Test
-  void testExplainDoesNotExecute() {
+  void explainDoesNotExecute() {
     // Setup
     database.getSchema().createVertexType("Counter");
 

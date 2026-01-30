@@ -49,7 +49,7 @@ class XMLImporterFormatTest extends TestHelper {
    * Bug behavior: Record 2 incorrectly inherits age="30" from Record 1
    */
   @Test
-  void testNoPropertyCarryoverBetweenRecords() throws IOException {
+  void noPropertyCarryoverBetweenRecords() throws Exception {
     final File xmlFile = createTempXMLFile("test-carryover.xml",
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
             "<users>\n" +

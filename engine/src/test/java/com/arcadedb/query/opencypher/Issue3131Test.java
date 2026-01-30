@@ -73,7 +73,7 @@ class Issue3131Test {
   }
 
   @Test
-  void testMatchWithIdThenMergeRelationship() {
+  void matchWithIdThenMergeRelationship() {
     // This query should:
     // 1. MATCH two nodes by ID
     // 2. MERGE a relationship between them
@@ -105,7 +105,7 @@ class Issue3131Test {
   }
 
   @Test
-  void testMergeRelationshipIdempotency() {
+  void mergeRelationshipIdempotency() {
     // First execution - creates the relationship
     database.command("opencypher",
         "MATCH (a), (b) WHERE ID(a) = $source_id AND ID(b) = $target_id " +

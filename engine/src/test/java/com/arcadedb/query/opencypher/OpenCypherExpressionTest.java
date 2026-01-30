@@ -29,7 +29,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 ;
 
@@ -46,7 +47,7 @@ public class OpenCypherExpressionTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./databases/test-expression").create();
 
     // Create schema
@@ -75,7 +76,7 @@ public class OpenCypherExpressionTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null)
       database.drop();
   }
@@ -85,81 +86,81 @@ public class OpenCypherExpressionTest {
   // ============================================================================
 
   @Test
-  public void testArithmeticMultiplication() {
+  void arithmeticMultiplication() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age * 2 AS doubleAge");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(Long.valueOf(60L), result.getProperty("doubleAge"));
-    assertFalse(resultSet.hasNext());
+    assertThat(result.getProperty("doubleAge")).isEqualTo(Long.valueOf(60L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testArithmeticAddition() {
+  void arithmeticAddition() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age + 10 AS agePlus10");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(Long.valueOf(40L), result.getProperty("agePlus10"));
-    assertFalse(resultSet.hasNext());
+    assertThat(result.getProperty("agePlus10")).isEqualTo(Long.valueOf(40L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testArithmeticSubtraction() {
+  void arithmeticSubtraction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age - 5 AS ageMinus5");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(Long.valueOf(25L), result.getProperty("ageMinus5"));
-    assertFalse(resultSet.hasNext());
+    assertThat(result.getProperty("ageMinus5")).isEqualTo(Long.valueOf(25L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testArithmeticDivision() {
+  void arithmeticDivision() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age / 2 AS halfAge");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(15.0, result.getProperty("halfAge"));
-    assertFalse(resultSet.hasNext());
+    assertThat(result.getProperty("halfAge")).isEqualTo(15.0);
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testArithmeticModulo() {
+  void arithmeticModulo() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age % 7 AS modulo");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(Long.valueOf(2L), result.getProperty("modulo"));
-    assertFalse(resultSet.hasNext());
+    assertThat(result.getProperty("modulo")).isEqualTo(Long.valueOf(2L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testArithmeticComplexExpression() {
+  void arithmeticComplexExpression() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.age * 2 + 10 AS result");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     // 30 * 2 + 10 = 70
-    assertEquals(Long.valueOf(70L), result.getProperty("result"));
-    assertFalse(resultSet.hasNext());
+    assertThat(result.getProperty("result")).isEqualTo(Long.valueOf(70L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testArithmeticWithLiterals() {
+  void arithmeticWithLiterals() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN 10 * 5 + 3 AS result");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertEquals(Long.valueOf(53L), result.getProperty("result"));
-    assertFalse(resultSet.hasNext());
+    assertThat(result.getProperty("result")).isEqualTo(Long.valueOf(53L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   // ============================================================================
@@ -167,50 +168,50 @@ public class OpenCypherExpressionTest {
   // ============================================================================
 
   @Test
-  public void testMapLiteralSimple() {
+  void mapLiteralSimple() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN {name: 'Alice', age: 30} AS person");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object personObj = result.getProperty("person");
-    assertTrue(personObj instanceof Map);
+    assertThat(personObj).isInstanceOf(Map.class);
     @SuppressWarnings("unchecked")
     final Map<String, Object> person = (Map<String, Object>) personObj;
-    assertEquals("Alice", person.get("name"));
-    assertEquals(Long.valueOf(30L), person.get("age"));
-    assertFalse(resultSet.hasNext());
+    assertThat(person.get("name")).isEqualTo("Alice");
+    assertThat(person.get("age")).isEqualTo(Long.valueOf(30L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testMapLiteralWithExpressions() {
+  void mapLiteralWithExpressions() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN {personName: n.name, doubled: n.age * 2} AS info");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object infoObj = result.getProperty("info");
-    assertTrue(infoObj instanceof Map);
+    assertThat(infoObj).isInstanceOf(Map.class);
     @SuppressWarnings("unchecked")
     final Map<String, Object> info = (Map<String, Object>) infoObj;
-    assertEquals("Alice", info.get("personName"));
-    assertEquals(Long.valueOf(60L), info.get("doubled"));
-    assertFalse(resultSet.hasNext());
+    assertThat(info.get("personName")).isEqualTo("Alice");
+    assertThat(info.get("doubled")).isEqualTo(Long.valueOf(60L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testMapLiteralEmpty() {
+  void mapLiteralEmpty() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN {} AS emptyMap");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object mapObj = result.getProperty("emptyMap");
-    assertTrue(mapObj instanceof Map);
+    assertThat(mapObj).isInstanceOf(Map.class);
     @SuppressWarnings("unchecked")
     final Map<String, Object> map = (Map<String, Object>) mapObj;
-    assertTrue(map.isEmpty());
-    assertFalse(resultSet.hasNext());
+    assertThat(map.isEmpty()).isTrue();
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   // ============================================================================
@@ -218,76 +219,76 @@ public class OpenCypherExpressionTest {
   // ============================================================================
 
   @Test
-  public void testListComprehensionSimple() {
+  void listComprehensionSimple() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN [x IN [1, 2, 3] | x * 2] AS doubled");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object listObj = result.getProperty("doubled");
-    assertTrue(listObj instanceof List, "Expected List but got: " + (listObj == null ? "null" : listObj.getClass().getName()));
+    assertThat(listObj).as("Expected List but got: " + (listObj == null ? "null" : listObj.getClass().getName())).isInstanceOf(List.class);
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
-    assertEquals(3, list.size());
-    assertEquals(Long.valueOf(2L), list.get(0));
-    assertEquals(Long.valueOf(4L), list.get(1));
-    assertEquals(Long.valueOf(6L), list.get(2));
-    assertFalse(resultSet.hasNext());
+    assertThat(list.size()).isEqualTo(3);
+    assertThat(list.get(0)).isEqualTo(Long.valueOf(2L));
+    assertThat(list.get(1)).isEqualTo(Long.valueOf(4L));
+    assertThat(list.get(2)).isEqualTo(Long.valueOf(6L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testListComprehensionWithFilter() {
+  void listComprehensionWithFilter() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN [x IN [1, 2, 3, 4, 5] WHERE x > 2 | x * 10] AS filtered");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object listObj = result.getProperty("filtered");
-    assertTrue(listObj instanceof List);
+    assertThat(listObj).isInstanceOf(List.class);
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
-    assertEquals(3, list.size());
-    assertEquals(Long.valueOf(30L), list.get(0));
-    assertEquals(Long.valueOf(40L), list.get(1));
-    assertEquals(Long.valueOf(50L), list.get(2));
-    assertFalse(resultSet.hasNext());
+    assertThat(list.size()).isEqualTo(3);
+    assertThat(list.get(0)).isEqualTo(Long.valueOf(30L));
+    assertThat(list.get(1)).isEqualTo(Long.valueOf(40L));
+    assertThat(list.get(2)).isEqualTo(Long.valueOf(50L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testListComprehensionWithRange() {
+  void listComprehensionWithRange() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN [x IN range(1, 5) | x * x] AS squares");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object listObj = result.getProperty("squares");
-    assertTrue(listObj instanceof List);
+    assertThat(listObj).isInstanceOf(List.class);
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
-    assertEquals(5, list.size());
-    assertEquals(Long.valueOf(1L), list.get(0));
-    assertEquals(Long.valueOf(4L), list.get(1));
-    assertEquals(Long.valueOf(9L), list.get(2));
-    assertEquals(Long.valueOf(16L), list.get(3));
-    assertEquals(Long.valueOf(25L), list.get(4));
-    assertFalse(resultSet.hasNext());
+    assertThat(list.size()).isEqualTo(5);
+    assertThat(list.get(0)).isEqualTo(Long.valueOf(1L));
+    assertThat(list.get(1)).isEqualTo(Long.valueOf(4L));
+    assertThat(list.get(2)).isEqualTo(Long.valueOf(9L));
+    assertThat(list.get(3)).isEqualTo(Long.valueOf(16L));
+    assertThat(list.get(4)).isEqualTo(Long.valueOf(25L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testListComprehensionFilterOnly() {
+  void listComprehensionFilterOnly() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN [x IN [1, 2, 3, 4, 5] WHERE x > 3] AS filtered");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object listObj = result.getProperty("filtered");
-    assertTrue(listObj instanceof List);
+    assertThat(listObj).isInstanceOf(List.class);
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
-    assertEquals(2, list.size());
-    assertEquals(Long.valueOf(4L), list.get(0));
-    assertEquals(Long.valueOf(5L), list.get(1));
-    assertFalse(resultSet.hasNext());
+    assertThat(list.size()).isEqualTo(2);
+    assertThat(list.get(0)).isEqualTo(Long.valueOf(4L));
+    assertThat(list.get(1)).isEqualTo(Long.valueOf(5L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   // ============================================================================
@@ -295,54 +296,54 @@ public class OpenCypherExpressionTest {
   // ============================================================================
 
   @Test
-  public void testMapProjectionSimple() {
+  void mapProjectionSimple() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n{.name, .age} AS person");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object personObj = result.getProperty("person");
-    assertTrue(personObj instanceof Map);
+    assertThat(personObj).isInstanceOf(Map.class);
     @SuppressWarnings("unchecked")
     final Map<String, Object> person = (Map<String, Object>) personObj;
-    assertEquals("Alice", person.get("name"));
-    assertEquals(30, person.get("age"));
+    assertThat(person.get("name")).isEqualTo("Alice");
+    assertThat(person.get("age")).isEqualTo(30);
     // Should NOT contain salary since it wasn't projected
-    assertFalse(person.containsKey("salary"));
-    assertFalse(resultSet.hasNext());
+    assertThat(person.containsKey("salary")).isFalse();
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testMapProjectionWithComputedValue() {
+  void mapProjectionWithComputedValue() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n{.name, doubleAge: n.age * 2} AS person");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object personObj = result.getProperty("person");
-    assertTrue(personObj instanceof Map);
+    assertThat(personObj).isInstanceOf(Map.class);
     @SuppressWarnings("unchecked")
     final Map<String, Object> person = (Map<String, Object>) personObj;
-    assertEquals("Alice", person.get("name"));
-    assertEquals(Long.valueOf(60L), person.get("doubleAge"));
-    assertFalse(resultSet.hasNext());
+    assertThat(person.get("name")).isEqualTo("Alice");
+    assertThat(person.get("doubleAge")).isEqualTo(Long.valueOf(60L));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   @Test
-  public void testMapProjectionAllProperties() {
+  void mapProjectionAllProperties() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n{.*} AS person");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object personObj = result.getProperty("person");
-    assertTrue(personObj instanceof Map);
+    assertThat(personObj).isInstanceOf(Map.class);
     @SuppressWarnings("unchecked")
     final Map<String, Object> person = (Map<String, Object>) personObj;
-    assertEquals("Alice", person.get("name"));
-    assertEquals(Integer.valueOf(30), person.get("age"));
-    assertEquals(Integer.valueOf(50000), person.get("salary"));
-    assertFalse(resultSet.hasNext());
+    assertThat(person.get("name")).isEqualTo("Alice");
+    assertThat(person.get("age")).isEqualTo(Integer.valueOf(30));
+    assertThat(person.get("salary")).isEqualTo(Integer.valueOf(50000));
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   // ============================================================================
@@ -350,21 +351,21 @@ public class OpenCypherExpressionTest {
   // ============================================================================
 
   @Test
-  public void testCombinedMapWithArithmetic() {
+  void combinedMapWithArithmetic() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' " +
             "RETURN {name: n.name, nextYearAge: n.age + 1, monthlySalary: n.salary / 12} AS info");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object infoObj = result.getProperty("info");
-    assertTrue(infoObj instanceof Map);
+    assertThat(infoObj).isInstanceOf(Map.class);
     @SuppressWarnings("unchecked")
     final Map<String, Object> info = (Map<String, Object>) infoObj;
-    assertEquals("Alice", info.get("name"));
-    assertEquals(Long.valueOf(31L), info.get("nextYearAge"));
+    assertThat(info.get("name")).isEqualTo("Alice");
+    assertThat(info.get("nextYearAge")).isEqualTo(Long.valueOf(31L));
     // 50000 / 12 ≈ 4166.67
-    assertTrue(info.get("monthlySalary") instanceof Double);
-    assertFalse(resultSet.hasNext());
+    assertThat(info.get("monthlySalary")).isInstanceOf(Double.class);
+    assertThat(resultSet.hasNext()).isFalse();
   }
 }

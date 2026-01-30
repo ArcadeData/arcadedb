@@ -112,7 +112,7 @@ class JsonlExporterIT {
    * When exporting a database to JSONL format, the schema indexes should include the "unique" field.
    */
   @Test
-  void testExportedIndexesContainUniqueField() throws Exception {
+  void exportedIndexesContainUniqueField() throws Exception {
     final File file = new File(FILE);
 
     // Create a database with indexes (both unique and non-unique)

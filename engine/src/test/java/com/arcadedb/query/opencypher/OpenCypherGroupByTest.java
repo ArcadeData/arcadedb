@@ -67,7 +67,7 @@ class OpenCypherGroupByTest {
   }
 
   @Test
-  void testGroupByWithCount() {
+  void groupByWithCount() {
     // Group by city and count people in each city
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) RETURN n.city AS city, count(n) AS peopleCount ORDER BY city");
@@ -92,7 +92,7 @@ class OpenCypherGroupByTest {
   }
 
   @Test
-  void testGroupByWithAverage() {
+  void groupByWithAverage() {
     // Group by city and compute average age
     // Note: SQL avg() returns integer result when averaging integers
     final ResultSet result = database.command("opencypher",
@@ -113,7 +113,7 @@ class OpenCypherGroupByTest {
   }
 
   @Test
-  void testGroupByWithMultipleAggregations() {
+  void groupByWithMultipleAggregations() {
     // Group by city with multiple aggregations: count, avg, min, max
     // Note: SQL avg() returns integer result when averaging integers
     final ResultSet result = database.command("opencypher",
@@ -150,7 +150,7 @@ class OpenCypherGroupByTest {
   }
 
   @Test
-  void testGroupByMultipleKeys() {
+  void groupByMultipleKeys() {
     // Create more test data with multiple grouping dimensions
     database.command("opencypher",
         "CREATE (p:Person {name: 'Frank', age: 30, city: 'NYC', department: 'Engineering'}), " +
@@ -186,7 +186,7 @@ class OpenCypherGroupByTest {
   }
 
   @Test
-  void testPureAggregationWithoutGrouping() {
+  void pureAggregationWithoutGrouping() {
     // Pure aggregation without grouping (should use AggregationStep, not GroupByAggregationStep)
     // Note: SQL avg() returns integer result when averaging integers
     final ResultSet result = database.command("opencypher",

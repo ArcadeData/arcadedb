@@ -23,6 +23,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,7 +32,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -41,20 +42,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
 /**
  * Test for PluginManager to verify plugin discovery and loading with isolated class loaders.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class PluginManagerTest {
+class PluginManagerTest {
   private ArcadeDBServer server;
   private PluginManager  pluginManager;
 
@@ -62,7 +58,7 @@ public class PluginManagerTest {
   Path tempDir;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, tempDir.toString());
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, tempDir.resolve("databases").toString());
@@ -82,7 +78,7 @@ public class PluginManagerTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (pluginManager != null) {
       pluginManager.stopPlugins();
     }
@@ -92,50 +88,50 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void testPluginManagerCreation() {
-    assertNotNull(pluginManager);
-    assertEquals(0, pluginManager.getPluginCount());
+  void pluginManagerCreation() {
+    assertThat(pluginManager).isNotNull();
+    assertThat(pluginManager.getPluginCount()).isEqualTo(0);
   }
 
   @Test
-  public void testDiscoverPluginsWithNoDirectory() {
+  void discoverPluginsWithNoDirectory() {
     // Should handle missing plugins directory gracefully
     pluginManager.discoverPlugins();
-    assertEquals(0, pluginManager.getPluginCount());
+    assertThat(pluginManager.getPluginCount()).isEqualTo(0);
   }
 
   @Test
-  public void testGetPluginNames() {
+  void getPluginNames() {
     final Collection<String> names = pluginManager.getPluginNames();
-    assertNotNull(names);
-    assertTrue(names.isEmpty());
+    assertThat(names).isNotNull();
+    assertThat(names.isEmpty()).isTrue();
   }
 
   @Test
-  public void testGetPlugins() {
+  void getPlugins() {
     final Collection<ServerPlugin> plugins = pluginManager.getPlugins();
-    assertNotNull(plugins);
-    assertTrue(plugins.isEmpty());
+    assertThat(plugins).isNotNull();
+    assertThat(plugins.isEmpty()).isTrue();
   }
 
   @Test
-  public void testStopPluginsWhenEmpty() {
+  void stopPluginsWhenEmpty() {
     // Should handle stopping with no plugins loaded
-    assertDoesNotThrow(() -> pluginManager.stopPlugins());
+    Assertions.assertThatCode(() -> pluginManager.stopPlugins()).doesNotThrowAnyException();
   }
 
   @Test
-  public void testDiscoverPluginsWithEmptyDirectory() throws IOException {
+  void discoverPluginsWithEmptyDirectory() throws Exception {
     // Create empty plugins directory
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
 
     pluginManager.discoverPlugins();
-    assertEquals(0, pluginManager.getPluginCount());
+    assertThat(pluginManager.getPluginCount()).isEqualTo(0);
   }
 
   @Test
-  public void testLoadPluginWithMetaInfServices() throws Exception {
+  void loadPluginWithMetaInfServices() throws Exception {
     // Create a test plugin JAR with proper META-INF/services
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
@@ -144,15 +140,15 @@ public class PluginManagerTest {
 
     pluginManager.discoverPlugins();
 
-    assertEquals(1, pluginManager.getPluginCount());
-    assertTrue(pluginManager.getPluginNames().contains(TestPlugin1.class.getSimpleName()));
+    assertThat(pluginManager.getPluginCount()).isEqualTo(1);
+    assertThat(pluginManager.getPluginNames().contains(TestPlugin1.class.getSimpleName())).isTrue();
 
     final Collection<ServerPlugin> plugins = pluginManager.getPlugins();
-    assertEquals(1, plugins.size());
+    assertThat(plugins.size()).isEqualTo(1);
   }
 
   @Test
-  public void testLoadMultiplePlugins() throws Exception {
+  void loadMultiplePlugins() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
 
@@ -161,44 +157,44 @@ public class PluginManagerTest {
 
     pluginManager.discoverPlugins();
 
-    assertEquals(2, pluginManager.getPluginCount());
+    assertThat(pluginManager.getPluginCount()).isEqualTo(2);
     final Set<String> names = pluginManager.getPluginNames();
-    assertTrue(names.contains(TestPlugin1.class.getSimpleName()));
-    assertTrue(names.contains(TestPlugin2.class.getSimpleName()));
+    assertThat(names.contains(TestPlugin1.class.getSimpleName())).isTrue();
+    assertThat(names.contains(TestPlugin2.class.getSimpleName())).isTrue();
   }
 
   @Test
-  public void testPluginLifecycle() throws Exception {
+  void pluginLifecycle() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
 
     createTestPluginJar(pluginsDir, "lifecycle-plugin", LifecycleTestPlugin.class);
 
     pluginManager.discoverPlugins();
-    assertEquals(1, pluginManager.getPluginCount());
+    assertThat(pluginManager.getPluginCount()).isEqualTo(1);
 
     // Start the plugin
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
 
     // Verify plugin was configured and started
     final PluginDescriptor descriptor = pluginManager.getPluginDescriptor(LifecycleTestPlugin.class.getSimpleName());
-    assertNotNull(descriptor);
-    assertTrue(descriptor.isStarted());
-    assertTrue(descriptor.getPluginInstance() instanceof LifecycleTestPlugin);
+    assertThat(descriptor).isNotNull();
+    assertThat(descriptor.isStarted()).isTrue();
+    assertThat(descriptor.getPluginInstance()).isInstanceOf(LifecycleTestPlugin.class);
 
     final LifecycleTestPlugin plugin = (LifecycleTestPlugin) descriptor.getPluginInstance();
-    assertTrue(plugin.configured.get());
-    assertTrue(plugin.started.get());
-    assertFalse(plugin.stopped.get());
+    assertThat(plugin.configured.get()).isTrue();
+    assertThat(plugin.started.get()).isTrue();
+    assertThat(plugin.stopped.get()).isFalse();
 
     // Stop the plugin
     pluginManager.stopPlugins();
-    assertTrue(plugin.stopped.get());
-    assertFalse(descriptor.isStarted());
+    assertThat(plugin.stopped.get()).isTrue();
+    assertThat(descriptor.isStarted()).isFalse();
   }
 
   @Test
-  public void testPluginStartOrderByPriority() throws Exception {
+  void pluginStartOrderByPriority() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
 
@@ -206,7 +202,7 @@ public class PluginManagerTest {
     createTestPluginJar(pluginsDir, "after-plugin", AfterHttpPlugin.class);
 
     pluginManager.discoverPlugins();
-    assertEquals(2, pluginManager.getPluginCount());
+    assertThat(pluginManager.getPluginCount()).isEqualTo(2);
 
     // Start BEFORE_HTTP_ON plugins
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
@@ -214,18 +210,18 @@ public class PluginManagerTest {
     PluginDescriptor beforeDesc = pluginManager.getPluginDescriptor(BeforeHttpPlugin.class.getSimpleName());
     PluginDescriptor afterDesc = pluginManager.getPluginDescriptor(AfterHttpPlugin.class.getSimpleName());
 
-    assertTrue(beforeDesc.isStarted());
-    assertFalse(afterDesc.isStarted());
+    assertThat(beforeDesc.isStarted()).isTrue();
+    assertThat(afterDesc.isStarted()).isFalse();
 
     // Start AFTER_HTTP_ON plugins
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
-    assertTrue(beforeDesc.isStarted());
-    assertTrue(afterDesc.isStarted());
+    assertThat(beforeDesc.isStarted()).isTrue();
+    assertThat(afterDesc.isStarted()).isTrue();
   }
 
   @Test
-  public void testPluginWithoutMetaInfServices() throws Exception {
+  void pluginWithoutMetaInfServices() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
 
@@ -241,26 +237,26 @@ public class PluginManagerTest {
     pluginManager.discoverPlugins();
 
     // Plugin should not be loaded due to missing META-INF/services
-    assertEquals(0, pluginManager.getPluginCount());
+    assertThat(pluginManager.getPluginCount()).isEqualTo(0);
   }
 
   @Test
-  public void testPluginStartException() throws Exception {
+  void pluginStartException() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
 
     createTestPluginJar(pluginsDir, "failing-plugin", FailingPlugin.class);
 
     pluginManager.discoverPlugins();
-    assertEquals(1, pluginManager.getPluginCount());
+    assertThat(pluginManager.getPluginCount()).isEqualTo(1);
 
     // Starting the plugin should throw exception
-    assertThrows(ServerException.class, () ->
+    assertThatExceptionOfType(ServerException.class).isThrownBy(() ->
         pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON));
   }
 
   @Test
-  public void testGetPluginDescriptor() throws Exception {
+  void getPluginDescriptor() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
 
@@ -269,15 +265,15 @@ public class PluginManagerTest {
     pluginManager.discoverPlugins();
 
     final PluginDescriptor descriptor = pluginManager.getPluginDescriptor(TestPlugin1.class.getSimpleName());
-    assertNotNull(descriptor);
-    assertEquals(TestPlugin1.class.getSimpleName(), descriptor.getPluginName());
-    assertNotNull(descriptor.getClassLoader());
-    assertNotNull(descriptor.getPluginInstance());
-    assertFalse(descriptor.isStarted());
+    assertThat(descriptor).isNotNull();
+    assertThat(descriptor.getPluginName()).isEqualTo(TestPlugin1.class.getSimpleName());
+    assertThat(descriptor.getClassLoader()).isNotNull();
+    assertThat(descriptor.getPluginInstance()).isNotNull();
+    assertThat(descriptor.isStarted()).isFalse();
   }
 
   @Test
-  public void testClassLoaderIsolation() throws Exception {
+  void classLoaderIsolation() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
     Files.createDirectories(pluginsDir);
 
@@ -290,13 +286,13 @@ public class PluginManagerTest {
     final PluginDescriptor desc2 = pluginManager.getPluginDescriptor(TestPlugin2.class.getSimpleName());
 
     // Each plugin should have its own class loader
-    assertNotNull(desc1.getClassLoader());
-    assertNotNull(desc2.getClassLoader());
-    assertNotSame(desc1.getClassLoader(), desc2.getClassLoader());
+    assertThat(desc1.getClassLoader()).isNotNull();
+    assertThat(desc2.getClassLoader()).isNotNull();
+    Assertions.assertThat(desc2.getClassLoader()).isNotSameAs(desc1.getClassLoader());
 
     // Both should be PluginClassLoader instances
-    assertTrue(desc1.getClassLoader() instanceof PluginClassLoader);
-    assertTrue(desc2.getClassLoader() instanceof PluginClassLoader);
+    assertThat(desc1.getClassLoader()).isInstanceOf(PluginClassLoader.class);
+    assertThat(desc2.getClassLoader()).isInstanceOf(PluginClassLoader.class);
   }
 
   /**

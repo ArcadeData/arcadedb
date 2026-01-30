@@ -13,11 +13,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test unary operations in SQL expressions.
  */
-public class UnaryOperationsTest {
+class UnaryOperationsTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/UnaryOperationsTest").create();
     final DocumentType type = database.getSchema().createDocumentType("V");
     database.transaction(() -> {
@@ -28,7 +28,7 @@ public class UnaryOperationsTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -37,7 +37,7 @@ public class UnaryOperationsTest {
   }
 
   @Test
-  public void testUnaryMinus() {
+  void unaryMinus() {
     // Test unary minus on literal
     ResultSet result = database.command("sql", "SELECT -10 as result");
     assertThat(result.hasNext()).isTrue();
@@ -60,7 +60,7 @@ public class UnaryOperationsTest {
   }
 
   @Test
-  public void testUnaryPlus() {
+  void unaryPlus() {
     // Test unary plus on literal
     ResultSet result = database.command("sql", "SELECT +10 as result");
     assertThat(result.hasNext()).isTrue();
@@ -78,7 +78,7 @@ public class UnaryOperationsTest {
   }
 
   @Test
-  public void testUnaryInExpression() {
+  void unaryInExpression() {
     // Test unary minus in arithmetic expression
     ResultSet result = database.command("sql", "SELECT value + (-value) as result FROM V WHERE value = 10");
     assertThat(result.hasNext()).isTrue();
@@ -91,7 +91,7 @@ public class UnaryOperationsTest {
   }
 
   @Test
-  public void testUnaryWithZero() {
+  void unaryWithZero() {
     ResultSet result = database.command("sql", "SELECT -value as result FROM V WHERE value = 0");
     assertThat(result.hasNext()).isTrue();
     assertThat(result.next().<Integer>getProperty("result")).isEqualTo(0);

@@ -32,7 +32,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 ;
 
@@ -46,7 +47,7 @@ public class OpenCypherMatchEnhancementsTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/databases/testopencypher-match-enhancements").create();
 
     // Create schema
@@ -74,7 +75,7 @@ public class OpenCypherMatchEnhancementsTest {
   }
 
   @AfterEach
-  public void cleanup() {
+  void cleanup() {
     if (database != null) {
       database.drop();
       database = null;
@@ -82,7 +83,7 @@ public class OpenCypherMatchEnhancementsTest {
   }
 
   @Test
-  public void testMultipleMatchClauses() {
+  void multipleMatchClauses() {
     // Two MATCH clauses: first matches Alice, second matches Bob
     // Result should be Cartesian product: Alice + Bob
     final ResultSet result = database.query("opencypher",
@@ -90,16 +91,16 @@ public class OpenCypherMatchEnhancementsTest {
             "MATCH (b:Person {name: 'Bob'}) " +
             "RETURN a.name AS person1, b.name AS person2");
 
-    assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    assertEquals("Alice", row.getProperty("person1"));
-    assertEquals("Bob", row.getProperty("person2"));
-    assertFalse(result.hasNext());
+    assertThat(row.getProperty("person1")).isEqualTo("Alice");
+    assertThat(row.getProperty("person2")).isEqualTo("Bob");
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
   @Test
-  public void testMultipleMatchClausesCartesianProduct() {
+  void multipleMatchClausesCartesianProduct() {
     // MATCH all people twice - should get Cartesian product (2x2 = 4 results)
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person) " +
@@ -113,24 +114,24 @@ public class OpenCypherMatchEnhancementsTest {
     }
     result.close();
 
-    assertEquals(4, results.size(), "Expected Cartesian product of 2 people");
+    assertThat(results.size()).as("Expected Cartesian product of 2 people").isEqualTo(4);
 
     // Alice-Alice, Alice-Bob, Bob-Alice, Bob-Bob
-    assertEquals("Alice", results.get(0).getProperty("person1"));
-    assertEquals("Alice", results.get(0).getProperty("person2"));
+    assertThat(results.get(0).getProperty("person1")).isEqualTo("Alice");
+    assertThat(results.get(0).getProperty("person2")).isEqualTo("Alice");
 
-    assertEquals("Alice", results.get(1).getProperty("person1"));
-    assertEquals("Bob", results.get(1).getProperty("person2"));
+    assertThat(results.get(1).getProperty("person1")).isEqualTo("Alice");
+    assertThat(results.get(1).getProperty("person2")).isEqualTo("Bob");
 
-    assertEquals("Bob", results.get(2).getProperty("person1"));
-    assertEquals("Alice", results.get(2).getProperty("person2"));
+    assertThat(results.get(2).getProperty("person1")).isEqualTo("Bob");
+    assertThat(results.get(2).getProperty("person2")).isEqualTo("Alice");
 
-    assertEquals("Bob", results.get(3).getProperty("person1"));
-    assertEquals("Bob", results.get(3).getProperty("person2"));
+    assertThat(results.get(3).getProperty("person1")).isEqualTo("Bob");
+    assertThat(results.get(3).getProperty("person2")).isEqualTo("Bob");
   }
 
   @Test
-  public void testPatternWithoutLabel() {
+  void patternWithoutLabel() {
     // MATCH (n) without label should match ALL vertices (Person and Company)
     final ResultSet result = database.query("opencypher",
         "MATCH (n) RETURN n.name AS name ORDER BY name");
@@ -141,14 +142,14 @@ public class OpenCypherMatchEnhancementsTest {
     }
     result.close();
 
-    assertEquals(3, names.size(), "Expected 3 vertices total");
-    assertTrue(names.contains("Alice"));
-    assertTrue(names.contains("Bob"));
-    assertTrue(names.contains("TechCorp"));
+    assertThat(names.size()).as("Expected 3 vertices total").isEqualTo(3);
+    assertThat(names.contains("Alice")).isTrue();
+    assertThat(names.contains("Bob")).isTrue();
+    assertThat(names.contains("TechCorp")).isTrue();
   }
 
   @Test
-  public void testPatternWithoutLabelFiltered() {
+  void patternWithoutLabelFiltered() {
     // MATCH (n) with WHERE clause to filter
     final ResultSet result = database.query("opencypher",
         "MATCH (n) WHERE n.age > 20 RETURN n.name AS name ORDER BY name");
@@ -160,43 +161,43 @@ public class OpenCypherMatchEnhancementsTest {
     result.close();
 
     // Should match Alice (age 30) and Bob (age 25), but not TechCorp (no age)
-    assertEquals(2, names.size());
-    assertTrue(names.contains("Alice"));
-    assertTrue(names.contains("Bob"));
+    assertThat(names.size()).isEqualTo(2);
+    assertThat(names.contains("Alice")).isTrue();
+    assertThat(names.contains("Bob")).isTrue();
   }
 
   @Test
-  public void testNamedPathSingleEdge() {
+  void namedPathSingleEdge() {
     // Named path: p = (a)-[r]->(b)
     final ResultSet result = database.query("opencypher",
         "MATCH p = (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) " +
             "RETURN a.name AS person, b.name AS friend, p AS path");
 
-    assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    assertEquals("Alice", row.getProperty("person"));
-    assertEquals("Bob", row.getProperty("friend"));
+    assertThat(row.getProperty("person")).isEqualTo("Alice");
+    assertThat(row.getProperty("friend")).isEqualTo("Bob");
 
     // Check that path object is returned
     final Object pathObj = row.getProperty("path");
-    assertNotNull(pathObj, "Path variable should not be null");
-    assertTrue(pathObj instanceof TraversalPath, "Path should be a TraversalPath object");
+    assertThat(pathObj).as("Path variable should not be null").isNotNull();
+    assertThat(pathObj).as("Path should be a TraversalPath object").isInstanceOf(TraversalPath.class);
 
     final TraversalPath path = (TraversalPath) pathObj;
-    assertEquals(1, path.length(), "Path should have length 1 (one edge)");
-    assertEquals(2, path.getVertices().size(), "Path should have 2 vertices");
-    assertEquals(1, path.getEdges().size(), "Path should have 1 edge");
+    assertThat(path.length()).as("Path should have length 1 (one edge)").isEqualTo(1);
+    assertThat(path.getVertices().size()).as("Path should have 2 vertices").isEqualTo(2);
+    assertThat(path.getEdges().size()).as("Path should have 1 edge").isEqualTo(1);
 
     // Check vertices in path
-    assertEquals("Alice", path.getStartVertex().get("name"));
-    assertEquals("Bob", path.getEndVertex().get("name"));
+    assertThat(path.getStartVertex().get("name")).isEqualTo("Alice");
+    assertThat(path.getEndVertex().get("name")).isEqualTo("Bob");
 
-    assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
   @Test
-  public void testNamedPathMultiplePaths() {
+  void namedPathMultiplePaths() {
     // Alice has two outgoing relationships: KNOWS to Bob, WORKS_FOR to TechCorp
     // Query all paths from Alice
     final ResultSet result = database.query("opencypher",
@@ -210,12 +211,12 @@ public class OpenCypherMatchEnhancementsTest {
     }
     result.close();
 
-    assertEquals(2, paths.size(), "Alice should have 2 outgoing paths");
+    assertThat(paths.size()).as("Alice should have 2 outgoing paths").isEqualTo(2);
 
     // Both paths should have length 1
     for (final TraversalPath path : paths) {
-      assertEquals(1, path.length());
-      assertEquals("Alice", path.getStartVertex().get("name"));
+      assertThat(path.length()).isEqualTo(1);
+      assertThat(path.getStartVertex().get("name")).isEqualTo("Alice");
     }
 
     // Collect target names
@@ -224,12 +225,12 @@ public class OpenCypherMatchEnhancementsTest {
       targets.add((String) path.getEndVertex().get("name"));
     }
 
-    assertTrue(targets.contains("Bob"));
-    assertTrue(targets.contains("TechCorp"));
+    assertThat(targets.contains("Bob")).isTrue();
+    assertThat(targets.contains("TechCorp")).isTrue();
   }
 
   @Test
-  public void testCombinedFeatures() {
+  void combinedFeatures() {
     // Combine multiple features: multiple MATCH + unlabeled pattern + named path
     final ResultSet result = database.query("opencypher",
         "MATCH (start) " +
@@ -240,15 +241,15 @@ public class OpenCypherMatchEnhancementsTest {
     int pathCount = 0;
     while (result.hasNext()) {
       final Result row = result.next();
-      assertEquals("Alice", row.getProperty("startName"));
+      assertThat(row.getProperty("startName")).isEqualTo("Alice");
 
       final TraversalPath path = (TraversalPath) row.getProperty("path");
-      assertNotNull(path);
-      assertEquals(1, path.length());
+      assertThat(path).isNotNull();
+      assertThat(path.length()).isEqualTo(1);
       pathCount++;
     }
     result.close();
 
-    assertEquals(2, pathCount, "Alice should have 2 outgoing paths");
+    assertThat(pathCount).as("Alice should have 2 outgoing paths").isEqualTo(2);
   }
 }

@@ -69,7 +69,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * Expected: Should work
    */
   @Test
-  void testEqualityWithPlainString() {
+  void equalityWithPlainString() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE nameFamily = 'Withington' AND nameGiven = 'Paul' AND birthDate = '1952-08-06'");
@@ -86,7 +86,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * According to the issue, this pattern should also work
    */
   @Test
-  void testEqualityWithAsDate() {
+  void equalityWithAsDate() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE nameFamily = 'Withington' AND nameGiven = 'Paul' AND birthDate = '1952-08-06'.asDate()");
@@ -103,7 +103,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * According to the issue, this works
    */
   @Test
-  void testGreaterThanWithAsDate() {
+  void greaterThanWithAsDate() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE birthDate > '1952-08-05'.asDate()");
@@ -123,7 +123,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * Test greater-than comparison with plain string (no .asDate())
    */
   @Test
-  void testGreaterThanWithPlainString() {
+  void greaterThanWithPlainString() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE birthDate > '1952-08-05'");
@@ -144,7 +144,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * According to the issue, this FAILS but shouldn't
    */
   @Test
-  void testRangeQueryWithAsDate() {
+  void rangeQueryWithAsDate() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE birthDate > '1952-08-05'.asDate() AND birthDate < '1952-08-07'.asDate()");
@@ -161,7 +161,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * According to the issue, this WORKS
    */
   @Test
-  void testRangeQueryWithPlainStrings() {
+  void rangeQueryWithPlainStrings() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE birthDate > '1952-08-05' AND birthDate < '1952-08-07'");
@@ -177,7 +177,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * Test mixed comparison: one with .asDate(), one without
    */
   @Test
-  void testMixedComparison() {
+  void mixedComparison() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE birthDate > '1952-08-05'.asDate() AND birthDate < '1952-08-07'");
@@ -193,7 +193,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * Test less-than comparison with .asDate() method
    */
   @Test
-  void testLessThanWithAsDate() {
+  void lessThanWithAsDate() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE birthDate < '1952-08-07'.asDate()");
@@ -213,7 +213,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * Test less-than-or-equal comparison with .asDate() method
    */
   @Test
-  void testLessThanOrEqualWithAsDate() {
+  void lessThanOrEqualWithAsDate() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE birthDate <= '1952-08-06'.asDate()");
@@ -233,7 +233,7 @@ public class DateQueryConsistencyTest extends TestHelper {
    * Test greater-than-or-equal comparison with .asDate() method
    */
   @Test
-  void testGreaterThanOrEqualWithAsDate() {
+  void greaterThanOrEqualWithAsDate() {
     database.transaction(() -> {
       ResultSet result = database.query("sql",
           "SELECT FROM Person WHERE birthDate >= '1952-08-06'.asDate()");

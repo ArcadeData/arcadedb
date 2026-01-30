@@ -48,7 +48,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testOrderByAscending() {
+  void orderByAscending() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n.name ORDER BY n.age ASC");
 
     assertThat((Object) result).isNotNull();
@@ -65,7 +65,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testOrderByDescending() {
+  void orderByDescending() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n.name ORDER BY n.age DESC");
 
     assertThat((Object) result).isNotNull();
@@ -82,7 +82,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testOrderByName() {
+  void orderByName() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n.name ORDER BY n.name ASC");
 
     assertThat((Object) result).isNotNull();
@@ -99,7 +99,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testLimitOnly() {
+  void limitOnly() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n LIMIT 3");
 
     assertThat((Object) result).isNotNull();
@@ -115,7 +115,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testSkipOnly() {
+  void skipOnly() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n SKIP 2");
 
     assertThat((Object) result).isNotNull();
@@ -131,7 +131,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testSkipAndLimit() {
+  void skipAndLimit() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n SKIP 1 LIMIT 2");
 
     assertThat((Object) result).isNotNull();
@@ -147,7 +147,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testOrderBySkipLimit() {
+  void orderBySkipLimit() {
     final ResultSet result = database.query("opencypher",
         "MATCH (n:Person) RETURN n.name ORDER BY n.age ASC SKIP 1 LIMIT 3");
 
@@ -163,7 +163,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testOrderByWithWhereFilter() {
+  void orderByWithWhereFilter() {
     final ResultSet result = database.query("opencypher",
         "MATCH (n:Person) WHERE n.age > 28 RETURN n.name ORDER BY n.age DESC");
 
@@ -178,7 +178,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testLimitLessThanResults() {
+  void limitLessThanResults() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n LIMIT 10");
 
     assertThat((Object) result).isNotNull();
@@ -189,7 +189,7 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
-  void testSkipMoreThanResults() {
+  void skipMoreThanResults() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n SKIP 10");
 
     assertThat((Object) result).isNotNull();

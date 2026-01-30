@@ -4,31 +4,29 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
 
-public class ScriptLanguageRestrictionTest extends TestHelper {
+class ScriptLanguageRestrictionTest extends TestHelper {
 
   @Test
-  public void testForeachRejectedInSqlLanguage() {
-    assertThrows(CommandSQLParsingException.class, () -> {
-      database.command("sql", "FOREACH ($i IN [1,2,3]) { RETURN $i; }");
-    });
+  void foreachRejectedInSqlLanguage() {
+    assertThatExceptionOfType(CommandSQLParsingException.class).isThrownBy(() ->
+        database.command("sql", "FOREACH ($i IN [1,2,3]) { RETURN $i; }"));
   }
 
   @Test
-  public void testWhileRejectedInSqlLanguage() {
-    assertThrows(CommandSQLParsingException.class, () -> {
-      database.command("sql", "WHILE (1 = 1) { RETURN 'test'; }");
-    });
+  void whileRejectedInSqlLanguage() {
+    assertThatExceptionOfType(CommandSQLParsingException.class).isThrownBy(() ->
+        database.command("sql", "WHILE (1 = 1) { RETURN 'test'; }"));
   }
 
   @Test
-  public void testForeachWorksInSqlscriptLanguage() {
+  void foreachWorksInSqlscriptLanguage() {
     database.command("sqlscript", "FOREACH ($i IN [1,2,3]) { RETURN $i; }");
   }
 
   @Test
-  public void testWhileWorksInSqlscriptLanguage() {
+  void whileWorksInSqlscriptLanguage() {
     database.command("sqlscript", "LET $i = 0; WHILE ($i < 1) { LET $i = 1; RETURN 'test'; }");
   }
 }

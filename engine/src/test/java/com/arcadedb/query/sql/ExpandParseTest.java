@@ -4,10 +4,10 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-public class ExpandParseTest extends TestHelper {
+class ExpandParseTest extends TestHelper {
 
   @Test
-  void testExpandParsing() {
+  void expandParsing() {
     database.transaction(() -> {
       database.getSchema().createVertexType("TestType");
       database.newVertex("TestType").set("name", "test1").save();

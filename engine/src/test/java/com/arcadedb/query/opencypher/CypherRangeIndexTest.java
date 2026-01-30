@@ -37,11 +37,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Test range index usage in Cypher queries.
  * Verifies that range predicates (>, <, >=, <=) use LSM indexes for efficient scanning.
  */
-public class CypherRangeIndexTest {
+class CypherRangeIndexTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/databases/cypherrangeindex").create();
 
     database.transaction(() -> {
@@ -65,14 +65,14 @@ public class CypherRangeIndexTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
     }
   }
 
   @Test
-  public void testDataInserted() {
+  void dataInserted() {
     // First verify data was inserted
     final ResultSet allResults = database.query("opencypher", "MATCH (p:Person) RETURN count(p) as count");
     assertThat(allResults.hasNext()).isTrue();
@@ -81,7 +81,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testBasicQuery() {
+  void basicQuery() {
     // Test a simple query to ensure basic matching works
     final ResultSet results = database.query("opencypher", "MATCH (p:Person) RETURN p.name, p.age LIMIT 5");
     int count = 0;
@@ -95,7 +95,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testRangeGreaterThan() {
+  void rangeGreaterThan() {
     // Verify EXPLAIN shows NodeIndexRangeScan
     final ResultSet explainResults = database.query("opencypher", "EXPLAIN MATCH (p:Person) WHERE p.age > 90 RETURN p.name, p.age");
     final StringBuilder plan = new StringBuilder();
@@ -119,7 +119,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testRangeLessThan() {
+  void rangeLessThan() {
     // Verify EXPLAIN shows NodeIndexRangeScan
     final ResultSet explainResults = database.query("opencypher", "EXPLAIN MATCH (p:Person) WHERE p.age < 11 RETURN p.name, p.age");
     final StringBuilder plan = new StringBuilder();
@@ -143,7 +143,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testRangeBetween() {
+  void rangeBetween() {
     // Verify EXPLAIN shows NodeIndexRangeScan for bounded range
     final ResultSet explainResults = database.query("opencypher",
         "EXPLAIN MATCH (p:Person) WHERE p.age >= 40 AND p.age <= 60 RETURN p.name, p.age");
@@ -170,7 +170,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testRangeGreaterThanOrEqual() {
+  void rangeGreaterThanOrEqual() {
     // Verify EXPLAIN shows NodeIndexRangeScan
     final ResultSet explainResults = database.query("opencypher", "EXPLAIN MATCH (p:Person) WHERE p.age >= 95 RETURN p.name, p.age");
     final StringBuilder plan = new StringBuilder();
@@ -194,7 +194,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testRangeLessThanOrEqual() {
+  void rangeLessThanOrEqual() {
     // Verify EXPLAIN shows NodeIndexRangeScan
     final ResultSet explainResults = database.query("opencypher", "EXPLAIN MATCH (p:Person) WHERE p.age <= 5 RETURN p.name, p.age");
     final StringBuilder plan = new StringBuilder();
@@ -218,7 +218,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testRangeWithParameter() {
+  void rangeWithParameter() {
     // Verify EXPLAIN shows NodeIndexRangeScan for parameterized query
     final ResultSet explainResults = database.query("opencypher",
         "EXPLAIN MATCH (p:Person) WHERE p.age > $minAge RETURN p.name, p.age",
@@ -246,7 +246,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testRangeWithMultipleParameters() {
+  void rangeWithMultipleParameters() {
     // Verify EXPLAIN shows NodeIndexRangeScan for parameterized bounded range
     final ResultSet explainResults = database.query("opencypher",
         "EXPLAIN MATCH (p:Person) WHERE p.age >= $min AND p.age <= $max RETURN p.name, p.age",
@@ -275,7 +275,7 @@ public class CypherRangeIndexTest {
   }
 
   @Test
-  public void testExplainShowsRangeScan() {
+  void explainShowsRangeScan() {
     // Verify that EXPLAIN shows NodeIndexRangeScan operator
     final ResultSet results = database.query("opencypher",
         "EXPLAIN MATCH (p:Person) WHERE p.age > 50 AND p.age < 60 RETURN p");

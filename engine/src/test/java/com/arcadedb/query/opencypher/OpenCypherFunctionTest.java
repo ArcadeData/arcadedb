@@ -29,7 +29,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
+
 
 ;
 
@@ -40,7 +42,7 @@ public class OpenCypherFunctionTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./databases/test-function").create();
 
     // Create schema
@@ -80,203 +82,203 @@ public class OpenCypherFunctionTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
     }
   }
 
   @Test
-  public void testIdFunction() {
+  void idFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) RETURN id(n) AS personId");
 
     int count = 0;
     while (resultSet.hasNext()) {
       final Result result = resultSet.next();
-      assertNotNull(result.getProperty("personId"));
-      assertTrue(result.getProperty("personId").toString().contains("#"));
+      assertThat(result.getProperty("personId")).isNotNull();
+      assertThat(result.getProperty("personId").toString().contains("#")).isTrue();
       count++;
     }
 
-    assertEquals(3, count, "Expected 3 persons");
+    assertThat(count).as("Expected 3 persons").isEqualTo(3);
   }
 
   @Test
-  public void testLabelsFunction() {
+  void labelsFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person {name: 'Alice'}) RETURN labels(n) AS personLabels");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object labels = result.getProperty("personLabels");
 
-    assertNotNull(labels);
-    assertTrue(labels instanceof List);
+    assertThat(labels).isNotNull();
+    assertThat(labels).isInstanceOf(List.class);
     final List<?> labelsList = (List<?>) labels;
-    assertTrue(labelsList.contains("Person"));
+    assertThat(labelsList.contains("Person")).isTrue();
   }
 
   @Test
-  public void testTypeFunction() {
+  void typeFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person)-[r]->(b) RETURN type(r) AS relType");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final String relType = (String) result.getProperty("relType");
 
-    assertNotNull(relType);
-    assertTrue(relType.equals("KNOWS") || relType.equals("WORKS_AT"));
+    assertThat(relType).isNotNull();
+    assertThat(relType.equals("KNOWS") || relType.equals("WORKS_AT")).isTrue();
   }
 
   @Test
-  public void testKeysFunction() {
+  void keysFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person {name: 'Alice'}) RETURN keys(n) AS personKeys");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object keys = result.getProperty("personKeys");
 
-    assertNotNull(keys);
-    assertTrue(keys instanceof List);
+    assertThat(keys).isNotNull();
+    assertThat(keys).isInstanceOf(List.class);
     final List<?> keysList = (List<?>) keys;
-    assertTrue(keysList.contains("name"));
-    assertTrue(keysList.contains("age"));
+    assertThat(keysList.contains("name")).isTrue();
+    assertThat(keysList.contains("age")).isTrue();
   }
 
   @Test
-  public void testCountFunction() {
+  void countFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) RETURN count(n) AS totalPersons");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object count = result.getProperty("totalPersons");
 
-    assertNotNull(count);
-    assertEquals(3L, ((Number) count).longValue());
+    assertThat(count).isNotNull();
+    assertThat(((Number) count).longValue()).isEqualTo(3L);
   }
 
   @Test
-  public void testCountStar() {
+  void countStar() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) RETURN count(*) AS total");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object count = result.getProperty("total");
 
-    assertNotNull(count);
-    assertEquals(3L, ((Number) count).longValue());
+    assertThat(count).isNotNull();
+    assertThat(((Number) count).longValue()).isEqualTo(3L);
   }
 
   @Test
-  public void testSumFunction() {
+  void sumFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) RETURN sum(n.age) AS totalAge");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object sum = result.getProperty("totalAge");
 
-    assertNotNull(sum);
-    assertEquals(90, ((Number) sum).intValue()); // 30 + 25 + 35
+    assertThat(sum).isNotNull();
+    assertThat(((Number) sum).intValue()).isEqualTo(90); // 30 + 25 + 35
   }
 
   @Test
-  public void testAvgFunction() {
+  void avgFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) RETURN avg(n.age) AS averageAge");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object avg = result.getProperty("averageAge");
 
-    assertNotNull(avg);
-    assertEquals(30.0, ((Number) avg).doubleValue(), 0.01); // (30 + 25 + 35) / 3
+    assertThat(avg).isNotNull();
+    assertThat(((Number) avg).doubleValue()).isCloseTo(30.0, within(0.01)); // (30 + 25 + 35) / 3
   }
 
   @Test
-  public void testMinFunction() {
+  void minFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) RETURN min(n.age) AS minAge");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object min = result.getProperty("minAge");
 
-    assertNotNull(min);
-    assertEquals(25, ((Number) min).intValue());
+    assertThat(min).isNotNull();
+    assertThat(((Number) min).intValue()).isEqualTo(25);
   }
 
   @Test
-  public void testMaxFunction() {
+  void maxFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n:Person) RETURN max(n.age) AS maxAge");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object max = result.getProperty("maxAge");
 
-    assertNotNull(max);
-    assertEquals(35, ((Number) max).intValue());
+    assertThat(max).isNotNull();
+    assertThat(((Number) max).intValue()).isEqualTo(35);
   }
 
   @Test
-  public void testAbsFunction() {
+  void absFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN abs(-42) AS absValue");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object abs = result.getProperty("absValue");
 
-    assertNotNull(abs);
-    assertEquals(42, ((Number) abs).intValue());
+    assertThat(abs).isNotNull();
+    assertThat(((Number) abs).intValue()).isEqualTo(42);
   }
 
   @Test
-  public void testSqrtFunction() {
+  void sqrtFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN sqrt(16) AS sqrtValue");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object sqrt = result.getProperty("sqrtValue");
 
-    assertNotNull(sqrt);
-    assertEquals(4.0, ((Number) sqrt).doubleValue(), 0.01);
+    assertThat(sqrt).isNotNull();
+    assertThat(((Number) sqrt).doubleValue()).isCloseTo(4.0, within(0.01));
   }
 
   @Test
-  public void testStartNodeFunction() {
+  void startNodeFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person)-[r:KNOWS]->(b) RETURN startNode(r) AS source");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     // Single-variable RETURN with Document result is unwrapped to element
-    assertTrue(result.isElement());
+    assertThat(result.isElement()).isTrue();
     final Object source = result.toElement();
 
-    assertNotNull(source);
-    assertTrue(source instanceof Vertex);
+    assertThat(source).isNotNull();
+    assertThat(source).isInstanceOf(Vertex.class);
   }
 
   @Test
-  public void testEndNodeFunction() {
+  void endNodeFunction() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (a:Person)-[r:KNOWS]->(b) RETURN endNode(r) AS target");
 
-    assertTrue(resultSet.hasNext());
+    assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     // Single-variable RETURN with Document result is unwrapped to element
-    assertTrue(result.isElement());
+    assertThat(result.isElement()).isTrue();
     final Object target = result.toElement();
 
-    assertNotNull(target);
-    assertTrue(target instanceof Vertex);
+    assertThat(target).isNotNull();
+    assertThat(target).isInstanceOf(Vertex.class);
   }
 }

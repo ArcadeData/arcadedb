@@ -35,14 +35,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DatabaseGetSizeTest extends TestHelper {
 
   @Test
-  void testGetSizeOnEmptyDatabase() {
+  void getSizeOnEmptyDatabase() {
     // Even an empty database has metadata files (schema, configuration, etc.)
     final long initialSize = database.getSize();
     assertThat(initialSize).isGreaterThan(0L);
   }
 
   @Test
-  void testGetSizeIncreasesWithDocuments() {
+  void getSizeIncreasesWithDocuments() {
     database.transaction(() -> {
       // Create a document type
       final DocumentType personType = database.getSchema().createDocumentType("Person");
@@ -71,7 +71,7 @@ class DatabaseGetSizeTest extends TestHelper {
   }
 
   @Test
-  void testGetSizeIncreasesWithVerticesAndEdges() {
+  void getSizeIncreasesWithVerticesAndEdges() {
     database.transaction(() -> {
       // Create vertex and edge types
       database.getSchema().createVertexType("User");
@@ -107,7 +107,7 @@ class DatabaseGetSizeTest extends TestHelper {
   }
 
   @Test
-  void testGetSizeWithIndex() {
+  void getSizeWithIndex() {
     database.transaction(() -> {
       // Create a document type with an indexed property
       final DocumentType productType = database.getSchema().createDocumentType("Product");
@@ -139,7 +139,7 @@ class DatabaseGetSizeTest extends TestHelper {
   }
 
   @Test
-  void testGetSizeMultipleCalls() {
+  void getSizeMultipleCalls() {
     // Multiple calls to getSize() should return consistent results
     final long size1 = database.getSize();
     final long size2 = database.getSize();
@@ -150,7 +150,7 @@ class DatabaseGetSizeTest extends TestHelper {
   }
 
   @Test
-  void testGetSizeAfterDelete() {
+  void getSizeAfterDelete() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("TempDoc");
     });

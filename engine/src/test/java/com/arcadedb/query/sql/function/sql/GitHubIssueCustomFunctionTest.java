@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GitHubIssueCustomFunctionTest {
 
   @Test
-  void testCase1_SQLFunctionWithStringParameter_BeerExample() throws Exception {
+  void case1SQLFunctionWithStringParameterBeerExample() throws Exception {
     TestHelper.executeInNewDatabase("testCase1", (db) -> {
       // Create the Beer type and add Hocus Pocus
       db.command("sql", "CREATE DOCUMENT TYPE Beer");
@@ -52,7 +52,7 @@ class GitHubIssueCustomFunctionTest {
   }
 
   @Test
-  void testCase2_SQLFunctionReturningInput() throws Exception {
+  void case2SQLFunctionReturningInput() throws Exception {
     TestHelper.executeInNewDatabase("testCase2", (db) -> {
       // Define function as in the issue
       db.command("sql", "DEFINE FUNCTION my.returnInput \"SELECT :a AS result\" PARAMETERS [a] LANGUAGE sql");
@@ -69,7 +69,7 @@ class GitHubIssueCustomFunctionTest {
   }
 
   @Test
-  void testCase3_JavaScriptFunctionReturningInput() throws Exception {
+  void case3JavaScriptFunctionReturningInput() throws Exception {
     TestHelper.executeInNewDatabase("testCase3", (db) -> {
       // Define JS function as in the issue - should NOT cause ClassCastException
       db.command("sql", "DEFINE FUNCTION my.returnInputJS \"return a\" PARAMETERS [a] LANGUAGE js");
@@ -86,7 +86,7 @@ class GitHubIssueCustomFunctionTest {
   }
 
   @Test
-  void testIssueObservation_NoDoubleQuotingNeeded() throws Exception {
+  void issueObservationNoDoubleQuotingNeeded() throws Exception {
     TestHelper.executeInNewDatabase("testObservation", (db) -> {
       // Test that strings don't need to be double quoted
       db.command("sql", "DEFINE FUNCTION my.echo \"SELECT :a AS result\" PARAMETERS [a] LANGUAGE sql");

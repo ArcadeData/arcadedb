@@ -6,10 +6,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class SimpleComparisonTest extends TestHelper {
+class SimpleComparisonTest extends TestHelper {
 
   @Test
-  void testSimpleComparison() {
+  void simpleComparison() {
     final String script = """
         IF (1 > 0) {
             RETURN "yes";
@@ -23,7 +23,7 @@ public class SimpleComparisonTest extends TestHelper {
   }
 
   @Test
-  void testVariableComparison() {
+  void variableComparison() {
     final String script = """
         LET $num = 5;
         IF ($num > 0) {
@@ -38,7 +38,7 @@ public class SimpleComparisonTest extends TestHelper {
   }
 
   @Test
-  void testMethodCallComparison() {
+  void methodCallComparison() {
     final String script = """
         LET $list = [1, 2, 3];
         IF ($list.size() > 0) {

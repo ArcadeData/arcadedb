@@ -35,7 +35,7 @@ class GraphRAGTest extends TestHelper {
   private static final int DIMENSIONS = 768;
 
   @Test
-  void testHybridVectorAndGraphRetrieval() {
+  void hybridVectorAndGraphRetrieval() {
     // Schema: Define Publication Types and Knowledge Graph
     // Create document types with vector embeddings and entity types for your knowledge graph:
     database.transaction(() -> {

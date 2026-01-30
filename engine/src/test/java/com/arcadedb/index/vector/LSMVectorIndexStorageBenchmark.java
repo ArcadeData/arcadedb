@@ -51,7 +51,7 @@ import java.util.stream.Collectors;
  * (exact nearest neighbors via brute-force linear scan).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-public class LSMVectorIndexStorageBenchmark {
+class LSMVectorIndexStorageBenchmark {
   private static final String DB_PATH = "target/test-databases/LSMVectorIndexStorageBenchmark";
 
   // Store benchmark results for final comparison table
@@ -73,7 +73,7 @@ public class LSMVectorIndexStorageBenchmark {
   private int[] vectorClusterAssignments;
 
   @BeforeAll
-  public void generateSyntheticData() {
+  void generateSyntheticData() {
     System.out.println("╔════════════════════════════════════════════════════════════╗");
     System.out.println("║         GENERATING SYNTHETIC CLUSTERED DATASET             ║");
     System.out.println("╚════════════════════════════════════════════════════════════╝");
@@ -194,18 +194,18 @@ public class LSMVectorIndexStorageBenchmark {
   }
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     FileUtils.deleteRecursively(new File(DB_PATH));
     GlobalConfiguration.PROFILE.setValue("high-performance");
   }
 
   @AfterEach
-  public void cleanup() {
+  void cleanup() {
     FileUtils.deleteRecursively(new File(DB_PATH));
   }
 
   @AfterAll
-  public void printComparisonTable() {
+  void printComparisonTable() {
     if (benchmarkResults.isEmpty())
       return;
 
@@ -355,7 +355,7 @@ public class LSMVectorIndexStorageBenchmark {
    * Vectors are fetched from documents via RID lookups.
    */
   @Test
-  public void benchmarkWithoutGraphStorage() {
+  void benchmarkWithoutGraphStorage() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 1: WITHOUT storeVectorsInGraph");
     System.out.println("========================================");
@@ -368,7 +368,7 @@ public class LSMVectorIndexStorageBenchmark {
    * Vectors are stored inline in graph file and fetched directly.
    */
   @Test
-  public void benchmarkWithGraphStorage() {
+  void benchmarkWithGraphStorage() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 2: WITH storeVectorsInGraph");
     System.out.println("========================================");
@@ -381,7 +381,7 @@ public class LSMVectorIndexStorageBenchmark {
    * Best of both worlds: inline storage + 4x compression.
    */
   @Test
-  public void benchmarkWithGraphStorageAndInt8Quantization() {
+  void benchmarkWithGraphStorageAndInt8Quantization() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 3: WITH storeVectorsInGraph + INT8");
     System.out.println("========================================");
@@ -394,7 +394,7 @@ public class LSMVectorIndexStorageBenchmark {
    * Vectors fetched from quantized pages.
    */
   @Test
-  public void benchmarkQuantizationInt8Only() {
+  void benchmarkQuantizationInt8Only() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 4: INT8 Quantization");
     System.out.println("========================================");
@@ -407,7 +407,7 @@ public class LSMVectorIndexStorageBenchmark {
    * Vectors fetched from quantized pages.
    */
   @Test
-  public void benchmarkQuantizationBinaryOnly() {
+  void benchmarkQuantizationBinaryOnly() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 5: BINARY Quantization");
     System.out.println("========================================");
@@ -420,7 +420,7 @@ public class LSMVectorIndexStorageBenchmark {
    * PQ is built but search uses exact vectors (fallback mode).
    */
   @Test
-  public void benchmarkProductQuantizationExact() {
+  void benchmarkProductQuantizationExact() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 6: PRODUCT Quantization (Exact Search)");
     System.out.println("========================================");
@@ -434,7 +434,7 @@ public class LSMVectorIndexStorageBenchmark {
    * This is the fastest option with sub-millisecond latency.
    */
   @Test
-  public void benchmarkProductQuantizationApproximate() {
+  void benchmarkProductQuantizationApproximate() {
     System.out.println("\n========================================");
     System.out.println("Benchmark 7: PRODUCT Quantization (Approximate/Zero-Disk-I/O)");
     System.out.println("========================================");

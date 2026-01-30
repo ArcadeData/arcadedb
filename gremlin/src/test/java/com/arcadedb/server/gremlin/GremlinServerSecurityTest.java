@@ -40,7 +40,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
 
   @Disabled
   @Test
-  void testRCEBlocked_RuntimeExec() {
+  void rceBlockedRuntimeExec() {
     // Test that Runtime.getRuntime().exec() is blocked when using Groovy engine
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -70,7 +70,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
 
   @Disabled
   @Test
-  void testRCEBlocked_ProcessBuilder() {
+  void rceBlockedProcessBuilder() {
     // Test that ProcessBuilder is blocked when using Groovy engine
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -97,7 +97,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
 
   @Disabled
   @Test
-  void testRCEBlocked_FileAccess() {
+  void rceBlockedFileAccess() {
     // Test that file system access is blocked when using Groovy engine
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -124,7 +124,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
 
   @Disabled
   @Test
-  void testRCEBlocked_Reflection() {
+  void rceBlockedReflection() {
     // Test that reflection-based security bypass is blocked when using Groovy engine
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
@@ -151,7 +151,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
   }
 
   @Test
-  void testLegitimateGremlinStillWorks() {
+  void legitimateGremlinStillWorks() {
     // Verify that legitimate Gremlin queries still work
     try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 

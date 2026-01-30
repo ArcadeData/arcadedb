@@ -96,7 +96,7 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
   }
 
   @AfterEach
-  public void cleanUpBackupConfig() {
+  void cleanUpBackupConfig() {
     if (backupConfigFile != null && backupConfigFile.exists())
       backupConfigFile.delete();
 
@@ -105,7 +105,7 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testPluginLoadsConfiguration() {
+  void pluginLoadsConfiguration() {
     final ArcadeDBServer server = getServer(0);
 
     // Find the auto-backup plugin
@@ -124,7 +124,7 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testPluginSchedulesBackups() {
+  void pluginSchedulesBackups() {
     final ArcadeDBServer server = getServer(0);
 
     // Find the auto-backup plugin
@@ -143,7 +143,7 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testTriggerImmediateBackup() {
+  void triggerImmediateBackup() {
     final ArcadeDBServer server = getServer(0);
 
     // Find the auto-backup plugin
@@ -180,7 +180,7 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testRetentionManagerRegistered() {
+  void retentionManagerRegistered() {
     final ArcadeDBServer server = getServer(0);
 
     AutoBackupSchedulerPlugin backupPlugin = null;

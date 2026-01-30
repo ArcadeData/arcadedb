@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Test case for collect(DISTINCT ...) functionality.
  * This ensures that DISTINCT is properly handled in the collect() aggregation function.
  */
-public class CollectDistinctTest {
+class CollectDistinctTest {
   private Database database;
 
   @BeforeEach
@@ -57,7 +57,7 @@ public class CollectDistinctTest {
   }
 
   @Test
-  void testCollectDistinctStrings() {
+  void collectDistinctStrings() {
     // Create people with duplicate cities
     database.transaction(() -> {
       MutableVertex alice = database.newVertex("Person");
@@ -100,7 +100,7 @@ public class CollectDistinctTest {
   }
 
   @Test
-  void testCollectDistinctVertices() {
+  void collectDistinctVertices() {
     // Create a graph where the same vertex is matched multiple times
     database.transaction(() -> {
       MutableVertex nyc = database.newVertex("City");
@@ -147,7 +147,7 @@ public class CollectDistinctTest {
   }
 
   @Test
-  void testCollectDistinctWithGroupBy() {
+  void collectDistinctWithGroupBy() {
     // Create cities with multiple people having various ages
     database.transaction(() -> {
       MutableVertex nyc = database.newVertex("City");
@@ -208,7 +208,7 @@ public class CollectDistinctTest {
   }
 
   @Test
-  void testCollectDistinctWithNulls() {
+  void collectDistinctWithNulls() {
     // Create people with some null cities
     database.transaction(() -> {
       MutableVertex alice = database.newVertex("Person");

@@ -14,11 +14,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test array concatenation expression (||).
  */
-public class ArrayConcatenationTest {
+class ArrayConcatenationTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/ArrayConcatenationTest").create();
     database.getSchema().createDocumentType("V");
 
@@ -36,7 +36,7 @@ public class ArrayConcatenationTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -45,7 +45,7 @@ public class ArrayConcatenationTest {
   }
 
   @Test
-  public void testArrayConcatTwoArrays() {
+  void arrayConcatTwoArrays() {
     // Concatenate two array fields
     ResultSet result = database.query("sql", "SELECT tags || categories as combined FROM V");
 
@@ -63,7 +63,7 @@ public class ArrayConcatenationTest {
   }
 
   @Test
-  public void testArrayConcatArrayAndLiteral() {
+  void arrayConcatArrayAndLiteral() {
     // Concatenate array with literal array
     ResultSet result = database.query("sql", "SELECT tags || ['extra'] as combined FROM V LIMIT 1");
 
@@ -75,7 +75,7 @@ public class ArrayConcatenationTest {
   }
 
   @Test
-  public void testArrayConcatLiteralArrays() {
+  void arrayConcatLiteralArrays() {
     // Concatenate two literal arrays
     ResultSet result = database.query("sql", "SELECT ['a', 'b'] || ['c', 'd'] as combined");
 

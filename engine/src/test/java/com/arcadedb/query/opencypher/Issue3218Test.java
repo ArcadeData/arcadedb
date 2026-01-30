@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * - 10 THEME relationships
  * Then the Cartesian product before aggregation is: 1 * 1000 * 100000 * 10 = 1 billion rows!
  */
-public class Issue3218Test {
+class Issue3218Test {
   private Database database;
   private String chunkId;
 
@@ -83,7 +83,7 @@ public class Issue3218Test {
    * Focus is on verifying collect(DISTINCT ...) works correctly.
    */
   @Test
-  void testOptionalMatchCartesianExplosion() {
+  void optionalMatchCartesianExplosion() {
     // Create a simpler graph structure that clearly demonstrates the feature
     database.transaction(() -> {
       // Create one CHUNK vertex
@@ -169,7 +169,7 @@ public class Issue3218Test {
    * Test a simpler case with just one OPTIONAL MATCH to verify basic functionality.
    */
   @Test
-  void testSingleOptionalMatch() {
+  void singleOptionalMatch() {
     database.transaction(() -> {
       MutableVertex chunk = database.newVertex("CHUNK");
       chunk.set("name", "chunk1");
@@ -219,7 +219,7 @@ public class Issue3218Test {
    * This shows how many intermediate rows are created.
    */
   @Test
-  void testCartesianProductSize() {
+  void cartesianProductSize() {
     database.transaction(() -> {
       MutableVertex chunk = database.newVertex("CHUNK");
       chunk.set("name", "chunk1");

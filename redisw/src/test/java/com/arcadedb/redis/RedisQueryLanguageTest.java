@@ -44,21 +44,21 @@ import static org.assertj.core.api.Assertions.fail;
 public class RedisQueryLanguageTest extends BaseGraphServerTest {
 
   @Test
-  void testPingCommand() throws Exception {
+  void pingCommand() throws Exception {
     // Test PING command via HTTP API with language=redis
     final JSONObject response = executeCommand(0, "redis", "PING");
     assertThat(getResultValue(response)).isEqualTo("PONG");
   }
 
   @Test
-  void testPingWithArgument() throws Exception {
+  void pingWithArgument() throws Exception {
     // Test PING with argument
     final JSONObject response = executeCommand(0, "redis", "PING Hello");
     assertThat(getResultValue(response)).isEqualTo("Hello");
   }
 
   @Test
-  void testSetAndGetCommands() throws Exception {
+  void setAndGetCommands() throws Exception {
     // Test SET command
     JSONObject response = executeCommand(0, "redis", "SET testkey testvalue");
     assertThat(getResultValue(response)).isEqualTo("OK");
@@ -69,7 +69,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testExistsCommand() throws Exception {
+  void existsCommand() throws Exception {
     // Set a key first
     executeCommand(0, "redis", "SET existskey value1");
 
@@ -83,7 +83,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testIncrDecrCommands() throws Exception {
+  void incrDecrCommands() throws Exception {
     // Set initial numeric value
     executeCommand(0, "redis", "SET counter 10");
 
@@ -105,7 +105,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testGetDelCommand() throws Exception {
+  void getDelCommand() throws Exception {
     // Set a key
     executeCommand(0, "redis", "SET deletekey value123");
 
@@ -119,7 +119,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testHSetAndHGetWithDatabase() throws Exception {
+  void hSetAndHGetWithDatabase() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     // Create a document type with index
@@ -140,7 +140,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testHExistsCommand() throws Exception {
+  void hExistsCommand() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     // Create a document type with index
@@ -161,7 +161,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testHDelCommand() throws Exception {
+  void hDelCommand() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     // Create a document type with index
@@ -191,7 +191,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testQueryEngineDirectly() throws Exception {
+  void queryEngineDirectly() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     // Test direct query engine access (like MongoDB tests do)
@@ -203,7 +203,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testCommandNotFound() throws Exception {
+  void commandNotFound() throws Exception {
     // Test unsupported command
     try {
       executeCommand(0, "redis", "UNKNOWNCOMMAND arg1");
@@ -214,7 +214,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testBatchCommands() throws Exception {
+  void batchCommands() throws Exception {
     // Test multiple commands separated by newlines (batch execution)
     final String batchCommands = """
         SET batch1 value1
@@ -241,7 +241,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testMultiExecTransaction() throws Exception {
+  void multiExecTransaction() throws Exception {
     // Test MULTI/EXEC transaction (official Redis syntax)
     final String transactionCommands = """
         MULTI
@@ -271,7 +271,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testMultiExecWithComments() throws Exception {
+  void multiExecWithComments() throws Exception {
     // Test that comments are ignored
     final String commands = """
         # This is a comment
@@ -289,7 +289,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testDiscard() throws Exception {
+  void discard() throws Exception {
     // Test DISCARD command
     final String commands = """
         MULTI
