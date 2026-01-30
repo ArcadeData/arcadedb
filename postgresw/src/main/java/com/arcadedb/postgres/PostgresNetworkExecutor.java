@@ -40,6 +40,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -760,7 +761,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       // Add all defined properties from the type
       for (final String propName : docType.getPropertyNames()) {
-        final com.arcadedb.schema.Property prop = docType.getProperty(propName);
+        final Property prop = docType.getProperty(propName);
         if (prop != null && prop.getType() != null) {
           columns.put(propName, PostgresType.getTypeFromArcade(prop.getType()));
         } else {

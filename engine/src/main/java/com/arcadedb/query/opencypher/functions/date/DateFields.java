@@ -20,10 +20,12 @@ package com.arcadedb.query.opencypher.functions.date;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.WeekFields;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -74,7 +76,7 @@ public class DateFields extends AbstractDateFunction {
     if (timezoneStr != null) {
       try {
         zoneId = ZoneId.of(timezoneStr);
-      } catch (final java.time.DateTimeException e) {
+      } catch (final DateTimeException e) {
         throw new IllegalArgumentException("Invalid timezone ID: " + timezoneStr, e);
       }
     } else {
@@ -95,7 +97,7 @@ public class DateFields extends AbstractDateFunction {
     fields.put("millisecond", (long) (dateTime.getNano() / 1_000_000));
     fields.put("dayOfWeek", (long) dateTime.getDayOfWeek().getValue());
     fields.put("dayOfYear", (long) dateTime.getDayOfYear());
-    fields.put("weekOfYear", (long) dateTime.get(java.time.temporal.WeekFields.ISO.weekOfYear()));
+    fields.put("weekOfYear", (long) dateTime.get(WeekFields.ISO.weekOfYear()));
     fields.put("timezone", dateTime.getZone().getId());
 
     return fields;

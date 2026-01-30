@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.functions.text;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * text.regexReplace(string, regex, replace) - Replace using regular expression.
@@ -70,7 +71,7 @@ public class TextRegexReplace extends AbstractTextFunction {
 
     try {
       return Pattern.compile(regex).matcher(str).replaceAll(replacement == null ? "" : replacement);
-    } catch (final java.util.regex.PatternSyntaxException e) {
+    } catch (final PatternSyntaxException e) {
       throw new IllegalArgumentException("Invalid regex pattern: " + e.getMessage(), e);
     } catch (final StackOverflowError e) {
       // Catastrophic backtracking can cause stack overflow

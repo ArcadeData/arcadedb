@@ -1070,8 +1070,8 @@ class CypherExpressionBuilder {
    * This is used for shortestPath patterns which contain a patternElement.
    */
   private PathPattern parsePatternElement(final Cypher25Parser.PatternElementContext ctx) {
-    final java.util.List<NodePattern> nodes = new java.util.ArrayList<>();
-    final java.util.List<RelationshipPattern> relationships = new java.util.ArrayList<>();
+    final List<NodePattern> nodes = new ArrayList<>();
+    final List<RelationshipPattern> relationships = new ArrayList<>();
 
     // First node
     if (!ctx.nodePattern().isEmpty()) {
@@ -1098,8 +1098,8 @@ class CypherExpressionBuilder {
    */
   private NodePattern parseNodePattern(final Cypher25Parser.NodePatternContext ctx) {
     String variable = null;
-    java.util.List<String> labels = null;
-    java.util.Map<String, Object> properties = null;
+    List<String> labels = null;
+    Map<String, Object> properties = null;
 
     if (ctx.variable() != null) {
       variable = ctx.variable().getText();
@@ -1121,8 +1121,8 @@ class CypherExpressionBuilder {
    */
   private RelationshipPattern parseRelationshipPattern(final Cypher25Parser.RelationshipPatternContext ctx) {
     String variable = null;
-    java.util.List<String> types = null;
-    java.util.Map<String, Object> properties = null;
+    List<String> types = null;
+    Map<String, Object> properties = null;
     Integer minHops = null;
     Integer maxHops = null;
 
@@ -1170,11 +1170,11 @@ class CypherExpressionBuilder {
   /**
    * Extract labels from a labelExpression context.
    */
-  private java.util.List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
+  private List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
     final String text = ctx.getText();
     final String cleanText = text.replaceAll("^:+", "");
     final String[] parts = cleanText.split("[:&|]+");
-    final java.util.List<String> labels = new java.util.ArrayList<>();
+    final List<String> labels = new ArrayList<>();
     for (String part : parts) {
       if (!part.isEmpty()) {
         labels.add(part);
@@ -1186,10 +1186,10 @@ class CypherExpressionBuilder {
   /**
    * Parse map properties from a MapContext.
    */
-  private java.util.Map<String, Object> parseMapProperties(final Cypher25Parser.MapContext ctx) {
-    final java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
-    final java.util.List<Cypher25Parser.PropertyKeyNameContext> keys = ctx.propertyKeyName();
-    final java.util.List<Cypher25Parser.ExpressionContext> values = ctx.expression();
+  private Map<String, Object> parseMapProperties(final Cypher25Parser.MapContext ctx) {
+    final Map<String, Object> map = new LinkedHashMap<>();
+    final List<Cypher25Parser.PropertyKeyNameContext> keys = ctx.propertyKeyName();
+    final List<Cypher25Parser.ExpressionContext> values = ctx.expression();
 
     for (int i = 0; i < keys.size() && i < values.size(); i++) {
       final String key = keys.get(i).getText();

@@ -23,7 +23,11 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+
+import java.util.Arrays;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -80,7 +84,7 @@ public class CypherFunctionSecurityTest {
   }
 
   @Test
-  @org.junit.jupiter.api.Disabled("Large parameter passing (11MB) has issues in Cypher query engine - security check exists in function code")
+  @Disabled("Large parameter passing (11MB) has issues in Cypher query engine - security check exists in function code")
   public void testUtilCompressInputSizeLimit() {
     // Test that compression has input size limits to prevent DoS
     // Create a string larger than max allowed size (11MB exceeds 10MB limit)
@@ -88,7 +92,7 @@ public class CypherFunctionSecurityTest {
     // query parameters has issues. The security check exists in UtilCompress.java.
     final int SIZE = 11 * 1024 * 1024;
     final char[] largeChars = new char[SIZE];
-    java.util.Arrays.fill(largeChars, 'x');
+    Arrays.fill(largeChars, 'x');
     final String largeString = new String(largeChars);
 
     final IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -291,7 +295,7 @@ public class CypherFunctionSecurityTest {
   }
 
   @Test
-  @org.junit.jupiter.api.Disabled("Large parameter passing (10KB+) has issues in Cypher query engine - security check exists in function code")
+  @Disabled("Large parameter passing (10KB+) has issues in Cypher query engine - security check exists in function code")
   public void testTextLevenshteinDistanceMaxLength() {
     // Test that excessively long strings are rejected for Levenshtein distance (MAX_STRING_LENGTH = 10000)
     // Note: This test is disabled because passing large string parameters through Cypher
@@ -343,7 +347,7 @@ public class CypherFunctionSecurityTest {
     assertTrue(resultSet.hasNext());
     final Object result = resultSet.next().getProperty("result");
     assertNotNull(result);
-    assertTrue(result instanceof java.util.Map);
+    assertTrue(result instanceof Map);
   }
 
   @Test

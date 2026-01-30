@@ -20,6 +20,8 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -120,7 +122,7 @@ public class PackStreamTest {
     writer.writeFloat(3.14159);
 
     final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
-    assertThat((Double) reader.readValue()).isCloseTo(3.14159, org.assertj.core.data.Offset.offset(0.00001));
+    assertThat((Double) reader.readValue()).isCloseTo(3.14159, Offset.offset(0.00001));
   }
 
   @Test
@@ -205,7 +207,7 @@ public class PackStreamTest {
     assertThat(result.get(0)).isEqualTo(1L);
     assertThat(result.get(1)).isEqualTo("hello");
     assertThat(result.get(2)).isEqualTo(true);
-    assertThat((Double) result.get(3)).isCloseTo(3.14, org.assertj.core.data.Offset.offset(0.001));
+    assertThat((Double) result.get(3)).isCloseTo(3.14, Offset.offset(0.001));
   }
 
   @Test
@@ -269,7 +271,7 @@ public class PackStreamTest {
     assertThat(reader.readValue()).isNull();
     assertThat(reader.readValue()).isEqualTo(true);
     assertThat(reader.readValue()).isEqualTo(42L);
-    assertThat((Double) reader.readValue()).isCloseTo(3.14, org.assertj.core.data.Offset.offset(0.001));
+    assertThat((Double) reader.readValue()).isCloseTo(3.14, Offset.offset(0.001));
     assertThat(reader.readValue()).isEqualTo("hello");
     assertThat(reader.readValue()).isEqualTo(List.of(1L, 2L));
     @SuppressWarnings("unchecked")

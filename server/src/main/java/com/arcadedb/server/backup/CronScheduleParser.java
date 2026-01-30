@@ -19,6 +19,7 @@
 package com.arcadedb.server.backup;
 
 import java.time.DayOfWeek;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.BitSet;
@@ -198,7 +199,7 @@ public class CronScheduleParser {
    */
   public long getDelayMillis(final LocalDateTime from) {
     final LocalDateTime next = getNextExecutionTime(from);
-    return java.time.Duration.between(from, next).toMillis();
+    return Duration.between(from, next).toMillis();
   }
 
   public String getExpression() {

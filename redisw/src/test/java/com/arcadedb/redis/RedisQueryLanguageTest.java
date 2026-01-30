@@ -32,6 +32,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -359,7 +360,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
         "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
-        "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     connection.setRequestProperty("Content-Type", "application/json");
     connection.setDoOutput(true);
 

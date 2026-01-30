@@ -22,6 +22,7 @@ import java.io.File;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.util.Arrays;
 
 /**
  * Custom class loader for plugins that provides isolation while allowing access to server APIs.
@@ -69,6 +70,6 @@ public class PluginClassLoader extends URLClassLoader {
 
   @Override
   public String toString() {
-    return "PluginClassLoader{urls=" + java.util.Arrays.toString(getURLs()) + "}";
+    return "PluginClassLoader{urls=" + Arrays.toString(getURLs()) + "}";
   }
 }
