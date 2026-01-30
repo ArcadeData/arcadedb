@@ -37,7 +37,7 @@ class PrometheusMetricsPluginNotAuthenticatedTest extends BaseGraphServerTest {
   public void setTestConfiguration() {
     super.setTestConfiguration();
     System.setProperty("arcadedb.serverMetrics.prometheus.requireAuthentication", "false");
-    GlobalConfiguration.SERVER_PLUGINS.setValue("Prometheus:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin");
+    GlobalConfiguration.SERVER_PLUGINS.setValue("PrometheusMetricsPlugin");
   }
 
   @AfterEach
