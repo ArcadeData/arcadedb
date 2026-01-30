@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PackStreamTest {
 
   @Test
-  void testNull() throws Exception {
+  void testNull() throws IOException {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeNull();
 
