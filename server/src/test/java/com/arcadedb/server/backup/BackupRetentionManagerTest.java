@@ -61,7 +61,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void maxFilesRetention() throws Exception {
+  void maxFilesRetention() throws IOException {
     // Create 10 backup files
     final List<File> files = createBackupFiles(10, LocalDateTime.now().minusDays(10));
 
@@ -90,7 +90,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void tieredRetentionHourly() throws Exception {
+  void tieredRetentionHourly() throws IOException {
     // Create backups for the last 48 hours (one per hour)
     final LocalDateTime now = LocalDateTime.now().withMinute(0).withSecond(0).withNano(0);
     final List<File> files = new ArrayList<>();
@@ -123,7 +123,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void tieredRetentionDaily() throws Exception {
+  void tieredRetentionDaily() throws IOException {
     // Create backups for the last 14 days (one per day)
     final LocalDateTime now = LocalDateTime.now().withHour(2).withMinute(0).withSecond(0).withNano(0);
     final List<File> files = new ArrayList<>();
@@ -156,7 +156,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void tieredRetentionCombined() throws Exception {
+  void tieredRetentionCombined() throws IOException {
     // Create multiple backups:
     // - Last 48 hours: one per hour
     // - Previous days: one per day for 7 more days
@@ -228,7 +228,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void getBackupSize() throws Exception {
+  void getBackupSize() throws IOException {
     // Create some backup files
     createBackupFiles(3, LocalDateTime.now());
 
@@ -237,7 +237,7 @@ class BackupRetentionManagerTest {
   }
 
   @Test
-  void ignoreNonBackupFiles() throws Exception {
+  void ignoreNonBackupFiles() throws IOException {
     // Create backup files
     createBackupFiles(5, LocalDateTime.now());
 
