@@ -18,7 +18,6 @@
  */
 package com.arcadedb.e2e;
 
-import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import org.junit.jupiter.api.AfterEach;
@@ -35,14 +34,25 @@ class JsFunctionsTest extends ArcadeContainerTemplate {
     database = new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");
     // ENLARGE THE TIMEOUT TO PASS THESE TESTS ON CI (GITHUB ACTIONS)
     database.setTimeout(60_000);
+    // Try to delete function first in case it exists from a previous failed test
+    tryDeleteFunction("math", "sum");
     database.command("sql", "define function math.sum \"return a + b\" parameters [a,b] language js");
-
   }
 
   @AfterEach
   void tearDown() {
-    database.command("sql", "delete function math.sum");
+    tryDeleteFunction("math", "sum");
+    tryDeleteFunction("Test", "objectComparison");
+    tryDeleteFunction("Test", "lowercase");
     if (database != null) database.close();
+  }
+
+  private void tryDeleteFunction(final String library, final String function) {
+    try {
+      database.command("sql", "delete function " + library + "." + function);
+    } catch (final Exception ignored) {
+      // Function might not exist or DELETE FUNCTION might not be supported in older versions
+    }
   }
 
   @Test
