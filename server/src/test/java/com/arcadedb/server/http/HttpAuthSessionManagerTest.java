@@ -70,7 +70,7 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
-  void sessionIdleTimeout() throws Exception {
+  void sessionIdleTimeout() throws InterruptedException {
     manager = new HttpAuthSessionManager(100L); // 100ms idle timeout
     ServerSecurityUser user = createMockUser("testuser");
 
