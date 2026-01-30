@@ -67,4 +67,15 @@ class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
       assertThat(result.hasNext()).isFalse();
     }
   }
+
+  @Test
+  void queryBeerDatabase() {
+    try (Session session = driver.session(SessionConfig.forDatabase("beer"))) {
+      final Result result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1");
+      assertThat(result.hasNext()).isTrue();
+      final org.neo4j.driver.Record record = result.next();
+      assertThat(record.get("name").asString()).isNotBlank();
+      assertThat(result.hasNext()).isFalse();
+    }
+  }
 }
