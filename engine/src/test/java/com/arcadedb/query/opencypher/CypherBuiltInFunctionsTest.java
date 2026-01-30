@@ -24,7 +24,6 @@ import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.function.procedure.ProcedureRegistry;
-import com.arcadedb.query.opencypher.functions.CypherFunction;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
@@ -83,11 +82,11 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   public void testApocPrefixFunctionExecution() {
     // Test that functions accessed via apoc prefix work correctly
-    final CypherFunction fn = CypherFunctionRegistry.get("apoc.text.indexOf");
+    final StatelessFunction fn = CypherFunctionRegistry.get("apoc.text.indexOf");
     assertNotNull(fn);
     assertEquals(0L, fn.execute(new Object[]{"hello", "h"}, null));
 
-    final CypherFunction md5 = CypherFunctionRegistry.get("apoc.util.md5");
+    final StatelessFunction md5 = CypherFunctionRegistry.get("apoc.util.md5");
     assertNotNull(md5);
     assertEquals("5d41402abc4b2a76b9719d911017c592", md5.execute(new Object[]{"hello"}, null));
   }
@@ -158,7 +157,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   public void testCypherFunctionInstancesAreSameInBothRegistries() {
     // Verify same instance is returned from both registries
-    CypherFunction cypherFn = CypherFunctionRegistry.get("text.indexOf");
+    StatelessFunction cypherFn = CypherFunctionRegistry.get("text.indexOf");
     Function unifiedFn = FunctionRegistry.get("text.indexOf");
     assertSame(cypherFn, unifiedFn);
 
@@ -199,7 +198,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testTextIndexOf() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.indexOf");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.indexOf");
     assertEquals(0L, fn.execute(new Object[]{"hello", "h"}, null));
     assertEquals(2L, fn.execute(new Object[]{"hello", "l"}, null));
     assertEquals(-1L, fn.execute(new Object[]{"hello", "x"}, null));
@@ -208,86 +207,86 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testTextJoin() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.join");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.join");
     assertEquals("a,b,c", fn.execute(new Object[]{List.of("a", "b", "c"), ","}, null));
     assertEquals("abc", fn.execute(new Object[]{List.of("a", "b", "c"), ""}, null));
   }
 
   @Test
   public void testTextSplit() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.split");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.split");
     assertEquals(List.of("a", "b", "c"), fn.execute(new Object[]{"a,b,c", ","}, null));
   }
 
   @Test
   public void testTextReplace() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.replace");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.replace");
     assertEquals("hXllo", fn.execute(new Object[]{"hello", "e", "X"}, null));
     assertEquals("helloworld", fn.execute(new Object[]{"hello world", " ", ""}, null));
   }
 
   @Test
   public void testTextRegexReplace() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.regexReplace");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.regexReplace");
     assertEquals("hXllX", fn.execute(new Object[]{"hello", "[aeiou]", "X"}, null));
   }
 
   @Test
   public void testTextCapitalize() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.capitalize");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.capitalize");
     assertEquals("Hello", fn.execute(new Object[]{"hello"}, null));
     assertEquals("Hello world", fn.execute(new Object[]{"hello world"}, null));
   }
 
   @Test
   public void testTextCapitalizeAll() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.capitalizeAll");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.capitalizeAll");
     assertEquals("Hello World", fn.execute(new Object[]{"hello world"}, null));
   }
 
   @Test
   public void testTextCamelCase() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.camelCase");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.camelCase");
     assertEquals("helloWorld", fn.execute(new Object[]{"hello world"}, null));
     assertEquals("helloWorld", fn.execute(new Object[]{"hello_world"}, null));
   }
 
   @Test
   public void testTextSnakeCase() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.snakeCase");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.snakeCase");
     assertEquals("hello_world", fn.execute(new Object[]{"helloWorld"}, null));
     assertEquals("hello_world", fn.execute(new Object[]{"hello world"}, null));
   }
 
   @Test
   public void testTextUpperCamelCase() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.upperCamelCase");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.upperCamelCase");
     assertEquals("HelloWorld", fn.execute(new Object[]{"hello world"}, null));
   }
 
   @Test
   public void testTextLpad() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.lpad");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.lpad");
     assertEquals("00042", fn.execute(new Object[]{"42", 5, "0"}, null));
     assertEquals("42", fn.execute(new Object[]{"42", 2, "0"}, null));
   }
 
   @Test
   public void testTextRpad() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.rpad");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.rpad");
     assertEquals("42000", fn.execute(new Object[]{"42", 5, "0"}, null));
   }
 
   @Test
   public void testTextSlug() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.slug");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.slug");
     assertEquals("hello-world", fn.execute(new Object[]{"Hello World!"}, null));
     assertEquals("hello_world", fn.execute(new Object[]{"Hello World!", "_"}, null));
   }
 
   @Test
   public void testTextLevenshteinDistance() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.levenshteinDistance");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.levenshteinDistance");
     assertEquals(0L, fn.execute(new Object[]{"hello", "hello"}, null));
     assertEquals(1L, fn.execute(new Object[]{"hello", "hallo"}, null));
     assertEquals(3L, fn.execute(new Object[]{"kitten", "sitting"}, null));
@@ -295,7 +294,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testTextLevenshteinSimilarity() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.levenshteinSimilarity");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.levenshteinSimilarity");
     assertEquals(1.0, fn.execute(new Object[]{"hello", "hello"}, null));
     // hello vs hallo has distance 1, max length 5, so similarity = 1 - 1/5 = 0.8
     assertEquals(0.8, (Double) fn.execute(new Object[]{"hello", "hallo"}, null), 0.001);
@@ -303,14 +302,14 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testTextHammingDistance() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.hammingDistance");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.hammingDistance");
     assertEquals(0L, fn.execute(new Object[]{"hello", "hello"}, null));
     assertEquals(1L, fn.execute(new Object[]{"hello", "hallo"}, null));
   }
 
   @Test
   public void testTextCharAt() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.charAt");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.charAt");
     assertEquals("h", fn.execute(new Object[]{"hello", 0}, null));
     assertEquals("o", fn.execute(new Object[]{"hello", 4}, null));
     assertNull(fn.execute(new Object[]{"hello", 10}, null));
@@ -318,7 +317,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testTextCode() {
-    final CypherFunction fn = CypherFunctionRegistry.get("text.code");
+    final StatelessFunction fn = CypherFunctionRegistry.get("text.code");
     assertEquals(65L, fn.execute(new Object[]{"A"}, null));
     assertEquals(97L, fn.execute(new Object[]{"a"}, null));
   }
@@ -327,7 +326,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMapMerge() {
-    final CypherFunction fn = CypherFunctionRegistry.get("map.merge");
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.merge");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{Map.of("a", 1), Map.of("b", 2)}, null);
@@ -337,7 +336,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMapMergeOverride() {
-    final CypherFunction fn = CypherFunctionRegistry.get("map.merge");
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.merge");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{Map.of("a", 1), Map.of("a", 2)}, null);
@@ -346,7 +345,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMapFromLists() {
-    final CypherFunction fn = CypherFunctionRegistry.get("map.fromLists");
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.fromLists");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{List.of("a", "b"), List.of(1, 2)}, null);
@@ -356,7 +355,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMapFromPairs() {
-    final CypherFunction fn = CypherFunctionRegistry.get("map.fromPairs");
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.fromPairs");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{List.of(List.of("a", 1), List.of("b", 2))}, null);
@@ -366,7 +365,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMapSetKey() {
-    final CypherFunction fn = CypherFunctionRegistry.get("map.setKey");
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.setKey");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{Map.of("a", 1), "b", 2}, null);
@@ -376,7 +375,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMapRemoveKey() {
-    final CypherFunction fn = CypherFunctionRegistry.get("map.removeKey");
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.removeKey");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{Map.of("a", 1, "b", 2), "a"}, null);
@@ -386,7 +385,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMapFlatten() {
-    final CypherFunction fn = CypherFunctionRegistry.get("map.flatten");
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.flatten");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{Map.of("a", Map.of("b", 1)), "."}, null);
@@ -395,7 +394,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMapSubmap() {
-    final CypherFunction fn = CypherFunctionRegistry.get("map.submap");
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.submap");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{Map.of("a", 1, "b", 2, "c", 3), List.of("a", "c")}, null);
@@ -409,7 +408,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMathSigmoid() {
-    final CypherFunction fn = CypherFunctionRegistry.get("math.sigmoid");
+    final StatelessFunction fn = CypherFunctionRegistry.get("math.sigmoid");
     assertEquals(0.5, fn.execute(new Object[]{0.0}, null));
     assertTrue((Double) fn.execute(new Object[]{10.0}, null) > 0.99);
     assertTrue((Double) fn.execute(new Object[]{-10.0}, null) < 0.01);
@@ -417,25 +416,25 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testMathTanh() {
-    final CypherFunction fn = CypherFunctionRegistry.get("math.tanh");
+    final StatelessFunction fn = CypherFunctionRegistry.get("math.tanh");
     assertEquals(0.0, (Double) fn.execute(new Object[]{0.0}, null), 0.001);
   }
 
   @Test
   public void testMathMaxLong() {
-    final CypherFunction fn = CypherFunctionRegistry.get("math.maxLong");
+    final StatelessFunction fn = CypherFunctionRegistry.get("math.maxLong");
     assertEquals(Long.MAX_VALUE, fn.execute(new Object[]{}, null));
   }
 
   @Test
   public void testMathMinLong() {
-    final CypherFunction fn = CypherFunctionRegistry.get("math.minLong");
+    final StatelessFunction fn = CypherFunctionRegistry.get("math.minLong");
     assertEquals(Long.MIN_VALUE, fn.execute(new Object[]{}, null));
   }
 
   @Test
   public void testMathMaxDouble() {
-    final CypherFunction fn = CypherFunctionRegistry.get("math.maxDouble");
+    final StatelessFunction fn = CypherFunctionRegistry.get("math.maxDouble");
     assertEquals(Double.MAX_VALUE, fn.execute(new Object[]{}, null));
   }
 
@@ -443,14 +442,14 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testConvertToJson() {
-    final CypherFunction fn = CypherFunctionRegistry.get("convert.toJson");
+    final StatelessFunction fn = CypherFunctionRegistry.get("convert.toJson");
     assertEquals("{\"a\":1}", fn.execute(new Object[]{Map.of("a", 1)}, null));
     assertEquals("[1,2,3]", fn.execute(new Object[]{List.of(1, 2, 3)}, null));
   }
 
   @Test
   public void testConvertFromJsonMap() {
-    final CypherFunction fn = CypherFunctionRegistry.get("convert.fromJsonMap");
+    final StatelessFunction fn = CypherFunctionRegistry.get("convert.fromJsonMap");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{"{\"a\":1}"}, null);
@@ -459,7 +458,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testConvertFromJsonList() {
-    final CypherFunction fn = CypherFunctionRegistry.get("convert.fromJsonList");
+    final StatelessFunction fn = CypherFunctionRegistry.get("convert.fromJsonList");
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) fn.execute(new Object[]{"[1,2,3]"}, null);
     assertEquals(3, result.size());
@@ -468,7 +467,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testConvertToList() {
-    final CypherFunction fn = CypherFunctionRegistry.get("convert.toList");
+    final StatelessFunction fn = CypherFunctionRegistry.get("convert.toList");
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) fn.execute(new Object[]{42}, null);
     assertEquals(1, result.size());
@@ -477,7 +476,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testConvertToSet() {
-    final CypherFunction fn = CypherFunctionRegistry.get("convert.toSet");
+    final StatelessFunction fn = CypherFunctionRegistry.get("convert.toSet");
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) fn.execute(
         new Object[]{List.of(1, 2, 2, 3, 3, 3)}, null);
@@ -486,7 +485,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testConvertToBoolean() {
-    final CypherFunction fn = CypherFunctionRegistry.get("convert.toBoolean");
+    final StatelessFunction fn = CypherFunctionRegistry.get("convert.toBoolean");
     assertEquals(true, fn.execute(new Object[]{"true"}, null));
     assertEquals(false, fn.execute(new Object[]{"false"}, null));
     assertEquals(true, fn.execute(new Object[]{1}, null));
@@ -495,7 +494,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testConvertToInteger() {
-    final CypherFunction fn = CypherFunctionRegistry.get("convert.toInteger");
+    final StatelessFunction fn = CypherFunctionRegistry.get("convert.toInteger");
     assertEquals(42L, fn.execute(new Object[]{"42"}, null));
     assertEquals(42L, fn.execute(new Object[]{42.9}, null));
     assertEquals(1L, fn.execute(new Object[]{true}, null));
@@ -503,7 +502,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testConvertToFloat() {
-    final CypherFunction fn = CypherFunctionRegistry.get("convert.toFloat");
+    final StatelessFunction fn = CypherFunctionRegistry.get("convert.toFloat");
     assertEquals(42.0, fn.execute(new Object[]{"42"}, null));
     assertEquals(42.5, fn.execute(new Object[]{"42.5"}, null));
   }
@@ -526,7 +525,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testDateCurrentTimestamp() {
-    final CypherFunction fn = CypherFunctionRegistry.get("date.currentTimestamp");
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.currentTimestamp");
     final long before = System.currentTimeMillis();
     final long result = (Long) fn.execute(new Object[]{}, null);
     final long after = System.currentTimeMillis();
@@ -535,7 +534,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testDateSystemTimezone() {
-    final CypherFunction fn = CypherFunctionRegistry.get("date.systemTimezone");
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.systemTimezone");
     final String result = (String) fn.execute(new Object[]{}, null);
     assertNotNull(result);
     assertFalse(result.isEmpty());
@@ -543,7 +542,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testDateFormat() {
-    final CypherFunction fn = CypherFunctionRegistry.get("date.format");
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
     // Test with a known timestamp (2024-01-15T10:30:00 UTC = 1705314600000)
     final String result = (String) fn.execute(new Object[]{1705314600000L, "ms", "yyyy-MM-dd"}, null);
     assertNotNull(result);
@@ -552,7 +551,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testDateField() {
-    final CypherFunction fn = CypherFunctionRegistry.get("date.field");
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.field");
     // Test extracting year from a timestamp
     final Long year = (Long) fn.execute(new Object[]{1705314600000L, "year"}, null);
     assertEquals(2024L, year);
@@ -560,7 +559,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testDateConvert() {
-    final CypherFunction fn = CypherFunctionRegistry.get("date.convert");
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.convert");
     // Convert 1000 ms to seconds
     final Long result = (Long) fn.execute(new Object[]{1000L, "ms", "s"}, null);
     assertEquals(1L, result);
@@ -572,7 +571,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testDateAdd() {
-    final CypherFunction fn = CypherFunctionRegistry.get("date.add");
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.add");
     // Add 1 day (86400000 ms) to a timestamp
     final long timestamp = 1705314600000L;
     final Long result = (Long) fn.execute(new Object[]{timestamp, 1L, "d"}, null);
@@ -595,36 +594,36 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testUtilMd5() {
-    final CypherFunction fn = CypherFunctionRegistry.get("util.md5");
+    final StatelessFunction fn = CypherFunctionRegistry.get("util.md5");
     final String result = (String) fn.execute(new Object[]{"hello"}, null);
     assertEquals("5d41402abc4b2a76b9719d911017c592", result);
   }
 
   @Test
   public void testUtilSha1() {
-    final CypherFunction fn = CypherFunctionRegistry.get("util.sha1");
+    final StatelessFunction fn = CypherFunctionRegistry.get("util.sha1");
     final String result = (String) fn.execute(new Object[]{"hello"}, null);
     assertEquals("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d", result);
   }
 
   @Test
   public void testUtilSha256() {
-    final CypherFunction fn = CypherFunctionRegistry.get("util.sha256");
+    final StatelessFunction fn = CypherFunctionRegistry.get("util.sha256");
     final String result = (String) fn.execute(new Object[]{"hello"}, null);
     assertEquals("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", result);
   }
 
   @Test
   public void testUtilSha512() {
-    final CypherFunction fn = CypherFunctionRegistry.get("util.sha512");
+    final StatelessFunction fn = CypherFunctionRegistry.get("util.sha512");
     final String result = (String) fn.execute(new Object[]{"hello"}, null);
     assertEquals("9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043", result);
   }
 
   @Test
   public void testUtilCompressDecompress() {
-    final CypherFunction compress = CypherFunctionRegistry.get("util.compress");
-    final CypherFunction decompress = CypherFunctionRegistry.get("util.decompress");
+    final StatelessFunction compress = CypherFunctionRegistry.get("util.compress");
+    final StatelessFunction decompress = CypherFunctionRegistry.get("util.decompress");
 
     final String original = "Hello, World! This is a test string for compression.";
     final String compressed = (String) compress.execute(new Object[]{original, "gzip"}, null);
@@ -636,14 +635,14 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testUtilValidateSuccess() {
-    final CypherFunction fn = CypherFunctionRegistry.get("util.validate");
+    final StatelessFunction fn = CypherFunctionRegistry.get("util.validate");
     final Boolean result = (Boolean) fn.execute(new Object[]{true, "Should not throw"}, null);
     assertTrue(result);
   }
 
   @Test
   public void testUtilValidateFailure() {
-    final CypherFunction fn = CypherFunctionRegistry.get("util.validate");
+    final StatelessFunction fn = CypherFunctionRegistry.get("util.validate");
     assertThrows(IllegalArgumentException.class, () -> {
       fn.execute(new Object[]{false, "Validation failed!"}, null);
     });
@@ -667,27 +666,27 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testAggFirst() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.first");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.first");
     assertEquals("a", fn.execute(new Object[]{List.of("a", "b", "c")}, null));
     assertEquals("b", fn.execute(new Object[]{Arrays.asList(null, "b", "c")}, null));
   }
 
   @Test
   public void testAggLast() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.last");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.last");
     assertEquals("c", fn.execute(new Object[]{List.of("a", "b", "c")}, null));
   }
 
   @Test
   public void testAggNth() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.nth");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.nth");
     assertEquals("b", fn.execute(new Object[]{List.of("a", "b", "c"), 1}, null));
     assertNull(fn.execute(new Object[]{List.of("a", "b", "c"), 10}, null));
   }
 
   @Test
   public void testAggSlice() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.slice");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.slice");
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) fn.execute(new Object[]{List.of(1, 2, 3, 4, 5), 1, 4}, null);
     assertEquals(List.of(2, 3, 4), result);
@@ -695,7 +694,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testAggMedian() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.median");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.median");
     // Odd number of elements
     assertEquals(3.0, fn.execute(new Object[]{List.of(1, 2, 3, 4, 5)}, null));
     // Even number of elements
@@ -704,7 +703,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testAggPercentiles() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.percentiles");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.percentiles");
     @SuppressWarnings("unchecked")
     final List<Double> result = (List<Double>) fn.execute(
         new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0), List.of(0.5)}, null);
@@ -714,7 +713,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testAggStatistics() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.statistics");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.statistics");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0)}, null);
@@ -728,13 +727,13 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testAggProduct() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.product");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.product");
     assertEquals(120.0, fn.execute(new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0)}, null));
   }
 
   @Test
   public void testAggMinItems() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.minItems");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.minItems");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{List.of(3.0, 1.0, 2.0, 1.0, 4.0), List.of("c", "a", "b", "d", "e")}, null);
@@ -749,7 +748,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testAggMaxItems() {
-    final CypherFunction fn = CypherFunctionRegistry.get("agg.maxItems");
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.maxItems");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{List.of(3.0, 1.0, 5.0, 2.0, 5.0), List.of("a", "b", "c", "d", "e")}, null);
@@ -811,7 +810,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   @SuppressWarnings("unchecked")
   public void testPathCreate() {
-    final CypherFunction fn = CypherFunctionRegistry.get("path.create");
+    final StatelessFunction fn = CypherFunctionRegistry.get("path.create");
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
         new Object[]{"startNode", List.of("rel1", "rel2")}, null);
 
@@ -823,11 +822,11 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   @SuppressWarnings("unchecked")
   public void testPathElements() {
-    final CypherFunction createFn = CypherFunctionRegistry.get("path.create");
+    final StatelessFunction createFn = CypherFunctionRegistry.get("path.create");
     final Map<String, Object> path = (Map<String, Object>) createFn.execute(
         new Object[]{"startNode", List.of("rel1")}, null);
 
-    final CypherFunction fn = CypherFunctionRegistry.get("path.elements");
+    final StatelessFunction fn = CypherFunctionRegistry.get("path.elements");
     final List<Object> elements = (List<Object>) fn.execute(new Object[]{path}, null);
 
     assertNotNull(elements);
@@ -846,7 +845,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testCreateUuid() {
-    final CypherFunction fn = CypherFunctionRegistry.get("create.uuid");
+    final StatelessFunction fn = CypherFunctionRegistry.get("create.uuid");
     final String uuid1 = (String) fn.execute(new Object[]{}, null);
     final String uuid2 = (String) fn.execute(new Object[]{}, null);
 
@@ -859,7 +858,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   public void testCreateUuidBase64() {
-    final CypherFunction fn = CypherFunctionRegistry.get("create.uuidBase64");
+    final StatelessFunction fn = CypherFunctionRegistry.get("create.uuidBase64");
     final String uuid1 = (String) fn.execute(new Object[]{}, null);
     final String uuid2 = (String) fn.execute(new Object[]{}, null);
 
@@ -873,7 +872,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   @SuppressWarnings("unchecked")
   public void testCreateVNode() {
-    final CypherFunction fn = CypherFunctionRegistry.get("create.vNode");
+    final StatelessFunction fn = CypherFunctionRegistry.get("create.vNode");
     final Map<String, Object> vNode = (Map<String, Object>) fn.execute(
         new Object[]{List.of("Person", "Employee"), Map.of("name", "John", "age", 30)}, null);
 
@@ -887,7 +886,7 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   @SuppressWarnings("unchecked")
   public void testCreateVRelationship() {
-    final CypherFunction fn = CypherFunctionRegistry.get("create.vRelationship");
+    final StatelessFunction fn = CypherFunctionRegistry.get("create.vRelationship");
     final Map<String, Object> vRel = (Map<String, Object>) fn.execute(
         new Object[]{"node1", "KNOWS", "node2", Map.of("since", 2020)}, null);
 

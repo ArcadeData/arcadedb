@@ -19,15 +19,15 @@
 package com.arcadedb.query.opencypher.functions.rel;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
-import com.arcadedb.query.opencypher.functions.CypherFunction;
 
 /**
  * Abstract base class for relationship functions.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractRelFunction implements CypherFunction {
+public abstract class AbstractRelFunction implements StatelessFunction {
   @Override
   public String getName() {
     return "rel." + getSimpleName();

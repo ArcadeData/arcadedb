@@ -19,10 +19,10 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
-import com.arcadedb.query.opencypher.executor.CypherFunctionExecutor;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -115,27 +115,27 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       final List<Result> groupRows = groupEntry.getValue();
 
       // Create aggregators for this group
-      final Map<String, CypherFunctionExecutor> aggregators = new HashMap<>();
+      final Map<String, StatelessFunction> aggregators = new HashMap<>();
       for (final AggregationItem aggItem : aggregationItems) {
-        // Pass the DISTINCT flag to create the appropriate function executor
-        final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(
+        // Pass the DISTINCT flag to create the appropriate function instance
+        final StatelessFunction function = functionFactory.getFunctionExecutor(
             aggItem.funcExpr.getFunctionName(), aggItem.funcExpr.isDistinct());
-        aggregators.put(aggItem.outputName, executor);
+        aggregators.put(aggItem.outputName, function);
       }
 
       // Create aggregators for wrapped aggregations (using the inner aggregation function)
-      final Map<String, CypherFunctionExecutor> wrappedAggregators = new HashMap<>();
+      final Map<String, StatelessFunction> wrappedAggregators = new HashMap<>();
       for (final WrappedAggregationItem wrappedItem : wrappedAggregationItems) {
-        final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(
+        final StatelessFunction function = functionFactory.getFunctionExecutor(
             wrappedItem.innerAggregation.getFunctionName(), wrappedItem.innerAggregation.isDistinct());
-        wrappedAggregators.put(wrappedItem.outputName, executor);
+        wrappedAggregators.put(wrappedItem.outputName, function);
       }
 
       // Process all rows in this group
       for (final Result groupRow : groupRows) {
         // Process regular aggregations
         for (final AggregationItem aggItem : aggregationItems) {
-          final CypherFunctionExecutor executor = aggregators.get(aggItem.outputName);
+          final StatelessFunction function = aggregators.get(aggItem.outputName);
 
           // Evaluate function arguments for this row
           final Object[] args = new Object[aggItem.funcExpr.getArguments().size()];
@@ -144,12 +144,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           }
 
           // Feed this row's data to the aggregator
-          executor.execute(args, context);
+          function.execute(args, context);
         }
 
         // Process inner aggregations for wrapped aggregation items
         for (final WrappedAggregationItem wrappedItem : wrappedAggregationItems) {
-          final CypherFunctionExecutor executor = wrappedAggregators.get(wrappedItem.outputName);
+          final StatelessFunction function = wrappedAggregators.get(wrappedItem.outputName);
 
           // Evaluate arguments for the inner aggregation
           final Object[] args = new Object[wrappedItem.innerAggregation.getArguments().size()];
@@ -158,7 +158,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           }
 
           // Feed this row's data to the aggregator
-          executor.execute(args, context);
+          function.execute(args, context);
         }
       }
 
@@ -171,7 +171,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       }
 
       // Add aggregated values
-      for (final Map.Entry<String, CypherFunctionExecutor> entry : aggregators.entrySet()) {
+      for (final Map.Entry<String, StatelessFunction> entry : aggregators.entrySet()) {
         final Object aggregatedValue = entry.getValue().getAggregatedResult();
         groupResult.setProperty(entry.getKey(), aggregatedValue);
       }
@@ -180,9 +180,9 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       for (final WrappedAggregationItem wrappedItem : wrappedAggregationItems) {
         final Object innerAggregatedValue = wrappedAggregators.get(wrappedItem.outputName).getAggregatedResult();
         // Apply the wrapper function to the aggregated result
-        final CypherFunctionExecutor wrapperExecutor = functionFactory.getFunctionExecutor(
+        final StatelessFunction wrapperFunction = functionFactory.getFunctionExecutor(
             wrappedItem.wrapperFunction.getFunctionName());
-        final Object wrappedValue = wrapperExecutor.execute(new Object[]{innerAggregatedValue}, context);
+        final Object wrappedValue = wrapperFunction.execute(new Object[]{innerAggregatedValue}, context);
         groupResult.setProperty(wrappedItem.outputName, wrappedValue);
       }
 

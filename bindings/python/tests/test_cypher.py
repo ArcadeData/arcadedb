@@ -163,7 +163,7 @@ def test_opencypher_case_and_coalesce(temp_db_path):
         try:
             rows = [(record.get("name"), record.get("status")) for record in result]
         except Exception as e:
-            if "CypherFunctionExecutor" in str(e):
+            if "StatelessFunction" in str(e):
                 pytest.skip("OpenCypher CASE/coalesce not supported")
             raise
 

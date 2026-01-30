@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions.agg;
 
-import com.arcadedb.query.opencypher.functions.CypherFunction;
+import com.arcadedb.function.StatelessFunction;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -30,7 +30,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractAggFunction implements CypherFunction {
+public abstract class AbstractAggFunction implements StatelessFunction {
   @Override
   public String getName() {
     return "agg." + getSimpleName();

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions.math;
 
-import com.arcadedb.query.opencypher.functions.CypherFunction;
+import com.arcadedb.function.StatelessFunction;
 
 /**
  * Abstract base class for math functions.
@@ -26,7 +26,7 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractMathFunction implements CypherFunction {
+public abstract class AbstractMathFunction implements StatelessFunction {
   protected static final String NAMESPACE = "math";
 
   /**

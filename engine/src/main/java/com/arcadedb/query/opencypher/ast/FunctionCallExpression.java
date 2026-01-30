@@ -40,9 +40,9 @@ public class FunctionCallExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    // Evaluation will be delegated to CypherFunctionExecutor
+    // Evaluation will be delegated to StatelessFunction
     // This method is overridden during execution phase
-    throw new UnsupportedOperationException("Function evaluation requires CypherFunctionExecutor");
+    throw new UnsupportedOperationException("Function evaluation requires StatelessFunction");
   }
 
   @Override

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions.date;
 
-import com.arcadedb.query.opencypher.functions.CypherFunction;
+import com.arcadedb.function.StatelessFunction;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -33,7 +33,7 @@ import java.util.Date;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractDateFunction implements CypherFunction {
+public abstract class AbstractDateFunction implements StatelessFunction {
   protected static final String NAMESPACE = "date";
 
   // Common time units

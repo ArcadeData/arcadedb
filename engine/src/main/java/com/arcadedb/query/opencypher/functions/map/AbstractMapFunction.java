@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions.map;
 
-import com.arcadedb.query.opencypher.functions.CypherFunction;
+import com.arcadedb.function.StatelessFunction;
 
 import java.util.Map;
 
@@ -28,7 +28,7 @@ import java.util.Map;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractMapFunction implements CypherFunction {
+public abstract class AbstractMapFunction implements StatelessFunction {
   protected static final String NAMESPACE = "map";
 
   /**

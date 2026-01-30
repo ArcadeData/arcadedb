@@ -19,10 +19,10 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
-import com.arcadedb.query.opencypher.executor.CypherFunctionExecutor;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -61,20 +61,20 @@ public class AggregationStep extends AbstractExecutionStep {
     // Pull all results from previous step and aggregate
     final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
 
-    // Map of aggregation function executors (one per aggregation expression)
-    final Map<String, CypherFunctionExecutor> aggregators = new HashMap<>();
+    // Map of aggregation functions (one per aggregation expression)
+    final Map<String, StatelessFunction> aggregators = new HashMap<>();
     final Map<String, Expression> aggregationExpressions = new HashMap<>();
     final List<String> nonAggregationItems = new ArrayList<>();
 
-    // Identify aggregation functions and create executors
+    // Identify aggregation functions and create function instances
     for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
       final Expression expr = item.getExpression();
       if (expr.isAggregation() && expr instanceof FunctionCallExpression) {
         final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
-        // Pass the DISTINCT flag to create the appropriate function executor
-        final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(
+        // Pass the DISTINCT flag to create the appropriate function instance
+        final StatelessFunction function = functionFactory.getFunctionExecutor(
             funcExpr.getFunctionName(), funcExpr.isDistinct());
-        aggregators.put(item.getOutputName(), executor);
+        aggregators.put(item.getOutputName(), function);
         aggregationExpressions.put(item.getOutputName(), expr);
       } else {
         nonAggregationItems.add(item.getOutputName());
@@ -88,7 +88,7 @@ public class AggregationStep extends AbstractExecutionStep {
       for (final Map.Entry<String, Expression> entry : aggregationExpressions.entrySet()) {
         final String outputName = entry.getKey();
         final Expression expr = entry.getValue();
-        final CypherFunctionExecutor executor = aggregators.get(outputName);
+        final StatelessFunction function = aggregators.get(outputName);
 
         // Evaluate the function arguments for this row
         if (expr instanceof FunctionCallExpression) {
@@ -99,7 +99,7 @@ public class AggregationStep extends AbstractExecutionStep {
           }
 
           // Feed this row's data to the aggregator
-          executor.execute(args, context);
+          function.execute(args, context);
         }
       }
     }
@@ -108,10 +108,10 @@ public class AggregationStep extends AbstractExecutionStep {
     final ResultInternal aggregatedResult = new ResultInternal();
 
     // Get aggregated values
-    for (final Map.Entry<String, CypherFunctionExecutor> entry : aggregators.entrySet()) {
+    for (final Map.Entry<String, StatelessFunction> entry : aggregators.entrySet()) {
       final String outputName = entry.getKey();
-      final CypherFunctionExecutor executor = entry.getValue();
-      final Object aggregatedValue = executor.getAggregatedResult();
+      final StatelessFunction function = entry.getValue();
+      final Object aggregatedValue = function.getAggregatedResult();
       aggregatedResult.setProperty(outputName, aggregatedValue);
     }
 

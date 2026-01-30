@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test for GitHub issue #3132 - ID() function in WHERE clause with IN operator.
  *
- * Error: 'java.lang.UnsupportedOperationException', 'Function evaluation requires CypherFunctionExecutor'
+ * Error: 'java.lang.UnsupportedOperationException', 'Function evaluation requires StatelessFunction'
  * Query: MATCH (n:CHUNK) WHERE ID(n) IN $ids RETURN n.text as text, ID(n) as id
  *
  * The problem was that InExpression was calling expression.evaluate() directly on

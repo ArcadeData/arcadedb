@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.functions;
 
 import com.arcadedb.function.FunctionRegistry;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.functions.agg.*;
 import com.arcadedb.query.opencypher.functions.convert.*;
@@ -40,7 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
- * Registry for namespaced Cypher functions.
+ * Registry for namespaced stateless functions.
  * <p>
  * Functions are registered by their fully qualified name (e.g., "text.indexOf", "map.merge").
  * The registry provides thread-safe access to function lookup and registration.
@@ -53,9 +54,9 @@ import java.util.logging.Level;
  * Example usage:
  * <pre>
  * CypherFunctionRegistry.register(new TextIndexOf());
- * CypherFunction fn = CypherFunctionRegistry.get("text.indexOf");
+ * StatelessFunction fn = CypherFunctionRegistry.get("text.indexOf");
  * // APOC compatibility - same function
- * CypherFunction fn2 = CypherFunctionRegistry.get("apoc.text.indexOf");
+ * StatelessFunction fn2 = CypherFunctionRegistry.get("apoc.text.indexOf");
  * </pre>
  * </p>
  *
@@ -63,7 +64,7 @@ import java.util.logging.Level;
  */
 public final class CypherFunctionRegistry {
   private static final String APOC_PREFIX = "apoc.";
-  private static final Map<String, CypherFunction> FUNCTIONS = new ConcurrentHashMap<>();
+  private static final Map<String, StatelessFunction> FUNCTIONS = new ConcurrentHashMap<>();
 
   // Static initialization block to register built-in functions
   static {
@@ -83,9 +84,9 @@ public final class CypherFunctionRegistry {
    * @param function the function to register
    * @throws IllegalArgumentException if a function with the same name is already registered
    */
-  public static void register(final CypherFunction function) {
+  public static void register(final StatelessFunction function) {
     final String name = function.getName().toLowerCase();
-    final CypherFunction existing = FUNCTIONS.putIfAbsent(name, function);
+    final StatelessFunction existing = FUNCTIONS.putIfAbsent(name, function);
     if (existing != null) {
       LogManager.instance().log(CypherFunctionRegistry.class, Level.WARNING,
           "Function already registered, ignoring: " + name);
@@ -103,7 +104,7 @@ public final class CypherFunctionRegistry {
    *
    * @param function the function to register
    */
-  public static void registerOrReplace(final CypherFunction function) {
+  public static void registerOrReplace(final StatelessFunction function) {
     final String name = function.getName().toLowerCase();
     FUNCTIONS.put(name, function);
     // Also register in the unified FunctionRegistry for cross-engine access
@@ -120,7 +121,7 @@ public final class CypherFunctionRegistry {
    * @param name the function name (case-insensitive)
    * @return the function, or null if not found
    */
-  public static CypherFunction get(final String name) {
+  public static StatelessFunction get(final String name) {
     return FUNCTIONS.get(normalizeApocName(name));
   }
 
@@ -166,7 +167,7 @@ public final class CypherFunctionRegistry {
    *
    * @return unmodifiable collection of functions
    */
-  public static Collection<CypherFunction> getAllFunctions() {
+  public static Collection<StatelessFunction> getAllFunctions() {
     return Collections.unmodifiableCollection(FUNCTIONS.values());
   }
 
@@ -188,7 +189,7 @@ public final class CypherFunctionRegistry {
    * @param name the function name to unregister
    * @return the unregistered function, or null if not found
    */
-  public static CypherFunction unregister(final String name) {
+  public static StatelessFunction unregister(final String name) {
     return FUNCTIONS.remove(normalizeApocName(name));
   }
 

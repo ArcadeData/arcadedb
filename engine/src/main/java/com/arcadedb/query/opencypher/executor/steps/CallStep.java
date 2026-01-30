@@ -23,11 +23,11 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
-import com.arcadedb.query.opencypher.functions.CypherFunction;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
@@ -208,7 +208,7 @@ public class CallStep extends AbstractExecutionStep {
         }
 
         // Check the function registry
-        final CypherFunction function = CypherFunctionRegistry.get(procedureName);
+        final StatelessFunction function = CypherFunctionRegistry.get(procedureName);
         if (function != null) {
           return executeFunction(function, args.toArray(), context);
         }
@@ -266,7 +266,7 @@ public class CallStep extends AbstractExecutionStep {
   /**
    * Executes a registered function.
    */
-  private Object executeFunction(final CypherFunction function, final Object[] args,
+  private Object executeFunction(final StatelessFunction function, final Object[] args,
                                   final CommandContext context) {
     try {
       function.validateArgs(args);

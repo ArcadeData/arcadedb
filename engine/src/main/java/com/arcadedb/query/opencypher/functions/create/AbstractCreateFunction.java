@@ -18,14 +18,14 @@
  */
 package com.arcadedb.query.opencypher.functions.create;
 
-import com.arcadedb.query.opencypher.functions.CypherFunction;
+import com.arcadedb.function.StatelessFunction;
 
 /**
  * Abstract base class for create functions.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractCreateFunction implements CypherFunction {
+public abstract class AbstractCreateFunction implements StatelessFunction {
   @Override
   public String getName() {
     return "create." + getSimpleName();
