@@ -19,16 +19,16 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.index.IndexException;
-import com.arcadedb.index.vector.monitor.SimpleFileIndexWriter;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.disk.SimpleMappedReader;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.logging.Level;
 
 /**
  * Utility class for storing and loading JVector Product Quantization (PQ) data.
@@ -104,8 +104,8 @@ public class LSMVectorIndexPQFile {
   public void writePQ(final ProductQuantization pq, final PQVectors vectors) {
     try {
       LogManager.instance().log(this, Level.INFO,
-              "Writing PQ data: %d vectors, %d subspaces, %d clusters",
-              vectors.count(), pq.getSubspaceCount(), pq.getClusterCount());
+          "Writing PQ data: %d vectors, %d subspaces, %d clusters",
+          vectors.count(), pq.getSubspaceCount(), pq.getClusterCount());
 
       // Create parent directories if needed
       final Path parent = pqFilePath.getParent();
@@ -126,8 +126,8 @@ public class LSMVectorIndexPQFile {
       this.pqVectors = vectors;
 
       LogManager.instance().log(this, Level.INFO,
-              "PQ data written successfully: %.2f MB",
-              Files.size(pqFilePath) / (1024.0 * 1024.0));
+          "PQ data written successfully: %.2f MB",
+          Files.size(pqFilePath) / (1024.0 * 1024.0));
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error writing PQ data to %s: %s", pqFilePath, e.getMessage());
@@ -145,13 +145,13 @@ public class LSMVectorIndexPQFile {
     try {
       if (!Files.exists(pqFilePath)) {
         LogManager.instance().log(this, Level.FINE,
-                "PQ file not found, will be created on next graph build: %s", pqFilePath);
+            "PQ file not found, will be created on next graph build: %s", pqFilePath);
         return false;
       }
 
       final long fileSize = Files.size(pqFilePath);
       LogManager.instance().log(this, Level.INFO,
-              "Loading PQ data from disk: %.2f MB", fileSize / (1024.0 * 1024.0));
+          "Loading PQ data from disk: %.2f MB", fileSize / (1024.0 * 1024.0));
 
       final long startTime = System.currentTimeMillis();
 
@@ -166,8 +166,8 @@ public class LSMVectorIndexPQFile {
 
       final long elapsed = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,
-              "PQ data loaded: %d vectors, %d subspaces in %d ms",
-              pqVectors.count(), productQuantization.getSubspaceCount(), elapsed);
+          "PQ data loaded: %d vectors, %d subspaces in %d ms",
+          pqVectors.count(), productQuantization.getSubspaceCount(), elapsed);
 
       return true;
 
