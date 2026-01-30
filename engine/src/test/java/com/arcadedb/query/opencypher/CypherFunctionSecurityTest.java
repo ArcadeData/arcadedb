@@ -54,8 +54,7 @@ class CypherFunctionSecurityTest {
   void utilSleepMaxDuration() {
     final ResultSet rs = database.query("opencypher", "RETURN util.sleep(999999999999) AS result");
     // Test that sleep duration is limited to prevent DoS
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("Sleep duration exceeds maximum allowed")).isTrue();
   }
 
@@ -64,7 +63,7 @@ class CypherFunctionSecurityTest {
     // Test that valid sleep durations work (e.g., 100ms)
     final ResultSet resultSet = database.query("opencypher", "RETURN util.sleep(100) AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isNull();
+    assertThat(resultSet.next().<String>getProperty("result")).isNull();
   }
 
   @Test
@@ -72,7 +71,7 @@ class CypherFunctionSecurityTest {
     // Test that negative durations are handled gracefully
     final ResultSet resultSet = database.query("opencypher", "RETURN util.sleep(-100) AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isNull();
+    assertThat(resultSet.next().<String>getProperty("result")).isNull();
   }
 
   @Test
@@ -80,7 +79,7 @@ class CypherFunctionSecurityTest {
     // Test that zero duration is handled
     final ResultSet resultSet = database.query("opencypher", "RETURN util.sleep(0) AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isNull();
+    assertThat(resultSet.next().<String>getProperty("result")).isNull();
   }
 
   @Test
@@ -97,8 +96,8 @@ class CypherFunctionSecurityTest {
 
     final ResultSet rs = database.query("opencypher", "RETURN util.compress($data) AS result", "data", largeString);
 
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class)
+        .isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("Input size exceeds maximum allowed")).isTrue();
   }
 
@@ -107,7 +106,7 @@ class CypherFunctionSecurityTest {
     // Test that valid compression works
     final ResultSet resultSet = database.query("opencypher", "RETURN util.compress('Hello World') AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isNotNull();
+    assertThat(resultSet.next().<String>getProperty("result")).isNotNull();
   }
 
   @Test
@@ -121,15 +120,14 @@ class CypherFunctionSecurityTest {
     final ResultSet decompressResult = database.query("opencypher",
         "RETURN util.decompress('" + compressed + "') AS result");
     assertThat(decompressResult.hasNext()).isTrue();
-    assertThat(decompressResult.next().getProperty("result")).isEqualTo("test");
+    assertThat(decompressResult.next().<String>getProperty("result")).isEqualTo("test");
   }
 
   @Test
   void textLpadMaxLength() {
     final ResultSet rs = database.query("opencypher", "RETURN text.lpad('x', 999999999, ' ') AS result");
     // Test that lpad has length limits to prevent excessive memory allocation
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("length exceeds maximum allowed") ||
         exception.getMessage().contains("Invalid length")).isTrue();
   }
@@ -138,8 +136,7 @@ class CypherFunctionSecurityTest {
   void textLpadNegativeLength() {
     final ResultSet rs = database.query("opencypher", "RETURN text.lpad('x', -100, ' ') AS result");
     // Test that negative lengths are rejected
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("Invalid length") ||
         exception.getMessage().contains("negative")).isTrue();
   }
@@ -149,15 +146,15 @@ class CypherFunctionSecurityTest {
     // Test that valid padding works
     final ResultSet resultSet = database.query("opencypher", "RETURN text.lpad('x', 5, ' ') AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isEqualTo("    x");
+    assertThat(resultSet.next().<String>getProperty("result")).isEqualTo("    x");
   }
 
   @Test
   void textRpadMaxLength() {
     final ResultSet rs = database.query("opencypher", "RETURN text.rpad('x', 999999999, ' ') AS result");
     // Test that rpad has length limits to prevent excessive memory allocation
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class)
+        .isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("length exceeds maximum allowed") ||
         exception.getMessage().contains("Invalid length")).isTrue();
   }
@@ -166,8 +163,8 @@ class CypherFunctionSecurityTest {
   void textRpadNegativeLength() {
     final ResultSet rs = database.query("opencypher", "RETURN text.rpad('x', -100, ' ') AS result");
     // Test that negative lengths are rejected
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class)
+        .isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("Invalid length") ||
         exception.getMessage().contains("negative")).isTrue();
   }
@@ -177,7 +174,7 @@ class CypherFunctionSecurityTest {
     // Test that valid padding works
     final ResultSet resultSet = database.query("opencypher", "RETURN text.rpad('x', 5, ' ') AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isEqualTo("x    ");
+    assertThat(resultSet.next().<String>getProperty("result")).isEqualTo("x    ");
   }
 
   @Test
@@ -186,10 +183,11 @@ class CypherFunctionSecurityTest {
     // Note: Java's regex engine may not cause stack overflow for short inputs
     // This test verifies that the function handles long backtracking patterns safely
     // by using a pattern that exceeds the max length limit instead
-    final String longPattern = "(a+)+".repeat(200); final ResultSet rs = database.query("opencypher",
-          "RETURN text.regexReplace('test', '" + longPattern + "', 'x') AS result"); // 1000 chars, exceeds 500 limit
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final String longPattern = "(a+)+".repeat(200);
+    final ResultSet rs = database.query("opencypher",
+        "RETURN text.regexReplace('test', '" + longPattern + "', 'x') AS result"); // 1000 chars, exceeds 500 limit
+    final Exception exception = assertThatExceptionOfType(Exception.class)
+        .isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("pattern") ||
         exception.getMessage().contains("regex") ||
         exception.getMessage().contains("exceeds")).as("Expected regex-related error but got: " + exception.getMessage()).isTrue();
@@ -201,9 +199,9 @@ class CypherFunctionSecurityTest {
     // Use literal value to avoid parameter handling issues
     final String longPattern = "a".repeat(600);
     final ResultSet rs = database.query("opencypher",
-          "RETURN text.regexReplace('test', '" + longPattern + "', 'x') AS result");
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+        "RETURN text.regexReplace('test', '" + longPattern + "', 'x') AS result");
+    final Exception exception = assertThatExceptionOfType(Exception.class)
+        .isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("pattern") ||
         exception.getMessage().contains("regex") ||
         exception.getMessage().contains("exceeds")).as("Expected pattern length error but got: " + exception.getMessage()).isTrue();
@@ -215,27 +213,29 @@ class CypherFunctionSecurityTest {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN text.regexReplace('hello world', 'world', 'universe') AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isEqualTo("hello universe");
+    assertThat(resultSet.next().<String>getProperty("result")).isEqualTo("hello universe");
   }
 
   @Test
   void dateAddOverflow() {
     final ResultSet rs = database.query("opencypher", "RETURN date.add(9223372036854775807, 1, 'ms') AS result");
     // Test that integer overflow is caught in date arithmetic
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final Exception exception = assertThatExceptionOfType(Exception.class)
+        .isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("overflow") ||
-        exception.getMessage().contains("ArithmeticException")).as("Expected overflow error but got: " + exception.getMessage()).isTrue();
+        exception.getMessage().contains("ArithmeticException")).as("Expected overflow error but got: " + exception.getMessage())
+        .isTrue();
   }
 
   @Test
   void dateAddMultiplicationOverflow() {
     final ResultSet rs = database.query("opencypher", "RETURN date.add(0, 9223372036854775807, 'h') AS result");
     // Test that multiplication overflow is caught (large value * unit conversion)
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final Exception exception = assertThatExceptionOfType(Exception.class)
+        .isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("overflow") ||
-        exception.getMessage().contains("ArithmeticException")).as("Expected overflow error but got: " + exception.getMessage()).isTrue();
+        exception.getMessage().contains("ArithmeticException")).as("Expected overflow error but got: " + exception.getMessage())
+        .isTrue();
   }
 
   @Test
@@ -251,20 +251,20 @@ class CypherFunctionSecurityTest {
   void textFormatInvalidFormat() {
     final ResultSet rs = database.query("opencypher", "RETURN text.format('%s %s', 'only one arg') AS result");
     // Test that invalid format strings are handled gracefully
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("format") ||
-        exception.getMessage().contains("MissingFormatArgumentException")).as("Expected format error but got: " + exception.getMessage()).isTrue();
+        exception.getMessage().contains("MissingFormatArgumentException")).as(
+        "Expected format error but got: " + exception.getMessage()).isTrue();
   }
 
   @Test
   void textFormatIllegalFormatConversion() {
     final ResultSet rs = database.query("opencypher", "RETURN text.format('%d', 'not a number') AS result");
     // Test that illegal format conversions are caught
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("format") ||
-        exception.getMessage().contains("IllegalFormatConversionException")).as("Expected format conversion error but got: " + exception.getMessage()).isTrue();
+        exception.getMessage().contains("IllegalFormatConversionException")).as(
+        "Expected format conversion error but got: " + exception.getMessage()).isTrue();
   }
 
   @Test
@@ -273,7 +273,7 @@ class CypherFunctionSecurityTest {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN text.format('Hello %s, you are %d years old', 'Alice', 30) AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isEqualTo("Hello Alice, you are 30 years old");
+    assertThat(resultSet.next().<String>getProperty("result")).isEqualTo("Hello Alice, you are 30 years old");
   }
 
   @Test
@@ -282,18 +282,14 @@ class CypherFunctionSecurityTest {
     // Test that excessively long strings are rejected for Levenshtein distance (MAX_STRING_LENGTH = 10000)
     // Note: This test is disabled because passing large string parameters through Cypher
     // query parameters has issues. The security check exists in TextLevenshteinDistance.java.
-    final StringBuilder sb = new StringBuilder();
-    for (int i = 0; i < 10100; i++) {
-      sb.append('a');
-    }
-    final String longString = sb.toString();
+    final String longString = "a".repeat(10100);
     final ResultSet rs = database.query("opencypher", "RETURN text.levenshteinDistance($str1, $str2) AS result",
-          "str1", longString,
-          "str2", "test");
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+        "str1", longString,
+        "str2", "test");
+    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("exceeds maximum allowed") ||
-        exception.getMessage().contains("String length")).as("Expected string length error but got: " + exception.getMessage()).isTrue();
+        exception.getMessage().contains("String length")).as("Expected string length error but got: " + exception.getMessage())
+        .isTrue();
   }
 
   @Test
@@ -308,10 +304,9 @@ class CypherFunctionSecurityTest {
   @Test
   void dateFieldsInvalidTimezone() {
     final ResultSet rs = database.query("opencypher",
-          "RETURN date.fields('2024-01-15', 'yyyy-MM-dd', 'InvalidTimezone') AS result");
+        "RETURN date.fields('2024-01-15', 'yyyy-MM-dd', 'InvalidTimezone') AS result");
     // Test that invalid timezone IDs are rejected
-    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(() ->
-        rs.hasNext()).actual();
+    final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("timezone") ||
         exception.getMessage().contains("Invalid")).as("Expected timezone error but got: " + exception.getMessage()).isTrue();
   }
@@ -334,7 +329,7 @@ class CypherFunctionSecurityTest {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN text.regexReplace(null, 'pattern', 'replace') AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isNull();
+    assertThat(resultSet.next().<String>getProperty("result")).isNull();
   }
 
   @Test
@@ -343,6 +338,6 @@ class CypherFunctionSecurityTest {
     final ResultSet resultSet = database.query("opencypher",
         "RETURN date.add(null, 100, 'ms') AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().getProperty("result")).isNull();
+    assertThat(resultSet.next().<String>getProperty("result")).isNull();
   }
 }

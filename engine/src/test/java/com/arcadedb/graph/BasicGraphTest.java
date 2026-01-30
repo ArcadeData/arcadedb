@@ -563,11 +563,15 @@ public class BasicGraphTest extends BaseGraphTest {
     v1a.newEdge(EDGE2_TYPE_NAME, v2);
     database.rollback();
 
-    assertThatThrownBy(() -> {
+    try {
       v2 = database.newVertex(VERTEX1_TYPE_NAME);
       v2.set("rid", v1RID.get());
       v2.save();
-    }).isInstanceOf(RuntimeException.class);
+      Assertions.fail();
+
+    } catch (final RuntimeException e) {
+      // EXPECTED
+    }
 
     assertThat(v1a.isConnectedTo(v2)).isFalse();
   }

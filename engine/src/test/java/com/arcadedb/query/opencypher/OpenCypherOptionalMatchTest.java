@@ -77,8 +77,8 @@ class OpenCypherOptionalMatchTest {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    assertThat(row.getProperty("person")).isEqualTo("Alice");
-    assertThat(row.getProperty("knows")).isEqualTo("Bob");
+    assertThat(row.<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(row.<String>getProperty("knows")).isEqualTo("Bob");
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
@@ -98,7 +98,7 @@ class OpenCypherOptionalMatchTest {
     result.close();
 
     assertThat(allResults.size()).as("Expected exactly 1 result").isEqualTo(1);
-    assertThat(allResults.get(0).getProperty("person")).isEqualTo("Charlie");
+    assertThat(allResults.getFirst().<String>getProperty("person")).isEqualTo("Charlie");
   }
 
   @Test
@@ -119,9 +119,9 @@ class OpenCypherOptionalMatchTest {
     result.close();
 
     assertThat(allResults.size()).as("Expected exactly 1 result").isEqualTo(1);
-    final Result row = allResults.get(0);
-    assertThat(row.getProperty("person")).isEqualTo("Charlie");
-    assertThat(row.getProperty("knows")).as("Expected NULL for knows when no relationship exists").isNull();
+    final Result row = allResults.getFirst();
+    assertThat(row.<String>getProperty("person")).isEqualTo("Charlie");
+    assertThat(row.<String>getProperty("knows")).as("Expected NULL for knows when no relationship exists").isNull();
   }
 
   @Test
@@ -134,7 +134,7 @@ class OpenCypherOptionalMatchTest {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    assertThat(row.getProperty("name")).as("Expected NULL when OPTIONAL MATCH finds nothing").isNull();
+    assertThat(row.<String>getProperty("name")).as("Expected NULL when OPTIONAL MATCH finds nothing").isNull();
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
@@ -160,16 +160,17 @@ class OpenCypherOptionalMatchTest {
     assertThat(results.size()).as("Expected 3 results (one per person)").isEqualTo(3);
 
     // Alice -> Bob
-    assertThat(results.get(0).getProperty("person")).isEqualTo("Alice");
-    assertThat(results.get(0).getProperty("knows")).isEqualTo("Bob");
+
+    assertThat(results.get(0).<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(results.get(0).<String>getProperty("knows")).isEqualTo("Bob");
 
     // Bob -> NULL
-    assertThat(results.get(1).getProperty("person")).isEqualTo("Bob");
-    assertThat(results.get(1).getProperty("knows")).isNull();
+    assertThat(results.get(1).<String>getProperty("person")).isEqualTo("Bob");
+    assertThat(results.get(1).<String>getProperty("knows")).isNull();
 
     // Charlie -> NULL
-    assertThat(results.get(2).getProperty("person")).isEqualTo("Charlie");
-    assertThat(results.get(2).getProperty("knows")).isNull();
+    assertThat(results.get(2).<String>getProperty("person")).isEqualTo("Charlie");
+    assertThat(results.get(2).<String>getProperty("knows")).isNull();
   }
 
   @Test
@@ -180,11 +181,12 @@ class OpenCypherOptionalMatchTest {
     // Query: MATCH all people, try to find their KNOWS relationships with WHERE filter
     // WHERE filters within OPTIONAL MATCH, so people without matches still appear
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person) " +
-            "OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) " +
-            "WHERE b.age > 20 " +
-            "RETURN a.name AS person, b.name AS knows " +
-            "ORDER BY a.name");
+        """
+            MATCH (a:Person)
+            OPTIONAL MATCH (a)-[:KNOWS]->(b:Person)
+            WHERE b.age > 20
+            RETURN a.name AS person, b.name AS knows
+            ORDER BY a.name""");
 
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
@@ -197,15 +199,15 @@ class OpenCypherOptionalMatchTest {
     assertThat(results.size()).as("All people should be returned").isEqualTo(3);
 
     // Alice -> Bob (matched and passed filter: age 25 > 20)
-    assertThat(results.get(0).getProperty("person")).isEqualTo("Alice");
-    assertThat(results.get(0).getProperty("knows")).isEqualTo("Bob");
+    assertThat(results.get(0).<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(results.get(0).<String>getProperty("knows")).isEqualTo("Bob");
 
     // Bob -> NULL (no outgoing relationships)
-    assertThat(results.get(1).getProperty("person")).isEqualTo("Bob");
-    assertThat(results.get(1).getProperty("knows")).isNull();
+    assertThat(results.get(1).<String>getProperty("person")).isEqualTo("Bob");
+    assertThat(results.get(1).<String>getProperty("knows")).isNull();
 
     // Charlie -> NULL (no outgoing relationships)
-    assertThat(results.get(2).getProperty("person")).isEqualTo("Charlie");
-    assertThat(results.get(2).getProperty("knows")).isNull();
+    assertThat(results.get(2).<String>getProperty("person")).isEqualTo("Charlie");
+    assertThat(results.get(2).<String>getProperty("knows")).isNull();
   }
 }

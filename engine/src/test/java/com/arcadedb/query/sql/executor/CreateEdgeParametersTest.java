@@ -20,8 +20,8 @@ class CreateEdgeParametersTest extends TestHelper {
 //      System.out.println("v1: " + v1);
 //      System.out.println("v2: " + v2);
 
-      final var result = database.command("sql", "create edge E from ? to ?", v1, v2);
-      assertThat(result).isNotNull();
+      final ResultSet result = database.command("sql", "create edge E from ? to ?", v1, v2);
+//      assertThat(result).isNotNull();
       assertThat(result.hasNext()).isTrue();
 //      System.out.println("Edge created successfully!");
     });

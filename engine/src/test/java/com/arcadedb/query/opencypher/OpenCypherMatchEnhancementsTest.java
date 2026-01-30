@@ -34,7 +34,6 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-
 ;
 
 /**
@@ -93,8 +92,8 @@ public class OpenCypherMatchEnhancementsTest {
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    assertThat(row.getProperty("person1")).isEqualTo("Alice");
-    assertThat(row.getProperty("person2")).isEqualTo("Bob");
+    assertThat(row.<String>getProperty("person1")).isEqualTo("Alice");
+    assertThat(row.<String>getProperty("person2")).isEqualTo("Bob");
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
@@ -103,10 +102,11 @@ public class OpenCypherMatchEnhancementsTest {
   void multipleMatchClausesCartesianProduct() {
     // MATCH all people twice - should get Cartesian product (2x2 = 4 results)
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person) " +
-            "MATCH (b:Person) " +
-            "RETURN a.name AS person1, b.name AS person2 " +
-            "ORDER BY person1, person2");
+        """
+            MATCH (a:Person)
+            MATCH (b:Person)
+            RETURN a.name AS person, b.name AS person2
+            ORDER BY person1, person2""");
 
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
@@ -117,17 +117,17 @@ public class OpenCypherMatchEnhancementsTest {
     assertThat(results.size()).as("Expected Cartesian product of 2 people").isEqualTo(4);
 
     // Alice-Alice, Alice-Bob, Bob-Alice, Bob-Bob
-    assertThat(results.get(0).getProperty("person1")).isEqualTo("Alice");
-    assertThat(results.get(0).getProperty("person2")).isEqualTo("Alice");
+    assertThat(results.get(0).<String>getProperty("person1")).isEqualTo("Alice");
+    assertThat(results.get(0).<String>getProperty("person2")).isEqualTo("Alice");
 
-    assertThat(results.get(1).getProperty("person1")).isEqualTo("Alice");
-    assertThat(results.get(1).getProperty("person2")).isEqualTo("Bob");
+    assertThat(results.get(1).<String>getProperty("person1")).isEqualTo("Alice");
+    assertThat(results.get(1).<String>getProperty("person2")).isEqualTo("Bob");
 
-    assertThat(results.get(2).getProperty("person1")).isEqualTo("Bob");
-    assertThat(results.get(2).getProperty("person2")).isEqualTo("Alice");
+    assertThat(results.get(2).<String>getProperty("person1")).isEqualTo("Bob");
+    assertThat(results.get(2).<String>getProperty("person2")).isEqualTo("Alice");
 
-    assertThat(results.get(3).getProperty("person1")).isEqualTo("Bob");
-    assertThat(results.get(3).getProperty("person2")).isEqualTo("Bob");
+    assertThat(results.get(3).<String>getProperty("person1")).isEqualTo("Bob");
+    assertThat(results.get(3).<String>getProperty("person2")).isEqualTo("Bob");
   }
 
   @Test
@@ -138,7 +138,7 @@ public class OpenCypherMatchEnhancementsTest {
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext()) {
-      names.add((String) result.next().getProperty("name"));
+      names.add(result.next().getProperty("name"));
     }
     result.close();
 
@@ -156,7 +156,7 @@ public class OpenCypherMatchEnhancementsTest {
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext()) {
-      names.add((String) result.next().getProperty("name"));
+      names.add(result.next().getProperty("name"));
     }
     result.close();
 
@@ -170,13 +170,14 @@ public class OpenCypherMatchEnhancementsTest {
   void namedPathSingleEdge() {
     // Named path: p = (a)-[r]->(b)
     final ResultSet result = database.query("opencypher",
-        "MATCH p = (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) " +
-            "RETURN a.name AS person, b.name AS friend, p AS path");
+        """
+            MATCH p = (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person)
+            RETURN a.name AS person, b.name AS friend, p AS path""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    assertThat(row.getProperty("person")).isEqualTo("Alice");
-    assertThat(row.getProperty("friend")).isEqualTo("Bob");
+    assertThat(row.<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(row.<String>getProperty("friend")).isEqualTo("Bob");
 
     // Check that path object is returned
     final Object pathObj = row.getProperty("path");
@@ -207,7 +208,7 @@ public class OpenCypherMatchEnhancementsTest {
     final List<TraversalPath> paths = new ArrayList<>();
     while (result.hasNext()) {
       final Result row = result.next();
-      paths.add((TraversalPath) row.getProperty("path"));
+      paths.add(row.getProperty("path"));
     }
     result.close();
 
@@ -241,9 +242,9 @@ public class OpenCypherMatchEnhancementsTest {
     int pathCount = 0;
     while (result.hasNext()) {
       final Result row = result.next();
-      assertThat(row.getProperty("startName")).isEqualTo("Alice");
+      assertThat(row.<String>getProperty("startName")).isEqualTo("Alice");
 
-      final TraversalPath path = (TraversalPath) row.getProperty("path");
+      final TraversalPath path = row.getProperty("path");
       assertThat(path).isNotNull();
       assertThat(path.length()).isEqualTo(1);
       pathCount++;

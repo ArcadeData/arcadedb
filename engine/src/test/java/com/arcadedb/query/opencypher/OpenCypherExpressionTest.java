@@ -31,9 +31,6 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-
-;
-
 /**
  * Tests for Cypher expression features:
  * - Arithmetic expressions (n.age * 2)
@@ -92,7 +89,7 @@ public class OpenCypherExpressionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.getProperty("doubleAge")).isEqualTo(Long.valueOf(60L));
+    assertThat(result.<Long>getProperty("doubleAge")).isEqualTo(Long.valueOf(60L));
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -103,7 +100,7 @@ public class OpenCypherExpressionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.getProperty("agePlus10")).isEqualTo(Long.valueOf(40L));
+    assertThat(result.<Long>getProperty("agePlus10")).isEqualTo(Long.valueOf(40L));
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -114,7 +111,7 @@ public class OpenCypherExpressionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.getProperty("ageMinus5")).isEqualTo(Long.valueOf(25L));
+    assertThat(result.<Long>getProperty("ageMinus5")).isEqualTo(Long.valueOf(25L));
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -125,7 +122,7 @@ public class OpenCypherExpressionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.getProperty("halfAge")).isEqualTo(15.0);
+    assertThat(result.<Float>getProperty("halfAge")).isEqualTo(15.0);
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -136,7 +133,7 @@ public class OpenCypherExpressionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.getProperty("modulo")).isEqualTo(Long.valueOf(2L));
+    assertThat(result.<Long>getProperty("modulo")).isEqualTo(Long.valueOf(2L));
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -148,7 +145,7 @@ public class OpenCypherExpressionTest {
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     // 30 * 2 + 10 = 70
-    assertThat(result.getProperty("result")).isEqualTo(Long.valueOf(70L));
+    assertThat(result.<Long>getProperty("result")).isEqualTo(70L);
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -159,7 +156,7 @@ public class OpenCypherExpressionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.getProperty("result")).isEqualTo(Long.valueOf(53L));
+    assertThat(result.<Long>getProperty("result")).isEqualTo(53L);
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -226,7 +223,8 @@ public class OpenCypherExpressionTest {
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
     final Object listObj = result.getProperty("doubled");
-    assertThat(listObj).as("Expected List but got: " + (listObj == null ? "null" : listObj.getClass().getName())).isInstanceOf(List.class);
+    assertThat(listObj).as("Expected List but got: " + (listObj == null ? "null" : listObj.getClass().getName()))
+        .isInstanceOf(List.class);
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
     assertThat(list.size()).isEqualTo(3);

@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Regression test for issue #774: When a bucket is added to a type AFTER indexes have been created,
  * the new bucket should be automatically indexed.
- *
+ * <p>
  * This issue was fixed in commit 0c80759ec1 (2023-11-14) as part of the remote schema API implementation.
  * The fix ensures that when addBucket() is called, all existing type indexes are automatically
  * created for the new bucket, and when removeBucket() is called, indexes on that bucket are dropped.
@@ -67,12 +67,12 @@ class Issue774AddBucketWithIndexTest extends TestHelper {
         int count = 0;
         while (resultSet.hasNext()) {
           final Result result = resultSet.next();
-          assertThat(result.getProperty("p1")).isEqualTo("PENDING");
-          assertThat(result.getProperty("p2")).isEqualTo("PENDING");
+          assertThat(result.<String>getProperty("p1")).isEqualTo("PENDING");
+          assertThat(result.<String>getProperty("p2")).isEqualTo("PENDING");
           count++;
         }
         // Verify that the query returns both records (one from the new bucket, one from the default bucket)
-        assertThat((int) count).as("Query with indexed property should return both records").isEqualTo(2);
+        assertThat(count).as("Query with indexed property should return both records").isEqualTo(2);
       }
     });
 
@@ -82,12 +82,12 @@ class Issue774AddBucketWithIndexTest extends TestHelper {
         int count = 0;
         while (resultSet.hasNext()) {
           final Result result = resultSet.next();
-          assertThat(result.getProperty("p1")).isEqualTo("PENDING");
-          assertThat(result.getProperty("p2")).isEqualTo("PENDING");
+          assertThat(result.<String>getProperty("p1")).isEqualTo("PENDING");
+          assertThat(result.<String>getProperty("p2")).isEqualTo("PENDING");
           count++;
         }
         // Verify that the query from the specific bucket returns 1 record
-        assertThat((int) count).as("Query from bucket with indexed property should return 1 record").isEqualTo(1);
+        assertThat(count).as("Query from bucket with indexed property should return 1 record").isEqualTo(1);
       }
     });
 
@@ -97,12 +97,12 @@ class Issue774AddBucketWithIndexTest extends TestHelper {
         int count = 0;
         while (resultSet.hasNext()) {
           final Result result = resultSet.next();
-          assertThat(result.getProperty("p1")).isEqualTo("PENDING");
-          assertThat(result.getProperty("p2")).isEqualTo("PENDING");
+          assertThat(result.<String>getProperty("p1")).isEqualTo("PENDING");
+          assertThat(result.<String>getProperty("p2")).isEqualTo("PENDING");
           count++;
         }
         // Verify that queries with non-indexed properties also return both records
-        assertThat((int) count).as("Query with non-indexed property should return both records").isEqualTo(2);
+        assertThat(count).as("Query with non-indexed property should return both records").isEqualTo(2);
       }
     });
   }

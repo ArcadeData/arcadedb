@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class TriggerSQLTest extends TestHelper {
 
   @BeforeEach
-  void beginTest() {
+  public void beginTest() {
     database.transaction(() -> {
       // Clean up any leftover triggers from previous tests
       for (Trigger trigger : database.getSchema().getTriggers()) {

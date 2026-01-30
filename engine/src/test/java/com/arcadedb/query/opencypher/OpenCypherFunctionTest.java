@@ -32,9 +32,6 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
-
-;
-
 /**
  * Tests for Cypher function support.
  */
@@ -96,8 +93,8 @@ public class OpenCypherFunctionTest {
     int count = 0;
     while (resultSet.hasNext()) {
       final Result result = resultSet.next();
-      assertThat(result.getProperty("personId")).isNotNull();
-      assertThat(result.getProperty("personId").toString().contains("#")).isTrue();
+      assertThat(result.<String>getProperty("personId")).isNotNull();
+      assertThat(result.<String>getProperty("personId").contains("#")).isTrue();
       count++;
     }
 
@@ -126,7 +123,7 @@ public class OpenCypherFunctionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    final String relType = (String) result.getProperty("relType");
+    final String relType = result.getProperty("relType");
 
     assertThat(relType).isNotNull();
     assertThat(relType.equals("KNOWS") || relType.equals("WORKS_AT")).isTrue();

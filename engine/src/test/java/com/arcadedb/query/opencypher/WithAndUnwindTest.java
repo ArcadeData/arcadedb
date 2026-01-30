@@ -22,7 +22,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import java.io.File;
 
@@ -33,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class WithAndUnwindTest {
-  private static Database database;
-  private static final String DB_PATH = "./target/test-databases/with-unwind-test";
+  private static       Database database;
+  private static final String   DB_PATH = "./target/test-databases/with-unwind-test";
 
   @BeforeAll
   static void setup() {
@@ -104,8 +109,8 @@ class WithAndUnwindTest {
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      assertThat(row.getProperty("name")).isEqualTo("Alice");
-      assertThat(row.getProperty("x")).isNotNull();
+      assertThat(row.<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(row.<String>getProperty("x")).isNotNull();
       count++;
     }
     result.close();
@@ -133,8 +138,8 @@ class WithAndUnwindTest {
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      assertThat(row.getProperty("name")).isNotNull();
-      assertThat(row.getProperty("age")).isNotNull();
+      assertThat(row.<String>getProperty("name")).isNotNull();
+      assertThat(row.<String>getProperty("age")).isNotNull();
       count++;
     }
     result.close();
@@ -151,7 +156,7 @@ class WithAndUnwindTest {
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      final String name = (String) row.getProperty("name");
+      final String name = row.getProperty("name");
       assertThat(name.equals("Alice") || name.equals("Charlie")).as("Should only return Alice or Charlie").isTrue();
       count++;
     }
@@ -171,7 +176,7 @@ class WithAndUnwindTest {
     int prevAge = -1;
     while (result.hasNext()) {
       final var row = result.next();
-      final int age = (Integer) row.getProperty("age");
+      final int age = row.<Integer>getProperty("age");
       assertThat(age > prevAge).as("Ages should be distinct and sorted").isTrue();
       prevAge = age;
       count++;
@@ -236,14 +241,14 @@ class WithAndUnwindTest {
     // For now, test simpler case: WITH + RETURN only
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age < 30 " +
-        "WITH p.name AS name, p.age AS age " +
-        "RETURN name, age ORDER BY name");
+            "WITH p.name AS name, p.age AS age " +
+            "RETURN name, age ORDER BY name");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      assertThat(row.getProperty("name")).as("name should not be null").isNotNull();
-      assertThat(row.getProperty("age")).as("age should not be null").isNotNull();
+      assertThat(row.<String>getProperty("name")).as("name should not be null").isNotNull();
+      assertThat(row.<String>getProperty("age")).as("age should not be null").isNotNull();
       count++;
     }
     result.close();
@@ -256,15 +261,16 @@ class WithAndUnwindTest {
   void multipleWithClauses() {
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) " +
-        "WITH p.name AS name, p.age AS age WHERE age > 25 " +
-        "WITH name, age WHERE age < 35 " +
-        "RETURN name ORDER BY name");
+            "WITH p.name AS name, p.age AS age WHERE age > 25 " +
+            "WITH name, age WHERE age < 35 " +
+            "RETURN name ORDER BY name");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      final String name = (String) row.getProperty("name");
-      assertThat(name.equals("Alice") || name.equals("Diana")).as("Should return Alice (30) and Diana (28), ages between 25 and 35").isTrue();
+      final String name = row.getProperty("name");
+      assertThat(name.equals("Alice") || name.equals("Diana")).as("Should return Alice (30) and Diana (28), ages between 25 and 35")
+          .isTrue();
       count++;
     }
     result.close();
@@ -278,16 +284,17 @@ class WithAndUnwindTest {
     // Chaining MATCH after WITH is not yet fully implemented
     // For now, test a simpler pattern: MATCH -> WITH -> RETURN
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person)-[:KNOWS]->(b:Person) " +
-        "WHERE a.name = 'Alice' " +
-        "WITH a.name AS aname, b.name AS bname " +
-        "RETURN aname, bname ORDER BY bname");
+        """
+            MATCH (a:Person)-[:KNOWS]->(b:Person)
+            WHERE a.name = 'Alice'
+            WITH a.name AS aname, b.name AS bname
+            RETURN aname, bname ORDER BY bname""");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      assertThat(row.getProperty("aname")).isEqualTo("Alice");
-      final String bname = (String) row.getProperty("bname");
+      assertThat(row.<String>getProperty("aname")).isEqualTo("Alice");
+      final String bname = row.getProperty("bname");
       assertThat(bname.equals("Bob") || bname.equals("Charlie")).as("Should return people Alice knows").isTrue();
       count++;
     }

@@ -125,7 +125,7 @@ class CypherLabelFilteringTest {
       assertThat(rs.hasNext()).isTrue();
       Result result = rs.next();
 
-      assertThat(result.getProperty("chunkName")).isEqualTo("chunk1");
+      assertThat(result.<String>getProperty("chunkName")).isEqualTo("chunk1");
       List<?> targets = (List<?>) result.getProperty("targets");
       // Should only get NER vertices (3), not DOCUMENT vertices
       assertThat(targets.size()).as("Expected 3 NER targets, got " + targets.size()).isEqualTo(3);
@@ -158,8 +158,8 @@ class CypherLabelFilteringTest {
       assertThat(rs.hasNext()).isTrue();
       Result result = rs.next();
 
-      assertThat(result.getProperty("chunkName")).isEqualTo("chunk1");
-      assertThat(result.getProperty("docName")).isEqualTo("doc1");
+      assertThat(result.<String>getProperty("chunkName")).isEqualTo("chunk1");
+      assertThat(result.<String>getProperty("docName")).isEqualTo("doc1");
 
       // Should be exactly 1 result, not a Cartesian product
       assertThat(rs.hasNext()).isFalse();
