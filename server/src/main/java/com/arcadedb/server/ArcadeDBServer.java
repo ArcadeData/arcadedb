@@ -29,6 +29,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinary;
 import com.arcadedb.query.QueryEngineManager;
@@ -746,6 +747,8 @@ public class ArcadeDBServer {
     eventLog = new FileServerEventLog(this);
 
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      // Mark logger as shutting down to prevent NPE when handlers are closed (issue #2813)
+      DefaultLogger.setShuttingDown(true);
       try {
         LogManager.instance().log(this, Level.SEVERE, "Received shutdown signal. The server will be halted");
       } catch (Throwable t) {

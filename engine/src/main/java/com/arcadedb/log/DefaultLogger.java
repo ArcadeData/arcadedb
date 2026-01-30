@@ -40,6 +40,39 @@ public class DefaultLogger implements Logger {
 
   private volatile boolean initialized = false;
 
+  /**
+   * Flag to indicate the JVM is shutting down. When true, log messages are written
+   * directly to System.err to avoid race conditions with the Java logging framework's
+   * shutdown hook that may close handlers before we're done logging.
+   * <p>
+   * See issue #2813: Irregular Null Pointer Exception on shutdown
+   */
+  private static volatile boolean shuttingDown = false;
+
+  static {
+    // Register a shutdown hook with highest priority to detect shutdown early.
+    // This allows us to bypass the Java logging framework during shutdown and
+    // avoid NPE when handlers are closed before our shutdown hooks complete.
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> shuttingDown = true, "ArcadeDB-LoggerShutdownDetector"));
+  }
+
+  /**
+   * Marks the logger as shutting down. This causes all log messages to be written
+   * directly to System.err, bypassing the Java logging framework.
+   * <p>
+   * This is primarily used for testing and for explicit shutdown sequences.
+   */
+  public static void setShuttingDown(final boolean value) {
+    shuttingDown = value;
+  }
+
+  /**
+   * Returns true if the logger is in shutdown mode.
+   */
+  public static boolean isShuttingDown() {
+    return shuttingDown;
+  }
+
   private final ConcurrentMap<String, java.util.logging.Logger> loggersCache =
       new ConcurrentHashMap<>();
 
@@ -138,6 +171,19 @@ public class DefaultLogger implements Logger {
     if (message == null)
       return;
 
+    final boolean hasParams =
+        arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null || arg8 != null
+            || arg9 != null || arg10 != null || arg11 != null || arg12 != null || arg13 != null || arg14 != null || arg15 != null
+            || arg16 != null || arg17 != null;
+
+    // During JVM shutdown, bypass the logging framework and use System.err directly
+    // to avoid NPE when handlers are closed (issue #2813)
+    if (shuttingDown) {
+      logToSystemErr(message, exception, context, hasParams, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+      return;
+    }
+
     init();
 
     final String requesterName;
@@ -161,11 +207,6 @@ public class DefaultLogger implements Logger {
           log = oldLogger;
       }
     }
-
-    final boolean hasParams =
-        arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null || arg8 != null
-            || arg9 != null || arg10 != null || arg11 != null || arg12 != null || arg13 != null || arg14 != null || arg15 != null
-            || arg16 != null || arg17 != null;
 
     if (log == null) {
       if (context != null)
@@ -214,10 +255,39 @@ public class DefaultLogger implements Logger {
     }
   }
 
+  /**
+   * Helper method to log directly to System.err during shutdown.
+   */
+  private void logToSystemErr(String message, final Throwable exception, final String context,
+                              final boolean hasParams, final Object... args) {
+    try {
+      if (context != null)
+        message = "<" + context + "> " + message;
+
+      String msg = message;
+      if (hasParams && args.length > 0)
+        msg = message.formatted(args);
+
+      System.err.println(msg);
+      if (exception != null)
+        exception.printStackTrace(System.err);
+      System.err.flush();
+    } catch (final Exception e) {
+      // Silently ignore errors during shutdown logging
+    }
+  }
+
   public void log(final Object requester, final Level level, String message, final Throwable exception,
                   final String context, final Object... args) {
     if (message == null)
       return;
+
+    // During JVM shutdown, bypass the logging framework and use System.err directly
+    // to avoid NPE when handlers are closed (issue #2813)
+    if (shuttingDown) {
+      logToSystemErr(message, exception, context, args.length > 0, args);
+      return;
+    }
 
     init();
 
