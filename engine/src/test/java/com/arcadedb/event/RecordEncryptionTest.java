@@ -58,6 +58,7 @@ public class RecordEncryptionTest extends TestHelper
   private final static String          ALGORITHM          = "AES/CBC/PKCS5Padding";
   private static final int             SALT_ITERATIONS    = 65536;
   private static final int             KEY_LENGTH         = 256;
+  private static final SecureRandom    SECURE_RANDOM      = new SecureRandom();
   private              SecretKey       key;
   private              IvParameterSpec ivParameterSpec;
   private final        AtomicInteger   creates            = new AtomicInteger();
@@ -75,7 +76,7 @@ public class RecordEncryptionTest extends TestHelper
       key = getKeyFromPassword(password, "salt");
       // Generate IV once during initialization
       byte[] iv = new byte[16];
-      new SecureRandom().nextBytes(iv);
+      SECURE_RANDOM.nextBytes(iv);
       ivParameterSpec = new IvParameterSpec(iv);
     } catch (Exception e) {
       throw new SecurityException(e);
