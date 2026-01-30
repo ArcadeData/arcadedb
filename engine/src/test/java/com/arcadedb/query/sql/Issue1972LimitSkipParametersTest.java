@@ -18,10 +18,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * This test verifies that LIMIT and SKIP clauses accept parameters and LET variables.
  * </p>
  */
-public class Issue1972LimitSkipParametersTest extends TestHelper {
+class Issue1972LimitSkipParametersTest extends TestHelper {
 
   @Test
-  void testLimitWithLetVariable() {
+  void limitWithLetVariable() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc IF NOT EXISTS");
       database.command("sql", "DELETE FROM doc");
@@ -50,7 +50,7 @@ public class Issue1972LimitSkipParametersTest extends TestHelper {
   }
 
   @Test
-  void testSkipWithLetVariable() {
+  void skipWithLetVariable() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc2 IF NOT EXISTS");
       database.command("sql", "DELETE FROM doc2");
@@ -79,7 +79,7 @@ public class Issue1972LimitSkipParametersTest extends TestHelper {
   }
 
   @Test
-  void testLimitWithNamedParameter() {
+  void limitWithNamedParameter() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc3 IF NOT EXISTS");
       database.command("sql", "DELETE FROM doc3");
@@ -107,7 +107,7 @@ public class Issue1972LimitSkipParametersTest extends TestHelper {
   }
 
   @Test
-  void testSkipWithNamedParameter() {
+  void skipWithNamedParameter() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc4 IF NOT EXISTS");
       database.command("sql", "DELETE FROM doc4");
@@ -135,7 +135,7 @@ public class Issue1972LimitSkipParametersTest extends TestHelper {
   }
 
   @Test
-  void testLimitAndSkipWithParameters() {
+  void limitAndSkipWithParameters() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc5 IF NOT EXISTS");
       database.command("sql", "DELETE FROM doc5");
@@ -164,7 +164,7 @@ public class Issue1972LimitSkipParametersTest extends TestHelper {
   }
 
   @Test
-  void testLimitAndSkipWithLetVariables() {
+  void limitAndSkipWithLetVariables() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE doc6 IF NOT EXISTS");
       database.command("sql", "DELETE FROM doc6");

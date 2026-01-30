@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue1582UnwindProjectionTest extends TestHelper {
+class Issue1582UnwindProjectionTest extends TestHelper {
 
   @Override
   protected void beginTest() {
@@ -50,7 +50,7 @@ public class Issue1582UnwindProjectionTest extends TestHelper {
    * Test UNWIND without projection - this should work correctly.
    */
   @Test
-  public void testUnwindWithoutProjection() {
+  void unwindWithoutProjection() {
     database.transaction(() -> {
       final ResultSet result = database.query("sql", "SELECT FROM doc UNWIND lst");
 
@@ -73,7 +73,7 @@ public class Issue1582UnwindProjectionTest extends TestHelper {
    * When using SELECT @rid FROM doc UNWIND lst, it should still return 3 records.
    */
   @Test
-  public void testUnwindWithRidProjection() {
+  void unwindWithRidProjection() {
     database.transaction(() -> {
       // First get the RID of the document
       final ResultSet ridResult = database.query("sql", "SELECT @rid FROM doc");
@@ -101,7 +101,7 @@ public class Issue1582UnwindProjectionTest extends TestHelper {
    * Test UNWIND with a different projection that doesn't include the unwind field.
    */
   @Test
-  public void testUnwindWithCustomProjection() {
+  void unwindWithCustomProjection() {
     database.transaction(() -> {
       // Insert another document with more fields
       database.command("sql", "INSERT INTO doc SET name = 'test', lst = ['a','b','c']");
@@ -127,7 +127,7 @@ public class Issue1582UnwindProjectionTest extends TestHelper {
    * Test UNWIND with projection that includes the unwind field.
    */
   @Test
-  public void testUnwindWithUnwindFieldInProjection() {
+  void unwindWithUnwindFieldInProjection() {
     database.transaction(() -> {
       final ResultSet result = database.query("sql", "SELECT lst FROM doc UNWIND lst");
 
@@ -149,7 +149,7 @@ public class Issue1582UnwindProjectionTest extends TestHelper {
    * Test UNWIND with multiple projections including the unwind field.
    */
   @Test
-  public void testUnwindWithMultipleProjections() {
+  void unwindWithMultipleProjections() {
     database.transaction(() -> {
       // Insert a document with multiple fields
       database.command("sql", "INSERT INTO doc SET name = 'multi', tags = ['x','y','z'], count = 10");

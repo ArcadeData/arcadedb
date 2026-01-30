@@ -28,7 +28,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Regression tests for variable-length path patterns in OpenCypher.
@@ -40,10 +41,10 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * @author Luca Garulli
  */
-public class OpenCypherTraversalRegressionTest extends TestHelper {
+class OpenCypherTraversalRegressionTest extends TestHelper {
 
   @BeforeEach
-  public void setupGraph() {
+  void setupGraph() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Node");
       database.getSchema().createEdgeType("Link");
@@ -71,7 +72,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
    * FIX: Cache the ResultSet from prev.syncPull() and reuse it instead of calling repeatedly.
    */
   @Test
-  public void testFixedLengthPathNoDuplicates() {
+  void fixedLengthPathNoDuplicates() {
     database.begin();
     try {
       final String query = "MATCH (a:Node {id: 0})-[:Link*3]->(b) RETURN b";
@@ -91,8 +92,8 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
       }
 
       // Should find exactly one vertex at depth 3: vertex with id=3
-      assertEquals(1, count, "Expected exactly 1 result for fixed-length path *3");
-      assertEquals(1, uniqueResults.size(), "REGRESSION: Found duplicate results! Check ExpandPathStep.prevResults caching");
+      assertThat(count).as("Expected exactly 1 result for fixed-length path *3").isEqualTo(1);
+      assertThat(uniqueResults.size()).as("REGRESSION: Found duplicate results! Check ExpandPathStep.prevResults caching").isEqualTo(1);
     } finally {
       database.commit();
     }
@@ -103,7 +104,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
    * Tests range syntax *1..3 which should return vertices at depth 1, 2, and 3.
    */
   @Test
-  public void testVariableLengthPathNoDuplicates() {
+  void variableLengthPathNoDuplicates() {
     database.begin();
     try {
       final String query = "MATCH (a:Node {id: 0})-[:Link*1..3]->(b) RETURN b ORDER BY b.id";
@@ -125,9 +126,9 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
       }
 
       // Should find vertices at depth 1, 2, 3: ids [1, 2, 3]
-      assertEquals(3, count, "Expected exactly 3 results for variable-length path *1..3");
-      assertEquals(3, uniqueResults.size(), "REGRESSION: Found duplicate results!");
-      assertEquals(Arrays.asList(1, 2, 3), ids, "Should find vertices with ids 1, 2, 3");
+      assertThat(count).as("Expected exactly 3 results for variable-length path *1..3").isEqualTo(3);
+      assertThat(uniqueResults.size()).as("REGRESSION: Found duplicate results!").isEqualTo(3);
+      assertThat(ids).as("Should find vertices with ids 1, 2, 3").isEqualTo(Arrays.asList(1, 2, 3));
     } finally {
       database.commit();
     }
@@ -142,7 +143,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
    * with persistent visited tracking. Cycle detection prevents revisiting vertices.
    */
   @Test
-  public void testVariableLengthPathWithCycles() {
+  void variableLengthPathWithCycles() {
     database.transaction(() -> {
       // Add a cycle: 4 -> 0 (back to start)
       final Vertex v0 = (Vertex) database.query("sql", "SELECT FROM Node WHERE id = 0").next().getRecord().get();
@@ -172,12 +173,12 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
 
       // Path: 0->1->2->3->4 (depth 4)
       // Cycle 4->0 is not followed because 0 is already visited
-      assertEquals(1, count, "Expected exactly 1 result for path of length 4");
-      assertEquals(1, uniqueResults.size(), "REGRESSION: Found duplicate results!");
+      assertThat(count).as("Expected exactly 1 result for path of length 4").isEqualTo(1);
+      assertThat(uniqueResults.size()).as("REGRESSION: Found duplicate results!").isEqualTo(1);
 
       final Vertex target = (Vertex) database.query("opencypher", "MATCH (a:Node {id: 0})-[:Link*4]->(b) RETURN b")
           .next().toElement();
-      assertEquals(4, target.get("id"), "Should reach vertex 4 at depth 4");
+      assertThat(target.get("id")).as("Should reach vertex 4 at depth 4").isEqualTo(4);
     } finally {
       database.commit();
     }
@@ -188,7 +189,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
    * Tests graph where vertices have multiple outgoing edges.
    */
   @Test
-  public void testVariableLengthPathHighlyConnectedGraph() {
+  void variableLengthPathHighlyConnectedGraph() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Account");
       database.getSchema().createEdgeType("Follows");
@@ -228,8 +229,8 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
 
       // From vertex 0, depth 2 paths: 0->1->2, 0->1->3, 0->2->3, 0->2->4
       // Should find vertices {2, 3, 4} but each should appear only once
-      assertTrue(count <= 10, "Should not have excessive results from highly connected graph");
-      assertEquals(count, uniqueResults.size(), "REGRESSION: All results should be unique (found duplicates)");
+      assertThat(count <= 10).as("Should not have excessive results from highly connected graph").isTrue();
+      assertThat(uniqueResults.size()).as("REGRESSION: All results should be unique (found duplicates)").isEqualTo(count);
     } finally {
       database.commit();
     }
@@ -244,7 +245,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
    * FIX: Cache prevResults and reuse it, so each source is processed only once.
    */
   @Test
-  public void testMultipleSourceVertices() {
+  void multipleSourceVertices() {
     database.begin();
     try {
       // Match TWO source vertices (id=0 and id=1) and traverse from each
@@ -269,14 +270,14 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
 
       // Source 0 -> depth 2 -> vertex 2
       // Source 1 -> depth 2 -> vertex 3
-      assertEquals(2, count, "Expected 2 results (one from each source)");
-      assertEquals(2, resultsBySource.size(), "REGRESSION: Should have results from 2 different sources");
+      assertThat(count).as("Expected 2 results (one from each source)").isEqualTo(2);
+      assertThat(resultsBySource.size()).as("REGRESSION: Should have results from 2 different sources").isEqualTo(2);
 
-      assertTrue(resultsBySource.containsKey(0), "Should have result from source 0");
-      assertTrue(resultsBySource.containsKey(1), "Should have result from source 1");
+      assertThat(resultsBySource.containsKey(0)).as("Should have result from source 0").isTrue();
+      assertThat(resultsBySource.containsKey(1)).as("Should have result from source 1").isTrue();
 
-      assertEquals(Arrays.asList(2), resultsBySource.get(0), "Source 0 should reach vertex 2 at depth 2");
-      assertEquals(Arrays.asList(3), resultsBySource.get(1), "Source 1 should reach vertex 3 at depth 2");
+      assertThat(resultsBySource.get(0)).as("Source 0 should reach vertex 2 at depth 2").isEqualTo(Arrays.asList(2));
+      assertThat(resultsBySource.get(1)).as("Source 1 should reach vertex 3 at depth 2").isEqualTo(Arrays.asList(3));
     } finally {
       database.commit();
     }
@@ -287,7 +288,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
    * When there are no matching paths, query should return 0 results and terminate.
    */
   @Test
-  public void testNoMatchingPathsTerminates() {
+  void noMatchingPathsTerminates() {
     database.begin();
     try {
       // Query for non-existent edge type
@@ -304,7 +305,7 @@ public class OpenCypherTraversalRegressionTest extends TestHelper {
         }
       }
 
-      assertEquals(0, count, "Should return 0 results for non-existent edge type");
+      assertThat(count).as("Should return 0 results for non-existent edge type").isEqualTo(0);
     } finally {
       database.commit();
     }

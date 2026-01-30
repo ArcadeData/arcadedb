@@ -8,7 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class TestIssue2453 extends TestHelper {
   @Test
-  void testIsNullWithDefaultSkipStrategy() {
+  void isNullWithDefaultSkipStrategy() {
     // Reproduce issue #2453
     database.command("SQL", "CREATE VERTEX TYPE vec");
     database.command("SQL", "CREATE PROPERTY vec.lnk LINK");

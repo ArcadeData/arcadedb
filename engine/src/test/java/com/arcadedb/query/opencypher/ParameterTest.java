@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ParameterTest {
 
   @Test
-  void testSimpleParameterQuery() {
+  void simpleParameterQuery() {
     final Database database = new DatabaseFactory("./target/testparams").create();
     try {
       database.getSchema().getOrCreateVertexType("Person");
@@ -75,7 +75,7 @@ class ParameterTest {
   }
 
   @Test
-  void testPositionalParameters() {
+  void positionalParameters() {
     final Database database = new DatabaseFactory("./target/testparams2").create();
     try {
       database.getSchema().getOrCreateVertexType("Person");
@@ -129,7 +129,7 @@ class ParameterTest {
    * Verifies native OpenCypher engine handles 16+ parameters correctly.
    */
   @Test
-  void testManyParametersInIdQuery() {
+  void manyParametersInIdQuery() {
     final Database database = new DatabaseFactory("./target/testparams3").create();
     try {
       database.getSchema().getOrCreateVertexType("CHUNK");

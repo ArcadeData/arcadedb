@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.fail;
 class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
 
   @Test
-  void testConcurrentMergeVWithThreadBucketStrategy() throws Exception {
+  void concurrentMergeVWithThreadBucketStrategy() throws Exception {
     final int nOfThreads = 8;
     final int batchSize = 100;
     final int nOfProperties = 8;

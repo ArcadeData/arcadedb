@@ -51,7 +51,7 @@ public class OpenCypherBasicTest {
   }
 
   @Test
-  void testOpenCypherEngineRegistered() {
+  void openCypherEngineRegistered() {
     // Test that the opencypher engine is registered
     database.getSchema().createVertexType("TestVertex");
 
@@ -72,7 +72,7 @@ public class OpenCypherBasicTest {
   }
 
   @Test
-  void testBasicMatchQuery() {
+  void basicMatchQuery() {
     // Test basic MATCH query parsing
     database.getSchema().createVertexType("Person");
 
@@ -82,7 +82,7 @@ public class OpenCypherBasicTest {
   }
 
   @Test
-  void testMatchWithWhereQuery() {
+  void matchWithWhereQuery() {
     // Test MATCH with WHERE clause
     database.getSchema().createVertexType("Person");
 

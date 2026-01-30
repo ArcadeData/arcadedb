@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration tests for multi-label support in Cypher queries.
  * Tests CREATE with multiple labels, MATCH with labels, and labels() function.
  */
-public class CypherMultiLabelTest {
+class CypherMultiLabelTest {
   private Database database;
 
   @BeforeEach
@@ -52,7 +52,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testCreateVertexWithTwoLabels() {
+  void createVertexWithTwoLabels() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (n:Person:Developer {name: 'Alice'}) RETURN n");
@@ -72,7 +72,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testCreateVertexWithTwoLabelsReversed() {
+  void createVertexWithTwoLabelsReversed() {
     database.transaction(() -> {
       // Labels in reverse order should produce the same composite type
       final ResultSet result = database.command("opencypher",
@@ -89,7 +89,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testCreateVertexWithThreeLabels() {
+  void createVertexWithThreeLabels() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (n:Manager:Developer:Person {name: 'Carol'}) RETURN n");
@@ -105,7 +105,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMatchByFirstLabel() {
+  void matchByFirstLabel() {
     database.transaction(() -> {
       // Create multi-label vertex
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -122,7 +122,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMatchBySecondLabel() {
+  void matchBySecondLabel() {
     database.transaction(() -> {
       // Create multi-label vertex
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -139,7 +139,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMatchByBothLabels() {
+  void matchByBothLabels() {
     database.transaction(() -> {
       // Create multi-label vertex
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -156,7 +156,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMatchByBothLabelsReversed() {
+  void matchByBothLabelsReversed() {
     database.transaction(() -> {
       // Create multi-label vertex
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -173,7 +173,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testLabelsFunction() {
+  void labelsFunction() {
     database.transaction(() -> {
       // Create multi-label vertex
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -191,7 +191,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testLabelsFunctionSingleLabel() {
+  void labelsFunctionSingleLabel() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Person");
       // Create single-label vertex
@@ -210,7 +210,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMixedSingleAndMultiLabelVertices() {
+  void mixedSingleAndMultiLabelVertices() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Person");
       // Create single-label vertex
@@ -231,7 +231,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMatchByLabelNotFound() {
+  void matchByLabelNotFound() {
     database.transaction(() -> {
       // Create multi-label vertex without Manager
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -245,7 +245,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMatchByNonExistentCompositeLabels() {
+  void matchByNonExistentCompositeLabels() {
     database.transaction(() -> {
       // Create multi-label vertex
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -259,7 +259,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testTypeHierarchyWithCompositeTypes() {
+  void typeHierarchyWithCompositeTypes() {
     database.transaction(() -> {
       // Create composite type
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -276,7 +276,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testVertexHasLabelMethod() {
+  void vertexHasLabelMethod() {
     database.transaction(() -> {
       // Create multi-label vertex
       final ResultSet result = database.command("opencypher",
@@ -292,7 +292,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMultipleVerticesWithDifferentLabelCombinations() {
+  void multipleVerticesWithDifferentLabelCombinations() {
     database.transaction(() -> {
       // Create vertices with different label combinations
       database.command("opencypher", "CREATE (n:Person:Developer {name: 'Alice'})");
@@ -334,7 +334,7 @@ public class CypherMultiLabelTest {
   // Tests for duplicate label deduplication (GitHub issue #3264)
 
   @Test
-  void testCreateWithDuplicateLabels() {
+  void createWithDuplicateLabels() {
     // CREATE (n:Person:Kebab:Person) should create type Kebab~Person (not Kebab~Person~Person)
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
@@ -357,7 +357,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testCreateWithAllDuplicateLabels() {
+  void createWithAllDuplicateLabels() {
     // CREATE (n:Kebab:Kebab) should create type Kebab (single label)
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
@@ -376,7 +376,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testMatchWithDuplicateLabels() {
+  void matchWithDuplicateLabels() {
     // Create a Kebab vertex
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Kebab {name: 'Kebab1'})");
@@ -392,7 +392,7 @@ public class CypherMultiLabelTest {
   }
 
   @Test
-  void testLabelsWithDuplicateLabelsCreate() {
+  void labelsWithDuplicateLabelsCreate() {
     // CREATE (n:Person:Kebab:Person) should have labels [Kebab, Person]
     database.transaction(() -> {
       database.command("opencypher",

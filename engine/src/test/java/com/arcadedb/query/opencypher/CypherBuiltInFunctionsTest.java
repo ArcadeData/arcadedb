@@ -27,15 +27,15 @@ import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Tests for Cypher built-in functions and procedures.
@@ -49,56 +49,56 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   public void testApocPrefixCompatibilityForFunctions() {
     // Test that functions can be accessed with "apoc." prefix
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.text.indexOf"));
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.map.merge"));
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.math.sigmoid"));
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.convert.toJson"));
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.date.currentTimestamp"));
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.util.md5"));
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.agg.median"));
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.text.indexOf")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.map.merge")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.math.sigmoid")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.convert.toJson")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.date.currentTimestamp")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.util.md5")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.agg.median")).isTrue();
 
     // Verify same function is returned with or without prefix
-    assertSame(CypherFunctionRegistry.get("text.indexOf"), CypherFunctionRegistry.get("apoc.text.indexOf"));
-    assertSame(CypherFunctionRegistry.get("map.merge"), CypherFunctionRegistry.get("apoc.map.merge"));
+    assertThat(CypherFunctionRegistry.get("apoc.text.indexOf")).isSameAs(CypherFunctionRegistry.get("text.indexOf"));
+    assertThat(CypherFunctionRegistry.get("apoc.map.merge")).isSameAs(CypherFunctionRegistry.get("map.merge"));
 
     // Test case insensitivity
-    assertSame(CypherFunctionRegistry.get("TEXT.INDEXOF"), CypherFunctionRegistry.get("APOC.TEXT.INDEXOF"));
+    assertThat(CypherFunctionRegistry.get("APOC.TEXT.INDEXOF")).isSameAs(CypherFunctionRegistry.get("TEXT.INDEXOF"));
   }
 
   @Test
   public void testApocPrefixCompatibilityForProcedures() {
     // Test that procedures can be accessed with "apoc." prefix
-    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.merge.relationship"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.merge.node"));
+    assertThat(CypherProcedureRegistry.hasProcedure("apoc.merge.relationship")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("apoc.merge.node")).isTrue();
 
     // Verify same procedure is returned with or without prefix
-    assertSame(CypherProcedureRegistry.get("merge.relationship"), CypherProcedureRegistry.get("apoc.merge.relationship"));
-    assertSame(CypherProcedureRegistry.get("merge.node"), CypherProcedureRegistry.get("apoc.merge.node"));
+    assertThat(CypherProcedureRegistry.get("apoc.merge.relationship")).isSameAs(CypherProcedureRegistry.get("merge.relationship"));
+    assertThat(CypherProcedureRegistry.get("apoc.merge.node")).isSameAs(CypherProcedureRegistry.get("merge.node"));
 
     // Test case insensitivity
-    assertSame(CypherProcedureRegistry.get("MERGE.RELATIONSHIP"), CypherProcedureRegistry.get("APOC.MERGE.RELATIONSHIP"));
+    assertThat(CypherProcedureRegistry.get("APOC.MERGE.RELATIONSHIP")).isSameAs(CypherProcedureRegistry.get("MERGE.RELATIONSHIP"));
   }
 
   @Test
   public void testApocPrefixFunctionExecution() {
     // Test that functions accessed via apoc prefix work correctly
     final StatelessFunction fn = CypherFunctionRegistry.get("apoc.text.indexOf");
-    assertNotNull(fn);
-    assertEquals(0L, fn.execute(new Object[]{"hello", "h"}, null));
+    assertThat(fn).isNotNull();
+    assertThat(fn.execute(new Object[] { "hello", "h" }, null)).isEqualTo(0L);
 
     final StatelessFunction md5 = CypherFunctionRegistry.get("apoc.util.md5");
-    assertNotNull(md5);
-    assertEquals("5d41402abc4b2a76b9719d911017c592", md5.execute(new Object[]{"hello"}, null));
+    assertThat(md5).isNotNull();
+    assertThat(md5.execute(new Object[] { "hello" }, null)).isEqualTo("5d41402abc4b2a76b9719d911017c592");
   }
 
   @Test
   public void testFunctionRegistryHasTextFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("text.indexOf"));
-    assertTrue(CypherFunctionRegistry.hasFunction("text.join"));
-    assertTrue(CypherFunctionRegistry.hasFunction("text.split"));
-    assertTrue(CypherFunctionRegistry.hasFunction("text.capitalize"));
-    assertTrue(CypherFunctionRegistry.hasFunction("text.camelCase"));
-    assertTrue(CypherFunctionRegistry.hasFunction("text.levenshteinDistance"));
+    assertThat(CypherFunctionRegistry.hasFunction("text.indexOf")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("text.join")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("text.split")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("text.capitalize")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("text.camelCase")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("text.levenshteinDistance")).isTrue();
   }
 
   // ===================== UNIFIED REGISTRY TESTS =====================
@@ -106,52 +106,52 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   public void testUnifiedFunctionRegistryHasCypherFunctions() {
     // Verify Cypher functions are registered in unified FunctionRegistry
-    assertTrue(FunctionRegistry.hasFunction("text.indexOf"));
-    assertTrue(FunctionRegistry.hasFunction("map.merge"));
-    assertTrue(FunctionRegistry.hasFunction("math.sigmoid"));
-    assertTrue(FunctionRegistry.hasFunction("convert.toJson"));
-    assertTrue(FunctionRegistry.hasFunction("date.currentTimestamp"));
-    assertTrue(FunctionRegistry.hasFunction("util.md5"));
-    assertTrue(FunctionRegistry.hasFunction("agg.median"));
+    assertThat(FunctionRegistry.hasFunction("text.indexOf")).isTrue();
+    assertThat(FunctionRegistry.hasFunction("map.merge")).isTrue();
+    assertThat(FunctionRegistry.hasFunction("math.sigmoid")).isTrue();
+    assertThat(FunctionRegistry.hasFunction("convert.toJson")).isTrue();
+    assertThat(FunctionRegistry.hasFunction("date.currentTimestamp")).isTrue();
+    assertThat(FunctionRegistry.hasFunction("util.md5")).isTrue();
+    assertThat(FunctionRegistry.hasFunction("agg.median")).isTrue();
 
     // Verify APOC prefix works with unified registry
-    assertTrue(FunctionRegistry.hasFunction("apoc.text.indexOf"));
-    assertTrue(FunctionRegistry.hasFunction("APOC.MAP.MERGE"));
+    assertThat(FunctionRegistry.hasFunction("apoc.text.indexOf")).isTrue();
+    assertThat(FunctionRegistry.hasFunction("APOC.MAP.MERGE")).isTrue();
   }
 
   @Test
   public void testUnifiedFunctionRegistryReturnsStatelessFunction() {
     // Verify functions from unified registry are StatelessFunction
     Function fn = FunctionRegistry.get("text.indexOf");
-    assertNotNull(fn);
-    assertTrue(fn instanceof StatelessFunction);
+    assertThat(fn).isNotNull();
+    assertThat(fn).isInstanceOf(StatelessFunction.class);
 
     // Verify stateless function can be executed
     StatelessFunction sf = FunctionRegistry.getStateless("text.indexOf");
-    assertNotNull(sf);
-    assertEquals(0L, sf.execute(new Object[]{"hello", "h"}, null));
+    assertThat(sf).isNotNull();
+    assertThat(sf.execute(new Object[] { "hello", "h" }, null)).isEqualTo(0L);
   }
 
   @Test
   public void testUnifiedProcedureRegistryHasCypherProcedures() {
     // Verify Cypher procedures are registered in unified ProcedureRegistry
-    assertTrue(ProcedureRegistry.hasProcedure("merge.relationship"));
-    assertTrue(ProcedureRegistry.hasProcedure("merge.node"));
-    assertTrue(ProcedureRegistry.hasProcedure("algo.dijkstra"));
+    assertThat(ProcedureRegistry.hasProcedure("merge.relationship")).isTrue();
+    assertThat(ProcedureRegistry.hasProcedure("merge.node")).isTrue();
+    assertThat(ProcedureRegistry.hasProcedure("algo.dijkstra")).isTrue();
 
     // Verify APOC prefix works with unified registry
-    assertTrue(ProcedureRegistry.hasProcedure("apoc.merge.relationship"));
-    assertTrue(ProcedureRegistry.hasProcedure("APOC.MERGE.NODE"));
+    assertThat(ProcedureRegistry.hasProcedure("apoc.merge.relationship")).isTrue();
+    assertThat(ProcedureRegistry.hasProcedure("APOC.MERGE.NODE")).isTrue();
   }
 
   @Test
   public void testUnifiedProcedureRegistryReturnsProcedure() {
     // Verify procedures from unified registry implement Procedure interface
     Procedure proc = ProcedureRegistry.get("merge.relationship");
-    assertNotNull(proc);
-    assertEquals("merge.relationship", proc.getName());
-    assertTrue(proc.isWriteProcedure());
-    assertEquals(List.of("rel"), proc.getYieldFields());
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("merge.relationship");
+    assertThat(proc.isWriteProcedure()).isTrue();
+    assertThat(proc.getYieldFields()).isEqualTo(List.of("rel"));
   }
 
   @Test
@@ -159,39 +159,39 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     // Verify same instance is returned from both registries
     StatelessFunction cypherFn = CypherFunctionRegistry.get("text.indexOf");
     Function unifiedFn = FunctionRegistry.get("text.indexOf");
-    assertSame(cypherFn, unifiedFn);
+    assertThat(unifiedFn).isSameAs(cypherFn);
 
     CypherProcedure cypherProc = CypherProcedureRegistry.get("merge.relationship");
     Procedure unifiedProc = ProcedureRegistry.get("merge.relationship");
-    assertSame(cypherProc, unifiedProc);
+    assertThat(unifiedProc).isSameAs(cypherProc);
   }
 
   @Test
   public void testFunctionRegistryHasMapFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("map.merge"));
-    assertTrue(CypherFunctionRegistry.hasFunction("map.fromLists"));
-    assertTrue(CypherFunctionRegistry.hasFunction("map.setKey"));
-    assertTrue(CypherFunctionRegistry.hasFunction("map.flatten"));
+    assertThat(CypherFunctionRegistry.hasFunction("map.merge")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("map.fromLists")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("map.setKey")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("map.flatten")).isTrue();
   }
 
   @Test
   public void testFunctionRegistryHasMathFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("math.sigmoid"));
-    assertTrue(CypherFunctionRegistry.hasFunction("math.tanh"));
-    assertTrue(CypherFunctionRegistry.hasFunction("math.maxLong"));
+    assertThat(CypherFunctionRegistry.hasFunction("math.sigmoid")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("math.tanh")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("math.maxLong")).isTrue();
   }
 
   @Test
   public void testFunctionRegistryHasConvertFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("convert.toJson"));
-    assertTrue(CypherFunctionRegistry.hasFunction("convert.fromJsonMap"));
-    assertTrue(CypherFunctionRegistry.hasFunction("convert.toList"));
+    assertThat(CypherFunctionRegistry.hasFunction("convert.toJson")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("convert.fromJsonMap")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("convert.toList")).isTrue();
   }
 
   @Test
   public void testProcedureRegistryHasMergeProcedures() {
-    assertTrue(CypherProcedureRegistry.hasProcedure("merge.relationship"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("merge.node"));
+    assertThat(CypherProcedureRegistry.hasProcedure("merge.relationship")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("merge.node")).isTrue();
   }
 
   // ===================== TEXT FUNCTION TESTS =====================
@@ -199,127 +199,127 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   public void testTextIndexOf() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.indexOf");
-    assertEquals(0L, fn.execute(new Object[]{"hello", "h"}, null));
-    assertEquals(2L, fn.execute(new Object[]{"hello", "l"}, null));
-    assertEquals(-1L, fn.execute(new Object[]{"hello", "x"}, null));
-    assertEquals(3L, fn.execute(new Object[]{"hello", "l", 3}, null));
+    assertThat(fn.execute(new Object[] { "hello", "h" }, null)).isEqualTo(0L);
+    assertThat(fn.execute(new Object[] { "hello", "l" }, null)).isEqualTo(2L);
+    assertThat(fn.execute(new Object[] { "hello", "x" }, null)).isEqualTo(-1L);
+    assertThat(fn.execute(new Object[] { "hello", "l", 3 }, null)).isEqualTo(3L);
   }
 
   @Test
   public void testTextJoin() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.join");
-    assertEquals("a,b,c", fn.execute(new Object[]{List.of("a", "b", "c"), ","}, null));
-    assertEquals("abc", fn.execute(new Object[]{List.of("a", "b", "c"), ""}, null));
+    assertThat(fn.execute(new Object[] { List.of("a", "b", "c"), "," }, null)).isEqualTo("a,b,c");
+    assertThat(fn.execute(new Object[] { List.of("a", "b", "c"), "" }, null)).isEqualTo("abc");
   }
 
   @Test
   public void testTextSplit() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.split");
-    assertEquals(List.of("a", "b", "c"), fn.execute(new Object[]{"a,b,c", ","}, null));
+    assertThat(fn.execute(new Object[] { "a,b,c", "," }, null)).isEqualTo(List.of("a", "b", "c"));
   }
 
   @Test
   public void testTextReplace() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.replace");
-    assertEquals("hXllo", fn.execute(new Object[]{"hello", "e", "X"}, null));
-    assertEquals("helloworld", fn.execute(new Object[]{"hello world", " ", ""}, null));
+    assertThat(fn.execute(new Object[] { "hello", "e", "X" }, null)).isEqualTo("hXllo");
+    assertThat(fn.execute(new Object[] { "hello world", " ", "" }, null)).isEqualTo("helloworld");
   }
 
   @Test
   public void testTextRegexReplace() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.regexReplace");
-    assertEquals("hXllX", fn.execute(new Object[]{"hello", "[aeiou]", "X"}, null));
+    assertThat(fn.execute(new Object[] { "hello", "[aeiou]", "X" }, null)).isEqualTo("hXllX");
   }
 
   @Test
   public void testTextCapitalize() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.capitalize");
-    assertEquals("Hello", fn.execute(new Object[]{"hello"}, null));
-    assertEquals("Hello world", fn.execute(new Object[]{"hello world"}, null));
+    assertThat(fn.execute(new Object[] { "hello" }, null)).isEqualTo("Hello");
+    assertThat(fn.execute(new Object[] { "hello world" }, null)).isEqualTo("Hello world");
   }
 
   @Test
   public void testTextCapitalizeAll() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.capitalizeAll");
-    assertEquals("Hello World", fn.execute(new Object[]{"hello world"}, null));
+    assertThat(fn.execute(new Object[] { "hello world" }, null)).isEqualTo("Hello World");
   }
 
   @Test
   public void testTextCamelCase() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.camelCase");
-    assertEquals("helloWorld", fn.execute(new Object[]{"hello world"}, null));
-    assertEquals("helloWorld", fn.execute(new Object[]{"hello_world"}, null));
+    assertThat(fn.execute(new Object[] { "hello world" }, null)).isEqualTo("helloWorld");
+    assertThat(fn.execute(new Object[] { "hello_world" }, null)).isEqualTo("helloWorld");
   }
 
   @Test
   public void testTextSnakeCase() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.snakeCase");
-    assertEquals("hello_world", fn.execute(new Object[]{"helloWorld"}, null));
-    assertEquals("hello_world", fn.execute(new Object[]{"hello world"}, null));
+    assertThat(fn.execute(new Object[] { "helloWorld" }, null)).isEqualTo("hello_world");
+    assertThat(fn.execute(new Object[] { "hello world" }, null)).isEqualTo("hello_world");
   }
 
   @Test
   public void testTextUpperCamelCase() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.upperCamelCase");
-    assertEquals("HelloWorld", fn.execute(new Object[]{"hello world"}, null));
+    assertThat(fn.execute(new Object[] { "hello world" }, null)).isEqualTo("HelloWorld");
   }
 
   @Test
   public void testTextLpad() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.lpad");
-    assertEquals("00042", fn.execute(new Object[]{"42", 5, "0"}, null));
-    assertEquals("42", fn.execute(new Object[]{"42", 2, "0"}, null));
+    assertThat(fn.execute(new Object[] { "42", 5, "0" }, null)).isEqualTo("00042");
+    assertThat(fn.execute(new Object[] { "42", 2, "0" }, null)).isEqualTo("42");
   }
 
   @Test
   public void testTextRpad() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.rpad");
-    assertEquals("42000", fn.execute(new Object[]{"42", 5, "0"}, null));
+    assertThat(fn.execute(new Object[] { "42", 5, "0" }, null)).isEqualTo("42000");
   }
 
   @Test
   public void testTextSlug() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.slug");
-    assertEquals("hello-world", fn.execute(new Object[]{"Hello World!"}, null));
-    assertEquals("hello_world", fn.execute(new Object[]{"Hello World!", "_"}, null));
+    assertThat(fn.execute(new Object[] { "Hello World!" }, null)).isEqualTo("hello-world");
+    assertThat(fn.execute(new Object[] { "Hello World!", "_" }, null)).isEqualTo("hello_world");
   }
 
   @Test
   public void testTextLevenshteinDistance() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.levenshteinDistance");
-    assertEquals(0L, fn.execute(new Object[]{"hello", "hello"}, null));
-    assertEquals(1L, fn.execute(new Object[]{"hello", "hallo"}, null));
-    assertEquals(3L, fn.execute(new Object[]{"kitten", "sitting"}, null));
+    assertThat(fn.execute(new Object[] { "hello", "hello" }, null)).isEqualTo(0L);
+    assertThat(fn.execute(new Object[] { "hello", "hallo" }, null)).isEqualTo(1L);
+    assertThat(fn.execute(new Object[] { "kitten", "sitting" }, null)).isEqualTo(3L);
   }
 
   @Test
   public void testTextLevenshteinSimilarity() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.levenshteinSimilarity");
-    assertEquals(1.0, fn.execute(new Object[]{"hello", "hello"}, null));
+    assertThat(fn.execute(new Object[] { "hello", "hello" }, null)).isEqualTo(1.0);
     // hello vs hallo has distance 1, max length 5, so similarity = 1 - 1/5 = 0.8
-    assertEquals(0.8, (Double) fn.execute(new Object[]{"hello", "hallo"}, null), 0.001);
+    assertThat((Double) fn.execute(new Object[] { "hello", "hallo" }, null)).isCloseTo(0.8, within(0.001));
   }
 
   @Test
   public void testTextHammingDistance() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.hammingDistance");
-    assertEquals(0L, fn.execute(new Object[]{"hello", "hello"}, null));
-    assertEquals(1L, fn.execute(new Object[]{"hello", "hallo"}, null));
+    assertThat(fn.execute(new Object[] { "hello", "hello" }, null)).isEqualTo(0L);
+    assertThat(fn.execute(new Object[] { "hello", "hallo" }, null)).isEqualTo(1L);
   }
 
   @Test
   public void testTextCharAt() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.charAt");
-    assertEquals("h", fn.execute(new Object[]{"hello", 0}, null));
-    assertEquals("o", fn.execute(new Object[]{"hello", 4}, null));
-    assertNull(fn.execute(new Object[]{"hello", 10}, null));
+    assertThat(fn.execute(new Object[] { "hello", 0 }, null)).isEqualTo("h");
+    assertThat(fn.execute(new Object[] { "hello", 4 }, null)).isEqualTo("o");
+    assertThat(fn.execute(new Object[] { "hello", 10 }, null)).isNull();
   }
 
   @Test
   public void testTextCode() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.code");
-    assertEquals(65L, fn.execute(new Object[]{"A"}, null));
-    assertEquals(97L, fn.execute(new Object[]{"a"}, null));
+    assertThat(fn.execute(new Object[] { "A" }, null)).isEqualTo(65L);
+    assertThat(fn.execute(new Object[] { "a" }, null)).isEqualTo(97L);
   }
 
   // ===================== MAP FUNCTION TESTS =====================
@@ -329,9 +329,9 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.merge");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{Map.of("a", 1), Map.of("b", 2)}, null);
-    assertEquals(1, result.get("a"));
-    assertEquals(2, result.get("b"));
+        new Object[] { Map.of("a", 1), Map.of("b", 2) }, null);
+    assertThat(result.get("a")).isEqualTo(1);
+    assertThat(result.get("b")).isEqualTo(2);
   }
 
   @Test
@@ -339,8 +339,8 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.merge");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{Map.of("a", 1), Map.of("a", 2)}, null);
-    assertEquals(2, result.get("a"));
+        new Object[] { Map.of("a", 1), Map.of("a", 2) }, null);
+    assertThat(result.get("a")).isEqualTo(2);
   }
 
   @Test
@@ -348,9 +348,9 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.fromLists");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{List.of("a", "b"), List.of(1, 2)}, null);
-    assertEquals(1, result.get("a"));
-    assertEquals(2, result.get("b"));
+        new Object[] { List.of("a", "b"), List.of(1, 2) }, null);
+    assertThat(result.get("a")).isEqualTo(1);
+    assertThat(result.get("b")).isEqualTo(2);
   }
 
   @Test
@@ -358,9 +358,9 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.fromPairs");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{List.of(List.of("a", 1), List.of("b", 2))}, null);
-    assertEquals(1, result.get("a"));
-    assertEquals(2, result.get("b"));
+        new Object[] { List.of(List.of("a", 1), List.of("b", 2)) }, null);
+    assertThat(result.get("a")).isEqualTo(1);
+    assertThat(result.get("b")).isEqualTo(2);
   }
 
   @Test
@@ -368,9 +368,9 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.setKey");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{Map.of("a", 1), "b", 2}, null);
-    assertEquals(1, result.get("a"));
-    assertEquals(2, result.get("b"));
+        new Object[] { Map.of("a", 1), "b", 2 }, null);
+    assertThat(result.get("a")).isEqualTo(1);
+    assertThat(result.get("b")).isEqualTo(2);
   }
 
   @Test
@@ -378,9 +378,9 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.removeKey");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{Map.of("a", 1, "b", 2), "a"}, null);
-    assertFalse(result.containsKey("a"));
-    assertEquals(2, result.get("b"));
+        new Object[] { Map.of("a", 1, "b", 2), "a" }, null);
+    assertThat(result).doesNotContainKey("a");
+    assertThat(result.get("b")).isEqualTo(2);
   }
 
   @Test
@@ -388,8 +388,8 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.flatten");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{Map.of("a", Map.of("b", 1)), "."}, null);
-    assertEquals(1, result.get("a.b"));
+        new Object[] { Map.of("a", Map.of("b", 1)), "." }, null);
+    assertThat(result.get("a.b")).isEqualTo(1);
   }
 
   @Test
@@ -397,11 +397,11 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.submap");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{Map.of("a", 1, "b", 2, "c", 3), List.of("a", "c")}, null);
-    assertEquals(2, result.size());
-    assertEquals(1, result.get("a"));
-    assertEquals(3, result.get("c"));
-    assertFalse(result.containsKey("b"));
+        new Object[] { Map.of("a", 1, "b", 2, "c", 3), List.of("a", "c") }, null);
+    assertThat(result).hasSize(2);
+    assertThat(result.get("a")).isEqualTo(1);
+    assertThat(result.get("c")).isEqualTo(3);
+    assertThat(result).doesNotContainKey("b");
   }
 
   // ===================== MATH FUNCTION TESTS =====================
@@ -409,33 +409,33 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   public void testMathSigmoid() {
     final StatelessFunction fn = CypherFunctionRegistry.get("math.sigmoid");
-    assertEquals(0.5, fn.execute(new Object[]{0.0}, null));
-    assertTrue((Double) fn.execute(new Object[]{10.0}, null) > 0.99);
-    assertTrue((Double) fn.execute(new Object[]{-10.0}, null) < 0.01);
+    assertThat(fn.execute(new Object[] { 0.0 }, null)).isEqualTo(0.5);
+    assertThat((Double) fn.execute(new Object[] { 10.0 }, null)).isGreaterThan(0.99);
+    assertThat((Double) fn.execute(new Object[] { -10.0 }, null)).isLessThan(0.01);
   }
 
   @Test
   public void testMathTanh() {
     final StatelessFunction fn = CypherFunctionRegistry.get("math.tanh");
-    assertEquals(0.0, (Double) fn.execute(new Object[]{0.0}, null), 0.001);
+    assertThat((Double) fn.execute(new Object[] { 0.0 }, null)).isCloseTo(0.0, within(0.001));
   }
 
   @Test
   public void testMathMaxLong() {
     final StatelessFunction fn = CypherFunctionRegistry.get("math.maxLong");
-    assertEquals(Long.MAX_VALUE, fn.execute(new Object[]{}, null));
+    assertThat(fn.execute(new Object[] {}, null)).isEqualTo(Long.MAX_VALUE);
   }
 
   @Test
   public void testMathMinLong() {
     final StatelessFunction fn = CypherFunctionRegistry.get("math.minLong");
-    assertEquals(Long.MIN_VALUE, fn.execute(new Object[]{}, null));
+    assertThat(fn.execute(new Object[] {}, null)).isEqualTo(Long.MIN_VALUE);
   }
 
   @Test
   public void testMathMaxDouble() {
     final StatelessFunction fn = CypherFunctionRegistry.get("math.maxDouble");
-    assertEquals(Double.MAX_VALUE, fn.execute(new Object[]{}, null));
+    assertThat(fn.execute(new Object[] {}, null)).isEqualTo(Double.MAX_VALUE);
   }
 
   // ===================== CONVERT FUNCTION TESTS =====================
@@ -443,8 +443,8 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   public void testConvertToJson() {
     final StatelessFunction fn = CypherFunctionRegistry.get("convert.toJson");
-    assertEquals("{\"a\":1}", fn.execute(new Object[]{Map.of("a", 1)}, null));
-    assertEquals("[1,2,3]", fn.execute(new Object[]{List.of(1, 2, 3)}, null));
+    assertThat(fn.execute(new Object[] { Map.of("a", 1) }, null)).isEqualTo("{\"a\":1}");
+    assertThat(fn.execute(new Object[] { List.of(1, 2, 3) }, null)).isEqualTo("[1,2,3]");
   }
 
   @Test
@@ -452,26 +452,26 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("convert.fromJsonMap");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{"{\"a\":1}"}, null);
-    assertEquals(1, ((Number) result.get("a")).intValue());
+        new Object[] { "{\"a\":1}" }, null);
+    assertThat(((Number) result.get("a")).intValue()).isEqualTo(1);
   }
 
   @Test
   public void testConvertFromJsonList() {
     final StatelessFunction fn = CypherFunctionRegistry.get("convert.fromJsonList");
     @SuppressWarnings("unchecked")
-    final List<Object> result = (List<Object>) fn.execute(new Object[]{"[1,2,3]"}, null);
-    assertEquals(3, result.size());
-    assertEquals(1, ((Number) result.get(0)).intValue());
+    final List<Object> result = (List<Object>) fn.execute(new Object[] { "[1,2,3]" }, null);
+    assertThat(result).hasSize(3);
+    assertThat(((Number) result.get(0)).intValue()).isEqualTo(1);
   }
 
   @Test
   public void testConvertToList() {
     final StatelessFunction fn = CypherFunctionRegistry.get("convert.toList");
     @SuppressWarnings("unchecked")
-    final List<Object> result = (List<Object>) fn.execute(new Object[]{42}, null);
-    assertEquals(1, result.size());
-    assertEquals(42, result.get(0));
+    final List<Object> result = (List<Object>) fn.execute(new Object[] { 42 }, null);
+    assertThat(result).hasSize(1);
+    assertThat(result.get(0)).isEqualTo(42);
   }
 
   @Test
@@ -479,94 +479,92 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("convert.toSet");
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) fn.execute(
-        new Object[]{List.of(1, 2, 2, 3, 3, 3)}, null);
-    assertEquals(3, result.size());
+        new Object[] { List.of(1, 2, 2, 3, 3, 3) }, null);
+    assertThat(result).hasSize(3);
   }
 
   @Test
   public void testConvertToBoolean() {
     final StatelessFunction fn = CypherFunctionRegistry.get("convert.toBoolean");
-    assertEquals(true, fn.execute(new Object[]{"true"}, null));
-    assertEquals(false, fn.execute(new Object[]{"false"}, null));
-    assertEquals(true, fn.execute(new Object[]{1}, null));
-    assertEquals(false, fn.execute(new Object[]{0}, null));
+    assertThat(fn.execute(new Object[] { "true" }, null)).isEqualTo(true);
+    assertThat(fn.execute(new Object[] { "false" }, null)).isEqualTo(false);
+    assertThat(fn.execute(new Object[] { 1 }, null)).isEqualTo(true);
+    assertThat(fn.execute(new Object[] { 0 }, null)).isEqualTo(false);
   }
 
   @Test
   public void testConvertToInteger() {
     final StatelessFunction fn = CypherFunctionRegistry.get("convert.toInteger");
-    assertEquals(42L, fn.execute(new Object[]{"42"}, null));
-    assertEquals(42L, fn.execute(new Object[]{42.9}, null));
-    assertEquals(1L, fn.execute(new Object[]{true}, null));
+    assertThat(fn.execute(new Object[] { "42" }, null)).isEqualTo(42L);
+    assertThat(fn.execute(new Object[] { 42.9 }, null)).isEqualTo(42L);
+    assertThat(fn.execute(new Object[] { true }, null)).isEqualTo(1L);
   }
 
   @Test
   public void testConvertToFloat() {
     final StatelessFunction fn = CypherFunctionRegistry.get("convert.toFloat");
-    assertEquals(42.0, fn.execute(new Object[]{"42"}, null));
-    assertEquals(42.5, fn.execute(new Object[]{"42.5"}, null));
+    assertThat(fn.execute(new Object[] { "42" }, null)).isEqualTo(42.0);
+    assertThat(fn.execute(new Object[] { "42.5" }, null)).isEqualTo(42.5);
   }
 
   // ===================== DATE FUNCTION TESTS =====================
 
   @Test
   public void testFunctionRegistryHasDateFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("date.format"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.parse"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.add"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.convert"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.field"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.fields"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.currentTimestamp"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.toISO8601"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.fromISO8601"));
-    assertTrue(CypherFunctionRegistry.hasFunction("date.systemTimezone"));
+    assertThat(CypherFunctionRegistry.hasFunction("date.format")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.parse")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.add")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.convert")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.field")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.fields")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.currentTimestamp")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.toISO8601")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.fromISO8601")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("date.systemTimezone")).isTrue();
   }
 
   @Test
   public void testDateCurrentTimestamp() {
     final StatelessFunction fn = CypherFunctionRegistry.get("date.currentTimestamp");
     final long before = System.currentTimeMillis();
-    final long result = (Long) fn.execute(new Object[]{}, null);
+    final long result = (Long) fn.execute(new Object[] {}, null);
     final long after = System.currentTimeMillis();
-    assertTrue(result >= before && result <= after);
+    assertThat(result).isBetween(before, after);
   }
 
   @Test
   public void testDateSystemTimezone() {
     final StatelessFunction fn = CypherFunctionRegistry.get("date.systemTimezone");
-    final String result = (String) fn.execute(new Object[]{}, null);
-    assertNotNull(result);
-    assertFalse(result.isEmpty());
+    final String result = (String) fn.execute(new Object[] {}, null);
+    assertThat(result).isNotNull().isNotEmpty();
   }
 
   @Test
   public void testDateFormat() {
     final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
     // Test with a known timestamp (2024-01-15T10:30:00 UTC = 1705314600000)
-    final String result = (String) fn.execute(new Object[]{1705314600000L, "ms", "yyyy-MM-dd"}, null);
-    assertNotNull(result);
-    assertTrue(result.matches("\\d{4}-\\d{2}-\\d{2}"));
+    final String result = (String) fn.execute(new Object[] { 1705314600000L, "ms", "yyyy-MM-dd" }, null);
+    assertThat(result).isNotNull().matches("\\d{4}-\\d{2}-\\d{2}");
   }
 
   @Test
   public void testDateField() {
     final StatelessFunction fn = CypherFunctionRegistry.get("date.field");
     // Test extracting year from a timestamp
-    final Long year = (Long) fn.execute(new Object[]{1705314600000L, "year"}, null);
-    assertEquals(2024L, year);
+    final Long year = (Long) fn.execute(new Object[] { 1705314600000L, "year" }, null);
+    assertThat(year).isEqualTo(2024L);
   }
 
   @Test
   public void testDateConvert() {
     final StatelessFunction fn = CypherFunctionRegistry.get("date.convert");
     // Convert 1000 ms to seconds
-    final Long result = (Long) fn.execute(new Object[]{1000L, "ms", "s"}, null);
-    assertEquals(1L, result);
+    final Long result = (Long) fn.execute(new Object[] { 1000L, "ms", "s" }, null);
+    assertThat(result).isEqualTo(1L);
 
     // Convert 60 seconds to minutes
-    final Long result2 = (Long) fn.execute(new Object[]{60L, "s", "m"}, null);
-    assertEquals(1L, result2);
+    final Long result2 = (Long) fn.execute(new Object[] { 60L, "s", "m" }, null);
+    assertThat(result2).isEqualTo(1L);
   }
 
   @Test
@@ -574,50 +572,52 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("date.add");
     // Add 1 day (86400000 ms) to a timestamp
     final long timestamp = 1705314600000L;
-    final Long result = (Long) fn.execute(new Object[]{timestamp, 1L, "d"}, null);
-    assertEquals(timestamp + 86400000L, result);
+    final Long result = (Long) fn.execute(new Object[] { timestamp, 1L, "d" }, null);
+    assertThat(result).isEqualTo(timestamp + 86400000L);
   }
 
   // ===================== UTIL FUNCTION TESTS =====================
 
   @Test
   public void testFunctionRegistryHasUtilFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("util.md5"));
-    assertTrue(CypherFunctionRegistry.hasFunction("util.sha1"));
-    assertTrue(CypherFunctionRegistry.hasFunction("util.sha256"));
-    assertTrue(CypherFunctionRegistry.hasFunction("util.sha512"));
-    assertTrue(CypherFunctionRegistry.hasFunction("util.compress"));
-    assertTrue(CypherFunctionRegistry.hasFunction("util.decompress"));
-    assertTrue(CypherFunctionRegistry.hasFunction("util.sleep"));
-    assertTrue(CypherFunctionRegistry.hasFunction("util.validate"));
+    assertThat(CypherFunctionRegistry.hasFunction("util.md5")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("util.sha1")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("util.sha256")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("util.sha512")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("util.compress")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("util.decompress")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("util.sleep")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("util.validate")).isTrue();
+
   }
 
   @Test
   public void testUtilMd5() {
     final StatelessFunction fn = CypherFunctionRegistry.get("util.md5");
-    final String result = (String) fn.execute(new Object[]{"hello"}, null);
-    assertEquals("5d41402abc4b2a76b9719d911017c592", result);
+    final String result = (String) fn.execute(new Object[] { "hello" }, null);
+    assertThat(result).isEqualTo("5d41402abc4b2a76b9719d911017c592");
   }
 
   @Test
   public void testUtilSha1() {
     final StatelessFunction fn = CypherFunctionRegistry.get("util.sha1");
-    final String result = (String) fn.execute(new Object[]{"hello"}, null);
-    assertEquals("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d", result);
+    final String result = (String) fn.execute(new Object[] { "hello" }, null);
+    assertThat(result).isEqualTo("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d");
   }
 
   @Test
   public void testUtilSha256() {
     final StatelessFunction fn = CypherFunctionRegistry.get("util.sha256");
-    final String result = (String) fn.execute(new Object[]{"hello"}, null);
-    assertEquals("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", result);
+    final String result = (String) fn.execute(new Object[] { "hello" }, null);
+    assertThat(result).isEqualTo("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
   }
 
   @Test
   public void testUtilSha512() {
     final StatelessFunction fn = CypherFunctionRegistry.get("util.sha512");
-    final String result = (String) fn.execute(new Object[]{"hello"}, null);
-    assertEquals("9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043", result);
+    final String result = (String) fn.execute(new Object[] { "hello" }, null);
+    assertThat(result).isEqualTo(
+        "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043");
   }
 
   @Test
@@ -626,79 +626,78 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction decompress = CypherFunctionRegistry.get("util.decompress");
 
     final String original = "Hello, World! This is a test string for compression.";
-    final String compressed = (String) compress.execute(new Object[]{original, "gzip"}, null);
-    assertNotNull(compressed);
+    final String compressed = (String) compress.execute(new Object[] { original, "gzip" }, null);
+    assertThat(compressed).isNotNull();
 
-    final String decompressed = (String) decompress.execute(new Object[]{compressed, "gzip"}, null);
-    assertEquals(original, decompressed);
+    final String decompressed = (String) decompress.execute(new Object[] { compressed, "gzip" }, null);
+    assertThat(decompressed).isEqualTo(original);
   }
 
   @Test
   public void testUtilValidateSuccess() {
     final StatelessFunction fn = CypherFunctionRegistry.get("util.validate");
-    final Boolean result = (Boolean) fn.execute(new Object[]{true, "Should not throw"}, null);
-    assertTrue(result);
+    final Boolean result = (Boolean) fn.execute(new Object[] { true, "Should not throw" }, null);
+    assertThat(result).isTrue();
   }
 
   @Test
   public void testUtilValidateFailure() {
     final StatelessFunction fn = CypherFunctionRegistry.get("util.validate");
-    assertThrows(IllegalArgumentException.class, () -> {
-      fn.execute(new Object[]{false, "Validation failed!"}, null);
-    });
+    assertThatThrownBy(() -> fn.execute(new Object[] { false, "Validation failed!" }, null))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   // ===================== AGG FUNCTION TESTS =====================
 
   @Test
   public void testFunctionRegistryHasAggFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.first"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.last"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.nth"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.slice"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.median"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.percentiles"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.statistics"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.product"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.minItems"));
-    assertTrue(CypherFunctionRegistry.hasFunction("agg.maxItems"));
+    assertThat(CypherFunctionRegistry.hasFunction("agg.first")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.last")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.nth")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.slice")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.median")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.percentiles")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.statistics")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.product")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.minItems")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("agg.maxItems")).isTrue();
   }
 
   @Test
   public void testAggFirst() {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.first");
-    assertEquals("a", fn.execute(new Object[]{List.of("a", "b", "c")}, null));
-    assertEquals("b", fn.execute(new Object[]{Arrays.asList(null, "b", "c")}, null));
+    assertThat(fn.execute(new Object[] { List.of("a", "b", "c") }, null)).isEqualTo("a");
+    assertThat(fn.execute(new Object[] { Arrays.asList(null, "b", "c") }, null)).isEqualTo("b");
   }
 
   @Test
   public void testAggLast() {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.last");
-    assertEquals("c", fn.execute(new Object[]{List.of("a", "b", "c")}, null));
+    assertThat(fn.execute(new Object[] { List.of("a", "b", "c") }, null)).isEqualTo("c");
   }
 
   @Test
   public void testAggNth() {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.nth");
-    assertEquals("b", fn.execute(new Object[]{List.of("a", "b", "c"), 1}, null));
-    assertNull(fn.execute(new Object[]{List.of("a", "b", "c"), 10}, null));
+    assertThat(fn.execute(new Object[] { List.of("a", "b", "c"), 1 }, null)).isEqualTo("b");
+    assertThat(fn.execute(new Object[] { List.of("a", "b", "c"), 10 }, null)).isNull();
   }
 
   @Test
   public void testAggSlice() {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.slice");
     @SuppressWarnings("unchecked")
-    final List<Object> result = (List<Object>) fn.execute(new Object[]{List.of(1, 2, 3, 4, 5), 1, 4}, null);
-    assertEquals(List.of(2, 3, 4), result);
+    final List<Object> result = (List<Object>) fn.execute(new Object[] { List.of(1, 2, 3, 4, 5), 1, 4 }, null);
+    assertThat(result).isEqualTo(List.of(2, 3, 4));
   }
 
   @Test
   public void testAggMedian() {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.median");
     // Odd number of elements
-    assertEquals(3.0, fn.execute(new Object[]{List.of(1, 2, 3, 4, 5)}, null));
+    assertThat(fn.execute(new Object[] { List.of(1, 2, 3, 4, 5) }, null)).isEqualTo(3.0);
     // Even number of elements
-    assertEquals(2.5, fn.execute(new Object[]{List.of(1, 2, 3, 4)}, null));
+    assertThat(fn.execute(new Object[] { List.of(1, 2, 3, 4) }, null)).isEqualTo(2.5);
   }
 
   @Test
@@ -706,9 +705,9 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.percentiles");
     @SuppressWarnings("unchecked")
     final List<Double> result = (List<Double>) fn.execute(
-        new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0), List.of(0.5)}, null);
-    assertEquals(1, result.size());
-    assertEquals(3.0, result.get(0), 0.001);
+        new Object[] { List.of(1.0, 2.0, 3.0, 4.0, 5.0), List.of(0.5) }, null);
+    assertThat(result).hasSize(1);
+    assertThat(result.getFirst()).isCloseTo(3.0, within(0.001));
   }
 
   @Test
@@ -716,19 +715,19 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.statistics");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0)}, null);
+        new Object[] { List.of(1.0, 2.0, 3.0, 4.0, 5.0) }, null);
 
-    assertEquals(5L, result.get("count"));
-    assertEquals(1.0, result.get("min"));
-    assertEquals(5.0, result.get("max"));
-    assertEquals(15.0, result.get("sum"));
-    assertEquals(3.0, result.get("mean"));
+    assertThat(result.get("count")).isEqualTo(5L);
+    assertThat(result.get("min")).isEqualTo(1.0);
+    assertThat(result.get("max")).isEqualTo(5.0);
+    assertThat(result.get("sum")).isEqualTo(15.0);
+    assertThat(result.get("mean")).isEqualTo(3.0);
   }
 
   @Test
   public void testAggProduct() {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.product");
-    assertEquals(120.0, fn.execute(new Object[]{List.of(1.0, 2.0, 3.0, 4.0, 5.0)}, null));
+    assertThat(fn.execute(new Object[] { List.of(1.0, 2.0, 3.0, 4.0, 5.0) }, null)).isEqualTo(120.0);
   }
 
   @Test
@@ -736,14 +735,12 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.minItems");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{List.of(3.0, 1.0, 2.0, 1.0, 4.0), List.of("c", "a", "b", "d", "e")}, null);
+        new Object[] { List.of(3.0, 1.0, 2.0, 1.0, 4.0), List.of("c", "a", "b", "d", "e") }, null);
 
-    assertEquals(1.0, result.get("value"));
+    assertThat(result.get("value")).isEqualTo(1.0);
     @SuppressWarnings("unchecked")
     final List<Object> items = (List<Object>) result.get("items");
-    assertEquals(2, items.size());
-    assertTrue(items.contains("a"));
-    assertTrue(items.contains("d"));
+    assertThat(items).hasSize(2).contains("a", "d");
   }
 
   @Test
@@ -751,60 +748,60 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.maxItems");
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{List.of(3.0, 1.0, 5.0, 2.0, 5.0), List.of("a", "b", "c", "d", "e")}, null);
+        new Object[] { List.of(3.0, 1.0, 5.0, 2.0, 5.0), List.of("a", "b", "c", "d", "e") }, null);
 
-    assertEquals(5.0, result.get("value"));
+    assertThat(result.get("value")).isEqualTo(5.0);
     @SuppressWarnings("unchecked")
     final List<Object> items = (List<Object>) result.get("items");
-    assertEquals(2, items.size());
-    assertTrue(items.contains("c"));
-    assertTrue(items.contains("e"));
+    assertThat(items).hasSize(2).contains("c", "e");
   }
 
   // ===================== NODE FUNCTION TESTS =====================
 
   @Test
   public void testFunctionRegistryHasNodeFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("node.degree"));
-    assertTrue(CypherFunctionRegistry.hasFunction("node.degree.in"));
-    assertTrue(CypherFunctionRegistry.hasFunction("node.degree.out"));
-    assertTrue(CypherFunctionRegistry.hasFunction("node.labels"));
-    assertTrue(CypherFunctionRegistry.hasFunction("node.id"));
-    assertTrue(CypherFunctionRegistry.hasFunction("node.relationship.exists"));
-    assertTrue(CypherFunctionRegistry.hasFunction("node.relationship.types"));
+    assertThat(CypherFunctionRegistry.hasFunction("node.degree")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("node.degree.in")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("node.degree.out")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("node.labels")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("node.id")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("node.relationship.exists")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("node.relationship.types")).isTrue();
+
   }
 
   @Test
   public void testApocPrefixCompatibilityForNodeFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.node.degree"));
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.node.labels"));
-    assertSame(CypherFunctionRegistry.get("node.degree"), CypherFunctionRegistry.get("apoc.node.degree"));
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.node.degree")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.node.labels")).isTrue();
+    assertThat(CypherFunctionRegistry.get("apoc.node.degree")).isSameAs(CypherFunctionRegistry.get("node.degree"));
   }
 
   // ===================== REL FUNCTION TESTS =====================
 
   @Test
   public void testFunctionRegistryHasRelFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("rel.id"));
-    assertTrue(CypherFunctionRegistry.hasFunction("rel.type"));
-    assertTrue(CypherFunctionRegistry.hasFunction("rel.startNode"));
-    assertTrue(CypherFunctionRegistry.hasFunction("rel.endNode"));
+    assertThat(CypherFunctionRegistry.hasFunction("rel.id")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("rel.type")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("rel.startNode")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("rel.endNode")).isTrue();
   }
 
   @Test
   public void testApocPrefixCompatibilityForRelFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("apoc.rel.type"));
-    assertSame(CypherFunctionRegistry.get("rel.type"), CypherFunctionRegistry.get("apoc.rel.type"));
+    assertThat(CypherFunctionRegistry.hasFunction("apoc.rel.type")).isTrue();
+    assertThat(CypherFunctionRegistry.get("apoc.rel.type")).isSameAs(CypherFunctionRegistry.get("rel.type"));
   }
 
   // ===================== PATH FUNCTION TESTS =====================
 
   @Test
   public void testFunctionRegistryHasPathFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("path.create"));
-    assertTrue(CypherFunctionRegistry.hasFunction("path.combine"));
-    assertTrue(CypherFunctionRegistry.hasFunction("path.slice"));
-    assertTrue(CypherFunctionRegistry.hasFunction("path.elements"));
+    assertThat(CypherFunctionRegistry.hasFunction("path.create")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("path.combine")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("path.slice")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("path.elements")).isTrue();
+
   }
 
   @Test
@@ -812,11 +809,11 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   public void testPathCreate() {
     final StatelessFunction fn = CypherFunctionRegistry.get("path.create");
     final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[]{"startNode", List.of("rel1", "rel2")}, null);
+        new Object[] { "startNode", List.of("rel1", "rel2") }, null);
 
-    assertNotNull(result);
-    assertEquals("path", result.get("_type"));
-    assertEquals(2, result.get("length"));
+    assertThat(result).isNotNull();
+    assertThat(result.get("_type")).isEqualTo("path");
+    assertThat(result.get("length")).isEqualTo(2);
   }
 
   @Test
@@ -824,49 +821,48 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   public void testPathElements() {
     final StatelessFunction createFn = CypherFunctionRegistry.get("path.create");
     final Map<String, Object> path = (Map<String, Object>) createFn.execute(
-        new Object[]{"startNode", List.of("rel1")}, null);
+        new Object[] { "startNode", List.of("rel1") }, null);
 
     final StatelessFunction fn = CypherFunctionRegistry.get("path.elements");
-    final List<Object> elements = (List<Object>) fn.execute(new Object[]{path}, null);
+    final List<Object> elements = (List<Object>) fn.execute(new Object[] { path }, null);
 
-    assertNotNull(elements);
-    assertTrue(elements.size() >= 1);
+    assertThat(elements).isNotNull().isNotEmpty();
   }
 
   // ===================== CREATE FUNCTION TESTS =====================
 
   @Test
   public void testFunctionRegistryHasCreateFunctions() {
-    assertTrue(CypherFunctionRegistry.hasFunction("create.uuid"));
-    assertTrue(CypherFunctionRegistry.hasFunction("create.uuidBase64"));
-    assertTrue(CypherFunctionRegistry.hasFunction("create.vNode"));
-    assertTrue(CypherFunctionRegistry.hasFunction("create.vRelationship"));
+    assertThat(CypherFunctionRegistry.hasFunction("create.uuid")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("create.uuidBase64")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("create.vNode")).isTrue();
+    assertThat(CypherFunctionRegistry.hasFunction("create.vRelationship")).isTrue();
   }
 
   @Test
   public void testCreateUuid() {
     final StatelessFunction fn = CypherFunctionRegistry.get("create.uuid");
-    final String uuid1 = (String) fn.execute(new Object[]{}, null);
-    final String uuid2 = (String) fn.execute(new Object[]{}, null);
+    final String uuid1 = (String) fn.execute(new Object[] {}, null);
+    final String uuid2 = (String) fn.execute(new Object[] {}, null);
 
-    assertNotNull(uuid1);
-    assertNotNull(uuid2);
-    assertNotEquals(uuid1, uuid2);
+    assertThat(uuid1).isNotNull();
+    assertThat(uuid2).isNotNull();
+    assertThat(uuid1).isNotEqualTo(uuid2);
     // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-    assertTrue(uuid1.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
+    assertThat(uuid1).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
   }
 
   @Test
   public void testCreateUuidBase64() {
     final StatelessFunction fn = CypherFunctionRegistry.get("create.uuidBase64");
-    final String uuid1 = (String) fn.execute(new Object[]{}, null);
-    final String uuid2 = (String) fn.execute(new Object[]{}, null);
+    final String uuid1 = (String) fn.execute(new Object[] {}, null);
+    final String uuid2 = (String) fn.execute(new Object[] {}, null);
 
-    assertNotNull(uuid1);
-    assertNotNull(uuid2);
-    assertNotEquals(uuid1, uuid2);
+    assertThat(uuid1).isNotNull();
+    assertThat(uuid2).isNotNull();
+    assertThat(uuid1).isNotEqualTo(uuid2);
     // Base64 UUID should be 22 characters (128 bits / 6 bits per char = ~22)
-    assertEquals(22, uuid1.length());
+    assertThat(uuid1).hasSize(22);
   }
 
   @Test
@@ -874,13 +870,13 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   public void testCreateVNode() {
     final StatelessFunction fn = CypherFunctionRegistry.get("create.vNode");
     final Map<String, Object> vNode = (Map<String, Object>) fn.execute(
-        new Object[]{List.of("Person", "Employee"), Map.of("name", "John", "age", 30)}, null);
+        new Object[] { List.of("Person", "Employee"), Map.of("name", "John", "age", 30) }, null);
 
-    assertNotNull(vNode);
-    assertEquals("vNode", vNode.get("_type"));
-    assertEquals(List.of("Person", "Employee"), vNode.get("_labels"));
-    assertEquals("John", vNode.get("name"));
-    assertEquals(30, vNode.get("age"));
+    assertThat(vNode).isNotNull();
+    assertThat(vNode.get("_type")).isEqualTo("vNode");
+    assertThat(vNode.get("_labels")).isEqualTo(List.of("Person", "Employee"));
+    assertThat(vNode.get("name")).isEqualTo("John");
+    assertThat(vNode.get("age")).isEqualTo(30);
   }
 
   @Test
@@ -888,204 +884,194 @@ public class CypherBuiltInFunctionsTest extends TestHelper {
   public void testCreateVRelationship() {
     final StatelessFunction fn = CypherFunctionRegistry.get("create.vRelationship");
     final Map<String, Object> vRel = (Map<String, Object>) fn.execute(
-        new Object[]{"node1", "KNOWS", "node2", Map.of("since", 2020)}, null);
+        new Object[] { "node1", "KNOWS", "node2", Map.of("since", 2020) }, null);
 
-    assertNotNull(vRel);
-    assertEquals("vRelationship", vRel.get("_type"));
-    assertEquals("KNOWS", vRel.get("_relType"));
-    assertEquals(2020, vRel.get("since"));
+    assertThat(vRel).isNotNull();
+    assertThat(vRel.get("_type")).isEqualTo("vRelationship");
+    assertThat(vRel.get("_relType")).isEqualTo("KNOWS");
+    assertThat(vRel.get("since")).isEqualTo(2020);
   }
 
   // ===================== SPRINT 4: ALGORITHM PROCEDURE TESTS =====================
 
   @Test
   public void testProcedureRegistryHasAlgorithmProcedures() {
-    assertTrue(CypherProcedureRegistry.hasProcedure("algo.dijkstra"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("algo.astar"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("algo.allsimplepaths"));
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.dijkstra")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.astar")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.allsimplepaths")).isTrue();
   }
 
   @Test
   public void testApocPrefixCompatibilityForAlgorithmProcedures() {
-    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.algo.dijkstra"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.algo.astar"));
-    assertSame(CypherProcedureRegistry.get("algo.dijkstra"), CypherProcedureRegistry.get("apoc.algo.dijkstra"));
+    assertThat(CypherProcedureRegistry.hasProcedure("apoc.algo.dijkstra")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("apoc.algo.astar")).isTrue();
+    assertThat(CypherProcedureRegistry.get("apoc.algo.dijkstra")).isSameAs(CypherProcedureRegistry.get("algo.dijkstra"));
   }
 
   @Test
   public void testAlgoDijkstraProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("algo.dijkstra");
-    assertNotNull(proc);
-    assertEquals("algo.dijkstra", proc.getName());
-    assertEquals(4, proc.getMinArgs());
-    assertEquals(5, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("path"));
-    assertTrue(proc.getYieldFields().contains("weight"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("algo.dijkstra");
+    assertThat(proc.getMinArgs()).isEqualTo(4);
+    assertThat(proc.getMaxArgs()).isEqualTo(5);
+    assertThat(proc.getYieldFields()).contains("path", "weight");
   }
 
   @Test
   public void testAlgoAStarProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("algo.astar");
-    assertNotNull(proc);
-    assertEquals("algo.astar", proc.getName());
-    assertEquals(4, proc.getMinArgs());
-    assertEquals(6, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("path"));
-    assertTrue(proc.getYieldFields().contains("weight"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("algo.astar");
+    assertThat(proc.getMinArgs()).isEqualTo(4);
+    assertThat(proc.getMaxArgs()).isEqualTo(6);
+    assertThat(proc.getYieldFields()).contains("path", "weight");
   }
 
   @Test
   public void testAlgoAllSimplePathsProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("algo.allsimplepaths");
-    assertNotNull(proc);
-    assertEquals("algo.allsimplepaths", proc.getName());
-    assertEquals(4, proc.getMinArgs());
-    assertEquals(4, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("path"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("algo.allsimplepaths");
+    assertThat(proc.getMinArgs()).isEqualTo(4);
+    assertThat(proc.getMaxArgs()).isEqualTo(4);
+    assertThat(proc.getYieldFields()).contains("path");
   }
 
   // ===================== SPRINT 4: PATH EXPANSION PROCEDURE TESTS =====================
 
   @Test
   public void testProcedureRegistryHasPathProcedures() {
-    assertTrue(CypherProcedureRegistry.hasProcedure("path.expand"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("path.expandconfig"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("path.subgraphnodes"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("path.subgraphall"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("path.spanningtree"));
+    assertThat(CypherProcedureRegistry.hasProcedure("path.expand")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("path.expandconfig")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("path.subgraphnodes")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("path.subgraphall")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("path.spanningtree")).isTrue();
   }
 
   @Test
   public void testApocPrefixCompatibilityForPathProcedures() {
-    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.path.expand"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.path.expandconfig"));
-    assertSame(CypherProcedureRegistry.get("path.expand"), CypherProcedureRegistry.get("apoc.path.expand"));
+    assertThat(CypherProcedureRegistry.hasProcedure("apoc.path.expand")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("apoc.path.expandconfig")).isTrue();
+    assertThat(CypherProcedureRegistry.get("apoc.path.expand")).isSameAs(CypherProcedureRegistry.get("path.expand"));
   }
 
   @Test
   public void testPathExpandProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("path.expand");
-    assertNotNull(proc);
-    assertEquals("path.expand", proc.getName());
-    assertEquals(5, proc.getMinArgs());
-    assertEquals(5, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("path"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("path.expand");
+    assertThat(proc.getMinArgs()).isEqualTo(5);
+    assertThat(proc.getMaxArgs()).isEqualTo(5);
+    assertThat(proc.getYieldFields()).contains("path");
   }
 
   @Test
   public void testPathExpandConfigProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("path.expandconfig");
-    assertNotNull(proc);
-    assertEquals("path.expandconfig", proc.getName());
-    assertEquals(2, proc.getMinArgs());
-    assertEquals(2, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("path"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("path.expandconfig");
+    assertThat(proc.getMinArgs()).isEqualTo(2);
+    assertThat(proc.getMaxArgs()).isEqualTo(2);
+    assertThat(proc.getYieldFields()).contains("path");
   }
 
   @Test
   public void testPathSubgraphNodesProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("path.subgraphnodes");
-    assertNotNull(proc);
-    assertEquals("path.subgraphnodes", proc.getName());
-    assertEquals(2, proc.getMinArgs());
-    assertEquals(2, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("node"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("path.subgraphnodes");
+    assertThat(proc.getMinArgs()).isEqualTo(2);
+    assertThat(proc.getMaxArgs()).isEqualTo(2);
+    assertThat(proc.getYieldFields()).contains("node");
   }
 
   @Test
   public void testPathSubgraphAllProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("path.subgraphall");
-    assertNotNull(proc);
-    assertEquals("path.subgraphall", proc.getName());
-    assertEquals(2, proc.getMinArgs());
-    assertEquals(2, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("nodes"));
-    assertTrue(proc.getYieldFields().contains("relationships"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("path.subgraphall");
+    assertThat(proc.getMinArgs()).isEqualTo(2);
+    assertThat(proc.getMaxArgs()).isEqualTo(2);
+    assertThat(proc.getYieldFields()).contains("nodes", "relationships");
   }
 
   @Test
   public void testPathSpanningTreeProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("path.spanningtree");
-    assertNotNull(proc);
-    assertEquals("path.spanningtree", proc.getName());
-    assertEquals(2, proc.getMinArgs());
-    assertEquals(2, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("path"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("path.spanningtree");
+    assertThat(proc.getMinArgs()).isEqualTo(2);
+    assertThat(proc.getMaxArgs()).isEqualTo(2);
+    assertThat(proc.getYieldFields()).contains("path");
   }
 
   // ===================== SPRINT 4: META PROCEDURE TESTS =====================
 
   @Test
   public void testProcedureRegistryHasMetaProcedures() {
-    assertTrue(CypherProcedureRegistry.hasProcedure("meta.graph"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("meta.schema"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("meta.stats"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("meta.nodetypeproperties"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("meta.reltypeproperties"));
+    assertThat(CypherProcedureRegistry.hasProcedure("meta.graph")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("meta.schema")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("meta.stats")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("meta.nodetypeproperties")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("meta.reltypeproperties")).isTrue();
   }
 
   @Test
   public void testApocPrefixCompatibilityForMetaProcedures() {
-    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.meta.graph"));
-    assertTrue(CypherProcedureRegistry.hasProcedure("apoc.meta.schema"));
-    assertSame(CypherProcedureRegistry.get("meta.graph"), CypherProcedureRegistry.get("apoc.meta.graph"));
+    assertThat(CypherProcedureRegistry.hasProcedure("apoc.meta.graph")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("apoc.meta.schema")).isTrue();
+    assertThat(CypherProcedureRegistry.get("apoc.meta.graph")).isSameAs(CypherProcedureRegistry.get("meta.graph"));
   }
 
   @Test
   public void testMetaGraphProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("meta.graph");
-    assertNotNull(proc);
-    assertEquals("meta.graph", proc.getName());
-    assertEquals(0, proc.getMinArgs());
-    assertEquals(0, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("nodes"));
-    assertTrue(proc.getYieldFields().contains("relationships"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("meta.graph");
+    assertThat(proc.getMinArgs()).isEqualTo(0);
+    assertThat(proc.getMaxArgs()).isEqualTo(0);
+    assertThat(proc.getYieldFields()).contains("nodes", "relationships");
   }
 
   @Test
   public void testMetaSchemaProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("meta.schema");
-    assertNotNull(proc);
-    assertEquals("meta.schema", proc.getName());
-    assertEquals(0, proc.getMinArgs());
-    assertEquals(0, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("value"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("meta.schema");
+    assertThat(proc.getMinArgs()).isEqualTo(0);
+    assertThat(proc.getMaxArgs()).isEqualTo(0);
+    assertThat(proc.getYieldFields()).contains("value");
   }
 
   @Test
   public void testMetaStatsProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("meta.stats");
-    assertNotNull(proc);
-    assertEquals("meta.stats", proc.getName());
-    assertEquals(0, proc.getMinArgs());
-    assertEquals(0, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("value"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("meta.stats");
+    assertThat(proc.getMinArgs()).isEqualTo(0);
+    assertThat(proc.getMaxArgs()).isEqualTo(0);
+    assertThat(proc.getYieldFields()).contains("value");
   }
 
   @Test
   public void testMetaNodeTypePropertiesProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("meta.nodetypeproperties");
-    assertNotNull(proc);
-    assertEquals("meta.nodetypeproperties", proc.getName());
-    assertEquals(0, proc.getMinArgs());
-    assertEquals(0, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("nodeType"));
-    assertTrue(proc.getYieldFields().contains("propertyName"));
-    assertTrue(proc.getYieldFields().contains("propertyTypes"));
-    assertTrue(proc.getYieldFields().contains("mandatory"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("meta.nodetypeproperties");
+    assertThat(proc.getMinArgs()).isEqualTo(0);
+    assertThat(proc.getMaxArgs()).isEqualTo(0);
+    assertThat(proc.getYieldFields()).contains("nodeType", "propertyName", "propertyTypes", "mandatory");
   }
 
   @Test
   public void testMetaRelTypePropertiesProcedureMetadata() {
     final CypherProcedure proc = CypherProcedureRegistry.get("meta.reltypeproperties");
-    assertNotNull(proc);
-    assertEquals("meta.reltypeproperties", proc.getName());
-    assertEquals(0, proc.getMinArgs());
-    assertEquals(0, proc.getMaxArgs());
-    assertTrue(proc.getYieldFields().contains("relType"));
-    assertTrue(proc.getYieldFields().contains("propertyName"));
-    assertTrue(proc.getYieldFields().contains("propertyTypes"));
-    assertTrue(proc.getYieldFields().contains("mandatory"));
+    assertThat(proc).isNotNull();
+    assertThat(proc.getName()).isEqualTo("meta.reltypeproperties");
+    assertThat(proc.getMinArgs()).isEqualTo(0);
+    assertThat(proc.getMaxArgs()).isEqualTo(0);
+    assertThat(proc.getYieldFields()).contains("relType", "propertyName", "propertyTypes", "mandatory");
   }
 
   // Note: Integration tests for Cypher queries with built-in functions

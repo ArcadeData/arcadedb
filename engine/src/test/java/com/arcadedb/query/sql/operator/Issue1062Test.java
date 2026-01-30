@@ -36,10 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * when used with a full-text index. The fix enables CONTAINSTEXT to use full-text indexes
  * for efficient text searches.
  */
-public class Issue1062Test extends TestHelper {
+class Issue1062Test extends TestHelper {
 
   @Test
-  void testExactScenarioFromIssue() {
+  void exactScenarioFromIssue() {
     database.transaction(() -> {
       // Exact setup from issue #1062
       database.command("sql", "CREATE DOCUMENT TYPE `Person:Resource`");
@@ -80,7 +80,7 @@ public class Issue1062Test extends TestHelper {
   }
 
   @Test
-  void testMultipleKeywordsWithFullTextIndex() {
+  void multipleKeywordsWithFullTextIndex() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Book");
       database.command("sql", "CREATE PROPERTY Book.abstract STRING");
@@ -106,7 +106,7 @@ public class Issue1062Test extends TestHelper {
   }
 
   @Test
-  void testEqualsOperatorWithFullTextIndex() {
+  void equalsOperatorWithFullTextIndex() {
     // Test the workaround mentioned in issue comment: using = instead of CONTAINSTEXT
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
@@ -146,7 +146,7 @@ public class Issue1062Test extends TestHelper {
   }
 
   @Test
-  void testLikeOperatorComparison() {
+  void likeOperatorComparison() {
     // Test comparison with LIKE operator (mentioned in issue comments)
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Person");

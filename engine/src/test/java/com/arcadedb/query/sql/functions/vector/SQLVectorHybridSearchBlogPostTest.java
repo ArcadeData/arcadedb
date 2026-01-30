@@ -90,7 +90,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testBlogPost_DefineJavaScriptFunction_WORKS() {
+  void blogPostDefineJavaScriptFunctionWORKS() {
     setupDocuments();
 
     database.transaction(() -> {
@@ -115,7 +115,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testBlogPost_HybridSearchWithJavaScriptFunction_WORKS() {
+  void blogPostHybridSearchWithJavaScriptFunctionWORKS() {
     setupDocuments();
 
     database.transaction(() -> {
@@ -165,7 +165,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testBlogPost_TextMatchScoreJavaScriptHelper_WORKS() {
+  void blogPostTextMatchScoreJavaScriptHelperWORKS() {
     setupDocuments();
 
     database.transaction(() -> {
@@ -209,7 +209,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testWorking_VectorHybridScoreWithLiterals() {
+  void workingVectorHybridScoreWithLiterals() {
     setupDocuments();
 
     database.transaction(() -> {
@@ -229,7 +229,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   }
 
   @Test
-  void testWorking_VectorDistanceWithLiteralArrays() {
+  void workingVectorDistanceWithLiteralArrays() {
     setupDocuments();
 
     database.transaction(() -> {
@@ -248,7 +248,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   }
 
   @Test
-  void testWorking_SimpleTextSearch() {
+  void workingSimpleTextSearch() {
     setupDocuments();
 
     database.transaction(() -> {
@@ -273,7 +273,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testWorking_ManualHybridSearchWithoutUDFs() {
+  void workingManualHybridSearchWithoutUDFs() {
     setupDocuments();
 
     database.transaction(() -> {
@@ -309,7 +309,7 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
   }
 
   @Test
-  void testWorking_HybridScoreInSelectWithCalculatedValues() {
+  void workingHybridScoreInSelectWithCalculatedValues() {
     setupDocuments();
 
     database.transaction(() -> {

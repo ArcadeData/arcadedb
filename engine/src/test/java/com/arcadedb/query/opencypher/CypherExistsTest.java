@@ -32,11 +32,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test EXISTS() expression in Cypher queries.
  */
-public class CypherExistsTest {
+class CypherExistsTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/databases/cypherexists").create();
 
     database.transaction(() -> {
@@ -60,14 +60,14 @@ public class CypherExistsTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
     }
   }
 
   @Test
-  public void testExistsWithSimplePattern() {
+  void existsWithSimplePattern() {
     // Find people who work at a company
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) WHERE EXISTS { (p)-[:WORKS_AT]->(:Company) } RETURN p.name ORDER BY p.name");
@@ -83,7 +83,7 @@ public class CypherExistsTest {
   }
 
   @Test
-  public void testExistsWithNonMatchingPattern() {
+  void existsWithNonMatchingPattern() {
     // Find people who don't have KNOWS relationships
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) WHERE NOT EXISTS { (p)-[:KNOWS]->() } RETURN p.name ORDER BY p.name");
@@ -99,7 +99,7 @@ public class CypherExistsTest {
   }
 
   @Test
-  public void testExistsInReturn() {
+  void existsInReturn() {
     // Return boolean indicating whether person works at a company
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) RETURN p.name, EXISTS { (p)-[:WORKS_AT]->(:Company) } as hasJob ORDER BY p.name");
@@ -121,7 +121,7 @@ public class CypherExistsTest {
   }
 
   @Test
-  public void testExistsWithMatchInSubquery() {
+  void existsWithMatchInSubquery() {
     // EXISTS with full MATCH clause
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:WORKS_AT]->(c:Company) WHERE c.name = 'Acme Corp' } RETURN p.name ORDER BY p.name");

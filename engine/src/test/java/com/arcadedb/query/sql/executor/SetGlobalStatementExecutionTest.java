@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SetGlobalStatementExecutionTest extends TestHelper {
 
   @Test
-  void testSetGlobalString() {
+  void setGlobalString() {
     database.command("sql", "SET GLOBAL myVar = 'hello'");
 
     final ResultSet result = database.query("sql", "SELECT $myVar as value");
@@ -43,7 +43,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testSetGlobalNumber() {
+  void setGlobalNumber() {
     database.command("sql", "SET GLOBAL counter = 42");
 
     final ResultSet result = database.query("sql", "SELECT $counter as value");
@@ -53,7 +53,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testSetGlobalBoolean() {
+  void setGlobalBoolean() {
     database.command("sql", "SET GLOBAL flag = true");
 
     final ResultSet result = database.query("sql", "SELECT $flag as value");
@@ -63,7 +63,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testSetGlobalMap() {
+  void setGlobalMap() {
     database.command("sql", "SET GLOBAL config = {\"key\": \"value\", \"num\": 123}");
 
     final ResultSet result = database.query("sql", "SELECT $config as value");
@@ -74,7 +74,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testSetGlobalNull() {
+  void setGlobalNull() {
     database.command("sql", "SET GLOBAL myVar = 'test'");
     assertThat(((DatabaseInternal) database).getGlobalVariable("myVar")).isEqualTo("test");
 
@@ -83,7 +83,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testLocalVariablePrecedence() {
+  void localVariablePrecedence() {
     database.command("sql", "SET GLOBAL myVar = 'global'");
 
     // Local LET variable should take precedence
@@ -101,7 +101,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testReservedVariableNames() {
+  void reservedVariableNames() {
     assertThatThrownBy(() -> database.command("sql", "SET GLOBAL parent = 'test'"))
         .hasMessageContaining("reserved");
 
@@ -110,7 +110,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testCrossQueryPersistence() {
+  void crossQueryPersistence() {
     // Set in first query
     database.command("sql", "SET GLOBAL sharedCounter = 100");
 
@@ -131,7 +131,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testGetGlobalVariables() {
+  void getGlobalVariables() {
     database.command("sql", "SET GLOBAL var1 = 'value1'");
     database.command("sql", "SET GLOBAL var2 = 'value2'");
 
@@ -141,7 +141,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testVariableNameWithDollarPrefix() {
+  void variableNameWithDollarPrefix() {
     // Both with and without $ prefix should work
     database.command("sql", "SET GLOBAL $withDollar = 'test1'");
     database.command("sql", "SET GLOBAL noDollar = 'test2'");
@@ -153,7 +153,7 @@ class SetGlobalStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testGlobalVariableInWhereClause() {
+  void globalVariableInWhereClause() {
     database.getSchema().createDocumentType("TestDoc");
     database.transaction(() -> {
       database.command("sql", "INSERT INTO TestDoc SET name = 'Alice', age = 30");

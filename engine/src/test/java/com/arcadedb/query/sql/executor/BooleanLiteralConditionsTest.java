@@ -13,11 +13,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test Boolean literal conditions (TRUE, FALSE, NULL) in WHERE clauses.
  */
-public class BooleanLiteralConditionsTest {
+class BooleanLiteralConditionsTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/BooleanLiteralConditionsTest").create();
     final DocumentType type = database.getSchema().createDocumentType("V");
 
@@ -40,7 +40,7 @@ public class BooleanLiteralConditionsTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -49,7 +49,7 @@ public class BooleanLiteralConditionsTest {
   }
 
   @Test
-  public void testTrueCondition() {
+  void trueCondition() {
     // WHERE TRUE should return all records
     ResultSet result = database.query("sql", "SELECT name FROM V WHERE TRUE");
 
@@ -63,7 +63,7 @@ public class BooleanLiteralConditionsTest {
   }
 
   @Test
-  public void testFalseCondition() {
+  void falseCondition() {
     // WHERE FALSE should return no records
     ResultSet result = database.query("sql", "SELECT name FROM V WHERE FALSE");
 
@@ -71,7 +71,7 @@ public class BooleanLiteralConditionsTest {
   }
 
   @Test
-  public void testNullCondition() {
+  void nullCondition() {
     // WHERE NULL should return no records (NULL is falsy in boolean context)
     ResultSet result = database.query("sql", "SELECT name FROM V WHERE NULL");
 
@@ -79,7 +79,7 @@ public class BooleanLiteralConditionsTest {
   }
 
   @Test
-  public void testTrueWithAnd() {
+  void trueWithAnd() {
     // WHERE TRUE AND condition should be equivalent to just condition
     ResultSet result = database.query("sql", "SELECT name FROM V WHERE TRUE AND age > 25");
 
@@ -95,7 +95,7 @@ public class BooleanLiteralConditionsTest {
   }
 
   @Test
-  public void testFalseWithOr() {
+  void falseWithOr() {
     // WHERE FALSE OR condition should be equivalent to just condition
     ResultSet result = database.query("sql", "SELECT name FROM V WHERE FALSE OR age = 25");
 
@@ -106,7 +106,7 @@ public class BooleanLiteralConditionsTest {
   }
 
   @Test
-  public void testComplexBooleanExpression() {
+  void complexBooleanExpression() {
     // WHERE (TRUE AND age > 30) OR (FALSE AND age < 20)
     // Should simplify to: age > 30
     ResultSet result = database.query("sql", "SELECT name FROM V WHERE (TRUE AND age > 30) OR (FALSE AND age < 20)");

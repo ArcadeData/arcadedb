@@ -29,16 +29,16 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for OPTIONAL MATCH clause functionality.
  */
-public class OpenCypherOptionalMatchTest {
+class OpenCypherOptionalMatchTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/databases/testopenopencypher-optional").create();
 
     // Create schema
@@ -60,7 +60,7 @@ public class OpenCypherOptionalMatchTest {
   }
 
   @AfterEach
-  public void cleanup() {
+  void cleanup() {
     if (database != null) {
       database.drop();
       database = null;
@@ -68,23 +68,23 @@ public class OpenCypherOptionalMatchTest {
   }
 
   @Test
-  public void testOptionalMatchWithExistingRelationship() {
+  void optionalMatchWithExistingRelationship() {
     // Alice has a KNOWS relationship, should return Alice and Bob
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Alice'}) " +
             "OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person) " +
             "RETURN a.name AS person, b.name AS knows");
 
-    assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    assertEquals("Alice", row.getProperty("person"));
-    assertEquals("Bob", row.getProperty("knows"));
-    assertFalse(result.hasNext());
+    assertThat(row.<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(row.<String>getProperty("knows")).isEqualTo("Bob");
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
   @Test
-  public void testMatchCharlieAlone() {
+  void matchCharlieAlone() {
     // First test that basic MATCH with property filter works
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Charlie'}) RETURN a.name AS person");
@@ -97,12 +97,12 @@ public class OpenCypherOptionalMatchTest {
     }
     result.close();
 
-    assertEquals(1, allResults.size(), "Expected exactly 1 result");
-    assertEquals("Charlie", allResults.get(0).getProperty("person"));
+    assertThat(allResults.size()).as("Expected exactly 1 result").isEqualTo(1);
+    assertThat(allResults.getFirst().<String>getProperty("person")).isEqualTo("Charlie");
   }
 
   @Test
-  public void testOptionalMatchWithoutRelationship() {
+  void optionalMatchWithoutRelationship() {
     // Charlie has no KNOWS relationship, should return Charlie with NULL for b
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name: 'Charlie'}) " +
@@ -118,29 +118,29 @@ public class OpenCypherOptionalMatchTest {
     }
     result.close();
 
-    assertEquals(1, allResults.size(), "Expected exactly 1 result");
-    final Result row = allResults.get(0);
-    assertEquals("Charlie", row.getProperty("person"));
-    assertNull(row.getProperty("knows"), "Expected NULL for knows when no relationship exists");
+    assertThat(allResults.size()).as("Expected exactly 1 result").isEqualTo(1);
+    final Result row = allResults.getFirst();
+    assertThat(row.<String>getProperty("person")).isEqualTo("Charlie");
+    assertThat(row.<String>getProperty("knows")).as("Expected NULL for knows when no relationship exists").isNull();
   }
 
   @Test
-  public void testOptionalMatchStandalone() {
+  void optionalMatchStandalone() {
     // OPTIONAL MATCH without preceding MATCH
     // Should return all Person nodes or NULL if no matches
     final ResultSet result = database.query("opencypher",
         "OPTIONAL MATCH (n:Person {name: 'NonExistent'}) " +
             "RETURN n.name AS name");
 
-    assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
-    assertNull(row.getProperty("name"), "Expected NULL when OPTIONAL MATCH finds nothing");
-    assertFalse(result.hasNext());
+    assertThat(row.<String>getProperty("name")).as("Expected NULL when OPTIONAL MATCH finds nothing").isNull();
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
   @Test
-  public void testMultiplePeopleWithOptionalMatch() {
+  void multiplePeopleWithOptionalMatch() {
     // All people, with optional KNOWS relationships
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person) " +
@@ -157,34 +157,36 @@ public class OpenCypherOptionalMatchTest {
     // Alice knows Bob
     // Bob knows nobody -> NULL
     // Charlie knows nobody -> NULL
-    assertEquals(3, results.size(), "Expected 3 results (one per person)");
+    assertThat(results.size()).as("Expected 3 results (one per person)").isEqualTo(3);
 
     // Alice -> Bob
-    assertEquals("Alice", results.get(0).getProperty("person"));
-    assertEquals("Bob", results.get(0).getProperty("knows"));
+
+    assertThat(results.get(0).<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(results.get(0).<String>getProperty("knows")).isEqualTo("Bob");
 
     // Bob -> NULL
-    assertEquals("Bob", results.get(1).getProperty("person"));
-    assertNull(results.get(1).getProperty("knows"));
+    assertThat(results.get(1).<String>getProperty("person")).isEqualTo("Bob");
+    assertThat(results.get(1).<String>getProperty("knows")).isNull();
 
     // Charlie -> NULL
-    assertEquals("Charlie", results.get(2).getProperty("person"));
-    assertNull(results.get(2).getProperty("knows"));
+    assertThat(results.get(2).<String>getProperty("person")).isEqualTo("Charlie");
+    assertThat(results.get(2).<String>getProperty("knows")).isNull();
   }
 
   @Test
-  public void testOptionalMatchWithWhere() {
+  void optionalMatchWithWhere() {
     // WHERE clause is now correctly scoped to OPTIONAL MATCH
     // It filters the optional match results but keeps rows where the match failed
 
     // Query: MATCH all people, try to find their KNOWS relationships with WHERE filter
     // WHERE filters within OPTIONAL MATCH, so people without matches still appear
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person) " +
-            "OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) " +
-            "WHERE b.age > 20 " +
-            "RETURN a.name AS person, b.name AS knows " +
-            "ORDER BY a.name");
+        """
+            MATCH (a:Person)
+            OPTIONAL MATCH (a)-[:KNOWS]->(b:Person)
+            WHERE b.age > 20
+            RETURN a.name AS person, b.name AS knows
+            ORDER BY a.name""");
 
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
@@ -194,18 +196,18 @@ public class OpenCypherOptionalMatchTest {
 
     // Correct behavior: WHERE filters within OPTIONAL MATCH
     // All people are returned, but only matches passing the filter are shown
-    assertEquals(3, results.size(), "All people should be returned");
+    assertThat(results.size()).as("All people should be returned").isEqualTo(3);
 
     // Alice -> Bob (matched and passed filter: age 25 > 20)
-    assertEquals("Alice", results.get(0).getProperty("person"));
-    assertEquals("Bob", results.get(0).getProperty("knows"));
+    assertThat(results.get(0).<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(results.get(0).<String>getProperty("knows")).isEqualTo("Bob");
 
     // Bob -> NULL (no outgoing relationships)
-    assertEquals("Bob", results.get(1).getProperty("person"));
-    assertNull(results.get(1).getProperty("knows"));
+    assertThat(results.get(1).<String>getProperty("person")).isEqualTo("Bob");
+    assertThat(results.get(1).<String>getProperty("knows")).isNull();
 
     // Charlie -> NULL (no outgoing relationships)
-    assertEquals("Charlie", results.get(2).getProperty("person"));
-    assertNull(results.get(2).getProperty("knows"));
+    assertThat(results.get(2).<String>getProperty("person")).isEqualTo("Charlie");
+    assertThat(results.get(2).<String>getProperty("knows")).isNull();
   }
 }

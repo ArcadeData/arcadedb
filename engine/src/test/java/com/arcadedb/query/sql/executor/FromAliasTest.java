@@ -13,11 +13,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test FROM clause alias functionality.
  */
-public class FromAliasTest {
+class FromAliasTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/FromAliasTest").create();
     final DocumentType type = database.getSchema().createDocumentType("V");
 
@@ -35,7 +35,7 @@ public class FromAliasTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -44,7 +44,7 @@ public class FromAliasTest {
   }
 
   @Test
-  public void testSimpleFromAlias() {
+  void simpleFromAlias() {
     // Test basic FROM alias with AS keyword
     // Note: ArcadeDB currently doesn't use alias in execution, but it should parse correctly
     ResultSet result = database.query("sql", "SELECT name, age FROM V AS v1 WHERE age > 25");
@@ -56,7 +56,7 @@ public class FromAliasTest {
   }
 
   @Test
-  public void testFromAliasWithoutAS() {
+  void fromAliasWithoutAS() {
     // Test FROM alias without AS keyword (AS is optional in SQL)
     // Note: Alias parsing works, but execution engine doesn't use it yet
     ResultSet result = database.query("sql", "SELECT name, age FROM V v2 WHERE name = 'Jane'");
@@ -68,7 +68,7 @@ public class FromAliasTest {
   }
 
   @Test
-  public void testSubqueryAlias() {
+  void subqueryAlias() {
     // Test subquery with alias
     // Note: Alias parsing works, but execution engine doesn't use it yet
     ResultSet result = database.query("sql", "SELECT name, age FROM (SELECT name, age FROM V WHERE age > 20) AS sub WHERE name = 'John'");

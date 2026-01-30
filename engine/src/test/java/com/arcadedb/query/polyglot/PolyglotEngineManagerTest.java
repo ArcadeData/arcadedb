@@ -19,47 +19,48 @@
 package com.arcadedb.query.polyglot;
 
 import org.graalvm.polyglot.Engine;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test for PolyglotEngineManager to ensure engine pooling works correctly.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class PolyglotEngineManagerTest {
+class PolyglotEngineManagerTest {
 
   @Test
-  public void testSharedEngineIsSingleton() {
+  void sharedEngineIsSingleton() {
     final PolyglotEngineManager manager = PolyglotEngineManager.getInstance();
-    Assertions.assertNotNull(manager, "PolyglotEngineManager instance should not be null");
+    assertThat(manager).as("PolyglotEngineManager instance should not be null").isNotNull();
 
     // Get the shared engine multiple times
     final Engine engine1 = manager.getSharedEngine();
     final Engine engine2 = manager.getSharedEngine();
     final Engine engine3 = manager.getSharedEngine();
 
-    Assertions.assertNotNull(engine1, "First engine instance should not be null");
-    Assertions.assertNotNull(engine2, "Second engine instance should not be null");
-    Assertions.assertNotNull(engine3, "Third engine instance should not be null");
+    assertThat(engine1).as("First engine instance should not be null").isNotNull();
+    assertThat(engine2).as("Second engine instance should not be null").isNotNull();
+    assertThat(engine3).as("Third engine instance should not be null").isNotNull();
 
     // Verify all references point to the same instance (singleton)
-    Assertions.assertSame(engine1, engine2, "Engine instances should be the same object (singleton)");
-    Assertions.assertSame(engine2, engine3, "Engine instances should be the same object (singleton)");
-    Assertions.assertSame(engine1, engine3, "Engine instances should be the same object (singleton)");
+    assertThat(engine2).as("Engine instances should be the same object (singleton)").isSameAs(engine1);
+    assertThat(engine3).as("Engine instances should be the same object (singleton)").isSameAs(engine2);
+    assertThat(engine3).as("Engine instances should be the same object (singleton)").isSameAs(engine1);
   }
 
   @Test
-  public void testMultipleManagerInstancesShareSameEngine() {
+  void multipleManagerInstancesShareSameEngine() {
     // Even though we get multiple manager instances (singleton), they should return the same engine
     final PolyglotEngineManager manager1 = PolyglotEngineManager.getInstance();
     final PolyglotEngineManager manager2 = PolyglotEngineManager.getInstance();
 
-    Assertions.assertSame(manager1, manager2, "Manager instances should be the same (singleton)");
+    assertThat(manager2).as("Manager instances should be the same (singleton)").isSameAs(manager1);
 
     final Engine engine1 = manager1.getSharedEngine();
     final Engine engine2 = manager2.getSharedEngine();
 
-    Assertions.assertSame(engine1, engine2, "Engines from different manager instances should be the same");
+    assertThat(engine2).as("Engines from different manager instances should be the same").isSameAs(engine1);
   }
 }

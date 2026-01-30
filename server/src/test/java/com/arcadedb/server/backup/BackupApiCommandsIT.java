@@ -43,7 +43,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
   private File backupConfigFile;
 
   @BeforeEach
-  public void beforeEachTest() {
+  void beforeEachTest() {
     // Ensure no backup config exists before each test
     backupConfigFile = new File(getServer(0).getRootPath() + File.separator + "config" + File.separator + "backup.json");
     if (backupConfigFile.exists())
@@ -51,7 +51,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
   }
 
   @AfterEach
-  public void afterEachTest() {
+  void afterEachTest() {
     // Clean up backup config after each test
     if (backupConfigFile != null && backupConfigFile.exists())
       backupConfigFile.delete();
@@ -74,7 +74,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testGetBackupConfigNotConfigured() throws Exception {
+  void getBackupConfigNotConfigured() throws Exception {
     final HttpClient client = HttpClient.newHttpClient();
 
     final JSONObject payload = new JSONObject();
@@ -98,7 +98,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testListBackupsEmptyDatabase() throws Exception {
+  void listBackupsEmptyDatabase() throws Exception {
     final HttpClient client = HttpClient.newHttpClient();
 
     final JSONObject payload = new JSONObject();
@@ -124,7 +124,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testSetAndGetBackupConfig() throws Exception {
+  void setAndGetBackupConfig() throws Exception {
     final HttpClient client = HttpClient.newHttpClient();
 
     // Create a backup configuration
@@ -187,7 +187,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testTriggerBackupCommand() throws Exception {
+  void triggerBackupCommand() throws Exception {
     // First configure backup
     final HttpClient client = HttpClient.newHttpClient();
 

@@ -48,7 +48,7 @@ class SubQueryFieldAccessTest extends TestHelper {
    * Issue #883: SELECT (SELECT name FROM doc).name; should return ["test"]
    */
   @Test
-  void testSubQueryFieldAccess() {
+  void subQueryFieldAccess() {
     database.transaction(() -> {
       // This is the problematic query from issue #883
       // Use explicit alias for cleaner property access
@@ -71,7 +71,7 @@ class SubQueryFieldAccessTest extends TestHelper {
    * Tests that the workaround with coalesce still works.
    */
   @Test
-  void testSubQueryFieldAccessWithCoalesce() {
+  void subQueryFieldAccessWithCoalesce() {
     database.transaction(() -> {
       // Workaround that currently works - use explicit alias
       ResultSet rs = database.query("sql", "SELECT coalesce((SELECT name FROM doc)).name AS extractedName");
@@ -87,7 +87,7 @@ class SubQueryFieldAccessTest extends TestHelper {
    * Tests that the workaround with LET clause still works.
    */
   @Test
-  void testSubQueryFieldAccessWithLet() {
+  void subQueryFieldAccessWithLet() {
     database.transaction(() -> {
       // Workaround that currently works - use explicit alias
       ResultSet rs = database.query("sql", "SELECT $temp.name AS extractedName LET $temp = (SELECT name FROM doc)");
@@ -103,7 +103,7 @@ class SubQueryFieldAccessTest extends TestHelper {
    * Tests field access on nested sub-queries.
    */
   @Test
-  void testNestedSubQueryFieldAccess() {
+  void nestedSubQueryFieldAccess() {
     database.transaction(() -> {
       // Add more complex test data
       database.command("sql", "INSERT INTO doc SET name = 'nested'");
@@ -126,7 +126,7 @@ class SubQueryFieldAccessTest extends TestHelper {
    * Tests array access on sub-query results.
    */
   @Test
-  void testSubQueryArrayAccess() {
+  void subQueryArrayAccess() {
     database.transaction(() -> {
       // Array access on sub-query result - use explicit alias
       ResultSet rs = database.query("sql", "SELECT (SELECT name FROM doc)[0].name AS firstName");
@@ -144,7 +144,7 @@ class SubQueryFieldAccessTest extends TestHelper {
    * Tests method call on sub-query results.
    */
   @Test
-  void testSubQueryMethodCall() {
+  void subQueryMethodCall() {
     database.transaction(() -> {
       // Method call on sub-query result (size) - use explicit alias
       ResultSet rs = database.query("sql", "SELECT (SELECT name FROM doc).size() AS resultSize");

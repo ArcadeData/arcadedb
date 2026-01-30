@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue3155NestedExceptionErrorIT extends BaseGraphServerTest {
 
   @Test
-  void testNestedExceptionInHttpError() throws Exception {
+  void nestedExceptionInHttpError() throws Exception {
     testEachServer((serverIndex) -> {
       // First, create a vertex type with a vector index
       HttpURLConnection setupConnection = (HttpURLConnection) new URL(

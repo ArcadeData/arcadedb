@@ -56,7 +56,7 @@ public class Issue3075PropertyPathValidationTest extends TestHelper {
   }
 
   @Test
-  void testPropertyWithBackticksCanUseIndex() {
+  void propertyWithBackticksCanUseIndex() {
     // Insert test data
     database.transaction(() -> {
       database.command("sql",
@@ -108,7 +108,7 @@ public class Issue3075PropertyPathValidationTest extends TestHelper {
   }
 
   @Test
-  void testNestedPropertyWithBackticksInMiddle() {
+  void nestedPropertyWithBackticksInMiddle() {
     database.transaction(() -> {
       // Create a type with a normal property name that has a nested property with backticks
       database.command("sql", "CREATE VERTEX TYPE Article");
@@ -137,7 +137,7 @@ public class Issue3075PropertyPathValidationTest extends TestHelper {
   }
 
   @Test
-  void testBackticksAtStartOfNestedPath() {
+  void backticksAtStartOfNestedPath() {
     // THIS IS THE ACTUAL BUG CASE: using `property-with-dash`.nestedProperty in WHERE clause
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE Page");

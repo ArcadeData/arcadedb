@@ -67,7 +67,7 @@ class OpenCypherAdvancedFunctionTest {
   // ==================== String Functions ====================
 
   @Test
-  void testLeftFunction() {
+  void leftFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN left('Hello World', 5) AS result");
 
@@ -76,7 +76,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testRightFunction() {
+  void rightFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN right('Hello World', 5) AS result");
 
@@ -85,7 +85,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testReverseStringFunction() {
+  void reverseStringFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN reverse('Hello') AS result");
 
@@ -94,7 +94,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testSplitFunction() {
+  void splitFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN split('one,two,three', ',') AS result");
 
@@ -109,7 +109,7 @@ class OpenCypherAdvancedFunctionTest {
   // ==================== List Functions ====================
 
   @Test
-  void testSizeFunction() {
+  void sizeFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN size([1, 2, 3, 4, 5]) AS result");
 
@@ -118,7 +118,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testSizeFunctionOnString() {
+  void sizeFunctionOnString() {
     final ResultSet result = database.command("opencypher",
         "RETURN size('Hello') AS result");
 
@@ -127,7 +127,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testHeadFunction() {
+  void headFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN head([1, 2, 3, 4, 5]) AS result");
 
@@ -136,7 +136,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testTailFunction() {
+  void tailFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN tail([1, 2, 3, 4, 5]) AS result");
 
@@ -148,7 +148,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testLastFunction() {
+  void lastFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN last([1, 2, 3, 4, 5]) AS result");
 
@@ -157,7 +157,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testRangeFunction() {
+  void rangeFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN range(1, 5) AS result");
 
@@ -169,7 +169,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testRangeFunctionWithStep() {
+  void rangeFunctionWithStep() {
     final ResultSet result = database.command("opencypher",
         "RETURN range(0, 10, 2) AS result");
 
@@ -182,7 +182,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testReverseListFunction() {
+  void reverseListFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN reverse([1, 2, 3, 4, 5]) AS result");
 
@@ -196,7 +196,7 @@ class OpenCypherAdvancedFunctionTest {
   // ==================== Type Conversion Functions ====================
 
   @Test
-  void testToStringFunction() {
+  void toStringFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN toString(123) AS result");
 
@@ -205,7 +205,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testToIntegerFunction() {
+  void toIntegerFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN toInteger('42') AS result");
 
@@ -214,7 +214,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testToFloatFunction() {
+  void toFloatFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN toFloat('3.14') AS result");
 
@@ -223,7 +223,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testToBooleanFunction() {
+  void toBooleanFunction() {
     final ResultSet result = database.command("opencypher",
         "RETURN toBoolean('true') AS result");
 
@@ -232,7 +232,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testToBooleanFunctionWithNumber() {
+  void toBooleanFunctionWithNumber() {
     final ResultSet result = database.command("opencypher",
         "RETURN toBoolean(1) AS result");
 
@@ -244,7 +244,7 @@ class OpenCypherAdvancedFunctionTest {
 
   @Test
   @Disabled("Requires path matching with variable length relationships to be fully implemented")
-  void testNodesFunction() {
+  void nodesFunction() {
     // Get a path and extract nodes from it
     final ResultSet result = database.command("opencypher",
         "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) " +
@@ -260,7 +260,7 @@ class OpenCypherAdvancedFunctionTest {
 
   @Test
   @Disabled("Requires path matching with variable length relationships to be fully implemented")
-  void testRelationshipsFunction() {
+  void relationshipsFunction() {
     // Get a path and extract relationships from it
     final ResultSet result = database.command("opencypher",
         "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) " +
@@ -275,7 +275,7 @@ class OpenCypherAdvancedFunctionTest {
 
   @Test
   @Disabled("Requires path matching with variable length relationships to be fully implemented")
-  void testLengthFunctionOnPath() {
+  void lengthFunctionOnPath() {
     // Get a path and return its length (number of relationships)
     final ResultSet result = database.command("opencypher",
         "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) " +
@@ -286,7 +286,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testLengthFunctionOnString() {
+  void lengthFunctionOnString() {
     // Length also works on strings
     final ResultSet result = database.command("opencypher",
         "RETURN length('Hello World') AS stringLength");
@@ -298,7 +298,7 @@ class OpenCypherAdvancedFunctionTest {
   // ==================== Combined Function Tests ====================
 
   @Test
-  void testCombinedStringFunctions() {
+  void combinedStringFunctions() {
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person {name: 'Alice'}) " +
             "RETURN left(n.name, 2) AS leftPart, " +
@@ -314,7 +314,7 @@ class OpenCypherAdvancedFunctionTest {
 
   @Test
   @Disabled("Requires WITH clause to be fully implemented")
-  void testCombinedListFunctions() {
+  void combinedListFunctions() {
     final ResultSet result = database.command("opencypher",
         "WITH [1, 2, 3, 4, 5] AS list " +
             "RETURN size(list) AS listSize, " +
@@ -329,7 +329,7 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  void testTypeConversionChain() {
+  void typeConversionChain() {
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person {name: 'Bob'}) " +
             "RETURN toString(n.age) AS ageString, " +

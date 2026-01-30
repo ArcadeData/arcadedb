@@ -35,10 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   CORRECT: SELECT expand([array]):{fields}
  *   NOT: SELECT expand([array]:{fields})  // This breaks WHERE clause parsing
  */
-public class Issue2965NestedProjectionExpandTest extends TestHelper {
+class Issue2965NestedProjectionExpandTest extends TestHelper {
 
   @Test
-  void testNestedProjectionWithoutExpand() {
+  void nestedProjectionWithoutExpand() {
     // This should work - nested projection on array of maps
     database.transaction(() -> {
       ResultSet result = database.query("sql", "SELECT [{'x':1,'y':2}]:{x} AS test");
@@ -59,7 +59,7 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
   }
 
   @Test
-  void testExpandWithoutNestedProjection() {
+  void expandWithoutNestedProjection() {
     // This should work - expand on array of maps
     database.transaction(() -> {
       ResultSet result = database.query("sql", "SELECT expand([{'x':1,'y':2}]) AS test");
@@ -73,7 +73,7 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
   }
 
   @Test
-  void testExpandWithNestedProjection() {
+  void expandWithNestedProjection() {
     // Solution: nested projection AFTER expand(), not inside parameter
     database.transaction(() -> {
       ResultSet result = database.query("sql", "SELECT expand([{'x':1,'y':2}]):{x}");
@@ -88,7 +88,7 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
   }
 
   @Test
-  void testExpandWithNestedProjectionMultipleRecords() {
+  void expandWithNestedProjectionMultipleRecords() {
     // Test with multiple records in the array - nested projection after expand()
     database.transaction(() -> {
       ResultSet result = database.query("sql",
@@ -108,7 +108,7 @@ public class Issue2965NestedProjectionExpandTest extends TestHelper {
   }
 
   @Test
-  void testExpandWithComplexNestedProjection() {
+  void expandWithComplexNestedProjection() {
     // Test with more complex nested projection - multiple fields
     database.transaction(() -> {
       ResultSet result = database.query("sql",

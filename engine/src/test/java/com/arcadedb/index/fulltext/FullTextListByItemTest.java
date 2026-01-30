@@ -40,7 +40,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemContainsText() {
+  void fullTextByItemContainsText() {
     // Test CONTAINSTEXT operator with FULL_TEXT BY ITEM index
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");
@@ -59,7 +59,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemMatches() {
+  void fullTextByItemMatches() {
     // Test MATCHES operator with FULL_TEXT BY ITEM index
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");
@@ -78,7 +78,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemMatchesCaseInsensitive() {
+  void fullTextByItemMatchesCaseInsensitive() {
     // Test MATCHES operator with case-insensitive regex
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");
@@ -97,7 +97,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemLike() {
+  void fullTextByItemLike() {
     // Test LIKE operator with FULL_TEXT BY ITEM index - Issue #2693
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");
@@ -116,7 +116,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemILike() {
+  void fullTextByItemILike() {
     // Test ILIKE operator (case-insensitive LIKE) with FULL_TEXT BY ITEM index - Issue #2693
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");
@@ -135,7 +135,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemFuzzyMatch() {
+  void fullTextByItemFuzzyMatch() {
     // Test fuzzy matching operator (<=>) with FULL_TEXT BY ITEM index - Issue #2693
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");
@@ -154,7 +154,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemEquality() {
+  void fullTextByItemEquality() {
     // Test equality operator with FULL_TEXT BY ITEM index (should work)
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");
@@ -173,7 +173,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemMultipleMatches() {
+  void fullTextByItemMultipleMatches() {
     // Test that multiple documents can match the same search term
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");
@@ -192,7 +192,7 @@ public class FullTextListByItemTest extends TestHelper {
   }
 
   @Test
-  void testFullTextByItemPartialMatch() {
+  void fullTextByItemPartialMatch() {
     // Test partial word matching with wildcards
     database.transaction(() -> {
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT");

@@ -49,7 +49,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testSelectAnchorWithIndexedProperty() {
+  void selectAnchorWithIndexedProperty() {
     // Setup: Person with indexed 'id' property
     statistics.setCardinality("Person", 10000);
     final IndexStatistics idIndex = new IndexStatistics("Person",
@@ -73,7 +73,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testSelectAnchorWithoutIndex() {
+  void selectAnchorWithoutIndex() {
     // Setup: Person without index
     statistics.setCardinality("Person", 10000);
 
@@ -93,7 +93,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testSelectAnchorWithNoPredicates() {
+  void selectAnchorWithNoPredicates() {
     // Setup: Person with no predicates
     statistics.setCardinality("Person", 10000);
 
@@ -112,7 +112,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testSelectAnchorPrefersIndexedNode() {
+  void selectAnchorPrefersIndexedNode() {
     // Setup: Two nodes, one with index, one without
     statistics.setCardinality("Person", 10000);
     statistics.setCardinality("Company", 1000);
@@ -136,7 +136,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testSelectAnchorPrefersSmallerType() {
+  void selectAnchorPrefersSmallerType() {
     // Setup: Two nodes, no indexes
     statistics.setCardinality("Person", 10000);
     statistics.setCardinality("Company", 1000);
@@ -157,7 +157,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testSelectAnchorPrefersUniqueIndex() {
+  void selectAnchorPrefersUniqueIndex() {
     // Setup: Two nodes, both with indexes, one unique
     statistics.setCardinality("Person", 10000);
     statistics.setCardinality("Company", 10000);
@@ -186,7 +186,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testSelectAnchorWithCompositeIndex() {
+  void selectAnchorWithCompositeIndex() {
     // Setup: Node with composite index
     statistics.setCardinality("Person", 10000);
     final IndexStatistics compositeIndex = new IndexStatistics("Person",
@@ -207,7 +207,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testSelectAnchorRejectsEmptyPlan() {
+  void selectAnchorRejectsEmptyPlan() {
     // Create empty logical plan (no nodes)
     final LogicalPlan emptyPlan = TestLogicalPlanBuilder.create().build();
 
@@ -218,7 +218,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testShouldUseIndexWhenIndexAvailable() {
+  void shouldUseIndexWhenIndexAvailable() {
     // Setup: Node with indexed property
     statistics.setCardinality("Person", 10000);
     final IndexStatistics index = new IndexStatistics("Person",
@@ -236,7 +236,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testShouldNotUseIndexWhenNoIndex() {
+  void shouldNotUseIndexWhenNoIndex() {
     // Setup: Node without index
     statistics.setCardinality("Person", 10000);
 
@@ -251,7 +251,7 @@ class AnchorSelectorTest {
   }
 
   @Test
-  void testShouldNotUseIndexWhenNoProperties() {
+  void shouldNotUseIndexWhenNoProperties() {
     // Setup: Node with no properties
     statistics.setCardinality("Person", 10000);
     final IndexStatistics index = new IndexStatistics("Person",

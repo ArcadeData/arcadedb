@@ -71,7 +71,7 @@ class OpenCypherCollectUnwindTest {
   // ===== COLLECT Tests =====
 
   @Test
-  void testCollectBasic() {
+  void collectBasic() {
     // Collect all person names into a list
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) RETURN collect(n.name) AS names");
@@ -86,7 +86,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testCollectWithGroupBy() {
+  void collectWithGroupBy() {
     // Collect names grouped by city
     final ResultSet result = database.command("opencypher",
         "MATCH (p:Person)-[:LIVES_IN]->(c:City) " +
@@ -114,7 +114,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testCollectNumbers() {
+  void collectNumbers() {
     // Collect ages
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) RETURN collect(n.age) AS ages");
@@ -129,7 +129,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testCollectEmpty() {
+  void collectEmpty() {
     // Collect from no matches (WHERE condition that matches nothing)
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) WHERE n.name = 'DoesNotExist' RETURN collect(n.name) AS names");
@@ -145,7 +145,7 @@ class OpenCypherCollectUnwindTest {
   // ===== UNWIND Tests =====
 
   @Test
-  void testUnwindSimpleList() {
+  void unwindSimpleList() {
     // Unwind a simple literal list
     final ResultSet result = database.command("opencypher",
         "UNWIND [1, 2, 3] AS x RETURN x");
@@ -160,7 +160,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testUnwindStringList() {
+  void unwindStringList() {
     // Unwind a list of strings
     final ResultSet result = database.command("opencypher",
         "UNWIND ['a', 'b', 'c'] AS letter RETURN letter");
@@ -175,7 +175,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testUnwindWithMatch() {
+  void unwindWithMatch() {
     // Unwind hobbies property from Person nodes
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) WHERE n.name = 'Alice' " +
@@ -193,7 +193,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testUnwindMultipleNodes() {
+  void unwindMultipleNodes() {
     // Unwind hobbies for all persons
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +
@@ -220,7 +220,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testUnwindNull() {
+  void unwindNull() {
     // Unwind null produces no rows
     final ResultSet result = database.command("opencypher",
         "UNWIND null AS x RETURN x");
@@ -229,7 +229,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testUnwindEmptyList() {
+  void unwindEmptyList() {
     // Unwind empty list produces no rows
     final ResultSet result = database.command("opencypher",
         "UNWIND [] AS x RETURN x");
@@ -238,7 +238,7 @@ class OpenCypherCollectUnwindTest {
   }
 
   @Test
-  void testUnwindWithRange() {
+  void unwindWithRange() {
     // Unwind using range() function
     final ResultSet result = database.command("opencypher",
         "UNWIND range(1, 5) AS num RETURN num");
@@ -316,7 +316,7 @@ class OpenCypherCollectUnwindTest {
   */
 
   @Test
-  void testUnwindNestedLists() {
+  void unwindNestedLists() {
     // Test unwinding nested lists
     final ResultSet result = database.command("opencypher",
         "UNWIND [[1, 2], [3, 4]] AS innerList " +

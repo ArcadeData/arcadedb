@@ -13,11 +13,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test UPDATE MERGE and UPDATE CONTENT operations.
  */
-public class UpdateMergeTest {
+class UpdateMergeTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/UpdateMergeTest").create();
     final DocumentType type = database.getSchema().createDocumentType("V");
 
@@ -38,7 +38,7 @@ public class UpdateMergeTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -47,7 +47,7 @@ public class UpdateMergeTest {
   }
 
   @Test
-  public void testUpdateMerge() {
+  void updateMerge() {
     // UPDATE MERGE should merge new fields with existing ones
     database.transaction(() -> {
       ResultSet result = database.command("sql", "UPDATE V MERGE { \"status\": \"active\", \"email\": \"john@example.com\" } WHERE name = 'John'");
@@ -66,7 +66,7 @@ public class UpdateMergeTest {
   }
 
   @Test
-  public void testUpdateContent() {
+  void updateContent() {
     // UPDATE CONTENT should replace entire document content
     database.transaction(() -> {
       ResultSet result = database.command("sql", "UPDATE V CONTENT { \"name\": \"Replaced\", \"status\": \"inactive\" } WHERE name = 'Jane'");

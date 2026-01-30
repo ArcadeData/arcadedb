@@ -38,7 +38,7 @@ public class OpenCypherStringEscapeTest {
    * Test: Dollar sign without newline - This should work according to the issue report.
    */
   @Test
-  void testDollarSignWithoutNewline() {
+  void dollarSignWithoutNewline() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (n:CHUNK {name: 'document DrSamChepard.pdf, chunk 5', subtype: 'CHUNK', text: '$50,000 bail,'}) RETURN ID(n)");
@@ -58,7 +58,7 @@ public class OpenCypherStringEscapeTest {
    * Test: Newline without dollar sign - This should work according to the issue report.
    */
   @Test
-  void testNewlineWithoutDollarSign() {
+  void newlineWithoutDollarSign() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (n:CHUNK {name: 'document DrSamChepard.pdf, chunk 5', subtype: 'CHUNK', text: '50,000 bail, \\nlol new line'}) RETURN ID(n)");
@@ -81,7 +81,7 @@ public class OpenCypherStringEscapeTest {
    * This is the core test for Issue #1649.
    */
   @Test
-  void testDollarSignWithNewline() {
+  void dollarSignWithNewline() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (n:CHUNK {name: 'document DrSamChepard.pdf, chunk 5', subtype: 'CHUNK', text: '$50,000 bail, \\nlol new line'}) RETURN ID(n)");
@@ -102,7 +102,7 @@ public class OpenCypherStringEscapeTest {
    * Additional test: Various escape sequences.
    */
   @Test
-  void testVariousEscapeSequences() {
+  void variousEscapeSequences() {
     database.transaction(() -> {
       // Test tab escape
       database.command("opencypher", "CREATE (n:CHUNK {text: 'hello\\tworld'}) RETURN n");
@@ -119,7 +119,7 @@ public class OpenCypherStringEscapeTest {
    * Test: Escaped single quote.
    */
   @Test
-  void testEscapedSingleQuote() {
+  void escapedSingleQuote() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:CHUNK {text: 'it\\'s working'}) RETURN n");
     });
@@ -135,7 +135,7 @@ public class OpenCypherStringEscapeTest {
    * Test: Escaped backslash.
    */
   @Test
-  void testEscapedBackslash() {
+  void escapedBackslash() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:CHUNK {text: 'path\\\\to\\\\file'}) RETURN n");
     });
@@ -151,7 +151,7 @@ public class OpenCypherStringEscapeTest {
    * Test: Carriage return escape.
    */
   @Test
-  void testCarriageReturnEscape() {
+  void carriageReturnEscape() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:CHUNK {text: 'line1\\rline2'}) RETURN n");
     });
@@ -167,7 +167,7 @@ public class OpenCypherStringEscapeTest {
    * Test: Double-quoted strings with escape sequences.
    */
   @Test
-  void testDoubleQuotedStringWithEscapes() {
+  void doubleQuotedStringWithEscapes() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:CHUNK {text: \"hello\\nworld\"}) RETURN n");
     });

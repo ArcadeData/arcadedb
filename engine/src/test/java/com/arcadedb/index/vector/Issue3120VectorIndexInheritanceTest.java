@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue3120VectorIndexInheritanceTest extends TestHelper {
 
   @Test
-  void testVectorIndexInheritance() {
+  void vectorIndexInheritance() {
     // System.out.println("\n=== Testing Vector Index Inheritance ===");
 
     // Step 1: Create parent vertex type with vector property and index
@@ -110,7 +110,7 @@ class Issue3120VectorIndexInheritanceTest extends TestHelper {
   }
 
   @Test
-  void testVectorIndexInheritanceMultipleLevels() {
+  void vectorIndexInheritanceMultipleLevels() {
     // System.out.println("\n=== Testing Multi-Level Vector Index Inheritance ===");
 
     // Create hierarchy: EMBEDDING -> CHUNK_EMBEDDING -> SPECIFIC_CHUNK

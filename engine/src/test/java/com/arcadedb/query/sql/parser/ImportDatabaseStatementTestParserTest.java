@@ -41,7 +41,7 @@ class ImportDatabaseStatementTestParserTest extends AbstractParserTest {
    * IMPORT DATABASE should allow optional URL when vertices/edges files are specified.
    */
   @Test
-  void testRegression_Issue1552_OptionalUrl() {
+  void regressionIssue1552OptionalUrl() {
     // URL should be optional when using vertices/edges settings
     checkRightSyntax("IMPORT DATABASE WITH vertices=\"file://vertices.csv\"");
     checkRightSyntax("IMPORT DATABASE WITH vertices=\"file://vertices.csv\", verticesFileType=csv, typeIdProperty=Id");

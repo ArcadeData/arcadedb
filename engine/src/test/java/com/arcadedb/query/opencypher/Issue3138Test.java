@@ -86,7 +86,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindMatchMergeCreateRelations() {
+  void unwindMatchMergeCreateRelations() {
     // Build batch parameter with source and target IDs
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -131,7 +131,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindMatchMergeWithCreate() {
+  void unwindMatchMergeWithCreate() {
     // Alternative query using CREATE instead of MERGE
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -175,7 +175,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testSimplifiedUnwindMatchReturnOnly() {
+  void simplifiedUnwindMatchReturnOnly() {
     // First test just UNWIND + MATCH to see if that works
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -209,7 +209,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindOnly() {
+  void unwindOnly() {
     // Test UNWIND alone to ensure it works
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -240,7 +240,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindMatchSingleNode() {
+  void unwindMatchSingleNode() {
     // Test UNWIND + MATCH with single node (using label)
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -270,7 +270,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindMatchNoWhere() {
+  void unwindMatchNoWhere() {
     // Test UNWIND + MATCH without WHERE to see if they produce rows
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -308,7 +308,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindMatchWithSimpleWhere() {
+  void unwindMatchWithSimpleWhere() {
     // Test UNWIND + MATCH with a simple WHERE comparison
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -339,7 +339,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindMatchWithIdEqual() {
+  void unwindMatchWithIdEqual() {
     // Test UNWIND + MATCH with WHERE ID(a) = ID(a)
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -370,7 +370,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindMatchWithIdEqualsString() {
+  void unwindMatchWithIdEqualsString() {
     // Test UNWIND + MATCH with WHERE ID(a) = literal string
     //System.out.println("Testing UNWIND + MATCH with WHERE ID(a) = '#1:0'");
     //System.out.println("First source ID: " + sourceIds.get(0));
@@ -394,7 +394,7 @@ class Issue3138Test {
   }
 
   @Test
-  void testUnwindMatchWithIdEqualsRowProperty() {
+  void unwindMatchWithIdEqualsRowProperty() {
     // Test UNWIND + MATCH with WHERE ID(a) = row.source_id
     final List<Map<String, Object>> batch = new ArrayList<>();
     for (String sourceId : sourceIds) {
@@ -461,7 +461,7 @@ class Issue3138Test {
    * the query should return results for ALL batch entries, not just the first one.
    */
   @Test
-  void testIssue1948UnwindMatchWithSameSourceId() {
+  void issue1948UnwindMatchWithSameSourceId() {
     // Create additional Target vertices
     final List<String> targetIds = new ArrayList<>();
     database.transaction(() -> {
@@ -521,7 +521,7 @@ class Issue3138Test {
    * Tests just MATCH without MERGE to isolate the iteration issue.
    */
   @Test
-  void testIssue1948SimpleMatchWithSameSourceId() {
+  void issue1948SimpleMatchWithSameSourceId() {
     // Use the FIRST source ID for ALL batch entries
     final String sameSourceId = sourceIds.get(0);
     final List<Map<String, Object>> batch = new ArrayList<>();

@@ -36,10 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *    Example: WHERE text CONTAINSTEXT ['xyz', 'abc']
  *    Expected: Should return true if text contains ANY of the strings in the array
  */
-public class ContainsTextWithArrayTest {
+class ContainsTextWithArrayTest {
 
   @Test
-  void testContainsTextWithSingleString() throws Exception {
+  void containsTextWithSingleString() throws Exception {
     TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_single", (db) -> {
       db.transaction(() -> {
         db.getSchema().createDocumentType("TestDoc");
@@ -74,7 +74,7 @@ public class ContainsTextWithArrayTest {
   }
 
   @Test
-  void testContainsTextWithArrayOfStrings() throws Exception {
+  void containsTextWithArrayOfStrings() throws Exception {
     TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_array", (db) -> {
       db.transaction(() -> {
         db.getSchema().createDocumentType("TestDoc");
@@ -108,7 +108,7 @@ public class ContainsTextWithArrayTest {
   }
 
   @Test
-  void testWorkaroundWithOrConditions() throws Exception {
+  void workaroundWithOrConditions() throws Exception {
     TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_workaround", (db) -> {
       db.transaction(() -> {
         db.getSchema().createDocumentType("TestDoc");

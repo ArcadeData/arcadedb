@@ -6,10 +6,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class InsertReturnTest extends TestHelper {
+class InsertReturnTest extends TestHelper {
 
   @Test
-  void testInsertReturnThis() {
+  void insertReturnThis() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestDoc");
 

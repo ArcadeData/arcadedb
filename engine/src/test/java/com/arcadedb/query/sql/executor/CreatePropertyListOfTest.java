@@ -1,13 +1,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-public class CreatePropertyListOfTest extends TestHelper {
+import static org.assertj.core.api.Assertions.assertThat;
+
+class CreatePropertyListOfTest extends TestHelper {
 
   @Test
-  public void testListOfInteger() {
+  void listOfInteger() {
     database.command("sql", "CREATE DOCUMENT TYPE doc");
     database.command("sql", "CREATE PROPERTY doc.nums LIST OF INTEGER");
 
@@ -15,33 +16,33 @@ public class CreatePropertyListOfTest extends TestHelper {
     var schema = database.getSchema();
     var type = schema.getType("doc");
     var property = type.getProperty("nums");
-    Assertions.assertNotNull(property);
+    assertThat(property).isNotNull();
   }
 
   @Test
-  public void testListOfString() {
+  void listOfString() {
     database.command("sql", "CREATE DOCUMENT TYPE doc");
     database.command("sql", "CREATE PROPERTY doc.tags LIST OF STRING");
 
     var schema = database.getSchema();
     var type = schema.getType("doc");
     var property = type.getProperty("tags");
-    Assertions.assertNotNull(property);
+    assertThat(property).isNotNull();
   }
 
   @Test
-  public void testListOfIntegerIfNotExists() {
+  void listOfIntegerIfNotExists() {
     database.command("sql", "CREATE DOCUMENT TYPE doc");
     database.command("sql", "CREATE PROPERTY doc.nums IF NOT EXISTS LIST OF INTEGER");
 
     var schema = database.getSchema();
     var type = schema.getType("doc");
     var property = type.getProperty("nums");
-    Assertions.assertNotNull(property);
+    assertThat(property).isNotNull();
   }
 
   @Test
-  public void testEmbeddedOf() {
+  void embeddedOf() {
     database.command("sql", "CREATE DOCUMENT TYPE doc");
     database.command("sql", "CREATE DOCUMENT TYPE Address");
     database.command("sql", "CREATE PROPERTY doc.addresses EMBEDDED OF Address");
@@ -49,7 +50,7 @@ public class CreatePropertyListOfTest extends TestHelper {
     var schema = database.getSchema();
     var type = schema.getType("doc");
     var property = type.getProperty("addresses");
-    Assertions.assertNotNull(property);
+    assertThat(property).isNotNull();
   }
 
   // TODO: testPropertyWithAttributes needs execution layer support for boolean conversion

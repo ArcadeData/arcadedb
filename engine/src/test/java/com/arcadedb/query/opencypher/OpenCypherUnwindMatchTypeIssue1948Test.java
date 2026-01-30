@@ -31,8 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test for GitHub Issue #1948: UNWIND + MATCH with type check returns incomplete results.
@@ -46,18 +45,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/1948">Issue #1948</a>
  */
-public class OpenCypherUnwindMatchTypeIssue1948Test {
+class OpenCypherUnwindMatchTypeIssue1948Test {
   private static Database database;
   private static final String DB_PATH = "./target/test-databases/issue-1948-test";
 
   @BeforeAll
-  public static void setup() {
+  static void setup() {
     FileUtils.deleteRecursively(new File(DB_PATH));
     database = new DatabaseFactory(DB_PATH).create();
   }
 
   @AfterAll
-  public static void teardown() {
+  static void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -107,7 +106,7 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
    * only 1 result is returned instead of 2.
    */
   @Test
-  void testUnwindMatchWithTypeConstraintSameSource() {
+  void unwindMatchWithTypeConstraintSameSource() {
     // Create test vertices
     RID chunkRid = null;
     RID target1Rid = null;
@@ -121,19 +120,19 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
 
     // Get the RIDs
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'chunk1'}) RETURN c")) {
-      assertTrue(rs.hasNext(), "CHUNK vertex should exist");
+      assertThat(rs.hasNext()).as("CHUNK vertex should exist").isTrue();
       Vertex chunk = (Vertex) rs.next().toElement();
       chunkRid = chunk.getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (t:TARGET {name: 'target1'}) RETURN t")) {
-      assertTrue(rs.hasNext(), "TARGET1 vertex should exist");
+      assertThat(rs.hasNext()).as("TARGET1 vertex should exist").isTrue();
       Vertex target1 = (Vertex) rs.next().toElement();
       target1Rid = target1.getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (t:TARGET {name: 'target2'}) RETURN t")) {
-      assertTrue(rs.hasNext(), "TARGET2 vertex should exist");
+      assertThat(rs.hasNext()).as("TARGET2 vertex should exist").isTrue();
       Vertex target2 = (Vertex) rs.next().toElement();
       target2Rid = target2.getIdentity();
     }
@@ -169,15 +168,14 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
 
     // Bug: With type constraint, only 1 result is returned
     // Expected: 2 results (one for each batch entry)
-    assertEquals(2, resultsWithType.size(),
-        "With type constraint (a:CHUNK), should return 2 results for 2 batch entries with same source_id");
+    assertThat(resultsWithType.size()).as("With type constraint (a:CHUNK), should return 2 results for 2 batch entries with same source_id").isEqualTo(2);
   }
 
   /**
    * This test verifies that removing the type constraint works correctly (workaround).
    */
   @Test
-  void testUnwindMatchWithoutTypeConstraintSameSource() {
+  void unwindMatchWithoutTypeConstraintSameSource() {
     // Create test vertices
     RID chunkRid = null;
     RID target1Rid = null;
@@ -191,19 +189,19 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
 
     // Get the RIDs
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'chunk2'}) RETURN c")) {
-      assertTrue(rs.hasNext(), "CHUNK vertex should exist");
+      assertThat(rs.hasNext()).as("CHUNK vertex should exist").isTrue();
       Vertex chunk = (Vertex) rs.next().toElement();
       chunkRid = chunk.getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (t:TARGET {name: 'target3'}) RETURN t")) {
-      assertTrue(rs.hasNext(), "TARGET vertex should exist");
+      assertThat(rs.hasNext()).as("TARGET vertex should exist").isTrue();
       Vertex target1 = (Vertex) rs.next().toElement();
       target1Rid = target1.getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (t:TARGET {name: 'target4'}) RETURN t")) {
-      assertTrue(rs.hasNext(), "TARGET vertex should exist");
+      assertThat(rs.hasNext()).as("TARGET vertex should exist").isTrue();
       Vertex target2 = (Vertex) rs.next().toElement();
       target2Rid = target2.getIdentity();
     }
@@ -238,15 +236,14 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
     });
 
     // Without type constraint, correctly returns 2 results
-    assertEquals(2, resultsWithoutType.size(),
-        "Without type constraint, should return 2 results for 2 batch entries with same source_id");
+    assertThat(resultsWithoutType.size()).as("Without type constraint, should return 2 results for 2 batch entries with same source_id").isEqualTo(2);
   }
 
   /**
    * Simpler test: UNWIND + MATCH with type constraint, verifying the step chain works correctly.
    */
   @Test
-  void testUnwindMatchWithTypeConstraintSimple() {
+  void unwindMatchWithTypeConstraintSimple() {
     // Create test vertices
     database.transaction(() -> {
       database.command("opencypher", "CREATE (c:CHUNK {name: 'simple_chunk'})");
@@ -254,7 +251,7 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
 
     final RID chunkRid;
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'simple_chunk'}) RETURN c")) {
-      assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       chunkRid = ((Vertex) rs.next().toElement()).getIdentity();
     }
 
@@ -279,15 +276,14 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
     }
 
     // Should return 3 results (one for each batch entry)
-    assertEquals(3, results.size(),
-        "UNWIND + MATCH with type constraint should return one result per batch entry");
+    assertThat(results.size()).as("UNWIND + MATCH with type constraint should return one result per batch entry").isEqualTo(3);
   }
 
   /**
    * Test with different source IDs to verify basic UNWIND + MATCH + type constraint works.
    */
   @Test
-  void testUnwindMatchWithTypeConstraintDifferentSources() {
+  void unwindMatchWithTypeConstraintDifferentSources() {
     // Create multiple CHUNK vertices
     database.transaction(() -> {
       database.command("opencypher", "CREATE (c1:CHUNK {name: 'diff_chunk1'})");
@@ -298,12 +294,12 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
     final RID chunk2Rid;
 
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'diff_chunk1'}) RETURN c")) {
-      assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       chunk1Rid = ((Vertex) rs.next().toElement()).getIdentity();
     }
 
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'diff_chunk2'}) RETURN c")) {
-      assertTrue(rs.hasNext());
+      assertThat(rs.hasNext()).isTrue();
       chunk2Rid = ((Vertex) rs.next().toElement()).getIdentity();
     }
 
@@ -326,7 +322,6 @@ public class OpenCypherUnwindMatchTypeIssue1948Test {
     }
 
     // Should return 2 results (one for each batch entry)
-    assertEquals(2, results.size(),
-        "UNWIND + MATCH with type constraint should work with different source IDs");
+    assertThat(results.size()).as("UNWIND + MATCH with type constraint should work with different source IDs").isEqualTo(2);
   }
 }

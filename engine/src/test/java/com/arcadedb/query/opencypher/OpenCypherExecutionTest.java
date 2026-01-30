@@ -80,7 +80,7 @@ public class OpenCypherExecutionTest {
   }
 
   @Test
-  void testSimpleMatchAllPersons() {
+  void simpleMatchAllPersons() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n");
 
     assertThat((Object) result).isNotNull();
@@ -97,7 +97,7 @@ public class OpenCypherExecutionTest {
   }
 
   @Test
-  void testMatchWithWhereFilter() {
+  void matchWithWhereFilter() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) WHERE n.age > 28 RETURN n");
 
     assertThat((Object) result).isNotNull();
@@ -114,7 +114,7 @@ public class OpenCypherExecutionTest {
   }
 
   @Test
-  void testMatchWithPropertyProjection() {
+  void matchWithPropertyProjection() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n.name");
 
     assertThat((Object) result).isNotNull();
@@ -133,7 +133,7 @@ public class OpenCypherExecutionTest {
   }
 
   @Test
-  void testMatchAllCompanies() {
+  void matchAllCompanies() {
     final ResultSet result = database.query("opencypher", "MATCH (c:Company) RETURN c");
 
     assertThat((Object) result).isNotNull();
@@ -148,7 +148,7 @@ public class OpenCypherExecutionTest {
   }
 
   @Test
-  void testMatchWithMultipleFilters() {
+  void matchWithMultipleFilters() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) WHERE n.age > 25 RETURN n.name");
 
     assertThat((Object) result).isNotNull();
@@ -166,7 +166,7 @@ public class OpenCypherExecutionTest {
   }
 
   @Test
-  void testMatchRelationshipPattern() {
+  void matchRelationshipPattern() {
     final ResultSet result = database.query("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a, r, b");
 
     assertThat((Object) result).isNotNull();

@@ -57,7 +57,7 @@ public class OpenCypherMergeTest {
   }
 
   @Test
-  void testMergeCreatesNodeWhenNotExists() {
+  void mergeCreatesNodeWhenNotExists() {
     database.transaction(() -> {
       database.command("opencypher", "MERGE (n:Person {name: 'Alice'})");
     });
@@ -69,7 +69,7 @@ public class OpenCypherMergeTest {
   }
 
   @Test
-  void testMergeFindsNodeWhenExists() {
+  void mergeFindsNodeWhenExists() {
     // Create node
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Bob'})");
@@ -91,7 +91,7 @@ public class OpenCypherMergeTest {
   }
 
   @Test
-  void testMergeWithReturn() {
+  void mergeWithReturn() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher", "MERGE (n:Person {name: 'Charlie'}) RETURN n");
       assertThat(result.hasNext()).isTrue();
@@ -101,7 +101,7 @@ public class OpenCypherMergeTest {
   }
 
   @Test
-  void testMergeMultipleTimes() {
+  void mergeMultipleTimes() {
     // First MERGE creates
     database.transaction(() -> {
       database.command("opencypher", "MERGE (n:Person {name: 'David', age: 30})");
@@ -128,7 +128,7 @@ public class OpenCypherMergeTest {
   }
 
   @Test
-  void testMergeRelationship() {
+  void mergeRelationship() {
     // Create nodes first
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Eve'})");
@@ -168,7 +168,7 @@ public class OpenCypherMergeTest {
    * This is the pattern: MERGE (n:PIPELINE_CONFIG) ON CREATE SET n.pipelines = ["miaou"] ON MATCH SET n.pipelines = ["miaou"]
    */
   @Test
-  void testMergeLabelOnlyFindsExistingNode() {
+  void mergeLabelOnlyFindsExistingNode() {
     database.getSchema().createVertexType("PIPELINE_CONFIG");
 
     // First MERGE should create the node
@@ -203,7 +203,7 @@ public class OpenCypherMergeTest {
    * and ON MATCH SET on subsequent calls.
    */
   @Test
-  void testMergeLabelOnlyWithOnCreateAndOnMatchSet() {
+  void mergeLabelOnlyWithOnCreateAndOnMatchSet() {
     database.getSchema().createVertexType("SINGLETON");
 
     // First MERGE should create and apply ON CREATE SET
@@ -228,7 +228,7 @@ public class OpenCypherMergeTest {
    * not included in the relationship type name.
    */
   @Test
-  void testMergeRelationshipWithBackticksInTypeName() {
+  void mergeRelationshipWithBackticksInTypeName() {
     // Create nodes first
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Alice'})");
@@ -271,7 +271,7 @@ public class OpenCypherMergeTest {
    * Test for issue #3217: Backticks in node labels should also be treated as escape characters.
    */
   @Test
-  void testCreateNodeWithBackticksInLabel() {
+  void createNodeWithBackticksInLabel() {
     // Create edge type for reserved keyword
     database.getSchema().createVertexType("select");
 

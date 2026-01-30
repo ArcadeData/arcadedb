@@ -35,19 +35,19 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Unit tests for physical operators (Phase 2 implementation).
  * Tests all 8 physical operators: NodeByLabelScan, NodeIndexSeek, ExpandAll,
  * ExpandInto, NodeHashJoin, FilterOperator.
  */
-public class PhysicalOperatorTest {
+class PhysicalOperatorTest {
   private Database database;
 
   @BeforeEach
-  public void setUp() {
+  void setUp() {
     database = new DatabaseFactory("./target/databases/PhysicalOperatorTest").create();
 
     // Create schema and data in separate transactions for proper index building
@@ -101,7 +101,7 @@ public class PhysicalOperatorTest {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -109,7 +109,7 @@ public class PhysicalOperatorTest {
   }
 
   @Test
-  public void testNodeByLabelScan() {
+  void nodeByLabelScan() {
     database.transaction(() -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
@@ -123,25 +123,25 @@ public class PhysicalOperatorTest {
 
       // Verify results
       final List<Result> resultList = collectResults(results);
-      assertEquals(3, resultList.size(), "Should find 3 Person vertices");
+      assertThat(resultList.size()).as("Should find 3 Person vertices").isEqualTo(3);
 
       // Verify each result has a vertex bound to 'n'
       for (final Result result : resultList) {
-        assertTrue(result.hasProperty("n"), "Result should have 'n' property");
+        assertThat(result.hasProperty("n")).as("Result should have 'n' property").isTrue();
         final Object obj = result.getProperty("n");
-        assertTrue(obj instanceof Vertex, "Property 'n' should be a Vertex");
+        assertThat(obj).as("Property 'n' should be a Vertex").isInstanceOf(Vertex.class);
         final Vertex vertex = (Vertex) obj;
-        assertEquals("Person", vertex.getTypeName(), "Vertex should be of type Person");
+        assertThat(vertex.getTypeName()).as("Vertex should be of type Person").isEqualTo("Person");
       }
 
       // Verify cost and cardinality
-      assertEquals(3.0, scan.getEstimatedCost(), 0.01);
-      assertEquals(3L, scan.getEstimatedCardinality());
+      assertThat(scan.getEstimatedCost()).isCloseTo(3.0, within(0.01));
+      assertThat(scan.getEstimatedCardinality()).isEqualTo(3L);
     });
   }
 
   @Test
-  public void testNodeIndexSeek() {
+  void nodeIndexSeek() {
     database.transaction(() -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
@@ -155,22 +155,22 @@ public class PhysicalOperatorTest {
 
       // Verify results
       final List<Result> resultList = collectResults(results);
-      assertEquals(1, resultList.size(), "Should find exactly 1 Person with id=1");
+      assertThat(resultList.size()).as("Should find exactly 1 Person with id=1").isEqualTo(1);
 
       final Result result = resultList.get(0);
-      assertTrue(result.hasProperty("n"), "Result should have 'n' property");
+      assertThat(result.hasProperty("n")).as("Result should have 'n' property").isTrue();
       final Vertex vertex = result.getProperty("n");
-      assertEquals(1, (int) vertex.get("id"), "Vertex should have id=1");
-      assertEquals("Alice", vertex.get("name"), "Vertex should be Alice");
+      assertThat((int) vertex.get("id")).as("Vertex should have id=1").isEqualTo(1);
+      assertThat(vertex.get("name")).as("Vertex should be Alice").isEqualTo("Alice");
 
       // Verify cost and cardinality
-      assertEquals(5.1, seek.getEstimatedCost(), 0.01);
-      assertEquals(1L, seek.getEstimatedCardinality());
+      assertThat(seek.getEstimatedCost()).isCloseTo(5.1, within(0.01));
+      assertThat(seek.getEstimatedCardinality()).isEqualTo(1L);
     });
   }
 
   @Test
-  public void testNodeIndexSeekNotFound() {
+  void nodeIndexSeekNotFound() {
     database.transaction(() -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
@@ -184,12 +184,12 @@ public class PhysicalOperatorTest {
 
       // Verify no results
       final List<Result> resultList = collectResults(results);
-      assertEquals(0, resultList.size(), "Should find no results for id=999");
+      assertThat(resultList.size()).as("Should find no results for id=999").isEqualTo(0);
     });
   }
 
   @Test
-  public void testExpandAll() {
+  void expandAll() {
     database.transaction(() -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
@@ -208,26 +208,26 @@ public class PhysicalOperatorTest {
 
       // Verify results - Alice knows Bob and Charlie
       final List<Result> resultList = collectResults(results);
-      assertEquals(2, resultList.size(), "Alice should know 2 people");
+      assertThat(resultList.size()).as("Alice should know 2 people").isEqualTo(2);
 
       // Verify each result has source vertex, edge, and target vertex
       for (final Result result : resultList) {
-        assertTrue(result.hasProperty("a"), "Result should have 'a' (source)");
-        assertTrue(result.hasProperty("r"), "Result should have 'r' (edge)");
-        assertTrue(result.hasProperty("b"), "Result should have 'b' (target)");
+        assertThat(result.hasProperty("a")).as("Result should have 'a' (source)").isTrue();
+        assertThat(result.hasProperty("r")).as("Result should have 'r' (edge)").isTrue();
+        assertThat(result.hasProperty("b")).as("Result should have 'b' (target)").isTrue();
 
         final Vertex source = result.getProperty("a");
-        assertEquals(1, (int) source.get("id"), "Source should be Alice");
+        assertThat((int) source.get("id")).as("Source should be Alice").isEqualTo(1);
 
         final Vertex target = result.getProperty("b");
         final int targetId = (Integer) target.get("id");
-        assertTrue(targetId == 2 || targetId == 3, "Target should be Bob or Charlie");
+        assertThat(targetId == 2 || targetId == 3).as("Target should be Bob or Charlie").isTrue();
       }
     });
   }
 
   @Test
-  public void testExpandInto() {
+  void expandInto() {
     database.transaction(() -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
@@ -255,22 +255,22 @@ public class PhysicalOperatorTest {
 
       // Verify results - there should be a KNOWS relationship from Alice to Bob
       final List<Result> resultList = collectResults(results);
-      assertEquals(1, resultList.size(), "Should find KNOWS relationship from Alice to Bob");
+      assertThat(resultList.size()).as("Should find KNOWS relationship from Alice to Bob").isEqualTo(1);
 
       final Result result = resultList.get(0);
-      assertTrue(result.hasProperty("a"), "Result should have 'a' (Alice)");
-      assertTrue(result.hasProperty("b"), "Result should have 'b' (Bob)");
-      assertTrue(result.hasProperty("r"), "Result should have 'r' (edge)");
+      assertThat(result.hasProperty("a")).as("Result should have 'a' (Alice)").isTrue();
+      assertThat(result.hasProperty("b")).as("Result should have 'b' (Bob)").isTrue();
+      assertThat(result.hasProperty("r")).as("Result should have 'r' (edge)").isTrue();
 
       final Vertex source = result.getProperty("a");
       final Vertex target = result.getProperty("b");
-      assertEquals(1, (int) source.get("id"), "Source should be Alice");
-      assertEquals(2, (int) target.get("id"), "Target should be Bob");
+      assertThat((int) source.get("id")).as("Source should be Alice").isEqualTo(1);
+      assertThat((int) target.get("id")).as("Target should be Bob").isEqualTo(2);
     });
   }
 
   @Test
-  public void testExpandIntoNotConnected() {
+  void expandIntoNotConnected() {
     database.transaction(() -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
@@ -297,12 +297,12 @@ public class PhysicalOperatorTest {
 
       // Verify no results
       final List<Result> resultList = collectResults(results);
-      assertEquals(0, resultList.size(), "Should find no relationship from Bob to Alice in OUT direction");
+      assertThat(resultList.size()).as("Should find no relationship from Bob to Alice in OUT direction").isEqualTo(0);
     });
   }
 
   @Test
-  public void testNodeHashJoin() {
+  void nodeHashJoin() {
     database.transaction(() -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
@@ -326,40 +326,40 @@ public class PhysicalOperatorTest {
 
       // Verify results - should find 1 match (Alice with Alice, since they share the same variable)
       final List<Result> resultList = collectResults(results);
-      assertEquals(1, resultList.size(), "Should find 1 match where Alice joins with herself");
+      assertThat(resultList.size()).as("Should find 1 match where Alice joins with herself").isEqualTo(1);
 
       final Result result = resultList.get(0);
       final Vertex person = result.getProperty("person");
-      assertEquals(1, (int) person.get("id"), "Should be Alice");
+      assertThat((int) person.get("id")).as("Should be Alice").isEqualTo(1);
     });
   }
 
   @Test
-  public void testExplainOutput() {
+  void explainOutput() {
     database.transaction(() -> {
       // Test explain output for various operators
       final NodeByLabelScan scan = new NodeByLabelScan("n", "Person", 3.0, 3L);
       final String scanExplain = scan.explain(0);
-      assertTrue(scanExplain.contains("NodeByLabelScan"), "Explain should contain operator type");
-      assertTrue(scanExplain.contains("Person"), "Explain should contain label");
-      assertTrue(scanExplain.contains("3.00"), "Explain should contain cost");
+      assertThat(scanExplain.contains("NodeByLabelScan")).as("Explain should contain operator type").isTrue();
+      assertThat(scanExplain.contains("Person")).as("Explain should contain label").isTrue();
+      assertThat(scanExplain.contains("3.00")).as("Explain should contain cost").isTrue();
 
       final NodeIndexSeek seek = new NodeIndexSeek(
           "n", "Person", "id", 1, "Person.id", 5.1, 1L
       );
       final String seekExplain = seek.explain(0);
-      assertTrue(seekExplain.contains("NodeIndexSeek"), "Explain should contain operator type");
-      assertTrue(seekExplain.contains("Person.id"), "Explain should contain index name");
-      assertTrue(seekExplain.contains("5.10"), "Explain should contain cost");
+      assertThat(seekExplain.contains("NodeIndexSeek")).as("Explain should contain operator type").isTrue();
+      assertThat(seekExplain.contains("Person.id")).as("Explain should contain index name").isTrue();
+      assertThat(seekExplain.contains("5.10")).as("Explain should contain cost").isTrue();
 
       final ExpandInto expandInto = new ExpandInto(
           null, "a", "b", "r", Direction.OUT, new String[]{"KNOWS"}, 1.0, 1L
       );
       final String expandIntoExplain = expandInto.explain(0);
-      assertTrue(expandIntoExplain.contains("ExpandInto"), "Explain should contain operator type");
-      assertTrue(expandIntoExplain.contains("SEMI-JOIN"), "Explain should indicate semi-join");
-      assertTrue(expandIntoExplain.contains("a"), "Explain should contain source variable");
-      assertTrue(expandIntoExplain.contains("b"), "Explain should contain target variable");
+      assertThat(expandIntoExplain.contains("ExpandInto")).as("Explain should contain operator type").isTrue();
+      assertThat(expandIntoExplain.contains("SEMI-JOIN")).as("Explain should indicate semi-join").isTrue();
+      assertThat(expandIntoExplain.contains("a")).as("Explain should contain source variable").isTrue();
+      assertThat(expandIntoExplain.contains("b")).as("Explain should contain target variable").isTrue();
     });
   }
 

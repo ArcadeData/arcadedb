@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/3271">Issue 3271</a>
  */
-public class Issue3271Test {
+class Issue3271Test {
   private Database database;
 
   @BeforeEach
@@ -105,7 +105,7 @@ public class Issue3271Test {
    * This serves as a baseline to confirm the basic multi-hop MATCH works.
    */
   @Test
-  void testSimplifiedMultiMatchQuery() {
+  void simplifiedMultiMatchQuery() {
     // Simplified query from issue - this should work
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
@@ -130,7 +130,7 @@ public class Issue3271Test {
    * This is a building block for the full issue query.
    */
   @Test
-  void testCollectWithMapLiteral() {
+  void collectWithMapLiteral() {
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
             "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
@@ -166,7 +166,7 @@ public class Issue3271Test {
    * The DISTINCT modifier should work with map literals.
    */
   @Test
-  void testCollectDistinctWithMapLiteral() {
+  void collectDistinctWithMapLiteral() {
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
             "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
@@ -197,7 +197,7 @@ public class Issue3271Test {
    * This tests the ability to use functions like type(r) in map expressions.
    */
   @Test
-  void testTypeInMapLiteral() {
+  void typeInMapLiteral() {
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
             "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
@@ -229,7 +229,7 @@ public class Issue3271Test {
    * HEAD should return the first element from a collected list.
    */
   @Test
-  void testHeadCollect() {
+  void headCollect() {
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
             "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
@@ -255,7 +255,7 @@ public class Issue3271Test {
    * Test HEAD(COLLECT(DISTINCT {...})) - combining HEAD and COLLECT DISTINCT with maps.
    */
   @Test
-  void testHeadCollectDistinctWithMapLiteral() {
+  void headCollectDistinctWithMapLiteral() {
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
             "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
@@ -281,7 +281,7 @@ public class Issue3271Test {
    * Test ID() function inside map literals.
    */
   @Test
-  void testIdInMapLiteral() {
+  void idInMapLiteral() {
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
             "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
@@ -313,7 +313,7 @@ public class Issue3271Test {
    * and HEAD(COLLECT(DISTINCT {...})) with ID().
    */
   @Test
-  void testFullIssue3271Query() {
+  void fullIssue3271Query() {
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
             "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
@@ -361,7 +361,7 @@ public class Issue3271Test {
    * The original query used (n)-[]-(chunk:CHUNK)-->(document:DOCUMENT)
    */
   @Test
-  void testUndirectedEdgeInMultiMatch() {
+  void undirectedEdgeInMultiMatch() {
     ResultSet rs = database.query("opencypher",
         "MATCH (n:NER {subtype:'DATE'}) " +
             "MATCH (n)-[r]-(m:NER) " +

@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * When returning a single node variable (e.g., RETURN n), the result should be the element
  * directly, not wrapped in {"n": element}.
  */
-public class CypherResultFormatTest {
+class CypherResultFormatTest {
   private Database database;
 
   @BeforeEach
@@ -62,7 +62,7 @@ public class CypherResultFormatTest {
   }
 
   @Test
-  void testReturnSingleNodeIsElement() {
+  void returnSingleNodeIsElement() {
     // MATCH (n) RETURN n should return elements directly, not wrapped in {"n": element}
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n");
     final List<Result> results = new ArrayList<>();
@@ -78,7 +78,7 @@ public class CypherResultFormatTest {
   }
 
   @Test
-  void testReturnSingleEdgeIsElement() {
+  void returnSingleEdgeIsElement() {
     // MATCH ()-[r]->() RETURN r should return elements directly
     final ResultSet result = database.query("opencypher", "MATCH ()-[r:KNOWS]->() RETURN r");
     final List<Result> results = new ArrayList<>();
@@ -92,7 +92,7 @@ public class CypherResultFormatTest {
   }
 
   @Test
-  void testReturnPropertyIsProjection() {
+  void returnPropertyIsProjection() {
     // MATCH (n) RETURN n.name should return projections, not elements
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n.name");
     final List<Result> results = new ArrayList<>();
@@ -108,7 +108,7 @@ public class CypherResultFormatTest {
   }
 
   @Test
-  void testReturnMultipleColumnsIsProjection() {
+  void returnMultipleColumnsIsProjection() {
     // MATCH (n) RETURN n, n.name should return projections with both columns
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n, n.name");
     final List<Result> results = new ArrayList<>();
@@ -124,7 +124,7 @@ public class CypherResultFormatTest {
   }
 
   @Test
-  void testReturnNodeWithAlias() {
+  void returnNodeWithAlias() {
     // MATCH (n) RETURN n AS person - single element with alias should still unwrap
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n AS person");
     final List<Result> results = new ArrayList<>();
@@ -139,7 +139,7 @@ public class CypherResultFormatTest {
   }
 
   @Test
-  void testReturnCountIsProjection() {
+  void returnCountIsProjection() {
     // MATCH (n) RETURN count(n) should return a projection with the count value
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN count(n)");
     final List<Result> results = new ArrayList<>();

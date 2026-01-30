@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for REMOVE clause in OpenCypher queries.
  * Issue #3257: REMOVE clause was not implemented in the new OpenCypher engine.
  */
-public class OpenCypherRemoveTest {
+class OpenCypherRemoveTest {
   private Database database;
 
   @BeforeEach
@@ -57,7 +57,7 @@ public class OpenCypherRemoveTest {
    * This test reproduces the exact scenario from the issue.
    */
   @Test
-  void testMergeWithOnCreateSetAndRemove() {
+  void mergeWithOnCreateSetAndRemove() {
     // This is the exact query from issue #3257
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
@@ -91,7 +91,7 @@ public class OpenCypherRemoveTest {
   }
 
   @Test
-  void testRemoveSingleProperty() {
+  void removeSingleProperty() {
     // Create a person with a property
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30, temp: 'value'})");
@@ -118,7 +118,7 @@ public class OpenCypherRemoveTest {
   }
 
   @Test
-  void testRemoveMultipleProperties() {
+  void removeMultipleProperties() {
     // Create a person with multiple properties
     database.transaction(() -> {
       database.command("opencypher",
@@ -140,7 +140,7 @@ public class OpenCypherRemoveTest {
   }
 
   @Test
-  void testRemoveNonExistentProperty() {
+  void removeNonExistentProperty() {
     // Create a person without the property
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Charlie'})");
@@ -158,7 +158,7 @@ public class OpenCypherRemoveTest {
   }
 
   @Test
-  void testSetThenRemove() {
+  void setThenRemove() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'David'})");
@@ -182,7 +182,7 @@ public class OpenCypherRemoveTest {
   }
 
   @Test
-  void testRemoveWithoutReturn() {
+  void removeWithoutReturn() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Eve', temp: 'remove_me'})");
@@ -202,7 +202,7 @@ public class OpenCypherRemoveTest {
   }
 
   @Test
-  void testRemoveOnMultipleNodes() {
+  void removeOnMultipleNodes() {
     // Create multiple people with temp property
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'A', temp: 1})");
@@ -233,7 +233,7 @@ public class OpenCypherRemoveTest {
   }
 
   @Test
-  void testRemovePropertyOnRelationship() {
+  void removePropertyOnRelationship() {
     // Create relationship with property
     database.transaction(() -> {
       database.command("opencypher",
@@ -253,7 +253,7 @@ public class OpenCypherRemoveTest {
   }
 
   @Test
-  void testCreateWithRemove() {
+  void createWithRemove() {
     // CREATE and REMOVE in the same query
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",

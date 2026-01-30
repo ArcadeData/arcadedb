@@ -31,10 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Test case for issue #1941: dijkstra function does not accept documented arguments
  * https://github.com/ArcadeData/arcadedb/issues/1941
  */
-public class SQLFunctionDijkstraIssue1941Test {
+class SQLFunctionDijkstraIssue1941Test {
 
   @Test
-  void testDijkstraWithVertexVariables() throws Exception {
+  void dijkstraWithVertexVariables() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941Test", (db) -> {
       // Setup schema
       db.transaction(() -> {
@@ -71,7 +71,7 @@ public class SQLFunctionDijkstraIssue1941Test {
   }
 
   @Test
-  void testDijkstraWithRIDs() throws Exception {
+  void dijkstraWithRIDs() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941TestRID", (db) -> {
       // Setup schema
       db.transaction(() -> {
@@ -108,7 +108,7 @@ public class SQLFunctionDijkstraIssue1941Test {
   }
 
   @Test
-  void testAstarWithVertexVariables() throws Exception {
+  void astarWithVertexVariables() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941TestAstar", (db) -> {
       // Setup schema
       db.transaction(() -> {
@@ -145,7 +145,7 @@ public class SQLFunctionDijkstraIssue1941Test {
   }
 
   @Test
-  void testDijkstraReturnsListOfRIDs() throws Exception {
+  void dijkstraReturnsListOfRIDs() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionDijkstraReturnsRIDs", (db) -> {
       // Setup schema
       db.transaction(() -> {
@@ -190,7 +190,7 @@ public class SQLFunctionDijkstraIssue1941Test {
   }
 
   @Test
-  void testAstarReturnsListOfRIDs() throws Exception {
+  void astarReturnsListOfRIDs() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionAstarReturnsRIDs", (db) -> {
       // Setup schema
       db.transaction(() -> {

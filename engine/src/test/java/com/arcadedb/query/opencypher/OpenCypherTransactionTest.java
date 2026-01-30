@@ -61,7 +61,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testCreateWithoutExplicitTransaction() {
+  void createWithoutExplicitTransaction() {
     // CREATE should automatically handle transaction
     final ResultSet result = database.command("opencypher",
         "CREATE (n:Person {name: 'Alice', age: 30}) RETURN n");
@@ -77,7 +77,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testSetWithoutExplicitTransaction() {
+  void setWithoutExplicitTransaction() {
     // Create a person first
     database.command("opencypher", "CREATE (n:Person {name: 'Bob', age: 25})");
 
@@ -96,7 +96,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testDeleteWithoutExplicitTransaction() {
+  void deleteWithoutExplicitTransaction() {
     // Create a person first
     database.command("opencypher", "CREATE (n:Person {name: 'Charlie', age: 35})");
 
@@ -109,7 +109,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testMergeWithoutExplicitTransaction() {
+  void mergeWithoutExplicitTransaction() {
     // MERGE should automatically handle transaction
     final ResultSet result = database.command("opencypher",
         "MERGE (n:Person {name: 'David', age: 40}) RETURN n");
@@ -124,7 +124,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testCreateWithinExplicitTransaction() {
+  void createWithinExplicitTransaction() {
     // Operations within explicit transaction should use that transaction
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Eve', age: 28})");
@@ -141,7 +141,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testMultipleOperationsInSingleTransaction() {
+  void multipleOperationsInSingleTransaction() {
     // Multiple operations should share the same transaction
     database.transaction(() -> {
       // CREATE
@@ -163,7 +163,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testTransactionRollbackOnError() {
+  void transactionRollbackOnError() {
     // Create initial data
     database.command("opencypher", "CREATE (n:Person {name: 'Henry', age: 45})");
 
@@ -186,7 +186,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testDetachDeleteWithTransaction() {
+  void detachDeleteWithTransaction() {
     // Create vertices with relationships
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Isaac'})-[:KNOWS]->(b:Person {name: 'Julia'})");
@@ -205,7 +205,7 @@ public class OpenCypherTransactionTest {
   }
 
   @Test
-  void testMergeReusesTransaction() {
+  void mergeReusesTransaction() {
     // MERGE within transaction should reuse it
     database.transaction(() -> {
       // First MERGE creates

@@ -72,7 +72,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testPatternPredicateWithOutgoingRelationship() {
+  void patternPredicateWithOutgoingRelationship() {
     // Find persons who KNOW someone
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +
@@ -85,7 +85,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testPatternPredicateWithIncomingRelationship() {
+  void patternPredicateWithIncomingRelationship() {
     // Find persons who are KNOWN by someone
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +
@@ -102,7 +102,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testPatternPredicateWithBidirectionalRelationship() {
+  void patternPredicateWithBidirectionalRelationship() {
     // Find persons who have any KNOWS relationship (either direction)
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +
@@ -119,7 +119,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testNegatedPatternPredicate() {
+  void negatedPatternPredicate() {
     // Find persons who DON'T know anyone
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +
@@ -136,7 +136,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testPatternPredicateWithSpecificEndNode() {
+  void patternPredicateWithSpecificEndNode() {
     // Find if Alice knows Bob specifically
     final ResultSet result = database.command("opencypher",
         "MATCH (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'}) " +
@@ -151,7 +151,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testPatternPredicateWithSpecificEndNodeNotExist() {
+  void patternPredicateWithSpecificEndNodeNotExist() {
     // Find if Bob knows Alice (should be false)
     final ResultSet result = database.command("opencypher",
         "MATCH (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'}) " +
@@ -162,7 +162,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testPatternPredicateCombinedWithRegularConditions() {
+  void patternPredicateCombinedWithRegularConditions() {
     // Find persons whose name starts with 'A' and who know someone
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +
@@ -175,7 +175,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testPatternPredicateWithMultipleRelationshipTypes() {
+  void patternPredicateWithMultipleRelationshipTypes() {
     // Find persons who have KNOWS or LIKES relationships
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +
@@ -192,7 +192,7 @@ class OpenCypherPatternPredicateTest {
   }
 
   @Test
-  void testPatternPredicateOrCombination() {
+  void patternPredicateOrCombination() {
     // Find persons who know someone OR are liked by someone
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +

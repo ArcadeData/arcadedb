@@ -1200,7 +1200,7 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  void testVectorNeighborsViaSQL() {
+  void vectorNeighborsViaSQL() {
     database.transaction(() -> {
       // Create vertex type with vector property
       database.command("sql", "CREATE VERTEX TYPE Product IF NOT EXISTS");
@@ -1344,7 +1344,7 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  void testVariableEncodingRoundTrip() {
+  void variableEncodingRoundTrip() {
     database.transaction(() -> {
       // Create vertex type and index
       database.command("sql", "CREATE VERTEX TYPE VectorDoc IF NOT EXISTS");
@@ -1413,7 +1413,7 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  void testAbsoluteFileOffsets() {
+  void absoluteFileOffsets() {
     database.transaction(() -> {
       // Create vertex type and index
       database.command("sql", "CREATE VERTEX TYPE OffsetTest IF NOT EXISTS");
@@ -1484,7 +1484,7 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  void testPageBoundaryHandling() {
+  void pageBoundaryHandling() {
     database.transaction(() -> {
       // Create vertex type and index with small page size to force page boundaries
       database.command("sql", "CREATE VERTEX TYPE BoundaryTest IF NOT EXISTS");
@@ -1552,7 +1552,7 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  void testCompactionWithVariableEntries() throws Exception {
+  void compactionWithVariableEntries() throws Exception {
     database.transaction(() -> {
       // Create vertex type and index
       database.command("sql", "CREATE VERTEX TYPE CompactVar IF NOT EXISTS");
@@ -1676,7 +1676,7 @@ class LSMVectorIndexTest extends TestHelper {
   }
 
   @Test
-  void testHeaderOffsetConsistency() {
+  void headerOffsetConsistency() {
     database.transaction(() -> {
       // Create vertex type and index
       database.command("sql", "CREATE VERTEX TYPE HeaderTest IF NOT EXISTS");
@@ -1759,7 +1759,7 @@ class LSMVectorIndexTest extends TestHelper {
    * - Graph file should exist on filesystem with non-zero size
    */
   @Test
-  void testVectorIndexGraphFileNotClosedBug() throws Exception {
+  void vectorIndexGraphFileNotClosedBug() throws Exception {
     final String dbPath = "databases/test-graph-file-not-closed";
     final File dbDir = new File(dbPath);
 
@@ -1897,7 +1897,7 @@ class LSMVectorIndexTest extends TestHelper {
    * Bug: discoverAndLoadGraphFile() in LSMVectorIndex fails to find graph files
    */
   @Test
-  void testGraphFileDiscoveryAfterReload() throws Exception {
+  void graphFileDiscoveryAfterReload() throws Exception {
     final String dbPath = "databases/test-graph-file-discovery";
     final File dbDir = new File(dbPath);
 

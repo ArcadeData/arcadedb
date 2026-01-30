@@ -15,18 +15,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Test CREATE INDEX with BY KEY and BY VALUE syntax parsing.
  * These tests verify that the parser correctly handles the BY KEY/VALUE syntax.
  */
-public class CreateIndexByKeyValueTest {
+class CreateIndexByKeyValueTest {
   private Database database;
   private StatementCache cache;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/CreateIndexByKeyValueTest").create();
     cache = new StatementCache(database, 100);
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -35,7 +35,7 @@ public class CreateIndexByKeyValueTest {
   }
 
   @Test
-  public void testParseIndexByKey() {
+  void parseIndexByKey() {
     // Test that BY KEY syntax is parsed correctly
     String sql = "CREATE INDEX idx_tags_key ON V (tags BY KEY) NOTUNIQUE";
 
@@ -47,7 +47,7 @@ public class CreateIndexByKeyValueTest {
   }
 
   @Test
-  public void testParseIndexByValue() {
+  void parseIndexByValue() {
     // Test that BY VALUE syntax is parsed correctly
     String sql = "CREATE INDEX idx_data_value ON V (data BY VALUE) NOTUNIQUE";
 
@@ -59,7 +59,7 @@ public class CreateIndexByKeyValueTest {
   }
 
   @Test
-  public void testParseIndexMultiplePropertiesWithBy() {
+  void parseIndexMultiplePropertiesWithBy() {
     // Test multiple properties with different BY modifiers
     String sql = "CREATE INDEX idx_multi ON V (tags BY KEY, data BY VALUE) NOTUNIQUE";
 
@@ -78,7 +78,7 @@ public class CreateIndexByKeyValueTest {
   }
 
   @Test
-  public void testParseIndexWithoutBy() {
+  void parseIndexWithoutBy() {
     // Test that regular properties without BY still work
     String sql = "CREATE INDEX idx_name ON V (name) NOTUNIQUE";
 
@@ -90,7 +90,7 @@ public class CreateIndexByKeyValueTest {
   }
 
   @Test
-  public void testGetCompleteKeyWithByKey() {
+  void getCompleteKeyWithByKey() {
     // Test that getCompleteKey() returns the correct field name with " by key"
     String sql = "CREATE INDEX idx ON V (field BY KEY) NOTUNIQUE";
 
@@ -100,7 +100,7 @@ public class CreateIndexByKeyValueTest {
   }
 
   @Test
-  public void testGetCompleteKeyWithByValue() {
+  void getCompleteKeyWithByValue() {
     // Test that getCompleteKey() returns the correct field name with " by value"
     String sql = "CREATE INDEX idx ON V (field BY VALUE) NOTUNIQUE";
 

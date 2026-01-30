@@ -56,7 +56,7 @@ class Issue3128BasicTest {
   }
 
   @Test
-  void testIdFunctionInWhereClause() {
+  void idFunctionInWhereClause() {
     // Create nodes
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Node {name: 'Node1'})");
@@ -105,7 +105,7 @@ class Issue3128BasicTest {
   }
 
   @Test
-  void testIdFunctionWithMultipleMatches() {
+  void idFunctionWithMultipleMatches() {
     // Create nodes
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Node {name: 'Source'})");

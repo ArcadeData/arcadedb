@@ -82,7 +82,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testBreadthFirstTraversal() {
+  void breadthFirstTraversal() {
     final BreadthFirstTraverser traverser = new BreadthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 1, 3, false, true);
 
     final Iterator<Vertex> vertices = traverser.traverse(alice);
@@ -99,7 +99,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testBreadthFirstTraversalWithMinHops() {
+  void breadthFirstTraversalWithMinHops() {
     final BreadthFirstTraverser traverser = new BreadthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 2, 3, false, true);
 
     final Iterator<Vertex> vertices = traverser.traverse(alice);
@@ -113,7 +113,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testBreadthFirstTraversalLimited() {
+  void breadthFirstTraversalLimited() {
     final BreadthFirstTraverser traverser = new BreadthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 1, 2, false, true);
 
     final Iterator<Vertex> vertices = traverser.traverse(alice);
@@ -127,7 +127,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testDepthFirstTraversal() {
+  void depthFirstTraversal() {
     final DepthFirstTraverser traverser = new DepthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 1, 3, false, true);
 
     final Iterator<Vertex> vertices = traverser.traverse(alice);
@@ -143,7 +143,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testBreadthFirstPathTraversal() {
+  void breadthFirstPathTraversal() {
     final BreadthFirstTraverser traverser = new BreadthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 1, 3, true, true);
 
     final Iterator<TraversalPath> paths = traverser.traversePaths(alice);
@@ -176,7 +176,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testVariableLengthPathTraverser() {
+  void variableLengthPathTraverser() {
     final VariableLengthPathTraverser traverser = new VariableLengthPathTraverser(Direction.OUT, new String[]{"KNOWS"}, 1, 2,
         false);
 
@@ -189,7 +189,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testVariableLengthPathTraverserWithPaths() {
+  void variableLengthPathTraverserWithPaths() {
     final VariableLengthPathTraverser traverser = new VariableLengthPathTraverser(Direction.OUT, new String[]{"KNOWS"}, 2, 3,
         true);
 
@@ -210,7 +210,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testTraversalWithTypeFilter() {
+  void traversalWithTypeFilter() {
     // Add a different edge type
     database.getSchema().createEdgeType("LIKES");
 
@@ -230,7 +230,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testTraversalWithoutTypeFilter() {
+  void traversalWithoutTypeFilter() {
     // Add a different edge type
     database.getSchema().createEdgeType("LIKES");
 
@@ -250,7 +250,7 @@ public class OpenCypherTraversalTest {
   }
 
   @Test
-  void testTraversalPathContainsVertex() {
+  void traversalPathContainsVertex() {
     final BreadthFirstTraverser traverser = new BreadthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 3, 3, true, true);
 
     final Iterator<TraversalPath> paths = traverser.traversePaths(alice);

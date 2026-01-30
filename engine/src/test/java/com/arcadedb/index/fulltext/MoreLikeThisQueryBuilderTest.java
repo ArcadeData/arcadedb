@@ -21,7 +21,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test suite for MoreLikeThisQueryBuilder.
@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class MoreLikeThisQueryBuilderTest {
 
   @Test
-  void testSelectTopTerms() {
+  void selectTopTerms() {
     // Given: MLT config with default thresholds
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
     config.setMinTermFreq(2);
@@ -62,17 +62,17 @@ class MoreLikeThisQueryBuilderTest {
     // Then: should return filtered and sorted terms
     final List<String> terms = builder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
-    assertNotNull(terms);
-    assertEquals(2, terms.size());
-    assertTrue(terms.contains("java"));
-    assertTrue(terms.contains("database"));
-    assertFalse(terms.contains("the"));   // Filtered by maxDocFreqPercent
-    assertFalse(terms.contains("a"));     // Filtered by minWordLen
-    assertFalse(terms.contains("query")); // Filtered by minTermFreq
+    assertThat(terms).isNotNull();
+    assertThat(terms.size()).isEqualTo(2);
+    assertThat(terms.contains("java")).isTrue();
+    assertThat(terms.contains("database")).isTrue();
+    assertThat(terms.contains("the")).isFalse();   // Filtered by maxDocFreqPercent
+    assertThat(terms.contains("a")).isFalse();     // Filtered by minWordLen
+    assertThat(terms.contains("query")).isFalse(); // Filtered by minTermFreq
   }
 
   @Test
-  void testSelectTopTermsWithMaxQueryTerms() {
+  void selectTopTermsWithMaxQueryTerms() {
     // Given: MLT config with maxQueryTerms limit
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
     config.setMinTermFreq(1);
@@ -100,16 +100,16 @@ class MoreLikeThisQueryBuilderTest {
     // Then: should return only top N by TF-IDF score
     final List<String> terms = builder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
-    assertNotNull(terms);
-    assertEquals(2, terms.size());
+    assertThat(terms).isNotNull();
+    assertThat(terms.size()).isEqualTo(2);
     // "java" should have highest TF-IDF: 10 * log(100/5) = 10 * 1.301 = 13.01
     // "database" should have second highest: 8 * log(100/10) = 8 * 1.0 = 8.0
-    assertEquals("java", terms.get(0));
-    assertEquals("database", terms.get(1));
+    assertThat(terms.get(0)).isEqualTo("java");
+    assertThat(terms.get(1)).isEqualTo("database");
   }
 
   @Test
-  void testFilterByMinTermFreq() {
+  void filterByMinTermFreq() {
     // Given: MLT config with higher minTermFreq
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
     config.setMinTermFreq(5);
@@ -132,14 +132,14 @@ class MoreLikeThisQueryBuilderTest {
     // Then: should only return terms meeting minTermFreq
     final List<String> terms = builder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
-    assertNotNull(terms);
-    assertEquals(1, terms.size());
-    assertEquals("frequent", terms.get(0));
-    assertFalse(terms.contains("rare"));
+    assertThat(terms).isNotNull();
+    assertThat(terms.size()).isEqualTo(1);
+    assertThat(terms.get(0)).isEqualTo("frequent");
+    assertThat(terms.contains("rare")).isFalse();
   }
 
   @Test
-  void testFilterByMinDocFreq() {
+  void filterByMinDocFreq() {
     // Given: MLT config with minDocFreq threshold
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
     config.setMinTermFreq(1);
@@ -162,14 +162,14 @@ class MoreLikeThisQueryBuilderTest {
     // Then: should only return terms meeting minDocFreq
     final List<String> terms = builder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
-    assertNotNull(terms);
-    assertEquals(1, terms.size());
-    assertEquals("common", terms.get(0));
-    assertFalse(terms.contains("unique"));
+    assertThat(terms).isNotNull();
+    assertThat(terms.size()).isEqualTo(1);
+    assertThat(terms.get(0)).isEqualTo("common");
+    assertThat(terms.contains("unique")).isFalse();
   }
 
   @Test
-  void testFilterByWordLength() {
+  void filterByWordLength() {
     // Given: MLT config with word length constraints
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
     config.setMinTermFreq(1);
@@ -197,16 +197,16 @@ class MoreLikeThisQueryBuilderTest {
     // Then: should only return terms within length bounds
     final List<String> terms = builder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
-    assertNotNull(terms);
-    assertEquals(2, terms.size());
-    assertTrue(terms.contains("java"));
-    assertTrue(terms.contains("database"));
-    assertFalse(terms.contains("sql"));
-    assertFalse(terms.contains("extraordinarily"));
+    assertThat(terms).isNotNull();
+    assertThat(terms.size()).isEqualTo(2);
+    assertThat(terms.contains("java")).isTrue();
+    assertThat(terms.contains("database")).isTrue();
+    assertThat(terms.contains("sql")).isFalse();
+    assertThat(terms.contains("extraordinarily")).isFalse();
   }
 
   @Test
-  void testEmptyInput() {
+  void emptyInput() {
     // Given: MLT config with default settings
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
     final MoreLikeThisQueryBuilder builder = new MoreLikeThisQueryBuilder(config);
@@ -219,12 +219,12 @@ class MoreLikeThisQueryBuilderTest {
     // Then: should return empty list
     final List<String> terms = builder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
-    assertNotNull(terms);
-    assertTrue(terms.isEmpty());
+    assertThat(terms).isNotNull();
+    assertThat(terms.isEmpty()).isTrue();
   }
 
   @Test
-  void testBoostByScoreDisabled() {
+  void boostByScoreDisabled() {
     // Given: MLT config with boostByScore disabled
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
     config.setMinTermFreq(1);
@@ -247,9 +247,9 @@ class MoreLikeThisQueryBuilderTest {
     // Then: should return terms without specific ordering by TF-IDF
     final List<String> terms = builder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
-    assertNotNull(terms);
-    assertEquals(2, terms.size());
-    assertTrue(terms.contains("java"));
-    assertTrue(terms.contains("database"));
+    assertThat(terms).isNotNull();
+    assertThat(terms.size()).isEqualTo(2);
+    assertThat(terms.contains("java")).isTrue();
+    assertThat(terms.contains("database")).isTrue();
   }
 }

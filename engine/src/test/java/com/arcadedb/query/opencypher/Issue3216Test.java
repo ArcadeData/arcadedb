@@ -108,7 +108,7 @@ class Issue3216Test {
    * creating the Cartesian product.
    */
   @Test
-  void testSimplifiedMatchWithIdFilter() {
+  void simplifiedMatchWithIdFilter() {
     long startTime = System.currentTimeMillis();
 
     database.transaction(() -> {
@@ -146,7 +146,7 @@ class Issue3216Test {
    * MERGE (a)-[r:`in`]->(b) RETURN a, b, r
    */
   @Test
-  void testUnwindMatchMergeWithIdFilter() {
+  void unwindMatchMergeWithIdFilter() {
     final List<Map<String, Object>> batch = new ArrayList<>();
     Map<String, Object> row = new HashMap<>();
     row.put("source_id", sourceId);
@@ -189,7 +189,7 @@ class Issue3216Test {
    * With our test data (~152 vertices), this would be ~23,104 combinations.
    */
   @Test
-  void testCartesianProductWithoutFilter() {
+  void cartesianProductWithoutFilter() {
     // Count total vertices
     final ResultSet countRs = database.query("opencypher", "MATCH (n) RETURN count(n) as total");
     long totalVertices = ((Number) countRs.next().getProperty("total")).longValue();
@@ -210,7 +210,7 @@ class Issue3216Test {
    * 2. MATCH (a) WHERE ID(a) = x MATCH (b) WHERE ID(b) = y (fast - filters first)
    */
   @Test
-  void testPerformanceComparisonMatchStrategies() {
+  void performanceComparisonMatchStrategies() {
     // Method 1: Single MATCH with Cartesian product
     long startTime1 = System.currentTimeMillis();
     database.transaction(() -> {

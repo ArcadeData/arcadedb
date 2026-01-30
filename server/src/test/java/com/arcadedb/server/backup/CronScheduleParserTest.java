@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class CronScheduleParserTest {
 
   @Test
-  void testParseSimpleExpression() {
+  void parseSimpleExpression() {
     // Every minute at second 0
     final CronScheduleParser parser = new CronScheduleParser("0 * * * * *");
 
@@ -42,7 +42,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseSpecificTime() {
+  void parseSpecificTime() {
     // Every day at 2:00:00 AM
     final CronScheduleParser parser = new CronScheduleParser("0 0 2 * * *");
 
@@ -53,7 +53,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseRange() {
+  void parseRange() {
     // Every minute from 10-15, hour 10
     final CronScheduleParser parser = new CronScheduleParser("0 10-15 10 * * *");
 
@@ -64,7 +64,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseList() {
+  void parseList() {
     // At seconds 0,15,30,45 of every minute
     final CronScheduleParser parser = new CronScheduleParser("0,15,30,45 * * * * *");
 
@@ -75,7 +75,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseIncrement() {
+  void parseIncrement() {
     // Every 15 minutes starting at 0
     final CronScheduleParser parser = new CronScheduleParser("0 0/15 * * * *");
 
@@ -86,7 +86,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseDayOfWeek() {
+  void parseDayOfWeek() {
     // Every Monday at 3:00 AM
     final CronScheduleParser parser = new CronScheduleParser("0 0 3 * * MON");
 
@@ -99,7 +99,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseDayOfWeekNumeric() {
+  void parseDayOfWeekNumeric() {
     // Every Sunday (0) at 4:00 AM
     final CronScheduleParser parser = new CronScheduleParser("0 0 4 * * 0");
 
@@ -112,7 +112,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseWeekdaysRange() {
+  void parseWeekdaysRange() {
     // Monday through Friday at 2:30 AM
     final CronScheduleParser parser = new CronScheduleParser("0 30 2 * * 1-5");
 
@@ -125,7 +125,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseQuestionMark() {
+  void parseQuestionMark() {
     // Question mark should be treated as wildcard
     final CronScheduleParser parser = new CronScheduleParser("0 0 3 ? * *");
 
@@ -136,7 +136,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testParseMonthNames() {
+  void parseMonthNames() {
     // First day of January and July at midnight
     final CronScheduleParser parser = new CronScheduleParser("0 0 0 1 JAN,JUL *");
 
@@ -147,7 +147,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testGetDelayMillis() {
+  void getDelayMillis() {
     final CronScheduleParser parser = new CronScheduleParser("0 0 3 * * *");
 
     final LocalDateTime from = LocalDateTime.of(2024, 1, 15, 2, 59, 0);
@@ -158,21 +158,21 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testInvalidExpressionTooFewFields() {
+  void invalidExpressionTooFewFields() {
     assertThatThrownBy(() -> new CronScheduleParser("0 0 3 * *"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("expected 6 fields");
   }
 
   @Test
-  void testInvalidExpressionTooManyFields() {
+  void invalidExpressionTooManyFields() {
     assertThatThrownBy(() -> new CronScheduleParser("0 0 3 * * * *"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("expected 6 fields");
   }
 
   @Test
-  void testGetExpression() {
+  void getExpression() {
     final String expression = "0 0 2 * * *";
     final CronScheduleParser parser = new CronScheduleParser(expression);
 
@@ -188,7 +188,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testEveryHour() {
+  void everyHour() {
     // Every hour at minute 0
     final CronScheduleParser parser = new CronScheduleParser("0 0 * * * *");
 
@@ -199,7 +199,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testMonthBoundary() {
+  void monthBoundary() {
     // First of each month at midnight
     final CronScheduleParser parser = new CronScheduleParser("0 0 0 1 * *");
 
@@ -210,7 +210,7 @@ class CronScheduleParserTest {
   }
 
   @Test
-  void testYearBoundary() {
+  void yearBoundary() {
     // First of January at midnight
     final CronScheduleParser parser = new CronScheduleParser("0 0 0 1 1 *");
 

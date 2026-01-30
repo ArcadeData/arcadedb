@@ -53,7 +53,7 @@ import java.util.List;
  * but we use ANTLR 4.13.2 for native OpenCypher. ANTLR 4.13.2 is backward compatible.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-public class CypherEngineComparisonBenchmark {
+class CypherEngineComparisonBenchmark {
   private static Database database;
 
   /**

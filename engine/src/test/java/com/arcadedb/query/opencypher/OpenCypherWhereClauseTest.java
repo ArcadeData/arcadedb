@@ -60,7 +60,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithAND() {
+  void whereWithAND() {
     // Test AND operator: age > 25 AND age < 35
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age > 25 AND p.age < 35 RETURN p.name ORDER BY p.name");
@@ -72,7 +72,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithOR() {
+  void whereWithOR() {
     // Test OR operator: age < 26 OR age > 35
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age < 26 OR p.age > 35 RETURN p.name ORDER BY p.name");
@@ -84,7 +84,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithNOT() {
+  void whereWithNOT() {
     // Test NOT operator: NOT(age > 30)
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE NOT p.age > 30 RETURN p.name ORDER BY p.name");
@@ -97,7 +97,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithComplexLogic() {
+  void whereWithComplexLogic() {
     // Test combined AND with NOT: age > 35 AND NOT name = 'David'
     // Note: Parenthesized OR expressions need additional parser work
     final ResultSet result = database.query("opencypher",
@@ -107,7 +107,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereISNULL() {
+  void whereISNULL() {
     // Test IS NULL: email IS NULL
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.email IS NULL RETURN p.name ORDER BY p.name");
@@ -119,7 +119,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereISNOTNULL() {
+  void whereISNOTNULL() {
     // Test IS NOT NULL: email IS NOT NULL
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.email IS NOT NULL RETURN p.name ORDER BY p.name");
@@ -132,7 +132,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithRegex() {
+  void whereWithRegex() {
     // Test regex matching: name =~ 'Alice'
     // Start with exact match first
     final ResultSet result = database.query("opencypher",
@@ -144,7 +144,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithRegexPattern() {
+  void whereWithRegexPattern() {
     // Test regex with pattern: name =~ 'A.*'
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name =~ 'A.*' RETURN p.name ORDER BY p.name");
@@ -155,7 +155,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithRegexAndLogic() {
+  void whereWithRegexAndLogic() {
     // Test regex with AND: name =~ 'A.*' AND age = 30
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name =~ 'A.*' AND p.age = 30 RETURN p.name ORDER BY p.name");
@@ -166,7 +166,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithIN() {
+  void whereWithIN() {
     // Test IN operator: name IN ['Alice', 'Bob']
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name IN ['Alice', 'Bob'] RETURN p.name ORDER BY p.name");
@@ -178,7 +178,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithINNumbers() {
+  void whereWithINNumbers() {
     // Test IN operator with numbers: age IN [25, 30, 35]
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age IN [25, 30, 35] RETURN p.name ORDER BY p.name");
@@ -191,7 +191,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithINAndLogic() {
+  void whereWithINAndLogic() {
     // Test IN with AND: name IN ['Alice', 'Bob', 'Charlie'] AND age > 28
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name IN ['Alice', 'Bob', 'Charlie'] AND p.age > 28 RETURN p.name ORDER BY p.name");
@@ -203,7 +203,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereWithNullCheckAndComparison() {
+  void whereWithNullCheckAndComparison() {
     // Test IS NOT NULL with comparison: email IS NOT NULL AND age >= 30
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.email IS NOT NULL AND p.age >= 30 RETURN p.name ORDER BY p.name");
@@ -215,7 +215,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereAllComparisonOperators() {
+  void whereAllComparisonOperators() {
     // Test all comparison operators
     ResultSet result;
 
@@ -247,7 +247,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereComplexConditions() {
+  void whereComplexConditions() {
     // Test multiple AND conditions: age > 25 AND age < 35 AND email IS NOT NULL
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age > 25 AND p.age < 35 AND p.email IS NOT NULL RETURN p.name ORDER BY p.name");
@@ -258,7 +258,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereStartsWith() {
+  void whereStartsWith() {
     // Test STARTS WITH operator
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name STARTS WITH 'A' RETURN p.name ORDER BY p.name");
@@ -269,7 +269,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereEndsWith() {
+  void whereEndsWith() {
     // Test ENDS WITH operator
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name ENDS WITH 'e' RETURN p.name ORDER BY p.name");
@@ -282,7 +282,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereContains() {
+  void whereContains() {
     // Test CONTAINS operator
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name CONTAINS 'li' RETURN p.name ORDER BY p.name");
@@ -294,7 +294,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereStartsWithEmailDomain() {
+  void whereStartsWithEmailDomain() {
     // Test STARTS WITH on email property
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.email STARTS WITH 'alice' RETURN p.name");
@@ -305,7 +305,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereEndsWithEmailDomain() {
+  void whereEndsWithEmailDomain() {
     // Test ENDS WITH on email domain
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.email ENDS WITH '@example.com' RETURN p.name ORDER BY p.name");
@@ -317,7 +317,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereStringMatchWithAND() {
+  void whereStringMatchWithAND() {
     // Test string matching combined with AND
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name STARTS WITH 'A' AND p.age > 28 RETURN p.name");
@@ -328,7 +328,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereParenthesizedOR() {
+  void whereParenthesizedOR() {
     // Test parenthesized OR with AND (operator precedence)
     // (age < 26 OR age > 35) AND email IS NOT NULL
     final ResultSet result = database.query("opencypher",
@@ -341,7 +341,7 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
-  void testWhereComplexParenthesizedExpressions() {
+  void whereComplexParenthesizedExpressions() {
     // Test nested parentheses with multiple OR and AND
     // ((age < 28 OR age > 35) AND email IS NOT NULL) OR (name CONTAINS 'li' AND age = 35)
     final ResultSet result = database.query("opencypher",

@@ -56,7 +56,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDeleteSingleVertex() {
+  void deleteSingleVertex() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Alice'})");
@@ -79,7 +79,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDeleteMultipleVertices() {
+  void deleteMultipleVertices() {
     // Create multiple people
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Alice'})");
@@ -107,7 +107,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDeleteWithWhere() {
+  void deleteWithWhere() {
     // Create multiple people
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Alice', age: 30})");
@@ -132,7 +132,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDeleteEdge() {
+  void deleteEdge() {
     // Create two people and a relationship
     database.transaction(() -> {
       database.command("opencypher",
@@ -163,7 +163,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDetachDeleteVertexWithRelationships() {
+  void detachDeleteVertexWithRelationships() {
     // Create a graph: (Alice)-[:KNOWS]->(Bob)-[:KNOWS]->(Charlie)
     database.transaction(() -> {
       database.command("opencypher",
@@ -203,7 +203,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDetachDeleteMultipleVertices() {
+  void detachDeleteMultipleVertices() {
     // Create a more complex graph
     database.transaction(() -> {
       database.command("opencypher",
@@ -242,7 +242,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDeleteWithReturn() {
+  void deleteWithReturn() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'David', age: 40})");
@@ -264,7 +264,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDeleteWithoutReturn() {
+  void deleteWithoutReturn() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Eve', age: 28})");
@@ -281,7 +281,7 @@ public class OpenCypherDeleteTest {
   }
 
   @Test
-  void testDeletePartialGraph() {
+  void deletePartialGraph() {
     // Create graph with two relationship types
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), (c:Company {name: 'ArcadeDB'})");

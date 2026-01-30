@@ -24,7 +24,7 @@ public class GitHubIssue1315Test extends TestHelper {
   }
 
   @Test
-  public void testOriginalIssueExample() {
+  void originalIssueExample() {
     // Reproduce the example from GitHub issue #1315
     // The issue requests: UPDATE doc CONTENT [{"name":"tim"},{"name":"tom"},{"name":"jim"}] UPSERT
     //
@@ -69,7 +69,7 @@ public class GitHubIssue1315Test extends TestHelper {
   }
 
   @Test
-  public void testUpdateMatchesInsertBehavior() {
+  void updateMatchesInsertBehavior() {
     // Demonstrate that UPDATE now behaves like INSERT with array CONTENT
     database.command("sql", "CREATE DOCUMENT TYPE Person");
 
@@ -98,7 +98,7 @@ public class GitHubIssue1315Test extends TestHelper {
   }
 
   @Test
-  public void testCreateVertexAlsoSupportsArrays() {
+  void createVertexAlsoSupportsArrays() {
     // Verify that CREATE VERTEX also supports arrays (as mentioned in the issue)
     database.command("sql", "CREATE VERTEX TYPE Person");
 

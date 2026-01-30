@@ -80,7 +80,7 @@ public class Issue2326MultiFieldIndexSelectionTest extends TestHelper {
   }
 
   @Test
-  public void testCompositeIndexIsSelected() {
+  void compositeIndexIsSelected() {
     database.transaction(() -> {
       // Query with equality on all three properties
       final ResultSet rs = database.query("sql",
@@ -110,7 +110,7 @@ public class Issue2326MultiFieldIndexSelectionTest extends TestHelper {
   }
 
   @Test
-  public void testQueryReturnsCorrectResult() {
+  void queryReturnsCorrectResult() {
     database.transaction(() -> {
       // Verify the query returns the correct result
       final ResultSet rs = database.query("sql",
@@ -121,7 +121,7 @@ public class Issue2326MultiFieldIndexSelectionTest extends TestHelper {
   }
 
   @Test
-  public void testSinglePropertyIndexNotSelected() {
+  void singlePropertyIndexNotSelected() {
     database.transaction(() -> {
       // Test with just one condition - should still prefer LSM index over full-text if available
       final ResultSet rs = database.query("sql",
@@ -139,7 +139,7 @@ public class Issue2326MultiFieldIndexSelectionTest extends TestHelper {
   }
 
   @Test
-  public void testTwoPropertyIndexSelection() {
+  void twoPropertyIndexSelection() {
     database.transaction(() -> {
       // Test with two conditions - composite index should not be used since it requires all three
       final ResultSet rs = database.query("sql",

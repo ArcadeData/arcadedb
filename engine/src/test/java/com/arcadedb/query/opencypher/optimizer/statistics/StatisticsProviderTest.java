@@ -57,7 +57,7 @@ class StatisticsProviderTest {
   }
 
   @Test
-  void testCollectStatisticsForVertexType() {
+  void collectStatisticsForVertexType() {
     // Create type and insert records
     database.getSchema().getOrCreateVertexType("Person");
     database.transaction(() -> {
@@ -78,7 +78,7 @@ class StatisticsProviderTest {
   }
 
   @Test
-  void testCollectStatisticsForEdgeType() {
+  void collectStatisticsForEdgeType() {
     // Create types
     database.getSchema().getOrCreateVertexType("Person");
     database.getSchema().getOrCreateEdgeType("KNOWS");
@@ -101,7 +101,7 @@ class StatisticsProviderTest {
   }
 
   @Test
-  void testCollectIndexStatistics() {
+  void collectIndexStatistics() {
     // Create type with index
     final var personType = database.getSchema().getOrCreateVertexType("Person");
     personType.createProperty("id", Integer.class);
@@ -136,7 +136,7 @@ class StatisticsProviderTest {
   }
 
   @Test
-  void testFindIndexForProperty() {
+  void findIndexForProperty() {
     // Create type with indexes
     final var personType = database.getSchema().getOrCreateVertexType("Person");
     personType.createProperty("id", Integer.class);
@@ -164,7 +164,7 @@ class StatisticsProviderTest {
   }
 
   @Test
-  void testHasIndexForProperty() {
+  void hasIndexForProperty() {
     // Create type with index
     final var personType = database.getSchema().getOrCreateVertexType("Person");
     personType.createProperty("email", String.class);
@@ -177,7 +177,7 @@ class StatisticsProviderTest {
   }
 
   @Test
-  void testGetCardinality() {
+  void getCardinality() {
     database.getSchema().getOrCreateVertexType("Person");
     database.transaction(() -> {
       for (int i = 0; i < 50; i++) {
@@ -192,7 +192,7 @@ class StatisticsProviderTest {
   }
 
   @Test
-  void testClear() {
+  void clear() {
     database.getSchema().getOrCreateVertexType("Person");
     statisticsProvider.collectStatistics(Arrays.asList("Person"));
 
@@ -204,7 +204,7 @@ class StatisticsProviderTest {
   }
 
   @Test
-  void testPreferUniqueIndexOverNonUnique() {
+  void preferUniqueIndexOverNonUnique() {
     // Create type with unique and non-unique indexes on different properties
     final var personType = database.getSchema().getOrCreateVertexType("Person");
     personType.createProperty("id", Integer.class);

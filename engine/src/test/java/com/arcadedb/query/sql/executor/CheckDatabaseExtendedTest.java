@@ -15,12 +15,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test CHECK DATABASE extended syntax (FIX, COMPRESS, TYPE, BUCKET).
  */
-public class CheckDatabaseExtendedTest {
+class CheckDatabaseExtendedTest {
   private Database database;
   private StatementCache cache;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/CheckDatabaseExtendedTest").create();
     cache = new StatementCache(database, 100);
 
@@ -30,7 +30,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -39,7 +39,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseBasic() {
+  void checkDatabaseBasic() {
     // Test basic CHECK DATABASE without any options
     String sql = "CHECK DATABASE";
 
@@ -52,7 +52,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithFix() {
+  void checkDatabaseWithFix() {
     // Test CHECK DATABASE with FIX flag
     String sql = "CHECK DATABASE FIX";
 
@@ -63,7 +63,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithCompress() {
+  void checkDatabaseWithCompress() {
     // Test CHECK DATABASE with COMPRESS flag
     String sql = "CHECK DATABASE COMPRESS";
 
@@ -74,7 +74,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithFixAndCompress() {
+  void checkDatabaseWithFixAndCompress() {
     // Test CHECK DATABASE with both FIX and COMPRESS
     String sql = "CHECK DATABASE FIX COMPRESS";
 
@@ -85,7 +85,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithType() {
+  void checkDatabaseWithType() {
     // Test CHECK DATABASE TYPE with single type
     String sql = "CHECK DATABASE TYPE Customer";
 
@@ -96,7 +96,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithMultipleTypes() {
+  void checkDatabaseWithMultipleTypes() {
     // Test CHECK DATABASE TYPE with multiple types
     String sql = "CHECK DATABASE TYPE Customer, Order";
 
@@ -106,7 +106,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithBucketNumber() {
+  void checkDatabaseWithBucketNumber() {
     // Test CHECK DATABASE BUCKET with numeric bucket
     String sql = "CHECK DATABASE BUCKET 3";
 
@@ -119,7 +119,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithBucketName() {
+  void checkDatabaseWithBucketName() {
     // Test CHECK DATABASE BUCKET with bucket name
     String sql = "CHECK DATABASE BUCKET Customer";
 
@@ -130,7 +130,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithTypeAndFix() {
+  void checkDatabaseWithTypeAndFix() {
     // Test CHECK DATABASE TYPE with FIX flag
     String sql = "CHECK DATABASE TYPE Customer FIX";
 
@@ -141,7 +141,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseWithBucketAndFix() {
+  void checkDatabaseWithBucketAndFix() {
     // Test CHECK DATABASE BUCKET with FIX flag
     String sql = "CHECK DATABASE BUCKET 3 FIX";
 
@@ -152,7 +152,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseFullSyntax() {
+  void checkDatabaseFullSyntax() {
     // Test all options together
     String sql = "CHECK DATABASE TYPE Customer BUCKET 3 FIX COMPRESS";
 
@@ -165,7 +165,7 @@ public class CheckDatabaseExtendedTest {
   }
 
   @Test
-  public void testCheckDatabaseCaseInsensitive() {
+  void checkDatabaseCaseInsensitive() {
     // Test case insensitivity
     String sql = "check database type Customer fix compress";
 

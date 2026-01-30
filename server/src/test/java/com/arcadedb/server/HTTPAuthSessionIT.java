@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/1691">GitHub Issue #1691</a>
  */
-public class HTTPAuthSessionIT extends BaseGraphServerTest {
+class HTTPAuthSessionIT extends BaseGraphServerTest {
 
   private static final String DATABASE_NAME = "graph";
 

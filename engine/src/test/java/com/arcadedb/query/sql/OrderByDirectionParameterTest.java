@@ -19,10 +19,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * boolean values (true for ASC, false for DESC) as an alternative to the ASC/DESC keywords.
  * </p>
  */
-public class OrderByDirectionParameterTest extends TestHelper {
+class OrderByDirectionParameterTest extends TestHelper {
 
   @Test
-  void testOrderByDirectionWithTrueForAsc() {
+  void orderByDirectionWithTrueForAsc() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestOrderParam IF NOT EXISTS");
       database.command("sql", "DELETE FROM TestOrderParam");
@@ -51,7 +51,7 @@ public class OrderByDirectionParameterTest extends TestHelper {
   }
 
   @Test
-  void testOrderByDirectionWithFalseForDesc() {
+  void orderByDirectionWithFalseForDesc() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestOrderParam2 IF NOT EXISTS");
       database.command("sql", "DELETE FROM TestOrderParam2");
@@ -80,7 +80,7 @@ public class OrderByDirectionParameterTest extends TestHelper {
   }
 
   @Test
-  void testOrderByDirectionWithBooleanParameter() {
+  void orderByDirectionWithBooleanParameter() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestOrderParam3 IF NOT EXISTS");
       database.command("sql", "DELETE FROM TestOrderParam3");
@@ -130,7 +130,7 @@ public class OrderByDirectionParameterTest extends TestHelper {
   }
 
   @Test
-  void testOrderByDirectionWithStringParameter() {
+  void orderByDirectionWithStringParameter() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestOrderParam5 IF NOT EXISTS");
       database.command("sql", "DELETE FROM TestOrderParam5");
@@ -198,7 +198,7 @@ public class OrderByDirectionParameterTest extends TestHelper {
   }
 
   @Test
-  void testMultipleOrderByWithMixedDirections() {
+  void multipleOrderByWithMixedDirections() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestOrderParam6 IF NOT EXISTS");
       database.command("sql", "DELETE FROM TestOrderParam6");
@@ -231,7 +231,7 @@ public class OrderByDirectionParameterTest extends TestHelper {
   }
 
   @Test
-  void testOriginalAscDescKeywordsStillWork() {
+  void originalAscDescKeywordsStillWork() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE TestOrderParam4 IF NOT EXISTS");
       database.command("sql", "DELETE FROM TestOrderParam4");

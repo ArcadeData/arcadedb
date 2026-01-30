@@ -10,10 +10,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class OrderByRidTest extends TestHelper {
+class OrderByRidTest extends TestHelper {
 
   @Test
-  void testOrderByRidDesc() {
+  void orderByRidDesc() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE TestVertex");
 
@@ -53,7 +53,7 @@ public class OrderByRidTest extends TestHelper {
   }
 
   @Test
-  void testOrderByRidAsc() {
+  void orderByRidAsc() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE TestVertex2");
 

@@ -50,17 +50,17 @@ class IndexSelectionRuleTest {
   }
 
   @Test
-  void testGetRuleName() {
+  void getRuleName() {
     assertThat(rule.getRuleName()).isEqualTo("IndexSelection");
   }
 
   @Test
-  void testGetPriority() {
+  void getPriority() {
     assertThat(rule.getPriority()).isEqualTo(10); // Highest priority
   }
 
   @Test
-  void testIsApplicableWithNodes() {
+  void isApplicableWithNodes() {
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
         Collections.singletonMap("id", 123));
     final LogicalPlan plan = LogicalPlan.forTesting(Collections.singletonMap("p", node));
@@ -69,14 +69,14 @@ class IndexSelectionRuleTest {
   }
 
   @Test
-  void testIsNotApplicableWithoutNodes() {
+  void isNotApplicableWithoutNodes() {
     final LogicalPlan emptyPlan = LogicalPlan.forTesting(Collections.emptyMap());
 
     assertThat(rule.isApplicable(emptyPlan)).isFalse();
   }
 
   @Test
-  void testCreateAnchorOperatorWithIndexSeek() {
+  void createAnchorOperatorWithIndexSeek() {
     // Setup: Anchor with index
     statistics.setCardinality("Person", 10000);
     final IndexStatistics index = new IndexStatistics("Person",
@@ -101,7 +101,7 @@ class IndexSelectionRuleTest {
   }
 
   @Test
-  void testCreateAnchorOperatorWithLabelScan() {
+  void createAnchorOperatorWithLabelScan() {
     // Setup: Anchor without index
     statistics.setCardinality("Person", 10000);
 
@@ -120,7 +120,7 @@ class IndexSelectionRuleTest {
   }
 
   @Test
-  void testShouldUseIndexWhenSelective() {
+  void shouldUseIndexWhenSelective() {
     statistics.setCardinality("Person", 100000);
     final IndexStatistics index = new IndexStatistics("Person",
         Arrays.asList("email"), true, "Person.email");
@@ -134,7 +134,7 @@ class IndexSelectionRuleTest {
   }
 
   @Test
-  void testShouldNotUseIndexWhenNotSelective() {
+  void shouldNotUseIndexWhenNotSelective() {
     statistics.setCardinality("Person", 100000);
     final IndexStatistics index = new IndexStatistics("Person",
         Arrays.asList("country"), false, "Person.country");
@@ -147,7 +147,7 @@ class IndexSelectionRuleTest {
   }
 
   @Test
-  void testShouldUseIndexAtThreshold() {
+  void shouldUseIndexAtThreshold() {
     statistics.setCardinality("Person", 100000);
     final IndexStatistics index = new IndexStatistics("Person",
         Arrays.asList("category"), false, "Person.category");
@@ -160,7 +160,7 @@ class IndexSelectionRuleTest {
   }
 
   @Test
-  void testShouldNotUseIndexJustAboveThreshold() {
+  void shouldNotUseIndexJustAboveThreshold() {
     statistics.setCardinality("Person", 100000);
     final IndexStatistics index = new IndexStatistics("Person",
         Arrays.asList("status"), false, "Person.status");
@@ -173,7 +173,7 @@ class IndexSelectionRuleTest {
   }
 
   @Test
-  void testShouldUseIndexForUniqueConstraint() {
+  void shouldUseIndexForUniqueConstraint() {
     statistics.setCardinality("Person", 1000000);
     final IndexStatistics uniqueIndex = new IndexStatistics("Person",
         Arrays.asList("ssn"), true, "Person.ssn");

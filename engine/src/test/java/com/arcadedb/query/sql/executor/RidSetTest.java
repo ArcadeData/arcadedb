@@ -24,38 +24,38 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
-public class RidSetTest extends TestHelper {
+class RidSetTest extends TestHelper {
 
   @Test
-  public void testAddAndContains() {
+  void addAndContains() {
     final RidSet set = new RidSet();
     final RID rid1 = new RID(database, 1, 100);
     final RID rid2 = new RID(database, 1, 200);
     final RID rid3 = new RID(database, 2, 100);
 
     // Test add() returns true when adding new element
-    assertTrue(set.add(rid1));
-    assertTrue(set.add(rid2));
-    assertTrue(set.add(rid3));
+    assertThat(set.add(rid1)).isTrue();
+    assertThat(set.add(rid2)).isTrue();
+    assertThat(set.add(rid3)).isTrue();
 
     // Test add() returns false when adding duplicate
-    assertFalse(set.add(rid1));
-    assertFalse(set.add(rid2));
+    assertThat(set.add(rid1)).isFalse();
+    assertThat(set.add(rid2)).isFalse();
 
     // Test contains()
-    assertTrue(set.contains(rid1));
-    assertTrue(set.contains(rid2));
-    assertTrue(set.contains(rid3));
-    assertFalse(set.contains(new RID(database, 3, 300)));
+    assertThat(set.contains(rid1)).isTrue();
+    assertThat(set.contains(rid2)).isTrue();
+    assertThat(set.contains(rid3)).isTrue();
+    assertThat(set.contains(new RID(database, 3, 300))).isFalse();
 
     // Test size()
-    assertEquals(3, set.size());
+    assertThat(set.size()).isEqualTo(3);
   }
 
   @Test
-  public void testRemove() {
+  void remove() {
     final RidSet set = new RidSet();
     final RID rid1 = new RID(database, 1, 100);
     final RID rid2 = new RID(database, 1, 200);
@@ -64,21 +64,21 @@ public class RidSetTest extends TestHelper {
     set.add(rid2);
 
     // Test remove() returns true when element exists
-    assertTrue(set.remove(rid1));
-    assertFalse(set.contains(rid1));
-    assertEquals(1, set.size());
+    assertThat(set.remove(rid1)).isTrue();
+    assertThat(set.contains(rid1)).isFalse();
+    assertThat(set.size()).isEqualTo(1);
 
     // Test remove() returns false when element doesn't exist
-    assertFalse(set.remove(rid1));
-    assertEquals(1, set.size());
+    assertThat(set.remove(rid1)).isFalse();
+    assertThat(set.size()).isEqualTo(1);
 
     // Remove remaining element
-    assertTrue(set.remove(rid2));
-    assertTrue(set.isEmpty());
+    assertThat(set.remove(rid2)).isTrue();
+    assertThat(set.isEmpty()).isTrue();
   }
 
   @Test
-  public void testAddAll() {
+  void addAll() {
     final RidSet set = new RidSet();
     final RID rid1 = new RID(database, 1, 100);
     final RID rid2 = new RID(database, 1, 200);
@@ -87,21 +87,21 @@ public class RidSetTest extends TestHelper {
     final List<RID> rids = Arrays.asList(rid1, rid2, rid3);
 
     // Test addAll() returns true when any element is added
-    assertTrue(set.addAll(rids));
-    assertEquals(3, set.size());
+    assertThat(set.addAll(rids)).isTrue();
+    assertThat(set.size()).isEqualTo(3);
 
     // Test addAll() returns false when all elements already exist
-    assertFalse(set.addAll(rids));
-    assertEquals(3, set.size());
+    assertThat(set.addAll(rids)).isFalse();
+    assertThat(set.size()).isEqualTo(3);
 
     // Test addAll() returns true when at least one element is new
     final List<RID> moreRids = Arrays.asList(rid2, new RID(database, 3, 100));
-    assertTrue(set.addAll(moreRids));
-    assertEquals(4, set.size());
+    assertThat(set.addAll(moreRids)).isTrue();
+    assertThat(set.size()).isEqualTo(4);
   }
 
   @Test
-  public void testIteratorWithContext() {
+  void iteratorWithContext() {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -120,14 +120,14 @@ public class RidSetTest extends TestHelper {
       iteratedRids.add(rid);
     }
 
-    assertEquals(3, iteratedRids.size());
-    assertTrue(iteratedRids.contains(rid1));
-    assertTrue(iteratedRids.contains(rid2));
-    assertTrue(iteratedRids.contains(rid3));
+    assertThat(iteratedRids.size()).isEqualTo(3);
+    assertThat(iteratedRids.contains(rid1)).isTrue();
+    assertThat(iteratedRids.contains(rid2)).isTrue();
+    assertThat(iteratedRids.contains(rid3)).isTrue();
   }
 
   @Test
-  public void testClear() {
+  void clear() {
     final RidSet set = new RidSet();
     final RID rid1 = new RID(database, 1, 100);
     final RID rid2 = new RID(database, 1, 200);
@@ -135,19 +135,19 @@ public class RidSetTest extends TestHelper {
     set.add(rid1);
     set.add(rid2);
 
-    assertFalse(set.isEmpty());
-    assertEquals(2, set.size());
+    assertThat(set.isEmpty()).isFalse();
+    assertThat(set.size()).isEqualTo(2);
 
     set.clear();
 
-    assertTrue(set.isEmpty());
-    assertEquals(0, set.size());
-    assertFalse(set.contains(rid1));
-    assertFalse(set.contains(rid2));
+    assertThat(set.isEmpty()).isTrue();
+    assertThat(set.size()).isEqualTo(0);
+    assertThat(set.contains(rid1)).isFalse();
+    assertThat(set.contains(rid2)).isFalse();
   }
 
   @Test
-  public void testContainsAll() {
+  void containsAll() {
     final RidSet set = new RidSet();
     final RID rid1 = new RID(database, 1, 100);
     final RID rid2 = new RID(database, 1, 200);
@@ -156,12 +156,12 @@ public class RidSetTest extends TestHelper {
     set.add(rid1);
     set.add(rid2);
 
-    assertTrue(set.containsAll(Arrays.asList(rid1, rid2)));
-    assertFalse(set.containsAll(Arrays.asList(rid1, rid2, rid3)));
+    assertThat(set.containsAll(Arrays.asList(rid1, rid2))).isTrue();
+    assertThat(set.containsAll(Arrays.asList(rid1, rid2, rid3))).isFalse();
   }
 
   @Test
-  public void testRemoveAll() {
+  void removeAll() {
     final RidSet set = new RidSet();
     final RID rid1 = new RID(database, 1, 100);
     final RID rid2 = new RID(database, 1, 200);
@@ -173,9 +173,9 @@ public class RidSetTest extends TestHelper {
 
     set.removeAll(Arrays.asList(rid1, rid3));
 
-    assertEquals(1, set.size());
-    assertFalse(set.contains(rid1));
-    assertTrue(set.contains(rid2));
-    assertFalse(set.contains(rid3));
+    assertThat(set.size()).isEqualTo(1);
+    assertThat(set.contains(rid1)).isFalse();
+    assertThat(set.contains(rid2)).isTrue();
+    assertThat(set.contains(rid3)).isFalse();
   }
 }

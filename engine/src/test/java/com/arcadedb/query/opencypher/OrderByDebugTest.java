@@ -38,7 +38,7 @@ public class OrderByDebugTest {
   }
 
   @Test
-  void testDebugOrderBy() {
+  void debugOrderBy() {
     //System.out.println("=== Testing ORDER BY ===");
 
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n.name ORDER BY n.age ASC");
@@ -55,7 +55,7 @@ public class OrderByDebugTest {
   }
 
   @Test
-  void testDebugOrderByFullVertex() {
+  void debugOrderByFullVertex() {
     //System.out.println("=== Testing ORDER BY with full vertex ===");
 
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n ORDER BY n.age ASC");

@@ -21,20 +21,20 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Trigger;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Comprehensive tests for SQL trigger support.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class TriggerSQLTest extends TestHelper {
+class TriggerSQLTest extends TestHelper {
 
   @BeforeEach
   public void beginTest() {
@@ -54,123 +54,126 @@ public class TriggerSQLTest extends TestHelper {
   }
 
   @Test
-  public void testCreateTriggerWithSQL() {
+  void createTriggerWithSQL() {
     database.command("sql",
         "CREATE TRIGGER audit_trigger BEFORE CREATE ON TYPE User " +
             "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"create\", timestamp = sysdate()'");
 
-    Assertions.assertTrue(database.getSchema().existsTrigger("audit_trigger"));
+    assertThat(database.getSchema().existsTrigger("audit_trigger")).isTrue();
     final Trigger trigger = database.getSchema().getTrigger("audit_trigger");
-    Assertions.assertNotNull(trigger);
-    Assertions.assertEquals("audit_trigger", trigger.getName());
-    Assertions.assertEquals(Trigger.TriggerTiming.BEFORE, trigger.getTiming());
-    Assertions.assertEquals(Trigger.TriggerEvent.CREATE, trigger.getEvent());
-    Assertions.assertEquals("User", trigger.getTypeName());
-    Assertions.assertEquals(Trigger.ActionType.SQL, trigger.getActionType());
+    assertThat(trigger).isNotNull();
+    assertThat(trigger.getName()).isEqualTo("audit_trigger");
+    assertThat(trigger.getTiming()).isEqualTo(Trigger.TriggerTiming.BEFORE);
+    assertThat(trigger.getEvent()).isEqualTo(Trigger.TriggerEvent.CREATE);
+    assertThat(trigger.getTypeName()).isEqualTo("User");
+    assertThat(trigger.getActionType()).isEqualTo(Trigger.ActionType.SQL);
   }
 
   @Test
-  public void testCreateTriggerWithJavaScript() {
+  void createTriggerWithJavaScript() {
     database.command("sql",
-        "CREATE TRIGGER validate_email BEFORE CREATE ON TYPE User " +
-            "EXECUTE JAVASCRIPT 'if (!record.email) throw new Error(\"Email required\");'");
+        """
+            CREATE TRIGGER validate_email BEFORE CREATE ON TYPE User
+            EXECUTE JAVASCRIPT 'if (!record.email) throw new Error("Email required");'""");
 
-    Assertions.assertTrue(database.getSchema().existsTrigger("validate_email"));
+    assertThat(database.getSchema().existsTrigger("validate_email")).isTrue();
     final Trigger trigger = database.getSchema().getTrigger("validate_email");
-    Assertions.assertNotNull(trigger);
-    Assertions.assertEquals(Trigger.ActionType.JAVASCRIPT, trigger.getActionType());
+    assertThat(trigger).isNotNull();
+    assertThat(trigger.getActionType()).isEqualTo(Trigger.ActionType.JAVASCRIPT);
   }
 
   @Test
-  public void testCreateTriggerIfNotExists() {
+  void createTriggerIfNotExists() {
     database.command("sql",
-        "CREATE TRIGGER IF NOT EXISTS test_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'SELECT 1'");
+        """
+            CREATE TRIGGER IF NOT EXISTS test_trigger BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'SELECT 1'""");
 
-    Assertions.assertTrue(database.getSchema().existsTrigger("test_trigger"));
+    assertThat(database.getSchema().existsTrigger("test_trigger")).isTrue();
 
     // Second call should not fail with IF NOT EXISTS
     database.command("sql",
-        "CREATE TRIGGER IF NOT EXISTS test_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'SELECT 1'");
+        """
+            CREATE TRIGGER IF NOT EXISTS test_trigger BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'SELECT 1'""");
 
-    Assertions.assertTrue(database.getSchema().existsTrigger("test_trigger"));
+    assertThat(database.getSchema().existsTrigger("test_trigger")).isTrue();
   }
 
   @Test
-  public void testCreateTriggerDuplicate() {
+  void createTriggerDuplicate() {
     database.command("sql",
-        "CREATE TRIGGER test_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'SELECT 1'");
+        """
+            CREATE TRIGGER test_trigger BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'SELECT 1'""");
 
     // Should fail without IF NOT EXISTS
-    Assertions.assertThrows(CommandExecutionException.class, () -> {
-      database.command("sql",
-          "CREATE TRIGGER test_trigger BEFORE CREATE ON TYPE User " +
-              "EXECUTE SQL 'SELECT 1'");
-    });
+    assertThatThrownBy(() -> database.command("sql",
+        """
+            CREATE TRIGGER test_trigger BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'SELECT 1'"""))
+        .isInstanceOf(CommandExecutionException.class);
   }
 
   @Test
-  public void testDropTrigger() {
+  void dropTrigger() {
     database.command("sql",
-        "CREATE TRIGGER test_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'SELECT 1'");
+        """
+            CREATE TRIGGER test_trigger BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'SELECT 1'""");
 
-    Assertions.assertTrue(database.getSchema().existsTrigger("test_trigger"));
+    assertThat(database.getSchema().existsTrigger("test_trigger")).isTrue();
 
     database.command("sql", "DROP TRIGGER test_trigger");
 
-    Assertions.assertFalse(database.getSchema().existsTrigger("test_trigger"));
+    assertThat(database.getSchema().existsTrigger("test_trigger")).isFalse();
   }
 
   @Test
-  public void testDropTriggerIfExists() {
+  void dropTriggerIfExists() {
     database.command("sql", "DROP TRIGGER IF EXISTS nonexistent_trigger");
     // Should not throw exception
   }
 
   @Test
-  public void testDropTriggerNotExists() {
-    Assertions.assertThrows(CommandExecutionException.class, () -> {
-      database.command("sql", "DROP TRIGGER nonexistent_trigger");
-    });
+  void dropTriggerNotExists() {
+    assertThatThrownBy(() -> database.command("sql", "DROP TRIGGER nonexistent_trigger"))
+        .isInstanceOf(CommandExecutionException.class);
   }
 
   @Test
-  public void testBeforeCreateTriggerSQL() {
+  void beforeCreateTriggerSQL() {
     database.command("sql",
-        "CREATE TRIGGER audit_create BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"before_create\", timestamp = sysdate()'");
+        """
+            CREATE TRIGGER audit_create BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'INSERT INTO AuditLog SET action = "before_create", timestamp = sysdate()'""");
 
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "John").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "John").save());
 
     final ResultSet result = database.query("sql", "SELECT FROM AuditLog WHERE action = 'before_create'");
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("before_create", result.next().getProperty("action"));
+    assertThat(result.hasNext()).isTrue();
+    assertThat( result.next().<String>getProperty("action")).isEqualTo("before_create");
   }
 
   @Test
-  public void testAfterCreateTriggerSQL() {
+  void afterCreateTriggerSQL() {
     database.command("sql",
-        "CREATE TRIGGER audit_after AFTER CREATE ON TYPE User " +
-            "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"after_create\", timestamp = sysdate()'");
+        """
+            CREATE TRIGGER audit_after AFTER CREATE ON TYPE User
+            EXECUTE SQL 'INSERT INTO AuditLog SET action = "after_create", timestamp = sysdate()'""");
 
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "Jane").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "Jane").save());
 
     final ResultSet result = database.query("sql", "SELECT FROM AuditLog WHERE action = 'after_create'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
   }
 
   @Test
-  public void testBeforeUpdateTriggerSQL() {
+  void beforeUpdateTriggerSQL() {
     database.command("sql",
-        "CREATE TRIGGER audit_update BEFORE UPDATE ON TYPE User " +
-            "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"before_update\", timestamp = sysdate()'");
+        """
+            CREATE TRIGGER audit_update BEFORE UPDATE ON TYPE User
+            EXECUTE SQL 'INSERT INTO AuditLog SET action = "before_update", timestamp = sysdate()'""");
 
     database.transaction(() -> {
       final Document user = database.newDocument("User").set("name", "Bob").save();
@@ -178,14 +181,15 @@ public class TriggerSQLTest extends TestHelper {
     });
 
     final ResultSet result = database.query("sql", "SELECT FROM AuditLog WHERE action = 'before_update'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
   }
 
   @Test
-  public void testBeforeDeleteTriggerSQL() {
+  void beforeDeleteTriggerSQL() {
     database.command("sql",
-        "CREATE TRIGGER audit_delete BEFORE DELETE ON TYPE User " +
-            "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"before_delete\", timestamp = sysdate()'");
+        """
+            CREATE TRIGGER audit_delete BEFORE DELETE ON TYPE User
+            EXECUTE SQL 'INSERT INTO AuditLog SET action = "before_delete", timestamp = sysdate()'""");
 
     database.transaction(() -> {
       final Document user = database.newDocument("User").set("name", "Alice").save();
@@ -193,131 +197,129 @@ public class TriggerSQLTest extends TestHelper {
     });
 
     final ResultSet result = database.query("sql", "SELECT FROM AuditLog WHERE action = 'before_delete'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
   }
 
   @Test
-  public void testBeforeCreateTriggerJavaScript() {
+  void beforeCreateTriggerJavaScript() {
     // Simple JavaScript trigger that always succeeds
     database.command("sql",
-        "CREATE TRIGGER js_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE JAVASCRIPT 'true;'");
+        """
+            CREATE TRIGGER js_trigger BEFORE CREATE ON TYPE User
+            EXECUTE JAVASCRIPT 'true;'""");
 
     // Should pass validation
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "John").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "John").save());
 
     final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'John'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
   }
 
   @Test
-  public void testBeforeCreateTriggerAbort() {
+  void beforeCreateTriggerAbort() {
     database.command("sql",
         "CREATE TRIGGER abort_trigger BEFORE CREATE ON TYPE User " +
             "EXECUTE JAVASCRIPT 'false;'"); // Return false to abort
 
     // Record creation should be silently aborted (no exception, just not saved)
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "Test").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "Test").save());
 
     // Verify record was not created
     final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'Test'");
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
-  public void testMultipleTriggersSameType() {
+  void multipleTriggersSameType() {
     database.command("sql",
-        "CREATE TRIGGER trigger1 BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"trigger1\"'");
+        """
+            CREATE TRIGGER trigger1 BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'INSERT INTO AuditLog SET action = "trigger1"'""");
 
     database.command("sql",
-        "CREATE TRIGGER trigger2 BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"trigger2\"'");
+        """
+            CREATE TRIGGER trigger2 BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'INSERT INTO AuditLog SET action = "trigger2"'""");
 
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "Test").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "Test").save());
 
     final ResultSet result = database.query("sql", "SELECT FROM AuditLog ORDER BY action");
-    Assertions.assertEquals(2, result.stream().count());
+    assertThat(result.stream().count()).isEqualTo(2);
   }
 
   @Test
-  public void testTriggerPersistence() {
+  void triggerPersistence() {
     database.command("sql",
-        "CREATE TRIGGER persistent_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"persistent\"'");
+        """
+            CREATE TRIGGER persistent_trigger BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'INSERT INTO AuditLog SET action = "persistent"'""");
 
-    Assertions.assertTrue(database.getSchema().existsTrigger("persistent_trigger"));
+    assertThat(database.getSchema().existsTrigger("persistent_trigger")).isTrue();
 
     // Close and reopen database
     database.close();
     reopenDatabase();
 
     // Trigger should still exist
-    Assertions.assertTrue(database.getSchema().existsTrigger("persistent_trigger"));
+    assertThat(database.getSchema().existsTrigger("persistent_trigger")).isTrue();
 
     // Trigger should still work
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "Test").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "Test").save());
 
     final ResultSet result = database.query("sql", "SELECT FROM AuditLog WHERE action = 'persistent'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
   }
 
   @Test
-  public void testCreateTriggerOnNonExistentType() {
-    Assertions.assertThrows(CommandExecutionException.class, () -> {
-      database.command("sql",
-          "CREATE TRIGGER bad_trigger BEFORE CREATE ON TYPE NonExistentType " +
-              "EXECUTE SQL 'SELECT 1'");
-    });
+  void createTriggerOnNonExistentType() {
+    assertThatThrownBy(() -> database.command("sql",
+        """
+            CREATE TRIGGER bad_trigger BEFORE CREATE ON TYPE NonExistentType
+            EXECUTE SQL 'SELECT 1'"""))
+        .isInstanceOf(CommandExecutionException.class);
   }
 
   @Test
-  public void testGetTriggers() {
+  void getTriggers() {
     database.command("sql",
-        "CREATE TRIGGER trigger1 BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'SELECT 1'");
+        """
+            CREATE TRIGGER trigger1 BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'SELECT 1'""");
 
     database.command("sql",
-        "CREATE TRIGGER trigger2 AFTER UPDATE ON TYPE User " +
-            "EXECUTE SQL 'SELECT 2'");
+        """
+            CREATE TRIGGER trigger2 AFTER UPDATE ON TYPE User
+            EXECUTE SQL 'SELECT 2'""");
 
     final Trigger[] triggers = database.getSchema().getTriggers();
-    Assertions.assertEquals(2, triggers.length);
+    assertThat(triggers).hasSize(2);
   }
 
   @Test
-  public void testGetTriggersForType() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Product");
-    });
+  void getTriggersForType() {
+    database.transaction(() -> database.getSchema().createDocumentType("Product"));
 
     database.command("sql",
-        "CREATE TRIGGER user_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'SELECT 1'");
+        """
+            CREATE TRIGGER user_trigger BEFORE CREATE ON TYPE User
+            EXECUTE SQL 'SELECT 1'""");
 
     database.command("sql",
-        "CREATE TRIGGER product_trigger BEFORE CREATE ON TYPE Product " +
-            "EXECUTE SQL 'SELECT 2'");
+        """
+            CREATE TRIGGER product_trigger BEFORE CREATE ON TYPE Product
+            EXECUTE SQL 'SELECT 2'""");
 
     final Trigger[] userTriggers = database.getSchema().getTriggersForType("User");
-    Assertions.assertEquals(1, userTriggers.length);
-    Assertions.assertEquals("user_trigger", userTriggers[0].getName());
+    assertThat(userTriggers).hasSize(1);
+    assertThat(userTriggers[0].getName()).isEqualTo("user_trigger");
 
     final Trigger[] productTriggers = database.getSchema().getTriggersForType("Product");
-    Assertions.assertEquals(1, productTriggers.length);
-    Assertions.assertEquals("product_trigger", productTriggers[0].getName());
+    assertThat(productTriggers).hasSize(1);
+    assertThat(productTriggers[0].getName()).isEqualTo("product_trigger");
   }
 
   @Test
-  public void testAllEventTypes() {
+  void allEventTypes() {
     // Test all 8 event types (BEFORE/AFTER × CREATE/READ/UPDATE/DELETE)
     database.command("sql",
         "CREATE TRIGGER t1 BEFORE CREATE ON TYPE User EXECUTE SQL 'SELECT 1'");
@@ -336,97 +338,89 @@ public class TriggerSQLTest extends TestHelper {
     database.command("sql",
         "CREATE TRIGGER t8 AFTER DELETE ON TYPE User EXECUTE SQL 'SELECT 8'");
 
-    Assertions.assertEquals(8, database.getSchema().getTriggers().length);
+    assertThat(database.getSchema().getTriggers()).hasSize(8);
   }
 
   @Test
-  public void testJavaTrigger() {
+  void javaTrigger() {
     database.command("sql",
-        "CREATE TRIGGER java_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE JAVA 'com.arcadedb.query.sql.TestJavaTrigger'");
+        """
+            CREATE TRIGGER java_trigger BEFORE CREATE ON TYPE User
+            EXECUTE JAVA 'com.arcadedb.query.sql.TestJavaTrigger'""");
 
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "John").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "John").save());
 
     // Verify the Java trigger executed and set the flag
     final ResultSet result = database.query("sql", "SELECT FROM User WHERE triggeredByJava = true");
-    Assertions.assertTrue(result.hasNext());
-    Assertions.assertEquals("John", result.next().getProperty("name"));
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<String>getProperty("name")).isEqualTo("John");
   }
 
   @Test
-  public void testJavaValidationTrigger() {
+  void javaValidationTrigger() {
     database.command("sql",
-        "CREATE TRIGGER validate_email BEFORE CREATE ON TYPE User " +
-            "EXECUTE JAVA 'com.arcadedb.query.sql.TestJavaValidationTrigger'");
+        """
+            CREATE TRIGGER validate_email BEFORE CREATE ON TYPE User
+            EXECUTE JAVA 'com.arcadedb.query.sql.TestJavaValidationTrigger'""");
 
     // Should fail validation
-    try {
-      database.transaction(() -> {
-        database.newDocument("User").set("name", "NoEmail").save();
-      });
-      Assertions.fail("Expected validation exception");
-    } catch (Exception e) {
-      Assertions.assertTrue(e.getMessage().contains("Invalid email"));
-    }
+    assertThatThrownBy(() -> database.transaction(() ->
+        database.newDocument("User").set("name", "NoEmail").save()))
+        .hasMessageContaining("Invalid email");
 
     // Should pass validation
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "Valid", "email", "test@example.com").save();
-    });
+    database.transaction(() ->
+        database.newDocument("User").set("name", "Valid", "email", "test@example.com").save());
 
     final ResultSet result = database.query("sql", "SELECT FROM User WHERE email = 'test@example.com'");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
   }
 
   @Test
-  public void testJavaAbortTrigger() {
+  void javaAbortTrigger() {
     database.command("sql",
-        "CREATE TRIGGER abort_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE JAVA 'com.arcadedb.query.sql.TestJavaAbortTrigger'");
+        """
+            CREATE TRIGGER abort_trigger BEFORE CREATE ON TYPE User
+            EXECUTE JAVA 'com.arcadedb.query.sql.TestJavaAbortTrigger'""");
 
     // Record creation should be silently aborted
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "Test").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "Test").save());
 
     // Verify record was not created
     final ResultSet result = database.query("sql", "SELECT FROM User WHERE name = 'Test'");
-    Assertions.assertFalse(result.hasNext());
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
-  public void testJavaTriggerPersistence() {
+  void javaTriggerPersistence() {
     database.command("sql",
-        "CREATE TRIGGER persistent_java BEFORE CREATE ON TYPE User " +
-            "EXECUTE JAVA 'com.arcadedb.query.sql.TestJavaTrigger'");
+        """
+            CREATE TRIGGER persistent_java BEFORE CREATE ON TYPE User
+            EXECUTE JAVA 'com.arcadedb.query.sql.TestJavaTrigger'""");
 
-    Assertions.assertTrue(database.getSchema().existsTrigger("persistent_java"));
+    assertThat(database.getSchema().existsTrigger("persistent_java")).isTrue();
 
     // Close and reopen database
     database.close();
     reopenDatabase();
 
     // Trigger should still exist and work
-    Assertions.assertTrue(database.getSchema().existsTrigger("persistent_java"));
+    assertThat(database.getSchema().existsTrigger("persistent_java")).isTrue();
 
-    database.transaction(() -> {
-      database.newDocument("User").set("name", "Test").save();
-    });
+    database.transaction(() -> database.newDocument("User").set("name", "Test").save());
 
     final ResultSet result = database.query("sql", "SELECT FROM User WHERE triggeredByJava = true");
-    Assertions.assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
   }
 
   @Test
-  public void testJavaTriggerInvalidClass() {
+  void javaTriggerInvalidClass() {
     // Should fail with class not found
-    Assertions.assertThrows(Exception.class, () -> {
-      database.command("sql",
-          "CREATE TRIGGER bad_trigger BEFORE CREATE ON TYPE User " +
-              "EXECUTE JAVA 'com.example.NonExistentClass'");
-    });
+    assertThatThrownBy(() -> database.command("sql",
+        """
+            CREATE TRIGGER bad_trigger BEFORE CREATE ON TYPE User
+            EXECUTE JAVA 'com.example.NonExistentClass'"""))
+        .isInstanceOf(Exception.class);
   }
 
   @Override

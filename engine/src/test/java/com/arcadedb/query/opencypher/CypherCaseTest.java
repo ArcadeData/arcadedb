@@ -31,11 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test CASE expressions in Cypher queries.
  */
-public class CypherCaseTest {
+class CypherCaseTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/databases/cyphercase").create();
 
     database.transaction(() -> {
@@ -55,14 +55,14 @@ public class CypherCaseTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
     }
   }
 
   @Test
-  public void testSimpleCaseWithMultipleConditions() {
+  void simpleCaseWithMultipleConditions() {
     // Simple CASE: CASE WHEN condition THEN result
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) RETURN p.name, " +
@@ -97,7 +97,7 @@ public class CypherCaseTest {
   }
 
   @Test
-  public void testSimpleCaseWithoutElse() {
+  void simpleCaseWithoutElse() {
     // CASE without ELSE clause should return null for non-matching cases
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name, " +
@@ -112,7 +112,7 @@ public class CypherCaseTest {
   }
 
   @Test
-  public void testExtendedCaseExpression() {
+  void extendedCaseExpression() {
     // Extended CASE: CASE expression WHEN value THEN result
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) WHERE p.status IS NOT NULL RETURN p.name, " +
@@ -141,7 +141,7 @@ public class CypherCaseTest {
   }
 
   @Test
-  public void testCaseInWhereClause() {
+  void caseInWhereClause() {
     // Use CASE expression in WHERE clause
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) " +
@@ -160,7 +160,7 @@ public class CypherCaseTest {
   }
 
   @Test
-  public void testCaseWithNullHandling() {
+  void caseWithNullHandling() {
     // Test CASE with null values
     database.transaction(() -> {
       database.newVertex("Person").set("name", "NoAge").save(); // No age property
@@ -180,7 +180,7 @@ public class CypherCaseTest {
   }
 
   @Test
-  public void testNestedCaseExpressions() {
+  void nestedCaseExpressions() {
     // Nested CASE expressions
     final ResultSet results = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name = 'Bob' RETURN p.name, " +

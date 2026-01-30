@@ -45,7 +45,7 @@ class IndexIteratorIsolationTest extends TestHelper {
   private final        AtomicLong errors        = new AtomicLong();
 
   @Test
-  void testIndexIteratorIsolation() {
+  void indexIteratorIsolation() {
     LogManager.instance().log(this, Level.SEVERE, "Creating schema and populating database...");
     createSchema();
     populateDatabase();
