@@ -243,7 +243,7 @@ class CypherTest {
 
   // https://github.com/ArcadeData/arcadedb/issues/3118
   @Test
-  void testUnwindEmptyArrayWithMerge() {
+  void unwindEmptyArrayWithMerge() {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
       // Test with AUTO engine first to see the fallback behavior

@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GremlinTransactionIT extends AbstractGremlinServerIT {
 
   @Test
-  void testTransactionCommit() throws Exception {
+  void transactionCommit() throws Exception {
     final Cluster cluster = createCluster();
     try {
       final GraphTraversalSource g = AnonymousTraversalSource.traversal()
@@ -76,7 +76,7 @@ class GremlinTransactionIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  void testTransactionRollback() throws Exception {
+  void transactionRollback() throws Exception {
     final Cluster cluster = createCluster();
     try {
       final GraphTraversalSource g = AnonymousTraversalSource.traversal()
@@ -105,7 +105,7 @@ class GremlinTransactionIT extends AbstractGremlinServerIT {
   }
 
   @Test
-  void testMultipleOperationsInTransaction() throws Exception {
+  void multipleOperationsInTransaction() throws Exception {
     final Cluster cluster = createCluster();
     try {
       final GraphTraversalSource g = AnonymousTraversalSource.traversal()

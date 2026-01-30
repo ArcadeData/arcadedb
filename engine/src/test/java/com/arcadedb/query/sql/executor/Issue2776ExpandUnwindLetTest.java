@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The bug: When using expand() or UNWIND with a LET clause that sets $nrid = @rid,
  * the last result row incorrectly shows a different RID instead of maintaining the original value.
  */
-public class Issue2776ExpandUnwindLetTest extends TestHelper {
+class Issue2776ExpandUnwindLetTest extends TestHelper {
 
   @Override
   protected void beginTest() {
@@ -71,7 +71,7 @@ public class Issue2776ExpandUnwindLetTest extends TestHelper {
   }
 
   @Test
-  public void testExpandWithLetVariable() {
+  void expandWithLetVariable() {
     database.transaction(() -> {
       // First, find the RID of Tag with id = 1
       final ResultSet tagResult = database.query("sql", "SELECT @rid FROM Tag WHERE id = '1'");
@@ -105,7 +105,7 @@ public class Issue2776ExpandUnwindLetTest extends TestHelper {
   }
 
   @Test
-  public void testUnwindWithLetVariable() {
+  void unwindWithLetVariable() {
     database.transaction(() -> {
       // First, find the RID of Tag with id = 1
       final ResultSet tagResult = database.query("sql", "SELECT @rid FROM Tag WHERE id = '1'");

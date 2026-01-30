@@ -54,7 +54,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
    * when the index was created on the parent type.
    */
   @Test
-  void testVectorSearchByChildType() {
+  void vectorSearchByChildType() {
     //System.out.println("\n=== Testing Vector Search by Child Type ===");
 
     // Step 1: Create parent type with vector index
@@ -192,7 +192,7 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
    * Test that type-specific search excludes records from other types even when they are similar.
    */
   @Test
-  void testTypeFilteringExcludesOtherTypes() {
+  void typeFilteringExcludesOtherTypes() {
     //System.out.println("\n=== Testing Type Filtering Exclusion ===");
 
     // Create schema

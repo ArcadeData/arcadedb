@@ -34,11 +34,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SQLCaseTest {
+class SQLCaseTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/databases/sqlcase").create();
 
     database.transaction(() -> {
@@ -66,13 +66,13 @@ public class SQLCaseTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null)
       database.drop();
   }
 
   @Test
-  public void testSimpleCaseInSelectReturn() {
+  void simpleCaseInSelectReturn() {
     // Simple CASE: CASE WHEN condition THEN result
     final ResultSet results = database.query("sql",
         "SELECT name, " +
@@ -108,7 +108,7 @@ public class SQLCaseTest {
   }
 
   @Test
-  public void testSimpleCaseWithoutElse() {
+  void simpleCaseWithoutElse() {
     // CASE without ELSE clause should return null for non-matching cases
     final ResultSet results = database.query("sql",
         "SELECT name, " +
@@ -124,7 +124,7 @@ public class SQLCaseTest {
   }
 
   @Test
-  public void testExtendedCaseInSelect() {
+  void extendedCaseInSelect() {
     // Extended CASE: CASE expression WHEN value THEN result
     final ResultSet results = database.query("sql",
         "SELECT name, " +
@@ -153,7 +153,7 @@ public class SQLCaseTest {
   }
 
   @Test
-  public void testCaseInWhereClause() {
+  void caseInWhereClause() {
     // Use CASE expression in WHERE clause
     // Note: People without age (Eve, Frank) will have age < 18 evaluate to NULL,
     // which is treated as false, so they go to ELSE 'adult' and are included
@@ -174,7 +174,7 @@ public class SQLCaseTest {
   }
 
   @Test
-  public void testCaseInMatchReturn() {
+  void caseInMatchReturn() {
     // CASE in MATCH RETURN clause
     // First test CASE works in SELECT (not MATCH)
     final ResultSet selectResults = database.query("sql",
@@ -241,7 +241,7 @@ public class SQLCaseTest {
   }
 
   @Test
-  public void testCaseInMatchWhere() {
+  void caseInMatchWhere() {
     // This is the main use case from GitHub issue #3151
     // Use CASE in MATCH WHERE clause to convert enum values and filter with wildcards
     final ResultSet results = database.query("sql",
@@ -261,7 +261,7 @@ public class SQLCaseTest {
   }
 
   @Test
-  public void testExtendedCaseInMatchWhere() {
+  void extendedCaseInMatchWhere() {
     // Extended CASE in MATCH WHERE
     final ResultSet results = database.query("sql",
         "MATCH {type: Product, as: prod, " +
@@ -279,7 +279,7 @@ public class SQLCaseTest {
   }
 
   @Test
-  public void testNestedCaseExpressions() {
+  void nestedCaseExpressions() {
     // Nested CASE expressions
     final ResultSet results = database.query("sql",
         "SELECT name, " +
@@ -299,7 +299,7 @@ public class SQLCaseTest {
   }
 
   @Test
-  public void testCaseWithNullHandling() {
+  void caseWithNullHandling() {
     // Test CASE with null values
     database.transaction(() -> {
       database.newVertex("Person").set("name", "NoAge").save(); // No age property

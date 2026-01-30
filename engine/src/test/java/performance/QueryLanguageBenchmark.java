@@ -66,7 +66,7 @@ import java.util.function.Function;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-public class QueryLanguageBenchmark {
+class QueryLanguageBenchmark {
   private static final String DB_PATH = "target/test-databases/QueryLanguageBenchmark";
 
   // Benchmark parameters
@@ -88,7 +88,7 @@ public class QueryLanguageBenchmark {
   private Database database;
 
   @BeforeAll
-  public void generateSyntheticData() {
+  void generateSyntheticData() {
     System.out.println("╔════════════════════════════════════════════════════════════╗");
     System.out.println("║         GENERATING SYNTHETIC SOCIAL NETWORK GRAPH          ║");
     System.out.println("╚════════════════════════════════════════════════════════════╝");
@@ -201,7 +201,7 @@ public class QueryLanguageBenchmark {
   }
 
   @AfterAll
-  public void cleanup() {
+  void cleanup() {
     if (database != null)
       database.close();
 
@@ -211,7 +211,7 @@ public class QueryLanguageBenchmark {
   }
 
   @Test
-  public void benchmarkJavaNativeAPI() {
+  void benchmarkJavaNativeAPI() {
     System.out.println("\n========================================");
     System.out.println("Benchmark: Java Native API");
     System.out.println("========================================\n");
@@ -240,7 +240,7 @@ public class QueryLanguageBenchmark {
   }
 
   @Test
-  public void benchmarkSQL() {
+  void benchmarkSQL() {
     System.out.println("\n========================================");
     System.out.println("Benchmark: SQL");
     System.out.println("========================================\n");
@@ -258,7 +258,7 @@ public class QueryLanguageBenchmark {
   }
 
   @Test
-  public void benchmarkOpenCypher() {
+  void benchmarkOpenCypher() {
     System.out.println("\n========================================");
     System.out.println("Benchmark: OpenCypher");
     System.out.println("========================================\n");

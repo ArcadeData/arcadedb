@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FullTextIndexMetadataTest {
 
   @Test
-  void testDefaultValues() {
+  void defaultValues() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
 
     assertThat(metadata.getAnalyzerClass()).isEqualTo(FullTextIndexMetadata.DEFAULT_ANALYZER);
@@ -41,7 +41,7 @@ class FullTextIndexMetadataTest {
   }
 
   @Test
-  void testFromJSONWithAnalyzer() {
+  void fromJSONWithAnalyzer() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
 
     final JSONObject json = new JSONObject();
@@ -58,7 +58,7 @@ class FullTextIndexMetadataTest {
   }
 
   @Test
-  void testFromJSONWithSeparateIndexAndQueryAnalyzers() {
+  void fromJSONWithSeparateIndexAndQueryAnalyzers() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
 
     final JSONObject json = new JSONObject();
@@ -77,7 +77,7 @@ class FullTextIndexMetadataTest {
   }
 
   @Test
-  void testFromJSONWithAllowLeadingWildcard() {
+  void fromJSONWithAllowLeadingWildcard() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
 
     final JSONObject json = new JSONObject();
@@ -92,7 +92,7 @@ class FullTextIndexMetadataTest {
   }
 
   @Test
-  void testFromJSONWithDefaultOperator() {
+  void fromJSONWithDefaultOperator() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
 
     final JSONObject json = new JSONObject();
@@ -107,7 +107,7 @@ class FullTextIndexMetadataTest {
   }
 
   @Test
-  void testFromJSONWithFieldAnalyzers() {
+  void fromJSONWithFieldAnalyzers() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "title", "body" }, 0);
 
     final JSONObject json = new JSONObject();
@@ -125,7 +125,7 @@ class FullTextIndexMetadataTest {
   }
 
   @Test
-  void testGetAnalyzerClassForField() {
+  void getAnalyzerClassForField() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "title", "body" }, 0);
 
     final JSONObject json = new JSONObject();
@@ -146,7 +146,7 @@ class FullTextIndexMetadataTest {
   }
 
   @Test
-  void testFromJSONWithAllOptions() {
+  void fromJSONWithAllOptions() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "title", "body" }, 0);
 
     final JSONObject json = new JSONObject();

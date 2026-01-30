@@ -54,7 +54,7 @@ class Issue3129Test {
   }
 
   @Test
-  void testUnwindMergeReturnsUniqueRids() {
+  void unwindMergeReturnsUniqueRids() {
     // Create batch data with different chunks
     final List<Map<String, Object>> batch = new ArrayList<>();
 
@@ -108,7 +108,7 @@ class Issue3129Test {
   }
 
   @Test
-  void testUnwindMergeWithDuplicates() {
+  void unwindMergeWithDuplicates() {
     // Create batch with some duplicates
     final List<Map<String, Object>> batch = new ArrayList<>();
 

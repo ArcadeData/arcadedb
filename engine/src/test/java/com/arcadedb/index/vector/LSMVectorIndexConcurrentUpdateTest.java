@@ -69,7 +69,7 @@ class LSMVectorIndexConcurrentUpdateTest extends TestHelper {
   private static final int UPDATES_PER_THREAD = 20;
 
   @Test
-  void testConcurrentInsertAndUpdateWithLSMVectorIndex() throws Exception {
+  void concurrentInsertAndUpdateWithLSMVectorIndex() throws Exception {
     final Random random = new Random(42);
     final AtomicInteger recordCounter = new AtomicInteger(0);
     final AtomicInteger errorCounter = new AtomicInteger(0);

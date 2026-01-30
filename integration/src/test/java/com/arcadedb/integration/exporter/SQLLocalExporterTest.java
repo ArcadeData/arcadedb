@@ -106,7 +106,7 @@ public class SQLLocalExporterTest {
   }
 
   @Test
-  void testExportAndReimportSmallDatabase() {
+  void exportAndReimportSmallDatabase() {
     // Test case for issue #1839 - exported database cannot be imported
     final String dbPath = "databases/testExportImport";
     FileUtils.deleteRecursively(new File(dbPath));

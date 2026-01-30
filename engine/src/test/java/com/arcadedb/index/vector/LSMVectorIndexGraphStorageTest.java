@@ -28,12 +28,13 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test cases for Phase 2: storing vectors inline in JVector graph files.
@@ -43,16 +44,16 @@ import java.util.*;
  * - storeVectorsInGraph with BINARY quantization
  * - Vector updates and graph rebuilds
  */
-public class LSMVectorIndexGraphStorageTest {
+class LSMVectorIndexGraphStorageTest {
   private static final String DB_PATH = "target/test-databases/LSMVectorIndexGraphStorageTest";
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     FileUtils.deleteRecursively(new File(DB_PATH));
   }
 
   @AfterEach
-  public void cleanup() {
+  void cleanup() {
     FileUtils.deleteRecursively(new File(DB_PATH));
   }
 
@@ -61,7 +62,7 @@ public class LSMVectorIndexGraphStorageTest {
    * Verifies that vectors are stored and retrieved correctly from the graph file.
    */
   @Test
-  public void testStoreVectorsInGraphNoQuantization() {
+  void storeVectorsInGraphNoQuantization() {
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       // Phase 1: Create index and insert vectors
       try (final Database db = factory.create()) {
@@ -97,10 +98,9 @@ public class LSMVectorIndexGraphStorageTest {
 
         // Verify index configuration
         final LSMVectorIndex index = getVectorIndex(db, "VectorDoc", "embedding");
-        Assertions.assertNotNull(index);
-        Assertions.assertTrue(index.metadata.storeVectorsInGraph, "storeVectorsInGraph should be enabled");
-        Assertions.assertEquals(VectorQuantizationType.NONE, index.metadata.quantizationType,
-            "Should have no quantization");
+        assertThat(index).isNotNull();
+        assertThat(index.metadata.storeVectorsInGraph).as("storeVectorsInGraph should be enabled").isTrue();
+        assertThat(index.metadata.quantizationType).as("Should have no quantization").isEqualTo(VectorQuantizationType.NONE);
 
         // System.out.println("✓ Index created with storeVectorsInGraph=true, closing database...");
       }
@@ -108,7 +108,7 @@ public class LSMVectorIndexGraphStorageTest {
       // Phase 2: Reopen database and verify vectors are fetched from graph
       try (final Database db = factory.open()) {
         final LSMVectorIndex index = getVectorIndex(db, "VectorDoc", "embedding");
-        Assertions.assertNotNull(index);
+        assertThat(index).isNotNull();
 
         // Perform searches and verify vectorFetchFromGraph metric
         final Map<String, Long> statsBefore = index.getStats();
@@ -118,18 +118,16 @@ public class LSMVectorIndexGraphStorageTest {
         final float[] queryVector = generateRandomVector(128, 42);
         final List<Pair<RID, Float>> results = index.findNeighborsFromVector(queryVector, 10);
 
-        Assertions.assertTrue(results.size() > 0, "Should find neighbors");
-        Assertions.assertTrue(results.size() <= 10, "Should not exceed k limit");
+        assertThat(results.size() > 0).as("Should find neighbors").isTrue();
+        assertThat(results.size() <= 10).as("Should not exceed k limit").isTrue();
 
         // Verify metrics show vectors fetched from graph
         final Map<String, Long> statsAfter = index.getStats();
         final long fetchFromGraphAfter = statsAfter.getOrDefault("vectorFetchFromGraph", 0L);
         final long fetchFromDocsAfter = statsAfter.getOrDefault("vectorFetchFromDocuments", 0L);
 
-        Assertions.assertTrue(fetchFromGraphAfter > fetchFromGraphBefore,
-            "Should have fetched vectors from graph (before: " + fetchFromGraphBefore + ", after: " + fetchFromGraphAfter + ")");
-        Assertions.assertEquals(fetchFromDocsBefore, fetchFromDocsAfter,
-            "Should NOT have fetched from documents when storeVectorsInGraph is enabled");
+        assertThat(fetchFromGraphAfter > fetchFromGraphBefore).as("Should have fetched vectors from graph (before: " + fetchFromGraphBefore + ", after: " + fetchFromGraphAfter + ")").isTrue();
+        assertThat(fetchFromDocsAfter).as("Should NOT have fetched from documents when storeVectorsInGraph is enabled").isEqualTo(fetchFromDocsBefore);
 
         // System.out.println("✓ Test passed: Vectors stored and fetched from graph file (no quantization)");
         // System.out.println("  Vectors fetched from graph: " + (fetchFromGraphAfter - fetchFromGraphBefore));
@@ -143,7 +141,7 @@ public class LSMVectorIndexGraphStorageTest {
    * Verifies that quantized vectors are stored and retrieved correctly.
    */
   @Test
-  public void testStoreVectorsInGraphWithINT8Quantization() {
+  void storeVectorsInGraphWithINT8Quantization() {
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       // Phase 1: Create index and insert vectors
       try (final Database db = factory.create()) {
@@ -178,10 +176,9 @@ public class LSMVectorIndexGraphStorageTest {
 
         // Verify index configuration
         final LSMVectorIndex index = getVectorIndex(db, "VectorDoc", "embedding");
-        Assertions.assertNotNull(index);
-        Assertions.assertTrue(index.metadata.storeVectorsInGraph, "storeVectorsInGraph should be enabled");
-        Assertions.assertEquals(VectorQuantizationType.INT8, index.metadata.quantizationType,
-            "Should have INT8 quantization");
+        assertThat(index).isNotNull();
+        assertThat(index.metadata.storeVectorsInGraph).as("storeVectorsInGraph should be enabled").isTrue();
+        assertThat(index.metadata.quantizationType).as("Should have INT8 quantization").isEqualTo(VectorQuantizationType.INT8);
 
         // System.out.println("✓ Index created with INT8 quantization and storeVectorsInGraph=true");
       }
@@ -195,7 +192,7 @@ public class LSMVectorIndexGraphStorageTest {
         final float[] queryVector = generateRandomVector(128, 99);
         final List<Pair<RID, Float>> results = index.findNeighborsFromVector(queryVector, 10);
 
-        Assertions.assertTrue(results.size() > 0, "Should find neighbors");
+        assertThat(results.size() > 0).as("Should find neighbors").isTrue();
 
         // Verify metrics - with quantization, vectors might be fetched from graph or quantized pages
         final Map<String, Long> statsAfter = index.getStats();
@@ -205,9 +202,8 @@ public class LSMVectorIndexGraphStorageTest {
             statsBefore.getOrDefault("vectorFetchFromDocuments", 0L);
 
         // When storeVectorsInGraph is enabled with quantization, vectors are stored quantized in graph
-        Assertions.assertTrue(fetchFromGraph > 0 || fetchFromDocs == 0,
-            "Should fetch from graph when storeVectorsInGraph is enabled (graph: " + fetchFromGraph + ", docs: " + fetchFromDocs
-                + ")");
+        assertThat(fetchFromGraph > 0 || fetchFromDocs == 0).as("Should fetch from graph when storeVectorsInGraph is enabled (graph: " + fetchFromGraph + ", docs: " + fetchFromDocs
+            + ")").isTrue();
 
         // System.out.println("✓ Test passed: INT8 quantized vectors stored and fetched from graph");
         // System.out.println("  Vectors fetched from graph: " + fetchFromGraph);
@@ -221,7 +217,7 @@ public class LSMVectorIndexGraphStorageTest {
    * Verifies maximum compression with binary quantization.
    */
   @Test
-  public void testStoreVectorsInGraphWithBinaryQuantization() {
+  void storeVectorsInGraphWithBinaryQuantization() {
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       try (final Database db = factory.create()) {
         final int dimensions = 128;
@@ -255,15 +251,15 @@ public class LSMVectorIndexGraphStorageTest {
 
         // Verify index configuration
         final LSMVectorIndex index = getVectorIndex(db, "VectorDoc", "embedding");
-        Assertions.assertNotNull(index);
-        Assertions.assertTrue(index.metadata.storeVectorsInGraph);
-        Assertions.assertEquals(VectorQuantizationType.BINARY, index.metadata.quantizationType);
+        assertThat(index).isNotNull();
+        assertThat(index.metadata.storeVectorsInGraph).isTrue();
+        assertThat(index.metadata.quantizationType).isEqualTo(VectorQuantizationType.BINARY);
 
         // Perform searches
         final float[] queryVector = generateRandomVector(dimensions, 50);
         final List<Pair<RID, Float>> results = index.findNeighborsFromVector(queryVector, 10);
 
-        Assertions.assertTrue(results.size() > 0, "Should find neighbors even with binary quantization");
+        assertThat(results.size() > 0).as("Should find neighbors even with binary quantization").isTrue();
 
         // System.out.println("✓ Test passed: BINARY quantized vectors stored and fetched from graph");
       }
@@ -275,7 +271,7 @@ public class LSMVectorIndexGraphStorageTest {
    * Verifies that graph is properly rebuilt after vector updates.
    */
   @Test
-  public void testVectorUpdatesWithGraphStorage() {
+  void vectorUpdatesWithGraphStorage() {
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       try (final Database db = factory.create()) {
         final int dimensions = 64;
@@ -332,8 +328,7 @@ public class LSMVectorIndexGraphStorageTest {
         final long rebuildsAfterUpdate = statsAfterUpdate.get("graphRebuildCount");
 
         // Graph should have been rebuilt due to mutations
-        Assertions.assertTrue(rebuildsAfterUpdate >= rebuildsAfterInsert,
-            "Graph should be rebuilt after mutations (before: " + rebuildsAfterInsert + ", after: " + rebuildsAfterUpdate + ")");
+        assertThat(rebuildsAfterUpdate >= rebuildsAfterInsert).as("Graph should be rebuilt after mutations (before: " + rebuildsAfterInsert + ", after: " + rebuildsAfterUpdate + ")").isTrue();
 
         // System.out.println("✓ Test passed: Vector updates trigger graph rebuilds");
         // System.out.println("  Rebuilds after insert: " + rebuildsAfterInsert);
@@ -347,7 +342,7 @@ public class LSMVectorIndexGraphStorageTest {
    * Test that disabling storeVectorsInGraph fetches from documents.
    */
   @Test
-  public void testDisabledGraphStorageFetchesFromDocuments() {
+  void disabledGraphStorageFetchesFromDocuments() {
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       try (final Database db = factory.create()) {
         final int dimensions = 64;
@@ -379,7 +374,7 @@ public class LSMVectorIndexGraphStorageTest {
         });
 
         final LSMVectorIndex index = getVectorIndex(db, "VectorDoc", "embedding");
-        Assertions.assertFalse(index.metadata.storeVectorsInGraph, "storeVectorsInGraph should be disabled");
+        assertThat(index.metadata.storeVectorsInGraph).as("storeVectorsInGraph should be disabled").isFalse();
 
         // Perform search
         final Map<String, Long> statsBefore = index.getStats();
@@ -392,8 +387,8 @@ public class LSMVectorIndexGraphStorageTest {
             statsBefore.getOrDefault("vectorFetchFromGraph", 0L);
 
         // Should fetch from documents when storeVectorsInGraph is disabled
-        Assertions.assertTrue(fetchFromDocs > 0, "Should fetch from documents when graph storage is disabled");
-        Assertions.assertEquals(0, fetchFromGraph, "Should NOT fetch from graph when disabled");
+        assertThat(fetchFromDocs > 0).as("Should fetch from documents when graph storage is disabled").isTrue();
+        assertThat(fetchFromGraph).as("Should NOT fetch from graph when disabled").isEqualTo(0);
 
         // System.out.println("✓ Test passed: Disabled graph storage fetches from documents");
         // System.out.println("  Vectors fetched from documents: " + fetchFromDocs);
@@ -408,7 +403,7 @@ public class LSMVectorIndexGraphStorageTest {
    * When storeVectorsInGraph=false, the graph file should store only topology (no vectors).
    */
   @Test
-  public void testStoreVectorsInGraphFalseShouldNotStoreVectors() {
+  void storeVectorsInGraphFalseShouldNotStoreVectors() {
     final String dbPathWithVectors = DB_PATH + "_with_vectors";
     final String dbPathWithoutVectors = DB_PATH + "_without_vectors";
 
@@ -507,12 +502,11 @@ public class LSMVectorIndexGraphStorageTest {
 
       // This assertion should FAIL with the current bug (both sizes are similar)
       // After the fix, this should PASS (WITHOUT vectors should be much smaller)
-      Assertions.assertTrue(sizeDifference > vectorDataSize * 0.8,
-          "BUG #3142: storeVectorsInGraph=false still stores vectors in graph file! " +
-              "Size with vectors: " + graphFileSizeWithVectors + " bytes, " +
-              "Size without vectors: " + graphFileSizeWithoutVectors + " bytes, " +
-              "Expected difference: >" + (vectorDataSize * 0.8) + " bytes, " +
-              "Actual difference: " + sizeDifference + " bytes");
+      assertThat(sizeDifference > vectorDataSize * 0.8).as("BUG #3142: storeVectorsInGraph=false still stores vectors in graph file! " +
+          "Size with vectors: " + graphFileSizeWithVectors + " bytes, " +
+          "Size without vectors: " + graphFileSizeWithoutVectors + " bytes, " +
+          "Expected difference: >" + (vectorDataSize * 0.8) + " bytes, " +
+          "Actual difference: " + sizeDifference + " bytes").isTrue();
 
       // System.out.println("✓ Test passed: storeVectorsInGraph=false correctly excludes vectors from graph file");
     } finally {

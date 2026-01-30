@@ -24,74 +24,74 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Basic tests for the ANTLR SQL parser.
  * Tests the parser infrastructure and basic SQL statement parsing.
  */
-public class SQLAntlrParserTest {
+class SQLAntlrParserTest {
 
   @Test
-  public void testSimpleSelect() {
+  void simpleSelect() {
     final SQLAntlrParser parser = new SQLAntlrParser(null);
 
     final String sql = "SELECT * FROM User";
     final Statement stmt = parser.parse(sql);
 
-    assertNotNull(stmt, "Statement should not be null");
-    assertTrue(stmt instanceof SelectStatement, "Statement should be a SelectStatement");
+    assertThat(stmt).as("Statement should not be null").isNotNull();
+    assertThat(stmt).as("Statement should be a SelectStatement").isInstanceOf(SelectStatement.class);
 
     final SelectStatement select = (SelectStatement) stmt;
-    assertNotNull(select.projection, "Projection should not be null");
-    assertNotNull(select.target, "FROM clause should not be null");
+    assertThat(select.projection).as("Projection should not be null").isNotNull();
+    assertThat(select.target).as("FROM clause should not be null").isNotNull();
 
     //System.out.println("✓ Simple SELECT parsed successfully");
   }
 
   @Test
-  public void testSelectWithWhere() {
+  void selectWithWhere() {
     final SQLAntlrParser parser = new SQLAntlrParser(null);
 
     final String sql = "SELECT name FROM User WHERE age > 18";
     final Statement stmt = parser.parse(sql);
 
-    assertNotNull(stmt, "Statement should not be null");
-    assertTrue(stmt instanceof SelectStatement, "Statement should be a SelectStatement");
+    assertThat(stmt).as("Statement should not be null").isNotNull();
+    assertThat(stmt).as("Statement should be a SelectStatement").isInstanceOf(SelectStatement.class);
 
     final SelectStatement select = (SelectStatement) stmt;
-    assertNotNull(select.projection, "Projection should not be null");
-    assertNotNull(select.target, "FROM clause should not be null");
-    assertNotNull(select.whereClause, "WHERE clause should not be null");
+    assertThat(select.projection).as("Projection should not be null").isNotNull();
+    assertThat(select.target).as("FROM clause should not be null").isNotNull();
+    assertThat(select.whereClause).as("WHERE clause should not be null").isNotNull();
 
     //System.out.println("✓ SELECT with WHERE parsed successfully");
   }
 
   @Test
-  public void testSelectWithLimit() {
+  void selectWithLimit() {
     final SQLAntlrParser parser = new SQLAntlrParser(null);
 
     final String sql = "SELECT * FROM User LIMIT 10";
     final Statement stmt = parser.parse(sql);
 
-    assertNotNull(stmt, "Statement should not be null");
-    assertTrue(stmt instanceof SelectStatement, "Statement should be a SelectStatement");
+    assertThat(stmt).as("Statement should not be null").isNotNull();
+    assertThat(stmt).as("Statement should be a SelectStatement").isInstanceOf(SelectStatement.class);
 
     final SelectStatement select = (SelectStatement) stmt;
-    assertNotNull(select.limit, "LIMIT clause should not be null");
+    assertThat(select.limit).as("LIMIT clause should not be null").isNotNull();
 
     //System.out.println("✓ SELECT with LIMIT parsed successfully");
   }
 
   @Test
-  public void testMultipleStatements() {
+  void multipleStatements() {
     final SQLAntlrParser parser = new SQLAntlrParser(null);
 
     final String sql = "SELECT * FROM User; SELECT * FROM Product";
     final List<Statement> statements = parser.parseScript(sql);
 
-    assertNotNull(statements, "Statements list should not be null");
-    assertEquals(2, statements.size(), "Should have 2 statements");
+    assertThat(statements).as("Statements list should not be null").isNotNull();
+    assertThat(statements.size()).as("Should have 2 statements").isEqualTo(2);
 
     //System.out.println("✓ Multiple statements parsed successfully");
   }

@@ -33,11 +33,11 @@ import java.io.File;
 /**
  * Debug test for EXISTS() expression.
  */
-public class CypherExistsDebugTest {
+class CypherExistsDebugTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     FileUtils.deleteRecursively(new File("./target/databases/cypherexistsdebug"));
     database = new DatabaseFactory("./target/databases/cypherexistsdebug").create();
 
@@ -57,14 +57,14 @@ public class CypherExistsDebugTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
     }
   }
 
   @Test
-  public void debugExists() {
+  void debugExists() {
     //System.out.println("=== Testing EXISTS expression ===");
 
     // First, test basic query without EXISTS

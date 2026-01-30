@@ -25,7 +25,6 @@ import com.arcadedb.server.security.ServerSecurityUser;
 
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ErrorResponseNestedExceptionTest {
 
   @Test
-  void testNestedExceptionInErrorResponse() {
+  void nestedExceptionInErrorResponse() {
     // Create a nested exception chain similar to the issue report
     final IllegalArgumentException rootCause = new IllegalArgumentException(
         "Expected float array or ComparableVector as key for vector index, got class java.lang.String");
@@ -73,7 +72,7 @@ class ErrorResponseNestedExceptionTest {
   }
 
   @Test
-  void testSingleExceptionWithoutCause() {
+  void singleExceptionWithoutCause() {
     final IllegalArgumentException exception = new IllegalArgumentException("Simple error message");
 
     final TestHandler handler = new TestHandler(null);
@@ -88,7 +87,7 @@ class ErrorResponseNestedExceptionTest {
   }
 
   @Test
-  void testExceptionWithNullMessage() {
+  void exceptionWithNullMessage() {
     final IllegalArgumentException rootCause = new IllegalArgumentException();  // No message
     final CommandExecutionException wrappedException = new CommandExecutionException("Outer message", rootCause);
 
@@ -105,7 +104,7 @@ class ErrorResponseNestedExceptionTest {
   }
 
   @Test
-  void testDeepExceptionChain() {
+  void deepExceptionChain() {
     final IllegalArgumentException level3 = new IllegalArgumentException("Level 3 error");
     final RuntimeException level2 = new RuntimeException("Level 2 error", level3);
     final CommandExecutionException level1 = new CommandExecutionException("Level 1 error", level2);

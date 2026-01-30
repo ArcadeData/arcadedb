@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Also tests that underscore characters in type names do not conflict with the
  * multi-label separator.
  */
-public class CypherMultiLabelPreExistingTypeTest {
+class CypherMultiLabelPreExistingTypeTest {
   private Database database;
 
   @BeforeEach
@@ -59,7 +59,7 @@ public class CypherMultiLabelPreExistingTypeTest {
    * multi-label nodes, the individual label types should still be created.
    */
   @Test
-  void testPreExistingCompositeTypeDoesNotPreventLabelCreation() {
+  void preExistingCompositeTypeDoesNotPreventLabelCreation() {
     // First, create a type with the composite name manually
     database.transaction(() -> {
       // Use the new separator (tilde) for composite type name
@@ -94,7 +94,7 @@ public class CypherMultiLabelPreExistingTypeTest {
    * nodes still allows matching by individual labels.
    */
   @Test
-  void testPreExistingCompositeTypeAllowsMatchByIndividualLabel() {
+  void preExistingCompositeTypeAllowsMatchByIndividualLabel() {
     // First, create a type with the composite name manually
     database.transaction(() -> {
       database.getSchema().createVertexType("Developer~Person");
@@ -123,7 +123,7 @@ public class CypherMultiLabelPreExistingTypeTest {
    * User-defined type names with underscores should work correctly.
    */
   @Test
-  void testTypeNamesWithUnderscoresDoNotConflict() {
+  void typeNamesWithUnderscoresDoNotConflict() {
     database.transaction(() -> {
       // Create types with underscores in their names
       database.getSchema().createVertexType("My_Type");
@@ -157,7 +157,7 @@ public class CypherMultiLabelPreExistingTypeTest {
    * Tests the labels() function returns correct labels for pre-existing composite types.
    */
   @Test
-  void testLabelsFunctionWithPreExistingCompositeType() {
+  void labelsFunctionWithPreExistingCompositeType() {
     // Create composite type first
     database.transaction(() -> {
       database.getSchema().createVertexType("Manager~Worker");
@@ -182,7 +182,7 @@ public class CypherMultiLabelPreExistingTypeTest {
    * Tests that the new tilde separator is used consistently.
    */
   @Test
-  void testCompositeTypeNameUsesTildeSeparator() {
+  void compositeTypeNameUsesTildeSeparator() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (n:Alpha:Beta:Gamma {name: 'Test'}) RETURN n");
@@ -199,7 +199,7 @@ public class CypherMultiLabelPreExistingTypeTest {
    * The getLabels method should handle both old (underscore) and new (tilde) separators.
    */
   @Test
-  void testLabelsUtilityMethods() {
+  void labelsUtilityMethods() {
     // Test getCompositeTypeName
     assertThat(Labels.getCompositeTypeName(List.of("Person"))).isEqualTo("Person");
     assertThat(Labels.getCompositeTypeName(List.of("Person", "Developer"))).isEqualTo("Developer~Person");

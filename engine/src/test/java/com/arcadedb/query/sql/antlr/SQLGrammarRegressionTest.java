@@ -23,14 +23,14 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * Regression tests for ANTLR SQL grammar fixes.
  * Tests parser-level acceptance of various SQL syntax patterns that were previously failing.
  * These tests focus on PARSING only - not execution.
  */
-public class SQLGrammarRegressionTest {
+class SQLGrammarRegressionTest {
 
   private final SQLAntlrParser parser = new SQLAntlrParser(null);
 
@@ -39,7 +39,7 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testReservedKeywordsAsIdentifiers() {
+  void reservedKeywordsAsIdentifiers() {
     // Test that common reserved keywords can be used as field/property names
     assertParses("SELECT value FROM MyType");
     assertParses("SELECT values FROM MyType");
@@ -63,14 +63,14 @@ public class SQLGrammarRegressionTest {
   }
 
   @Test
-  public void testLimitAsParameterName() {
+  void limitAsParameterName() {
     // Test that 'limit' can be used as a named parameter (issue from RandomTestMultiThreadsTest)
     assertParses("SELECT FROM Transaction LIMIT :limit");
     assertParses("SELECT FROM MyType WHERE id = :limit");
   }
 
   @Test
-  public void testReservedKeywordsInInsert() {
+  void reservedKeywordsInInsert() {
     assertParses("INSERT INTO MyType SET value = 'test'");
     assertParses("INSERT INTO MyType SET status = 'active'");
     assertParses("INSERT INTO MyType SET start = 10");
@@ -78,7 +78,7 @@ public class SQLGrammarRegressionTest {
   }
 
   @Test
-  public void testReservedKeywordsInUpdate() {
+  void reservedKeywordsInUpdate() {
     assertParses("UPDATE MyType SET value = 'new'");
     assertParses("UPDATE MyType SET status = 'pending'");
   }
@@ -88,20 +88,20 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testUpdateRemoveSimple() {
+  void updateRemoveSimple() {
     assertParses("UPDATE MyType REMOVE field1");
     assertParses("UPDATE MyType REMOVE field1, field2, field3");
   }
 
   @Test
-  public void testUpdateRemoveWithEquals() {
+  void updateRemoveWithEquals() {
     // REMOVE field = value (removes specific value from collection)
     assertParses("UPDATE MyType REMOVE items = 'item1'");
     assertParses("UPDATE MyType REMOVE tags = 'obsolete'");
   }
 
   @Test
-  public void testUpdateRemoveMixed() {
+  void updateRemoveMixed() {
     assertParses("UPDATE MyType SET x = 1 REMOVE field1");
     assertParses("UPDATE MyType REMOVE field1 SET x = 1");
     assertParses("UPDATE MyType SET x = 1 REMOVE field1, field2 WHERE id = 5");
@@ -112,25 +112,25 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testReturnEmpty() {
+  void returnEmpty() {
     final List<Statement> statements = parser.parseScript("RETURN;");
-    assertEquals(1, statements.size());
-    assertTrue(statements.get(0) instanceof ReturnStatement);
+    assertThat(statements.size()).isEqualTo(1);
+    assertThat(statements.get(0)).isInstanceOf(ReturnStatement.class);
     final ReturnStatement ret = (ReturnStatement) statements.get(0);
-    assertNull(ret.expression, "RETURN without value should have null expression");
+    assertThat(ret.expression).as("RETURN without value should have null expression").isNull();
   }
 
   @Test
-  public void testReturnWithValue() {
+  void returnWithValue() {
     final List<Statement> statements = parser.parseScript("RETURN $result;");
-    assertEquals(1, statements.size());
-    assertTrue(statements.get(0) instanceof ReturnStatement);
+    assertThat(statements.size()).isEqualTo(1);
+    assertThat(statements.get(0)).isInstanceOf(ReturnStatement.class);
     final ReturnStatement ret = (ReturnStatement) statements.get(0);
-    assertNotNull(ret.expression, "RETURN with value should have expression");
+    assertThat(ret.expression).as("RETURN with value should have expression").isNotNull();
   }
 
   @Test
-  public void testReturnInScript() {
+  void returnInScript() {
     final String script = """
         LET $x = 10;
         IF ($x > 5) {
@@ -139,7 +139,7 @@ public class SQLGrammarRegressionTest {
         RETURN $x;
         """;
     final List<Statement> statements = parser.parseScript(script);
-    assertEquals(3, statements.size());
+    assertThat(statements.size()).isEqualTo(3);
   }
 
   // ============================================================================
@@ -147,27 +147,27 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testTruncateTypePolymorphic() {
+  void truncateTypePolymorphic() {
     final Statement stmt = assertParses("TRUNCATE TYPE MyType POLYMORPHIC");
-    assertTrue(stmt instanceof TruncateTypeStatement);
+    assertThat(stmt).isInstanceOf(TruncateTypeStatement.class);
     final TruncateTypeStatement truncate = (TruncateTypeStatement) stmt;
-    assertTrue(truncate.polymorphic, "POLYMORPHIC flag should be set");
+    assertThat(truncate.polymorphic).as("POLYMORPHIC flag should be set").isTrue();
   }
 
   @Test
-  public void testTruncateTypeUnsafe() {
+  void truncateTypeUnsafe() {
     final Statement stmt = assertParses("TRUNCATE TYPE MyType UNSAFE");
-    assertTrue(stmt instanceof TruncateTypeStatement);
+    assertThat(stmt).isInstanceOf(TruncateTypeStatement.class);
     final TruncateTypeStatement truncate = (TruncateTypeStatement) stmt;
-    assertTrue(truncate.unsafe, "UNSAFE flag should be set");
+    assertThat(truncate.unsafe).as("UNSAFE flag should be set").isTrue();
   }
 
   @Test
-  public void testTruncateTypePolymorphicUnsafe() {
+  void truncateTypePolymorphicUnsafe() {
     final Statement stmt = assertParses("TRUNCATE TYPE MyType POLYMORPHIC UNSAFE");
-    assertTrue(stmt instanceof TruncateTypeStatement);
+    assertThat(stmt).isInstanceOf(TruncateTypeStatement.class);
     final TruncateTypeStatement truncate = (TruncateTypeStatement) stmt;
-    assertTrue(truncate.polymorphic && truncate.unsafe, "Both flags should be set");
+    assertThat(truncate.polymorphic && truncate.unsafe).as("Both flags should be set").isTrue();
   }
 
   // ============================================================================
@@ -175,21 +175,21 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testMethodCallsOnLiterals() {
+  void methodCallsOnLiterals() {
     assertParses("SELECT [{'x':1,'y':2}].keys() AS keys");
     assertParses("SELECT [{'x':1,'y':2}].values() AS values");
     assertParses("SELECT [1,2,3].size() AS count");
   }
 
   @Test
-  public void testMethodCallsOnFields() {
+  void methodCallsOnFields() {
     assertParses("SELECT name.toLowerCase() FROM User");
     assertParses("SELECT name.toUpperCase() FROM User");
     assertParses("SELECT name.trim() FROM User");
   }
 
   @Test
-  public void testConversionMethods() {
+  void conversionMethods() {
     assertParses("SELECT number.asDecimal() FROM MyType");
     assertParses("SELECT number.asInteger() FROM MyType");
     assertParses("SELECT number.asLong() FROM MyType");
@@ -200,13 +200,13 @@ public class SQLGrammarRegressionTest {
   }
 
   @Test
-  public void testMethodCallsWithParameters() {
+  void methodCallsWithParameters() {
     assertParses("SELECT name.substring(0, 5) FROM User");
     assertParses("SELECT dateAsString.asDate('yyyy-MM-dd') FROM MyType");
   }
 
   @Test
-  public void testChainedMethodCalls() {
+  void chainedMethodCalls() {
     assertParses("SELECT name.trim().toLowerCase() FROM User");
     assertParses("SELECT data.keys().size() FROM MyType");
   }
@@ -216,14 +216,14 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testInsertFromSelectSimple() {
+  void insertFromSelectSimple() {
     // Simple INSERT FROM SELECT works (basic SELECT without WHERE/LIMIT/etc)
     assertParses("INSERT INTO dst FROM SELECT * FROM src");
     assertParses("INSERT INTO dst FROM SELECT a, b FROM src");
   }
 
   @Test
-  public void testInsertFromSelectWithParentheses() {
+  void insertFromSelectWithParentheses() {
     // Parenthesized SELECT works for simple queries
     assertParses("INSERT INTO dst FROM (SELECT * FROM src)");
     assertParses("INSERT INTO dst (SELECT * FROM src)");
@@ -234,7 +234,7 @@ public class SQLGrammarRegressionTest {
   }
 
   @Test
-  public void testInsertFromSelectWithReturn() {
+  void insertFromSelectWithReturn() {
     assertParses("INSERT INTO dst RETURN @rid FROM SELECT * FROM src");
   }
 
@@ -243,7 +243,7 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testBreakInForeach() {
+  void breakInForeach() {
     final String script = """
         FOREACH ($i IN [1, 2, 3]) {
           IF ($i = 2) {
@@ -252,12 +252,12 @@ public class SQLGrammarRegressionTest {
         }
         """;
     final List<Statement> statements = parser.parseScript(script);
-    assertEquals(1, statements.size());
-    assertTrue(statements.get(0) instanceof ForEachBlock);
+    assertThat(statements.size()).isEqualTo(1);
+    assertThat(statements.get(0)).isInstanceOf(ForEachBlock.class);
   }
 
   @Test
-  public void testBreakInWhile() {
+  void breakInWhile() {
     final String script = """
         WHILE ($x < 10) {
           IF ($x = 5) {
@@ -267,12 +267,12 @@ public class SQLGrammarRegressionTest {
         }
         """;
     final List<Statement> statements = parser.parseScript(script);
-    assertEquals(1, statements.size());
-    assertTrue(statements.get(0) instanceof WhileBlock);
+    assertThat(statements.size()).isEqualTo(1);
+    assertThat(statements.get(0)).isInstanceOf(WhileBlock.class);
   }
 
   @Test
-  public void testNestedBreak() {
+  void nestedBreak() {
     final String script = """
         FOREACH ($i IN [1, 2, 3]) {
           FOREACH ($j IN ['A', 'B']) {
@@ -283,7 +283,7 @@ public class SQLGrammarRegressionTest {
         }
         """;
     final List<Statement> statements = parser.parseScript(script);
-    assertEquals(1, statements.size());
+    assertThat(statements.size()).isEqualTo(1);
   }
 
   // ============================================================================
@@ -291,51 +291,51 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testBeginIsolation() {
+  void beginIsolation() {
     final Statement stmt = assertParses("BEGIN ISOLATION REPEATABLE_READ");
-    assertTrue(stmt instanceof BeginStatement);
+    assertThat(stmt).isInstanceOf(BeginStatement.class);
     final BeginStatement begin = (BeginStatement) stmt;
-    assertNotNull(begin.isolation, "Isolation level should be set");
-    assertEquals("REPEATABLE_READ", begin.isolation.getStringValue());
+    assertThat(begin.isolation).as("Isolation level should be set").isNotNull();
+    assertThat(begin.isolation.getStringValue()).isEqualTo("REPEATABLE_READ");
   }
 
   @Test
-  public void testBeginWithoutIsolation() {
+  void beginWithoutIsolation() {
     final Statement stmt = assertParses("BEGIN");
-    assertTrue(stmt instanceof BeginStatement);
+    assertThat(stmt).isInstanceOf(BeginStatement.class);
     final BeginStatement begin = (BeginStatement) stmt;
-    assertNull(begin.isolation, "Isolation level should be null");
+    assertThat(begin.isolation).as("Isolation level should be null").isNull();
   }
 
   @Test
-  public void testCommitRetry() {
+  void commitRetry() {
     final Statement stmt = assertParses("COMMIT RETRY 10");
-    assertTrue(stmt instanceof CommitStatement);
+    assertThat(stmt).isInstanceOf(CommitStatement.class);
     final CommitStatement commit = (CommitStatement) stmt;
-    assertNotNull(commit.retry, "Retry count should be set");
-    assertEquals(10, commit.retry.getValue().intValue());
+    assertThat(commit.retry).as("Retry count should be set").isNotNull();
+    assertThat(commit.retry.getValue().intValue()).isEqualTo(10);
   }
 
   @Test
-  public void testCommitWithoutRetry() {
+  void commitWithoutRetry() {
     final Statement stmt = assertParses("COMMIT");
-    assertTrue(stmt instanceof CommitStatement);
+    assertThat(stmt).isInstanceOf(CommitStatement.class);
     final CommitStatement commit = (CommitStatement) stmt;
-    assertNull(commit.retry, "Retry count should be null");
+    assertThat(commit.retry).as("Retry count should be null").isNull();
   }
 
   @Test
-  public void testTransactionScript() {
+  void transactionScript() {
     final String script = """
         BEGIN ISOLATION REPEATABLE_READ;
         INSERT INTO MyType SET x = 1;
         COMMIT RETRY 10;
         """;
     final List<Statement> statements = parser.parseScript(script);
-    assertEquals(3, statements.size());
-    assertTrue(statements.get(0) instanceof BeginStatement);
-    assertTrue(statements.get(1) instanceof InsertStatement);
-    assertTrue(statements.get(2) instanceof CommitStatement);
+    assertThat(statements.size()).isEqualTo(3);
+    assertThat(statements.get(0)).isInstanceOf(BeginStatement.class);
+    assertThat(statements.get(1)).isInstanceOf(InsertStatement.class);
+    assertThat(statements.get(2)).isInstanceOf(CommitStatement.class);
   }
 
   // ============================================================================
@@ -343,27 +343,27 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testLetWithInsert() {
+  void letWithInsert() {
     final String script = "LET $a = INSERT INTO MyType SET x = 1";
     final List<Statement> statements = parser.parseScript(script);
-    assertEquals(1, statements.size());
-    assertTrue(statements.get(0) instanceof LetStatement);
+    assertThat(statements.size()).isEqualTo(1);
+    assertThat(statements.get(0)).isInstanceOf(LetStatement.class);
   }
 
   @Test
-  public void testLetWithSelect() {
+  void letWithSelect() {
     final String script = "LET $result = SELECT * FROM MyType";
     final List<Statement> statements = parser.parseScript(script);
-    assertEquals(1, statements.size());
-    assertTrue(statements.get(0) instanceof LetStatement);
+    assertThat(statements.size()).isEqualTo(1);
+    assertThat(statements.get(0)).isInstanceOf(LetStatement.class);
   }
 
   @Test
-  public void testLetWithParenthesizedStatement() {
+  void letWithParenthesizedStatement() {
     final String script = "LET $result = (SELECT * FROM MyType)";
     final List<Statement> statements = parser.parseScript(script);
-    assertEquals(1, statements.size());
-    assertTrue(statements.get(0) instanceof LetStatement);
+    assertThat(statements.size()).isEqualTo(1);
+    assertThat(statements.get(0)).isInstanceOf(LetStatement.class);
   }
 
   // ============================================================================
@@ -371,40 +371,40 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testLockType() {
+  void lockType() {
     final Statement stmt = assertParses("LOCK TYPE Node");
-    assertTrue(stmt instanceof LockStatement);
+    assertThat(stmt).isInstanceOf(LockStatement.class);
     final LockStatement lock = (LockStatement) stmt;
-    assertEquals("TYPE", lock.mode);
-    assertNotNull(lock.identifiers);
-    assertEquals(1, lock.identifiers.size());
+    assertThat(lock.mode).isEqualTo("TYPE");
+    assertThat(lock.identifiers).isNotNull();
+    assertThat(lock.identifiers.size()).isEqualTo(1);
   }
 
   @Test
-  public void testLockMultipleTypes() {
+  void lockMultipleTypes() {
     final Statement stmt = assertParses("LOCK TYPE Node, Node2, Node3");
-    assertTrue(stmt instanceof LockStatement);
+    assertThat(stmt).isInstanceOf(LockStatement.class);
     final LockStatement lock = (LockStatement) stmt;
-    assertEquals("TYPE", lock.mode);
-    assertEquals(3, lock.identifiers.size());
+    assertThat(lock.mode).isEqualTo("TYPE");
+    assertThat(lock.identifiers.size()).isEqualTo(3);
   }
 
   @Test
-  public void testLockBucket() {
+  void lockBucket() {
     final Statement stmt = assertParses("LOCK BUCKET myBucket");
-    assertTrue(stmt instanceof LockStatement);
+    assertThat(stmt).isInstanceOf(LockStatement.class);
     final LockStatement lock = (LockStatement) stmt;
-    assertEquals("BUCKET", lock.mode);
-    assertEquals(1, lock.identifiers.size());
+    assertThat(lock.mode).isEqualTo("BUCKET");
+    assertThat(lock.identifiers.size()).isEqualTo(1);
   }
 
   @Test
-  public void testLockMultipleBuckets() {
+  void lockMultipleBuckets() {
     final Statement stmt = assertParses("LOCK BUCKET bucket1, bucket2");
-    assertTrue(stmt instanceof LockStatement);
+    assertThat(stmt).isInstanceOf(LockStatement.class);
     final LockStatement lock = (LockStatement) stmt;
-    assertEquals("BUCKET", lock.mode);
-    assertEquals(2, lock.identifiers.size());
+    assertThat(lock.mode).isEqualTo("BUCKET");
+    assertThat(lock.identifiers.size()).isEqualTo(2);
   }
 
   // ============================================================================
@@ -412,38 +412,38 @@ public class SQLGrammarRegressionTest {
   // ============================================================================
 
   @Test
-  public void testSelectWithRidAttribute() {
+  void selectWithRidAttribute() {
     assertParses("SELECT @rid FROM MyType");
     assertParses("SELECT @rid, name FROM MyType");
     assertParses("SELECT * FROM MyType WHERE @rid = #1:0");
   }
 
   @Test
-  public void testSelectWithTypeAttribute() {
+  void selectWithTypeAttribute() {
     assertParses("SELECT @type FROM MyType");
     assertParses("SELECT @type, @rid FROM MyType");
   }
 
   @Test
-  public void testSelectWithInOutAttributes() {
+  void selectWithInOutAttributes() {
     assertParses("SELECT @in FROM Edge");
     assertParses("SELECT @out FROM Edge");
     assertParses("SELECT @in, @out FROM Edge");
   }
 
   @Test
-  public void testUpdateWithRidFilter() {
+  void updateWithRidFilter() {
     assertParses("UPDATE MyType SET name = 'test' WHERE @rid = #1:0");
     assertParses("UPDATE MyType SET id = id + 1 WHERE @rid = #10:5");
   }
 
   @Test
-  public void testDeleteWithRidFilter() {
+  void deleteWithRidFilter() {
     assertParses("DELETE FROM MyType WHERE @rid = #1:0");
   }
 
   @Test
-  public void testWhereRidComparison() {
+  void whereRidComparison() {
     assertParses("SELECT * FROM MyType WHERE @rid > #1:0");
     assertParses("SELECT * FROM MyType WHERE @rid < #1:100");
     assertParses("SELECT * FROM MyType WHERE @rid IN [#1:0, #1:1, #1:2]");
@@ -461,7 +461,7 @@ public class SQLGrammarRegressionTest {
   private Statement assertParses(final String sql) {
     try {
       final Statement stmt = parser.parse(sql);
-      assertNotNull(stmt, "Parser should return a statement for: " + sql);
+      assertThat(stmt).as("Parser should return a statement for: " + sql).isNotNull();
       return stmt;
     } catch (final Exception e) {
       fail("Failed to parse SQL: " + sql + "\nError: " + e.getMessage(), e);
@@ -474,11 +474,6 @@ public class SQLGrammarRegressionTest {
    * @param sql The SQL statement that should fail
    */
   private void assertFails(final String sql) {
-    try {
-      parser.parse(sql);
-      fail("Should have failed to parse: " + sql);
-    } catch (final Exception e) {
-      // Expected - test passes
-    }
+    assertThatThrownBy(() -> parser.parse(sql)).isInstanceOf(Exception.class);
   }
 }

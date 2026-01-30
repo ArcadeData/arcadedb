@@ -34,22 +34,23 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for More Like This (MLT) functionality in LSMTreeFullTextIndex.
  *
  * @author Frank Reale
  */
-public class LSMTreeFullTextIndexMLTTest {
-  private static final String DB_PATH = "target/databases/LSMTreeFullTextIndexMLTTest";
-  private Database db;
-  private RID javaGuideRID;
-  private RID pythonGuideRID;
-  private RID javaDatabaseRID;
+class LSMTreeFullTextIndexMLTTest {
+  private static final String   DB_PATH = "target/databases/LSMTreeFullTextIndexMLTTest";
+  private              Database db;
+  private              RID      javaGuideRID;
+  private              RID      pythonGuideRID;
+  private              RID      javaDatabaseRID;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     // Clean up any existing database
     final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     if (factory.exists()) {
@@ -92,7 +93,7 @@ public class LSMTreeFullTextIndexMLTTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (db != null) {
       db.drop();
       db = null;
@@ -100,7 +101,7 @@ public class LSMTreeFullTextIndexMLTTest {
   }
 
   @Test
-  public void testSearchMoreLikeThis() {
+  void searchMoreLikeThis() {
     final LSMTreeFullTextIndex index = getFullTextIndex();
     final MoreLikeThisConfig config = new MoreLikeThisConfig()
         .setMinTermFreq(1)
@@ -119,16 +120,16 @@ public class LSMTreeFullTextIndexMLTTest {
 
     // Should find Java Database (similar) but not Python Guide
     // Source should be excluded by default
-    assertFalse(results.isEmpty(), "Should find similar documents");
-    assertTrue(results.contains(javaDatabaseRID), "Should find Java Database document (similar)");
-    assertFalse(results.contains(javaGuideRID), "Should exclude source document by default");
+    assertThat(results).isNotEmpty();
+    assertThat(results).contains(javaDatabaseRID);
+    assertThat(results).doesNotContain(javaGuideRID);
 
     // Python guide might or might not be included depending on scoring,
     // but Java Database should rank higher due to more Java-related terms
   }
 
   @Test
-  public void testSearchMoreLikeThisExcludesSource() {
+  void searchMoreLikeThisExcludesSource() {
     final LSMTreeFullTextIndex index = getFullTextIndex();
     final MoreLikeThisConfig config = new MoreLikeThisConfig()
         .setMinTermFreq(1)
@@ -147,11 +148,11 @@ public class LSMTreeFullTextIndexMLTTest {
     }
 
     // Source document should NOT be in results
-    assertFalse(results.contains(javaGuideRID), "Source document should be excluded");
+    assertThat(results).doesNotContain(javaGuideRID);
   }
 
   @Test
-  public void testSearchMoreLikeThisIncludesSource() {
+  void searchMoreLikeThisIncludesSource() {
     final LSMTreeFullTextIndex index = getFullTextIndex();
     final MoreLikeThisConfig config = new MoreLikeThisConfig()
         .setMinTermFreq(1)
@@ -170,11 +171,11 @@ public class LSMTreeFullTextIndexMLTTest {
     }
 
     // Source document SHOULD be in results when excludeSource is false
-    assertTrue(results.contains(javaGuideRID), "Source document should be included when excludeSource=false");
+    assertThat(results).contains(javaGuideRID);
   }
 
   @Test
-  public void testSearchMoreLikeThisMultipleSources() {
+  void searchMoreLikeThisMultipleSources() {
     final LSMTreeFullTextIndex index = getFullTextIndex();
     final MoreLikeThisConfig config = new MoreLikeThisConfig()
         .setMinTermFreq(1)
@@ -191,41 +192,37 @@ public class LSMTreeFullTextIndexMLTTest {
       results.add(cursor.next().getIdentity());
     }
 
-    assertFalse(results.contains(javaGuideRID), "Should exclude first source");
-    assertFalse(results.contains(javaDatabaseRID), "Should exclude second source");
+    assertThat(results).doesNotContain(javaGuideRID, javaDatabaseRID);
   }
 
   @Test
-  public void testSearchMoreLikeThisNullSourceRIDs() {
+  void searchMoreLikeThisNullSourceRIDs() {
     final LSMTreeFullTextIndex index = getFullTextIndex();
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
 
-    assertThrows(IllegalArgumentException.class, () -> {
-      index.searchMoreLikeThis(null, config);
-    }, "Should throw IllegalArgumentException for null sourceRids");
+    assertThatThrownBy(() -> index.searchMoreLikeThis(null, config))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  public void testSearchMoreLikeThisEmptySourceRIDs() {
+  void searchMoreLikeThisEmptySourceRIDs() {
     final LSMTreeFullTextIndex index = getFullTextIndex();
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
 
-    assertThrows(IllegalArgumentException.class, () -> {
-      index.searchMoreLikeThis(Set.of(), config);
-    }, "Should throw IllegalArgumentException for empty sourceRids");
+    assertThatThrownBy(() -> index.searchMoreLikeThis(Set.of(), config))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  public void testSearchMoreLikeThisExceedsMaxSourceDocs() {
+  void searchMoreLikeThisExceedsMaxSourceDocs() {
     final LSMTreeFullTextIndex index = getFullTextIndex();
     final MoreLikeThisConfig config = new MoreLikeThisConfig()
         .setMaxSourceDocs(1);
 
     final Set<RID> sourceRids = Set.of(javaGuideRID, pythonGuideRID);
 
-    assertThrows(IllegalArgumentException.class, () -> {
-      index.searchMoreLikeThis(sourceRids, config);
-    }, "Should throw IllegalArgumentException when sourceRids exceeds maxSourceDocs");
+    assertThatThrownBy(() -> index.searchMoreLikeThis(sourceRids, config))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   /**

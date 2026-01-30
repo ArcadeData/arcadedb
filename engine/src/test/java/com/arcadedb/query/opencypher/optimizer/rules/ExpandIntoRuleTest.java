@@ -41,17 +41,17 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testGetRuleName() {
+  void getRuleName() {
     assertThat(rule.getRuleName()).isEqualTo("ExpandInto");
   }
 
   @Test
-  void testGetPriority() {
+  void getPriority() {
     assertThat(rule.getPriority()).isEqualTo(30); // Medium-high priority
   }
 
   @Test
-  void testIsApplicableWithBoundedRelationship() {
+  void isApplicableWithBoundedRelationship() {
     // Create plan with two bounded nodes and relationship between them
     final LogicalNode nodeA = new LogicalNode("a", Arrays.asList("Person"),
         Collections.singletonMap("id", 1));
@@ -72,7 +72,7 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testDetermineBoundVariablesWithAnchor() {
+  void determineBoundVariablesWithAnchor() {
     // Create plan with one node having properties (bound) and one without (unbound)
     final LogicalNode boundNode = new LogicalNode("a", Arrays.asList("Person"),
         Collections.singletonMap("id", 1));
@@ -95,7 +95,7 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testDetermineBoundVariablesWithMultipleBoundNodes() {
+  void determineBoundVariablesWithMultipleBoundNodes() {
     // Create plan with multiple nodes having properties
     final LogicalNode nodeA = new LogicalNode("a", Arrays.asList("Person"),
         Collections.singletonMap("id", 1));
@@ -121,7 +121,7 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testShouldUseExpandIntoWhenBothEndpointsBound() {
+  void shouldUseExpandIntoWhenBothEndpointsBound() {
     // Setup: Both source and target are bound
     final LogicalRelationship rel = new LogicalRelationship(
         "r", "a", "b", Arrays.asList("KNOWS"), Direction.OUT,
@@ -138,7 +138,7 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testShouldNotUseExpandIntoWhenOnlySourceBound() {
+  void shouldNotUseExpandIntoWhenOnlySourceBound() {
     // Setup: Only source is bound
     final LogicalRelationship rel = new LogicalRelationship(
         "r", "a", "b", Arrays.asList("KNOWS"), Direction.OUT,
@@ -155,7 +155,7 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testShouldNotUseExpandIntoWhenOnlyTargetBound() {
+  void shouldNotUseExpandIntoWhenOnlyTargetBound() {
     // Setup: Only target is bound
     final LogicalRelationship rel = new LogicalRelationship(
         "r", "a", "b", Arrays.asList("KNOWS"), Direction.OUT,
@@ -172,7 +172,7 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testShouldNotUseExpandIntoWhenNeitherBound() {
+  void shouldNotUseExpandIntoWhenNeitherBound() {
     // Setup: Neither endpoint is bound
     final LogicalRelationship rel = new LogicalRelationship(
         "r", "a", "b", Arrays.asList("KNOWS"), Direction.OUT,
@@ -189,7 +189,7 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testDetermineBoundVariablesEmptyPlan() {
+  void determineBoundVariablesEmptyPlan() {
     // Create empty plan
     final LogicalPlan plan = LogicalPlan.forTesting(Collections.emptyMap());
 
@@ -201,7 +201,7 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void testDetermineBoundVariablesWithNullProperties() {
+  void determineBoundVariablesWithNullProperties() {
     // Create node with null properties
     final LogicalNode node = new LogicalNode("a", Arrays.asList("Person"), null);
     final LogicalPlan plan = LogicalPlan.forTesting(Collections.singletonMap("a", node));

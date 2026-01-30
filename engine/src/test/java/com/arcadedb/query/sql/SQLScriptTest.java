@@ -466,7 +466,7 @@ public class SQLScriptTest extends TestHelper {
   }
 
   @Test
-  void testUninitializedVariables() {
+  void uninitializedVariables() {
     // Test case for issue #1939: https://github.com/ArcadeData/arcadedb/issues/1939
     // Uninitialized variables should evaluate to null, not to their symbol name as a string
     //

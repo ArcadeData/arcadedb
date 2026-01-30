@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AutoBackupConfigTest {
 
   @Test
-  void testParseMinimalConfig() {
+  void parseMinimalConfig() {
     final String json = """
         {
           "version": 1,
@@ -50,7 +50,7 @@ class AutoBackupConfigTest {
   }
 
   @Test
-  void testParseFullConfig() {
+  void parseFullConfig() {
     final String json = """
         {
           "version": 1,
@@ -129,7 +129,7 @@ class AutoBackupConfigTest {
   }
 
   @Test
-  void testGetEffectiveConfigWithDefaults() {
+  void getEffectiveConfigWithDefaults() {
     final String json = """
         {
           "version": 1,
@@ -162,7 +162,7 @@ class AutoBackupConfigTest {
   }
 
   @Test
-  void testGetEffectiveConfigWithOverrides() {
+  void getEffectiveConfigWithOverrides() {
     final String json = """
         {
           "version": 1,
@@ -204,7 +204,7 @@ class AutoBackupConfigTest {
   }
 
   @Test
-  void testCreateDefault() {
+  void createDefault() {
     final AutoBackupConfig config = AutoBackupConfig.createDefault();
 
     assertThat(config.isEnabled()).isTrue();
@@ -215,7 +215,7 @@ class AutoBackupConfigTest {
   }
 
   @Test
-  void testDisabledConfig() {
+  void disabledConfig() {
     final String json = """
         {
           "version": 1,
@@ -229,7 +229,7 @@ class AutoBackupConfigTest {
   }
 
   @Test
-  void testCronScheduleConfig() {
+  void cronScheduleConfig() {
     final String json = """
         {
           "version": 1,

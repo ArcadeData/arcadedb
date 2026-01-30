@@ -68,7 +68,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
    * Users should use synchronous execution (awaitResponse=true) for REBUILD INDEX operations.
    */
   @Test
-  void testRebuildIndexAsyncDoesNotDeleteIndexes() throws Exception {
+  void rebuildIndexAsyncDoesNotDeleteIndexes() throws Exception {
     testEachServer((serverIndex) -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
@@ -169,7 +169,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
    * This is a baseline test to confirm normal behavior.
    */
   @Test
-  void testRebuildIndexSyncWorksCorrectly() throws Exception {
+  void rebuildIndexSyncWorksCorrectly() throws Exception {
     testEachServer((serverIndex) -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
@@ -226,7 +226,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
    * Test that REBUILD INDEX on a specific index via async HTTP API preserves the index.
    */
   @Test
-  void testRebuildSpecificIndexAsyncDoesNotDeleteIndex() throws Exception {
+  void rebuildSpecificIndexAsyncDoesNotDeleteIndex() throws Exception {
     testEachServer((serverIndex) -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 

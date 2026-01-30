@@ -27,10 +27,10 @@ import org.junit.jupiter.api.Test;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class EdgeIndexDuplicateKeyTest extends TestHelper {
+class EdgeIndexDuplicateKeyTest extends TestHelper {
 
   @Test
-  void testEdgeDeleteAndRecreateMultipleTimes() {
+  void edgeDeleteAndRecreateMultipleTimes() {
     // Transaction #1: Create schema
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE duct");

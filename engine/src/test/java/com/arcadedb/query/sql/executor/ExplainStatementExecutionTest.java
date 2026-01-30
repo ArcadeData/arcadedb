@@ -49,7 +49,7 @@ class ExplainStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void testRegression_Issue1488_ExplainSubqueryRecursion() {
+  void regressionIssue1488ExplainSubqueryRecursion() {
     // Test for issue #1488: EXPLAIN should recursively resolve subqueries
     database.getSchema().createVertexType("vec", 1);
 

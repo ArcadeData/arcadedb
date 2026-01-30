@@ -57,7 +57,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetSingleProperty() {
+  void setSingleProperty() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30})");
@@ -81,7 +81,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetMultipleProperties() {
+  void setMultipleProperties() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Bob', age: 25})");
@@ -107,7 +107,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetWithWhere() {
+  void setWithWhere() {
     // Create multiple people
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Alice', age: 30})");
@@ -142,7 +142,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetStringValue() {
+  void setStringValue() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Alice'})");
@@ -160,7 +160,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetNumericValue() {
+  void setNumericValue() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Bob'})");
@@ -179,7 +179,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetBooleanValue() {
+  void setBooleanValue() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Charlie'})");
@@ -207,7 +207,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetNullValue() {
+  void setNullValue() {
     // Create a person with age
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'David', age: 30})");
@@ -231,7 +231,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetOnMultipleNodes() {
+  void setOnMultipleNodes() {
     // Create multiple people
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Alice', age: 30})");
@@ -265,7 +265,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetWithoutReturn() {
+  void setWithoutReturn() {
     // Create a person
     database.transaction(() -> {
       database.command("opencypher", "CREATE (n:Person {name: 'Eve', age: 28})");
@@ -284,7 +284,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetOnRelationship() {
+  void setOnRelationship() {
     // Create two people and a relationship
     database.transaction(() -> {
       database.command("opencypher",
@@ -313,7 +313,7 @@ public class OpenCypherSetTest {
   }
 
   @Test
-  void testSetAfterCreate() {
+  void setAfterCreate() {
     // CREATE and SET in same query
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",

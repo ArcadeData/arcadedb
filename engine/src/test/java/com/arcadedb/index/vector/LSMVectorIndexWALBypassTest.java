@@ -36,7 +36,7 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
   private static final int DIMENSIONS = 256;
 
   @Test
-  void testIndexBuildCompletesWithoutErrors() {
+  void indexBuildCompletesWithoutErrors() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Movie");
       database.command("sql", "CREATE PROPERTY Movie.title STRING");
@@ -79,7 +79,7 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
   }
 
   @Test
-  void testInvalidIndexBlocksQueries() {
+  void invalidIndexBlocksQueries() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Movie");
       database.command("sql", "CREATE PROPERTY Movie.embedding ARRAY_OF_FLOATS");
@@ -131,7 +131,7 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
   }
 
   @Test
-  void testCrashRecoveryMarkIndexInvalid() {
+  void crashRecoveryMarkIndexInvalid() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Movie");
       database.command("sql", "CREATE PROPERTY Movie.embedding ARRAY_OF_FLOATS");
@@ -198,7 +198,7 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
   //  }
 
   @Test
-  void testWALRestoredAfterBuild() {
+  void walRestoredAfterBuild() {
     final boolean originalWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
     assertThat(originalWAL).isTrue();
 

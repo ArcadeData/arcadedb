@@ -32,10 +32,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue: When a full-text index exists on a property, CONTAINSTEXT operator throws
  * UnsupportedOperationException instead of using the index for efficient search.
  */
-public class ContainsTextWithFullTextIndexTest extends TestHelper {
+class ContainsTextWithFullTextIndexTest extends TestHelper {
 
   @Test
-  void testContainsTextWithFullTextIndex() {
+  void containsTextWithFullTextIndex() {
     database.transaction(() -> {
       // Create type and property as in issue #1062
       database.command("sql", "CREATE DOCUMENT TYPE PersonResource");
@@ -68,7 +68,7 @@ public class ContainsTextWithFullTextIndexTest extends TestHelper {
   }
 
   @Test
-  void testContainsTextWithFullTextIndexMultipleKeywords() {
+  void containsTextWithFullTextIndexMultipleKeywords() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.content STRING");
@@ -107,7 +107,7 @@ public class ContainsTextWithFullTextIndexTest extends TestHelper {
   }
 
   @Test
-  void testContainsTextPreferIndexOverFullScan() {
+  void containsTextPreferIndexOverFullScan() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Book");
       database.command("sql", "CREATE PROPERTY Book.abstract STRING");

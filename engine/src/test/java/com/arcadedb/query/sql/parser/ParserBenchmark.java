@@ -29,7 +29,7 @@ import java.util.Map;
 /**
  * Benchmark comparing ANTLR vs JavaCC SQL parser performance.
  */
-public class ParserBenchmark {
+class ParserBenchmark {
 
   private static       Database database;
   private static final int      WARMUP_ITERATIONS    = 100;

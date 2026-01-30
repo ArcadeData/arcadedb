@@ -56,7 +56,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
    * If they run sequentially, total time would be ~2*SLEEP_DURATION.
    */
   @Test
-  void testHttpAsyncCommandsRunInParallel() throws Exception {
+  void httpAsyncCommandsRunInParallel() throws Exception {
     testEachServer((serverIndex) -> {
       // Verify the server has at least 2 async worker threads by default (fix for issue #3122)
       final Database database = getServer(0).getDatabase(getDatabaseName());
@@ -131,7 +131,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
    * Test that two async commands via the database.async() API run in parallel.
    */
   @Test
-  void testDatabaseAsyncCommandsRunInParallel() throws Exception {
+  void databaseAsyncCommandsRunInParallel() throws Exception {
     final Database database = getServer(0).getDatabase(getDatabaseName());
 
     // Ensure we have at least 2 async worker threads
@@ -194,7 +194,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
    * Test that simple SQL SLEEP commands (not sqlscript) also run in parallel.
    */
   @Test
-  void testSimpleSqlAsyncCommandsRunInParallel() throws Exception {
+  void simpleSqlAsyncCommandsRunInParallel() throws Exception {
     final Database database = getServer(0).getDatabase(getDatabaseName());
 
     // Ensure we have at least 2 async worker threads

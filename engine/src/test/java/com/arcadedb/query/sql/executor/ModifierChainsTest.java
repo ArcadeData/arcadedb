@@ -16,11 +16,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test modifier chains in SQL expressions (e.g., field[0][1], obj.field.method()).
  */
-public class ModifierChainsTest {
+class ModifierChainsTest {
   private Database database;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     database = new DatabaseFactory("./target/test-databases/ModifierChainsTest").create();
     final DocumentType type = database.getSchema().createDocumentType("V");
 
@@ -49,7 +49,7 @@ public class ModifierChainsTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -58,7 +58,7 @@ public class ModifierChainsTest {
   }
 
   @Test
-  public void testDoubleArrayAccessor() {
+  void doubleArrayAccessor() {
     // Access matrix[0][1] - should get 2
     ResultSet result = database.command("sql", "SELECT matrix[0][1] as value FROM V WHERE matrix IS NOT NULL");
     assertThat(result.hasNext()).isTrue();
@@ -79,7 +79,7 @@ public class ModifierChainsTest {
   }
 
   @Test
-  public void testNestedPropertyAccess() {
+  void nestedPropertyAccess() {
     // Access nested.level1.level2.value - should get 42
     ResultSet result = database.command("sql", "SELECT nested.level1.level2.value as value FROM V WHERE nested IS NOT NULL");
     assertThat(result.hasNext()).isTrue();
@@ -88,7 +88,7 @@ public class ModifierChainsTest {
   }
 
   @Test
-  public void testArrayWithMethodChain() {
+  void arrayWithMethodChain() {
     // Access array[0] with size() method
     ResultSet result = database.command("sql", "SELECT array.size() as length FROM V WHERE array IS NOT NULL");
     assertThat(result.hasNext()).isTrue();

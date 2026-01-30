@@ -28,10 +28,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test to verify that CONTAINSTEXT uses the full-text index when available.
  */
-public class ContainsTextIndexUsageTest extends TestHelper {
+class ContainsTextIndexUsageTest extends TestHelper {
 
   @Test
-  void testContainsTextUsesFullTextIndex() {
+  void containsTextUsesFullTextIndex() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Book");
       database.command("sql", "CREATE PROPERTY Book.content STRING");
@@ -77,7 +77,7 @@ public class ContainsTextIndexUsageTest extends TestHelper {
   }
 
   @Test
-  void testContainsTextWithoutIndex() {
+  void containsTextWithoutIndex() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.text STRING");

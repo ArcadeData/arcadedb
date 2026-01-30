@@ -22,22 +22,27 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import java.io.File;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for WITH and UNWIND clauses in native OpenCypher implementation.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class WithAndUnwindTest {
-  private static Database database;
-  private static final String DB_PATH = "./target/test-databases/with-unwind-test";
+class WithAndUnwindTest {
+  private static       Database database;
+  private static final String   DB_PATH = "./target/test-databases/with-unwind-test";
 
   @BeforeAll
-  public static void setup() {
+  static void setup() {
     FileUtils.deleteRecursively(new File(DB_PATH));
     database = new DatabaseFactory(DB_PATH).create();
 
@@ -67,7 +72,7 @@ public class WithAndUnwindTest {
   }
 
   @AfterAll
-  public static void teardown() {
+  static void teardown() {
     if (database != null) {
       database.drop();
       database = null;
@@ -79,7 +84,7 @@ public class WithAndUnwindTest {
 
   @Test
   @Order(1)
-  void testUnwindSimpleList() {
+  void unwindSimpleList() {
     final ResultSet result = database.query("opencypher", "UNWIND [1, 2, 3] AS x RETURN x");
 
     int count = 0;
@@ -91,34 +96,34 @@ public class WithAndUnwindTest {
     }
     result.close();
 
-    assertEquals(3, count, "Should return 3 rows");
-    assertEquals(6, sum, "Sum should be 1+2+3=6");
+    assertThat(count).as("Should return 3 rows").isEqualTo(3);
+    assertThat(sum).as("Sum should be 1+2+3=6").isEqualTo(6);
   }
 
   @Test
   @Order(2)
-  void testUnwindWithMatch() {
+  void unwindWithMatch() {
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name = 'Alice' UNWIND [1, 2, 3] AS x RETURN p.name AS name, x");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      assertEquals("Alice", row.getProperty("name"));
-      assertNotNull(row.getProperty("x"));
+      assertThat(row.<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(row.<Long>getProperty("x")).isNotNull();
       count++;
     }
     result.close();
 
-    assertEquals(3, count, "Should return 3 rows (one person × 3 list elements)");
+    assertThat(count).as("Should return 3 rows (one person × 3 list elements)").isEqualTo(3);
   }
 
   @Test
   @Order(3)
-  void testUnwindEmptyList() {
+  void unwindEmptyList() {
     final ResultSet result = database.query("opencypher", "UNWIND [] AS x RETURN x");
 
-    assertFalse(result.hasNext(), "Empty list should produce no rows");
+    assertThat(result.hasNext()).as("Empty list should produce no rows").isFalse();
     result.close();
   }
 
@@ -126,43 +131,43 @@ public class WithAndUnwindTest {
 
   @Test
   @Order(10)
-  void testWithProjection() {
+  void withProjection() {
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WITH p.name AS name, p.age AS age RETURN name, age ORDER BY name");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      assertNotNull(row.getProperty("name"));
-      assertNotNull(row.getProperty("age"));
+      assertThat(row.<String>getProperty("name")).isNotNull();
+      assertThat(row.<Integer>getProperty("age")).isNotNull();
       count++;
     }
     result.close();
 
-    assertEquals(4, count, "Should return 4 people");
+    assertThat(count).as("Should return 4 people").isEqualTo(4);
   }
 
   @Test
   @Order(11)
-  void testWithFiltering() {
+  void withFiltering() {
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WITH p.name AS name, p.age AS age WHERE age > 28 RETURN name ORDER BY name");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      final String name = (String) row.getProperty("name");
-      assertTrue(name.equals("Alice") || name.equals("Charlie"), "Should only return Alice or Charlie");
+      final String name = row.getProperty("name");
+      assertThat(name.equals("Alice") || name.equals("Charlie")).as("Should only return Alice or Charlie").isTrue();
       count++;
     }
     result.close();
 
-    assertEquals(2, count, "Should return 2 people with age > 28");
+    assertThat(count).as("Should return 2 people with age > 28").isEqualTo(2);
   }
 
   @Test
   @Order(12)
-  void testWithDistinct() {
+  void withDistinct() {
     // Create duplicate age values
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WITH DISTINCT p.age AS age RETURN age ORDER BY age");
@@ -171,19 +176,19 @@ public class WithAndUnwindTest {
     int prevAge = -1;
     while (result.hasNext()) {
       final var row = result.next();
-      final int age = (Integer) row.getProperty("age");
-      assertTrue(age > prevAge, "Ages should be distinct and sorted");
+      final int age = row.<Integer>getProperty("age");
+      assertThat(age > prevAge).as("Ages should be distinct and sorted").isTrue();
       prevAge = age;
       count++;
     }
     result.close();
 
-    assertEquals(4, count, "Should return 4 distinct ages");
+    assertThat(count).as("Should return 4 distinct ages").isEqualTo(4);
   }
 
   @Test
   @Order(13)
-  void testWithLimit() {
+  void withLimit() {
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WITH p.name AS name ORDER BY name LIMIT 2 RETURN name");
 
@@ -194,12 +199,12 @@ public class WithAndUnwindTest {
     }
     result.close();
 
-    assertEquals(2, count, "Should return only 2 rows due to LIMIT");
+    assertThat(count).as("Should return only 2 rows due to LIMIT").isEqualTo(2);
   }
 
   @Test
   @Order(14)
-  void testWithSkip() {
+  void withSkip() {
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WITH p.name AS name ORDER BY name SKIP 2 RETURN name");
 
@@ -210,19 +215,19 @@ public class WithAndUnwindTest {
     }
     result.close();
 
-    assertEquals(2, count, "Should return 2 rows after skipping first 2");
+    assertThat(count).as("Should return 2 rows after skipping first 2").isEqualTo(2);
   }
 
   @Test
   @Order(15)
-  void testWithAggregation() {
+  void withAggregation() {
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WITH count(p) AS personCount RETURN personCount");
 
-    assertTrue(result.hasNext());
+    assertThat(result.hasNext()).isTrue();
     final var row = result.next();
-    assertEquals(4, ((Number) row.getProperty("personCount")).intValue(), "Should count 4 people");
-    assertFalse(result.hasNext());
+    assertThat(((Number) row.getProperty("personCount")).intValue()).as("Should count 4 people").isEqualTo(4);
+    assertThat(result.hasNext()).isFalse();
     result.close();
   }
 
@@ -230,71 +235,71 @@ public class WithAndUnwindTest {
 
   @Test
   @Order(20)
-  void testWithAndUnwindCombined() {
+  void withAndUnwindCombined() {
     // Test that WITH passes through to subsequent clauses
     // This is currently not fully supported - UNWIND after WITH needs work
     // For now, test simpler case: WITH + RETURN only
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age < 30 " +
-        "WITH p.name AS name, p.age AS age " +
-        "RETURN name, age ORDER BY name");
+            "WITH p.name AS name, p.age AS age " +
+            "RETURN name, age ORDER BY name");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      assertNotNull(row.getProperty("name"), "name should not be null");
-      assertNotNull(row.getProperty("age"), "age should not be null");
+      assertThat(row.<String>getProperty("name")).as("name should not be null").isNotNull();
+      assertThat(row.<Integer>getProperty("age")).as("age should not be null").isNotNull();
       count++;
     }
     result.close();
 
-    assertEquals(2, count, "Should return 2 people with age < 30 (Bob=25, Diana=28)");
+    assertThat(count).as("Should return 2 people with age < 30 (Bob=25, Diana=28)").isEqualTo(2);
   }
 
   @Test
   @Order(21)
-  void testMultipleWithClauses() {
+  void multipleWithClauses() {
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person) " +
-        "WITH p.name AS name, p.age AS age WHERE age > 25 " +
-        "WITH name, age WHERE age < 35 " +
-        "RETURN name ORDER BY name");
+            "WITH p.name AS name, p.age AS age WHERE age > 25 " +
+            "WITH name, age WHERE age < 35 " +
+            "RETURN name ORDER BY name");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      final String name = (String) row.getProperty("name");
-      assertTrue(name.equals("Alice") || name.equals("Diana"),
-          "Should return Alice (30) and Diana (28), ages between 25 and 35");
+      final String name = row.getProperty("name");
+      assertThat(name.equals("Alice") || name.equals("Diana")).as("Should return Alice (30) and Diana (28), ages between 25 and 35")
+          .isTrue();
       count++;
     }
     result.close();
 
-    assertEquals(2, count, "Should return 2 people");
+    assertThat(count).as("Should return 2 people").isEqualTo(2);
   }
 
   @Test
   @Order(22)
-  void testWithChainedMatch() {
+  void withChainedMatch() {
     // Chaining MATCH after WITH is not yet fully implemented
     // For now, test a simpler pattern: MATCH -> WITH -> RETURN
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person)-[:KNOWS]->(b:Person) " +
-        "WHERE a.name = 'Alice' " +
-        "WITH a.name AS aname, b.name AS bname " +
-        "RETURN aname, bname ORDER BY bname");
+        """
+            MATCH (a:Person)-[:KNOWS]->(b:Person)
+            WHERE a.name = 'Alice'
+            WITH a.name AS aname, b.name AS bname
+            RETURN aname, bname ORDER BY bname""");
 
     int count = 0;
     while (result.hasNext()) {
       final var row = result.next();
-      assertEquals("Alice", row.getProperty("aname"));
-      final String bname = (String) row.getProperty("bname");
-      assertTrue(bname.equals("Bob") || bname.equals("Charlie"),
-          "Should return people Alice knows");
+      assertThat(row.<String>getProperty("aname")).isEqualTo("Alice");
+      final String bname = row.getProperty("bname");
+      assertThat(bname.equals("Bob") || bname.equals("Charlie")).as("Should return people Alice knows").isTrue();
       count++;
     }
     result.close();
 
-    assertEquals(2, count, "Alice knows 2 people");
+    assertThat(count).as("Alice knows 2 people").isEqualTo(2);
   }
 }

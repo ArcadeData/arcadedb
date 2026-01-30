@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CustomFunctionParametersTest {
 
   @Test
-  void testSQLFunctionWithStringParameter() throws Exception {
+  void sqlFunctionWithStringParameter() throws Exception {
     TestHelper.executeInNewDatabase("testSQLFunctionWithStringParameter", (db) -> {
       // Create a type and add some test data
       db.command("sql", "CREATE DOCUMENT TYPE Beer");
@@ -54,7 +54,7 @@ class CustomFunctionParametersTest {
   }
 
   @Test
-  void testSQLFunctionReturningInput() throws Exception {
+  void sqlFunctionReturningInput() throws Exception {
     TestHelper.executeInNewDatabase("testSQLFunctionReturningInput", (db) -> {
       // Define a function that returns the input directly
       db.command("sql", "DEFINE FUNCTION my.returnInput \"SELECT :a AS result\" PARAMETERS [a] LANGUAGE sql");
@@ -69,7 +69,7 @@ class CustomFunctionParametersTest {
   }
 
   @Test
-  void testSQLFunctionWithMultipleParameters() throws Exception {
+  void sqlFunctionWithMultipleParameters() throws Exception {
     TestHelper.executeInNewDatabase("testSQLFunctionWithMultipleParameters", (db) -> {
       // Define a function that uses multiple parameters
       db.command("sql", "DEFINE FUNCTION my.add \"SELECT :a + :b AS result\" PARAMETERS [a, b] LANGUAGE sql");
@@ -84,7 +84,7 @@ class CustomFunctionParametersTest {
   }
 
   @Test
-  void testJavaScriptFunctionReturningInput() throws Exception {
+  void javaScriptFunctionReturningInput() throws Exception {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionReturningInput", (db) -> {
       // Define a JavaScript function that returns the input
       db.command("sql", "DEFINE FUNCTION my.returnInputJS \"return a\" PARAMETERS [a] LANGUAGE js");
@@ -99,7 +99,7 @@ class CustomFunctionParametersTest {
   }
 
   @Test
-  void testJavaScriptFunctionWithStringParameter() throws Exception {
+  void javaScriptFunctionWithStringParameter() throws Exception {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionWithStringParameter", (db) -> {
       // Define a JavaScript function that manipulates a string
       db.command("sql", "DEFINE FUNCTION my.uppercase \"return a.toUpperCase()\" PARAMETERS [a] LANGUAGE js");
@@ -114,7 +114,7 @@ class CustomFunctionParametersTest {
   }
 
   @Test
-  void testJavaScriptFunctionWithMultipleParameters() throws Exception {
+  void javaScriptFunctionWithMultipleParameters() throws Exception {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionWithMultipleParameters", (db) -> {
       // Define a JavaScript function with multiple parameters
       db.command("sql", "DEFINE FUNCTION my.add \"return a + b\" PARAMETERS [a, b] LANGUAGE js");
@@ -129,7 +129,7 @@ class CustomFunctionParametersTest {
   }
 
   @Test
-  void testJavaScriptFunctionWithStringContainingQuotes() throws Exception {
+  void javaScriptFunctionWithStringContainingQuotes() throws Exception {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionWithStringContainingQuotes", (db) -> {
       // Define a JavaScript function that handles strings
       db.command("sql", "DEFINE FUNCTION my.echo \"return a\" PARAMETERS [a] LANGUAGE js");
@@ -144,7 +144,7 @@ class CustomFunctionParametersTest {
   }
 
   @Test
-  void testSQLFunctionWithNumericParameter() throws Exception {
+  void sqlFunctionWithNumericParameter() throws Exception {
     TestHelper.executeInNewDatabase("testSQLFunctionWithNumericParameter", (db) -> {
       // Define a function that works with numbers
       db.command("sql", "DEFINE FUNCTION my.double \"SELECT :a * 2 AS result\" PARAMETERS [a] LANGUAGE sql");
@@ -159,7 +159,7 @@ class CustomFunctionParametersTest {
   }
 
   @Test
-  void testJavaScriptFunctionWithBooleanParameter() throws Exception {
+  void javaScriptFunctionWithBooleanParameter() throws Exception {
     TestHelper.executeInNewDatabase("testJavaScriptFunctionWithBooleanParameter", (db) -> {
       // Define a JavaScript function that works with booleans
       db.command("sql", "DEFINE FUNCTION my.negate \"return !a\" PARAMETERS [a] LANGUAGE js");

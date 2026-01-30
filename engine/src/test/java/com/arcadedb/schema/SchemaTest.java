@@ -235,7 +235,7 @@ class SchemaTest extends TestHelper {
   }
 
   @Test
-  void testDropNonExistentIndexThenCreateProperty() {
+  void dropNonExistentIndexThenCreateProperty() {
     // Reproduce the issue where DROP INDEX IF EXISTS for a non-existent index
     // prevents subsequent schema changes from being persisted
     database.command("sql", "CREATE DOCUMENT TYPE PSM_StructuralEntity IF NOT EXISTS");
@@ -278,7 +278,7 @@ class SchemaTest extends TestHelper {
   }
 
   @Test
-  void testDropTypeWithIndexesAndBuckets() {
+  void dropTypeWithIndexesAndBuckets() {
     // Test that dropType() properly manages multipleUpdate flag when dropping indexes and buckets
     database.command("sql", "CREATE VERTEX TYPE TestType");
     database.command("sql", "CREATE PROPERTY TestType.prop1 STRING");

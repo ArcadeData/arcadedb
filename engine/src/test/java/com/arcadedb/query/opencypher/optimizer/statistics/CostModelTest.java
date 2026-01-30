@@ -40,7 +40,7 @@ class CostModelTest {
   }
 
   @Test
-  void testEstimateScanCost() {
+  void estimateScanCost() {
     statistics.setCardinality("Person", 10000);
 
     final double scanCost = costModel.estimateScanCost("Person");
@@ -48,7 +48,7 @@ class CostModelTest {
   }
 
   @Test
-  void testEstimateIndexSeekCost() {
+  void estimateIndexSeekCost() {
     statistics.setCardinality("Person", 10000);
     final IndexStatistics index = new IndexStatistics("Person",
         Arrays.asList("email"), true, "Person.email");
@@ -62,25 +62,25 @@ class CostModelTest {
   }
 
   @Test
-  void testEstimateFilterCost() {
+  void estimateFilterCost() {
     final double filterCost = costModel.estimateFilterCost(1000);
     assertThat(filterCost).isEqualTo(500.0); // 1000 * 0.5
   }
 
   @Test
-  void testEstimateExpandCost() {
+  void estimateExpandCost() {
     final double expandCost = costModel.estimateExpandCost(100, 10.0);
     assertThat(expandCost).isEqualTo(2000.0); // 100 * 10 * 2.0
   }
 
   @Test
-  void testEstimateExpandIntoCost() {
+  void estimateExpandIntoCost() {
     final double expandIntoCost = costModel.estimateExpandIntoCost(100);
     assertThat(expandIntoCost).isEqualTo(100.0); // Much cheaper than ExpandAll
   }
 
   @Test
-  void testEstimateHashJoinCost() {
+  void estimateHashJoinCost() {
     final double joinCost = costModel.estimateHashJoinCost(1000, 500);
 
     // Build from smaller (500), probe from larger (1000)
@@ -89,13 +89,13 @@ class CostModelTest {
   }
 
   @Test
-  void testEstimateFilterCardinality() {
+  void estimateFilterCardinality() {
     final long outputCardinality = costModel.estimateFilterCardinality(1000, 0.1);
     assertThat(outputCardinality).isEqualTo(100);
   }
 
   @Test
-  void testEstimateEqualitySelectivityWithUniqueIndex() {
+  void estimateEqualitySelectivityWithUniqueIndex() {
     statistics.setCardinality("Person", 10000);
     final IndexStatistics uniqueIndex = new IndexStatistics("Person",
         Arrays.asList("id"), true, "Person.id");
@@ -108,7 +108,7 @@ class CostModelTest {
   }
 
   @Test
-  void testEstimateEqualitySelectivityWithNonUniqueIndex() {
+  void estimateEqualitySelectivityWithNonUniqueIndex() {
     statistics.setCardinality("Person", 10000);
     final IndexStatistics nonUniqueIndex = new IndexStatistics("Person",
         Arrays.asList("name"), false, "Person.name");
@@ -121,25 +121,25 @@ class CostModelTest {
   }
 
   @Test
-  void testEstimateEqualitySelectivityWithoutIndex() {
+  void estimateEqualitySelectivityWithoutIndex() {
     final double selectivity = costModel.estimateEqualitySelectivity("Person", "age", false);
     assertThat(selectivity).isEqualTo(CostModel.SELECTIVITY_EQUALITY);
   }
 
   @Test
-  void testEstimateRangeSelectivity() {
+  void estimateRangeSelectivity() {
     final double selectivity = costModel.estimateRangeSelectivity();
     assertThat(selectivity).isEqualTo(CostModel.SELECTIVITY_RANGE);
   }
 
   @Test
-  void testCombineSelectivitiesAnd() {
+  void combineSelectivitiesAnd() {
     final double combined = costModel.combineSelectivitiesAnd(0.1, 0.5, 0.2);
     assertThat(combined).isCloseTo(0.01, Offset.offset(0.0001)); // 0.1 * 0.5 * 0.2
   }
 
   @Test
-  void testCombineSelectivitiesOr() {
+  void combineSelectivitiesOr() {
     final double combined = costModel.combineSelectivitiesOr(0.1, 0.2);
 
     // 1 - (1 - 0.1) * (1 - 0.2) = 1 - (0.9 * 0.8) = 1 - 0.72 = 0.28
@@ -147,7 +147,7 @@ class CostModelTest {
   }
 
   @Test
-  void testShouldUseIndexWhenSelective() {
+  void shouldUseIndexWhenSelective() {
     statistics.setCardinality("Person", 100000);
     final IndexStatistics index = new IndexStatistics("Person",
         Arrays.asList("email"), false, "Person.email");
@@ -160,7 +160,7 @@ class CostModelTest {
   }
 
   @Test
-  void testShouldNotUseIndexWhenNotSelective() {
+  void shouldNotUseIndexWhenNotSelective() {
     statistics.setCardinality("Person", 100000);
     final IndexStatistics index = new IndexStatistics("Person",
         Arrays.asList("country"), false, "Person.country");
@@ -172,7 +172,7 @@ class CostModelTest {
   }
 
   @Test
-  void testEstimateAverageDegree() {
+  void estimateAverageDegree() {
     final double avgDegree = costModel.estimateAverageDegree("KNOWS");
     assertThat(avgDegree).isEqualTo(CostModel.DEFAULT_AVG_DEGREE);
   }

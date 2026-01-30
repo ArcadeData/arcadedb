@@ -6,10 +6,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RecyclingSQLTest extends TestHelper {
+class RecyclingSQLTest extends TestHelper {
 
   @Test
-  void testOrderByRidDesc() {
+  void orderByRidDesc() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE TestV");
       database.command("sql", "INSERT INTO TestV SET id = 1");
@@ -26,7 +26,7 @@ public class RecyclingSQLTest extends TestHelper {
   }
 
   @Test
-  void testDeleteFrom() {
+  void deleteFrom() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE TestV2");
       database.command("sql", "INSERT INTO TestV2 SET id = 1");

@@ -25,7 +25,7 @@ public class UpdateContentArrayTest extends TestHelper {
   }
 
   @Test
-  public void testInsertVsUpdateWithJsonArrayComparison() {
+  void insertVsUpdateWithJsonArrayComparison() {
     // This test shows that INSERT already supports JSON arrays
     // and validates that UPDATE should work the same way
     database.getSchema().createDocumentType("TestDoc");
@@ -54,7 +54,7 @@ public class UpdateContentArrayTest extends TestHelper {
   }
 
   @Test
-  public void testUpdateWithContentJsonArrayWithoutUpsert() {
+  void updateWithContentJsonArrayWithoutUpsert() {
     // Create document type and some documents
     database.getSchema().createDocumentType("Person");
 
@@ -100,7 +100,7 @@ public class UpdateContentArrayTest extends TestHelper {
   }
 
   @Test
-  public void testUpdateWithContentJsonArrayWithWhere() {
+  void updateWithContentJsonArrayWithWhere() {
     // Create document type and some documents
     database.getSchema().createDocumentType("Product");
 
@@ -138,7 +138,7 @@ public class UpdateContentArrayTest extends TestHelper {
   }
 
   @Test
-  public void testUpdateWithContentJsonArrayParameter() {
+  void updateWithContentJsonArrayParameter() {
     // Create document type and existing documents
     database.getSchema().createDocumentType("Employee");
 
@@ -187,7 +187,7 @@ public class UpdateContentArrayTest extends TestHelper {
   }
 
   @Test
-  public void testUpdateExistingDocumentsWithArray() {
+  void updateExistingDocumentsWithArray() {
     // Create document type
     database.getSchema().createDocumentType("TestDoc");
 

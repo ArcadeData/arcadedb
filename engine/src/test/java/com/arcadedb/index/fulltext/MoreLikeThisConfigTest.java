@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MoreLikeThisConfigTest {
 
   @Test
-  void testDefaultValues() {
+  void defaultValues() {
     final MoreLikeThisConfig config = new MoreLikeThisConfig();
 
     assertThat(config.getMinTermFreq()).isEqualTo(2);
@@ -40,7 +40,7 @@ class MoreLikeThisConfigTest {
   }
 
   @Test
-  void testFromJSON() {
+  void fromJSON() {
     final JSONObject json = new JSONObject();
     json.put("minTermFreq", 1);
     json.put("minDocFreq", 3);
@@ -58,7 +58,7 @@ class MoreLikeThisConfigTest {
   }
 
   @Test
-  void testFromNullJSON() {
+  void fromNullJSON() {
     final MoreLikeThisConfig config = MoreLikeThisConfig.fromJSON(null);
 
     // Should use defaults

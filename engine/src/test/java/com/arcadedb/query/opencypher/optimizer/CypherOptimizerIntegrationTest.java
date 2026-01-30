@@ -40,11 +40,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration tests for CypherOptimizer.
  * Tests the full optimization flow with real database and statistics.
  */
-public class CypherOptimizerIntegrationTest {
+class CypherOptimizerIntegrationTest {
   private Database database;
 
   @BeforeEach
-  public void setUp() {
+  void setUp() {
     database = new DatabaseFactory("./target/databases/CypherOptimizerTest").create();
 
     database.transaction(() -> {
@@ -91,14 +91,14 @@ public class CypherOptimizerIntegrationTest {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     if (database != null) {
       database.drop();
     }
   }
 
   @Test
-  public void testStatisticsCollection() {
+  void statisticsCollection() {
     // Given: StatisticsProvider
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
 
@@ -111,7 +111,7 @@ public class CypherOptimizerIntegrationTest {
   }
 
   @Test
-  public void testAnchorSelectorWithIndexedProperty() {
+  void anchorSelectorWithIndexedProperty() {
     // Given: Plan with indexed property
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
         Collections.singletonMap("id", 123));
@@ -133,7 +133,7 @@ public class CypherOptimizerIntegrationTest {
   }
 
   @Test
-  public void testAnchorSelectorWithoutIndex() {
+  void anchorSelectorWithoutIndex() {
     // Given: Plan without index
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
         Collections.singletonMap("name", "Alice"));
@@ -154,7 +154,7 @@ public class CypherOptimizerIntegrationTest {
   }
 
   @Test
-  public void testAnchorSelectorPrefersSmallerType() {
+  void anchorSelectorPrefersSmallerType() {
     // Given: Plan with two types
     final LogicalNode person = new LogicalNode("p", Arrays.asList("Person"),
         Collections.emptyMap());
@@ -181,7 +181,7 @@ public class CypherOptimizerIntegrationTest {
   }
 
   @Test
-  public void testCostModelWithRealStatistics() {
+  void costModelWithRealStatistics() {
     // Given: CostModel with real statistics
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
     stats.collectStatistics(Arrays.asList("Person", "Company"));
@@ -198,7 +198,7 @@ public class CypherOptimizerIntegrationTest {
   }
 
   @Test
-  public void testIndexStatisticsCollection() {
+  void indexStatisticsCollection() {
     // Given: StatisticsProvider
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
     stats.collectStatistics(Collections.singletonList("Person"));
@@ -213,7 +213,7 @@ public class CypherOptimizerIntegrationTest {
   }
 
   @Test
-  public void testOptimizerRulesOrdering() {
+  void optimizerRulesOrdering() {
     // Given: StatisticsProvider
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
     final CostModel costModel = new CostModel(stats);

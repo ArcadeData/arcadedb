@@ -32,44 +32,44 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit tests for the Labels utility class.
  * Tests composite type naming, label retrieval, and composite type creation.
  */
-public class LabelsTest extends TestHelper {
+class LabelsTest extends TestHelper {
 
   // Tests for getCompositeTypeName()
 
   @Test
-  public void testGetCompositeTypeNameWithNull() {
+  void getCompositeTypeNameWithNull() {
     assertThat(Labels.getCompositeTypeName(null)).isEqualTo("V");
   }
 
   @Test
-  public void testGetCompositeTypeNameWithEmptyList() {
+  void getCompositeTypeNameWithEmptyList() {
     assertThat(Labels.getCompositeTypeName(Collections.emptyList())).isEqualTo("V");
   }
 
   @Test
-  public void testGetCompositeTypeNameWithSingleLabel() {
+  void getCompositeTypeNameWithSingleLabel() {
     assertThat(Labels.getCompositeTypeName(List.of("Person"))).isEqualTo("Person");
   }
 
   @Test
-  public void testGetCompositeTypeNameWithTwoLabels() {
+  void getCompositeTypeNameWithTwoLabels() {
     // Should be sorted alphabetically
     assertThat(Labels.getCompositeTypeName(List.of("Person", "Developer"))).isEqualTo("Developer~Person");
   }
 
   @Test
-  public void testGetCompositeTypeNameWithTwoLabelsReversed() {
+  void getCompositeTypeNameWithTwoLabelsReversed() {
     // Should produce same result regardless of order
     assertThat(Labels.getCompositeTypeName(List.of("Developer", "Person"))).isEqualTo("Developer~Person");
   }
 
   @Test
-  public void testGetCompositeTypeNameWithThreeLabels() {
+  void getCompositeTypeNameWithThreeLabels() {
     assertThat(Labels.getCompositeTypeName(List.of("C", "A", "B"))).isEqualTo("A~B~C");
   }
 
   @Test
-  public void testGetCompositeTypeNamePreservesCase() {
+  void getCompositeTypeNamePreservesCase() {
     // Case-sensitive sorting: uppercase letters come before lowercase
     assertThat(Labels.getCompositeTypeName(List.of("person", "Developer"))).isEqualTo("Developer~person");
   }
@@ -77,24 +77,24 @@ public class LabelsTest extends TestHelper {
   // Tests for isCompositeTypeName()
 
   @Test
-  public void testIsCompositeTypeNameWithNull() {
+  void isCompositeTypeNameWithNull() {
     assertThat(Labels.isCompositeTypeName(null)).isFalse();
   }
 
   @Test
-  public void testIsCompositeTypeNameWithSingleLabel() {
+  void isCompositeTypeNameWithSingleLabel() {
     assertThat(Labels.isCompositeTypeName("Person")).isFalse();
   }
 
   @Test
-  public void testIsCompositeTypeNameWithCompositeLabel() {
+  void isCompositeTypeNameWithCompositeLabel() {
     assertThat(Labels.isCompositeTypeName("Developer~Person")).isTrue();
   }
 
   // Tests for ensureCompositeType()
 
   @Test
-  public void testEnsureCompositeTypeWithEmptyList() {
+  void ensureCompositeTypeWithEmptyList() {
     database.transaction(() -> {
       String typeName = Labels.ensureCompositeType(database.getSchema(), Collections.emptyList());
       assertThat(typeName).isEqualTo("V");
@@ -102,7 +102,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testEnsureCompositeTypeWithSingleLabel() {
+  void ensureCompositeTypeWithSingleLabel() {
     database.transaction(() -> {
       String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Person"));
       assertThat(typeName).isEqualTo("Person");
@@ -111,7 +111,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testEnsureCompositeTypeWithMultipleLabels() {
+  void ensureCompositeTypeWithMultipleLabels() {
     database.transaction(() -> {
       String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Developer"));
       assertThat(typeName).isEqualTo("Developer~Person");
@@ -130,7 +130,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testEnsureCompositeTypeReturnsExistingType() {
+  void ensureCompositeTypeReturnsExistingType() {
     database.transaction(() -> {
       // Create composite type first
       Labels.ensureCompositeType(database.getSchema(), List.of("A", "B"));
@@ -144,7 +144,7 @@ public class LabelsTest extends TestHelper {
   // Tests for getLabels() and hasLabel()
 
   @Test
-  public void testGetLabelsForSingleLabelVertex() {
+  void getLabelsForSingleLabelVertex() {
     database.transaction(() -> {
       database.getSchema().getOrCreateVertexType("Person");
       MutableVertex vertex = database.newVertex("Person");
@@ -157,7 +157,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testGetLabelsForCompositeTypeVertex() {
+  void getLabelsForCompositeTypeVertex() {
     database.transaction(() -> {
       // Create composite type
       Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Developer"));
@@ -172,7 +172,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testHasLabelForSingleLabelVertex() {
+  void hasLabelForSingleLabelVertex() {
     database.transaction(() -> {
       database.getSchema().getOrCreateVertexType("Person");
       MutableVertex vertex = database.newVertex("Person");
@@ -185,7 +185,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testHasLabelForCompositeTypeVertex() {
+  void hasLabelForCompositeTypeVertex() {
     database.transaction(() -> {
       // Create composite type
       Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Developer"));
@@ -202,7 +202,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testPolymorphicIterationWithCompositeType() {
+  void polymorphicIterationWithCompositeType() {
     database.transaction(() -> {
       // Create composite type
       Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Developer"));
@@ -229,7 +229,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testThreeLabelCompositeType() {
+  void threeLabelCompositeType() {
     database.transaction(() -> {
       // Create composite type with three labels
       String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Manager", "Developer", "Person"));
@@ -254,26 +254,26 @@ public class LabelsTest extends TestHelper {
   // Tests for duplicate label deduplication (GitHub issue #3264)
 
   @Test
-  public void testGetCompositeTypeNameWithDuplicateLabels() {
+  void getCompositeTypeNameWithDuplicateLabels() {
     // Duplicate labels should be deduplicated
     // Person:Kebab:Person should become Kebab~Person (not Kebab~Person~Person)
     assertThat(Labels.getCompositeTypeName(List.of("Person", "Kebab", "Person"))).isEqualTo("Kebab~Person");
   }
 
   @Test
-  public void testGetCompositeTypeNameWithAllDuplicateLabels() {
+  void getCompositeTypeNameWithAllDuplicateLabels() {
     // Kebab:Kebab should become just Kebab
     assertThat(Labels.getCompositeTypeName(List.of("Kebab", "Kebab"))).isEqualTo("Kebab");
   }
 
   @Test
-  public void testGetCompositeTypeNameWithMultipleDuplicates() {
+  void getCompositeTypeNameWithMultipleDuplicates() {
     // A:B:A:B:A should become A~B
     assertThat(Labels.getCompositeTypeName(List.of("A", "B", "A", "B", "A"))).isEqualTo("A~B");
   }
 
   @Test
-  public void testEnsureCompositeTypeWithDuplicateLabels() {
+  void ensureCompositeTypeWithDuplicateLabels() {
     database.transaction(() -> {
       // Person:Kebab:Person should create Kebab~Person (with duplicates removed)
       String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Person", "Kebab", "Person"));
@@ -293,7 +293,7 @@ public class LabelsTest extends TestHelper {
   }
 
   @Test
-  public void testEnsureCompositeTypeWithAllDuplicateLabels() {
+  void ensureCompositeTypeWithAllDuplicateLabels() {
     database.transaction(() -> {
       // Kebab:Kebab should just create/return Kebab (single label)
       String typeName = Labels.ensureCompositeType(database.getSchema(), List.of("Kebab", "Kebab"));

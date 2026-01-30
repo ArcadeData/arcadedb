@@ -4490,7 +4490,7 @@ public class SelectStatementExecutionTest extends TestHelper {
    * The $parent.$current should refer to the current record from the outer query context.
    */
   @Test
-  void testParentCurrentInSubqueryFromClause_Issue1825() {
+  void parentCurrentInSubqueryFromClauseIssue1825() {
     final String className = "testParentCurrentInSubqueryFromClause";
     database.getSchema().createDocumentType(className);
 
@@ -4566,7 +4566,7 @@ public class SelectStatementExecutionTest extends TestHelper {
    * instead of FROM RID in the outer query.
    */
   @Test
-  void testParentCurrentInSubqueryFromClause_Issue1825_WithTypeName() {
+  void parentCurrentInSubqueryFromClauseIssue1825WithTypeName() {
     final String className = "testParentCurrentIssue1825TypeName";
     database.getSchema().createDocumentType(className);
 

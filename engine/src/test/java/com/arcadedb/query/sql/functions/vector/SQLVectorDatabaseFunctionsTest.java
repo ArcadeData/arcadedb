@@ -53,7 +53,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testPhase1_NormalizeEmbeddingsBeforeIndexing() {
+  void phase1NormalizeEmbeddingsBeforeIndexing() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("raw_documents");
       docType.createProperty("title", Type.STRING);
@@ -97,7 +97,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase1_CalculateVectorProperties() {
+  void phase1CalculateVectorProperties() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("documents");
       docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
@@ -121,7 +121,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase1_ComputeSimilarityScores() {
+  void phase1ComputeSimilarityScores() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("document_pairs");
       docType.createProperty("v1_embedding", Type.ARRAY_OF_FLOATS);
@@ -153,7 +153,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testPhase2_CombineTextAndImageEmbeddings() {
+  void phase2CombineTextAndImageEmbeddings() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("documents");
       docType.createProperty("document_id", Type.STRING);
@@ -193,7 +193,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase2_CalculateClusterCentroids() {
+  void phase2CalculateClusterCentroids() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("documents");
       docType.createProperty("category", Type.STRING);
@@ -251,7 +251,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase2_ElementWiseOperations() {
+  void phase2ElementWiseOperations() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("comparisons");
       docType.createProperty("embedding1", Type.ARRAY_OF_FLOATS);
@@ -286,7 +286,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testPhase3_HybridSearchWithJavaScriptFunction() {
+  void phase3HybridSearchWithJavaScriptFunction() {
     database.transaction(() -> {
       // Test built-in hybrid scoring function (JavaScript functions require different setup)
       // This test validates the concept of hybrid search shown in the blog post
@@ -300,7 +300,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase3_VectorHybridScore() {
+  void phase3VectorHybridScore() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("title", Type.STRING);
@@ -331,7 +331,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testPhase4_StoreSparseEmbeddings() {
+  void phase4StoreSparseEmbeddings() {
     database.transaction(() -> {
       // Test that `vector.sparseCreate` works (sparse vectors are computed, not stored)
       final int[] tokenIds = new int[] { 5, 17, 42, 103 };
@@ -347,7 +347,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase4_SparseDotProduct() {
+  void phase4SparseDotProduct() {
     database.transaction(() -> {
       // Test sparse dot product function (indices must create same dimension vectors)
       final int[] indices1 = new int[] { 0, 2, 5 };
@@ -368,7 +368,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase4_ConvertBetweenSparseAndDense() {
+  void phase4ConvertBetweenSparseAndDense() {
     database.transaction(() -> {
       // Test `vector.denseToSparse` conversion (blog post example)
       final float[] denseVec = new float[] { 1.0f, 0.0f, 0.5f, 0.3f, 0.0f, 0.8f };
@@ -389,7 +389,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testPhase5_AutomaticInt8Quantization() {
+  void phase5AutomaticInt8Quantization() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
@@ -432,7 +432,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase5_AutomaticBinaryQuantization() {
+  void phase5AutomaticBinaryQuantization() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
       docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
@@ -465,7 +465,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase5_ManualQuantization() {
+  void phase5ManualQuantization() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("documents");
       docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
@@ -494,7 +494,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testPhase6_VectorStatistics() {
+  void phase6VectorStatistics() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("documents");
       docType.createProperty("category", Type.STRING);
@@ -527,7 +527,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase6_DataQualityChecks() {
+  void phase6DataQualityChecks() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("documents");
       docType.createProperty("document_id", Type.STRING);
@@ -569,7 +569,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase6_OutlierDetection() {
+  void phase6OutlierDetection() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("documents");
       docType.createProperty("document_id", Type.STRING);
@@ -600,7 +600,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testPhase6_ValueClipping() {
+  void phase6ValueClipping() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("documents");
       docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
@@ -634,7 +634,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   // =============================================================================
 
   @Test
-  void testRealWorld_ProductionRAGWithHybridSearch() {
+  void realWorldProductionRAGWithHybridSearch() {
     database.transaction(() -> {
       // Step 1: Create Document type
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -693,7 +693,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testRealWorld_MultiModalRAG() {
+  void realWorldMultiModalRAG() {
     database.transaction(() -> {
       // Step 1: Create type for multi-modal documents
       final DocumentType docType = database.getSchema().createDocumentType("MultiModalDocument");
@@ -751,7 +751,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testRealWorld_SPLADESparseHybrid() {
+  void realWorldSPLADESparseHybrid() {
     database.transaction(() -> {
       // Step 1: Create document type
       final DocumentType docType = database.getSchema().createDocumentType("SpladeDocument");
@@ -794,7 +794,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testRealWorld_LSMVectorIndexCreationAndQuery() {
+  void realWorldLSMVectorIndexCreationAndQuery() {
     database.transaction(() -> {
       // Your First Vector Search in 5 Minutes (blog post example)
       // Step 1: Create document type with vector property
@@ -882,7 +882,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
    */
 
   @Test
-  void testBlogPost_SQLCreateIndexWithJSONMetadata() {
+  void blogPostSQLCreateIndexWithJSONMetadata() {
     database.transaction(() -> {
       // Create document type (correct SQL syntax from LSMVectorIndexTest)
       database.command("sql", "CREATE VERTEX TYPE VectorVertex IF NOT EXISTS");
@@ -907,7 +907,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testBlogPost_SQLCreateIndexWithQuantization() {
+  void blogPostSQLCreateIndexWithQuantization() {
     database.transaction(() -> {
       // Create document type with correct SQL syntax
       database.command("sql", "CREATE DOCUMENT TYPE QuantDoc IF NOT EXISTS");

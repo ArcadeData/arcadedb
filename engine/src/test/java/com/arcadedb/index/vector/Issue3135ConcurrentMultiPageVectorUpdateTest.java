@@ -65,7 +65,7 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
   }
 
   @Test
-  void testConcurrentMultiPageVectorUpdates() throws Exception {
+  void concurrentMultiPageVectorUpdates() throws Exception {
     // System.out.println("\n=== Testing Concurrent Multi-Page Vector Updates (Issue #3135) ===");
 
     // Phase 1: Create schema with inheritance and LSM_VECTOR index

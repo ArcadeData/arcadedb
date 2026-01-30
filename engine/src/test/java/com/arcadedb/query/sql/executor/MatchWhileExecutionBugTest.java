@@ -73,7 +73,7 @@ public class MatchWhileExecutionBugTest extends TestHelper {
    * This test PASSES on both main and sql-antlr branches.
    */
   @Test
-  void testMatchWithWhileStandalone() {
+  void matchWithWhileStandalone() {
     String query = "MATCH {type:Employee, where: (name = 'p10')}" +
         ".out('WorksAt')" +
         ".out('ParentDepartment'){" +
@@ -102,7 +102,7 @@ public class MatchWhileExecutionBugTest extends TestHelper {
    * The bug: The exact same MATCH query returns 0 results when nested in SELECT FROM (MATCH...)
    */
   @Test
-  void testMatchWithWhileInSubquery() {
+  void matchWithWhileInSubquery() {
     String query = "SELECT expand(manager) FROM (" +
         "MATCH {type:Employee, where: (name = 'p10')}" +
         ".out('WorksAt')" +
@@ -132,7 +132,7 @@ public class MatchWhileExecutionBugTest extends TestHelper {
    * This test PASSES on main branch but FAILS on sql-antlr branch.
    */
   @Test
-  void testNestedSelectWithMatchAndWhile() {
+  void nestedSelectWithMatchAndWhile() {
     String query = "SELECT @type FROM (" +
         "SELECT expand(manager) FROM (" +
         "MATCH {type:Employee, where: (name = 'p10')}" +
@@ -163,7 +163,7 @@ public class MatchWhileExecutionBugTest extends TestHelper {
    * This test PASSES on both branches - proves the bug is specific to while clause.
    */
   @Test
-  void testMatchWithoutWhileInSubquery() {
+  void matchWithoutWhileInSubquery() {
     String query = "SELECT expand(manager) FROM (" +
         "MATCH {type:Employee, where: (name = 'p10')}" +
         ".out('WorksAt')" +

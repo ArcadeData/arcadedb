@@ -60,7 +60,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateVertexWithMultipleLabels() {
+  void createVertexWithMultipleLabels() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create vertex with two labels
@@ -84,7 +84,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testCreateVertexWithThreeLabels() {
+  void createVertexWithThreeLabels() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create vertex with three labels
@@ -108,7 +108,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMatchByFirstLabel() {
+  void matchByFirstLabel() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create multi-label vertex
@@ -126,7 +126,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMatchBySecondLabel() {
+  void matchBySecondLabel() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create multi-label vertex
@@ -144,7 +144,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMatchByBothLabels() {
+  void matchByBothLabels() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create multi-label vertex
@@ -162,7 +162,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testLabelsFunction() {
+  void labelsFunction() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create multi-label vertex
@@ -179,7 +179,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testSingleLabelVertex() {
+  void singleLabelVertex() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create single-label vertex
@@ -203,7 +203,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMixedSingleAndMultiLabelVertices() {
+  void mixedSingleAndMultiLabelVertices() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create both single and multi-label vertices
@@ -222,7 +222,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testNodeHasLabelMethod() {
+  void nodeHasLabelMethod() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create multi-label vertex
@@ -241,7 +241,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMatchByNonExistentLabelCombination() {
+  void matchByNonExistentLabelCombination() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create multi-label vertex without Manager
@@ -255,7 +255,7 @@ public class BoltMultiLabelIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testMultipleVerticesWithDifferentLabelCombinations() {
+  void multipleVerticesWithDifferentLabelCombinations() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // Create vertices with different label combinations

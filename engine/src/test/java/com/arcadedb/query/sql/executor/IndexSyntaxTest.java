@@ -1,16 +1,17 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for CREATE INDEX and REBUILD INDEX syntax fixes.
  */
-public class IndexSyntaxTest extends TestHelper {
+class IndexSyntaxTest extends TestHelper {
 
   @Test
-  public void testCreateIndexIfNotExists() {
+  void createIndexIfNotExists() {
     database.command("sql", "CREATE DOCUMENT TYPE CompactTest");
     database.command("sql", "CREATE PROPERTY CompactTest.vec ARRAY_OF_FLOATS");
 
@@ -19,11 +20,11 @@ public class IndexSyntaxTest extends TestHelper {
 
     var schema = database.getSchema();
     var indexes = schema.getIndexes();
-    Assertions.assertTrue(indexes.length > 0);
+    assertThat(indexes.length > 0).isTrue();
   }
 
   @Test
-  public void testCreateIndexByItem() {
+  void createIndexByItem() {
     database.command("sql", "CREATE DOCUMENT TYPE SimpleListDoc");
     database.command("sql", "CREATE PROPERTY SimpleListDoc.tags LIST OF STRING");
 
@@ -32,11 +33,11 @@ public class IndexSyntaxTest extends TestHelper {
 
     var schema = database.getSchema();
     var indexes = schema.getIndexes();
-    Assertions.assertTrue(indexes.length > 0);
+    assertThat(indexes.length > 0).isTrue();
   }
 
   @Test
-  public void testRebuildIndexWithBacktickName() {
+  void rebuildIndexWithBacktickName() {
     database.command("sql", "CREATE DOCUMENT TYPE Embedding");
     database.command("sql", "CREATE PROPERTY Embedding.vector ARRAY_OF_FLOATS");
     database.command("sql", "CREATE INDEX ON Embedding (vector) LSM_VECTOR METADATA {dimensions: 4}");
@@ -46,11 +47,11 @@ public class IndexSyntaxTest extends TestHelper {
 
     var schema = database.getSchema();
     var index = schema.getIndexByName("Embedding[vector]");
-    Assertions.assertNotNull(index);
+    assertThat(index).isNotNull();
   }
 
   @Test
-  public void testRebuildAllIndexes() {
+  void rebuildAllIndexes() {
     database.command("sql", "CREATE DOCUMENT TYPE TestType");
     database.command("sql", "CREATE PROPERTY TestType.name STRING");
     database.command("sql", "CREATE INDEX ON TestType (name) NOTUNIQUE");
@@ -59,6 +60,6 @@ public class IndexSyntaxTest extends TestHelper {
     database.command("sql", "REBUILD INDEX *");
 
     var schema = database.getSchema();
-    Assertions.assertTrue(schema.getIndexes().length > 0);
+    assertThat(schema.getIndexes().length > 0).isTrue();
   }
 }

@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for CREATE clause in OpenCypher queries.
  */
-public class OpenCypherCreateTest {
+class OpenCypherCreateTest {
   private Database database;
   private String databasePath;
 
@@ -45,7 +45,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreateSingleVertex() {
+  void createSingleVertex() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30}) RETURN n");
 
@@ -68,7 +68,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreateMultipleVertices() {
+  void createMultipleVertices() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Alice'})");
       database.command("opencypher", "CREATE (b:Person {name: 'Bob'})");
@@ -86,7 +86,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreateVertexWithReturn() {
+  void createVertexWithReturn() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (n:Person {name: 'Alice', age: 30}) RETURN n.name, n.age");
@@ -101,7 +101,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreateRelationship() {
+  void createRelationship() {
     database.transaction(() -> {
       // First create two vertices
       database.command("opencypher", "CREATE (a:Person {name: 'Alice'})");
@@ -131,7 +131,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreatePathWithProperties() {
+  void createPathWithProperties() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (a:Person {name: 'Alice'})-[r:WORKS_AT {since: 2020}]->(c:Company {name: 'ArcadeDB'}) RETURN a, r, c");
@@ -159,7 +159,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreateChainedPath() {
+  void createChainedPath() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})-[:KNOWS]->(c:Person {name: 'Charlie'}) RETURN a, b, c");
@@ -187,7 +187,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreateWithoutLabel() {
+  void createWithoutLabel() {
     database.getSchema().createVertexType("Vertex");
 
     database.transaction(() -> {
@@ -205,7 +205,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreateWithMatchContext() {
+  void createWithMatchContext() {
     // Create a person first
     database.transaction(() -> {
       database.command("opencypher", "CREATE (a:Person {name: 'Alice'})");
@@ -232,7 +232,7 @@ public class OpenCypherCreateTest {
   }
 
   @Test
-  void testCreateMultiplePathsInOneQuery() {
+  void createMultiplePathsInOneQuery() {
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
           "CREATE (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) RETURN a, b");

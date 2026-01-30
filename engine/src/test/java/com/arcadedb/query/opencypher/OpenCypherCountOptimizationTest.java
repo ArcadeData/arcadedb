@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class OpenCypherCountOptimizationTest {
+class OpenCypherCountOptimizationTest {
   private Database database;
 
   @BeforeEach
@@ -52,7 +52,7 @@ public class OpenCypherCountOptimizationTest {
   }
 
   @Test
-  public void testSimpleCountOptimization() {
+  void simpleCountOptimization() {
     // Create test data
     database.transaction(() -> {
       database.getSchema().createVertexType("Account");
@@ -80,7 +80,7 @@ public class OpenCypherCountOptimizationTest {
   }
 
   @Test
-  public void testCountWithDifferentAliases() {
+  void countWithDifferentAliases() {
     // Create test data
     database.transaction(() -> {
       database.getSchema().createVertexType("Person");
@@ -103,7 +103,7 @@ public class OpenCypherCountOptimizationTest {
   }
 
   @Test
-  public void testCountWithEmptyType() {
+  void countWithEmptyType() {
     // Create empty type
     database.transaction(() -> {
       database.getSchema().createVertexType("EmptyType");
@@ -119,7 +119,7 @@ public class OpenCypherCountOptimizationTest {
   }
 
   @Test
-  public void testOptimizationNotAppliedWithWhereClause() {
+  void optimizationNotAppliedWithWhereClause() {
     // Create test data with properties
     database.transaction(() -> {
       final VertexType accountType = database.getSchema().createVertexType("BankAccount");
@@ -148,7 +148,7 @@ public class OpenCypherCountOptimizationTest {
   }
 
   @Test
-  public void testOptimizationNotAppliedWithMultipleReturnItems() {
+  void optimizationNotAppliedWithMultipleReturnItems() {
     // Create test data
     database.transaction(() -> {
       database.getSchema().createVertexType("Company");
@@ -173,7 +173,7 @@ public class OpenCypherCountOptimizationTest {
   }
 
   @Test
-  public void testCountWithPolymorphicTypes() {
+  void countWithPolymorphicTypes() {
     // Create type hierarchy
     database.transaction(() -> {
       database.getSchema().createVertexType("Animal");

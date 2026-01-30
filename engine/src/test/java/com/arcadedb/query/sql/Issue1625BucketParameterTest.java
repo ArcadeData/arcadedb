@@ -52,7 +52,7 @@ class Issue1625BucketParameterTest extends TestHelper {
   }
 
   @Test
-  void testSelectFromBucketWithNamedParameter() {
+  void selectFromBucketWithNamedParameter() {
     database.transaction(() -> {
       // Test using named parameter for bucket name
       final Map<String, Object> params = new HashMap<>();
@@ -70,7 +70,7 @@ class Issue1625BucketParameterTest extends TestHelper {
   }
 
   @Test
-  void testSelectFromBucketWithPositionalParameter() {
+  void selectFromBucketWithPositionalParameter() {
     database.transaction(() -> {
       // Test using positional parameter (?) for bucket name
       final Map<String, Object> params = new HashMap<>();
@@ -88,7 +88,7 @@ class Issue1625BucketParameterTest extends TestHelper {
   }
 
   @Test
-  void testSelectFromBucketParameterWithWhereClause() {
+  void selectFromBucketParameterWithWhereClause() {
     database.transaction(() -> {
       // Test bucket parameter combined with WHERE clause
       final Map<String, Object> params = new HashMap<>();
@@ -106,7 +106,7 @@ class Issue1625BucketParameterTest extends TestHelper {
   }
 
   @Test
-  void testInsertIntoBucketWithParameter() {
+  void insertIntoBucketWithParameter() {
     database.transaction(() -> {
       // Test INSERT with bucket parameter
       final Map<String, Object> params = new HashMap<>();

@@ -34,7 +34,7 @@ import java.util.Map;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class TriggerBenchmark {
+class TriggerBenchmark {
 
   private static Database database;
   private static final int WARMUP_ITERATIONS = 10000;

@@ -79,7 +79,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseSimpleRelationshipPattern() {
+  void parseSimpleRelationshipPattern() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(a:Person)-[r:KNOWS]->(b:Person)");
 
     assertThat(patterns).hasSize(1);
@@ -103,7 +103,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseIncomingRelationshipPattern() {
+  void parseIncomingRelationshipPattern() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(a)<-[r:KNOWS]-(b)");
 
     assertThat(patterns).hasSize(1);
@@ -115,7 +115,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseBidirectionalRelationshipPattern() {
+  void parseBidirectionalRelationshipPattern() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(a)-[r:KNOWS]-(b)");
 
     assertThat(patterns).hasSize(1);
@@ -127,7 +127,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseVariableLengthPattern() {
+  void parseVariableLengthPattern() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(a)-[r:KNOWS*1..3]->(b)");
 
     assertThat(patterns).hasSize(1);
@@ -142,7 +142,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseVariableLengthUnbounded() {
+  void parseVariableLengthUnbounded() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(a)-[*1..]->(b)");
 
     assertThat(patterns).hasSize(1);
@@ -157,7 +157,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseAnonymousRelationship() {
+  void parseAnonymousRelationship() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(a)-[]->(b)");
 
     assertThat(patterns).hasSize(1);
@@ -171,7 +171,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseSingleNodePattern() {
+  void parseSingleNodePattern() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(n:Person)");
 
     assertThat(patterns).hasSize(1);
@@ -187,7 +187,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseNodePatternWithoutLabel() {
+  void parseNodePatternWithoutLabel() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(n)");
 
     assertThat(patterns).hasSize(1);
@@ -200,7 +200,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testParseAnonymousNodePattern() {
+  void parseAnonymousNodePattern() {
     final List<PathPattern> patterns = PatternParser.parsePathPatterns("(:Person)-[:KNOWS]->(:Person)");
 
     assertThat(patterns).hasSize(1);
@@ -218,7 +218,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testRelationshipPatternEffectiveHops() {
+  void relationshipPatternEffectiveHops() {
     final RelationshipPattern rel1 = new RelationshipPattern("r", null, Direction.OUT, null, null, null);
     assertThat(rel1.getEffectiveMinHops()).isEqualTo(1);
     assertThat(rel1.getEffectiveMaxHops()).isEqualTo(1);
@@ -236,7 +236,7 @@ public class OpenCypherRelationshipTest {
   }
 
   @Test
-  void testPathPatternToString() {
+  void pathPatternToString() {
     final NodePattern node1 = new NodePattern("a", List.of("Person"), null);
     final RelationshipPattern rel = new RelationshipPattern("r", List.of("KNOWS"), Direction.OUT, null, null, null);
     final NodePattern node2 = new NodePattern("b", List.of("Person"), null);

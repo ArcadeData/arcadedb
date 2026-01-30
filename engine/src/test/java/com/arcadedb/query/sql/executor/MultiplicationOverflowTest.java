@@ -7,10 +7,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class MultiplicationOverflowTest extends TestHelper {
+class MultiplicationOverflowTest extends TestHelper {
 
   @Test
-  public void testMultiplicationOverflowToLong() {
+  void multiplicationOverflowToLong() {
     database.transaction(() -> {
       // Test case that caused the original bug: 1000*3600*24*365
       final ResultSet result1 = database.query("sql", "SELECT 1000*3600*24*365 as value");
@@ -66,7 +66,7 @@ public class MultiplicationOverflowTest extends TestHelper {
   }
 
   @Test
-  public void testMultiplicationWithMixedTypes() {
+  void multiplicationWithMixedTypes() {
     database.transaction(() -> {
       // Test Integer * Long
       final ResultSet result1 = database.query("sql", "SELECT 1000 * 1000000000L as value");

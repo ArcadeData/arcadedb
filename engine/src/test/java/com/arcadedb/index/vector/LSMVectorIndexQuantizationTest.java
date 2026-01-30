@@ -44,7 +44,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
   private static final int NUM_VECTORS = 100;
 
   @Test
-  void testNoQuantization() {
+  void noQuantization() {
     // Verify that NONE quantization type works as before (default behavior)
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -85,7 +85,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
   }
 
   @Test
-  void testInt8Quantization() {
+  void int8Quantization() {
     // Test INT8 quantization with insert, retrieval, and dequantization
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -133,7 +133,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
   }
 
   @Test
-  void testBinaryQuantization() {
+  void binaryQuantization() {
     // Test BINARY quantization with insert, retrieval, and dequantization
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -175,7 +175,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
   }
 
   @Test
-  void testQuantizationMetadataPersistence() {
+  void quantizationMetadataPersistence() {
     // Test that quantization settings persist across database close/reopen
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -211,7 +211,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
   }
 
   @Test
-  void testQuantizationErrorBounds() {
+  void quantizationErrorBounds() {
     // Test that INT8 quantization error is within acceptable bounds (<2-3%)
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -260,7 +260,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
   }
 
   @Test
-  void testQuantizationWithBuilderAPI() {
+  void quantizationWithBuilderAPI() {
     // Test creating quantized index using builder API (verifies builder support)
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -295,7 +295,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
   }
 
   @Test
-  void testQuantizationJSONSerialization() {
+  void quantizationJSONSerialization() {
     // Test that quantization settings are properly serialized in toJSON()
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Document");
@@ -323,7 +323,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
   }
 
   @Test
-  void testProductQuantizationCustomParameters() {
+  void productQuantizationCustomParameters() {
     // Test for GitHub issue #3160: Expose PQ tuning parameters via builder API
     // This test verifies that custom PQ parameters can be set and are properly applied
     database.transaction(() -> {
