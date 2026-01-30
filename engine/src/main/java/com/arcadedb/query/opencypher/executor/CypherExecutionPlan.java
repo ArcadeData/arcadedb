@@ -38,6 +38,7 @@ import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
+import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
@@ -891,6 +892,57 @@ public class CypherExecutionPlan {
           }
           currentStep = matchStep;
         }
+      } else if (pathPattern instanceof ShortestPathPattern) {
+        // Handle shortestPath or allShortestPaths patterns
+        final ShortestPathPattern shortestPathPattern = (ShortestPathPattern) pathPattern;
+        final NodePattern sourceNode = pathPattern.getFirstNode();
+        final NodePattern targetNode = pathPattern.getLastNode();
+        final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
+        final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : "b";
+        final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
+
+        // Track path variable
+        if (pathVariable != null) {
+          matchVariables.add(pathVariable);
+        }
+
+        // For shortestPath, both endpoints must be matched first
+        // Check both boundVariables (from previous MATCH clauses) and matchVariables (from earlier
+        // patterns in this same MATCH clause) to avoid re-matching already-bound variables
+
+        // Source node matching (if not already bound)
+        if (!boundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
+          final String sourceIdFilter = extractIdFilter(whereClause, sourceVar);
+          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+          if (currentStep != null) {
+            sourceStep.setPrevious(currentStep);
+          }
+          currentStep = sourceStep;
+          matchVariables.add(sourceVar); // Track as bound for subsequent patterns
+        }
+
+        // Target node matching (if not already bound)
+        if (!boundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
+          final String targetIdFilter = extractIdFilter(whereClause, targetVar);
+          final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter);
+          if (currentStep != null) {
+            targetStep.setPrevious(currentStep);
+          }
+          currentStep = targetStep;
+          matchVariables.add(targetVar); // Track as bound for subsequent patterns
+        }
+
+        // Now add the ShortestPathStep to compute the path
+        final ShortestPathStep shortestStep = new ShortestPathStep(sourceVar, targetVar, pathVariable,
+            shortestPathPattern, context);
+        if (currentStep != null) {
+          shortestStep.setPrevious(currentStep);
+        }
+        currentStep = shortestStep;
+
+        if (isOptional && matchChainStart == null) {
+          matchChainStart = shortestStep;
+        }
       } else {
         final NodePattern sourceNode = pathPattern.getFirstNode();
         final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
@@ -1076,7 +1128,59 @@ public class CypherExecutionPlan {
           for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
             final PathPattern pathPattern = pathPatterns.get(patternIndex);
 
-          if (pathPattern.isSingleNode()) {
+          if (pathPattern instanceof ShortestPathPattern) {
+            // Handle shortestPath or allShortestPaths patterns in legacy path
+            final ShortestPathPattern shortestPathPattern = (ShortestPathPattern) pathPattern;
+            final NodePattern sourceNode = pathPattern.getFirstNode();
+            final NodePattern targetNode = pathPattern.getLastNode();
+            final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
+            final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : "b";
+            final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
+
+            // Track path variable
+            if (pathVariable != null) {
+              matchVariables.add(pathVariable);
+            }
+
+            // Check both legacyBoundVariables (from previous MATCH clauses) and matchVariables (from earlier
+            // patterns in this same MATCH clause) to avoid re-matching already-bound variables
+
+            // Source node matching (if not already bound)
+            if (!legacyBoundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
+              final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+              final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
+              final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+              if (currentStep != null) {
+                sourceStep.setPrevious(currentStep);
+              }
+              currentStep = sourceStep;
+              matchVariables.add(sourceVar);
+            }
+
+            // Target node matching (if not already bound)
+            if (!legacyBoundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
+              final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+              final String targetIdFilter = extractIdFilter(matchWhere, targetVar);
+              final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter);
+              if (currentStep != null) {
+                targetStep.setPrevious(currentStep);
+              }
+              currentStep = targetStep;
+              matchVariables.add(targetVar);
+            }
+
+            // Now add the ShortestPathStep to compute the path
+            final ShortestPathStep shortestStep = new ShortestPathStep(sourceVar, targetVar, pathVariable,
+                shortestPathPattern, context);
+            if (currentStep != null) {
+              shortestStep.setPrevious(currentStep);
+            }
+            currentStep = shortestStep;
+
+            if (isOptional && matchChainStart == null) {
+              matchChainStart = shortestStep;
+            }
+          } else if (pathPattern.isSingleNode()) {
             // Simple node pattern: MATCH (n:Person) or MATCH (a), (b)
             final NodePattern nodePattern = pathPattern.getFirstNode();
             final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("n" + patternIndex);

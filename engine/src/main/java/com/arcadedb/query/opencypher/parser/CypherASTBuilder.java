@@ -861,8 +861,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Visit the anonymous pattern to get the base path
     final PathPattern basePath = visitAnonymousPattern(ctx.anonymousPattern());
 
-    // If there's a path variable, create a new PathPattern with it
+    // If there's a path variable, create a new PathPattern/ShortestPathPattern with it
+    // IMPORTANT: Preserve the ShortestPathPattern type if the base path is one
     if (pathVariable != null) {
+      if (basePath instanceof ShortestPathPattern) {
+        // Preserve ShortestPathPattern type
+        final ShortestPathPattern shortestBase = (ShortestPathPattern) basePath;
+        return new ShortestPathPattern(basePath.getNodes(), basePath.getRelationships(), pathVariable, shortestBase.isAllPaths());
+      }
       return new PathPattern(basePath.getNodes(), basePath.getRelationships(), pathVariable);
     }
 
@@ -873,7 +879,26 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (ctx.patternElement() != null) {
       return visitPatternElement(ctx.patternElement());
     }
-    throw new CommandParsingException("shortestPathPattern not yet supported");
+    if (ctx.shortestPathPattern() != null) {
+      return visitShortestPathPattern(ctx.shortestPathPattern());
+    }
+    throw new CommandParsingException("Unknown anonymous pattern type");
+  }
+
+  /**
+   * Visit a shortestPathPattern and convert it to a ShortestPathPattern.
+   * Grammar: (SHORTEST_PATH | ALL_SHORTEST_PATHS) LPAREN patternElement RPAREN
+   */
+  public PathPattern visitShortestPathPattern(final Cypher25Parser.ShortestPathPatternContext ctx) {
+    // Parse the inner pattern element
+    final PathPattern innerPattern = visitPatternElement(ctx.patternElement());
+
+    // Determine if this is shortestPath or allShortestPaths
+    final boolean isAllPaths = ctx.ALL_SHORTEST_PATHS() != null;
+
+    // Create a ShortestPathPattern (extends PathPattern with shortest path flag)
+    return new ShortestPathPattern(innerPattern.getNodes(), innerPattern.getRelationships(),
+        innerPattern.getPathVariable(), isAllPaths);
   }
 
   public PathPattern visitPatternElement(final Cypher25Parser.PatternElementContext ctx) {

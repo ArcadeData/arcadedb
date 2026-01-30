@@ -69,6 +69,20 @@ class CypherExpressionBuilder {
       return parseExtendedCaseExpression(extCaseCtx);
     }
 
+    // Check for shortestPath expressions
+    // shortestPath((a)-[:KNOWS*]-(b)) and allShortestPaths((a)-[:KNOWS*]-(b))
+    final Cypher25Parser.ShortestPathExpressionContext shortestPathCtx = findShortestPathExpressionRecursive(ctx);
+    if (shortestPathCtx != null) {
+      return parseShortestPathExpression(shortestPathCtx);
+    }
+
+    // Check for reduce expressions BEFORE list comprehensions
+    // reduce(acc = 0, n IN list | acc + n) is a fold operation over a list
+    final Cypher25Parser.ReduceExpressionContext reduceCtx = findReduceExpressionRecursive(ctx);
+    if (reduceCtx != null) {
+      return parseReduceExpression(reduceCtx);
+    }
+
     // Check for list comprehensions BEFORE comparison expressions
     // List comprehensions can contain comparisons in WHERE clause, e.g., [x IN list WHERE x > 2 | x * 10]
     // If we check comparisons first, the inner comparison gets matched instead
@@ -594,6 +608,46 @@ class CypherExpressionBuilder {
   }
 
   /**
+   * Recursively find ShortestPathExpressionContext in the parse tree.
+   */
+  Cypher25Parser.ShortestPathExpressionContext findShortestPathExpressionRecursive(
+      final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.ShortestPathExpressionContext)
+      return (Cypher25Parser.ShortestPathExpressionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ShortestPathExpressionContext found = findShortestPathExpressionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
+   * Recursively find ReduceExpressionContext in the parse tree.
+   */
+  Cypher25Parser.ReduceExpressionContext findReduceExpressionRecursive(
+      final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.ReduceExpressionContext)
+      return (Cypher25Parser.ReduceExpressionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ReduceExpressionContext found = findReduceExpressionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
    * Recursively find MapProjectionContext in the parse tree.
    */
   Cypher25Parser.MapProjectionContext findMapProjectionRecursive(
@@ -962,6 +1016,192 @@ class CypherExpressionBuilder {
       mapExpression = parseExpression(ctx.barExp);
 
     return new ListComprehensionExpression(variable, listExpression, whereExpression, mapExpression, ctx.getText());
+  }
+
+  // ============================================================================
+  // Reduce Expression Parsing
+  // ============================================================================
+
+  /**
+   * Parse a reduce expression into a ReduceExpression.
+   * Syntax: reduce(accumulator = initial, variable IN list | expression)
+   * Examples: reduce(total = 0, n IN [1,2,3] | total + n) -> 6
+   */
+  ReduceExpression parseReduceExpression(final Cypher25Parser.ReduceExpressionContext ctx) {
+    // Grammar: REDUCE LPAREN variable EQ expression COMMA variable IN expression BAR expression RPAREN
+    // The grammar gives us: variable(0) = expression(0), variable(1) IN expression(1) BAR expression(2)
+    final List<Cypher25Parser.VariableContext> variables = ctx.variable();
+    final List<Cypher25Parser.ExpressionContext> expressions = ctx.expression();
+
+    final String accumulatorVariable = variables.get(0).getText();
+    final Expression initialValue = parseExpression(expressions.get(0));
+
+    final String iteratorVariable = variables.get(1).getText();
+    final Expression listExpression = parseExpression(expressions.get(1));
+
+    final Expression reduceExpression = parseExpression(expressions.get(2));
+
+    return new ReduceExpression(accumulatorVariable, initialValue, iteratorVariable,
+        listExpression, reduceExpression, ctx.getText());
+  }
+
+  // ============================================================================
+  // Shortest Path Expression Parsing
+  // ============================================================================
+
+  /**
+   * Parse a shortestPath or allShortestPaths expression.
+   * Syntax: shortestPath((a)-[:KNOWS*]-(b)) or allShortestPaths((a)-[:KNOWS*]-(b))
+   */
+  ShortestPathExpression parseShortestPathExpression(final Cypher25Parser.ShortestPathExpressionContext ctx) {
+    // Grammar: shortestPathExpression : shortestPathPattern ;
+    // shortestPathPattern : (SHORTEST_PATH | ALL_SHORTEST_PATHS) LPAREN patternElement RPAREN ;
+    final Cypher25Parser.ShortestPathPatternContext patternCtx = ctx.shortestPathPattern();
+    final boolean isAllPaths = patternCtx.ALL_SHORTEST_PATHS() != null;
+
+    // Parse the inner pattern element
+    final PathPattern innerPattern = parsePatternElement(patternCtx.patternElement());
+
+    return new ShortestPathExpression(innerPattern, isAllPaths, ctx.getText());
+  }
+
+  /**
+   * Parse a patternElement into a PathPattern.
+   * This is used for shortestPath patterns which contain a patternElement.
+   */
+  private PathPattern parsePatternElement(final Cypher25Parser.PatternElementContext ctx) {
+    final java.util.List<NodePattern> nodes = new java.util.ArrayList<>();
+    final java.util.List<RelationshipPattern> relationships = new java.util.ArrayList<>();
+
+    // First node
+    if (!ctx.nodePattern().isEmpty()) {
+      nodes.add(parseNodePattern(ctx.nodePattern(0)));
+
+      // Relationships and subsequent nodes
+      for (int i = 0; i < ctx.relationshipPattern().size(); i++) {
+        relationships.add(parseRelationshipPattern(ctx.relationshipPattern(i)));
+        if (i + 1 < ctx.nodePattern().size()) {
+          nodes.add(parseNodePattern(ctx.nodePattern(i + 1)));
+        }
+      }
+    }
+
+    if (relationships.isEmpty()) {
+      return new PathPattern(nodes.get(0));
+    } else {
+      return new PathPattern(nodes, relationships);
+    }
+  }
+
+  /**
+   * Parse a nodePattern into a NodePattern.
+   */
+  private NodePattern parseNodePattern(final Cypher25Parser.NodePatternContext ctx) {
+    String variable = null;
+    java.util.List<String> labels = null;
+    java.util.Map<String, Object> properties = null;
+
+    if (ctx.variable() != null) {
+      variable = ctx.variable().getText();
+    }
+
+    if (ctx.labelExpression() != null) {
+      labels = extractLabels(ctx.labelExpression());
+    }
+
+    if (ctx.properties() != null && ctx.properties().map() != null) {
+      properties = parseMapProperties(ctx.properties().map());
+    }
+
+    return new NodePattern(variable, labels, properties);
+  }
+
+  /**
+   * Parse a relationshipPattern into a RelationshipPattern.
+   */
+  private RelationshipPattern parseRelationshipPattern(final Cypher25Parser.RelationshipPatternContext ctx) {
+    String variable = null;
+    java.util.List<String> types = null;
+    java.util.Map<String, Object> properties = null;
+    Integer minHops = null;
+    Integer maxHops = null;
+
+    if (ctx.variable() != null) {
+      variable = ctx.variable().getText();
+    }
+
+    if (ctx.labelExpression() != null) {
+      types = extractLabels(ctx.labelExpression());
+    }
+
+    if (ctx.properties() != null && ctx.properties().map() != null) {
+      properties = parseMapProperties(ctx.properties().map());
+    }
+
+    // Path length (variable-length relationships)
+    if (ctx.pathLength() != null) {
+      final Cypher25Parser.PathLengthContext pathLen = ctx.pathLength();
+      if (pathLen.from != null) {
+        minHops = Integer.parseInt(pathLen.from.getText());
+      }
+      if (pathLen.to != null) {
+        maxHops = Integer.parseInt(pathLen.to.getText());
+      }
+      if (pathLen.single != null) {
+        minHops = maxHops = Integer.parseInt(pathLen.single.getText());
+      }
+    }
+
+    // Direction
+    final Direction direction;
+    if (ctx.leftArrow() != null && ctx.rightArrow() != null) {
+      direction = Direction.BOTH;
+    } else if (ctx.leftArrow() != null) {
+      direction = Direction.IN;
+    } else if (ctx.rightArrow() != null) {
+      direction = Direction.OUT;
+    } else {
+      direction = Direction.BOTH;
+    }
+
+    return new RelationshipPattern(variable, types, direction, properties, minHops, maxHops);
+  }
+
+  /**
+   * Extract labels from a labelExpression context.
+   */
+  private java.util.List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
+    final String text = ctx.getText();
+    final String cleanText = text.replaceAll("^:+", "");
+    final String[] parts = cleanText.split("[:&|]+");
+    final java.util.List<String> labels = new java.util.ArrayList<>();
+    for (String part : parts) {
+      if (!part.isEmpty()) {
+        labels.add(part);
+      }
+    }
+    return labels;
+  }
+
+  /**
+   * Parse map properties from a MapContext.
+   */
+  private java.util.Map<String, Object> parseMapProperties(final Cypher25Parser.MapContext ctx) {
+    final java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
+    final java.util.List<Cypher25Parser.PropertyKeyNameContext> keys = ctx.propertyKeyName();
+    final java.util.List<Cypher25Parser.ExpressionContext> values = ctx.expression();
+
+    for (int i = 0; i < keys.size() && i < values.size(); i++) {
+      final String key = keys.get(i).getText();
+      final Expression expr = parseExpression(values.get(i));
+      if (expr instanceof LiteralExpression) {
+        map.put(key, ((LiteralExpression) expr).getValue());
+      } else {
+        map.put(key, expr);
+      }
+    }
+
+    return map;
   }
 
   // ============================================================================
