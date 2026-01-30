@@ -62,8 +62,8 @@ public class ExpressionEvaluator {
 
   private Object evaluateFunction(final FunctionCallExpression expression, final Result result,
       final CommandContext context) {
-    // Get function executor
-    final CypherFunctionExecutor executor = functionFactory.getFunctionExecutor(expression.getFunctionName());
+    // Get function
+    final com.arcadedb.function.StatelessFunction function = functionFactory.getFunctionExecutor(expression.getFunctionName());
 
     // Evaluate arguments
     final Object[] args = new Object[expression.getArguments().size()];
@@ -72,7 +72,7 @@ public class ExpressionEvaluator {
     }
 
     // Execute function
-    return executor.execute(args, context);
+    return function.execute(args, context);
   }
 
   /**

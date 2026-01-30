@@ -21,9 +21,11 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
@@ -108,6 +110,11 @@ public class CypherFunctionFactory {
       return sqlFunctionFactory.hasFunction(sqlFunctionName);
     }
 
+    // Check CypherFunctionRegistry for namespaced functions (text.*, map.*, util.*, date.*, etc.)
+    if (CypherFunctionRegistry.hasFunction(functionName)) {
+      return true;
+    }
+
     // Check Cypher-specific functions
     if (isCypherSpecificFunction(functionName)) {
       return true;
@@ -126,7 +133,7 @@ public class CypherFunctionFactory {
   /**
    * Get a function executor for the given Cypher function name.
    */
-  public CypherFunctionExecutor getFunctionExecutor(final String cypherFunctionName) {
+  public StatelessFunction getFunctionExecutor(final String cypherFunctionName) {
     return getFunctionExecutor(cypherFunctionName, false);
   }
 
@@ -136,7 +143,7 @@ public class CypherFunctionFactory {
    * @param cypherFunctionName the function name
    * @param distinct           true if DISTINCT keyword was used
    */
-  public CypherFunctionExecutor getFunctionExecutor(final String cypherFunctionName, final boolean distinct) {
+  public StatelessFunction getFunctionExecutor(final String cypherFunctionName, final boolean distinct) {
     final String functionName = cypherFunctionName.toLowerCase();
 
     // Handle sql. prefix - explicit SQL function access
@@ -147,6 +154,12 @@ public class CypherFunctionFactory {
         return new SQLFunctionBridge(sqlFunction, cypherFunctionName);
       }
       throw new CommandExecutionException("Unknown SQL function: " + sqlFunctionName);
+    }
+
+    // Check CypherFunctionRegistry for namespaced functions (text.*, map.*, util.*, date.*, etc.)
+    final StatelessFunction registryFunction = CypherFunctionRegistry.get(functionName);
+    if (registryFunction != null) {
+      return registryFunction;
     }
 
     // Handle Cypher-specific functions
@@ -191,7 +204,7 @@ public class CypherFunctionFactory {
    * @param functionName the function name (lowercase)
    * @param distinct     true if DISTINCT keyword was used (for aggregation functions)
    */
-  private CypherFunctionExecutor createCypherSpecificExecutor(final String functionName, final boolean distinct) {
+  private StatelessFunction createCypherSpecificExecutor(final String functionName, final boolean distinct) {
     return switch (functionName) {
       // Graph functions
       case "id" -> new IdFunction();
@@ -232,7 +245,12 @@ public class CypherFunctionFactory {
   /**
    * id() function - returns the internal ID of a node or relationship.
    */
-  private static class IdFunction implements CypherFunctionExecutor {
+  private static class IdFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "id";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -243,11 +261,6 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
@@ -257,7 +270,12 @@ public class CypherFunctionFactory {
    * sorted alphabetically. For single-label vertices, returns a list with
    * the type name.
    */
-  private static class LabelsFunction implements CypherFunctionExecutor {
+  private static class LabelsFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "labels";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -269,17 +287,17 @@ public class CypherFunctionFactory {
       }
       return Collections.emptyList();
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * type() function - returns the type of a relationship.
    */
-  private static class TypeFunction implements CypherFunctionExecutor {
+  private static class TypeFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "type";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -290,17 +308,17 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * keys() function - returns the property keys of a node or relationship.
    */
-  private static class KeysFunction implements CypherFunctionExecutor {
+  private static class KeysFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "keys";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -312,17 +330,17 @@ public class CypherFunctionFactory {
       }
       return Collections.emptyList();
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * properties() function - returns all properties as a map.
    */
-  private static class PropertiesFunction implements CypherFunctionExecutor {
+  private static class PropertiesFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "properties";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -338,17 +356,17 @@ public class CypherFunctionFactory {
       }
       return Collections.emptyMap();
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * startNode() function - returns the start node of a relationship.
    */
-  private static class StartNodeFunction implements CypherFunctionExecutor {
+  private static class StartNodeFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "startNode";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -361,17 +379,17 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * endNode() function - returns the end node of a relationship.
    */
-  private static class EndNodeFunction implements CypherFunctionExecutor {
+  private static class EndNodeFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "endNode";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -384,11 +402,6 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   // Path Functions
@@ -396,7 +409,12 @@ public class CypherFunctionFactory {
   /**
    * nodes() function - returns all nodes in a path.
    */
-  private static class NodesFunction implements CypherFunctionExecutor {
+  private static class NodesFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "nodes";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -415,17 +433,17 @@ public class CypherFunctionFactory {
       }
       return Collections.emptyList();
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * relationships() function - returns all relationships in a path.
    */
-  private static class RelationshipsFunction implements CypherFunctionExecutor {
+  private static class RelationshipsFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "relationships";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -444,17 +462,17 @@ public class CypherFunctionFactory {
       }
       return Collections.emptyList();
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * length() function - returns the length of a path (number of relationships).
    */
-  private static class LengthFunction implements CypherFunctionExecutor {
+  private static class LengthFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "length";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -477,11 +495,6 @@ public class CypherFunctionFactory {
       }
       return 0L;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   // List Functions
@@ -489,7 +502,12 @@ public class CypherFunctionFactory {
   /**
    * size() function - returns the size of a list or string.
    */
-  private static class SizeFunction implements CypherFunctionExecutor {
+  private static class SizeFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "size";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -502,17 +520,17 @@ public class CypherFunctionFactory {
       }
       return 0L;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * head() function - returns the first element of a list.
    */
-  private static class HeadFunction implements CypherFunctionExecutor {
+  private static class HeadFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "head";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -524,17 +542,17 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * tail() function - returns all elements except the first.
    */
-  private static class TailFunction implements CypherFunctionExecutor {
+  private static class TailFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "tail";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -546,17 +564,17 @@ public class CypherFunctionFactory {
       }
       return Collections.emptyList();
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * last() function - returns the last element of a list.
    */
-  private static class LastFunction implements CypherFunctionExecutor {
+  private static class LastFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "last";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -568,17 +586,17 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * range() function - creates a list of numbers from start to end (optionally with step).
    */
-  private static class RangeFunction implements CypherFunctionExecutor {
+  private static class RangeFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "range";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length < 2 || args.length > 3) {
@@ -604,11 +622,6 @@ public class CypherFunctionFactory {
       }
       return result;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   // String Functions
@@ -616,7 +629,12 @@ public class CypherFunctionFactory {
   /**
    * left() function - returns the leftmost n characters of a string.
    */
-  private static class LeftFunction implements CypherFunctionExecutor {
+  private static class LeftFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "left";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 2) {
@@ -629,17 +647,17 @@ public class CypherFunctionFactory {
       final int length = ((Number) args[1]).intValue();
       return str.substring(0, Math.min(length, str.length()));
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * right() function - returns the rightmost n characters of a string.
    */
-  private static class RightFunction implements CypherFunctionExecutor {
+  private static class RightFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "right";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 2) {
@@ -652,17 +670,17 @@ public class CypherFunctionFactory {
       final int length = ((Number) args[1]).intValue();
       return str.substring(Math.max(0, str.length() - length));
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * reverse() function - reverses a string or list.
    */
-  private static class ReverseFunction implements CypherFunctionExecutor {
+  private static class ReverseFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "reverse";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -682,17 +700,17 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * split() function - splits a string by a delimiter.
    */
-  private static class SplitFunction implements CypherFunctionExecutor {
+  private static class SplitFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "split";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 2) {
@@ -705,11 +723,6 @@ public class CypherFunctionFactory {
       final String delimiter = args[1].toString();
       return List.of(str.split(Pattern.quote(delimiter)));
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   // Type Conversion Functions
@@ -717,7 +730,12 @@ public class CypherFunctionFactory {
   /**
    * toString() function - converts a value to a string.
    */
-  private static class ToStringFunction implements CypherFunctionExecutor {
+  private static class ToStringFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "toString";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -725,17 +743,17 @@ public class CypherFunctionFactory {
       }
       return args[0] == null ? null : args[0].toString();
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * toInteger() function - converts a value to an integer.
    */
-  private static class ToIntegerFunction implements CypherFunctionExecutor {
+  private static class ToIntegerFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "toInteger";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -756,17 +774,17 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * toFloat() function - converts a value to a float.
    */
-  private static class ToFloatFunction implements CypherFunctionExecutor {
+  private static class ToFloatFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "toFloat";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -787,11 +805,6 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
@@ -799,7 +812,12 @@ public class CypherFunctionFactory {
    * Numbers: 0 is false, non-zero is true.
    * Strings: "true" is true, "false" is false (case-insensitive).
    */
-  private static class ToBooleanFunction implements CypherFunctionExecutor {
+  private static class ToBooleanFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "toBoolean";
+    }
+
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1) {
@@ -826,19 +844,19 @@ public class CypherFunctionFactory {
       }
       return null;
     }
-
-    @Override
-    public boolean isAggregation() {
-      return false;
-    }
   }
 
   /**
    * collect() aggregation function - collects values into a list.
    * Example: MATCH (n:Person) RETURN collect(n.name)
    */
-  private static class CollectFunction implements CypherFunctionExecutor {
+  private static class CollectFunction implements StatelessFunction {
     private final List<Object> collectedValues = new ArrayList<>();
+
+    @Override
+    public String getName() {
+      return "collect";
+    }
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
@@ -851,7 +869,7 @@ public class CypherFunctionFactory {
     }
 
     @Override
-    public boolean isAggregation() {
+    public boolean aggregateResults() {
       return true;
     }
 
@@ -866,8 +884,13 @@ public class CypherFunctionFactory {
    * Uses LinkedHashSet to maintain insertion order while eliminating duplicates.
    * Example: MATCH (n:Person) RETURN collect(DISTINCT n.name)
    */
-  private static class CollectDistinctFunction implements CypherFunctionExecutor {
+  private static class CollectDistinctFunction implements StatelessFunction {
     private final Set<Object> distinctValues = new LinkedHashSet<>();
+
+    @Override
+    public String getName() {
+      return "collect";
+    }
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
@@ -888,7 +911,7 @@ public class CypherFunctionFactory {
     }
 
     @Override
-    public boolean isAggregation() {
+    public boolean aggregateResults() {
       return true;
     }
 
@@ -942,7 +965,7 @@ public class CypherFunctionFactory {
    * Bridge from Cypher function to SQL function.
    * For aggregation functions, we configure them to enable proper state accumulation.
    */
-  private static class SQLFunctionBridge implements CypherFunctionExecutor {
+  private static class SQLFunctionBridge implements StatelessFunction {
     private final SQLFunction sqlFunction;
     private final String cypherFunctionName;
     private final boolean isAggregation;
@@ -961,6 +984,11 @@ public class CypherFunctionFactory {
     }
 
     @Override
+    public String getName() {
+      return cypherFunctionName;
+    }
+
+    @Override
     public Object execute(final Object[] args, final CommandContext context) {
       // SQL functions expect (self, currentRecord, currentResult, params, context)
       // For now, we pass nulls for self, currentRecord, currentResult
@@ -968,7 +996,7 @@ public class CypherFunctionFactory {
     }
 
     @Override
-    public boolean isAggregation() {
+    public boolean aggregateResults() {
       return isAggregation;
     }
 

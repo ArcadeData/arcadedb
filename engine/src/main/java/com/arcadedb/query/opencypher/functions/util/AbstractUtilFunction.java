@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions.util;
 
-import com.arcadedb.query.opencypher.functions.CypherFunction;
+import com.arcadedb.function.StatelessFunction;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -29,7 +29,7 @@ import java.security.NoSuchAlgorithmException;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractUtilFunction implements CypherFunction {
+public abstract class AbstractUtilFunction implements StatelessFunction {
   private static final char[] HEX_CHARS = "0123456789abcdef".toCharArray();
 
   @Override

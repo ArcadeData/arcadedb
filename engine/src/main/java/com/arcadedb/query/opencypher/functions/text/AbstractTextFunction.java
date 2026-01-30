@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions.text;
 
-import com.arcadedb.query.opencypher.functions.CypherFunction;
+import com.arcadedb.function.StatelessFunction;
 
 /**
  * Abstract base class for text functions.
@@ -26,7 +26,7 @@ import com.arcadedb.query.opencypher.functions.CypherFunction;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractTextFunction implements CypherFunction {
+public abstract class AbstractTextFunction implements StatelessFunction {
   protected static final String NAMESPACE = "text";
 
   /**

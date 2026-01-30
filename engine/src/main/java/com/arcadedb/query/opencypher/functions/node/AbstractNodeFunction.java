@@ -19,15 +19,15 @@
 package com.arcadedb.query.opencypher.functions.node;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.opencypher.functions.CypherFunction;
 
 /**
  * Abstract base class for node functions.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public abstract class AbstractNodeFunction implements CypherFunction {
+public abstract class AbstractNodeFunction implements StatelessFunction {
   @Override
   public String getName() {
     return "node." + getSimpleName();
