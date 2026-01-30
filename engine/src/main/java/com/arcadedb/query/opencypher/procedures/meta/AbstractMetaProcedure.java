@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.meta;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -57,7 +58,7 @@ public abstract class AbstractMetaProcedure implements CypherProcedure {
     return result;
   }
 
-  protected String mapPropertyType(final com.arcadedb.schema.Type type) {
+  protected String mapPropertyType(final Type type) {
     return switch (type) {
       case STRING -> "String";
       case INTEGER -> "Integer";

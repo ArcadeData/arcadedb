@@ -22,6 +22,9 @@ import com.arcadedb.log.LogManager;
 
 import java.io.File;
 import java.io.FilenameFilter;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
@@ -87,7 +90,7 @@ public class BackupRetentionManager {
       return 0;
     }
 
-    final File dbBackupDir = java.nio.file.Paths.get(backupDirectory, databaseName).toFile();
+    final File dbBackupDir = Paths.get(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 
@@ -108,11 +111,11 @@ public class BackupRetentionManager {
     for (final BackupFileInfo info : backupFiles) {
       if (!filesToKeep.contains(info.file)) {
         try {
-          java.nio.file.Files.delete(info.file.toPath());
+          Files.delete(info.file.toPath());
           deletedCount++;
           LogManager.instance().log(this, Level.INFO,
               "Deleted old backup: %s", info.file.getName());
-        } catch (final java.io.IOException e) {
+        } catch (final IOException e) {
           failedCount++;
           LogManager.instance().log(this, Level.WARNING,
               "Failed to delete old backup '%s': %s", info.file.getName(), e.getMessage());
@@ -365,7 +368,7 @@ public class BackupRetentionManager {
    * Gets the total size of all backup files for a database.
    */
   public long getBackupSizeBytes(final String databaseName) {
-    final File dbBackupDir = java.nio.file.Paths.get(backupDirectory, databaseName).toFile();
+    final File dbBackupDir = Paths.get(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 
@@ -383,7 +386,7 @@ public class BackupRetentionManager {
    * Gets the count of backup files for a database.
    */
   public int getBackupCount(final String databaseName) {
-    final File dbBackupDir = java.nio.file.Paths.get(backupDirectory, databaseName).toFile();
+    final File dbBackupDir = Paths.get(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 

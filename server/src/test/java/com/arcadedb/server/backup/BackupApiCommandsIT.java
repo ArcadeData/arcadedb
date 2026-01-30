@@ -29,6 +29,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -81,7 +82,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
 
     final HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/server"))
-        .header("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .build();
@@ -105,7 +106,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
 
     final HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/server"))
-        .header("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .build();
@@ -153,7 +154,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
 
     final HttpRequest setRequest = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/server"))
-        .header("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(setPayload.toString()))
         .build();
@@ -171,7 +172,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
 
     final HttpRequest getRequest = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/server"))
-        .header("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(getPayload.toString()))
         .build();
@@ -216,7 +217,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
 
     final HttpRequest setRequest = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/server"))
-        .header("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(setPayload.toString()))
         .build();
@@ -231,7 +232,7 @@ class BackupApiCommandsIT extends BaseGraphServerTest {
 
     final HttpRequest triggerRequest = HttpRequest.newBuilder()
         .uri(new URI("http://localhost:2480/api/v1/server"))
-        .header("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(triggerPayload.toString()))
         .build();

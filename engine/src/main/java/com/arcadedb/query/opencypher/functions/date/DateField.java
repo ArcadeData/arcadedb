@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.temporal.WeekFields;
 
 /**
  * date.field(timestamp, field) - Extract a field from timestamp.
@@ -70,7 +71,7 @@ public class DateField extends AbstractDateFunction {
       case "millisecond", "milliseconds", "millis" -> (long) (dateTime.getNano() / 1_000_000);
       case "dayofweek", "weekday" -> (long) dateTime.getDayOfWeek().getValue();
       case "dayofyear" -> (long) dateTime.getDayOfYear();
-      case "week", "weekofyear" -> (long) dateTime.get(java.time.temporal.WeekFields.ISO.weekOfYear());
+      case "week", "weekofyear" -> (long) dateTime.get(WeekFields.ISO.weekOfYear());
       default -> throw new IllegalArgumentException("Unknown date field: " + field);
     };
   }

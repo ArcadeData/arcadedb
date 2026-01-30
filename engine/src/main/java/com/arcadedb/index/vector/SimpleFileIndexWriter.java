@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.io.UTFDataFormatException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
@@ -158,7 +159,7 @@ public class SimpleFileIndexWriter implements IndexWriter {
   @Override
   public void writeUTF(final String s) throws IOException {
     // Standard DataOutputStream UTF implementation
-    final byte[] bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    final byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
     if (bytes.length > 65535) {
       throw new UTFDataFormatException("String too long: " + bytes.length);
     }

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -245,7 +246,7 @@ public class OpenCypherRemoveTest {
           "MATCH (a:Person)-[r:KNOWS]->(b:Person) REMOVE r.temp RETURN r");
 
       assertThat(result.hasNext()).isTrue();
-      final com.arcadedb.graph.Edge edge = (com.arcadedb.graph.Edge) result.next().toElement();
+      final Edge edge = (Edge) result.next().toElement();
       assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2020);
       assertThat(edge.has("temp")).isFalse();
     });
