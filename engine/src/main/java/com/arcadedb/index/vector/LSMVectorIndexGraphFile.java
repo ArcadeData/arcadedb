@@ -237,8 +237,8 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
     try {
       // Create reader supplier for lazy-loading
-      // Use 0L offset since graph data starts at position 0 (no separate header)
-      final ArcadePageReaderSupplier supplier = new ArcadePageReaderSupplier(database, getFileId(), getPageSize(), totalBytes, 292L);
+      // Use 0L offset since graph data starts at position 0 (jvector 4.0.0-rc.7+ handles header/footer automatically)
+      final ArcadePageReaderSupplier supplier = new ArcadePageReaderSupplier(database, getFileId(), getPageSize(), totalBytes, 0L);
 
       // Load graph using JVector's OnDiskGraphIndex
       final OnDiskGraphIndex graph = OnDiskGraphIndex.load(supplier);

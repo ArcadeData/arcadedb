@@ -88,8 +88,8 @@ public class ContiguousPageReader implements RandomAccessReader {
 
     this.logicalPosition = position;
 
-    if (logicalPosition == 0)
-      // PATCH TO OVERCOME TO A BUG IN JVECTOR THAT SHOULD START 292 BYTES AFTER THE BEGINNING
+    if (logicalPosition == 0 && offset > 0)
+      // Apply optional offset for reading (typically 0 for jvector 4.0.0-rc.7+)
       logicalPosition += offset;
   }
 
