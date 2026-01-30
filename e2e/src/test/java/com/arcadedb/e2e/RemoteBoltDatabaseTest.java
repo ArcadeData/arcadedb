@@ -25,6 +25,11 @@ import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Config;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
+import org.neo4j.driver.Result;
+import org.neo4j.driver.Session;
+import org.neo4j.driver.SessionConfig;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
 
@@ -50,5 +55,16 @@ class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
   @Test
   void testConnection() {
     driver.verifyConnectivity();
+  }
+
+  @Test
+  void simpleReturnQuery() {
+    try (Session session = driver.session(SessionConfig.forDatabase("beer"))) {
+      final Result result = session.run("RETURN 1 AS value");
+      assertThat(result.hasNext()).isTrue();
+      final org.neo4j.driver.Record record = result.next();
+      assertThat(record.get("value").asLong()).isEqualTo(1L);
+      assertThat(result.hasNext()).isFalse();
+    }
   }
 }
