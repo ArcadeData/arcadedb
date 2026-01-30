@@ -777,7 +777,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         return createFallbackComparison(ctx);
       }
 
-      // Other comparison types (TypeComparison, NormalFormComparison, LabelComparison)
+      // LabelComparison: labelExpression (e.g., n:Person, n:Person|Developer)
+      if (compCtx instanceof Cypher25Parser.LabelComparisonContext) {
+        final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) compCtx;
+        return parseLabelCheckExpression(leftExpr, labelCtx.labelExpression(), ctx.getText());
+      }
+
+      // Other comparison types (TypeComparison, NormalFormComparison)
       // Fall back to text-based parsing for now
       return createFallbackComparison(ctx);
     }
@@ -816,6 +822,55 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         ComparisonExpression.Operator.EQUALS,
         new LiteralExpression(true, "true")
     );
+  }
+
+  /**
+   * Parse a label check expression from WHERE clause (e.g., n:Person, n:Person|Developer).
+   * The grammar for labelExpression is:
+   * labelExpression : (COLON | IS) labelExpression4
+   * labelExpression4 : labelExpression3 (BAR COLON? labelExpression3)*  # OR
+   * labelExpression3 : labelExpression2 ((AMPERSAND | COLON) labelExpression2)*  # AND
+   * labelExpression2 : EXCLAMATION_MARK* labelExpression1
+   * labelExpression1 : symbolicNameString  # label name
+   */
+  private LabelCheckExpression parseLabelCheckExpression(final Expression variableExpr,
+                                                          final Cypher25Parser.LabelExpressionContext labelExprCtx,
+                                                          final String text) {
+    // Extract labels and operator from the label expression
+    final List<String> labels = new ArrayList<>();
+    LabelCheckExpression.LabelOperator operator = LabelCheckExpression.LabelOperator.AND;
+
+    // Get the text and parse the labels - remove leading : or IS
+    final String labelText = labelExprCtx.getText();
+    String cleanText = labelText;
+    if (cleanText.startsWith(":"))
+      cleanText = cleanText.substring(1);
+
+    // Check if it contains OR operator (|)
+    if (cleanText.contains("|")) {
+      operator = LabelCheckExpression.LabelOperator.OR;
+      // Split by | (may have optional : after |)
+      final String[] parts = cleanText.split("\\|:?");
+      for (final String part : parts) {
+        final String label = part.trim();
+        if (!label.isEmpty())
+          labels.add(label);
+      }
+    } else if (cleanText.contains("&") || cleanText.contains(":")) {
+      // AND operator (& or :)
+      operator = LabelCheckExpression.LabelOperator.AND;
+      final String[] parts = cleanText.split("[&:]");
+      for (final String part : parts) {
+        final String label = part.trim();
+        if (!label.isEmpty())
+          labels.add(label);
+      }
+    } else {
+      // Single label
+      labels.add(cleanText.trim());
+    }
+
+    return new LabelCheckExpression(variableExpr, labels, operator, text);
   }
 
   private Object parseValueString(String value) {
