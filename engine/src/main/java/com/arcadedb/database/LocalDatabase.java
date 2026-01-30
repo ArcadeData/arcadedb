@@ -124,7 +124,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final      GraphEngine                               graphEngine;
   protected final      WALFileFactory                            walFactory;
   protected final      DocumentIndexer                           indexer;
-  protected final      QueryEngineManager                        queryEngineManager;
   protected final      DatabaseStats                             stats                                = new DatabaseStats();
   protected            FileManager                               fileManager;
   protected            LocalSchema                               schema;
@@ -190,7 +189,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       checkDatabaseName();
 
       indexer = new DocumentIndexer(this);
-      queryEngineManager = new QueryEngineManager();
       graphEngine = new GraphEngine(this);
 
     } catch (DatabaseOperationException e) {
@@ -1363,7 +1361,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public QueryEngine getQueryEngine(final String language) {
     QueryEngine engine = reusableQueryEngines.get(language);
     if (engine == null) {
-      engine = queryEngineManager.getInstance(language, this);
+      engine = QueryEngineManager.getInstance().getEngine(language, this);
       if (engine.isReusable()) {
         final QueryEngine prev = reusableQueryEngines.putIfAbsent(language, engine);
         if (prev != null)
@@ -1682,7 +1680,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public QueryEngineManager getQueryEngineManager() {
-    return queryEngineManager;
+    return QueryEngineManager.getInstance();
   }
 
   @Override

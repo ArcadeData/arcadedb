@@ -50,7 +50,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     final JSONObject response = new JSONObject().put("user", user != null ? user.getName() : null)
                                                 .put("version", Constants.getVersion())
                                                 .put("serverName", httpServer.getServer().getServerName())
-                                                .put("languages", new QueryEngineManager().getAvailableLanguages());
+                                                .put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
 
     final String mode = getQueryParameter(exchange, "mode", "default");
 
