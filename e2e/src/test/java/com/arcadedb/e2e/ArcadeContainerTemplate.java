@@ -28,7 +28,7 @@ public abstract class ArcadeContainerTemplate {
 
   static {
     ARCADE = new GenericContainer<>("arcadedata/arcadedb:latest")
-        .withExposedPorts(2480, 6379, 5432, 8182, 50051)
+        .withExposedPorts(2480, 6379, 5432, 7687, 8182, 50051)
         .withStartupTimeout(Duration.ofSeconds(90))
         .withEnv("JAVA_OPTS", """
             -Darcadedb.server.rootPassword=playwithdata
@@ -39,7 +39,7 @@ public abstract class ArcadeContainerTemplate {
             -Darcadedb.grpc.reflection.enabled=true
             -Darcadedb.grpc.health.enabled=true
             -Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
-            -Darcadedb.server.plugins=PostgresProtocolPlugin,GremlinServerPlugin,GrpcServerPlugin,PrometheusMetricsPlugin
+            -Darcadedb.server.plugins=PostgresProtocolPlugin,GremlinServerPlugin,GrpcServerPlugin,BoltProtocolPlugin,PrometheusMetricsPlugin
             """)
         .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
     ARCADE.start();
@@ -51,4 +51,5 @@ public abstract class ArcadeContainerTemplate {
   protected int    pgsqlPort   = ARCADE.getMappedPort(5432);
   protected int    gremlinPort = ARCADE.getMappedPort(8182);
   protected int    grpcPort    = ARCADE.getMappedPort(50051);
+  protected int    boltPort    = ARCADE.getMappedPort(7687);
 }
