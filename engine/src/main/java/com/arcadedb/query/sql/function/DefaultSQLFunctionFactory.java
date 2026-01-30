@@ -123,12 +123,21 @@ import com.arcadedb.query.sql.function.vector.SQLFunctionVectorToString;
 import com.arcadedb.query.sql.function.vector.SQLFunctionVectorVariance;
 
 /**
- * Default set of SQL function.
+ * Default set of SQL functions.
+ * <p>
+ * This is a singleton to ensure functions are registered only once in the {@link com.arcadedb.function.FunctionRegistry}.
+ * </p>
  */
 public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate {
+  private static final DefaultSQLFunctionFactory INSTANCE = new DefaultSQLFunctionFactory();
+
   private final SQLFunctionReflectionFactory reflectionFactory;
 
-  public DefaultSQLFunctionFactory() {
+  public static DefaultSQLFunctionFactory getInstance() {
+    return INSTANCE;
+  }
+
+  private DefaultSQLFunctionFactory() {
     // Collection
     register(SQLFunctionDifference.NAME, SQLFunctionDifference.class);
     register(SQLFunctionFirst.NAME, new SQLFunctionFirst());

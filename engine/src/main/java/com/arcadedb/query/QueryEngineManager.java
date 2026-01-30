@@ -59,7 +59,7 @@ public class QueryEngineManager {
 
       register((QueryEngine.QueryEngineFactory) Class.forName(className).getConstructor().newInstance());
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Unable to register engine '%s' (%s)", className, e.getMessage());
+      LogManager.instance().log(this, Level.FINE, "Unable to register engine '%s' (%s)", className, e.getMessage());
     }
   }
 

@@ -44,7 +44,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
   public static final String ENGINE_NAME = "opencypher";
 
   // Shared stateless components - thread-safe and reusable
-  private static final DefaultSQLFunctionFactory SQL_FUNCTION_FACTORY = new DefaultSQLFunctionFactory();
+  private static final DefaultSQLFunctionFactory SQL_FUNCTION_FACTORY = DefaultSQLFunctionFactory.getInstance();
   private static final CypherFunctionFactory CYPHER_FUNCTION_FACTORY = new CypherFunctionFactory(SQL_FUNCTION_FACTORY);
   private static final ExpressionEvaluator EXPRESSION_EVALUATOR = new ExpressionEvaluator(CYPHER_FUNCTION_FACTORY);
 
