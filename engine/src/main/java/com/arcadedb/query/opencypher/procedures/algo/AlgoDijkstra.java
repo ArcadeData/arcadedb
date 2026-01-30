@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -103,7 +104,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
       final var nextDoc = context.getDatabase().lookupByRID(next, true);
 
       // If this is an edge, get its weight
-      if (currentDoc.getRecord() instanceof com.arcadedb.graph.Edge edge) {
+      if (currentDoc.getRecord() instanceof Edge edge) {
         final Object weight = edge.get(weightProperty);
         if (weight instanceof Number num) {
           totalWeight += num.doubleValue();

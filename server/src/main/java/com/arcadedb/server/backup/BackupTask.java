@@ -25,9 +25,13 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 
+import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -184,10 +188,10 @@ public class BackupTask implements Runnable {
     final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
 
     // Prepare backup directory for this database - use Files.createDirectories to avoid TOCTOU
-    final java.nio.file.Path dbBackupPath = java.nio.file.Paths.get(backupDirectory, databaseName);
+    final Path dbBackupPath = Paths.get(backupDirectory, databaseName);
     try {
-      java.nio.file.Files.createDirectories(dbBackupPath);
-    } catch (final java.io.IOException e) {
+      Files.createDirectories(dbBackupPath);
+    } catch (final IOException e) {
       throw new BackupException("Failed to create backup directory for database '" + databaseName + "': " + dbBackupPath, e);
     }
     final String dbBackupDir = dbBackupPath.toString();

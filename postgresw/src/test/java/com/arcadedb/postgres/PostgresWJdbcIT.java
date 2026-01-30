@@ -393,7 +393,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         assertThat(rs.next()).isTrue();
 
         // Verify the timestamp is not null (would be null if pg driver can't parse the format)
-        java.sql.Timestamp timestamp = rs.getTimestamp("created");
+        Timestamp timestamp = rs.getTimestamp("created");
         assertThat(timestamp).isNotNull();
 
         // Verify the value is correct

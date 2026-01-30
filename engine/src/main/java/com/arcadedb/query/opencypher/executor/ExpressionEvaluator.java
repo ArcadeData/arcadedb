@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
@@ -63,7 +64,7 @@ public class ExpressionEvaluator {
   private Object evaluateFunction(final FunctionCallExpression expression, final Result result,
       final CommandContext context) {
     // Get function
-    final com.arcadedb.function.StatelessFunction function = functionFactory.getFunctionExecutor(expression.getFunctionName());
+    final StatelessFunction function = functionFactory.getFunctionExecutor(expression.getFunctionName());
 
     // Evaluate arguments
     final Object[] args = new Object[expression.getArguments().size()];

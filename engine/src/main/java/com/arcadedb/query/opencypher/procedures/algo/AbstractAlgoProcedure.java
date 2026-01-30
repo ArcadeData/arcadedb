@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
@@ -87,7 +88,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /**
    * Builds a path representation from a list of RIDs.
    */
-  protected Map<String, Object> buildPath(final List<RID> rids, final com.arcadedb.database.Database database) {
+  protected Map<String, Object> buildPath(final List<RID> rids, final Database database) {
     final List<Object> nodes = new ArrayList<>();
     final List<Object> relationships = new ArrayList<>();
 

@@ -550,8 +550,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         final Database database = server.getDatabase(databaseName);
         final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
 
-        final String timestamp = java.time.LocalDateTime.now()
-            .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        final String timestamp = LocalDateTime.now()
+            .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
 
         final Path dbBackupPath = Paths.get(backupDirectory, databaseName);

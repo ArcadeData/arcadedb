@@ -60,6 +60,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -337,7 +338,7 @@ public class ArcadeDBServer {
   }
 
   private void registerAutoBackupPluginIfConfigured() {
-    final File backupConfigFile = java.nio.file.Paths.get(serverRootPath, "config", "backup.json").toFile();
+    final File backupConfigFile = Paths.get(serverRootPath, "config", "backup.json").toFile();
     if (backupConfigFile.exists()) {
       try {
         final Class<ServerPlugin> c = (Class<ServerPlugin>) Class.forName(
