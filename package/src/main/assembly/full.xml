@@ -94,14 +94,42 @@
         </file>
     </files>
     <!--
-     | all artifacts in a /lib dir
+     | all artifacts in a /lib dir, except plugins which go to /lib/plugins
     -->
     <dependencySets>
+        <!-- Main libraries -->
         <dependencySet>
             <outputDirectory>lib</outputDirectory>
             <includes>
                 <include>*:jar:*</include>
             </includes>
+            <excludes>
+                <exclude>com.arcadedb:arcadedb-gremlin</exclude>
+                <exclude>com.arcadedb:arcadedb-bolt</exclude>
+                <exclude>com.arcadedb:arcadedb-postgresw</exclude>
+                <exclude>com.arcadedb:arcadedb-mongodbw</exclude>
+                <exclude>com.arcadedb:arcadedb-redisw</exclude>
+                <exclude>com.arcadedb:arcadedb-grpcw</exclude>
+                <exclude>com.arcadedb:arcadedb-graphql</exclude>
+                <exclude>com.arcadedb:arcadedb-metrics</exclude>
+            </excludes>
+        </dependencySet>
+        <!-- Plugin modules in separate directory -->
+        <dependencySet>
+            <!-- waiting for fix on query engine-->
+            <outputDirectory>lib</outputDirectory>
+<!--            <outputDirectory>lib/plugins</outputDirectory>-->
+            <includes>
+                <include>com.arcadedb:arcadedb-gremlin</include>
+                <include>com.arcadedb:arcadedb-bolt</include>
+                <include>com.arcadedb:arcadedb-postgresw</include>
+                <include>com.arcadedb:arcadedb-mongodbw</include>
+                <include>com.arcadedb:arcadedb-redisw</include>
+                <include>com.arcadedb:arcadedb-grpcw</include>
+                <include>com.arcadedb:arcadedb-graphql</include>
+                <include>com.arcadedb:arcadedb-metrics</include>
+            </includes>
+            <useTransitiveDependencies>false</useTransitiveDependencies>
         </dependencySet>
     </dependencySets>
 

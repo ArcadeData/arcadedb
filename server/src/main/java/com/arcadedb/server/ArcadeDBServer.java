@@ -40,6 +40,7 @@ import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -59,7 +60,15 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.logging.Level;
@@ -77,14 +86,13 @@ public class ArcadeDBServer {
   private             String                                hostAddress;
   private final       boolean                               replicationLifecycleEventsEnabled;
   private             FileServerEventLog                    eventLog;
-  private final       Map<String, ServerPlugin>             plugins                              =
-      new LinkedHashMap<>();
+  private final       Map<String, ServerPlugin>             plugins                              = new LinkedHashMap<>();
+  private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
   private             HAServer                              haServer;
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
-  private final       ConcurrentMap<String, ServerDatabase> databases                            =
-      new ConcurrentHashMap<>();
+  private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
 //  private             ServerMonitor                         serverMonitor;
@@ -139,8 +147,11 @@ public class ArcadeDBServer {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
+    // Discover plugins from lib/plugins directory
+    pluginManager.discoverPlugins();
+
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
-        GlobalConfiguration.SERVER_MODE.getValueAsString(), getPluginNames());
+        GlobalConfiguration.SERVER_MODE.getValueAsString(), getAllPluginNames());
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
@@ -171,7 +182,8 @@ public class ArcadeDBServer {
     // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
     httpServer = new HttpServer(this);
 
-    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.BEFORE_HTTP_ON);
+//    registerPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
+    pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
 
     httpServer.startService();
 
@@ -180,14 +192,14 @@ public class ArcadeDBServer {
       haServer.startService();
     }
 
-    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_HTTP_ON);
+    pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
     loadDefaultDatabases();
 
     // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
     loadDatabases();
 
-    registerPlugins(ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN);
+    pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
 
@@ -276,7 +288,17 @@ public class ArcadeDBServer {
     return result;
   }
 
-  private void registerPlugins(final ServerPlugin.INSTALLATION_PRIORITY installationPriority) {
+  private Set<String> getAllPluginNames() {
+    final Set<String> result = new LinkedHashSet<>();
+    // Add legacy plugins
+    result.addAll(getPluginNames());
+    // Add PluginManager plugins
+    if (pluginManager != null)
+      result.addAll(pluginManager.getPluginNames());
+    return result;
+  }
+
+  private void registerPlugins(final ServerPlugin.PluginInstallationPriority installationPriority) {
     final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
       final String[] pluginEntries = registeredPlugins.split(",");
@@ -308,7 +330,7 @@ public class ArcadeDBServer {
     }
 
     // Auto-register backup scheduler plugin if backup.json exists and not already registered
-    if (installationPriority == ServerPlugin.INSTALLATION_PRIORITY.AFTER_DATABASES_OPEN
+    if (installationPriority == ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN
         && !plugins.containsKey("auto-backup")) {
       registerAutoBackupPluginIfConfigured();
     }
@@ -354,6 +376,11 @@ public class ArcadeDBServer {
 
     status = STATUS.SHUTTING_DOWN;
 
+    // Stop plugins managed by PluginManager first
+    if (pluginManager != null)
+      pluginManager.stopPlugins();
+
+    // Stop legacy plugins
     for (final Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
       CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(),
@@ -395,7 +422,10 @@ public class ArcadeDBServer {
   }
 
   public Collection<ServerPlugin> getPlugins() {
-    return Collections.unmodifiableCollection(plugins.values());
+    final List<ServerPlugin> allPlugins = new ArrayList<>(plugins.values());
+    if (pluginManager != null)
+      allPlugins.addAll(pluginManager.getPlugins());
+    return Collections.unmodifiableCollection(allPlugins);
   }
 
   public ServerDatabase getDatabase(final String databaseName) {
@@ -502,7 +532,7 @@ public class ArcadeDBServer {
   }
 
   public ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
-                                    final boolean allowLoad) {
+      final boolean allowLoad) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
@@ -523,7 +553,7 @@ public class ArcadeDBServer {
 
         ComponentFile.MODE defaultDbMode =
             configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE,
-            ComponentFile.MODE.class);
+                ComponentFile.MODE.class);
         if (defaultDbMode == null)
           defaultDbMode = READ_WRITE;
 
@@ -620,46 +650,46 @@ public class ArcadeDBServer {
             final String commandParams = command.substring(commandSeparator + 1);
 
             switch (commandType) {
-              case "restore":
-                // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
-                if (database != null) {
-                  ((DatabaseInternal) database).getEmbedded().drop();
-                  databases.remove(dbName);
-                }
-                final String dbPath =
-                    configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
+            case "restore":
+              // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
+              if (database != null) {
+                ((DatabaseInternal) database).getEmbedded().drop();
+                databases.remove(dbName);
+              }
+              final String dbPath =
+                  configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
 //              new Restore(commandParams, dbPath).restoreDatabase();
 
-                try {
-                  final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-                  final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(commandParams,
-                      dbPath);
+              try {
+                final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+                final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(commandParams,
+                    dbPath);
 
-                  clazz.getMethod("restoreDatabase").invoke(restorer);
+                clazz.getMethod("restoreDatabase").invoke(restorer);
 
-                } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
-                               InstantiationException e) {
-                  throw new CommandExecutionException("Error on restoring database, restore libs not found in " +
-                      "classpath", e);
-                } catch (final InvocationTargetException e) {
-                  throw new CommandExecutionException("Error on restoring database", e.getTargetException());
-                }
+              } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
+                             InstantiationException e) {
+                throw new CommandExecutionException("Error on restoring database, restore libs not found in " +
+                    "classpath", e);
+              } catch (final InvocationTargetException e) {
+                throw new CommandExecutionException("Error on restoring database", e.getTargetException());
+              }
 
-                getDatabase(dbName);
-                break;
+              getDatabase(dbName);
+              break;
 
-              case "import":
-                if (database == null) {
-                  // CREATE THE DATABASE
-                  LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
-                  database = createDatabase(dbName, defaultDbMode);
-                }
-                database.command("sql", "import database " + commandParams);
-                break;
+            case "import":
+              if (database == null) {
+                // CREATE THE DATABASE
+                LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
+                database = createDatabase(dbName, defaultDbMode);
+              }
+              database.command("sql", "import database " + commandParams);
+              break;
 
-              default:
-                LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null
-                    , commandType);
+            default:
+              LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null
+                  , commandType);
             }
           }
         } else {
@@ -700,7 +730,7 @@ public class ArcadeDBServer {
               user = security.authenticate(userName, userPassword, dbName);
 
               // UPDATE DB LIST + GROUP
-              user.addDatabase(dbName, new String[]{userGroup});
+              user.addDatabase(dbName, new String[] { userGroup });
               security.saveUsers();
 
             } catch (final ServerSecurityException e) {
@@ -711,7 +741,7 @@ public class ArcadeDBServer {
             }
           } else {
             // UPDATE DB LIST
-            user.addDatabase(dbName, new String[]{userGroup});
+            user.addDatabase(dbName, new String[] { userGroup });
             security.saveUsers();
           }
         } else {
@@ -722,7 +752,7 @@ public class ArcadeDBServer {
 
           // UPDATE DB LIST + GROUP
           ServerSecurityUser user = security.getUser(userName);
-          user.addDatabase(dbName, new String[]{userGroup});
+          user.addDatabase(dbName, new String[] { userGroup });
           security.saveUsers();
         }
       }
@@ -745,6 +775,7 @@ public class ArcadeDBServer {
 
   private void init() {
     eventLog = new FileServerEventLog(this);
+    pluginManager = new PluginManager(this, configuration);
 
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       // Mark logger as shutting down to prevent NPE when handlers are closed (issue #2813)
