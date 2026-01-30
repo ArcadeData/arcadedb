@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
@@ -216,7 +217,7 @@ public enum PostgresType {
    * @param arcadeType The ArcadeDB schema type
    * @return The corresponding PostgreSQL type
    */
-  public static PostgresType getTypeFromArcade(com.arcadedb.schema.Type arcadeType) {
+  public static PostgresType getTypeFromArcade(Type arcadeType) {
     if (arcadeType == null) {
       return PostgresType.VARCHAR;
     }

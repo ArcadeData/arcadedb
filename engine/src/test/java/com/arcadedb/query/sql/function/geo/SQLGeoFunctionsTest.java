@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.function.geo;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.index.Index;
@@ -26,12 +28,17 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.Test;
 import org.locationtech.spatial4j.io.GeohashUtils;
 import org.locationtech.spatial4j.shape.Circle;
 import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
+
+import java.io.File;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -226,8 +233,8 @@ class SQLGeoFunctionsTest {
 
         // The geom field should contain the stored point (as WKT or nested result)
         // When using subquery, the result is a map containing the point
-        if (geom instanceof java.util.Map) {
-          final java.util.Map<?, ?> map = (java.util.Map<?, ?>) geom;
+        if (geom instanceof Map) {
+          final Map<?, ?> map = (Map<?, ?>) geom;
           assertThat(map.get("point")).isNotNull();
         }
       });
@@ -246,10 +253,10 @@ class SQLGeoFunctionsTest {
 
     try {
       // Clean up first
-      com.arcadedb.utility.FileUtils.deleteRecursively(new java.io.File(dbPath));
+      FileUtils.deleteRecursively(new File(dbPath));
 
       // Create database and insert data
-      try (com.arcadedb.database.Database db = new com.arcadedb.database.DatabaseFactory(dbPath).create()) {
+      try (Database db = new DatabaseFactory(dbPath).create()) {
         db.transaction(() -> {
           // Create the document type as described in the issue
           db.command("sql", "create document type GeoPoint");
@@ -260,7 +267,7 @@ class SQLGeoFunctionsTest {
       }
 
       // Reopen database to verify data was persisted correctly
-      try (com.arcadedb.database.Database db = new com.arcadedb.database.DatabaseFactory(dbPath).open()) {
+      try (Database db = new DatabaseFactory(dbPath).open()) {
         db.transaction(() -> {
           // Verify we can retrieve the stored value
           final ResultSet result = db.query("sql", "select from GeoPoint");
@@ -276,7 +283,7 @@ class SQLGeoFunctionsTest {
         });
       }
     } finally {
-      com.arcadedb.utility.FileUtils.deleteRecursively(new java.io.File(dbPath));
+      FileUtils.deleteRecursively(new File(dbPath));
     }
   }
 

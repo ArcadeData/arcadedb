@@ -804,6 +804,17 @@ download_optional_modules() {
 
   local extracted_dir="$TEMP_DIR/arcadedb-${ARCADEDB_VERSION}"
   local lib_dir="${extracted_dir}/lib"
+#  local plugins_dir="${extracted_dir}/lib/plugins"
+#
+#  # Create plugins directory if it doesn't exist
+#  if [[ "$DRY_RUN" != true ]]; then
+#    if [[ ! -d "$plugins_dir" ]]; then
+#      mkdir -p "$plugins_dir"
+#      log_verbose "Created plugins directory: $plugins_dir"
+#    fi
+#  else
+#    log_info "[DRY RUN] Would create plugins directory"
+#  fi
 
   # Split modules by comma
   IFS=',' read -ra modules <<<"$SELECTED_MODULES"
@@ -813,12 +824,17 @@ download_optional_modules() {
 
     # Determine if shaded or regular JAR
     local classifier=""
+#    local dest_dir="$lib_dir"
     if [[ " $SHADED_MODULES " =~ " $module " ]]; then
       classifier="-shaded"
+      # Shaded modules are plugins and go to lib/plugins/
+#      dest_dir="$plugins_dir"
     fi
 
     local artifact_id="arcadedb-${module}"
     local jar_filename="${artifact_id}-${ARCADEDB_VERSION}${classifier}.jar"
+#        local jar_file="${dest_dir}/${jar_filename}"
+
     local jar_file="${lib_dir}/${jar_filename}"
 
     if [[ -n "$LOCAL_REPO" ]]; then

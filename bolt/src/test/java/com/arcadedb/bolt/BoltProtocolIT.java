@@ -20,6 +20,8 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.test.BaseGraphServerTest;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.neo4j.driver.*;
@@ -35,6 +37,8 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import org.neo4j.driver.Record;
 
 /**
  * Integration tests for BOLT protocol using Neo4j Java driver.
@@ -77,7 +81,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run("RETURN 1 AS value");
         assertThat(result.hasNext()).isTrue();
-        final org.neo4j.driver.Record record = result.next();
+        final Record record = result.next();
         assertThat(record.get("value").asLong()).isEqualTo(1L);
         assertThat(result.hasNext()).isFalse();
       }
@@ -90,7 +94,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run("RETURN 'hello' AS greeting");
         assertThat(result.hasNext()).isTrue();
-        final org.neo4j.driver.Record record = result.next();
+        final Record record = result.next();
         assertThat(record.get("greeting").asString()).isEqualTo("hello");
       }
     }
@@ -105,7 +109,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
             Map.of("name", "Alice", "age", 30)
         );
         assertThat(result.hasNext()).isTrue();
-        final org.neo4j.driver.Record record = result.next();
+        final Record record = result.next();
         assertThat(record.get("name").asString()).isEqualTo("Alice");
         assertThat(record.get("age").asLong()).isEqualTo(30L);
       }
@@ -122,7 +126,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         // Match and return
         final Result result = session.run("MATCH (n:BoltPerson {name: 'Bob'}) RETURN n");
         assertThat(result.hasNext()).isTrue();
-        final org.neo4j.driver.Record record = result.next();
+        final Record record = result.next();
         final var node = record.get("n").asNode();
         assertThat(node.get("name").asString()).isEqualTo("Bob");
         assertThat(node.get("age").asLong()).isEqualTo(25L);
@@ -146,7 +150,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
             "MATCH (a:EdgePerson)-[r:KNOWS]->(b:EdgePerson) WHERE a.name = 'EdgeAlice' AND b.name = 'EdgeBob' RETURN r"
         );
         assertThat(result.hasNext()).isTrue();
-        final org.neo4j.driver.Record record = result.next();
+        final Record record = result.next();
         final var rel = record.get("r").asRelationship();
         assertThat(rel.type()).isEqualTo("KNOWS");
         assertThat(rel.get("since").asLong()).isEqualTo(2020L);
@@ -289,7 +293,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN true AS t, false AS f");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("t").asBoolean()).isTrue();
         assertThat(record.get("f").asBoolean()).isFalse();
       }
@@ -302,7 +306,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 3.14159 AS pi");
         assertThat(result.hasNext()).isTrue();
-        assertThat(result.next().get("pi").asDouble()).isCloseTo(3.14159, org.assertj.core.data.Offset.offset(0.00001));
+        assertThat(result.next().get("pi").asDouble()).isCloseTo(3.14159, Offset.offset(0.00001));
       }
     }
   }
@@ -315,7 +319,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN -42 AS negative, -1000000 AS bigNegative");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("negative").asLong()).isEqualTo(-42L);
         assertThat(record.get("bigNegative").asLong()).isEqualTo(-1000000L);
       }
@@ -329,7 +333,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         // Test with large integers that require different encoding sizes
         Result result = session.run("RETURN 127 AS tiny, 32767 AS small, 2147483647 AS medium, 9223372036854775807 AS large");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("tiny").asLong()).isEqualTo(127L);
         assertThat(record.get("small").asLong()).isEqualTo(32767L);
         assertThat(record.get("medium").asLong()).isEqualTo(2147483647L);
@@ -344,7 +348,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN '你好世界' AS chinese, 'Привет' AS russian, '🌍🚀' AS emoji");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("chinese").asString()).isEqualTo("你好世界");
         assertThat(record.get("russian").asString()).isEqualTo("Привет");
         assertThat(record.get("emoji").asString()).isEqualTo("🌍🚀");
@@ -395,7 +399,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 1 AS a, 2 AS b, 3 AS c, 4 AS d, 5 AS e");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("a").asLong()).isEqualTo(1L);
         assertThat(record.get("b").asLong()).isEqualTo(2L);
         assertThat(record.get("c").asLong()).isEqualTo(3L);
@@ -517,7 +521,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 10 + 5 AS sum, 10 - 5 AS diff, 10 * 5 AS product, 10 / 5 AS quotient");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("sum").asLong()).isEqualTo(15L);
         assertThat(record.get("diff").asLong()).isEqualTo(5L);
         assertThat(record.get("product").asLong()).isEqualTo(50L);
@@ -533,7 +537,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         // Test string concatenation which is supported
         Result result = session.run("RETURN 'hello' + ' ' + 'world' AS greeting");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("greeting").asString()).isEqualTo("hello world");
       }
     }
@@ -605,7 +609,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         var node = result.next().get("n").asNode();
         assertThat(node.get("stringProp").asString()).isEqualTo("hello");
         assertThat(node.get("intProp").asLong()).isEqualTo(42L);
-        assertThat(node.get("floatProp").asDouble()).isCloseTo(3.14, org.assertj.core.data.Offset.offset(0.001));
+        assertThat(node.get("floatProp").asDouble()).isCloseTo(3.14, Offset.offset(0.001));
         assertThat(node.get("boolProp").asBoolean()).isTrue();
         assertThat(node.get("listProp").asList()).containsExactly(1L, 2L, 3L);
       }
@@ -623,7 +627,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
             "MATCH (a:NodeA)-[r:LINKS]->(b:NodeB) RETURN a, r, b"
         );
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
 
         var nodeA = record.get("a").asNode();
         var rel = record.get("r").asRelationship();
@@ -705,7 +709,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 1 AS a, null AS b, 'text' AS c, null AS d");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("a").asLong()).isEqualTo(1L);
         assertThat(record.get("b").isNull()).isTrue();
         assertThat(record.get("c").asString()).isEqualTo("text");
@@ -762,7 +766,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         Result result = session.run("RETURN 0 AS zero, 0.0 AS zeroFloat");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("zero").asLong()).isEqualTo(0L);
         assertThat(record.get("zeroFloat").asDouble()).isEqualTo(0.0);
       }
@@ -776,9 +780,9 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         // Test very small float value
         Result result = session.run("RETURN 0.000001 AS small, -0.000001 AS negSmall");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
-        assertThat(record.get("small").asDouble()).isCloseTo(0.000001, org.assertj.core.data.Offset.offset(0.0000001));
-        assertThat(record.get("negSmall").asDouble()).isCloseTo(-0.000001, org.assertj.core.data.Offset.offset(0.0000001));
+        Record record = result.next();
+        assertThat(record.get("small").asDouble()).isCloseTo(0.000001, Offset.offset(0.0000001));
+        assertThat(record.get("negSmall").asDouble()).isCloseTo(-0.000001, Offset.offset(0.0000001));
       }
     }
   }
@@ -790,7 +794,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         // Test large float value
         Result result = session.run("RETURN 1.0E100 AS large, -1.0E100 AS negLarge");
         assertThat(result.hasNext()).isTrue();
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         assertThat(record.get("large").asDouble()).isEqualTo(1.0E100);
         assertThat(record.get("negLarge").asDouble()).isEqualTo(-1.0E100);
       }
@@ -1019,7 +1023,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         Result result = session.run("MATCH p = (a:PathNode {name: 'start'})-[r:CONNECTS_TO]->(b:PathNode {name: 'end'}) RETURN p");
         assertThat(result.hasNext()).isTrue();
 
-        org.neo4j.driver.Record record = result.next();
+        Record record = result.next();
         // Note: Path support depends on OpenCypher implementation
         // At minimum, verify the query doesn't throw an error
         assertThat(record).isNotNull();

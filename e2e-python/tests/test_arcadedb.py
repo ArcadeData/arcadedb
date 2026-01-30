@@ -31,7 +31,7 @@ arcadedb = (DockerContainer("arcadedata/arcadedb:latest")
             .with_env("JAVA_OPTS",
                       "-Darcadedb.server.rootPassword=playwithdata "
                       "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
-                      "-Darcadedb.server.plugins=Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin,PrometheusMetrics:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin"))
+                      "-Darcadedb.server.plugins=PostgresProtocolPlugin,GremlinServerPlugin,PrometheusMetricsPlugin"))
 
 
 def get_connection_params(container):

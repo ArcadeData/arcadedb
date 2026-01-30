@@ -34,6 +34,7 @@
         <logback-classic.version>1.5.25</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
         <assertj-db.version>3.0.1</assertj-db.version>
+        <neo4j-driver.version>5.27.0</neo4j-driver.version>
     </properties>
 
     <artifactId>arcadedb-e2e</artifactId>
@@ -104,6 +105,12 @@
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
             <version>${logback-classic.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.neo4j.driver</groupId>
+            <artifactId>neo4j-java-driver</artifactId>
+            <version>${neo4j-driver.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

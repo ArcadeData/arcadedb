@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.functions.text;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Arrays;
+import java.util.IllegalFormatException;
 
 /**
  * text.format(format, args...) - Format string with arguments.
@@ -60,7 +61,7 @@ public class TextFormat extends AbstractTextFunction {
     final Object[] formatArgs = Arrays.copyOfRange(args, 1, args.length);
     try {
       return String.format(format, formatArgs);
-    } catch (final java.util.IllegalFormatException e) {
+    } catch (final IllegalFormatException e) {
       throw new IllegalArgumentException("Invalid format string: " + e.getMessage(), e);
     }
   }
