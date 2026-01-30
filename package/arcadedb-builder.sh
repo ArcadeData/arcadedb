@@ -833,7 +833,9 @@ download_optional_modules() {
 
     local artifact_id="arcadedb-${module}"
     local jar_filename="${artifact_id}-${ARCADEDB_VERSION}${classifier}.jar"
-    local jar_file="${dest_dir}/${jar_filename}"
+#        local jar_file="${dest_dir}/${jar_filename}"
+
+    local jar_file="${lib_dir}/${jar_filename}"
 
     if [[ -n "$LOCAL_REPO" ]]; then
       # Local repository mode
