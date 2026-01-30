@@ -29,6 +29,8 @@ import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
@@ -75,6 +77,21 @@ class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
       assertThat(result.hasNext()).isTrue();
       final org.neo4j.driver.Record record = result.next();
       assertThat(record.get("name").asString()).isNotBlank();
+      assertThat(result.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void parameterizedQuery() {
+    try (Session session = driver.session(SessionConfig.forDatabase("beer"))) {
+      final Result result = session.run(
+          "RETURN $name AS name, $value AS value",
+          Map.of("name", "test", "value", 42)
+      );
+      assertThat(result.hasNext()).isTrue();
+      final org.neo4j.driver.Record record = result.next();
+      assertThat(record.get("name").asString()).isEqualTo("test");
+      assertThat(record.get("value").asLong()).isEqualTo(42L);
       assertThat(result.hasNext()).isFalse();
     }
   }
