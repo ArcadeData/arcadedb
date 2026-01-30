@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -87,13 +88,17 @@ public class PatternPredicateExpression implements BooleanExpression {
     final NodePattern endNodePattern = pathPattern.getNode(1);
     final Vertex endVertex = getVertexFromPattern(endNodePattern, result);
 
+    // Get target node labels (if specified) for filtering
+    final List<String> targetLabels = endNodePattern != null ? endNodePattern.getLabels() : null;
+
     // Check if the pattern exists
     if (endVertex != null) {
       // We have a specific end node - check if relationship exists between them
       return checkRelationshipExists(startVertex, endVertex, relationshipTypes, isOutgoing, isIncoming);
     } else {
       // No specific end node - check if any relationship of the specified type exists
-      return checkAnyRelationshipExists(startVertex, relationshipTypes, isOutgoing, isIncoming);
+      // Also filter by target node labels if specified
+      return checkAnyRelationshipExists(startVertex, relationshipTypes, targetLabels, isOutgoing, isIncoming);
     }
   }
 
@@ -168,10 +173,12 @@ public class PatternPredicateExpression implements BooleanExpression {
 
   /**
    * Check if any relationship of the specified type exists from the start vertex.
+   * Also filters by target node labels if specified.
    */
   private boolean checkAnyRelationshipExists(
       final Vertex startVertex,
       final String[] relationshipTypes,
+      final List<String> targetLabels,
       final boolean isOutgoing,
       final boolean isIncoming
   ) {
@@ -184,8 +191,10 @@ public class PatternPredicateExpression implements BooleanExpression {
         outEdges = startVertex.getEdges(Vertex.DIRECTION.OUT).iterator();
       }
 
-      if (outEdges.hasNext()) {
-        return true;
+      while (outEdges.hasNext()) {
+        final Edge edge = outEdges.next();
+        if (matchesTargetLabels(edge.getInVertex(), targetLabels))
+          return true;
       }
     }
 
@@ -198,12 +207,30 @@ public class PatternPredicateExpression implements BooleanExpression {
         inEdges = startVertex.getEdges(Vertex.DIRECTION.IN).iterator();
       }
 
-      if (inEdges.hasNext()) {
-        return true;
+      while (inEdges.hasNext()) {
+        final Edge edge = inEdges.next();
+        if (matchesTargetLabels(edge.getOutVertex(), targetLabels))
+          return true;
       }
     }
 
     return false;
+  }
+
+  /**
+   * Check if a vertex matches the target labels.
+   * If no labels are specified, returns true (matches any vertex).
+   */
+  private boolean matchesTargetLabels(final Vertex vertex, final List<String> targetLabels) {
+    if (targetLabels == null || targetLabels.isEmpty())
+      return true;
+
+    // Check if vertex has ALL the specified labels (AND semantics)
+    for (final String label : targetLabels) {
+      if (!Labels.hasLabel(vertex, label))
+        return false;
+    }
+    return true;
   }
 
   @Override
