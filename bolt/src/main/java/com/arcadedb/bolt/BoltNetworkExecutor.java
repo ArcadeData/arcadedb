@@ -20,12 +20,22 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.bolt.message.*;
+import com.arcadedb.bolt.message.BeginMessage;
+import com.arcadedb.bolt.message.BoltMessage;
+import com.arcadedb.bolt.message.DiscardMessage;
+import com.arcadedb.bolt.message.FailureMessage;
+import com.arcadedb.bolt.message.HelloMessage;
+import com.arcadedb.bolt.message.IgnoredMessage;
+import com.arcadedb.bolt.message.LogonMessage;
+import com.arcadedb.bolt.message.PullMessage;
+import com.arcadedb.bolt.message.RecordMessage;
+import com.arcadedb.bolt.message.RouteMessage;
+import com.arcadedb.bolt.message.RunMessage;
+import com.arcadedb.bolt.message.SuccessMessage;
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
@@ -38,8 +48,16 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.SocketException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
+
+import static com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep.PROJECTION_NAME_METADATA;
 
 /**
  * Handles a single BOLT protocol connection.
@@ -72,11 +90,11 @@ public class BoltNetworkExecutor extends Thread {
   private final boolean             debug;
   private final BoltNetworkListener listener; // For notifying when connection closes
 
-  private State             state = State.DISCONNECTED;
-  private int               protocolVersion;
+  private State              state = State.DISCONNECTED;
+  private int                protocolVersion;
   private ServerSecurityUser user;
-  private Database          database;
-  private String            databaseName;
+  private Database           database;
+  private String             databaseName;
 
   // Transaction state
   private boolean explicitTransaction = false;
@@ -86,15 +104,16 @@ public class BoltNetworkExecutor extends Thread {
    * Thread-safety: This class is designed to handle a single connection in a dedicated thread.
    * All state variables are accessed only by the executor thread and do not require synchronization.
    */
-  private ResultSet      currentResultSet;
-  private List<String>   currentFields;
-  private Result         firstResult; // Buffered first result for field name extraction
-  private int            recordsStreamed;
-  private long           queryStartTime; // Nanosecond timestamp when query execution started
-  private long           firstRecordTime; // Nanosecond timestamp when first record was retrieved
-  private boolean        isWriteOperation; // Whether the current query performs writes
+  private ResultSet    currentResultSet;
+  private List<String> currentFields;
+  private Result       firstResult; // Buffered first result for field name extraction
+  private int          recordsStreamed;
+  private long         queryStartTime; // Nanosecond timestamp when query execution started
+  private long         firstRecordTime; // Nanosecond timestamp when first record was retrieved
+  private boolean      isWriteOperation; // Whether the current query performs writes
 
-  public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener) throws IOException {
+  public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener)
+      throws IOException {
     super("BOLT-" + socket.getRemoteSocketAddress());
     this.server = server;
     this.socket = socket;
@@ -128,7 +147,8 @@ public class BoltNetworkExecutor extends Thread {
           final Object value = reader.readValue();
 
           if (!(value instanceof PackStreamReader.StructureValue structure)) {
-            sendFailure(BoltException.PROTOCOL_ERROR, "Expected structure, got: " + (value != null ? value.getClass().getSimpleName() : "null"));
+            sendFailure(BoltException.PROTOCOL_ERROR,
+                "Expected structure, got: " + (value != null ? value.getClass().getSimpleName() : "null"));
             continue;
           }
 
@@ -195,7 +215,8 @@ public class BoltNetworkExecutor extends Thread {
           break;
         }
       }
-      if (protocolVersion != 0) break;
+      if (protocolVersion != 0)
+        break;
     }
 
     // Send selected version
@@ -487,11 +508,7 @@ public class BoltNetworkExecutor extends Thread {
 
       // First, return the buffered first result if present
       if (firstResult != null && (n < 0 || count < n)) {
-        final List<Object> values = new ArrayList<>();
-        for (final String field : currentFields) {
-          final Object value = firstResult.getProperty(field);
-          values.add(BoltStructureMapper.toPackStreamValue(value));
-        }
+        final List<Object> values = extractRecordValues(firstResult);
         sendRecord(values);
         count++;
         recordsStreamed++;
@@ -501,12 +518,7 @@ public class BoltNetworkExecutor extends Thread {
       // Then continue with the rest of the result set
       while (currentResultSet.hasNext() && (n < 0 || count < n)) {
         final Result record = currentResultSet.next();
-        final List<Object> values = new ArrayList<>();
-
-        for (final String field : currentFields) {
-          final Object value = record.getProperty(field);
-          values.add(BoltStructureMapper.toPackStreamValue(value));
-        }
+        final List<Object> values = extractRecordValues(record);
 
         sendRecord(values);
         count++;
@@ -794,6 +806,9 @@ public class BoltNetworkExecutor extends Thread {
   /**
    * Extract field names from result set by peeking at the first result.
    * The first result is buffered and will be returned first during PULL.
+   * <p>
+   * For single-element results (e.g., RETURN n), the projection name is stored
+   * in metadata by FinalProjectionStep and used here to preserve field names.
    */
   private List<String> extractFieldNames(final ResultSet resultSet) {
     if (resultSet == null) {
@@ -804,11 +819,48 @@ public class BoltNetworkExecutor extends Thread {
     if (resultSet.hasNext()) {
       firstResult = resultSet.next();
       firstRecordTime = System.nanoTime(); // Capture time when first record is available
+
+      // Check if this is an unwrapped element with a projection name in metadata
+      // This happens for queries like "MATCH (n) RETURN n" where the vertex is
+      // returned directly but we need to preserve the field name "n" for Bolt protocol
+      if (firstResult.isElement()) {
+        final Object projectionName = firstResult.getMetadata(PROJECTION_NAME_METADATA);
+        if (projectionName instanceof String name) {
+          return List.of(name);
+        }
+      }
+
       final Set<String> propertyNames = firstResult.getPropertyNames();
       return propertyNames != null ? new ArrayList<>(propertyNames) : List.of();
     }
 
     return List.of();
+  }
+
+  /**
+   * Extract values from a result for sending as a BOLT RECORD.
+   * Handles both projection results and element results.
+   * <p>
+   * For element results (e.g., RETURN n where n is a vertex), the whole element
+   * is returned as a single value, converted to BoltNode/BoltRelationship.
+   */
+  private List<Object> extractRecordValues(final Result result) {
+    final List<Object> values = new ArrayList<>();
+
+    // Check if this is an unwrapped element result
+    // (single vertex/edge returned directly from RETURN clause)
+    if (result.isElement() && result.getMetadata(PROJECTION_NAME_METADATA) != null) {
+      // Return the element as a single value
+      values.add(BoltStructureMapper.toPackStreamValue(result.getElement().orElse(null)));
+    } else {
+      // Standard projection result - extract each field
+      for (final String field : currentFields) {
+        final Object value = result.getProperty(field);
+        values.add(BoltStructureMapper.toPackStreamValue(value));
+      }
+    }
+
+    return values;
   }
 
   /**
@@ -827,7 +879,7 @@ public class BoltNetworkExecutor extends Thread {
       // Log at FINE level to avoid spam for complex but valid queries
       LogManager.instance().log(this, Level.FINE,
           "Query analysis failed for: " + (query.length() > 100 ? query.substring(0, 100) + "..." : query) +
-          " - assuming write operation", e);
+              " - assuming write operation", e);
       return true;
     }
   }
@@ -842,9 +894,11 @@ public class BoltNetworkExecutor extends Thread {
   /**
    * Authenticate user with provided credentials.
    *
-   * @param principal the username
+   * @param principal   the username
    * @param credentials the password
+   *
    * @return true if authentication succeeded, false otherwise (failure already sent)
+   *
    * @throws IOException if sending failure message fails
    */
   private boolean authenticateUser(final String principal, final String credentials) throws IOException {

@@ -114,10 +114,17 @@ public class FinalProjectionStep extends AbstractExecutionStep {
   }
 
   /**
+   * Metadata key for storing the projection name when unwrapping single-element results.
+   * This allows wire protocols (like Bolt) to correctly format responses with field names.
+   */
+  public static final String PROJECTION_NAME_METADATA = "_projectionName";
+
+  /**
    * Filters the result to only include the requested properties.
    * When the result contains a single property that is a Document (vertex/edge),
    * returns it as an element result directly, matching the behavior of the
-   * Gremlin-based Cypher engine.
+   * Gremlin-based Cypher engine. The original projection name is stored in metadata
+   * for wire protocols that need field names.
    */
   private ResultInternal filterResult(final Result inputResult) {
     // When returning a single variable that resolves to an element (vertex/edge),
@@ -128,7 +135,10 @@ public class FinalProjectionStep extends AbstractExecutionStep {
       if (inputResult.hasProperty(singleProp)) {
         final Object value = inputResult.getProperty(singleProp);
         if (value instanceof Document doc) {
-          return new ResultInternal(doc);
+          final ResultInternal result = new ResultInternal(doc);
+          // Store the original projection name for wire protocols (Bolt, HTTP, etc.)
+          result.setMetadata(PROJECTION_NAME_METADATA, singleProp);
+          return result;
         }
       }
     }
