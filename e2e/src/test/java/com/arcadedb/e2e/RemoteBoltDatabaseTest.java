@@ -25,6 +25,7 @@ import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Config;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
+import org.neo4j.driver.Record;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
@@ -64,7 +65,7 @@ class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
     try (Session session = driver.session(SessionConfig.forDatabase("beer"))) {
       final Result result = session.run("RETURN 1 AS value");
       assertThat(result.hasNext()).isTrue();
-      final org.neo4j.driver.Record record = result.next();
+      final Record record = result.next();
       assertThat(record.get("value").asLong()).isEqualTo(1L);
       assertThat(result.hasNext()).isFalse();
     }
@@ -75,7 +76,7 @@ class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
     try (Session session = driver.session(SessionConfig.forDatabase("beer"))) {
       final Result result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1");
       assertThat(result.hasNext()).isTrue();
-      final org.neo4j.driver.Record record = result.next();
+      final Record record = result.next();
       assertThat(record.get("name").asString()).isNotBlank();
       assertThat(result.hasNext()).isFalse();
     }
@@ -89,7 +90,7 @@ class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
           Map.of("name", "test", "value", 42)
       );
       assertThat(result.hasNext()).isTrue();
-      final org.neo4j.driver.Record record = result.next();
+      final Record record = result.next();
       assertThat(record.get("name").asString()).isEqualTo("test");
       assertThat(record.get("value").asLong()).isEqualTo(42L);
       assertThat(result.hasNext()).isFalse();
