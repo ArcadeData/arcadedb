@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep.PROJECTION_NAME_METADATA;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -163,7 +164,7 @@ class CypherResultFormatTest {
     assertThat(results).hasSize(2);
     for (final Result r : results) {
       assertThat(r.isElement()).isTrue();
-      assertThat(r.getMetadata("_projectionName")).isEqualTo("n");
+      assertThat(r.getMetadata(PROJECTION_NAME_METADATA)).isEqualTo("n");
     }
   }
 }
