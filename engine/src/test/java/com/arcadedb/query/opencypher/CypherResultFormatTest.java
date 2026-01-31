@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep.PROJECTION_NAME_METADATA;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -149,5 +150,21 @@ class CypherResultFormatTest {
 
     assertThat(results).hasSize(1);
     assertThat(results.getFirst().isProjection()).as("Count result should be a projection").isTrue();
+  }
+
+  @Test
+  void singleNodeHasProjectionNameMetadata() {
+    // RETURN n should have _projectionName metadata for wire protocols
+    final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n");
+    final List<Result> results = new ArrayList<>();
+    while (result.hasNext()) {
+      results.add(result.next());
+    }
+
+    assertThat(results).hasSize(2);
+    for (final Result r : results) {
+      assertThat(r.isElement()).isTrue();
+      assertThat(r.getMetadata(PROJECTION_NAME_METADATA)).isEqualTo("n");
+    }
   }
 }

@@ -321,19 +321,21 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
         for (int i = 0; i < 100; i++) {
           st.execute("{opencypher} MATCH (n) DETACH DELETE n;");
-          st.execute("{opencypher} CREATE (james:PersonVertex {name: \"James\", height: 1.9});");
-          st.execute("{opencypher} CREATE (henry:PersonVertex {name: \"Henry\"});");
+          st.execute("""
+              {opencypher} CREATE (james:PersonVertex {name: "James", height: 1.9});""");
+          st.execute("""
+              {opencypher} CREATE (henry:PersonVertex {name: "Henry"});""");
 
-          var rs = st.executeQuery("{opencypher} MATCH (person:PersonVertex) RETURN person.name, person.height;");
+          var rs = st.executeQuery("{opencypher} MATCH (person:PersonVertex) RETURN person.name AS name, person.height AS height;");
 
           int numberOfPeople = 0;
           while (rs.next()) {
-            assertThat(rs.getString(1)).isNotNull();
+            assertThat(rs.getString("name")).isNotNull();
 
-            if (rs.getString(1).equals("James"))
-              assertThat(rs.getFloat(2)).isEqualTo(1.9F);
-            else if (rs.getString(1).equals("Henry"))
-              assertThat(rs.getString(2)).isNull();
+            if (rs.getString("name").equals("James"))
+              assertThat(rs.getFloat("height")).isEqualTo(1.9F);
+            else if (rs.getString("name").equals("Henry"))
+              assertThat(rs.getString("height")).isNull();
             else
               fail("");
 
