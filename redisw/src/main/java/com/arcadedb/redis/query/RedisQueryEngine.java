@@ -69,8 +69,7 @@ import java.util.regex.*;
 public class RedisQueryEngine implements QueryEngine {
   public static final String ENGINE_NAME = "redis";
 
-  private final DatabaseInternal    database;
-  private final Map<String, Object> defaultBucket = new HashMap<>();
+  private final DatabaseInternal database;
 
   // Pattern to parse Redis commands - handles quoted strings and JSON
   private static final Pattern COMMAND_PATTERN = Pattern.compile("(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})|\"([^\"]*)\"|'([^']*)'|(\\S+)");
@@ -301,7 +300,7 @@ public class RedisQueryEngine implements QueryEngine {
     }
     final String key = parts.get(1);
     final String value = parts.get(2);
-    defaultBucket.put(key, value);
+    database.setGlobalVariable(key, value);
     return "OK";
   }
 
@@ -309,14 +308,16 @@ public class RedisQueryEngine implements QueryEngine {
     if (parts.size() < 2) {
       throw new CommandParsingException("GET requires a key: GET <key>");
     }
-    return defaultBucket.get(parts.get(1));
+    return database.getGlobalVariable(parts.get(1));
   }
 
   private Object getDel(final List<String> parts) {
     if (parts.size() < 2) {
       throw new CommandParsingException("GETDEL requires a key: GETDEL <key>");
     }
-    return defaultBucket.remove(parts.get(1));
+    final String key = parts.get(1);
+    // Use setGlobalVariable which atomically returns the previous value
+    return database.setGlobalVariable(key, null);
   }
 
   private int exists(final List<String> parts) {
@@ -325,7 +326,7 @@ public class RedisQueryEngine implements QueryEngine {
     }
     int count = 0;
     for (int i = 1; i < parts.size(); i++) {
-      if (defaultBucket.containsKey(parts.get(i))) {
+      if (database.getGlobalVariable(parts.get(i)) != null) {
         count++;
       }
     }
@@ -344,7 +345,7 @@ public class RedisQueryEngine implements QueryEngine {
       increment = 1;
     }
 
-    Object current = defaultBucket.get(key);
+    Object current = database.getGlobalVariable(key);
     if (current == null) {
       current = 0L;
     } else if (!(current instanceof Number)) {
@@ -356,7 +357,7 @@ public class RedisQueryEngine implements QueryEngine {
     }
 
     final Number newValue = Type.increment((Number) current, increment);
-    defaultBucket.put(key, newValue);
+    database.setGlobalVariable(key, newValue);
     return newValue;
   }
 
@@ -367,7 +368,7 @@ public class RedisQueryEngine implements QueryEngine {
     final String key = parts.get(1);
     final int decrement = parts.size() > 2 ? Integer.parseInt(parts.get(2)) : 1;
 
-    Object current = defaultBucket.get(key);
+    Object current = database.getGlobalVariable(key);
     if (current == null) {
       current = 0L;
     } else if (!(current instanceof Number)) {
@@ -379,7 +380,7 @@ public class RedisQueryEngine implements QueryEngine {
     }
 
     final Number newValue = Type.decrement((Number) current, decrement);
-    defaultBucket.put(key, newValue);
+    database.setGlobalVariable(key, newValue);
     return newValue;
   }
 

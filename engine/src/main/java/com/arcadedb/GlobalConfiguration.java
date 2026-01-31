@@ -534,6 +534,9 @@ public enum GlobalConfiguration {
   REDIS_HOST("arcadedb.redis.host", SCOPE.SERVER,
       "TCP/IP host name used for incoming connections for Redis plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
 
+  REDIS_DEFAULT_DATABASE("arcadedb.redis.defaultDatabase", SCOPE.SERVER,
+      "Default database name for Redis protocol connections. If set, RAM commands (SET, GET, etc.) will use this database's globalVariables. Empty means no default (requires SELECT command or key prefix)", String.class, ""),
+
   // MONGO
   MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Mongo plugin. Default is 27017", Integer.class, 27017),
