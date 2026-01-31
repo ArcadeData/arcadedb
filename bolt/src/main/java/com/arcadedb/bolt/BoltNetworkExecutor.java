@@ -487,11 +487,7 @@ public class BoltNetworkExecutor extends Thread {
 
       // First, return the buffered first result if present
       if (firstResult != null && (n < 0 || count < n)) {
-        final List<Object> values = new ArrayList<>();
-        for (final String field : currentFields) {
-          final Object value = firstResult.getProperty(field);
-          values.add(BoltStructureMapper.toPackStreamValue(value));
-        }
+        final List<Object> values = extractRecordValues(firstResult);
         sendRecord(values);
         count++;
         recordsStreamed++;
@@ -501,12 +497,7 @@ public class BoltNetworkExecutor extends Thread {
       // Then continue with the rest of the result set
       while (currentResultSet.hasNext() && (n < 0 || count < n)) {
         final Result record = currentResultSet.next();
-        final List<Object> values = new ArrayList<>();
-
-        for (final String field : currentFields) {
-          final Object value = record.getProperty(field);
-          values.add(BoltStructureMapper.toPackStreamValue(value));
-        }
+        final List<Object> values = extractRecordValues(record);
 
         sendRecord(values);
         count++;
@@ -794,6 +785,9 @@ public class BoltNetworkExecutor extends Thread {
   /**
    * Extract field names from result set by peeking at the first result.
    * The first result is buffered and will be returned first during PULL.
+   *
+   * For single-element results (e.g., RETURN n), the projection name is stored
+   * in metadata by FinalProjectionStep and used here to preserve field names.
    */
   private List<String> extractFieldNames(final ResultSet resultSet) {
     if (resultSet == null) {
@@ -804,11 +798,48 @@ public class BoltNetworkExecutor extends Thread {
     if (resultSet.hasNext()) {
       firstResult = resultSet.next();
       firstRecordTime = System.nanoTime(); // Capture time when first record is available
+
+      // Check if this is an unwrapped element with a projection name in metadata
+      // This happens for queries like "MATCH (n) RETURN n" where the vertex is
+      // returned directly but we need to preserve the field name "n" for Bolt protocol
+      if (firstResult.isElement()) {
+        final Object projectionName = firstResult.getMetadata("_projectionName");
+        if (projectionName instanceof String name) {
+          return List.of(name);
+        }
+      }
+
       final Set<String> propertyNames = firstResult.getPropertyNames();
       return propertyNames != null ? new ArrayList<>(propertyNames) : List.of();
     }
 
     return List.of();
+  }
+
+  /**
+   * Extract values from a result for sending as a BOLT RECORD.
+   * Handles both projection results and element results.
+   *
+   * For element results (e.g., RETURN n where n is a vertex), the whole element
+   * is returned as a single value, converted to BoltNode/BoltRelationship.
+   */
+  private List<Object> extractRecordValues(final Result result) {
+    final List<Object> values = new ArrayList<>();
+
+    // Check if this is an unwrapped element result
+    // (single vertex/edge returned directly from RETURN clause)
+    if (result.isElement() && result.getMetadata("_projectionName") != null) {
+      // Return the element as a single value
+      values.add(BoltStructureMapper.toPackStreamValue(result.getElement().orElse(null)));
+    } else {
+      // Standard projection result - extract each field
+      for (final String field : currentFields) {
+        final Object value = result.getProperty(field);
+        values.add(BoltStructureMapper.toPackStreamValue(value));
+      }
+    }
+
+    return values;
   }
 
   /**
