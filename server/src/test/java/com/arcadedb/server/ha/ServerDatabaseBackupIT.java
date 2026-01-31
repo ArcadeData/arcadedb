@@ -25,13 +25,18 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import java.io.*;
+import java.io.File;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("ha")
 public class ServerDatabaseBackupIT extends BaseGraphServerTest {
+
   @Override
   protected int getServerCount() {
     return 3;
@@ -53,7 +58,11 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)  // Backup operations are I/O intensive
   void sqlBackup() {
+    // Ensure cluster is stable before backup operations
+    waitForClusterStable(getServerCount());
+
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 
@@ -71,7 +80,11 @@ public class ServerDatabaseBackupIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)  // Backup operations are I/O intensive
   void sqlScriptBackup() {
+    // Ensure cluster is stable before backup operations
+    waitForClusterStable(getServerCount());
+
     for (int i = 0; i < getServerCount(); i++) {
       final Database database = getServer(i).getDatabase(getDatabaseName());
 

@@ -18,15 +18,17 @@
  */
 package com.arcadedb.server.ha;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
-import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.LocalSchema;
@@ -44,44 +46,53 @@ import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 public class Replica2LeaderNetworkExecutor extends Thread {
   private final    HAServer            server;
-  private          String              host;
-  private          int                 port;
-  private          String              leaderServerName             = "?";
+  private HAServer.ServerInfo leader;
   private          String              leaderServerHTTPAddress;
   private          ChannelBinaryClient channel;
   private volatile boolean             shutdown                     = false;
+  private volatile boolean             connectInProgress            = false;
   private final    Object              channelOutputLock            = new Object();
   private final    Object              channelInputLock             = new Object();
   private          long                installDatabaseLastLogNumber = -1;
+  private volatile boolean             forceFullResync              = false;
 
-  public Replica2LeaderNetworkExecutor(final HAServer ha, final String host, final int port) {
+  public Replica2LeaderNetworkExecutor(final HAServer ha, HAServer.ServerInfo leader) {
     this.server = ha;
-    this.host = host;
-    this.port = port;
+    this.leader = leader;
     connect();
   }
 
   @Override
   public void run() {
     LogManager.instance().setContext(server.getServer().getServerName());
+    LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: run() thread started, entering message processing loop");
 
     // REUSE THE SAME BUFFER TO AVOID MALLOC
     final Binary buffer = new Binary(8192);
     buffer.setAllocationChunkSize(1024);
+    LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: Buffer created, about to enter while loop");
 
     long lastReqId = -1;
 
     while (!shutdown) {
       long reqId = -1;
       try {
+        LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: Waiting to receive message from leader...");
         final byte[] requestBytes = receiveResponse();
+        LogManager.instance().log(this, Level.INFO, "DIAGNOSTIC: Received message bytes, length=%d", requestBytes.length);
 
         if (shutdown)
           break;
@@ -106,7 +117,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
               .log(this, Level.FINE, "Received request %d from the Leader (threadId=%d)", reqId, Thread.currentThread().threadId());
         else
           LogManager.instance()
-              .log(this, Level.FINE, "Received response %d from the Leader (threadId=%d)", reqId, Thread.currentThread().threadId());
+              .log(this, Level.FINE, "Received response %d from the Leader (threadId=%d)", reqId,
+                  Thread.currentThread().threadId());
 
         // NUMBERS <0 ARE FORWARD FROM REPLICA TO LEADER WITHOUT A VALID SEQUENCE
         if (reqId > -1) {
@@ -119,7 +131,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             continue;
           }
 
-          if (!server.getReplicationLogFile().checkMessageOrder(message)) {
+          if (server.getReplicationLogFile().isWrongMessageOrder(message)) {
             // SKIP
             closeChannel();
             connect();
@@ -131,10 +143,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         if (installDatabaseLastLogNumber > -1 && request.getSecond() instanceof TxRequest)
           ((TxRequest) request.getSecond()).installDatabaseLastLogNumber = installDatabaseLastLogNumber;
 
-        // TODO: LOG THE TX BEFORE EXECUTING TO RECOVER THE DB IN CASE OF CRASH
-
-        final HACommand response = request.getSecond().execute(server, leaderServerName, reqId);
-
+        // WAL SEMANTICS: Log the message BEFORE executing to ensure durability.
+        // If the replica crashes after logging but before executing, the message
+        // can be replayed on restart. This matches the leader's behavior.
         if (reqId > -1) {
           if (!server.getReplicationLogFile().appendMessage(message)) {
             // ERROR IN THE SEQUENCE, FORCE A RECONNECTION
@@ -145,17 +156,57 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           }
         }
 
-        server.getServer().lifecycleEvent(ReplicationCallback.TYPE.REPLICA_MSG_RECEIVED, request);
+        // Now execute the command after it's safely logged
+        final HACommand response = request.getSecond().execute(server, leader, reqId);
 
-        if (response != null)
+        server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_MSG_RECEIVED, request);
+
+        if (response != null) {
           sendCommandToLeader(buffer, response, reqId);
+        }
         reqId = -1;
 
       } catch (final SocketTimeoutException e) {
         // IGNORE IT
+      } catch (final ConcurrentModificationException e) {
+        // DATA CORRUPTION DETECTED - page version mismatch in WAL
+        // This indicates the replica's database state is inconsistent with the WAL
+        // Reconnecting won't fix this - we need a full resync from the leader
+        LogManager.instance().log(this, Level.SEVERE,
+            "DATA CORRUPTION: ConcurrentModificationException during WAL replay (request=%d). " +
+            "Page version mismatch detected. Forcing full resync from leader. Error: %s",
+            e, reqId, e.getMessage());
+
+        forceFullResync = true;
+        reconnect(e);
+      } catch (final StackOverflowError e) {
+        // CRITICAL: Stack overflow during message processing
+        LogManager.instance().log(this, Level.SEVERE,
+            "STACK OVERFLOW during execution of request %d (shutdown=%s name=%s). " +
+            "This indicates excessive recursion or deep call stack. Thread will terminate.",
+            e, reqId, shutdown, getName());
+        e.printStackTrace(System.err);
+        shutdown = true;
+        break;
+      } catch (final OutOfMemoryError e) {
+        // CRITICAL: Out of memory during message processing
+        LogManager.instance().log(this, Level.SEVERE,
+            "OUT OF MEMORY during execution of request %d (shutdown=%s name=%s). Thread will terminate.",
+            e, reqId, shutdown, getName());
+        e.printStackTrace(System.err);
+        shutdown = true;
+        break;
+      } catch (final Error e) {
+        // CRITICAL: Other fatal errors (AssertionError, etc.)
+        LogManager.instance().log(this, Level.SEVERE,
+            "FATAL ERROR (%s) during execution of request %d (shutdown=%s name=%s). Thread will terminate.",
+            e, e.getClass().getSimpleName(), reqId, shutdown, getName());
+        e.printStackTrace(System.err);
+        shutdown = true;
+        break;
       } catch (final Exception e) {
         LogManager.instance()
-            .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", reqId, shutdown,
+            .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", e, reqId, shutdown,
                 getName(), e.toString());
         reconnect(e);
       } finally {
@@ -165,15 +216,15 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     LogManager.instance()
         .log(this, Level.INFO, "Replica message thread closed (shutdown=%s name=%s threadId=%d lastReqId=%d)", shutdown, getName(),
-            Thread.currentThread().threadId(), lastReqId);
+            Thread.currentThread().getId(), lastReqId);
   }
 
   public String getRemoteServerName() {
-    return leaderServerName;
+    return leader.alias();
   }
 
   public String getRemoteAddress() {
-    return host + ":" + port;
+    return leader.host() + ":" + leader.port();
   }
 
   private void reconnect(final Exception e) {
@@ -204,18 +255,15 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           LogManager.instance()
               .log(this, Level.SEVERE, "Error on re-connecting to the Leader ('%s') (error=%s)", getRemoteServerName(), e1);
 
-          HashSet<String> serverAddressListCopy = new HashSet<>(Arrays.asList(server.getServerAddressList().split(",")));
+//          HashSet<HAServer.ServerInfo> serverAddressListCopy = new HashSet<>(server.);
 
-          for (int retry = 0; retry < 3 && !shutdown && !serverAddressListCopy.isEmpty(); ++retry) {
-            for (final String serverAddress : serverAddressListCopy) {
+          // RECONNECT TO THE NEXT SERVER
+          for (int retry = 0; retry < 3 && !shutdown && !server.getCluster().getServers().isEmpty(); ++retry) {
+            for (final HAServer.ServerInfo serverAddress : server.getCluster().getServers()) {
               try {
                 if (server.isCurrentServer(serverAddress))
                   // SKIP LOCAL SERVER
                   continue;
-
-                final String[] parts = HostUtil.parseHostAddress(serverAddress, HostUtil.HA_DEFAULT_PORT);
-                host = parts[0];
-                port = Integer.parseInt(parts[1]);
 
                 connect();
                 startup();
@@ -234,7 +282,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
               return;
             }
 
-            serverAddressListCopy = new HashSet<>(Arrays.asList(server.getServerAddressList().split(",")));
+//            serverAddressListCopy = new HashSet<>(server.getServerAddressList());
           }
 
           server.startElection(true);
@@ -256,7 +304,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       final ChannelBinaryClient c = channel;
       if (c == null)
         throw new ReplicationException(
-            "Error on sending command back to the leader server '" + leaderServerName + "' (cause=socket closed)");
+            "Error on sending command back to the leader server '" + leader + "' (cause=socket closed)");
 
       c.writeVarLengthBytes(buffer.getContent(), buffer.size());
       c.flush();
@@ -273,12 +321,40 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     interrupt();
     close();
 
+    // Wait for any in-progress connection attempt to finish
+    // This prevents race conditions in 2-server clusters where old and new executors
+    // might try to connect simultaneously, causing "Connection reset" errors
+    final long maxWaitMs = 10000; // 10 seconds max wait
+    final long startWait = System.currentTimeMillis();
+    while (connectInProgress && (System.currentTimeMillis() - startWait) < maxWaitMs) {
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+
+    if (connectInProgress) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Connection attempt still in progress after %dms wait during kill()",
+          System.currentTimeMillis() - startWait);
+    }
+
     // WAIT THE THREAD IS DEAD
     try {
       join();
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
+  }
+
+  public boolean isConnectInProgress() {
+    return connectInProgress;
+  }
+
+  public HAServer.ServerInfo getLeader() {
+    return leader;
   }
 
   /**
@@ -298,7 +374,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
   @Override
   public String toString() {
-    return leaderServerName;
+    return leader.toString();
   }
 
   private byte[] receiveResponse() throws IOException {
@@ -308,10 +384,117 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   public void connect() {
-    LogManager.instance().log(this, Level.FINE, "Connecting to server %s:%d...", host, port);
+    connectInProgress = true;
+    try {
+      final int maxAttempts = server.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_ATTEMPTS);
+      final long baseDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_BASE_DELAY_MS);
+      final long maxDelayMs = server.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_REPLICA_CONNECT_RETRY_MAX_DELAY_MS);
+
+      ConnectionException lastException = null;
+      final long startTime = System.currentTimeMillis();
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Check if shutdown was requested before each attempt
+      // This is critical for 2-server clusters where connection replacement can happen mid-retry
+      if (shutdown) {
+        LogManager.instance().log(this, Level.INFO, "Connection retry aborted: shutdown requested before attempt %d/%d", attempt, maxAttempts);
+        throw new ConnectionException(leader.toString(), "Connection aborted: executor shutdown");
+      }
+
+      try {
+        if (attempt > 1) {
+          LogManager.instance().log(this, Level.INFO, "Connection attempt %d/%d to leader %s", attempt, maxAttempts, leader);
+        }
+
+        attemptConnect();
+
+        // Success - log total retry time if there were retries
+        if (attempt > 1) {
+          final long totalTime = System.currentTimeMillis() - startTime;
+          LogManager.instance().log(this, Level.INFO,
+              "Successfully connected to leader %s after %d attempts in %dms", leader, attempt, totalTime);
+        }
+        return;
+
+      } catch (final ServerIsNotTheLeaderException e) {
+        // Server we tried is not the leader - extract actual leader and retry
+        final String leaderAddress = e.getLeaderAddress();
+        LogManager.instance().log(this, Level.INFO,
+            "Server %s is not the leader, redirecting to %s (attempt %d/%d)",
+            leader, leaderAddress, attempt, maxAttempts);
+
+        // Parse the actual leader address and update our target
+        final String[] leaderParts = HostUtil.parseHostAddress(leaderAddress, HAServer.DEFAULT_PORT);
+        final HAServer.ServerInfo newLeader = new HAServer.ServerInfo(leaderParts[0], Integer.parseInt(leaderParts[1]), leaderParts[2]);
+
+        // Check if we're being redirected to ourselves - this means WE are the leader
+        if (server.isCurrentServer(newLeader)) {
+          LogManager.instance().log(this, Level.INFO,
+              "Redirected to ourselves (%s) - we are the leader, triggering election to claim leadership",
+              newLeader);
+          // Trigger election and WAIT for it to complete to prevent split-brain
+          // We must become leader before the redirecting server steps down
+          server.startElection(true);
+          return;
+        }
+
+        this.leader = newLeader;
+
+        // Continue retry loop with new leader target (no delay needed for redirect)
+        continue;
+
+      } catch (final ReplicationException e) {
+        // Replication exceptions should not trigger retry - they are logical errors
+        throw e;
+
+      } catch (final ConnectionException e) {
+        lastException = e;
+
+        if (attempt == maxAttempts) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to connect to leader %s after %d attempts in %dms",
+              leader, maxAttempts, System.currentTimeMillis() - startTime);
+          break;
+        }
+
+        // Check if shutdown was requested
+        if (shutdown) {
+          LogManager.instance().log(this, Level.INFO, "Connection retry aborted due to shutdown request");
+          throw e;
+        }
+
+        // Calculate delay with exponential backoff and jitter
+        final long exponentialDelay = baseDelayMs * (1L << (attempt - 1));
+        final long cappedDelay = Math.min(exponentialDelay, maxDelayMs);
+        final long jitter = (long) (cappedDelay * 0.1 * Math.random()); // 0-10% jitter
+        final long delayMs = cappedDelay + jitter;
+
+        LogManager.instance().log(this, Level.FINE,
+            "Connection attempt %d/%d failed: %s. Retrying in %dms...",
+            attempt, maxAttempts, e.getMessage(), delayMs);
+
+        try {
+          Thread.sleep(delayMs);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          LogManager.instance().log(this, Level.INFO, "Connection retry interrupted");
+          throw e;
+        }
+        }
+      }
+
+      // All attempts failed
+      throw lastException;
+    } finally {
+      connectInProgress = false;
+    }
+  }
+
+  private void attemptConnect() {
+    LogManager.instance().log(this, Level.INFO, "Connecting to leader %s", leader);
 
     try {
-      channel = server.createNetworkConnection(host, port, ReplicationProtocol.COMMAND_CONNECT);
+      channel = server.createNetworkConnection(leader, ReplicationProtocol.COMMAND_CONNECT);
       channel.flush();
 
       // READ RESPONSE
@@ -363,36 +546,48 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           }
 
           closeChannel();
-          throw new ConnectionException(host + ":" + port, reason);
+          throw new ConnectionException(leader.toString(), reason);
         }
 
-        leaderServerName = channel.readString();
+        String leaderServerName = channel.readString();
         final long leaderElectedAtTurn = channel.readLong();
         leaderServerHTTPAddress = channel.readString();
         final String memberList = channel.readString();
 
         server.lastElectionVote = new Pair<>(leaderElectedAtTurn, leaderServerName);
 
-        server.setServerAddresses(memberList);
+//        server.setServerAddresses(server.parseServerList(memberList));
       }
 
+    } catch (final EOFException e) {
+      // Connection closed during handshake - this is a transient error that should trigger retry
+      LogManager.instance().log(this, Level.FINE,
+          "Connection closed during handshake with leader %s (will retry)", leader);
+      closeChannel();
+      throw new ConnectionException(leader.toString(), "Handshake interrupted: connection closed by remote server");
+
+    } catch (final ServerIsNotTheLeaderException | ReplicationException e) {
+      // These are logical errors, not connection issues - propagate without wrapping
+      // This allows connect() to catch ServerIsNotTheLeaderException and handle redirects
+      // within the bounded retry loop, or let ReplicationException propagate to caller
+      throw e;
+
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s:%d (cause=%s)", host, port, e.toString());
+      LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s (cause=%s)", leader, e.toString());
 
       //shutdown();
-      throw new ConnectionException(host + ":" + port, e);
+      throw new ConnectionException(leader.toString(), e);
     }
   }
 
   public void startup() {
-    LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port,
-        server.getServerAddressList());
+    LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s, members=[%s]", leader,
+        server.getCluster().getServers());
 
     setName(server.getServerName() + " replica2leader<-" + getRemoteServerName());
 
     LogManager.instance()
-        .log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host,
-            port);
+        .log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s)", server.getClusterName(), leader);
 
     installDatabases();
   }
@@ -401,7 +596,16 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     final Binary buffer = new Binary(8192);
     buffer.setAllocationChunkSize(1024);
 
-    final long lastLogNumber = server.getReplicationLogFile().getLastMessageNumber();
+    // Check if full resync was forced due to data corruption
+    final long lastLogNumber;
+    if (forceFullResync) {
+      // Force full resync by sending -1 (replica has no log history)
+      lastLogNumber = -1;
+      LogManager.instance().log(this, Level.WARNING,
+          "Forcing full resync due to data corruption (ConcurrentModificationException)");
+    } else {
+      lastLogNumber = server.getReplicationLogFile().getLastMessageNumber();
+    }
 
     LogManager.instance().log(this, Level.INFO, "Requesting install of databases up to log %d...", lastLogNumber);
 
@@ -412,18 +616,26 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       if (response instanceof ReplicaConnectFullResyncResponse fullSync) {
         LogManager.instance().log(this, Level.INFO, "Asking for a full resync...");
 
-        server.getServer().lifecycleEvent(ReplicationCallback.TYPE.REPLICA_FULL_RESYNC, null);
+        server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_FULL_RESYNC, null);
 
         final Set<String> databases = fullSync.getDatabases();
 
-        for (final String db : databases)
+        for (final String db : databases) {
           requestInstallDatabase(buffer, db);
+        }
+
+        // Full resync completed - clear the flag
+        forceFullResync = false;
+        LogManager.instance().log(this, Level.INFO, "Full resync completed successfully");
 
       } else {
         LogManager.instance().log(this, Level.INFO, "Receiving hot resync (from=%d)...", lastLogNumber);
-        server.getServer().lifecycleEvent(ReplicationCallback.TYPE.REPLICA_HOT_RESYNC, null);
+        server.getServer().lifecycleEvent(ReplicationCallback.Type.REPLICA_HOT_RESYNC, null);
       }
 
+      LogManager.instance().log(this, Level.INFO,
+          "Resync complete, sending ReplicaReadyRequest to leader '%s'",
+          getRemoteServerName());
       sendCommandToLeader(buffer, new ReplicaReadyRequest(), -1);
 
     } catch (final Exception e) {
@@ -513,17 +725,25 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   private HACommand receiveCommandFromLeaderDuringJoin(final Binary buffer) throws IOException {
-    final byte[] response = receiveResponse();
+    try {
+      final byte[] response = receiveResponse();
 
-    final Pair<ReplicationMessage, HACommand> command = server.getMessageFactory().deserializeCommand(buffer, response);
-    if (command == null)
-      throw new NetworkProtocolException("Error on reading response, message " + response[0] + " not valid");
+      final Pair<ReplicationMessage, HACommand> command = server.getMessageFactory().deserializeCommand(buffer, response);
+      if (command == null)
+        throw new NetworkProtocolException("Error on reading response, message " + response[0] + " not valid");
 
-    return command.getSecond();
+      return command.getSecond();
+
+    } catch (final EOFException e) {
+      // Connection closed during database installation - log and re-throw as IOException
+      LogManager.instance().log(this, Level.WARNING,
+          "Connection closed during database installation from leader %s", leader);
+      throw new IOException("Database installation interrupted: connection closed by leader", e);
+    }
   }
 
   private void shutdown() {
-    LogManager.instance().log(this, Level.FINE, "Shutting down thread %s (id=%d)...", getName(), getId());
+    LogManager.instance().log(this, Level.WARNING, "Shutting down thread %s (id=%d)...", getName(), getId());
     shutdown = true;
   }
 }

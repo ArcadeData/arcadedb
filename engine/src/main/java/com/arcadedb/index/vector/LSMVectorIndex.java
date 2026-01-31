@@ -2731,9 +2731,46 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public long countEntries() {
-    // Use vectorIndex which already applies LSM merge-on-read semantics
-    // (latest entry for each RID, filtering out deleted entries)
-    return vectorIndex.getActiveCount();
+    checkIsValid();
+    // Count entries directly from pages instead of from in-memory cache
+    // This ensures accurate counts even when using limited location cache size
+    // Apply LSM merge-on-read semantics: latest entry for each RID, filter out deleted entries
+    final Map<RID, Integer> ridToLatestVectorId = new HashMap<>();
+    final DatabaseInternal database = getDatabase();
+
+    // Read from compacted sub-index if it exists
+    if (compactedSubIndex != null) {
+      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(),
+          compactedSubIndex.getTotalPages(), getPageSize(), true, entry -> {
+        if (!entry.deleted) {
+          // Keep latest (highest ID) vector for each RID
+          final Integer existing = ridToLatestVectorId.get(entry.rid);
+          if (existing == null || entry.vectorId > existing) {
+            ridToLatestVectorId.put(entry.rid, entry.vectorId);
+          }
+        } else {
+          // Deleted entry - remove from map
+          ridToLatestVectorId.remove(entry.rid);
+        }
+      });
+    }
+
+    // Read from mutable index (overrides compacted entries)
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(),
+        getPageSize(), false, entry -> {
+      if (!entry.deleted) {
+        // Keep latest (highest ID) vector for each RID
+        final Integer existing = ridToLatestVectorId.get(entry.rid);
+        if (existing == null || entry.vectorId > existing) {
+          ridToLatestVectorId.put(entry.rid, entry.vectorId);
+        }
+      } else {
+        // Deleted entry - remove from map
+        ridToLatestVectorId.remove(entry.rid);
+      }
+    });
+
+    return ridToLatestVectorId.size();
   }
 
   @Override
@@ -3642,6 +3679,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Read deleted flag (fixed 1 byte)
         final boolean deleted = page.readByte(currentOffset) == 1;
         currentOffset += 1;
+
+        // CRITICAL FIX: Read and skip quantization type byte (ALWAYS present in page format)
+        final byte quantOrdinal = page.readByte(currentOffset);
+        currentOffset += 1;
+        final VectorQuantizationType quantType = VectorQuantizationType.values()[quantOrdinal];
+
+        // Skip quantized vector data based on quantization type
+        if (quantType == VectorQuantizationType.INT8) {
+          // INT8: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
+          final int vectorLength = page.readInt(currentOffset);
+          currentOffset += 4;
+          currentOffset += vectorLength; // Skip quantized bytes
+          currentOffset += 8; // Skip min + max (2 floats)
+        } else if (quantType == VectorQuantizationType.BINARY) {
+          // BINARY: original length (4 bytes) + packed bytes + median (4 bytes)
+          final int originalLength = page.readInt(currentOffset);
+          currentOffset += 4;
+          // Packed bytes = ceil(originalLength / 8)
+          final int packedLength = (originalLength + 7) / 8;
+          currentOffset += packedLength;
+          currentOffset += 4; // Skip median (float)
+        }
+        // NONE and PRODUCT: no additional data to skip
 
         // Update VectorLocationIndex with this entry's absolute file offset
         // LSM semantics: later entries override earlier ones

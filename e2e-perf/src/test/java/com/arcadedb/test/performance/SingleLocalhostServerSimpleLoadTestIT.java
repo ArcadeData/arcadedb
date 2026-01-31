@@ -37,6 +37,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -103,7 +104,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
   @DisplayName("Single server load test")
   void singleServerLoadTest() throws Exception {
 
-    ServerWrapper server = new ServerWrapper("localhost", 2480, 50051);
+    ServerWrapper server = new ServerWrapper("localhost", 2480, 50051, List.of());
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier);
     db.createDatabase();
     db.createSchema();

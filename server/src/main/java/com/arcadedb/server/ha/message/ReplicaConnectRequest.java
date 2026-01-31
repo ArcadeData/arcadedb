@@ -36,11 +36,25 @@ public class ReplicaConnectRequest extends HAAbstractCommand {
   }
 
   @Override
-  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+  public HACommand execute(final HAServer server, final HAServer.ServerInfo remoteServerName, final long messageNumber) {
     if (lastReplicationMessageNumber > -1) {
-      LogManager.instance().log(this, Level.INFO, "Hot backup with Replica server '%s' is possible (lastReplicationMessageNumber=%d)", remoteServerName,
-          lastReplicationMessageNumber);
-      return new ReplicaConnectHotResyncResponse(lastReplicationMessageNumber);
+      // Check if the message exists in the leader's replication log
+      // This is critical when a replica reconnects to a different leader than it was originally connected to
+      final long position = server.getReplicationLogFile().findMessagePosition(lastReplicationMessageNumber);
+
+      if (position >= 0) {
+        // Message found in leader's log - hot resync is possible
+        LogManager.instance().log(this, Level.INFO, "Hot backup with Replica server '%s' is possible (lastReplicationMessageNumber=%d)", remoteServerName,
+            lastReplicationMessageNumber);
+        return new ReplicaConnectHotResyncResponse(lastReplicationMessageNumber);
+      } else {
+        // Message not found in leader's log - this happens when replica reconnects to a different leader
+        // The new leader doesn't have the messages from the previous leader in its log
+        LogManager.instance().log(this, Level.WARNING,
+            "Replica '%s' requested hot resync from message %d but message not found in leader's log - forcing full resync",
+            remoteServerName, lastReplicationMessageNumber);
+        // Fall through to full resync
+      }
     }
 
     // IN ANY OTHER CASE EXECUTE FULL SYNC
