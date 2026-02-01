@@ -179,4 +179,75 @@ public class GrpcServerIT extends BaseGraphServerTest {
         .isInstanceOf(StatusRuntimeException.class)
         .hasMessageContaining("UNAUTHENTICATED");
   }
+
+  @Test
+  void executeCommandInsertDocument() {
+    ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("INSERT INTO Person SET name = 'John Doe', age = 30")
+        .setReturnRows(true)
+        .build();
+
+    ExecuteCommandResponse response = authenticatedStub.executeCommand(request);
+
+    assertThat(response.getSuccess()).isTrue();
+    assertThat(response.getAffectedRecords()).isEqualTo(1);
+  }
+
+  @Test
+  void executeCommandWithParameters() {
+    ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("INSERT INTO Person SET name = :name, age = :age")
+        .putParameters("name", stringValue("Jane Doe"))
+        .putParameters("age", intValue(25))
+        .setReturnRows(true)
+        .build();
+
+    ExecuteCommandResponse response = authenticatedStub.executeCommand(request);
+
+    assertThat(response.getSuccess()).isTrue();
+    assertThat(response.getAffectedRecords()).isEqualTo(1);
+  }
+
+  @Test
+  void executeCommandDdlCreateType() {
+    String typeName = "GrpcTestType_" + System.currentTimeMillis();
+
+    ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE DOCUMENT TYPE " + typeName)
+        .build();
+
+    ExecuteCommandResponse response = authenticatedStub.executeCommand(request);
+
+    assertThat(response.getSuccess()).isTrue();
+
+    // Verify type was created by querying schema
+    ExecuteQueryRequest queryRequest = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT FROM schema:types WHERE name = '" + typeName + "'")
+        .build();
+
+    ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
+    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isNotEmpty();
+  }
+
+  @Test
+  void executeCommandInvalidSqlReturnsError() {
+    ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("INVALID SQL SYNTAX HERE")
+        .build();
+
+    ExecuteCommandResponse response = authenticatedStub.executeCommand(request);
+
+    assertThat(response.getSuccess()).isFalse();
+    assertThat(response.getMessage()).isNotEmpty();
+  }
 }
