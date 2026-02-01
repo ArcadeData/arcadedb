@@ -250,4 +250,196 @@ public class GrpcServerIT extends BaseGraphServerTest {
     assertThat(response.getSuccess()).isFalse();
     assertThat(response.getMessage()).isNotEmpty();
   }
+
+  // CRUD operation tests
+
+  @Test
+  void createRecordAndLookupByRid() {
+    // Create a record
+    GrpcRecord record = GrpcRecord.newBuilder()
+        .setType("Person")
+        .putProperties("name", stringValue("Test Person"))
+        .putProperties("age", intValue(40))
+        .build();
+
+    CreateRecordRequest createRequest = CreateRecordRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setType("Person")
+        .setRecord(record)
+        .build();
+
+    CreateRecordResponse createResponse = authenticatedStub.createRecord(createRequest);
+
+    assertThat(createResponse.getRid()).isNotEmpty();
+    assertThat(createResponse.getRid()).startsWith("#");
+
+    // Lookup by RID
+    LookupByRidRequest lookupRequest = LookupByRidRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setRid(createResponse.getRid())
+        .build();
+
+    LookupByRidResponse lookupResponse = authenticatedStub.lookupByRid(lookupRequest);
+
+    assertThat(lookupResponse.getFound()).isTrue();
+    assertThat(lookupResponse.getRecord().getPropertiesMap().get("name").getStringValue())
+        .isEqualTo("Test Person");
+  }
+
+  @Test
+  void lookupByRidNotFoundThrowsException() {
+    // First create a record to get a valid bucket ID
+    GrpcRecord record = GrpcRecord.newBuilder()
+        .setType("Person")
+        .putProperties("name", stringValue("Temp Record"))
+        .build();
+
+    CreateRecordRequest createRequest = CreateRecordRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setType("Person")
+        .setRecord(record)
+        .build();
+
+    String rid = authenticatedStub.createRecord(createRequest).getRid();
+    // Extract bucket ID from the created RID (e.g., #26:0 -> 26)
+    String bucketId = rid.substring(1, rid.indexOf(':'));
+
+    // Use the same bucket with a very high position that doesn't exist
+    LookupByRidRequest request = LookupByRidRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setRid("#" + bucketId + ":999999")
+        .build();
+
+    // The service throws an exception when a record is not found
+    assertThatThrownBy(() -> authenticatedStub.lookupByRid(request))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("not found");
+  }
+
+  @Test
+  void updateRecordModifiesData() {
+    // Create a record first
+    GrpcRecord record = GrpcRecord.newBuilder()
+        .setType("Person")
+        .putProperties("name", stringValue("Original Name"))
+        .putProperties("age", intValue(20))
+        .build();
+
+    CreateRecordRequest createRequest = CreateRecordRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setType("Person")
+        .setRecord(record)
+        .build();
+
+    String rid = authenticatedStub.createRecord(createRequest).getRid();
+
+    // Update the record
+    GrpcRecord updatedRecord = GrpcRecord.newBuilder()
+        .setType("Person")
+        .putProperties("name", stringValue("Updated Name"))
+        .putProperties("age", intValue(21))
+        .build();
+
+    UpdateRecordRequest updateRequest = UpdateRecordRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setRid(rid)
+        .setRecord(updatedRecord)
+        .build();
+
+    UpdateRecordResponse updateResponse = authenticatedStub.updateRecord(updateRequest);
+
+    assertThat(updateResponse.getSuccess()).isTrue();
+    assertThat(updateResponse.getUpdated()).isTrue();
+
+    // Verify the update
+    LookupByRidRequest lookupRequest = LookupByRidRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setRid(rid)
+        .build();
+
+    LookupByRidResponse lookupResponse = authenticatedStub.lookupByRid(lookupRequest);
+
+    assertThat(lookupResponse.getRecord().getPropertiesMap().get("name").getStringValue())
+        .isEqualTo("Updated Name");
+  }
+
+  @Test
+  void deleteRecordRemovesData() {
+    // Create a record first
+    GrpcRecord record = GrpcRecord.newBuilder()
+        .setType("Person")
+        .putProperties("name", stringValue("To Be Deleted"))
+        .build();
+
+    CreateRecordRequest createRequest = CreateRecordRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setType("Person")
+        .setRecord(record)
+        .build();
+
+    String rid = authenticatedStub.createRecord(createRequest).getRid();
+
+    // Delete the record
+    DeleteRecordRequest deleteRequest = DeleteRecordRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setRid(rid)
+        .build();
+
+    DeleteRecordResponse deleteResponse = authenticatedStub.deleteRecord(deleteRequest);
+
+    assertThat(deleteResponse.getSuccess()).isTrue();
+    assertThat(deleteResponse.getDeleted()).isTrue();
+
+    // Verify it's gone - lookup of deleted record throws an exception
+    LookupByRidRequest lookupRequest = LookupByRidRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setRid(rid)
+        .build();
+
+    assertThatThrownBy(() -> authenticatedStub.lookupByRid(lookupRequest))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("not found");
+  }
+
+  @Test
+  void deleteNonExistentRecordThrowsException() {
+    // First create a record to get a valid bucket ID
+    GrpcRecord record = GrpcRecord.newBuilder()
+        .setType("Person")
+        .putProperties("name", stringValue("Temp For Bucket"))
+        .build();
+
+    CreateRecordRequest createRequest = CreateRecordRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setType("Person")
+        .setRecord(record)
+        .build();
+
+    String rid = authenticatedStub.createRecord(createRequest).getRid();
+    // Extract bucket ID from the created RID (e.g., #26:0 -> 26)
+    String bucketId = rid.substring(1, rid.indexOf(':'));
+
+    // Use the same bucket with a very high position that doesn't exist
+    DeleteRecordRequest request = DeleteRecordRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setRid("#" + bucketId + ":999999")
+        .build();
+
+    // The service throws an exception when trying to delete a non-existent record
+    assertThatThrownBy(() -> authenticatedStub.deleteRecord(request))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("not found");
+  }
 }
