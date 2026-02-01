@@ -340,7 +340,7 @@ public enum GlobalConfiguration {
 
     VECTOR_INDEX_GRAPH_BUILD_DIAGNOSTICS("arcadedb.vectorIndex.graphBuildDiagnostics", SCOPE.DATABASE,
       "Enable diagnostic logging during vector graph build progress (heap/off-heap memory and index file sizes). " +
-        "This is intended for benchmarking and troubleshooting; keep disabled in production for minimal overhead.",
+          "This provides visibility during graph construction; disable if any logging overhead is a concern.",
         Boolean.class, true),
 
   // NETWORK

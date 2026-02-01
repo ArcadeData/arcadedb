@@ -274,10 +274,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (path == null)
       return 0L;
     try {
-      if (!Files.exists(path))
-        return 0L;
       return Files.size(path);
-    } catch (final Exception e) {
+    } catch (final IOException e) {
       return 0L;
     }
   }
