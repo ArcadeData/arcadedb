@@ -338,6 +338,11 @@ public enum GlobalConfiguration {
           "Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.",
       Integer.class, 100),
 
+    VECTOR_INDEX_GRAPH_BUILD_DIAGNOSTICS("arcadedb.vectorIndex.graphBuildDiagnostics", SCOPE.DATABASE,
+      "Enable diagnostic logging during vector graph build progress (heap/off-heap memory and index file sizes). " +
+        "This is intended for benchmarking and troubleshooting; keep disabled in production for minimal overhead.",
+        Boolean.class, true),
+
   // NETWORK
   NETWORK_SAME_SERVER_ERROR_RETRIES("arcadedb.network.sameServerErrorRetry", SCOPE.SERVER,
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, look also at HA_ERROR_RETRY setting. 0 (default) = no retry",

@@ -77,8 +77,13 @@ import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.management.BufferPoolMXBean;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.MemoryUsage;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -181,6 +186,100 @@ public class LSMVectorIndex implements Index, IndexInternal {
      * @param vectorAccesses Total number of vector accesses (getVector calls)
      */
     void onGraphBuildProgress(String phase, int processedNodes, int totalNodes, long vectorAccesses);
+  }
+
+  private static final class GraphBuildDiagnosticsSnapshot {
+    private final long   heapUsedBytes;
+    private final long   heapMaxBytes;
+    private final long   offHeapBytes;
+    private final long   vectorIndexBytes;
+    private final long   graphFileBytes;
+    private final long   pqFileBytes;
+    private final long   compactedFileBytes;
+    private final String fileBreakdown;
+
+    private GraphBuildDiagnosticsSnapshot(final long heapUsedBytes, final long heapMaxBytes, final long offHeapBytes,
+        final long vectorIndexBytes, final long graphFileBytes, final long pqFileBytes, final long compactedFileBytes,
+        final String fileBreakdown) {
+      this.heapUsedBytes = heapUsedBytes;
+      this.heapMaxBytes = heapMaxBytes;
+      this.offHeapBytes = offHeapBytes;
+      this.vectorIndexBytes = vectorIndexBytes;
+      this.graphFileBytes = graphFileBytes;
+      this.pqFileBytes = pqFileBytes;
+      this.compactedFileBytes = compactedFileBytes;
+      this.fileBreakdown = fileBreakdown;
+    }
+
+    private double heapUsedMb() {
+      return heapUsedBytes / (1024.0 * 1024.0);
+    }
+
+    private double heapMaxMb() {
+      return heapMaxBytes / (1024.0 * 1024.0);
+    }
+
+    private double offHeapMb() {
+      return offHeapBytes / (1024.0 * 1024.0);
+    }
+
+    private double totalFilesMb() {
+      final long total = vectorIndexBytes + graphFileBytes + pqFileBytes + compactedFileBytes;
+      return total / (1024.0 * 1024.0);
+    }
+  }
+
+  private boolean isGraphBuildDiagnosticsEnabled() {
+    return getDatabase().getConfiguration().getValueAsBoolean(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_DIAGNOSTICS);
+  }
+
+  private GraphBuildDiagnosticsSnapshot captureGraphBuildDiagnostics() {
+    final MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+    final MemoryUsage heap = memoryBean != null ? memoryBean.getHeapMemoryUsage() : null;
+    final long heapUsed = heap != null ? heap.getUsed() : 0L;
+    final long heapMax = heap != null ? (heap.getMax() > 0 ? heap.getMax() : heap.getCommitted()) : 0L;
+
+    long directBytes = 0L;
+    long mappedBytes = 0L;
+    for (final BufferPoolMXBean pool : ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class)) {
+      if (pool == null)
+        continue;
+      final String name = pool.getName();
+      if ("direct".equalsIgnoreCase(name)) {
+        directBytes = pool.getMemoryUsed();
+      } else if ("mapped".equalsIgnoreCase(name)) {
+        mappedBytes = pool.getMemoryUsed();
+      }
+    }
+    final long offHeap = directBytes + mappedBytes;
+
+    final long vectorIndexBytes = safeFileSize(
+      mutable != null && mutable.getComponentFile() != null ? Path.of(mutable.getComponentFile().getFilePath()) : null);
+    final long graphFileBytes = safeFileSize(
+      graphFile != null && graphFile.getComponentFile() != null ? Path.of(graphFile.getComponentFile().getFilePath()) : null);
+    final long pqFileBytes = safeFileSize(pqFile != null ? pqFile.getFilePath() : null);
+    final long compactedFileBytes = safeFileSize(
+      compactedSubIndex != null && compactedSubIndex.getComponentFile() != null ?
+        Path.of(compactedSubIndex.getComponentFile().getFilePath()) :
+        null);
+
+    final String breakdown = String.format("idx=%.1f, graph=%.1f, pq=%.1f, compacted=%.1f", vectorIndexBytes / (1024.0 * 1024.0),
+        graphFileBytes / (1024.0 * 1024.0), pqFileBytes / (1024.0 * 1024.0), compactedFileBytes / (1024.0 * 1024.0));
+
+    return new GraphBuildDiagnosticsSnapshot(heapUsed, heapMax, offHeap, vectorIndexBytes, graphFileBytes, pqFileBytes,
+        compactedFileBytes, breakdown);
+  }
+
+  private static long safeFileSize(final Path path) {
+    if (path == null)
+      return 0L;
+    try {
+      if (!Files.exists(path))
+        return 0L;
+      return Files.size(path);
+    } catch (final Exception e) {
+      return 0L;
+    }
   }
 
   /**
@@ -854,8 +953,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final boolean shouldLog = progressed && (timeElapsed || reachedEnd);
 
         if (shouldLog) {
-          LogManager.instance().log(this, Level.INFO,
-              "Graph build %s: %d/%d (vector accesses=%d)", phase, processedNodes, totalNodes, vectorAccesses);
+          if (isGraphBuildDiagnosticsEnabled()) {
+            final GraphBuildDiagnosticsSnapshot diagnostics = captureGraphBuildDiagnostics();
+            LogManager.instance().log(this, Level.INFO,
+                "Graph build %s: %d/%d (vector accesses=%d, heap=%.1f/%.1fMB, offheap=%.1fMB, files=%.1fMB [%s])",
+                phase, processedNodes, totalNodes, vectorAccesses,
+                diagnostics.heapUsedMb(), diagnostics.heapMaxMb(), diagnostics.offHeapMb(),
+                diagnostics.totalFilesMb(), diagnostics.fileBreakdown);
+          } else {
+            LogManager.instance().log(this, Level.INFO,
+                "Graph build %s: %d/%d (vector accesses=%d)", phase, processedNodes, totalNodes, vectorAccesses);
+          }
           lastLogTimeMs[0] = now;
           lastLoggedProcessed[0] = processedNodes;
         }
