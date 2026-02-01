@@ -42,8 +42,7 @@ public class GrpcAdminServiceIT extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue(
-        "GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
+    GlobalConfiguration.SERVER_PLUGINS.setValue("GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
   }
 
   @BeforeEach
