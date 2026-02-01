@@ -442,4 +442,108 @@ public class GrpcServerIT extends BaseGraphServerTest {
         .isInstanceOf(StatusRuntimeException.class)
         .hasMessageContaining("not found");
   }
+
+  // Transaction tests
+
+  @Test
+  void beginAndCommitTransaction() {
+    // Begin transaction
+    BeginTransactionRequest beginRequest = BeginTransactionRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .build();
+
+    BeginTransactionResponse beginResponse = authenticatedStub.beginTransaction(beginRequest);
+
+    assertThat(beginResponse.getTransactionId()).isNotEmpty();
+
+    String txId = beginResponse.getTransactionId();
+
+    // Insert within transaction
+    ExecuteCommandRequest insertRequest = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("INSERT INTO Person SET name = 'Transaction Test'")
+        .setTransaction(TransactionContext.newBuilder()
+            .setTransactionId(txId)
+            .build())
+        .build();
+
+    authenticatedStub.executeCommand(insertRequest);
+
+    // Commit transaction
+    CommitTransactionRequest commitRequest = CommitTransactionRequest.newBuilder()
+        .setCredentials(credentials())
+        .setTransaction(TransactionContext.newBuilder()
+            .setTransactionId(txId)
+            .setDatabase(getDatabaseName())
+            .build())
+        .build();
+
+    CommitTransactionResponse commitResponse = authenticatedStub.commitTransaction(commitRequest);
+
+    assertThat(commitResponse.getSuccess()).isTrue();
+    assertThat(commitResponse.getCommitted()).isTrue();
+
+    // Verify data is visible after commit
+    ExecuteQueryRequest queryRequest = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT FROM Person WHERE name = 'Transaction Test'")
+        .build();
+
+    ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
+
+    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isNotEmpty();
+  }
+
+  @Test
+  void beginAndRollbackTransaction() {
+    // Begin transaction
+    BeginTransactionRequest beginRequest = BeginTransactionRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .build();
+
+    BeginTransactionResponse beginResponse = authenticatedStub.beginTransaction(beginRequest);
+
+    String txId = beginResponse.getTransactionId();
+
+    // Insert within transaction
+    ExecuteCommandRequest insertRequest = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("INSERT INTO Person SET name = 'Rollback Test " + txId + "'")
+        .setTransaction(TransactionContext.newBuilder()
+            .setTransactionId(txId)
+            .build())
+        .build();
+
+    authenticatedStub.executeCommand(insertRequest);
+
+    // Rollback transaction
+    RollbackTransactionRequest rollbackRequest = RollbackTransactionRequest.newBuilder()
+        .setCredentials(credentials())
+        .setTransaction(TransactionContext.newBuilder()
+            .setTransactionId(txId)
+            .setDatabase(getDatabaseName())
+            .build())
+        .build();
+
+    RollbackTransactionResponse rollbackResponse = authenticatedStub.rollbackTransaction(rollbackRequest);
+
+    assertThat(rollbackResponse.getSuccess()).isTrue();
+    assertThat(rollbackResponse.getRolledBack()).isTrue();
+
+    // Verify data is NOT visible after rollback
+    ExecuteQueryRequest queryRequest = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT FROM Person WHERE name = 'Rollback Test " + txId + "'")
+        .build();
+
+    ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
+
+    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isEmpty();
+  }
 }
