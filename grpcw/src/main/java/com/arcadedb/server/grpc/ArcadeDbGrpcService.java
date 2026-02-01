@@ -2424,10 +2424,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private void validateCredentials(DatabaseCredentials credentials) {
+    // Check if user is already authenticated via the interceptor (e.g., via Bearer token)
+    final String authenticatedUser = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
+    if (authenticatedUser != null && !authenticatedUser.isEmpty()) {
+      // User already authenticated via interceptor, no need to validate credentials
+      LogManager.instance().log(this, Level.FINE, "validateCredentials(): user already authenticated via interceptor: %s", authenticatedUser);
+      return;
+    }
 
     // Implement credential validation logic
     // This is a placeholder - integrate with ArcadeDB's security system
-
     if (credentials == null || credentials.getUsername().isEmpty()) {
       throw new IllegalArgumentException("Invalid credentials");
     }

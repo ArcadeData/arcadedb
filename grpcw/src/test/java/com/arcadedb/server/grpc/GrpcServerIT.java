@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -34,7 +35,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -52,6 +57,8 @@ public class GrpcServerIT extends BaseGraphServerTest {
       Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> DATABASE_HEADER =
       Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> AUTHORIZATION_HEADER =
+      Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
 
   private ManagedChannel channel;
   private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub blockingStub;
@@ -94,6 +101,60 @@ public class GrpcServerIT extends BaseGraphServerTest {
         }
       };
     }
+  }
+
+  /**
+   * Client interceptor that uses Bearer token authentication
+   */
+  private class TokenAuthClientInterceptor implements ClientInterceptor {
+    private final String token;
+
+    TokenAuthClientInterceptor(final String token) {
+      this.token = token;
+    }
+
+    @Override
+    public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
+        MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
+      return new ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(
+          next.newCall(method, callOptions)) {
+        @Override
+        public void start(Listener<RespT> responseListener, Metadata headers) {
+          headers.put(AUTHORIZATION_HEADER, "Bearer " + token);
+          headers.put(DATABASE_HEADER, getDatabaseName());
+          super.start(responseListener, headers);
+        }
+      };
+    }
+  }
+
+  /**
+   * Helper to login via HTTP and get a token
+   */
+  private String loginAndGetToken(final String username, final String password) throws Exception {
+    final HttpURLConnection conn = (HttpURLConnection) new URI("http://localhost:2480/api/v1/login").toURL().openConnection();
+    conn.setRequestMethod("POST");
+    conn.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8)));
+    conn.setDoOutput(true);
+
+    final int responseCode = conn.getResponseCode();
+    if (responseCode != 200)
+      throw new RuntimeException("Login failed with status: " + responseCode);
+
+    final String response = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    final JSONObject jsonResponse = new JSONObject(response);
+    return jsonResponse.getString("token");
+  }
+
+  /**
+   * Helper to logout via HTTP to invalidate a token
+   */
+  private void logout(final String token) throws Exception {
+    final HttpURLConnection conn = (HttpURLConnection) new URI("http://localhost:2480/api/v1/logout").toURL().openConnection();
+    conn.setRequestMethod("POST");
+    conn.setRequestProperty("Authorization", "Bearer " + token);
+    conn.getResponseCode(); // Execute request
   }
 
   @AfterEach
@@ -706,5 +767,68 @@ public class GrpcServerIT extends BaseGraphServerTest {
     assertThat(response.getReceived()).isEqualTo(3);
     assertThat(response.getInserted()).isEqualTo(2); // key1 and key2
     assertThat(response.getIgnored()).isEqualTo(1);  // duplicate key1
+  }
+
+  // Token authentication tests
+
+  @Test
+  void authenticateWithHttpTokenOverGrpc() throws Exception {
+    // 1. Login via HTTP to get token
+    final String token = loginAndGetToken("root", DEFAULT_PASSWORD_FOR_TESTS);
+    assertThat(token).isNotNull();
+    assertThat(token).startsWith("AU-");
+
+    // 2. Create gRPC stub with token auth
+    final Channel tokenChannel = io.grpc.ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor(token));
+    final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub tokenStub = ArcadeDbServiceGrpc.newBlockingStub(tokenChannel);
+
+    // 3. Execute a query using token auth
+    final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setQuery("SELECT 1 as test")
+        .build();
+
+    final ExecuteQueryResponse response = tokenStub.executeQuery(request);
+    assertThat(response.getResultsList()).isNotEmpty();
+  }
+
+  @Test
+  void tokenRejectedAfterLogout() throws Exception {
+    // 1. Login and get token
+    final String token = loginAndGetToken("root", DEFAULT_PASSWORD_FOR_TESTS);
+
+    // 2. Logout to invalidate token
+    logout(token);
+
+    // 3. Try to use invalidated token
+    final Channel tokenChannel = io.grpc.ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor(token));
+    final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub tokenStub = ArcadeDbServiceGrpc.newBlockingStub(tokenChannel);
+
+    final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setQuery("SELECT 1 as test")
+        .build();
+
+    // Should fail with UNAUTHENTICATED
+    assertThatThrownBy(() -> tokenStub.executeQuery(request))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("UNAUTHENTICATED");
+  }
+
+  @Test
+  void invalidTokenRejected() {
+    // Use a fake token that doesn't exist
+    final Channel tokenChannel = io.grpc.ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor("AU-fake-token-12345"));
+    final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub tokenStub = ArcadeDbServiceGrpc.newBlockingStub(tokenChannel);
+
+    final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setQuery("SELECT 1 as test")
+        .build();
+
+    // Should fail with UNAUTHENTICATED
+    assertThatThrownBy(() -> tokenStub.executeQuery(request))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("UNAUTHENTICATED");
   }
 }
