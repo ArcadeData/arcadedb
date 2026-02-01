@@ -18,14 +18,18 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -103,5 +107,75 @@ public class GrpcAuthInterceptorTest {
     GrpcAuthInterceptor interceptorWithNullSession = new GrpcAuthInterceptor(mockSecurity, null);
 
     assertThat(interceptorWithNullSession).isNotNull();
+  }
+
+  @Test
+  void validateTokenReturnsTrueForValidSession() {
+    HttpAuthSession mockSession = mock(HttpAuthSession.class);
+    ServerSecurityUser mockUser = mock(ServerSecurityUser.class);
+    when(mockSession.getUser()).thenReturn(mockUser);
+    when(mockUser.getName()).thenReturn("testuser");
+    when(mockSessionManager.getSessionByToken("valid-token")).thenReturn(mockSession);
+
+    // getUsers() returns Set<String> - need at least one user for security to be enabled
+    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+
+    GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
+
+    Metadata headers = new Metadata();
+    Metadata.Key<String> authKey = Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+    headers.put(authKey, "Bearer valid-token");
+    headers.put(Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER), "testdb");
+
+    when(mockMethodDescriptor.getFullMethodName()).thenReturn("com.arcadedb.grpc.ArcadeDbService/Query");
+
+    interceptorWithSession.interceptCall(mockCall, headers, mockHandler);
+
+    // Handler's startCall should be invoked (call proceeds)
+    verify(mockHandler).startCall(any(), any());
+    verify(mockCall, never()).close(any(), any());
+  }
+
+  @Test
+  void validateTokenReturnsFalseForInvalidSession() {
+    when(mockSessionManager.getSessionByToken("invalid-token")).thenReturn(null);
+    // getUsers() returns Set<String> - need at least one user for security to be enabled
+    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+
+    GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
+
+    Metadata headers = new Metadata();
+    Metadata.Key<String> authKey = Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+    headers.put(authKey, "Bearer invalid-token");
+    headers.put(Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER), "testdb");
+
+    when(mockMethodDescriptor.getFullMethodName()).thenReturn("com.arcadedb.grpc.ArcadeDbService/Query");
+
+    interceptorWithSession.interceptCall(mockCall, headers, mockHandler);
+
+    // Call should be closed with UNAUTHENTICATED
+    verify(mockCall).close(any(), any());
+    verify(mockHandler, never()).startCall(any(), any());
+  }
+
+  @Test
+  void validateTokenReturnsFalseWhenSessionManagerIsNull() {
+    // getUsers() returns Set<String> - need at least one user for security to be enabled
+    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+
+    GrpcAuthInterceptor interceptorWithoutSession = new GrpcAuthInterceptor(mockSecurity, null);
+
+    Metadata headers = new Metadata();
+    Metadata.Key<String> authKey = Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+    headers.put(authKey, "Bearer any-token");
+    headers.put(Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER), "testdb");
+
+    when(mockMethodDescriptor.getFullMethodName()).thenReturn("com.arcadedb.grpc.ArcadeDbService/Query");
+
+    interceptorWithoutSession.interceptCall(mockCall, headers, mockHandler);
+
+    // Call should be closed with UNAUTHENTICATED (token auth not available)
+    verify(mockCall).close(any(), any());
+    verify(mockHandler, never()).startCall(any(), any());
   }
 }

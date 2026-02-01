@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.Context;
@@ -92,18 +93,22 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       }
 
       // Try Bearer token authentication first
-      String authorization = headers.get(AUTHORIZATION_HEADER);
+      final String authorization = headers.get(AUTHORIZATION_HEADER);
       if (authorization != null && authorization.startsWith(BEARER_TYPE)) {
-        String token = authorization.substring(BEARER_TYPE.length()).trim();
-        if (!validateToken(token, database)) {
+        final String token = authorization.substring(BEARER_TYPE.length()).trim();
+        final HttpAuthSession session = getValidSession(token, database);
+        if (session == null) {
           call.close(Status.UNAUTHENTICATED.withDescription("Invalid token"), new Metadata());
           return new ServerCall.Listener<ReqT>() {
           };
         }
+        // Add user to context from session
+        final Context context = Context.current().withValue(USER_CONTEXT_KEY, session.getUser().getName());
+        return Contexts.interceptCall(context, call, headers, next);
       } else {
         // Try basic authentication
-        String username = headers.get(USER_HEADER);
-        String password = headers.get(PASSWORD_HEADER);
+        final String username = headers.get(USER_HEADER);
+        final String password = headers.get(PASSWORD_HEADER);
 
         if (username == null || password == null) {
           // No authentication provided for secured server
@@ -118,18 +123,10 @@ class GrpcAuthInterceptor implements ServerInterceptor {
             };
           }
           // Add user to context
-          Context context = Context.current().withValue(USER_CONTEXT_KEY, username);
+          final Context context = Context.current().withValue(USER_CONTEXT_KEY, username);
           return Contexts.interceptCall(context, call, headers, next);
         }
       }
-
-      // Add user context for downstream processing
-      Context context = Context.current();
-      if (authorization != null) {
-        context = context.withValue(USER_CONTEXT_KEY, extractUserFromToken(authorization));
-      }
-
-      return Contexts.interceptCall(context, call, headers, next);
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Authentication error", e);
@@ -139,12 +136,21 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     }
   }
 
-  private boolean validateToken(String token, String database) {
-    // TODO: Implement JWT/OAuth2 token validation when token auth is supported
-    // For now, reject all token authentication attempts as this feature is not yet implemented
-    LogManager.instance().log(this, Level.WARNING,
-        "Bearer token authentication is not yet implemented - rejecting token auth attempt for database: %s", database);
-    return false;
+  private HttpAuthSession getValidSession(final String token, final String database) {
+    if (authSessionManager == null) {
+      LogManager.instance().log(this, Level.FINE,
+          "Token authentication not available - no session manager configured");
+      return null;
+    }
+
+    final HttpAuthSession session = authSessionManager.getSessionByToken(token);
+    if (session == null) {
+      LogManager.instance().log(this, Level.FINE,
+          "Invalid or expired token for database: %s", database);
+      return null;
+    }
+
+    return session;
   }
 
   private boolean validateCredentials(String username, String password, String database) {
@@ -161,12 +167,6 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       LogManager.instance().log(this, Level.SEVERE, "Failed to authenticate user: %s for database: %s", e, username, database);
       return false;
     }
-  }
-
-  private String extractUserFromToken(String authorization) {
-    // TODO: Extract user information from JWT/OAuth2 token when implemented
-    // This method should not be called since validateToken returns false
-    throw new UnsupportedOperationException("Token authentication is not yet implemented");
   }
 
   // Context key for storing authenticated user
