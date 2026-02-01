@@ -34,6 +34,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -545,5 +548,61 @@ public class GrpcServerIT extends BaseGraphServerTest {
     ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
 
     assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isEmpty();
+  }
+
+  // Streaming query tests
+
+  @Test
+  void streamQueryReturnsResults() {
+    StreamQueryRequest request = StreamQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT FROM V1")
+        .setBatchSize(10)
+        .build();
+
+    Iterator<QueryResult> results = authenticatedStub.streamQuery(request);
+
+    List<GrpcRecord> allRecords = new ArrayList<>();
+    while (results.hasNext()) {
+      QueryResult batch = results.next();
+      allRecords.addAll(batch.getRecordsList());
+    }
+
+    assertThat(allRecords).isNotEmpty();
+  }
+
+  @Test
+  void streamQueryWithSmallBatchSize() {
+    // First insert multiple records
+    for (int i = 0; i < 5; i++) {
+      ExecuteCommandRequest insertRequest = ExecuteCommandRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setCommand("INSERT INTO Person SET name = 'Stream Test " + i + "', batchTest = true")
+          .build();
+      authenticatedStub.executeCommand(insertRequest);
+    }
+
+    StreamQueryRequest request = StreamQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT FROM Person WHERE batchTest = true")
+        .setBatchSize(2)
+        .build();
+
+    Iterator<QueryResult> results = authenticatedStub.streamQuery(request);
+
+    int batchCount = 0;
+    int totalRecords = 0;
+    while (results.hasNext()) {
+      QueryResult batch = results.next();
+      batchCount++;
+      totalRecords += batch.getRecordsList().size();
+    }
+
+    assertThat(totalRecords).isGreaterThanOrEqualTo(5);
+    // With batch size 2 and 5+ records, we should have at least 3 batches
+    assertThat(batchCount).isGreaterThanOrEqualTo(3);
   }
 }
