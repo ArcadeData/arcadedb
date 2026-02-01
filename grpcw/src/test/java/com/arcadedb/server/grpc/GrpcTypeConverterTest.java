@@ -258,4 +258,46 @@ class GrpcTypeConverterTest {
     assertThat(result.hasTimestampValue()).isTrue();
     assertThat(GrpcTypeConverter.tsToMillis(result.getTimestampValue())).isEqualTo(1000_500L);
   }
+
+  @Test
+  void toGrpcValueRID() {
+    RID rid = new RID(null, "#1:0");
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(rid);
+    assertThat(result.hasLinkValue()).isTrue();
+    assertThat(result.getLinkValue().getRid()).isEqualTo("#1:0");
+  }
+
+  @Test
+  void toGrpcValueBigDecimal() {
+    BigDecimal decimal = new BigDecimal("123.45");
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(decimal);
+    assertThat(result.hasDecimalValue()).isTrue();
+    assertThat(result.getDecimalValue().getUnscaled()).isEqualTo(12345);
+    assertThat(result.getDecimalValue().getScale()).isEqualTo(2);
+  }
+
+  @Test
+  void toGrpcValueList() {
+    List<Integer> list = List.of(1, 2, 3);
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(list);
+    assertThat(result.hasListValue()).isTrue();
+    assertThat(result.getListValue().getValuesCount()).isEqualTo(3);
+  }
+
+  @Test
+  void toGrpcValueMap() {
+    Map<String, Object> map = Map.of("name", "John", "age", 30);
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(map);
+    assertThat(result.hasMapValue()).isTrue();
+    assertThat(result.getMapValue().getEntriesCount()).isEqualTo(2);
+  }
+
+  @Test
+  void roundTripPrimitives() {
+    // Test that fromGrpcValue(toGrpcValue(x)) == x for various types
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(true))).isEqualTo(true);
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(42))).isEqualTo(42);
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(3.14))).isEqualTo(3.14);
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue("hello"))).isEqualTo("hello");
+  }
 }
