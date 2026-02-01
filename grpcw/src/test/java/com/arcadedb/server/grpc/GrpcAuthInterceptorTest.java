@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
@@ -36,6 +37,7 @@ import static org.mockito.Mockito.when;
 public class GrpcAuthInterceptorTest {
 
   private ServerSecurity mockSecurity;
+  private HttpAuthSessionManager mockSessionManager;
   private GrpcAuthInterceptor interceptor;
   private ServerCall<Object, Object> mockCall;
   private ServerCallHandler<Object, Object> mockHandler;
@@ -46,6 +48,7 @@ public class GrpcAuthInterceptorTest {
   @SuppressWarnings("unchecked")
   void setUp() {
     mockSecurity = mock(ServerSecurity.class);
+    mockSessionManager = mock(HttpAuthSessionManager.class);
     interceptor = new GrpcAuthInterceptor(mockSecurity);
     mockCall = mock(ServerCall.class);
     mockHandler = mock(ServerCallHandler.class);
@@ -84,5 +87,21 @@ public class GrpcAuthInterceptorTest {
     // The interceptor should be able to read the authorization header
     assertThat(metadata.get(authKey)).isNotNull();
     assertThat(metadata.get(authKey)).isEqualTo("Basic dGVzdDp0ZXN0");
+  }
+
+  @Test
+  void constructorAcceptsSessionManager() {
+    // Create interceptor with both security and session manager
+    GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
+
+    assertThat(interceptorWithSession).isNotNull();
+  }
+
+  @Test
+  void constructorAcceptsNullSessionManager() {
+    // Create interceptor with security but null session manager
+    GrpcAuthInterceptor interceptorWithNullSession = new GrpcAuthInterceptor(mockSecurity, null);
+
+    assertThat(interceptorWithNullSession).isNotNull();
   }
 }

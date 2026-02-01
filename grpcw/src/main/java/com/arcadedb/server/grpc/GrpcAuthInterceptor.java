@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.Context;
 import io.grpc.Contexts;
@@ -44,11 +45,17 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> DATABASE_HEADER      =
       Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
-  private final        ServerSecurity       security;
-  private final        boolean              securityEnabled;
+  private final        ServerSecurity          security;
+  private final        boolean                 securityEnabled;
+  private final        HttpAuthSessionManager  authSessionManager;
 
-  public GrpcAuthInterceptor(ServerSecurity security) {
+  public GrpcAuthInterceptor(final ServerSecurity security) {
+    this(security, null);
+  }
+
+  public GrpcAuthInterceptor(final ServerSecurity security, final HttpAuthSessionManager authSessionManager) {
     this.security = security;
+    this.authSessionManager = authSessionManager;
     // Check if security is enabled by checking if it's not null and has users configured
     this.securityEnabled = (security != null && security.getUsers() != null && !security.getUsers().isEmpty());
   }
