@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.HttpAuthSessionManager;
+import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import io.grpc.CompressorRegistry;
@@ -248,9 +250,17 @@ public class GrpcServerPlugin implements ServerPlugin {
     }
 
     // Add authentication interceptor if security is configured
-    ServerSecurity serverSecurity = arcadeServer.getSecurity();
+    final ServerSecurity serverSecurity = arcadeServer.getSecurity();
     if (serverSecurity != null) {
-      serverBuilder.intercept(new GrpcAuthInterceptor(serverSecurity));
+      HttpAuthSessionManager authSessionManager = null;
+      final HttpServer httpServer = arcadeServer.getHttpServer();
+      if (httpServer != null) {
+        authSessionManager = httpServer.getAuthSessionManager();
+      } else {
+        LogManager.instance().log(this, Level.INFO,
+            "HTTP server not available - token authentication disabled for gRPC");
+      }
+      serverBuilder.intercept(new GrpcAuthInterceptor(serverSecurity, authSessionManager));
     }
   }
 
