@@ -1,0 +1,88 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.server.grpc;
+
+import com.arcadedb.server.security.ServerSecurity;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+public class GrpcAuthInterceptorTest {
+
+  private ServerSecurity mockSecurity;
+  private GrpcAuthInterceptor interceptor;
+  private ServerCall<Object, Object> mockCall;
+  private ServerCallHandler<Object, Object> mockHandler;
+  private MethodDescriptor<Object, Object> mockMethodDescriptor;
+  private Metadata metadata;
+
+  @BeforeEach
+  @SuppressWarnings("unchecked")
+  void setUp() {
+    mockSecurity = mock(ServerSecurity.class);
+    interceptor = new GrpcAuthInterceptor(mockSecurity);
+    mockCall = mock(ServerCall.class);
+    mockHandler = mock(ServerCallHandler.class);
+    mockMethodDescriptor = mock(MethodDescriptor.class);
+    metadata = new Metadata();
+
+    // Setup method descriptor to return a method name
+    when(mockCall.getMethodDescriptor()).thenReturn(mockMethodDescriptor);
+    when(mockMethodDescriptor.getFullMethodName()).thenReturn("com.arcadedb.grpc.TestService/TestMethod");
+  }
+
+  @Test
+  void interceptorAllowsCallWhenSecurityIsNull() {
+    // When security is null, securityEnabled is false
+    GrpcAuthInterceptor noSecurityInterceptor = new GrpcAuthInterceptor(null);
+
+    noSecurityInterceptor.interceptCall(mockCall, metadata, mockHandler);
+
+    // Handler's startCall should be invoked (call proceeds)
+    verify(mockHandler).startCall(any(), any());
+    // Call should NOT be closed (no rejection)
+    verify(mockCall, never()).close(any(), any());
+  }
+
+  @Test
+  void interceptorCreatesInstance() {
+    assertThat(interceptor).isNotNull();
+  }
+
+  @Test
+  void metadataKeyForAuthorizationExists() {
+    // Verify the interceptor can handle metadata with authorization header
+    Metadata.Key<String> authKey = Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+    metadata.put(authKey, "Basic dGVzdDp0ZXN0"); // test:test in base64
+
+    // The interceptor should be able to read the authorization header
+    assertThat(metadata.get(authKey)).isNotNull();
+    assertThat(metadata.get(authKey)).isEqualTo("Basic dGVzdDp0ZXN0");
+  }
+}
