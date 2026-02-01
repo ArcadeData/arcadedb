@@ -323,4 +323,25 @@ class GrpcTypeConverterTest {
     assertThat(result).containsEntry("age", 30);
     assertThat(result).containsEntry("active", true);
   }
+
+  @Test
+  void bytesOfNull() {
+    assertThat(GrpcTypeConverter.bytesOf(null)).isEqualTo(0);
+  }
+
+  @Test
+  void bytesOfEmpty() {
+    assertThat(GrpcTypeConverter.bytesOf("")).isEqualTo(0);
+  }
+
+  @Test
+  void bytesOfAscii() {
+    assertThat(GrpcTypeConverter.bytesOf("hello")).isEqualTo(5);
+  }
+
+  @Test
+  void bytesOfUtf8() {
+    // UTF-8 multibyte characters
+    assertThat(GrpcTypeConverter.bytesOf("日本")).isEqualTo(6); // 3 bytes each
+  }
 }

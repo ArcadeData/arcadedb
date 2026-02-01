@@ -23,6 +23,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Date;
@@ -177,5 +178,12 @@ class GrpcTypeConverter {
       params.put(entry.getKey(), fromGrpcValue(entry.getValue()));
     }
     return params;
+  }
+
+  /**
+   * Calculate the UTF-8 byte length of a string.
+   */
+  static int bytesOf(final String s) {
+    return s == null ? 0 : s.getBytes(StandardCharsets.UTF_8).length;
   }
 }
