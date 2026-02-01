@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.RID;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 
 import java.math.BigDecimal;
@@ -26,6 +27,8 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Utility class for converting between gRPC protobuf types and Java/ArcadeDB types.
@@ -103,5 +106,64 @@ class GrpcTypeConverter {
       return null;
     }
     return null;
+  }
+
+  /**
+   * Convert a Java Object to a GrpcValue.
+   */
+  static GrpcValue toGrpcValue(final Object o) {
+    final GrpcValue.Builder b = GrpcValue.newBuilder();
+
+    if (o == null)
+      return b.build();
+
+    if (o instanceof Boolean v)
+      return b.setBoolValue(v).build();
+    if (o instanceof Integer v)
+      return b.setInt32Value(v).build();
+    if (o instanceof Long v)
+      return b.setInt64Value(v).build();
+    if (o instanceof Float v)
+      return b.setFloatValue(v).build();
+    if (o instanceof Double v)
+      return b.setDoubleValue(v).build();
+    if (o instanceof CharSequence v)
+      return b.setStringValue(v.toString()).build();
+    if (o instanceof byte[] v)
+      return b.setBytesValue(ByteString.copyFrom(v)).build();
+
+    if (o instanceof Date v)
+      return b.setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build();
+
+    if (o instanceof RID rid)
+      return b.setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();
+
+    if (o instanceof BigDecimal v) {
+      final var unscaled = v.unscaledValue();
+      if (unscaled.bitLength() <= 63) {
+        return b.setDecimalValue(
+            GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()))
+            .setLogicalType("decimal").build();
+      } else {
+        return b.setStringValue(v.toPlainString()).setLogicalType("decimal").build();
+      }
+    }
+
+    // Collections
+    if (o instanceof List<?> list) {
+      final GrpcList.Builder lb = GrpcList.newBuilder();
+      for (final Object item : list)
+        lb.addValues(toGrpcValue(item));
+      return b.setListValue(lb.build()).build();
+    }
+
+    if (o instanceof Map<?, ?> map) {
+      final GrpcMap.Builder mb = GrpcMap.newBuilder();
+      map.forEach((k, v) -> mb.putEntries(String.valueOf(k), toGrpcValue(v)));
+      return b.setMapValue(mb.build()).build();
+    }
+
+    // Fallback: convert to string
+    return b.setStringValue(String.valueOf(o)).build();
   }
 }

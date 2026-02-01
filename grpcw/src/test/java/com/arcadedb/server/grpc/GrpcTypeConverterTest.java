@@ -201,4 +201,61 @@ class GrpcTypeConverterTest {
     Map<String, Object> mapResult = (Map<String, Object>) result;
     assertThat(mapResult).containsEntry("city", "Rome");
   }
+
+  @Test
+  void toGrpcValueNull() {
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(null);
+    assertThat(result.getKindCase()).isEqualTo(GrpcValue.KindCase.KIND_NOT_SET);
+  }
+
+  @Test
+  void toGrpcValueBoolean() {
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(true);
+    assertThat(result.getBoolValue()).isTrue();
+  }
+
+  @Test
+  void toGrpcValueInteger() {
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(42);
+    assertThat(result.getInt32Value()).isEqualTo(42);
+  }
+
+  @Test
+  void toGrpcValueLong() {
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(123456789012L);
+    assertThat(result.getInt64Value()).isEqualTo(123456789012L);
+  }
+
+  @Test
+  void toGrpcValueFloat() {
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(3.14f);
+    assertThat(result.getFloatValue()).isEqualTo(3.14f);
+  }
+
+  @Test
+  void toGrpcValueDouble() {
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(3.14159);
+    assertThat(result.getDoubleValue()).isEqualTo(3.14159);
+  }
+
+  @Test
+  void toGrpcValueString() {
+    GrpcValue result = GrpcTypeConverter.toGrpcValue("hello");
+    assertThat(result.getStringValue()).isEqualTo("hello");
+  }
+
+  @Test
+  void toGrpcValueBytes() {
+    byte[] data = {1, 2, 3, 4};
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(data);
+    assertThat(result.getBytesValue().toByteArray()).isEqualTo(data);
+  }
+
+  @Test
+  void toGrpcValueDate() {
+    Date date = new Date(1000_500L);
+    GrpcValue result = GrpcTypeConverter.toGrpcValue(date);
+    assertThat(result.hasTimestampValue()).isTrue();
+    assertThat(GrpcTypeConverter.tsToMillis(result.getTimestampValue())).isEqualTo(1000_500L);
+  }
 }
