@@ -18,11 +18,15 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.database.RID;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.Date;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -121,5 +125,80 @@ class GrpcTypeConverterTest {
   void fromGrpcValueKindNotSet() {
     final GrpcValue v = GrpcValue.newBuilder().build();
     assertThat(GrpcTypeConverter.fromGrpcValue(v)).isNull();
+  }
+
+  @Test
+  void fromGrpcValueDecimal() {
+    GrpcDecimal decimal = GrpcDecimal.newBuilder()
+        .setUnscaled(12345)
+        .setScale(2)
+        .build();
+    GrpcValue v = GrpcValue.newBuilder().setDecimalValue(decimal).build();
+
+    Object result = GrpcTypeConverter.fromGrpcValue(v);
+
+    assertThat(result).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result).toString()).isEqualTo("123.45");
+  }
+
+  @Test
+  void fromGrpcValueLink() {
+    GrpcLink link = GrpcLink.newBuilder().setRid("#1:0").build();
+    GrpcValue v = GrpcValue.newBuilder().setLinkValue(link).build();
+
+    Object result = GrpcTypeConverter.fromGrpcValue(v);
+
+    assertThat(result).isInstanceOf(RID.class);
+    assertThat(result.toString()).isEqualTo("#1:0");
+  }
+
+  @Test
+  void fromGrpcValueList() {
+    GrpcList list = GrpcList.newBuilder()
+        .addValues(GrpcValue.newBuilder().setInt32Value(1).build())
+        .addValues(GrpcValue.newBuilder().setInt32Value(2).build())
+        .addValues(GrpcValue.newBuilder().setInt32Value(3).build())
+        .build();
+    GrpcValue v = GrpcValue.newBuilder().setListValue(list).build();
+
+    Object result = GrpcTypeConverter.fromGrpcValue(v);
+
+    assertThat(result).isInstanceOf(List.class);
+    @SuppressWarnings("unchecked")
+    List<Object> listResult = (List<Object>) result;
+    assertThat(listResult).containsExactly(1, 2, 3);
+  }
+
+  @Test
+  void fromGrpcValueMap() {
+    GrpcMap map = GrpcMap.newBuilder()
+        .putEntries("name", GrpcValue.newBuilder().setStringValue("John").build())
+        .putEntries("age", GrpcValue.newBuilder().setInt32Value(30).build())
+        .build();
+    GrpcValue v = GrpcValue.newBuilder().setMapValue(map).build();
+
+    Object result = GrpcTypeConverter.fromGrpcValue(v);
+
+    assertThat(result).isInstanceOf(Map.class);
+    @SuppressWarnings("unchecked")
+    Map<String, Object> mapResult = (Map<String, Object>) result;
+    assertThat(mapResult).containsEntry("name", "John");
+    assertThat(mapResult).containsEntry("age", 30);
+  }
+
+  @Test
+  void fromGrpcValueEmbedded() {
+    GrpcEmbedded embedded = GrpcEmbedded.newBuilder()
+        .setType("Address")
+        .putFields("city", GrpcValue.newBuilder().setStringValue("Rome").build())
+        .build();
+    GrpcValue v = GrpcValue.newBuilder().setEmbeddedValue(embedded).build();
+
+    Object result = GrpcTypeConverter.fromGrpcValue(v);
+
+    assertThat(result).isInstanceOf(Map.class);
+    @SuppressWarnings("unchecked")
+    Map<String, Object> mapResult = (Map<String, Object>) result;
+    assertThat(mapResult).containsEntry("city", "Rome");
   }
 }
