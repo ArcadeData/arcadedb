@@ -103,4 +103,54 @@ public class GrpcAdminServiceIT extends BaseGraphServerTest {
         .isInstanceOf(StatusRuntimeException.class)
         .hasMessageContaining("UNAUTHENTICATED");
   }
+
+  @Test
+  void getServerInfoReturnsValidData() {
+    GetServerInfoRequest request = GetServerInfoRequest.newBuilder()
+        .setCredentials(credentials())
+        .build();
+
+    GetServerInfoResponse response = adminStub.getServerInfo(request);
+
+    assertThat(response.getVersion()).isNotEmpty();
+    assertThat(response.getHttpPort()).isGreaterThan(0);
+    // Note: gRPC port is not exposed via the server reflection API, so it returns -1
+    // The gRPC server is running (we're connected to it) but the port isn't discoverable
+    assertThat(response.getDatabasesCount()).isGreaterThanOrEqualTo(0);
+  }
+
+  @Test
+  void listDatabasesReturnsExistingDatabase() {
+    ListDatabasesRequest request = ListDatabasesRequest.newBuilder()
+        .setCredentials(credentials())
+        .build();
+
+    ListDatabasesResponse response = adminStub.listDatabases(request);
+
+    assertThat(response.getDatabasesList()).contains(getDatabaseName());
+  }
+
+  @Test
+  void existsDatabaseReturnsTrueForExisting() {
+    ExistsDatabaseRequest request = ExistsDatabaseRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName(getDatabaseName())
+        .build();
+
+    ExistsDatabaseResponse response = adminStub.existsDatabase(request);
+
+    assertThat(response.getExists()).isTrue();
+  }
+
+  @Test
+  void existsDatabaseReturnsFalseForNonExistent() {
+    ExistsDatabaseRequest request = ExistsDatabaseRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName("nonexistent_database_xyz")
+        .build();
+
+    ExistsDatabaseResponse response = adminStub.existsDatabase(request);
+
+    assertThat(response.getExists()).isFalse();
+  }
 }
