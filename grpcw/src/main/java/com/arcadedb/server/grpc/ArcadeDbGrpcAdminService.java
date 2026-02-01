@@ -165,13 +165,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       // Optional: if requested 'graph', initialize default graph types
       if ("graph".equalsIgnoreCase(type)) {
-        try (Database db = openDatabase(name)) {
-          Schema s = db.getSchema();
-          if (!existsVertexType(s, "V"))
-            s.createVertexType("V");
-          if (!existsEdgeType(s, "E"))
-            s.createEdgeType("E");
-        }
+        // Use getDatabase which returns a shared ServerDatabase - don't close it
+        Database db = openDatabase(name);
+        Schema s = db.getSchema();
+        if (!existsVertexType(s, "V"))
+          s.createVertexType("V");
+        if (!existsEdgeType(s, "E"))
+          s.createEdgeType("E");
       }
 
       resp.onNext(CreateDatabaseResponse.newBuilder().build());
@@ -223,48 +223,48 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
         return;
       }
 
-      try (Database db = openDatabase(name)) {
+      // Use getDatabase which returns a shared ServerDatabase - don't close it
+      Database db = openDatabase(name);
 
-        Schema schema = db.getSchema();
+      Schema schema = db.getSchema();
 
-        // Count classes
-        int classes = 0;
-        try {
-          classes = schema.getTypes().size();
-        } catch (Throwable ignore) {
-        }
-
-        // Count indexes (Index[] in your build)
-        int indexes = 0;
-        try {
-          Index[] idx = schema.getIndexes();
-          indexes = (idx != null) ? idx.length : 0;
-        } catch (Throwable ignore) {
-        }
-
-        // Approximate record count (fast-ish; adjust to your needs)
-        long records = approximateRecordCount(db);
-
-        // Infer db kind: "graph" if any vertex type exists
-        String type = "document";
-
-        try {
-
-          var vIter = schema.getTypes().stream().filter(t -> t instanceof VertexType);
-
-          if (vIter != null && vIter.iterator().hasNext())
-            type = "graph";
-        } catch (Throwable ignore) {
-        }
-
-        GetDatabaseInfoResponse out = GetDatabaseInfoResponse.newBuilder()
-            .setDatabase(name)
-            .setClasses(classes).setIndexes(indexes).setRecords(records).setType(type)
-            .build();
-
-        resp.onNext(out);
-        resp.onCompleted();
+      // Count classes
+      int classes = 0;
+      try {
+        classes = schema.getTypes().size();
+      } catch (Throwable ignore) {
       }
+
+      // Count indexes (Index[] in your build)
+      int indexes = 0;
+      try {
+        Index[] idx = schema.getIndexes();
+        indexes = (idx != null) ? idx.length : 0;
+      } catch (Throwable ignore) {
+      }
+
+      // Approximate record count (fast-ish; adjust to your needs)
+      long records = approximateRecordCount(db);
+
+      // Infer db kind: "graph" if any vertex type exists
+      String type = "document";
+
+      try {
+
+        var vIter = schema.getTypes().stream().filter(t -> t instanceof VertexType);
+
+        if (vIter != null && vIter.iterator().hasNext())
+          type = "graph";
+      } catch (Throwable ignore) {
+      }
+
+      GetDatabaseInfoResponse out = GetDatabaseInfoResponse.newBuilder()
+          .setDatabase(name)
+          .setClasses(classes).setIndexes(indexes).setRecords(records).setType(type)
+          .build();
+
+      resp.onNext(out);
+      resp.onCompleted();
     } catch (SecurityException se) {
       resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
     } catch (Exception e) {
@@ -384,17 +384,24 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
-   * Drop DB physically. Prefer API with 'removeFiles' boolean if available.
+   * Drop DB physically. Gets the database, drops it via embedded, then removes from server cache.
    */
   private void dropDatabasePhysical(String name) throws Exception {
-    try {
-      var m = server.getClass().getMethod("dropDatabase", String.class, boolean.class);
-      m.invoke(server, name, Boolean.TRUE);
-    } catch (NoSuchMethodException nsme) {
-      // Fallback: dropDatabase(String) if present
-      var m2 = server.getClass().getMethod("dropDatabase", String.class);
-      m2.invoke(server, name);
-    }
+    // Get the server database
+    var getDbMethod = server.getClass().getMethod("getDatabase", String.class);
+    Object serverDb = getDbMethod.invoke(server, name);
+
+    // Get the embedded database and call drop()
+    var getEmbeddedMethod = serverDb.getClass().getMethod("getEmbedded");
+    Object embeddedDb = getEmbeddedMethod.invoke(serverDb);
+    var dropMethod = embeddedDb.getClass().getMethod("drop");
+    dropMethod.invoke(embeddedDb);
+
+    // Remove from server's database cache
+    var getNameMethod = serverDb.getClass().getMethod("getName");
+    String dbName = (String) getNameMethod.invoke(serverDb);
+    var removeMethod = server.getClass().getMethod("removeDatabase", String.class);
+    removeMethod.invoke(server, dbName);
   }
 
   /**

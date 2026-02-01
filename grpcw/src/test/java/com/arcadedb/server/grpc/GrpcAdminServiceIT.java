@@ -153,4 +153,96 @@ public class GrpcAdminServiceIT extends BaseGraphServerTest {
 
     assertThat(response.getExists()).isFalse();
   }
+
+  @Test
+  void createAndDropDatabase() {
+    String testDbName = "grpc_test_db_" + System.currentTimeMillis();
+
+    // Create database
+    CreateDatabaseRequest createRequest = CreateDatabaseRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName(testDbName)
+        .setType("graph")
+        .build();
+
+    adminStub.createDatabase(createRequest);
+
+    // Verify it exists
+    ExistsDatabaseRequest existsRequest = ExistsDatabaseRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName(testDbName)
+        .build();
+
+    assertThat(adminStub.existsDatabase(existsRequest).getExists()).isTrue();
+
+    // Drop database
+    DropDatabaseRequest dropRequest = DropDatabaseRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName(testDbName)
+        .build();
+
+    adminStub.dropDatabase(dropRequest);
+
+    // Verify it no longer exists
+    assertThat(adminStub.existsDatabase(existsRequest).getExists()).isFalse();
+  }
+
+  @Test
+  void createDatabaseIsIdempotent() {
+    String testDbName = "grpc_idempotent_db_" + System.currentTimeMillis();
+
+    CreateDatabaseRequest request = CreateDatabaseRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName(testDbName)
+        .setType("document")
+        .build();
+
+    // Create twice - should not throw
+    adminStub.createDatabase(request);
+    adminStub.createDatabase(request);
+
+    // Cleanup
+    DropDatabaseRequest dropRequest = DropDatabaseRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName(testDbName)
+        .build();
+    adminStub.dropDatabase(dropRequest);
+  }
+
+  @Test
+  void dropNonExistentDatabaseIsIdempotent() {
+    DropDatabaseRequest request = DropDatabaseRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName("nonexistent_db_for_drop_test")
+        .build();
+
+    // Should not throw
+    adminStub.dropDatabase(request);
+  }
+
+  @Test
+  void getDatabaseInfoReturnsValidData() {
+    GetDatabaseInfoRequest request = GetDatabaseInfoRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName(getDatabaseName())
+        .build();
+
+    GetDatabaseInfoResponse response = adminStub.getDatabaseInfo(request);
+
+    assertThat(response.getDatabase()).isEqualTo(getDatabaseName());
+    assertThat(response.getType()).isEqualTo("graph");
+    assertThat(response.getClasses()).isGreaterThan(0);
+  }
+
+  @Test
+  void getDatabaseInfoForNonExistentFails() {
+    GetDatabaseInfoRequest request = GetDatabaseInfoRequest.newBuilder()
+        .setCredentials(credentials())
+        .setName("nonexistent_database")
+        .build();
+
+    assertThatThrownBy(() -> adminStub.getDatabaseInfo(request))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("NOT_FOUND");
+  }
 }
