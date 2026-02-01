@@ -25,14 +25,14 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -340,30 +340,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // Then authenticate against server security
     try {
       server.getSecurity().authenticate(user, pass, null);
-    } catch (Exception e) {
+    } catch (ServerSecurityException e) {
       throw new SecurityException("Invalid credentials");
     }
   }
 
   /**
-   * Get DB names from the server. Adjust if your server exposes a different
-   * accessor.
+   * Get DB names from the server.
    */
-  @SuppressWarnings("unchecked")
   private Collection<String> getDatabaseNames() {
-    // Replace with your server API:
-    // e.g., ((ArcadeDBServer)server).getDatabaseNames()
-    try {
-      var m = server.getClass().getMethod("getDatabaseNames");
-      Object res = m.invoke(server);
-      if (res instanceof Collection<?> c) {
-        return (Collection<String>) c;
-      } else if (res instanceof String[] arr) {
-        return Arrays.asList(arr);
-      }
-    } catch (Throwable ignore) {
-    }
-    return Collections.emptyList();
+    return server.getDatabaseNames();
   }
 
   private boolean containsDatabaseIgnoreCase(String name) {
@@ -375,49 +361,26 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
-   * Create DB physically with READ_WRITE mode. Adjust to your server signature.
+   * Create DB physically with READ_WRITE mode.
    */
-  private void createDatabasePhysical(String name) throws Exception {
-    // Typical signature: createDatabase(String, ComponentFile.MODE)
-    var m = server.getClass().getMethod("createDatabase", String.class, ComponentFile.MODE.class);
-    m.invoke(server, name, ComponentFile.MODE.READ_WRITE);
+  private void createDatabasePhysical(final String name) {
+    server.createDatabase(name, ComponentFile.MODE.READ_WRITE);
   }
 
   /**
    * Drop DB physically. Gets the database, drops it via embedded, then removes from server cache.
    */
-  private void dropDatabasePhysical(String name) throws Exception {
-    // Get the server database
-    var getDbMethod = server.getClass().getMethod("getDatabase", String.class);
-    Object serverDb = getDbMethod.invoke(server, name);
-
-    // Get the embedded database and call drop()
-    var getEmbeddedMethod = serverDb.getClass().getMethod("getEmbedded");
-    Object embeddedDb = getEmbeddedMethod.invoke(serverDb);
-    var dropMethod = embeddedDb.getClass().getMethod("drop");
-    dropMethod.invoke(embeddedDb);
-
-    // Remove from server's database cache
-    var getNameMethod = serverDb.getClass().getMethod("getName");
-    String dbName = (String) getNameMethod.invoke(serverDb);
-    var removeMethod = server.getClass().getMethod("removeDatabase", String.class);
-    removeMethod.invoke(server, dbName);
+  private void dropDatabasePhysical(final String name) {
+    final ServerDatabase database = server.getDatabase(name);
+    database.getEmbedded().drop();
+    server.removeDatabase(database.getName());
   }
 
   /**
-   * Open database for read ops. Adjust to your server's open/get method.
+   * Open database for read ops.
    */
-  private Database openDatabase(String name) throws Exception {
-    // Commonly: server.getDatabase(name) or server.openDatabase(name)
-    try {
-      var m = server.getClass().getMethod("getDatabase", String.class);
-      Object db = m.invoke(server, name);
-      return (Database) db;
-    } catch (NoSuchMethodException nsme) {
-      var m2 = server.getClass().getMethod("openDatabase", String.class);
-      Object db = m2.invoke(server, name);
-      return (Database) db;
-    }
+  private Database openDatabase(final String name) {
+    return server.getDatabase(name);
   }
 
   /**
