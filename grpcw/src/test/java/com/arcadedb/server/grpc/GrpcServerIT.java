@@ -605,4 +605,106 @@ public class GrpcServerIT extends BaseGraphServerTest {
     // With batch size 2 and 5+ records, we should have at least 3 batches
     assertThat(batchCount).isGreaterThanOrEqualTo(3);
   }
+
+  // Bulk insert tests
+
+  @Test
+  void bulkInsertMultipleRecords() {
+    String typeName = "BulkTestType_" + System.currentTimeMillis();
+
+    // Create the type first
+    ExecuteCommandRequest createTypeRequest = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE DOCUMENT TYPE " + typeName)
+        .build();
+    authenticatedStub.executeCommand(createTypeRequest);
+
+    // Prepare records
+    List<GrpcRecord> records = new ArrayList<>();
+    for (int i = 0; i < 10; i++) {
+      records.add(GrpcRecord.newBuilder()
+          .setType(typeName)
+          .putProperties("index", intValue(i))
+          .putProperties("name", stringValue("Bulk Record " + i))
+          .build());
+    }
+
+    BulkInsertRequest request = BulkInsertRequest.newBuilder()
+        .setOptions(InsertOptions.newBuilder()
+            .setDatabase(getDatabaseName())
+            .setCredentials(credentials())
+            .setTargetClass(typeName)
+            .setConflictMode(InsertOptions.ConflictMode.CONFLICT_ERROR)
+            .setTransactionMode(InsertOptions.TransactionMode.PER_BATCH)
+            .build())
+        .addAllRows(records)
+        .build();
+
+    InsertSummary response = authenticatedStub.bulkInsert(request);
+
+    assertThat(response.getReceived()).isEqualTo(10);
+    assertThat(response.getInserted()).isEqualTo(10);
+    assertThat(response.getFailed()).isEqualTo(0);
+  }
+
+  @Test
+  void bulkInsertWithConflictIgnore() {
+    String typeName = "BulkConflictType_" + System.currentTimeMillis();
+
+    // Create the type with unique index
+    ExecuteCommandRequest createTypeRequest = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE DOCUMENT TYPE " + typeName)
+        .build();
+    authenticatedStub.executeCommand(createTypeRequest);
+
+    ExecuteCommandRequest createIndexRequest = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE PROPERTY " + typeName + ".uniqueKey STRING")
+        .build();
+    authenticatedStub.executeCommand(createIndexRequest);
+
+    ExecuteCommandRequest createUniqueIndexRequest = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE INDEX ON " + typeName + "(uniqueKey) UNIQUE")
+        .build();
+    authenticatedStub.executeCommand(createUniqueIndexRequest);
+
+    // Insert records with duplicates
+    List<GrpcRecord> records = new ArrayList<>();
+    records.add(GrpcRecord.newBuilder()
+        .setType(typeName)
+        .putProperties("uniqueKey", stringValue("key1"))
+        .build());
+    records.add(GrpcRecord.newBuilder()
+        .setType(typeName)
+        .putProperties("uniqueKey", stringValue("key1")) // duplicate
+        .build());
+    records.add(GrpcRecord.newBuilder()
+        .setType(typeName)
+        .putProperties("uniqueKey", stringValue("key2"))
+        .build());
+
+    BulkInsertRequest request = BulkInsertRequest.newBuilder()
+        .setOptions(InsertOptions.newBuilder()
+            .setDatabase(getDatabaseName())
+            .setCredentials(credentials())
+            .setTargetClass(typeName)
+            .addKeyColumns("uniqueKey")
+            .setConflictMode(InsertOptions.ConflictMode.CONFLICT_IGNORE)
+            .setTransactionMode(InsertOptions.TransactionMode.PER_BATCH)
+            .build())
+        .addAllRows(records)
+        .build();
+
+    InsertSummary response = authenticatedStub.bulkInsert(request);
+
+    assertThat(response.getReceived()).isEqualTo(3);
+    assertThat(response.getInserted()).isEqualTo(2); // key1 and key2
+    assertThat(response.getIgnored()).isEqualTo(1);  // duplicate key1
+  }
 }
