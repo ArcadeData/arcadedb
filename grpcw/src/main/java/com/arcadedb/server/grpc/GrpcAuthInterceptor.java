@@ -67,6 +67,11 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       return next.startCall(call, headers);
     }
 
+    // Skip auth for admin service - it handles its own authentication via request body
+    if (methodName.startsWith("com.arcadedb.grpc.ArcadeDbAdminService/")) {
+      return next.startCall(call, headers);
+    }
+
     // If security is not enabled, allow all requests
     if (!securityEnabled) {
       return next.startCall(call, headers);

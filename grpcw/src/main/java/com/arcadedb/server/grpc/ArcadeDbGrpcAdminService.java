@@ -334,7 +334,15 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     if (user == null || user.isBlank())
       throw new SecurityException("Authentication required");
 
+    // Validate format first
     credentialsValidator.validateCredentials(user, pass);
+
+    // Then authenticate against server security
+    try {
+      server.getSecurity().authenticate(user, pass, null);
+    } catch (Exception e) {
+      throw new SecurityException("Invalid credentials");
+    }
   }
 
   /**
