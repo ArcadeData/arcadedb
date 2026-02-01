@@ -18,7 +18,14 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.database.RID;
 import com.google.protobuf.Timestamp;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.LinkedHashMap;
 
 /**
  * Utility class for converting between gRPC protobuf types and Java/ArcadeDB types.
@@ -44,5 +51,57 @@ class GrpcTypeConverter {
     final long seconds = Math.floorDiv(ms, 1000L);
     final int nanos = (int) Math.floorMod(ms, 1000L) * 1_000_000;
     return Timestamp.newBuilder().setSeconds(seconds).setNanos(nanos).build();
+  }
+
+  /**
+   * Convert a GrpcValue to a Java Object.
+   */
+  static Object fromGrpcValue(final GrpcValue v) {
+    if (v == null)
+      return null;
+
+    switch (v.getKindCase()) {
+    case BOOL_VALUE:
+      return v.getBoolValue();
+    case INT32_VALUE:
+      return v.getInt32Value();
+    case INT64_VALUE:
+      return v.getInt64Value();
+    case FLOAT_VALUE:
+      return v.getFloatValue();
+    case DOUBLE_VALUE:
+      return v.getDoubleValue();
+    case STRING_VALUE:
+      return v.getStringValue();
+    case BYTES_VALUE:
+      return v.getBytesValue().toByteArray();
+    case TIMESTAMP_VALUE:
+      return new Date(tsToMillis(v.getTimestampValue()));
+    case LINK_VALUE:
+      return new RID(v.getLinkValue().getRid());
+    case DECIMAL_VALUE: {
+      final var d = v.getDecimalValue();
+      return new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale());
+    }
+    case LIST_VALUE: {
+      final var out = new ArrayList<>();
+      for (final GrpcValue e : v.getListValue().getValuesList())
+        out.add(fromGrpcValue(e));
+      return out;
+    }
+    case MAP_VALUE: {
+      final var out = new LinkedHashMap<String, Object>();
+      v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+      return out;
+    }
+    case EMBEDDED_VALUE: {
+      final var out = new LinkedHashMap<String, Object>();
+      v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+      return out;
+    }
+    case KIND_NOT_SET:
+      return null;
+    }
+    return null;
   }
 }

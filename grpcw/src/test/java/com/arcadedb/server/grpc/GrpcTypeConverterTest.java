@@ -18,8 +18,11 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import org.junit.jupiter.api.Test;
+
+import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,5 +58,68 @@ class GrpcTypeConverterTest {
     long result = GrpcTypeConverter.tsToMillis(ts);
 
     assertThat(result).isEqualTo(original);
+  }
+
+  @Test
+  void fromGrpcValueNull() {
+    assertThat(GrpcTypeConverter.fromGrpcValue(null)).isNull();
+  }
+
+  @Test
+  void fromGrpcValueBoolean() {
+    final GrpcValue v = GrpcValue.newBuilder().setBoolValue(true).build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(v)).isEqualTo(true);
+  }
+
+  @Test
+  void fromGrpcValueInt32() {
+    final GrpcValue v = GrpcValue.newBuilder().setInt32Value(42).build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(v)).isEqualTo(42);
+  }
+
+  @Test
+  void fromGrpcValueInt64() {
+    final GrpcValue v = GrpcValue.newBuilder().setInt64Value(123456789012L).build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(v)).isEqualTo(123456789012L);
+  }
+
+  @Test
+  void fromGrpcValueFloat() {
+    final GrpcValue v = GrpcValue.newBuilder().setFloatValue(3.14f).build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(v)).isEqualTo(3.14f);
+  }
+
+  @Test
+  void fromGrpcValueDouble() {
+    final GrpcValue v = GrpcValue.newBuilder().setDoubleValue(3.14159).build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(v)).isEqualTo(3.14159);
+  }
+
+  @Test
+  void fromGrpcValueString() {
+    final GrpcValue v = GrpcValue.newBuilder().setStringValue("hello").build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(v)).isEqualTo("hello");
+  }
+
+  @Test
+  void fromGrpcValueBytes() {
+    final byte[] data = {1, 2, 3, 4};
+    final GrpcValue v = GrpcValue.newBuilder().setBytesValue(ByteString.copyFrom(data)).build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(v)).isEqualTo(data);
+  }
+
+  @Test
+  void fromGrpcValueTimestamp() {
+    final Timestamp ts = Timestamp.newBuilder().setSeconds(1000).setNanos(0).build();
+    final GrpcValue v = GrpcValue.newBuilder().setTimestampValue(ts).build();
+    final Object result = GrpcTypeConverter.fromGrpcValue(v);
+    assertThat(result).isInstanceOf(Date.class);
+    assertThat(((Date) result).getTime()).isEqualTo(1000_000L);
+  }
+
+  @Test
+  void fromGrpcValueKindNotSet() {
+    final GrpcValue v = GrpcValue.newBuilder().build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(v)).isNull();
   }
 }
