@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -299,5 +300,27 @@ class GrpcTypeConverterTest {
     assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(42))).isEqualTo(42);
     assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(3.14))).isEqualTo(3.14);
     assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue("hello"))).isEqualTo("hello");
+  }
+
+  @Test
+  void convertParametersEmpty() {
+    Map<String, GrpcValue> params = Map.of();
+    Map<String, Object> result = GrpcTypeConverter.convertParameters(params);
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void convertParametersWithValues() {
+    Map<String, GrpcValue> params = new HashMap<>();
+    params.put("name", GrpcValue.newBuilder().setStringValue("John").build());
+    params.put("age", GrpcValue.newBuilder().setInt32Value(30).build());
+    params.put("active", GrpcValue.newBuilder().setBoolValue(true).build());
+
+    Map<String, Object> result = GrpcTypeConverter.convertParameters(params);
+
+    assertThat(result).hasSize(3);
+    assertThat(result).containsEntry("name", "John");
+    assertThat(result).containsEntry("age", 30);
+    assertThat(result).containsEntry("active", true);
   }
 }

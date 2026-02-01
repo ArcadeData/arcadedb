@@ -26,6 +26,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -165,5 +166,16 @@ class GrpcTypeConverter {
 
     // Fallback: convert to string
     return b.setStringValue(String.valueOf(o)).build();
+  }
+
+  /**
+   * Convert a map of GrpcValue parameters to Java objects.
+   */
+  static Map<String, Object> convertParameters(final Map<String, GrpcValue> protoParams) {
+    final Map<String, Object> params = new HashMap<>();
+    for (final Map.Entry<String, GrpcValue> entry : protoParams.entrySet()) {
+      params.put(entry.getKey(), fromGrpcValue(entry.getValue()));
+    }
+    return params;
   }
 }
