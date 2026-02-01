@@ -133,10 +133,11 @@ class GrpcAuthInterceptor implements ServerInterceptor {
   }
 
   private boolean validateToken(String token, String database) {
-    // Implement token validation logic
-    // This could integrate with JWT, OAuth2, or custom token validation
-    // For now, this is a placeholder
-    return true;
+    // TODO: Implement JWT/OAuth2 token validation when token auth is supported
+    // For now, reject all token authentication attempts as this feature is not yet implemented
+    LogManager.instance().log(this, Level.WARNING,
+        "Bearer token authentication is not yet implemented - rejecting token auth attempt for database: %s", database);
+    return false;
   }
 
   private boolean validateCredentials(String username, String password, String database) {
@@ -156,9 +157,9 @@ class GrpcAuthInterceptor implements ServerInterceptor {
   }
 
   private String extractUserFromToken(String authorization) {
-    // Extract user information from token
-    // This is a placeholder - implement based on your token format
-    return "authenticated-user";
+    // TODO: Extract user information from JWT/OAuth2 token when implemented
+    // This method should not be called since validateToken returns false
+    throw new UnsupportedOperationException("Token authentication is not yet implemented");
   }
 
   // Context key for storing authenticated user
