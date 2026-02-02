@@ -33,10 +33,6 @@
     <packaging>jar</packaging>
     <name>ArcadeDB Network</name>
 
-    <properties>
-        <mockito.version>5.15.2</mockito.version>
-    </properties>
-
     <dependencies>
 
         <dependency>
@@ -44,6 +40,13 @@
             <artifactId>arcadedb-engine</artifactId>
             <version>${project.parent.version}</version>
             <scope>compile</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito-core.version}</version>
+            <scope>test</scope>
         </dependency>
 
     </dependencies>
