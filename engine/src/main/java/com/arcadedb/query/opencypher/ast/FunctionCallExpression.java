@@ -52,6 +52,21 @@ public class FunctionCallExpression implements Expression {
   }
 
   @Override
+  public boolean containsAggregation() {
+    // If this function itself is an aggregation, return true
+    if (isAggregation()) {
+      return true;
+    }
+    // Otherwise, check if any argument contains an aggregation (wrapped aggregation)
+    for (final Expression arg : arguments) {
+      if (arg.containsAggregation()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  @Override
   public String getText() {
     final StringBuilder sb = new StringBuilder();
     sb.append(functionName).append("(");

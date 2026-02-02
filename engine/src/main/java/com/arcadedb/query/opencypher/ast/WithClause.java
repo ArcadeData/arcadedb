@@ -85,10 +85,11 @@ public class WithClause {
 
   /**
    * Check if any WITH item is an aggregation function.
+   * This includes wrapped aggregations like head(collect(...)).
    */
   public boolean hasAggregations() {
     for (final ReturnClause.ReturnItem item : items) {
-      if (item.getExpression().isAggregation()) {
+      if (item.getExpression().containsAggregation()) {
         return true;
       }
     }
@@ -98,10 +99,11 @@ public class WithClause {
   /**
    * Check if any WITH item is NOT an aggregation function.
    * Used to detect implicit GROUP BY (when WITH has both aggregations and non-aggregations).
+   * An expression is considered non-aggregation if it doesn't contain any aggregation.
    */
   public boolean hasNonAggregations() {
     for (final ReturnClause.ReturnItem item : items) {
-      if (!item.getExpression().isAggregation()) {
+      if (!item.getExpression().containsAggregation()) {
         return true;
       }
     }

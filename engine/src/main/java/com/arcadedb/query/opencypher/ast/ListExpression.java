@@ -58,6 +58,17 @@ public class ListExpression implements Expression {
   }
 
   @Override
+  public boolean containsAggregation() {
+    // A list contains an aggregation if any of its elements contain aggregations
+    for (final Expression element : elements) {
+      if (element.containsAggregation()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  @Override
   public String getText() {
     return text;
   }
