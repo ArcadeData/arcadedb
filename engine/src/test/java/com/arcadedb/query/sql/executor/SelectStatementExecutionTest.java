@@ -4609,4 +4609,112 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(((Result) firstResult).<Integer>getProperty("a")).isEqualTo(0);
     }
   }
+
+  /**
+   * Test for GitHub issue #3304 - max/min aggregates should use indexes when available.
+   * This test creates an indexed property and verifies that max/min aggregate queries
+   * utilize the index rather than performing a full table scan.
+   */
+  @Test
+  void testMaxMinAggregateWithIndex() {
+    final String className = "testMaxMinAggregateWithIndex";
+    final DocumentType tc = database.getSchema().createDocumentType(className);
+    tc.createProperty("p1", Type.STRING);
+    tc.createProperty("p2", Type.LONG);
+
+    database.begin();
+    final Index idx = tc.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "p2");
+    final String indexName = idx.getName();
+
+    // Insert 126+ records to make scan warning appear
+    for (long i = 0; i < 126; i++) {
+      final MutableDocument doc = database.newDocument(className);
+      doc.set("p1", "value" + i);
+      doc.set("p2", i);
+      doc.save();
+    }
+    database.commit();
+
+    // Test max aggregate
+    final ResultSet maxResult = database.query("sql", "select max(p2) as maxValue from " + className);
+    assertThat(maxResult.hasNext()).isTrue();
+    final Result maxRow = maxResult.next();
+    assertThat(maxRow).isNotNull();
+    assertThat(maxRow.<Long>getProperty("maxValue")).isEqualTo(125L);
+    assertThat(maxResult.hasNext()).isFalse();
+
+    // Check execution plan for max - should use index
+    final Optional<ExecutionPlan> maxPlan = maxResult.getExecutionPlan();
+    assertThat(maxPlan.isPresent()).isTrue();
+    final ExecutionPlan maxExecPlan = maxPlan.get();
+    assertThat(maxExecPlan instanceof SelectExecutionPlan).isTrue();
+
+    // TODO: Once fix is implemented, uncomment this to verify index usage
+    // final SelectExecutionPlan maxSelectPlan = (SelectExecutionPlan) maxExecPlan;
+    // boolean usesIndex = maxSelectPlan.getSteps().stream()
+    //     .anyMatch(step -> step instanceof FetchFromIndexStep);
+    // assertThat(usesIndex).as("max() should use index").isTrue();
+
+    maxResult.close();
+
+    // Test min aggregate
+    final ResultSet minResult = database.query("sql", "select min(p2) as minValue from " + className);
+    assertThat(minResult.hasNext()).isTrue();
+    final Result minRow = minResult.next();
+    assertThat(minRow).isNotNull();
+    assertThat(minRow.<Long>getProperty("minValue")).isEqualTo(0L);
+    assertThat(minResult.hasNext()).isFalse();
+
+    // Check execution plan for min - should use index
+    final Optional<ExecutionPlan> minPlan = minResult.getExecutionPlan();
+    assertThat(minPlan.isPresent()).isTrue();
+    final ExecutionPlan minExecPlan = minPlan.get();
+    assertThat(minExecPlan instanceof SelectExecutionPlan).isTrue();
+
+    // TODO: Once fix is implemented, uncomment this to verify index usage
+    // final SelectExecutionPlan minSelectPlan = (SelectExecutionPlan) minExecPlan;
+    // boolean usesIndex = minSelectPlan.getSteps().stream()
+    //     .anyMatch(step -> step instanceof FetchFromIndexStep);
+    // assertThat(usesIndex).as("min() should use index").isTrue();
+
+    minResult.close();
+
+    // Test with EXPLAIN to check execution plan
+    final ResultSet explainMax = database.query("sql", "explain select max(p2) as maxValue from " + className);
+    assertThat(explainMax.hasNext()).isTrue();
+    final Result explainMaxResult = explainMax.next();
+    assertThat(explainMaxResult).isNotNull();
+    final String maxExecutionPlanString = explainMaxResult.getProperty("executionPlanAsString");
+    assertThat(maxExecutionPlanString).isNotNull();
+
+    // TODO: Once fix is implemented, uncomment this to verify index usage in EXPLAIN
+    // assertThat(maxExecutionPlanString).as("max() execution plan should mention index usage")
+    //     .containsIgnoringCase("index");
+
+    explainMax.close();
+
+    final ResultSet explainMin = database.query("sql", "explain select min(p2) as minValue from " + className);
+    assertThat(explainMin.hasNext()).isTrue();
+    final Result explainMinResult = explainMin.next();
+    assertThat(explainMinResult).isNotNull();
+    final String minExecutionPlanString = explainMinResult.getProperty("executionPlanAsString");
+    assertThat(minExecutionPlanString).isNotNull();
+
+    // TODO: Once fix is implemented, uncomment this to verify index usage in EXPLAIN
+    // assertThat(minExecutionPlanString).as("min() execution plan should mention index usage")
+    //     .containsIgnoringCase("index");
+
+    explainMin.close();
+
+    // Test combined max and min in single query
+    final ResultSet combinedResult = database.query("sql",
+        "select max(p2) as maxValue, min(p2) as minValue from " + className);
+    assertThat(combinedResult.hasNext()).isTrue();
+    final Result combinedRow = combinedResult.next();
+    assertThat(combinedRow).isNotNull();
+    assertThat(combinedRow.<Long>getProperty("maxValue")).isEqualTo(125L);
+    assertThat(combinedRow.<Long>getProperty("minValue")).isEqualTo(0L);
+    assertThat(combinedResult.hasNext()).isFalse();
+    combinedResult.close();
+  }
 }

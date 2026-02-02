@@ -316,7 +316,8 @@ public class SelectExecutionPlanner {
   }
 
   private boolean handleHardwiredOptimizations(final SelectExecutionPlan result, final CommandContext context) {
-    return handleHardwiredCountOnIndex(result, info, context) || handleHardwiredCountOnType(result, info, context);
+    return handleHardwiredCountOnIndex(result, info, context) || handleHardwiredCountOnType(result, info, context)
+        || handleHardwiredMaxMinOnIndex(result, info, context);
   }
 
   private boolean handleHardwiredCountOnType(final SelectExecutionPlan result, final QueryPlanningInfo info,
@@ -363,6 +364,51 @@ public class SelectExecutionPlanner {
     return true;
   }
 
+  private boolean handleHardwiredMaxMinOnIndex(final SelectExecutionPlan result, final QueryPlanningInfo info,
+      final CommandContext context) {
+    final Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
+    if (targetClass == null)
+      return false;
+
+    if (info.distinct || info.expand)
+      return false;
+
+    if (!isMaxOrMin(info))
+      return false;
+
+    if (!isMinimalQuery(info))
+      return false;
+
+    // Extract the property name from the max/min function
+    final String propertyName = getAggregatePropertyName(info);
+    if (propertyName == null)
+      return false;
+
+    // Get the target type from the database schema
+    final String typeName = targetClass.getStringValue();
+    final DocumentType targetType = context.getDatabase().getSchema().getType(typeName);
+    if (targetType == null)
+      return false;
+
+    // Find an index on the property
+    final Collection<TypeIndex> indexes = targetType.getIndexesByProperties(propertyName);
+    if (indexes == null || indexes.isEmpty())
+      return false;
+
+    // Use the first suitable index
+    final TypeIndex index = indexes.iterator().next();
+
+    // Determine if this is a max or min operation
+    final boolean isMax = isMaxOnly(info);
+
+    // Get the alias for the result
+    final String alias = info.projection.getAllAliases().getFirst();
+
+    // Add the optimized step
+    result.chain(new MaxMinFromIndexStep(index, isMax, propertyName, alias, context));
+    return true;
+  }
+
   /**
    * returns true if the query is minimal, ie. no WHERE condition, no SKIP/LIMIT, no UNWIND, no GROUP/ORDER BY, no LET
    *
@@ -405,6 +451,96 @@ public class SelectExecutionPlanner {
     }
     final ProjectionItem item = aggregateProjection.getItems().getFirst();
     return item.getExpression().isCount();
+  }
+
+  private boolean isMaxOrMin(final QueryPlanningInfo info) {
+    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1
+        || info.projection.getItems().size() != 1)
+      return false;
+
+    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
+    final Expression exp = item.getExpression();
+    if (exp.getMathExpression() != null && exp.getMathExpression() instanceof BaseExpression) {
+      final BaseExpression base = (BaseExpression) exp.getMathExpression();
+      if (base.getIdentifier() == null)
+        return false;
+
+      final FunctionCall function = base.getIdentifier().getLevelZero().getFunctionCall();
+      if (function == null)
+        return false;
+
+      final String functionName = function.getName().getStringValue();
+      return functionName.equalsIgnoreCase("max") || functionName.equalsIgnoreCase("min");
+    }
+    return false;
+  }
+
+  private boolean isMaxOnly(final QueryPlanningInfo info) {
+    if (!isMaxOrMin(info))
+      return false;
+
+    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
+    final Expression exp = item.getExpression();
+    final BaseExpression base = (BaseExpression) exp.getMathExpression();
+    final FunctionCall function = base.getIdentifier().getLevelZero().getFunctionCall();
+    return function.getName().getStringValue().equalsIgnoreCase("max");
+  }
+
+  private boolean isMinOnly(final QueryPlanningInfo info) {
+    if (!isMaxOrMin(info))
+      return false;
+
+    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
+    final Expression exp = item.getExpression();
+    final BaseExpression base = (BaseExpression) exp.getMathExpression();
+    final FunctionCall function = base.getIdentifier().getLevelZero().getFunctionCall();
+    return function.getName().getStringValue().equalsIgnoreCase("min");
+  }
+
+  private String getAggregatePropertyName(final QueryPlanningInfo info) {
+    if (!isMaxOrMin(info))
+      return null;
+
+    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
+    final Expression exp = item.getExpression();
+    final BaseExpression base = (BaseExpression) exp.getMathExpression();
+    final FunctionCall function = base.getIdentifier().getLevelZero().getFunctionCall();
+
+    // Get the first parameter of the max/min function
+    final List<Expression> params = function.getParams();
+    if (params == null || params.isEmpty())
+      return null;
+
+    // Extract the property name from the first parameter
+    final Expression param = params.getFirst();
+    if (param.getMathExpression() != null && param.getMathExpression() instanceof BaseExpression) {
+      final BaseExpression paramBase = (BaseExpression) param.getMathExpression();
+      if (paramBase.getIdentifier() != null && paramBase.getIdentifier().suffix != null
+          && paramBase.getIdentifier().suffix.identifier != null) {
+        final String result = paramBase.getIdentifier().suffix.identifier.getStringValue();
+
+        // If it's an internal alias (_$$$OALIAS$$$_), we need to resolve it from preAggregateProjection
+        if (result.startsWith("_$$$OALIAS$$$_") && info.preAggregateProjection != null) {
+          // Find the original property name from preAggregateProjection
+          for (final ProjectionItem preItem : info.preAggregateProjection.getItems()) {
+            if (result.equals(preItem.getProjectionAliasAsString())) {
+              // Found the matching item, extract its property name
+              final Expression preExp = preItem.getExpression();
+              if (preExp.getMathExpression() instanceof BaseExpression) {
+                final BaseExpression preBase = (BaseExpression) preExp.getMathExpression();
+                if (preBase.getIdentifier() != null && preBase.getIdentifier().suffix != null
+                    && preBase.getIdentifier().suffix.identifier != null)
+                  return preBase.getIdentifier().suffix.identifier.getStringValue();
+              }
+            }
+          }
+        }
+
+        return result;
+      }
+    }
+
+    return null;
   }
 
   public static void handleUnwind(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context) {
