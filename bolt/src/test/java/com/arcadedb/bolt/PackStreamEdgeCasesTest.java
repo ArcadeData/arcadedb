@@ -23,6 +23,7 @@ import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltNode;
 
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -40,7 +41,7 @@ class PackStreamEdgeCasesTest {
   // ============ Integer edge cases ============
 
   @Test
-  void integerBoundaryTinyInt() throws IOException {
+  void integerBoundaryTinyInt() throws Exception {
     // Test boundary values for TINY_INT range [-16, 127]
     testIntegerRoundTrip(-16);  // Min TINY_INT
     testIntegerRoundTrip(127);  // Max TINY_INT
@@ -49,7 +50,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void integerBoundaryInt8() throws IOException {
+  void integerBoundaryInt8() throws Exception {
     // Test values that require INT_8 encoding
     testIntegerRoundTrip(-17);           // Just below TINY_INT range
     testIntegerRoundTrip(Byte.MIN_VALUE); // -128
@@ -57,7 +58,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void integerBoundaryInt16() throws IOException {
+  void integerBoundaryInt16() throws Exception {
     // Test values that require INT_16 encoding
     testIntegerRoundTrip(128);            // Just above Byte.MAX_VALUE
     testIntegerRoundTrip(-129);           // Just below Byte.MIN_VALUE
@@ -68,7 +69,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void integerBoundaryInt32() throws IOException {
+  void integerBoundaryInt32() throws Exception {
     // Test values that require INT_32 encoding
     testIntegerRoundTrip(32768);           // Just above Short.MAX_VALUE
     testIntegerRoundTrip(-32769);          // Just below Short.MIN_VALUE
@@ -79,7 +80,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void integerBoundaryInt64() throws IOException {
+  void integerBoundaryInt64() throws Exception {
     // Test values that require INT_64 encoding
     testIntegerRoundTrip((long) Integer.MAX_VALUE + 1);
     testIntegerRoundTrip((long) Integer.MIN_VALUE - 1);
@@ -97,7 +98,7 @@ class PackStreamEdgeCasesTest {
   // ============ String edge cases ============
 
   @Test
-  void stringTiny() throws IOException {
+  void stringTiny() throws Exception {
     // TINY_STRING: 0-15 bytes
     testStringRoundTrip("");
     testStringRoundTrip("a");
@@ -105,7 +106,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void string8() throws IOException {
+  void string8() throws Exception {
     // STRING_8: 16-255 bytes
     testStringRoundTrip("a".repeat(16));  // Min STRING_8
     testStringRoundTrip("a".repeat(100));
@@ -113,7 +114,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void string16() throws IOException {
+  void string16() throws Exception {
     // STRING_16: 256-65535 bytes
     testStringRoundTrip("a".repeat(256));   // Min STRING_16
     testStringRoundTrip("a".repeat(1000));
@@ -121,14 +122,14 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void string32() throws IOException {
+  void string32() throws Exception {
     // STRING_32: > 65535 bytes (only test minimum to save memory)
     final String longString = "a".repeat(65536); // Min STRING_32
     testStringRoundTrip(longString);
   }
 
   @Test
-  void stringNull() throws IOException {
+  void stringNull() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeString(null);
     final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
@@ -145,7 +146,7 @@ class PackStreamEdgeCasesTest {
   // ============ Bytes edge cases ============
 
   @Test
-  void bytes8() throws IOException {
+  void bytes8() throws Exception {
     // BYTES_8: 0-255 bytes
     testBytesRoundTrip(new byte[0]);
     testBytesRoundTrip(new byte[] { 1, 2, 3 });
@@ -153,14 +154,14 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void bytes16() throws IOException {
+  void bytes16() throws Exception {
     // BYTES_16: 256-65535 bytes
     testBytesRoundTrip(new byte[256]);
     testBytesRoundTrip(new byte[1000]);
   }
 
   @Test
-  void bytesNull() throws IOException {
+  void bytesNull() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeBytes(null);
     final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
@@ -177,7 +178,7 @@ class PackStreamEdgeCasesTest {
   // ============ List edge cases ============
 
   @Test
-  void listTiny() throws IOException {
+  void listTiny() throws Exception {
     // TINY_LIST: 0-15 items
     testListRoundTrip(List.of());
     testListRoundTrip(List.of(1));
@@ -185,7 +186,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void list8() throws IOException {
+  void list8() throws Exception {
     // LIST_8: 16-255 items
     testListRoundTrip(createIntList(16));  // Min LIST_8
     testListRoundTrip(createIntList(100));
@@ -193,14 +194,14 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void list16() throws IOException {
+  void list16() throws Exception {
     // LIST_16: 256-65535 items
     testListRoundTrip(createIntList(256));  // Min LIST_16
     testListRoundTrip(createIntList(1000));
   }
 
   @Test
-  void listNull() throws IOException {
+  void listNull() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeList(null);
     final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
@@ -227,7 +228,7 @@ class PackStreamEdgeCasesTest {
   // ============ Map edge cases ============
 
   @Test
-  void mapTiny() throws IOException {
+  void mapTiny() throws Exception {
     // TINY_MAP: 0-15 entries
     testMapRoundTrip(Map.of());
     testMapRoundTrip(Map.of("a", 1));
@@ -235,7 +236,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void map8() throws IOException {
+  void map8() throws Exception {
     // MAP_8: 16-255 entries
     testMapRoundTrip(createIntMap(16));  // Min MAP_8
     testMapRoundTrip(createIntMap(100));
@@ -243,13 +244,13 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void map16() throws IOException {
+  void map16() throws Exception {
     // MAP_16: 256-65535 entries
     testMapRoundTrip(createIntMap(256)); // Min MAP_16
   }
 
   @Test
-  void mapNull() throws IOException {
+  void mapNull() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeMap(null);
     final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
@@ -284,7 +285,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void structureWithPackStreamStructure() throws IOException {
+  void structureWithPackStreamStructure() throws Exception {
     final BoltNode node = new BoltNode(1L, List.of("Label"), Map.of("key", "value"), "#1:0");
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeValue(node);
@@ -297,7 +298,7 @@ class PackStreamEdgeCasesTest {
   // ============ WriteValue type detection ============
 
   @Test
-  void writeValueBoolean() throws IOException {
+  void writeValueBoolean() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeValue(Boolean.TRUE);
     writer.writeValue(Boolean.FALSE);
@@ -308,7 +309,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void writeValueNumbers() throws IOException {
+  void writeValueNumbers() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeValue((byte) 10);
     writer.writeValue((short) 100);
@@ -322,12 +323,12 @@ class PackStreamEdgeCasesTest {
     assertThat(reader.readValue()).isEqualTo(100L);
     assertThat(reader.readValue()).isEqualTo(1000L);
     assertThat(reader.readValue()).isEqualTo(10000L);
-    assertThat((Double) reader.readValue()).isEqualTo(3.14f, org.assertj.core.data.Offset.offset(0.01));
-    assertThat((Double) reader.readValue()).isEqualTo(3.14159, org.assertj.core.data.Offset.offset(0.00001));
+    assertThat((Double) reader.readValue()).isEqualTo(3.14f, Offset.offset(0.01));
+    assertThat((Double) reader.readValue()).isEqualTo(3.14159, Offset.offset(0.00001));
   }
 
   @Test
-  void writeValueUnknownTypeConvertsToString() throws IOException {
+  void writeValueUnknownTypeConvertsToString() throws Exception {
     final Object customObject = new Object() {
       @Override
       public String toString() {
@@ -345,7 +346,7 @@ class PackStreamEdgeCasesTest {
   // ============ Writer utility methods ============
 
   @Test
-  void writerSize() throws IOException {
+  void writerSize() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     assertThat(writer.size()).isEqualTo(0);
 
@@ -354,7 +355,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void writerReset() throws IOException {
+  void writerReset() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeString("test");
     assertThat(writer.size()).isGreaterThan(0);
@@ -364,7 +365,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void writerRawMethods() throws IOException {
+  void writerRawMethods() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeRawByte(0x01);          // 1 byte
     writer.writeRawBytes(new byte[] { 0x02, 0x03 }); // 2 bytes
@@ -375,7 +376,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void writerWithCustomBuffer() throws IOException {
+  void writerWithCustomBuffer() throws Exception {
     final ByteArrayOutputStream customBuffer = new ByteArrayOutputStream();
     final PackStreamWriter writer = new PackStreamWriter(customBuffer);
     writer.writeString("test");
@@ -387,7 +388,7 @@ class PackStreamEdgeCasesTest {
   // ============ Float edge cases ============
 
   @Test
-  void floatSpecialValues() throws IOException {
+  void floatSpecialValues() throws Exception {
     testFloatRoundTrip(0.0);
     testFloatRoundTrip(-0.0);
     testFloatRoundTrip(Double.MAX_VALUE);
@@ -398,7 +399,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void floatNaN() throws IOException {
+  void floatNaN() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeFloat(Double.NaN);
     final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
@@ -415,7 +416,7 @@ class PackStreamEdgeCasesTest {
   // ============ ListHeader tests ============
 
   @Test
-  void listHeaderSizes() throws IOException {
+  void listHeaderSizes() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
 
     // Tiny list header (0-15)
@@ -439,7 +440,7 @@ class PackStreamEdgeCasesTest {
   // ============ MapHeader tests ============
 
   @Test
-  void mapHeaderSizes() throws IOException {
+  void mapHeaderSizes() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
 
     // Tiny map header (0-15)
@@ -463,7 +464,7 @@ class PackStreamEdgeCasesTest {
   // ============ Complex nested structures ============
 
   @Test
-  void deeplyNestedStructure() throws IOException {
+  void deeplyNestedStructure() throws Exception {
     // Create a deeply nested structure
     Map<String, Object> level3 = Map.of("value", "deep");
     Map<String, Object> level2 = Map.of("nested", level3);
@@ -480,7 +481,7 @@ class PackStreamEdgeCasesTest {
   }
 
   @Test
-  void mixedTypeList() throws IOException {
+  void mixedTypeList() throws Exception {
     final List<Object> mixed = new ArrayList<>();
     mixed.add(null);
     mixed.add(true);

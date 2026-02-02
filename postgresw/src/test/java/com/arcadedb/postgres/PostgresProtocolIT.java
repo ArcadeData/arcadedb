@@ -24,12 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.sql.*;
 import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -439,7 +434,7 @@ class PostgresProtocolIT extends BaseGraphServerTest {
 
       ResultSet rs = st.executeQuery("SELECT values FROM IntArrayTest WHERE name = 'test'");
       assertThat(rs.next()).isTrue();
-      java.sql.Array arr = rs.getArray("values");
+      Array arr = rs.getArray("values");
       assertThat(arr).isNotNull();
       Object[] values = (Object[]) arr.getArray();
       assertThat(values).hasSize(5);
@@ -454,7 +449,7 @@ class PostgresProtocolIT extends BaseGraphServerTest {
 
       ResultSet rs = st.executeQuery("SELECT tags FROM StringArrayTest WHERE name = 'test'");
       assertThat(rs.next()).isTrue();
-      java.sql.Array arr = rs.getArray("tags");
+      Array arr = rs.getArray("tags");
       assertThat(arr).isNotNull();
       Object[] values = (Object[]) arr.getArray();
       assertThat(values).hasSize(3);
@@ -469,7 +464,7 @@ class PostgresProtocolIT extends BaseGraphServerTest {
 
       ResultSet rs = st.executeQuery("SELECT flags FROM BoolArrayTest WHERE name = 'test'");
       assertThat(rs.next()).isTrue();
-      java.sql.Array arr = rs.getArray("flags");
+      Array arr = rs.getArray("flags");
       assertThat(arr).isNotNull();
       Object[] values = (Object[]) arr.getArray();
       assertThat(values).hasSize(3);
@@ -484,7 +479,7 @@ class PostgresProtocolIT extends BaseGraphServerTest {
 
       ResultSet rs = st.executeQuery("SELECT bigNumbers FROM LongArrayTest WHERE name = 'test'");
       assertThat(rs.next()).isTrue();
-      java.sql.Array arr = rs.getArray("bigNumbers");
+      Array arr = rs.getArray("bigNumbers");
       assertThat(arr).isNotNull();
       Object[] values = (Object[]) arr.getArray();
       assertThat(values).hasSize(2);

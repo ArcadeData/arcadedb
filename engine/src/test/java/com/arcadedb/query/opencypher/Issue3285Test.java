@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * This issue was reported for version 26.1.1.
  */
-public class Issue3285Test {
+class Issue3285Test {
   private Database database;
 
   @BeforeEach
@@ -56,7 +56,7 @@ public class Issue3285Test {
   }
 
   @Test
-  void testExactQueryFromIssue() {
+  void exactQueryFromIssue() {
     // This is the EXACT query string from the issue (no spaces, lowercase 'return')
     final ResultSet result = database.query("opencypher",
         "MATCH(a:A {name:'one'})-[:EDG]->(aa:A)-[:EDG]->(aaa:A) return aaa");
@@ -79,7 +79,7 @@ public class Issue3285Test {
   }
 
   @Test
-  void testMultiHopChainedPatternReturnsCorrectVertex() {
+  void multiHopChainedPatternReturnsCorrectVertex() {
     // Same query with standard formatting
     final ResultSet result = database.query("opencypher",
         "MATCH (a:A {name:'one'})-[:EDG]->(aa:A)-[:EDG]->(aaa:A) RETURN aaa");
@@ -102,7 +102,7 @@ public class Issue3285Test {
   }
 
   @Test
-  void testMultiHopChainedPatternReturnsAllVariables() {
+  void multiHopChainedPatternReturnsAllVariables() {
     // Test returning all three variables to ensure correct binding
     final ResultSet result = database.query("opencypher",
         "MATCH (a:A {name:'one'})-[:EDG]->(aa:A)-[:EDG]->(aaa:A) RETURN a, aa, aaa");
@@ -126,7 +126,7 @@ public class Issue3285Test {
   }
 
   @Test
-  void testSingleHopPattern() {
+  void singleHopPattern() {
     // Verify single hop works correctly
     final ResultSet result = database.query("opencypher",
         "MATCH (a:A {name:'one'})-[:EDG]->(aa:A) RETURN aa");
@@ -147,7 +147,7 @@ public class Issue3285Test {
   }
 
   @Test
-  void testThreeHopChainedPattern() {
+  void threeHopChainedPattern() {
     // Add a fourth vertex to test longer chains
     database.transaction(() -> {
       final ResultSet findThree = database.query("opencypher", "MATCH (v:A {name:'three'}) RETURN v");

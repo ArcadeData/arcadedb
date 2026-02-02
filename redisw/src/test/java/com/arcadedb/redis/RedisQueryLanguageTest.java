@@ -306,7 +306,7 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testGlobalVariablesSharedWithSQL() throws Exception {
+  void globalVariablesSharedWithSQL() throws Exception {
     // Issue #3246: Redis commands should use database's globalVariables
     // This test verifies that Redis SET/GET uses the same storage as SQL variables
 

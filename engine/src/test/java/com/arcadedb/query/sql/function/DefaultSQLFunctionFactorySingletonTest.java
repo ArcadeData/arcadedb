@@ -50,21 +50,21 @@ class DefaultSQLFunctionFactorySingletonTest {
   }
 
   @Test
-  void testFunctionFactorySingleton() {
+  void functionFactorySingleton() {
     final DefaultSQLFunctionFactory instance1 = DefaultSQLFunctionFactory.getInstance();
     final DefaultSQLFunctionFactory instance2 = DefaultSQLFunctionFactory.getInstance();
     assertThat(instance1).isSameAs(instance2);
   }
 
   @Test
-  void testMethodFactorySingleton() {
+  void methodFactorySingleton() {
     final DefaultSQLMethodFactory instance1 = DefaultSQLMethodFactory.getInstance();
     final DefaultSQLMethodFactory instance2 = DefaultSQLMethodFactory.getInstance();
     assertThat(instance1).isSameAs(instance2);
   }
 
   @Test
-  void testFunctionsRegisteredOnlyOnceWithMultipleDatabases() {
+  void functionsRegisteredOnlyOnceWithMultipleDatabases() {
     // Record the current function count before creating databases
     final int initialCount = FunctionRegistry.size();
 
@@ -87,7 +87,7 @@ class DefaultSQLFunctionFactorySingletonTest {
   }
 
   @Test
-  void testSQLQueryEngineUsesSharedFactories() {
+  void sqlQueryEngineUsesSharedFactories() {
     final String dbPath = "./target/databases/SingletonSQLEngineTest";
     FileUtils.deleteRecursively(new File(dbPath));
 

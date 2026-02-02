@@ -808,7 +808,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void floatArrayPropertyRoundTrip() throws SQLException, ClassNotFoundException {
+  void floatArrayPropertyRoundTrip() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
         st.execute("create vertex type `TEXT_EMBEDDING` if not exists;");
@@ -914,7 +914,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   @Test
-  void arrayOfFloatsPropertyRoundTrip() throws SQLException, ClassNotFoundException {
+  void arrayOfFloatsPropertyRoundTrip() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
         st.execute("create vertex type `TEXT_EMBEDDING_2` if not exists;");

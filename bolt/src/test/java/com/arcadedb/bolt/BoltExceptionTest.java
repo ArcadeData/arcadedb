@@ -18,6 +18,8 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.exception.ArcadeDBException;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,6 +88,6 @@ class BoltExceptionTest {
   @Test
   void exceptionIsArcadeDBException() {
     final BoltException ex = new BoltException("test");
-    assertThat(ex).isInstanceOf(com.arcadedb.exception.ArcadeDBException.class);
+    assertThat(ex).isInstanceOf(ArcadeDBException.class);
   }
 }

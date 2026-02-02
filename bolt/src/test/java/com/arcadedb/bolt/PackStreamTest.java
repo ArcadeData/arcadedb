@@ -24,7 +24,6 @@ import com.arcadedb.bolt.packstream.PackStreamWriter;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
@@ -36,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PackStreamTest {
 
   @Test
-  void testNull() throws IOException {
+  void testNull() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeNull();
 
@@ -45,7 +44,7 @@ class PackStreamTest {
   }
 
   @Test
-  void booleanTrue() throws IOException {
+  void booleanTrue() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeBoolean(true);
 
@@ -54,7 +53,7 @@ class PackStreamTest {
   }
 
   @Test
-  void booleanFalse() throws IOException {
+  void booleanFalse() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeBoolean(false);
 
@@ -63,7 +62,7 @@ class PackStreamTest {
   }
 
   @Test
-  void tinyIntPositive() throws IOException {
+  void tinyIntPositive() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeInteger(42);
 
@@ -72,7 +71,7 @@ class PackStreamTest {
   }
 
   @Test
-  void tinyIntNegative() throws IOException {
+  void tinyIntNegative() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeInteger(-10);
 
@@ -81,7 +80,7 @@ class PackStreamTest {
   }
 
   @Test
-  void int8() throws IOException {
+  void int8() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeInteger(-100);
 
@@ -90,7 +89,7 @@ class PackStreamTest {
   }
 
   @Test
-  void int16() throws IOException {
+  void int16() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeInteger(1000);
 
@@ -99,7 +98,7 @@ class PackStreamTest {
   }
 
   @Test
-  void int32() throws IOException {
+  void int32() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeInteger(100000);
 
@@ -108,7 +107,7 @@ class PackStreamTest {
   }
 
   @Test
-  void int64() throws IOException {
+  void int64() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeInteger(Long.MAX_VALUE);
 
@@ -117,7 +116,7 @@ class PackStreamTest {
   }
 
   @Test
-  void testFloat() throws IOException {
+  void testFloat() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeFloat(3.14159);
 
@@ -126,7 +125,7 @@ class PackStreamTest {
   }
 
   @Test
-  void tinyString() throws IOException {
+  void tinyString() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeString("hello");
 
@@ -135,7 +134,7 @@ class PackStreamTest {
   }
 
   @Test
-  void string8() throws IOException {
+  void string8() throws Exception {
     final String longString = "a".repeat(100);
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeString(longString);
@@ -145,7 +144,7 @@ class PackStreamTest {
   }
 
   @Test
-  void string16() throws IOException {
+  void string16() throws Exception {
     final String longString = "a".repeat(1000);
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeString(longString);
@@ -155,7 +154,7 @@ class PackStreamTest {
   }
 
   @Test
-  void emptyString() throws IOException {
+  void emptyString() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeString("");
 
@@ -164,7 +163,7 @@ class PackStreamTest {
   }
 
   @Test
-  void unicodeString() throws IOException {
+  void unicodeString() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeString("Hello 世界! 🌍");
 
@@ -173,7 +172,7 @@ class PackStreamTest {
   }
 
   @Test
-  void bytes() throws IOException {
+  void bytes() throws Exception {
     final byte[] data = { 0x01, 0x02, 0x03, 0x04, 0x05 };
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeBytes(data);
@@ -183,7 +182,7 @@ class PackStreamTest {
   }
 
   @Test
-  void tinyList() throws IOException {
+  void tinyList() throws Exception {
     final List<Object> list = List.of(1, 2, 3);
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeList(list);
@@ -195,7 +194,7 @@ class PackStreamTest {
   }
 
   @Test
-  void mixedList() throws IOException {
+  void mixedList() throws Exception {
     final List<Object> list = List.of(1, "hello", true, 3.14);
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeList(list);
@@ -211,7 +210,7 @@ class PackStreamTest {
   }
 
   @Test
-  void tinyMap() throws IOException {
+  void tinyMap() throws Exception {
     final Map<String, Object> map = Map.of("name", "Alice", "age", 30);
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeMap(map);
@@ -224,7 +223,7 @@ class PackStreamTest {
   }
 
   @Test
-  void nestedStructures() throws IOException {
+  void nestedStructures() throws Exception {
     final Map<String, Object> map = Map.of(
         "list", List.of(1, 2, 3),
         "nested", Map.of("key", "value")
@@ -240,7 +239,7 @@ class PackStreamTest {
   }
 
   @Test
-  void structure() throws IOException {
+  void structure() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader((byte) 0x4E, 4); // Node signature
     writer.writeInteger(123); // id
@@ -257,7 +256,7 @@ class PackStreamTest {
   }
 
   @Test
-  void autoTypeDetection() throws IOException {
+  void autoTypeDetection() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeValue(null);
     writer.writeValue(true);

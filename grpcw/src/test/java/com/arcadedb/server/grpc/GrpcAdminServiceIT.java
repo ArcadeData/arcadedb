@@ -46,7 +46,7 @@ public class GrpcAdminServiceIT extends BaseGraphServerTest {
   }
 
   @BeforeEach
-  public void setupGrpcClient() {
+  void setupGrpcClient() {
     channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT)
         .usePlaintext()
         .build();
@@ -54,7 +54,7 @@ public class GrpcAdminServiceIT extends BaseGraphServerTest {
   }
 
   @AfterEach
-  public void teardownGrpcClient() throws InterruptedException {
+  void teardownGrpcClient() throws InterruptedException {
     if (channel != null) {
       channel.shutdown();
       channel.awaitTermination(5, TimeUnit.SECONDS);
