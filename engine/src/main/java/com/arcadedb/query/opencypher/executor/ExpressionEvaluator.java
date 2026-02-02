@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -45,6 +46,8 @@ public class ExpressionEvaluator {
       return evaluateVariable((VariableExpression) expression, result);
     } else if (expression instanceof PropertyAccessExpression) {
       return evaluatePropertyAccess((PropertyAccessExpression) expression, result);
+    } else if (expression instanceof ListIndexExpression) {
+      return evaluateListIndex((ListIndexExpression) expression, result, context);
     } else if (expression instanceof FunctionCallExpression) {
       return evaluateFunction((FunctionCallExpression) expression, result, context);
     }
@@ -59,6 +62,11 @@ public class ExpressionEvaluator {
 
   private Object evaluatePropertyAccess(final PropertyAccessExpression expression, final Result result) {
     return expression.evaluate(result, null);
+  }
+
+  private Object evaluateListIndex(final ListIndexExpression expression, final Result result,
+      final CommandContext context) {
+    return expression.evaluate(result, context);
   }
 
   private Object evaluateFunction(final FunctionCallExpression expression, final Result result,
