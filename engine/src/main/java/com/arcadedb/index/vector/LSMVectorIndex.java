@@ -933,7 +933,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param graphCallback Optional callback for graph build progress
    */
   private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback) {
-    // Always have a progress reporter: if caller didn't provide one, log throttled progress every ~2s
+    // Always have a progress reporter: if caller didn't provide one, log throttled progress every ~5s
     final GraphBuildCallback effectiveGraphCallback;
     if (graphCallback != null) {
       effectiveGraphCallback = graphCallback;
@@ -946,7 +946,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final long now = System.currentTimeMillis();
         final boolean progressed = processedNodes != lastLoggedProcessed[0];
-        final boolean timeElapsed = now - lastLogTimeMs[0] >= 2000;
+        final boolean timeElapsed = now - lastLogTimeMs[0] >= 5000;
         final boolean reachedEnd = processedNodes >= totalNodes && lastLoggedProcessed[0] != totalNodes;
         final boolean shouldLog = progressed && (timeElapsed || reachedEnd);
 
