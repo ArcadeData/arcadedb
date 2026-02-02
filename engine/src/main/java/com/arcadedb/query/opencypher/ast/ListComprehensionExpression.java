@@ -150,6 +150,17 @@ public class ListComprehensionExpression implements Expression {
   }
 
   @Override
+  public boolean containsAggregation() {
+    if (listExpression.containsAggregation())
+      return true;
+    if (whereExpression != null && whereExpression.containsAggregation())
+      return true;
+    if (mapExpression != null && mapExpression.containsAggregation())
+      return true;
+    return false;
+  }
+
+  @Override
   public String getText() {
     return text;
   }

@@ -42,6 +42,16 @@ public interface Expression {
   boolean isAggregation();
 
   /**
+   * Returns true if this expression contains an aggregation function,
+   * either directly or nested within other expressions.
+   * This is used to detect wrapped aggregations like head(collect(...)).
+   * Default implementation delegates to isAggregation().
+   */
+  default boolean containsAggregation() {
+    return isAggregation();
+  }
+
+  /**
    * Get the string representation of this expression.
    */
   String getText();

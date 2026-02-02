@@ -123,6 +123,27 @@ public class CaseExpression implements Expression {
   }
 
   @Override
+  public boolean containsAggregation() {
+    // CASE contains aggregation if any of its expressions contain aggregations
+    if (caseExpression != null && caseExpression.containsAggregation()) {
+      return true;
+    }
+
+    for (final CaseAlternative alternative : alternatives) {
+      if (alternative.getWhenExpression().containsAggregation()
+          || alternative.getThenExpression().containsAggregation()) {
+        return true;
+      }
+    }
+
+    if (elseExpression != null && elseExpression.containsAggregation()) {
+      return true;
+    }
+
+    return false;
+  }
+
+  @Override
   public String getText() {
     return text;
   }
