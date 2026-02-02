@@ -479,3 +479,14 @@ jobs:
           language: java
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        if: success() || failure()
+        with:
+          fail_ci_if_error: false
+          disable_search: true
+          files:  ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: ArcadeData/arcadedb
+          verbose: true
