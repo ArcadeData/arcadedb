@@ -351,4 +351,166 @@ class OpenCypherCollectUnwindTest {
     assertThat(result.hasNext()).isFalse();
   }
   */
+
+  // ===== Regression Test for Issue #3307 =====
+
+  /**
+   * Regression test for Issue #3307: Cypher head(collect()) returning null values.
+   * <p>
+   * Root cause: WithClause.hasAggregations() doesn't recursively detect aggregations
+   * nested inside non-aggregation functions like head(collect()). This causes the
+   * planner to use WithStep instead of AggregationStep, breaking the aggregation.
+   * <p>
+   * Test scenarios:
+   * - head(collect(ID(doc))) with single document
+   * - head(collect(ID(doc))) with multiple documents
+   * - head(collect(doc.name)) with property access
+   * - head(collect(doc)) with full node
+   * - Edge case: no matching documents (should return null gracefully)
+   */
+  @Test
+  void testHeadCollectInWithClause() {
+    // Setup: Create CHUNK -> DOCUMENT relationship matching issue #3307
+    database.getSchema().createVertexType("CHUNK");
+    database.getSchema().createVertexType("DOCUMENT");
+    database.getSchema().createEdgeType("BELONGS_TO");
+
+    // Create test data: 3 chunks pointing to 2 documents
+    database.command("opencypher",
+        "CREATE (doc1:DOCUMENT {name: 'Document A', id: 'doc-a'}), " +
+            "(doc2:DOCUMENT {name: 'Document B', id: 'doc-b'}), " +
+            "(chunk1:CHUNK {text: 'chunk 1'}), " +
+            "(chunk2:CHUNK {text: 'chunk 2'}), " +
+            "(chunk3:CHUNK {text: 'chunk 3'}), " +
+            "(chunk1)-[:BELONGS_TO]->(doc1), " +
+            "(chunk2)-[:BELONGS_TO]->(doc1), " +
+            "(chunk3)-[:BELONGS_TO]->(doc2)");
+
+    // Test 1: head(collect(ID(doc))) - should return first document ID (not null!)
+    ResultSet result = database.command("opencypher",
+        "MATCH (c:CHUNK)-[:BELONGS_TO]->(doc:DOCUMENT) " +
+            "WITH c, head(collect(ID(doc))) AS documentId " +
+            "RETURN c.text AS chunk, documentId " +
+            "ORDER BY chunk");
+
+    // Verify chunk1 result
+    assertThat(result.hasNext()).isTrue();
+    Result row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("chunk 1");
+    final Object documentId1 = row.getProperty("documentId");
+    assertThat(documentId1).as("documentId should not be null for chunk 1").isNotNull();
+    assertThat(documentId1).as("documentId should be a String or RID").isInstanceOf(Object.class);
+
+    // Verify chunk2 result
+    assertThat(result.hasNext()).isTrue();
+    row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("chunk 2");
+    final Object documentId2 = row.getProperty("documentId");
+    assertThat(documentId2).as("documentId should not be null for chunk 2").isNotNull();
+
+    // Verify chunk3 result
+    assertThat(result.hasNext()).isTrue();
+    row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("chunk 3");
+    final Object documentId3 = row.getProperty("documentId");
+    assertThat(documentId3).as("documentId should not be null for chunk 3").isNotNull();
+
+    assertThat(result.hasNext()).isFalse();
+
+    // Test 2: head(collect(doc.name)) - should return first document name
+    result = database.command("opencypher",
+        "MATCH (c:CHUNK)-[:BELONGS_TO]->(doc:DOCUMENT) " +
+            "WITH c, head(collect(doc.name)) AS documentName " +
+            "RETURN c.text AS chunk, documentName " +
+            "ORDER BY chunk");
+
+    // Verify chunk1
+    assertThat(result.hasNext()).isTrue();
+    row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("chunk 1");
+    final String docName1 = (String) row.getProperty("documentName");
+    assertThat(docName1).as("documentName should not be null for chunk 1").isNotNull();
+    assertThat(docName1).as("documentName should be 'Document A'").isEqualTo("Document A");
+
+    // Verify chunk2
+    assertThat(result.hasNext()).isTrue();
+    row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("chunk 2");
+    final String docName2 = (String) row.getProperty("documentName");
+    assertThat(docName2).as("documentName should not be null for chunk 2").isNotNull();
+    assertThat(docName2).as("documentName should be 'Document A'").isEqualTo("Document A");
+
+    // Verify chunk3
+    assertThat(result.hasNext()).isTrue();
+    row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("chunk 3");
+    final String docName3 = (String) row.getProperty("documentName");
+    assertThat(docName3).as("documentName should not be null for chunk 3").isNotNull();
+    assertThat(docName3).as("documentName should be 'Document B'").isEqualTo("Document B");
+
+    assertThat(result.hasNext()).isFalse();
+
+    // Test 3: Test with multiple documents per chunk to verify head() gets first element
+    database.command("opencypher",
+        "MATCH (chunk1:CHUNK {text: 'chunk 1'}), (doc2:DOCUMENT {name: 'Document B'}) " +
+            "CREATE (chunk1)-[:BELONGS_TO]->(doc2)");
+
+    result = database.command("opencypher",
+        "MATCH (c:CHUNK {text: 'chunk 1'})-[:BELONGS_TO]->(doc:DOCUMENT) " +
+            "WITH c, head(collect(doc.name)) AS firstDocName, collect(doc.name) AS allDocNames " +
+            "RETURN c.text AS chunk, firstDocName, allDocNames");
+
+    assertThat(result.hasNext()).isTrue();
+    row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("chunk 1");
+    final String firstDoc = (String) row.getProperty("firstDocName");
+    assertThat(firstDoc).as("firstDocName should not be null").isNotNull();
+    assertThat(firstDoc).as("firstDocName should be one of the documents").isIn("Document A", "Document B");
+
+    @SuppressWarnings("unchecked")
+    final List<String> allDocs = (List<String>) row.getProperty("allDocNames");
+    assertThat(allDocs).as("allDocNames should contain 2 documents").hasSize(2);
+    assertThat(allDocs).as("allDocNames should contain both documents")
+        .containsExactlyInAnyOrder("Document A", "Document B");
+    assertThat(firstDoc).as("firstDocName should be the first element of allDocNames").isEqualTo(allDocs.get(0));
+
+    assertThat(result.hasNext()).isFalse();
+
+    // Test 4: Edge case - no matching documents (should return null gracefully)
+    database.getSchema().createVertexType("ORPHAN_CHUNK");
+    database.command("opencypher", "CREATE (orphan:ORPHAN_CHUNK {text: 'orphan'})");
+
+    result = database.command("opencypher",
+        "MATCH (c:ORPHAN_CHUNK) " +
+            "OPTIONAL MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) " +
+            "WITH c, head(collect(doc.name)) AS documentName " +
+            "RETURN c.text AS chunk, documentName");
+
+    assertThat(result.hasNext()).isTrue();
+    row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("orphan");
+    final Object orphanDocName = row.getProperty("documentName");
+    // For no matches, head(collect(null)) should return null gracefully
+    assertThat(orphanDocName).as("documentName should be null for orphan chunk with no relationships").isNull();
+
+    assertThat(result.hasNext()).isFalse();
+
+    // Test 5: Test head(collect(doc)) with full node objects
+    result = database.command("opencypher",
+        "MATCH (c:CHUNK {text: 'chunk 3'})-[:BELONGS_TO]->(doc:DOCUMENT) " +
+            "WITH c, head(collect(doc)) AS firstDoc " +
+            "RETURN c.text AS chunk, firstDoc.name AS docName, firstDoc.id AS docId");
+
+    assertThat(result.hasNext()).isTrue();
+    row = result.next();
+    assertThat((String) row.getProperty("chunk")).isEqualTo("chunk 3");
+    final String fullDocName = (String) row.getProperty("docName");
+    final String fullDocId = (String) row.getProperty("docId");
+    assertThat(fullDocName).as("docName should not be null when accessing firstDoc.name").isNotNull();
+    assertThat(fullDocName).as("docName should be 'Document B'").isEqualTo("Document B");
+    assertThat(fullDocId).as("docId should not be null when accessing firstDoc.id").isNotNull();
+    assertThat(fullDocId).as("docId should be 'doc-b'").isEqualTo("doc-b");
+
+    assertThat(result.hasNext()).isFalse();
+  }
 }
