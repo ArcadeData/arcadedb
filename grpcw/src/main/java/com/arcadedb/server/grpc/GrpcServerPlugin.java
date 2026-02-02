@@ -202,11 +202,11 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Get database directory path
     String databasePath = arcadeServer.getRootPath() + File.separator + "databases";
 
-    // Create the main service
-    ArcadeDbGrpcService mainService = new ArcadeDbGrpcService(databasePath, arcadeServer);
+    // Create the main service and store reference for cleanup
+    this.grpcService = new ArcadeDbGrpcService(databasePath, arcadeServer);
 
     // Add the main service
-    serverBuilder.addService(mainService);
+    serverBuilder.addService(grpcService);
 
     // Create the Admin service
     ArcadeDbGrpcAdminService adminService = new ArcadeDbGrpcAdminService(arcadeServer, new DefaultCredentialsValidator());

@@ -223,9 +223,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       }
 
       // Use getDatabase which returns a shared ServerDatabase - don't close it
-      Database db = openDatabase(name);
+      final Database db = openDatabase(name);
+      if (db == null) {
+        resp.onError(Status.NOT_FOUND.withDescription("Database not found: " + name).asException());
+        return;
+      }
 
-      Schema schema = db.getSchema();
+      final Schema schema = db.getSchema();
 
       // Count classes
       int classes = 0;
@@ -247,14 +251,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       // Infer db kind: "graph" if any vertex type exists
       String type = "document";
-
       try {
-
-        var vIter = schema.getTypes().stream().filter(t -> t instanceof VertexType);
-
-        if (vIter != null && vIter.iterator().hasNext())
+        final boolean hasVertexTypes = schema.getTypes().stream()
+            .anyMatch(t -> t instanceof VertexType);
+        if (hasVertexTypes)
           type = "graph";
-      } catch (Throwable ignore) {
+      } catch (Exception e) {
+        // Keep default "document" type if schema inspection fails
       }
 
       GetDatabaseInfoResponse out = GetDatabaseInfoResponse.newBuilder()
