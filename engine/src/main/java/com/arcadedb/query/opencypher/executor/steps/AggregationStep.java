@@ -64,6 +64,10 @@ public class AggregationStep extends AbstractExecutionStep {
     // Map of aggregation functions (one per aggregation expression)
     final Map<String, StatelessFunction> aggregators = new HashMap<>();
     final Map<String, Expression> aggregationExpressions = new HashMap<>();
+
+    // Wrapped aggregations: non-aggregation functions that wrap aggregations, e.g., HEAD(COLLECT(...))
+    final Map<String, WrappedAggregationInfo> wrappedAggregators = new HashMap<>();
+
     final List<String> nonAggregationItems = new ArrayList<>();
 
     // Identify aggregation functions and create function instances
@@ -76,6 +80,19 @@ public class AggregationStep extends AbstractExecutionStep {
             funcExpr.getFunctionName(), funcExpr.isDistinct());
         aggregators.put(item.getOutputName(), function);
         aggregationExpressions.put(item.getOutputName(), expr);
+      } else if (expr instanceof FunctionCallExpression) {
+        // Check if this is a wrapper around an aggregation, e.g., HEAD(COLLECT(...))
+        final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
+        final FunctionCallExpression innerAgg = findInnerAggregation(funcExpr);
+        if (innerAgg != null) {
+          // Create aggregator for the inner aggregation
+          final StatelessFunction innerFunction = functionFactory.getFunctionExecutor(
+              innerAgg.getFunctionName(), innerAgg.isDistinct());
+          wrappedAggregators.put(item.getOutputName(),
+              new WrappedAggregationInfo(funcExpr, innerAgg, innerFunction));
+        } else {
+          nonAggregationItems.add(item.getOutputName());
+        }
       } else {
         nonAggregationItems.add(item.getOutputName());
       }
@@ -85,6 +102,7 @@ public class AggregationStep extends AbstractExecutionStep {
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
 
+      // Process regular aggregations
       for (final Map.Entry<String, Expression> entry : aggregationExpressions.entrySet()) {
         final String outputName = entry.getKey();
         final Expression expr = entry.getValue();
@@ -102,6 +120,15 @@ public class AggregationStep extends AbstractExecutionStep {
           function.execute(args, context);
         }
       }
+
+      // Process wrapped aggregations - feed data to inner aggregation
+      for (final WrappedAggregationInfo wrappedInfo : wrappedAggregators.values()) {
+        final Object[] args = new Object[wrappedInfo.innerAggregation.getArguments().size()];
+        for (int i = 0; i < args.length; i++) {
+          args[i] = evaluator.evaluate(wrappedInfo.innerAggregation.getArguments().get(i), inputRow, context);
+        }
+        wrappedInfo.innerFunction.execute(args, context);
+      }
     }
 
     // Build final aggregated result
@@ -113,6 +140,22 @@ public class AggregationStep extends AbstractExecutionStep {
       final StatelessFunction function = entry.getValue();
       final Object aggregatedValue = function.getAggregatedResult();
       aggregatedResult.setProperty(outputName, aggregatedValue);
+    }
+
+    // Get wrapped aggregated values (apply wrapper function to aggregated result)
+    for (final Map.Entry<String, WrappedAggregationInfo> entry : wrappedAggregators.entrySet()) {
+      final String outputName = entry.getKey();
+      final WrappedAggregationInfo wrappedInfo = entry.getValue();
+
+      // Get the aggregated result from the inner function
+      final Object innerAggregatedValue = wrappedInfo.innerFunction.getAggregatedResult();
+
+      // Apply the wrapper function to the aggregated result
+      final StatelessFunction wrapperFunction = functionFactory.getFunctionExecutor(
+          wrappedInfo.wrapperFunction.getFunctionName());
+      final Object wrappedValue = wrapperFunction.execute(new Object[]{innerAggregatedValue}, context);
+
+      aggregatedResult.setProperty(outputName, wrappedValue);
     }
 
     // Return single aggregated row
@@ -139,6 +182,46 @@ public class AggregationStep extends AbstractExecutionStep {
     };
   }
 
+  /**
+   * Find an inner aggregation function in a function call expression.
+   * Returns the first aggregation function found in the arguments, or null if none.
+   * This is used to detect patterns like HEAD(COLLECT(...)) where the outer function
+   * is not an aggregation but wraps one.
+   */
+  private static FunctionCallExpression findInnerAggregation(final FunctionCallExpression funcExpr) {
+    for (final Expression arg : funcExpr.getArguments()) {
+      if (arg instanceof FunctionCallExpression) {
+        final FunctionCallExpression argFunc = (FunctionCallExpression) arg;
+        if (argFunc.isAggregation()) {
+          return argFunc;
+        }
+        // Recursively check for nested function calls
+        final FunctionCallExpression nested = findInnerAggregation(argFunc);
+        if (nested != null) {
+          return nested;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Holds information about a wrapped aggregation.
+   */
+  private static class WrappedAggregationInfo {
+    final FunctionCallExpression wrapperFunction;
+    final FunctionCallExpression innerAggregation;
+    final StatelessFunction innerFunction;
+
+    WrappedAggregationInfo(final FunctionCallExpression wrapperFunction,
+                           final FunctionCallExpression innerAggregation,
+                           final StatelessFunction innerFunction) {
+      this.wrapperFunction = wrapperFunction;
+      this.innerAggregation = innerAggregation;
+      this.innerFunction = innerFunction;
+    }
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder builder = new StringBuilder();
@@ -146,10 +229,10 @@ public class AggregationStep extends AbstractExecutionStep {
     builder.append(ind);
     builder.append("+ AGGREGATION ");
 
-    // Show aggregation functions
+    // Show aggregation functions (including wrapped aggregations)
     final List<String> aggFuncs = new ArrayList<>();
     for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
-      if (item.getExpression().isAggregation()) {
+      if (item.getExpression().containsAggregation()) {
         aggFuncs.add(item.getExpression().getText());
       }
     }
