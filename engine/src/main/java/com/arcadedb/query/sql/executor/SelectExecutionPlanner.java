@@ -63,6 +63,7 @@ import com.arcadedb.query.sql.parser.RecordAttribute;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.SchemaIdentifier;
 import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.Timeout;
@@ -316,7 +317,8 @@ public class SelectExecutionPlanner {
   }
 
   private boolean handleHardwiredOptimizations(final SelectExecutionPlan result, final CommandContext context) {
-    return handleHardwiredCountOnIndex(result, info, context) || handleHardwiredCountOnType(result, info, context);
+    return handleHardwiredCountOnIndex(result, info, context) || handleHardwiredCountOnType(result, info, context)
+        || handleHardwiredMaxMinOnIndex(result, info, context);
   }
 
   private boolean handleHardwiredCountOnType(final SelectExecutionPlan result, final QueryPlanningInfo info,
@@ -405,6 +407,135 @@ public class SelectExecutionPlanner {
     }
     final ProjectionItem item = aggregateProjection.getItems().get(0);
     return item.getExpression().isCount();
+  }
+
+  /**
+   * Handles optimization for MAX(indexed_field) or MIN(indexed_field) queries.
+   * Instead of scanning all records, uses the index to directly get the max/min value.
+   * <p>
+   * For MAX: iterates index in descending order and returns first non-null key.
+   * For MIN: iterates index in ascending order and returns first non-null key.
+   *
+   * @see <a href="https://github.com/ArcadeData/arcadedb/issues/3304">Issue #3304</a>
+   */
+  private boolean handleHardwiredMaxMinOnIndex(final SelectExecutionPlan result, final QueryPlanningInfo info,
+      final CommandContext context) {
+    // Must have a type target
+    final Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
+    if (targetClass == null)
+      return false;
+
+    if (info.distinct || info.expand)
+      return false;
+
+    // Must be a minimal query (no WHERE, GROUP BY, etc.)
+    if (!isMinimalQuery(info))
+      return false;
+
+    // Check for MAX or MIN aggregate function on a single property
+    final MaxMinInfo maxMinInfo = getMaxMinInfo(info);
+    if (maxMinInfo == null)
+      return false;
+
+    // Get the document type
+    final String typeName = targetClass.getStringValue();
+    final DocumentType documentType = context.getDatabase().getSchema().getType(typeName);
+    if (documentType == null)
+      return false;
+
+    // Find an index on the property
+    final RangeIndex index = findIndexForProperty(documentType, maxMinInfo.propertyName);
+    if (index == null)
+      return false;
+
+    // Create the optimized execution step
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
+    return true;
+  }
+
+  /**
+   * Information about a MAX/MIN aggregate function.
+   */
+  private static class MaxMinInfo {
+    final String propertyName;
+    final boolean isMax; // true for MAX, false for MIN
+
+    MaxMinInfo(final String propertyName, final boolean isMax) {
+      this.propertyName = propertyName;
+      this.isMax = isMax;
+    }
+  }
+
+  /**
+   * Extracts MAX/MIN function info from the query if it's a simple MAX(field) or MIN(field).
+   */
+  private MaxMinInfo getMaxMinInfo(final QueryPlanningInfo info) {
+    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1
+        || info.projection.getItems().size() != 1)
+      return null;
+
+    // preAggregateProjection contains the field expression (e.g., "value AS _$$$OALIAS$$$_1")
+    if (info.preAggregateProjection == null || info.preAggregateProjection.getItems().size() != 1)
+      return null;
+
+    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().getFirst();
+    final Expression exp = aggregateItem.getExpression();
+
+    if (exp.getMathExpression() == null || !(exp.getMathExpression() instanceof BaseExpression base))
+      return null;
+
+    if (base.getModifier() != null)
+      return null;
+
+    if (base.getIdentifier() == null || base.getIdentifier().getLevelZero() == null)
+      return null;
+
+    final FunctionCall functionCall = base.getIdentifier().getLevelZero().getFunctionCall();
+    if (functionCall == null)
+      return null;
+
+    final String functionName = functionCall.getName().getStringValue().toLowerCase();
+    final boolean isMax;
+    if (functionName.equals("max"))
+      isMax = true;
+    else if (functionName.equals("min"))
+      isMax = false;
+    else
+      return null;
+
+    // Get the property name from the pre-aggregate projection
+    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().getFirst();
+    final Expression preAggExp = preAggItem.getExpression();
+
+    if (preAggExp.getMathExpression() == null || !(preAggExp.getMathExpression() instanceof BaseExpression preAggBase))
+      return null;
+
+    if (preAggBase.getIdentifier() == null)
+      return null;
+
+    // For simple properties like "value", the identifier is in suffix, not levelZero
+    final SuffixIdentifier suffix = preAggBase.getIdentifier().suffix;
+    if (suffix == null || suffix.identifier == null)
+      return null;
+
+    return new MaxMinInfo(suffix.identifier.getStringValue(), isMax);
+  }
+
+  /**
+   * Finds a RangeIndex (LSM_TREE) on the specified property.
+   */
+  private RangeIndex findIndexForProperty(final DocumentType type, final String propertyName) {
+    final Collection<TypeIndex> indexes = type.getAllIndexes(true);
+    for (final TypeIndex index : indexes) {
+      // Must be a single-property index on the exact property
+      final List<String> propNames = index.getPropertyNames();
+      if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
+        // Must support ordered iterations (RangeIndex like LSM_TREE)
+        if (index.supportsOrderedIterations())
+          return index;
+      }
+    }
+    return null;
   }
 
   public static void handleUnwind(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context) {
