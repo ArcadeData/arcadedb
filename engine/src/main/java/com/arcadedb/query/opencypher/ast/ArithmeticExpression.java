@@ -140,6 +140,11 @@ public class ArithmeticExpression implements Expression {
   }
 
   @Override
+  public boolean containsAggregation() {
+    return left.containsAggregation() || right.containsAggregation();
+  }
+
+  @Override
   public String getText() {
     return text;
   }

@@ -146,6 +146,13 @@ class CypherExpressionBuilder {
       return parseIsNullExpression(nullCtx);
     }
 
+    // Check for postfix expressions (property access, list indexing, slicing)
+    // This must be checked BEFORE falling back to text parsing
+    final Cypher25Parser.Expression2Context expr2Ctx = findExpression2Recursive(ctx);
+    if (expr2Ctx != null && !expr2Ctx.postFix().isEmpty()) {
+      return parseExpression2WithPostfix(expr2Ctx);
+    }
+
     // Use the shared text parsing logic
     return parseExpressionText(text);
   }
@@ -667,9 +674,135 @@ class CypherExpressionBuilder {
     return null;
   }
 
+  /**
+   * Recursively find Expression2 context (which may have postfix operations).
+   */
+  Cypher25Parser.Expression2Context findExpression2Recursive(final ParseTree node) {
+    if (node == null) {
+      return null;
+    }
+
+    if (node instanceof Cypher25Parser.Expression2Context) {
+      return (Cypher25Parser.Expression2Context) node;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.Expression2Context found = findExpression2Recursive(node.getChild(i));
+      if (found != null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
   // ============================================================================
   // Parse Methods
   // ============================================================================
+
+  /**
+   * Parse an Expression2 that has postfix operations (property access, list indexing, slicing).
+   * Grammar: expression2 : expression1 postFix*
+   * PostFix can be:
+   * - PropertyPostfix: .property
+   * - IndexPostfix: [expression]
+   * - RangePostfix: [from..to]
+   */
+  Expression parseExpression2WithPostfix(final Cypher25Parser.Expression2Context ctx) {
+    // Start with the base expression (expression1)
+    Expression result = parseExpressionFromText(ctx.expression1());
+
+    // Apply each postfix operation in order
+    for (final Cypher25Parser.PostFixContext postfix : ctx.postFix()) {
+      if (postfix instanceof Cypher25Parser.PropertyPostfixContext) {
+        // Property access: expr.property
+        final Cypher25Parser.PropertyPostfixContext propCtx = (Cypher25Parser.PropertyPostfixContext) postfix;
+        final String propertyName = propCtx.property().propertyKeyName().getText();
+        // Create a compound expression: treat result as a variable expression
+        result = createPropertyAccessFromExpression(result, propertyName);
+      } else if (postfix instanceof Cypher25Parser.IndexPostfixContext) {
+        // List indexing: expr[index]
+        final Cypher25Parser.IndexPostfixContext indexCtx = (Cypher25Parser.IndexPostfixContext) postfix;
+        final Expression indexExpr = parseExpression(indexCtx.expression());
+        result = new ListIndexExpression(result, indexExpr);
+      } else if (postfix instanceof Cypher25Parser.RangePostfixContext) {
+        // Range slicing: expr[from..to]
+        // TODO: Implement range slicing if needed
+        throw new UnsupportedOperationException("Range slicing (list[from..to]) is not yet implemented");
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Create a property access expression from a base expression and property name.
+   * If the base is a VariableExpression, create a PropertyAccessExpression.
+   * Otherwise, this is a chained property access (e.g., a.b.c or result[0].property)
+   * which needs special handling.
+   */
+  private Expression createPropertyAccessFromExpression(final Expression baseExpr, final String propertyName) {
+    if (baseExpr instanceof VariableExpression) {
+      return new PropertyAccessExpression(((VariableExpression) baseExpr).getVariableName(), propertyName);
+    }
+    // For other base expressions (like list[index]), we need to wrap in a property access
+    // that evaluates the base expression first, then accesses the property
+    return new ChainedPropertyAccessExpression(baseExpr, propertyName);
+  }
+
+  /**
+   * Expression for chained property access where the base is not a simple variable.
+   * Example: list[0].property, func().property
+   */
+  private static class ChainedPropertyAccessExpression implements Expression {
+    private final Expression baseExpression;
+    private final String propertyName;
+
+    ChainedPropertyAccessExpression(final Expression baseExpression, final String propertyName) {
+      this.baseExpression = baseExpression;
+      this.propertyName = propertyName;
+    }
+
+    @Override
+    public Object evaluate(final com.arcadedb.query.sql.executor.Result result, final com.arcadedb.query.sql.executor.CommandContext context) {
+      final Object baseValue = baseExpression.evaluate(result, context);
+      if (baseValue == null) {
+        return null;
+      }
+
+      // Handle Document types
+      if (baseValue instanceof com.arcadedb.database.Document) {
+        return ((com.arcadedb.database.Document) baseValue).get(propertyName);
+      }
+
+      // Handle Map types
+      if (baseValue instanceof java.util.Map) {
+        return ((java.util.Map<?, ?>) baseValue).get(propertyName);
+      }
+
+      // Handle Result types
+      if (baseValue instanceof com.arcadedb.query.sql.executor.Result) {
+        return ((com.arcadedb.query.sql.executor.Result) baseValue).getProperty(propertyName);
+      }
+
+      return null;
+    }
+
+    @Override
+    public boolean isAggregation() {
+      return baseExpression.isAggregation();
+    }
+
+    @Override
+    public boolean containsAggregation() {
+      return baseExpression.containsAggregation();
+    }
+
+    @Override
+    public String getText() {
+      return baseExpression.getText() + "." + propertyName;
+    }
+  }
 
   /**
    * Parse a list literal context into a ListExpression.
