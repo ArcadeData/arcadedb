@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class OpenCypherExpressionTest {
+class OpenCypherExpressionTest {
   private Database database;
 
   @BeforeEach

@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression test for GitHub issue #3276: match (n) WHERE n:NER OR n:CHUNK return n
  * fails to filter by type, returning all nodes.
  */
-public class CypherLabelCheckInWhereTest {
+class CypherLabelCheckInWhereTest {
   private Database database;
 
   @BeforeEach
@@ -85,7 +85,7 @@ public class CypherLabelCheckInWhereTest {
    * Should only return NER and CHUNK nodes, not OTHER nodes.
    */
   @Test
-  void testLabelCheckWithOrInWhere() {
+  void labelCheckWithOrInWhere() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (n) WHERE n:NER OR n:CHUNK RETURN n");
@@ -110,7 +110,7 @@ public class CypherLabelCheckInWhereTest {
    * Tests simple single label check in WHERE clause.
    */
   @Test
-  void testSingleLabelCheckInWhere() {
+  void singleLabelCheckInWhere() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (n) WHERE n:NER RETURN n");
@@ -132,7 +132,7 @@ public class CypherLabelCheckInWhereTest {
    * Tests label check combined with other conditions.
    */
   @Test
-  void testLabelCheckWithOtherConditions() {
+  void labelCheckWithOtherConditions() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (n) WHERE n:NER AND n.name = 'ner1' RETURN n");
@@ -154,7 +154,7 @@ public class CypherLabelCheckInWhereTest {
    * Tests negated label check (NOT n:Label).
    */
   @Test
-  void testNegatedLabelCheckInWhere() {
+  void negatedLabelCheckInWhere() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (n) WHERE NOT n:OTHER RETURN n");
@@ -177,7 +177,7 @@ public class CypherLabelCheckInWhereTest {
    * Tests label check with AND operator.
    */
   @Test
-  void testLabelCheckWithAndInWhere() {
+  void labelCheckWithAndInWhere() {
     database.transaction(() -> {
       // This should return 0 results since no vertex is both NER and CHUNK
       final ResultSet rs = database.query("opencypher",

@@ -39,7 +39,7 @@ class BoltMessageTest {
   // ============ SuccessMessage tests ============
 
   @Test
-  void successMessageCreation() throws IOException {
+  void successMessageCreation() throws Exception {
     final Map<String, Object> metadata = Map.of("server", "ArcadeDB", "version", "1.0");
     final SuccessMessage msg = new SuccessMessage(metadata);
 
@@ -55,7 +55,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void successMessageWriteAndToString() throws IOException {
+  void successMessageWriteAndToString() throws Exception {
     final SuccessMessage msg = new SuccessMessage(Map.of("fields", List.of("a", "b")));
     final PackStreamWriter writer = new PackStreamWriter();
     msg.writeTo(writer);
@@ -68,7 +68,7 @@ class BoltMessageTest {
   // ============ FailureMessage tests ============
 
   @Test
-  void failureMessageWithCodeAndMessage() throws IOException {
+  void failureMessageWithCodeAndMessage() throws Exception {
     final FailureMessage msg = new FailureMessage(BoltErrorCodes.SYNTAX_ERROR, "Invalid query");
 
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.FAILURE);
@@ -95,7 +95,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void failureMessageWriteAndToString() throws IOException {
+  void failureMessageWriteAndToString() throws Exception {
     final FailureMessage msg = new FailureMessage(BoltErrorCodes.DATABASE_ERROR, "Error");
     final PackStreamWriter writer = new PackStreamWriter();
     msg.writeTo(writer);
@@ -108,7 +108,7 @@ class BoltMessageTest {
   // ============ RecordMessage tests ============
 
   @Test
-  void recordMessageCreation() throws IOException {
+  void recordMessageCreation() throws Exception {
     final List<Object> data = List.of("Alice", 30L, true);
     final RecordMessage msg = new RecordMessage(data);
 
@@ -123,7 +123,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void recordMessageWriteAndToString() throws IOException {
+  void recordMessageWriteAndToString() throws Exception {
     final RecordMessage msg = new RecordMessage(List.of(1, 2, 3));
     final PackStreamWriter writer = new PackStreamWriter();
     msg.writeTo(writer);
@@ -135,7 +135,7 @@ class BoltMessageTest {
   // ============ IgnoredMessage tests ============
 
   @Test
-  void ignoredMessageCreation() throws IOException {
+  void ignoredMessageCreation() throws Exception {
     final IgnoredMessage msg = new IgnoredMessage();
 
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.IGNORED);
@@ -148,7 +148,7 @@ class BoltMessageTest {
   // ============ Request message tests ============
 
   @Test
-  void helloMessageCreation() throws IOException {
+  void helloMessageCreation() throws Exception {
     final Map<String, Object> extra = Map.of(
         "user_agent", "TestDriver/1.0",
         "scheme", "basic",
@@ -174,7 +174,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void helloMessageWriteTo() throws IOException {
+  void helloMessageWriteTo() throws Exception {
     final HelloMessage msg = new HelloMessage(Map.of("user_agent", "test"));
     final PackStreamWriter writer = new PackStreamWriter();
     msg.writeTo(writer);
@@ -182,7 +182,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void runMessageCreation() throws IOException {
+  void runMessageCreation() throws Exception {
     final RunMessage msg = new RunMessage("RETURN 1", Map.of("param", "value"), Map.of("db", "neo4j"));
 
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.RUN);
@@ -200,7 +200,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void runMessageWriteTo() throws IOException {
+  void runMessageWriteTo() throws Exception {
     final RunMessage msg = new RunMessage("RETURN 1", Map.of(), Map.of());
     final PackStreamWriter writer = new PackStreamWriter();
     msg.writeTo(writer);
@@ -208,7 +208,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void beginMessageCreation() throws IOException {
+  void beginMessageCreation() throws Exception {
     final BeginMessage msg = new BeginMessage(Map.of("db", "testdb"));
 
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.BEGIN);
@@ -223,7 +223,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void beginMessageWriteTo() throws IOException {
+  void beginMessageWriteTo() throws Exception {
     final BeginMessage msg = new BeginMessage(Map.of());
     final PackStreamWriter writer = new PackStreamWriter();
     msg.writeTo(writer);
@@ -231,7 +231,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void commitMessageCreation() throws IOException {
+  void commitMessageCreation() throws Exception {
     final CommitMessage msg = new CommitMessage();
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.COMMIT);
 
@@ -241,7 +241,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void rollbackMessageCreation() throws IOException {
+  void rollbackMessageCreation() throws Exception {
     final RollbackMessage msg = new RollbackMessage();
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.ROLLBACK);
 
@@ -251,7 +251,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void goodbyeMessageCreation() throws IOException {
+  void goodbyeMessageCreation() throws Exception {
     final GoodbyeMessage msg = new GoodbyeMessage();
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.GOODBYE);
 
@@ -261,7 +261,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void resetMessageCreation() throws IOException {
+  void resetMessageCreation() throws Exception {
     final ResetMessage msg = new ResetMessage();
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.RESET);
 
@@ -271,7 +271,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void pullMessageCreation() throws IOException {
+  void pullMessageCreation() throws Exception {
     final PullMessage msg = new PullMessage(Map.of("n", 100L));
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.PULL);
     assertThat(msg.getN()).isEqualTo(100L);
@@ -288,7 +288,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void discardMessageCreation() throws IOException {
+  void discardMessageCreation() throws Exception {
     final DiscardMessage msg = new DiscardMessage(Map.of("n", 50L));
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.DISCARD);
     assertThat(msg.getN()).isEqualTo(50L);
@@ -305,7 +305,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void logonMessageCreation() throws IOException {
+  void logonMessageCreation() throws Exception {
     final LogonMessage msg = new LogonMessage(Map.of("scheme", "basic", "principal", "user", "credentials", "pass"));
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.LOGON);
     assertThat(msg.getScheme()).isEqualTo("basic");
@@ -324,7 +324,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void logoffMessageCreation() throws IOException {
+  void logoffMessageCreation() throws Exception {
     final LogoffMessage msg = new LogoffMessage();
     assertThat(msg.getSignature()).isEqualTo(BoltMessage.LOGOFF);
 
@@ -334,7 +334,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void routeMessageCreation() throws IOException {
+  void routeMessageCreation() throws Exception {
     final RouteMessage msg = new RouteMessage(
         Map.of("region", "us-east"),
         List.of("bookmark1", "bookmark2"),
@@ -390,7 +390,7 @@ class BoltMessageTest {
   // ============ BoltMessage.parse() tests ============
 
   @Test
-  void parseHelloMessage() throws IOException {
+  void parseHelloMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.HELLO, 1);
     writer.writeMap(Map.of("user_agent", "TestDriver"));
@@ -404,7 +404,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseHelloMessageEmptyFields() throws IOException {
+  void parseHelloMessageEmptyFields() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.HELLO, 0);
 
@@ -417,7 +417,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseGoodbyeMessage() throws IOException {
+  void parseGoodbyeMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.GOODBYE, 0);
 
@@ -429,7 +429,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseResetMessage() throws IOException {
+  void parseResetMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.RESET, 0);
 
@@ -441,7 +441,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseRunMessage() throws IOException {
+  void parseRunMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.RUN, 3);
     writer.writeString("RETURN 1");
@@ -460,7 +460,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseRunMessageMinimalFields() throws IOException {
+  void parseRunMessageMinimalFields() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.RUN, 1);
     writer.writeString("RETURN 1");
@@ -476,7 +476,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseBeginMessage() throws IOException {
+  void parseBeginMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.BEGIN, 1);
     writer.writeMap(Map.of("db", "testdb"));
@@ -490,7 +490,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseBeginMessageEmptyFields() throws IOException {
+  void parseBeginMessageEmptyFields() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.BEGIN, 0);
 
@@ -503,7 +503,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseCommitMessage() throws IOException {
+  void parseCommitMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.COMMIT, 0);
 
@@ -514,7 +514,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseRollbackMessage() throws IOException {
+  void parseRollbackMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.ROLLBACK, 0);
 
@@ -525,7 +525,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parsePullMessage() throws IOException {
+  void parsePullMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.PULL, 1);
     writer.writeMap(Map.of("n", 100));
@@ -539,7 +539,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parsePullMessageEmptyFields() throws IOException {
+  void parsePullMessageEmptyFields() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.PULL, 0);
 
@@ -551,7 +551,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseDiscardMessage() throws IOException {
+  void parseDiscardMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.DISCARD, 1);
     writer.writeMap(Map.of("n", 50));
@@ -565,7 +565,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseDiscardMessageEmptyFields() throws IOException {
+  void parseDiscardMessageEmptyFields() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.DISCARD, 0);
 
@@ -576,7 +576,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseLogonMessage() throws IOException {
+  void parseLogonMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.LOGON, 1);
     writer.writeMap(Map.of("scheme", "basic", "principal", "user", "credentials", "pass"));
@@ -592,7 +592,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseLogonMessageEmptyFields() throws IOException {
+  void parseLogonMessageEmptyFields() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.LOGON, 0);
 
@@ -603,7 +603,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseLogoffMessage() throws IOException {
+  void parseLogoffMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.LOGOFF, 0);
 
@@ -614,7 +614,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseRouteMessage() throws IOException {
+  void parseRouteMessage() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.ROUTE, 3);
     writer.writeMap(Map.of("region", "us-east"));
@@ -633,7 +633,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseRouteMessageMinimalFields() throws IOException {
+  void parseRouteMessageMinimalFields() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.ROUTE, 0);
 
@@ -649,7 +649,7 @@ class BoltMessageTest {
   }
 
   @Test
-  void parseUnknownSignatureThrowsException() throws IOException {
+  void parseUnknownSignatureThrowsException() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader((byte) 0xFF, 0);
 

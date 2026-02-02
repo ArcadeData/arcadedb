@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.within;
 /**
  * Tests for Cypher function support.
  */
-public class OpenCypherFunctionTest {
+class OpenCypherFunctionTest {
   private Database database;
 
   @BeforeEach
