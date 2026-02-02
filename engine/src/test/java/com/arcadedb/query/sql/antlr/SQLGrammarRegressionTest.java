@@ -450,6 +450,38 @@ class SQLGrammarRegressionTest {
   }
 
   // ============================================================================
+  // Unicode Escape Sequences (Issue #3311)
+  // ============================================================================
+
+  @Test
+  void unicodeEscapeInString() {
+    // Issue #3311: Unicode escape sequences should work in SQL strings
+    assertParses("SELECT '\\u0026'");
+    assertParses("SELECT '\\u0026' FROM V");
+    assertParses("SELECT \"\\u0026\"");
+    assertParses("SELECT \"\\u0026\" FROM V");
+  }
+
+  @Test
+  void unicodeEscapeMultiple() {
+    // Multiple unicode escapes in a string
+    assertParses("SELECT '\\u0048\\u0065\\u006C\\u006C\\u006F'");  // "Hello"
+    assertParses("SELECT '\\u005C\\u005C'");  // "\\\\"
+  }
+
+  @Test
+  void unicodeEscapeInWhere() {
+    assertParses("SELECT FROM bucket:internal WHERE \"\\u005C\\u005C\" = \"\\u005C\\u005C\"");
+  }
+
+  @Test
+  void unicodeEscapeMixedWithText() {
+    // Unicode escape mixed with regular text
+    assertParses("SELECT 'Hello\\u0020World'");
+    assertParses("SELECT 'test\\u003Dvalue'");
+  }
+
+  // ============================================================================
   // Helper Methods
   // ============================================================================
 

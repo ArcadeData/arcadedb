@@ -518,7 +518,18 @@ public class BaseExpression extends MathExpression {
           buffer.append('\r');
         else if (c == '%')
           buffer.append("\\%");
-        else
+        else if (c == 'u' && i + 4 < textSize) {
+          // Unicode escape sequence (backslash-u followed by 4 hex digits)
+          final String hex = iText.substring(i + 1, i + 5);
+          try {
+            final int codePoint = Integer.parseInt(hex, 16);
+            buffer.append((char) codePoint);
+            i += 4; // Skip the 4 hex digits
+          } catch (final NumberFormatException e) {
+            // Invalid unicode escape, append as-is
+            buffer.append(c);
+          }
+        } else
           buffer.append(c);
         continue;
       } else if (c == '\\') {
