@@ -4609,4 +4609,47 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(((Result) firstResult).<Integer>getProperty("a")).isEqualTo(0);
     }
   }
+
+  /**
+   * Tests for GitHub issue #3311 - Unicode escape sequences in SQL strings.
+   * Verifies that backslash-u-XXXX escape sequences are correctly parsed and decoded to actual unicode characters.
+   */
+  @Test
+  void unicodeEscapeSequences() {
+    // Test basic unicode escape: backslash-u-0026 should become '&'
+    // Note: We use "\\" + "u" to avoid Java compiler interpreting as unicode escape
+    try (ResultSet result = database.query("sql", "SELECT '\\" + "u0026' AS ampersand")) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.<String>getProperty("ampersand")).isEqualTo("&");
+    }
+
+    // Test multiple unicode escapes: "Hello" spelled out in unicode
+    try (ResultSet result = database.query("sql", "SELECT '\\" + "u0048\\" + "u0065\\" + "u006C\\" + "u006C\\" + "u006F' AS hello")) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.<String>getProperty("hello")).isEqualTo("Hello");
+    }
+
+    // Test backslash escape: backslash-u-005C is backslash character
+    try (ResultSet result = database.query("sql", "SELECT '\\" + "u005C\\" + "u005C' AS backslashes")) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.<String>getProperty("backslashes")).isEqualTo("\\\\");
+    }
+
+    // Test unicode mixed with regular text
+    try (ResultSet result = database.query("sql", "SELECT 'Hello\\" + "u0020World' AS mixed")) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.<String>getProperty("mixed")).isEqualTo("Hello World");
+    }
+
+    // Test unicode in double-quoted string
+    try (ResultSet result = database.query("sql", "SELECT \"\\" + "u003D\" AS equals")) {
+      assertThat(result.hasNext()).isTrue();
+      final Result item = result.next();
+      assertThat(item.<String>getProperty("equals")).isEqualTo("=");
+    }
+  }
 }

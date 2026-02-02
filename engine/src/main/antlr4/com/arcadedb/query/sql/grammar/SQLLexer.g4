@@ -417,6 +417,7 @@ STRING_LITERAL
 
 fragment STRING_ESCAPE_SEQ
     : '\\' [ntbrf\\'"/ %?]
+    | '\\u' [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]
     ;
 
 // Character Literals
