@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for pattern predicates in WHERE clauses.
  * Regression test for GitHub issue #3277.
  */
-public class CypherPatternPredicateTest {
+class CypherPatternPredicateTest {
   private Database database;
 
   @BeforeEach
@@ -95,7 +95,7 @@ public class CypherPatternPredicateTest {
    * Should return only chunk3 (the orphan chunk with no relationships).
    */
   @Test
-  void testPatternPredicateWithNotAndLabels() {
+  void patternPredicateWithNotAndLabels() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (n:CHUNK) WHERE NOT (n)-[:in]-(:IMAGE) AND NOT (n)-[:in]-(:DOCUMENT) RETURN n");
@@ -117,7 +117,7 @@ public class CypherPatternPredicateTest {
    * Tests positive pattern predicate (without NOT).
    */
   @Test
-  void testPatternPredicatePositive() {
+  void patternPredicatePositive() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (n:CHUNK) WHERE (n)-[:in]-(:IMAGE) RETURN n");
@@ -139,7 +139,7 @@ public class CypherPatternPredicateTest {
    * Tests pattern predicate with OR.
    */
   @Test
-  void testPatternPredicateWithOr() {
+  void patternPredicateWithOr() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
           "MATCH (n:CHUNK) WHERE (n)-[:in]-(:IMAGE) OR (n)-[:in]-(:DOCUMENT) RETURN n");

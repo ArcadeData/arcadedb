@@ -820,7 +820,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   }
 
   @Test
-  void concurrentSessions() throws InterruptedException {
+  void concurrentSessions() throws Exception {
     // Test that multiple concurrent sessions can work independently
     final List<Thread> threads = new ArrayList<>();
     final List<Throwable> errors = new ArrayList<>();

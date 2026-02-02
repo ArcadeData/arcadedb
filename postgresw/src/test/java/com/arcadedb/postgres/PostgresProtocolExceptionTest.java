@@ -20,6 +20,8 @@ package com.arcadedb.postgres;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -51,8 +53,8 @@ class PostgresProtocolExceptionTest {
 
   @Test
   void exceptionWithIOExceptionCause() {
-    java.io.IOException ioCause = new java.io.IOException("IO error");
+    IOException ioCause = new IOException("IO error");
     PostgresProtocolException exception = new PostgresProtocolException("Protocol error", ioCause);
-    assertThat(exception.getCause()).isInstanceOf(java.io.IOException.class);
+    assertThat(exception.getCause()).isInstanceOf(IOException.class);
   }
 }

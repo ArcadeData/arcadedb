@@ -70,7 +70,7 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
-  void sessionIdleTimeout() throws InterruptedException {
+  void sessionIdleTimeout() throws Exception {
     manager = new HttpAuthSessionManager(100L); // 100ms idle timeout
     ServerSecurityUser user = createMockUser("testuser");
 
@@ -91,7 +91,7 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
-  void sessionIdleTimeoutResetByAccess() throws InterruptedException {
+  void sessionIdleTimeoutResetByAccess() throws Exception {
     manager = new HttpAuthSessionManager(200L); // 200ms idle timeout
     ServerSecurityUser user = createMockUser("testuser");
 
@@ -111,7 +111,7 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
-  void absoluteTimeoutZeroMeansUnlimited() throws InterruptedException {
+  void absoluteTimeoutZeroMeansUnlimited() throws Exception {
     manager = new HttpAuthSessionManager(10_000L, 0); // 10s idle timeout, 0 = unlimited absolute
     ServerSecurityUser user = createMockUser("testuser");
 
@@ -127,7 +127,7 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
-  void absoluteTimeoutExpiresSession() throws InterruptedException {
+  void absoluteTimeoutExpiresSession() throws Exception {
     manager = new HttpAuthSessionManager(10_000L, 100L); // 10s idle timeout, 100ms absolute timeout
     ServerSecurityUser user = createMockUser("testuser");
 
@@ -146,7 +146,7 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
-  void absoluteTimeoutNotResetByAccess() throws InterruptedException {
+  void absoluteTimeoutNotResetByAccess() throws Exception {
     manager = new HttpAuthSessionManager(10_000L, 200L); // 10s idle timeout, 200ms absolute timeout
     ServerSecurityUser user = createMockUser("testuser");
 
@@ -193,7 +193,7 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
-  void elapsedFromCreation() throws InterruptedException {
+  void elapsedFromCreation() throws Exception {
     manager = new HttpAuthSessionManager(30_000L);
     ServerSecurityUser user = createMockUser("testuser");
 

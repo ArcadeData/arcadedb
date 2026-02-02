@@ -28,7 +28,6 @@ import com.arcadedb.database.RID;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.Instant;
@@ -73,7 +72,7 @@ class BoltStructureTest {
   }
 
   @Test
-  void boltNodeWriteTo() throws IOException {
+  void boltNodeWriteTo() throws Exception {
     final BoltNode node = new BoltNode(1L, List.of("Label"), Map.of("key", "value"), "#1:0");
     final PackStreamWriter writer = new PackStreamWriter();
     node.writeTo(writer);
@@ -123,7 +122,7 @@ class BoltStructureTest {
   }
 
   @Test
-  void boltRelationshipWriteTo() throws IOException {
+  void boltRelationshipWriteTo() throws Exception {
     final BoltRelationship rel = new BoltRelationship(1L, 2L, 3L, "REL", Map.of(), "#1:0", "#2:0", "#3:0");
     final PackStreamWriter writer = new PackStreamWriter();
     rel.writeTo(writer);
@@ -165,7 +164,7 @@ class BoltStructureTest {
   }
 
   @Test
-  void boltUnboundRelationshipWriteTo() throws IOException {
+  void boltUnboundRelationshipWriteTo() throws Exception {
     final BoltUnboundRelationship rel = new BoltUnboundRelationship(1L, "REL", Map.of(), "#1:0");
     final PackStreamWriter writer = new PackStreamWriter();
     rel.writeTo(writer);
@@ -215,7 +214,7 @@ class BoltStructureTest {
   }
 
   @Test
-  void boltPathWriteTo() throws IOException {
+  void boltPathWriteTo() throws Exception {
     final List<BoltNode> nodes = List.of(new BoltNode(1L, List.of("A"), Map.of(), "#1:0"));
     final List<BoltUnboundRelationship> rels = List.of();
     final List<Long> indices = List.of();
@@ -228,7 +227,7 @@ class BoltStructureTest {
   }
 
   @Test
-  void boltPathWriteToWithRelationships() throws IOException {
+  void boltPathWriteToWithRelationships() throws Exception {
     final List<BoltNode> nodes = List.of(
         new BoltNode(1L, List.of("A"), Map.of(), "#1:0"),
         new BoltNode(2L, List.of("B"), Map.of(), "#2:0")

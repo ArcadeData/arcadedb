@@ -56,7 +56,7 @@ class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
   }
 
   @Test
-  void testConnection() {
+  void connection() {
     driver.verifyConnectivity();
   }
 
