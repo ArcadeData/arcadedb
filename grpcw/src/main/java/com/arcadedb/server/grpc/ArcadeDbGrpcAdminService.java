@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.Index;
@@ -25,26 +26,25 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
 /**
- * Consolidated, compile-clean admin service for the new ArcadeDbAdminService. -
- * No usage of APIs that were missing in your build - Safe fallbacks for
- * version/ports/start time if not exposed by server - Array .length for indexes
- * - Inference of db kind (graph/document) via vertex types
+ * gRPC admin service for server and database administration.
+ * Provides server info, database CRUD, and basic management operations.
  */
 public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceImplBase {
 
-  // Replace with your concrete server class if needed
   private final ArcadeDBServer       server;
   private final CredentialsValidator credentialsValidator;
 
@@ -79,14 +79,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     try {
       authenticate(req.getCredentials());
 
-      // Safer fallbacks (adjust these 3 helpers to your server if you have getters)
-      final String version = safeServerVersion();
-      final long startMs = safeServerStartMs();
+      final String version = getServerVersion();
+      final long startMs = getServerStartMs();
       final long uptime = (startMs > 0) ? Math.max(0, System.currentTimeMillis() - startMs) : 0L;
 
-      final int httpPort = safeHttpPort();
-      final int grpcPort = safeGrpcPort();
-      final int binaryPort = safeBinaryPort();
+      final int httpPort = getHttpPort();
+      final int grpcPort = getGrpcPort();
+      final int binaryPort = getBinaryPort();
 
       final List<String> dbNames = new ArrayList<>(getDatabaseNames());
       int dbCount = dbNames.size();
@@ -165,15 +164,17 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       // Optional: if requested 'graph', initialize default graph types
       if ("graph".equalsIgnoreCase(type)) {
+        // Use getDatabase which returns a shared ServerDatabase - don't close it
         try (Database db = openDatabase(name)) {
-          Schema s = db.getSchema();
-          if (!existsVertexType(s, "V"))
-            s.createVertexType("V");
-          if (!existsEdgeType(s, "E"))
-            s.createEdgeType("E");
+          db.transaction(() -> {
+            Schema s = db.getSchema();
+            if (!existsVertexType(s, "V"))
+              s.createVertexType("V");
+            if (!existsEdgeType(s, "E"))
+              s.createEdgeType("E");
+          });
         }
       }
-
       resp.onNext(CreateDatabaseResponse.newBuilder().build());
       resp.onCompleted();
     } catch (SecurityException se) {
@@ -223,48 +224,51 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
         return;
       }
 
-      try (Database db = openDatabase(name)) {
-
-        Schema schema = db.getSchema();
-
-        // Count classes
-        int classes = 0;
-        try {
-          classes = schema.getTypes().size();
-        } catch (Throwable ignore) {
-        }
-
-        // Count indexes (Index[] in your build)
-        int indexes = 0;
-        try {
-          Index[] idx = schema.getIndexes();
-          indexes = (idx != null) ? idx.length : 0;
-        } catch (Throwable ignore) {
-        }
-
-        // Approximate record count (fast-ish; adjust to your needs)
-        long records = approximateRecordCount(db);
-
-        // Infer db kind: "graph" if any vertex type exists
-        String type = "document";
-
-        try {
-
-          var vIter = schema.getTypes().stream().filter(t -> t instanceof VertexType);
-
-          if (vIter != null && vIter.iterator().hasNext())
-            type = "graph";
-        } catch (Throwable ignore) {
-        }
-
-        GetDatabaseInfoResponse out = GetDatabaseInfoResponse.newBuilder()
-            .setDatabase(name)
-            .setClasses(classes).setIndexes(indexes).setRecords(records).setType(type)
-            .build();
-
-        resp.onNext(out);
-        resp.onCompleted();
+      // Use getDatabase which returns a shared ServerDatabase - don't close it
+      final Database db = openDatabase(name);
+      if (db == null) {
+        resp.onError(Status.NOT_FOUND.withDescription("Database not found: " + name).asException());
+        return;
       }
+
+      final Schema schema = db.getSchema();
+
+      // Count classes
+      int classes = 0;
+      try {
+        classes = schema.getTypes().size();
+      } catch (Throwable ignore) {
+      }
+
+      // Count indexes (Index[] in your build)
+      int indexes = 0;
+      try {
+        Index[] idx = schema.getIndexes();
+        indexes = (idx != null) ? idx.length : 0;
+      } catch (Throwable ignore) {
+      }
+
+      // Approximate record count (fast-ish; adjust to your needs)
+      long records = approximateRecordCount(db);
+
+      // Infer db kind: "graph" if any vertex type exists
+      String type = "document";
+      try {
+        final boolean hasVertexTypes = schema.getTypes().stream()
+            .anyMatch(t -> t instanceof VertexType);
+        if (hasVertexTypes)
+          type = "graph";
+      } catch (Exception e) {
+        // Keep default "document" type if schema inspection fails
+      }
+
+      GetDatabaseInfoResponse out = GetDatabaseInfoResponse.newBuilder()
+          .setDatabase(name)
+          .setClasses(classes).setIndexes(indexes).setRecords(records).setType(type)
+          .build();
+
+      resp.onNext(out);
+      resp.onCompleted();
     } catch (SecurityException se) {
       resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
     } catch (Exception e) {
@@ -274,50 +278,20 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
   @Override
   public void createUser(CreateUserRequest req, StreamObserver<CreateUserResponse> resp) {
-
-    try {
-
-      authenticate(req.getCredentials());
-
-      final String user = req.getUser();
-      final String pwd = req.getPassword();
-      final String role = req.getRole();
-
-      if (user == null || user.isBlank())
-        throw new IllegalArgumentException("user is required");
-      if (pwd == null || pwd.isBlank())
-        throw new IllegalArgumentException("password is required");
-
-      // TODO: wire into your security backend here
-      // server.getSecurity().createUser(user, pwd, role);
-
-      resp.onNext(CreateUserResponse.newBuilder().setSuccess(true).setMessage("OK").build());
-      resp.onCompleted();
-    } catch (SecurityException se) {
-      resp.onError(Status.PERMISSION_DENIED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("createUser: " + e.getMessage()).asException());
-    }
+    // User management via gRPC is not yet implemented
+    // Users should be managed via configuration files or HTTP API
+    resp.onError(Status.UNIMPLEMENTED
+        .withDescription("User management via gRPC is not yet implemented. Use HTTP API or configuration files.")
+        .asException());
   }
 
   @Override
   public void deleteUser(DeleteUserRequest req, StreamObserver<DeleteUserResponse> resp) {
-    try {
-      authenticate(req.getCredentials());
-      final String user = req.getUser();
-      if (user == null || user.isBlank())
-        throw new IllegalArgumentException("user is required");
-
-      // TODO: wire into your security backend here
-      // server.getSecurity().deleteUser(user);
-
-      resp.onNext(DeleteUserResponse.newBuilder().setSuccess(true).setMessage("OK").build());
-      resp.onCompleted();
-    } catch (SecurityException se) {
-      resp.onError(Status.PERMISSION_DENIED.withDescription(se.getMessage()).asException());
-    } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("deleteUser: " + e.getMessage()).asException());
-    }
+    // User management via gRPC is not yet implemented
+    // Users should be managed via configuration files or HTTP API
+    resp.onError(Status.UNIMPLEMENTED
+        .withDescription("User management via gRPC is not yet implemented. Use HTTP API or configuration files.")
+        .asException());
   }
 
   // ------------------------------------------------------------------------------------
@@ -334,28 +308,22 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     if (user == null || user.isBlank())
       throw new SecurityException("Authentication required");
 
+    // Validate format first
     credentialsValidator.validateCredentials(user, pass);
+
+    // Then authenticate against server security
+    try {
+      server.getSecurity().authenticate(user, pass, null);
+    } catch (ServerSecurityException e) {
+      throw new SecurityException("Invalid credentials");
+    }
   }
 
   /**
-   * Get DB names from the server. Adjust if your server exposes a different
-   * accessor.
+   * Get DB names from the server.
    */
-  @SuppressWarnings("unchecked")
   private Collection<String> getDatabaseNames() {
-    // Replace with your server API:
-    // e.g., ((ArcadeDBServer)server).getDatabaseNames()
-    try {
-      var m = server.getClass().getMethod("getDatabaseNames");
-      Object res = m.invoke(server);
-      if (res instanceof Collection<?> c) {
-        return (Collection<String>) c;
-      } else if (res instanceof String[] arr) {
-        return Arrays.asList(arr);
-      }
-    } catch (Throwable ignore) {
-    }
-    return Collections.emptyList();
+    return server.getDatabaseNames();
   }
 
   private boolean containsDatabaseIgnoreCase(String name) {
@@ -367,42 +335,26 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
-   * Create DB physically with READ_WRITE mode. Adjust to your server signature.
+   * Create DB physically with READ_WRITE mode.
    */
-  private void createDatabasePhysical(String name) throws Exception {
-    // Typical signature: createDatabase(String, ComponentFile.MODE)
-    var m = server.getClass().getMethod("createDatabase", String.class, ComponentFile.MODE.class);
-    m.invoke(server, name, ComponentFile.MODE.READ_WRITE);
+  private void createDatabasePhysical(final String name) {
+    server.createDatabase(name, ComponentFile.MODE.READ_WRITE);
   }
 
   /**
-   * Drop DB physically. Prefer API with 'removeFiles' boolean if available.
+   * Drop DB physically. Gets the database, drops it via embedded, then removes from server cache.
    */
-  private void dropDatabasePhysical(String name) throws Exception {
-    try {
-      var m = server.getClass().getMethod("dropDatabase", String.class, boolean.class);
-      m.invoke(server, name, Boolean.TRUE);
-    } catch (NoSuchMethodException nsme) {
-      // Fallback: dropDatabase(String) if present
-      var m2 = server.getClass().getMethod("dropDatabase", String.class);
-      m2.invoke(server, name);
-    }
+  private void dropDatabasePhysical(final String name) {
+    final ServerDatabase database = server.getDatabase(name);
+    database.getEmbedded().drop();
+    server.removeDatabase(database.getName());
   }
 
   /**
-   * Open database for read ops. Adjust to your server's open/get method.
+   * Open database for read ops.
    */
-  private Database openDatabase(String name) throws Exception {
-    // Commonly: server.getDatabase(name) or server.openDatabase(name)
-    try {
-      var m = server.getClass().getMethod("getDatabase", String.class);
-      Object db = m.invoke(server, name);
-      return (Database) db;
-    } catch (NoSuchMethodException nsme) {
-      var m2 = server.getClass().getMethod("openDatabase", String.class);
-      Object db = m2.invoke(server, name);
-      return (Database) db;
-    }
+  private Database openDatabase(final String name) {
+    return server.getDatabase(name);
   }
 
   /**
@@ -442,73 +394,37 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     }
   }
 
-  // ---------- safe server info fallbacks (optional; return sentinel values if
-  // not exposed) ----------
+  // ---------- Server info helpers using direct API calls ----------
 
-  private String safeServerVersion() {
-    try {
-      var m = server.getClass().getMethod("getProductVersion");
-      Object v = m.invoke(server);
-      return (v != null) ? v.toString() : "unknown";
-    } catch (Throwable t) {
-      return "unknown";
-    }
+  private String getServerVersion() {
+    return Constants.getVersion();
   }
 
-  private long safeServerStartMs() {
-    try {
-      var m = server.getClass().getMethod("getStartTime");
-      Object v = m.invoke(server);
-      if (v instanceof Number n)
-        return n.longValue();
-    } catch (Throwable t) {
-      // ignore
-    }
+  private long getServerStartMs() {
+    // ArcadeDBServer does not expose start time directly
+    // Return 0 to indicate "not available"
     return 0L;
   }
 
-  private int safeHttpPort() {
-    try {
-      var m = server.getClass().getMethod("getHttpServer");
-      Object http = m.invoke(server);
-      if (http != null) {
-        var pm = http.getClass().getMethod("getPort");
-        Object p = pm.invoke(http);
-        if (p instanceof Number n)
-          return n.intValue();
+  private int getHttpPort() {
+    final HttpServer httpServer = server.getHttpServer();
+    return httpServer != null ? httpServer.getPort() : -1;
+  }
+
+  private int getGrpcPort() {
+    // Find the GrpcServerPlugin in the registered plugins
+    for (final ServerPlugin plugin : server.getPlugins()) {
+      if (plugin instanceof GrpcServerPlugin grpcPlugin) {
+        final GrpcServerPlugin.ServerStatus status = grpcPlugin.getStatus();
+        return status.standardPort;
       }
-    } catch (Throwable ignore) {
     }
     return -1;
   }
 
-  private int safeGrpcPort() {
-    try {
-      var m = server.getClass().getMethod("getGrpcServer");
-      Object g = m.invoke(server);
-      if (g != null) {
-        var pm = g.getClass().getMethod("getPort");
-        Object p = pm.invoke(g);
-        if (p instanceof Number n)
-          return n.intValue();
-      }
-    } catch (Throwable ignore) {
-    }
-    return -1;
-  }
-
-  private int safeBinaryPort() {
-    try {
-      var m = server.getClass().getMethod("getBinaryServer");
-      Object b = m.invoke(server);
-      if (b != null) {
-        var pm = b.getClass().getMethod("getPort");
-        Object p = pm.invoke(b);
-        if (p instanceof Number n)
-          return n.intValue();
-      }
-    } catch (Throwable ignore) {
-    }
+  private int getBinaryPort() {
+    // ArcadeDB does not have a separate binary server plugin
+    // Binary communication is part of HA (High Availability) infrastructure
     return -1;
   }
 }

@@ -19,6 +19,8 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.http.HttpAuthSession;
+import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.Context;
 import io.grpc.Contexts;
@@ -44,11 +46,17 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> DATABASE_HEADER      =
       Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
-  private final        ServerSecurity       security;
-  private final        boolean              securityEnabled;
+  private final        ServerSecurity          security;
+  private final        boolean                 securityEnabled;
+  private final        HttpAuthSessionManager  authSessionManager;
 
-  public GrpcAuthInterceptor(ServerSecurity security) {
+  public GrpcAuthInterceptor(final ServerSecurity security) {
+    this(security, null);
+  }
+
+  public GrpcAuthInterceptor(final ServerSecurity security, final HttpAuthSessionManager authSessionManager) {
     this.security = security;
+    this.authSessionManager = authSessionManager;
     // Check if security is enabled by checking if it's not null and has users configured
     this.securityEnabled = (security != null && security.getUsers() != null && !security.getUsers().isEmpty());
   }
@@ -67,6 +75,11 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       return next.startCall(call, headers);
     }
 
+    // Skip auth for admin service - it handles its own authentication via request body
+    if (methodName.startsWith("com.arcadedb.grpc.ArcadeDbAdminService/")) {
+      return next.startCall(call, headers);
+    }
+
     // If security is not enabled, allow all requests
     if (!securityEnabled) {
       return next.startCall(call, headers);
@@ -80,18 +93,22 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       }
 
       // Try Bearer token authentication first
-      String authorization = headers.get(AUTHORIZATION_HEADER);
+      final String authorization = headers.get(AUTHORIZATION_HEADER);
       if (authorization != null && authorization.startsWith(BEARER_TYPE)) {
-        String token = authorization.substring(BEARER_TYPE.length()).trim();
-        if (!validateToken(token, database)) {
+        final String token = authorization.substring(BEARER_TYPE.length()).trim();
+        final HttpAuthSession session = getValidSession(token, database);
+        if (session == null) {
           call.close(Status.UNAUTHENTICATED.withDescription("Invalid token"), new Metadata());
           return new ServerCall.Listener<ReqT>() {
           };
         }
+        // Add user to context from session
+        final Context context = Context.current().withValue(USER_CONTEXT_KEY, session.getUser().getName());
+        return Contexts.interceptCall(context, call, headers, next);
       } else {
         // Try basic authentication
-        String username = headers.get(USER_HEADER);
-        String password = headers.get(PASSWORD_HEADER);
+        final String username = headers.get(USER_HEADER);
+        final String password = headers.get(PASSWORD_HEADER);
 
         if (username == null || password == null) {
           // No authentication provided for secured server
@@ -106,18 +123,10 @@ class GrpcAuthInterceptor implements ServerInterceptor {
             };
           }
           // Add user to context
-          Context context = Context.current().withValue(USER_CONTEXT_KEY, username);
+          final Context context = Context.current().withValue(USER_CONTEXT_KEY, username);
           return Contexts.interceptCall(context, call, headers, next);
         }
       }
-
-      // Add user context for downstream processing
-      Context context = Context.current();
-      if (authorization != null) {
-        context = context.withValue(USER_CONTEXT_KEY, extractUserFromToken(authorization));
-      }
-
-      return Contexts.interceptCall(context, call, headers, next);
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Authentication error", e);
@@ -127,11 +136,21 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     }
   }
 
-  private boolean validateToken(String token, String database) {
-    // Implement token validation logic
-    // This could integrate with JWT, OAuth2, or custom token validation
-    // For now, this is a placeholder
-    return true;
+  private HttpAuthSession getValidSession(final String token, final String database) {
+    if (authSessionManager == null) {
+      LogManager.instance().log(this, Level.FINE,
+          "Token authentication not available - no session manager configured");
+      return null;
+    }
+
+    final HttpAuthSession session = authSessionManager.getSessionByToken(token);
+    if (session == null) {
+      LogManager.instance().log(this, Level.FINE,
+          "Invalid or expired token for database: %s", database);
+      return null;
+    }
+
+    return session;
   }
 
   private boolean validateCredentials(String username, String password, String database) {
@@ -148,12 +167,6 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       LogManager.instance().log(this, Level.SEVERE, "Failed to authenticate user: %s for database: %s", e, username, database);
       return false;
     }
-  }
-
-  private String extractUserFromToken(String authorization) {
-    // Extract user information from token
-    // This is a placeholder - implement based on your token format
-    return "authenticated-user";
   }
 
   // Context key for storing authenticated user

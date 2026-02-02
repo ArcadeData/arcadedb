@@ -247,7 +247,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     boolean beganHere = false;
 
     try {
-      final Map<String, Object> params = convertParameters(req.getParametersMap());
+      final Map<String, Object> params = GrpcTypeConverter.convertParameters(req.getParametersMap());
 
       // Language defaults to "sql" when empty
       final String language = (req.getLanguage() == null || req.getLanguage().isEmpty()) ? "sql" : req.getLanguage();
@@ -763,7 +763,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       LogManager.instance().log(this, Level.FINE, "executeQuery(): query = %s", request.getQuery());
 
-      ResultSet resultSet = database.query("sql", request.getQuery(), convertParameters(request.getParametersMap()));
+      ResultSet resultSet = database.query("sql", request.getQuery(), GrpcTypeConverter.convertParameters(request.getParametersMap()));
 
       LogManager.instance()
           .log(this, Level.FINE, "executeQuery(): to get resultSet = %s", (System.currentTimeMillis() - startTime));
@@ -1102,7 +1102,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     QueryResult.Builder batch = QueryResult.newBuilder();
     int inBatch = 0;
 
-    try (ResultSet rs = db.query("sql", request.getQuery(), convertParameters(request.getParametersMap()))) {
+    try (ResultSet rs = db.query("sql", request.getQuery(), GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
       while (rs.hasNext()) {
 
@@ -1169,7 +1169,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final List<GrpcRecord> all = new ArrayList<>();
 
-    try (ResultSet rs = db.query("sql", request.getQuery(), convertParameters(request.getParametersMap()))) {
+    try (ResultSet rs = db.query("sql", request.getQuery(), GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
       while (rs.hasNext()) {
         if (cancelled.get())
@@ -1227,7 +1227,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
       waitUntilReady(scso, cancelled);
 
-      Map<String, Object> params = new HashMap<>(convertParameters(request.getParametersMap()));
+      Map<String, Object> params = new HashMap<>(GrpcTypeConverter.convertParameters(request.getParametersMap()));
       params.put("_skip", offset);
       params.put("_limit", batchSize);
 
@@ -1924,10 +1924,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     });
   }
 
-  private static long tsToMillis(Timestamp ts) {
-    return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
-  }
-
   private Object fromGrpcValue(GrpcValue v) {
     if (v == null)
       return dbgDec("fromGrpcValue", v, null, null);
@@ -1947,7 +1943,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     case BYTES_VALUE:
       return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
     case TIMESTAMP_VALUE:
-      return dbgDec("fromGrpcValue", v, new Date(tsToMillis(v.getTimestampValue())), null);
+      return dbgDec("fromGrpcValue", v, new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue())), null);
     case LINK_VALUE:
       return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()), null);
 
@@ -1980,12 +1976,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return dbgDec("fromGrpcValue", v, null, null);
     }
     return dbgDec("fromGrpcValue", v, null, null);
-  }
-
-  private static Timestamp msToTimestamp(long ms) {
-    long seconds = Math.floorDiv(ms, 1000L);
-    int nanos = (int) Math.floorMod(ms, 1000L) * 1_000_000;
-    return Timestamp.newBuilder().setSeconds(seconds).setNanos(nanos).build();
   }
 
   private GrpcValue toGrpcValue(Object o) {
@@ -2024,7 +2014,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     if (o instanceof Date v) {
       return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build(), null);
+          GrpcValue.newBuilder().setTimestampValue(GrpcTypeConverter.msToTimestamp(v.getTime())).setLogicalType("datetime").build(), null);
     }
 
     if (o instanceof RID rid) {
@@ -2107,7 +2097,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           GrpcValue ridVal = GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
               .setLogicalType("rid").build();
           // soft limit accounting (precise, using serialized sizes)
-          if (!pc.wouldExceed(bytesOf("@rid") + ridVal.getSerializedSize())) {
+          if (!pc.wouldExceed(GrpcTypeConverter.bytesOf("@rid") + ridVal.getSerializedSize())) {
             mb.putEntries("@rid", ridVal);
           } else {
             pc.truncated = true;
@@ -2115,7 +2105,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
         if (doc.getType() != null) {
           GrpcValue typeVal = GrpcValue.newBuilder().setStringValue(doc.getTypeName()).build();
-          if (!pc.wouldExceed(bytesOf("@type") + typeVal.getSerializedSize())) {
+          if (!pc.wouldExceed(GrpcTypeConverter.bytesOf("@type") + typeVal.getSerializedSize())) {
             mb.putEntries("@type", typeVal);
           } else {
             pc.truncated = true;
@@ -2124,7 +2114,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         for (String k : doc.getPropertyNames()) {
           GrpcValue child = toGrpcValue(doc.get(k), pc); // recurse with config
-          int add = bytesOf(k) + child.getSerializedSize();
+          int add = GrpcTypeConverter.bytesOf(k) + child.getSerializedSize();
           if (pc.wouldExceed(add)) {
             LogManager.instance()
                 .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' (limit=%s, used~%s)",
@@ -2268,10 +2258,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             String.valueOf(o));
 
     return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
-  }
-
-  private static int bytesOf(String s) {
-    return s == null ? 0 : s.getBytes(StandardCharsets.UTF_8).length;
   }
 
   private InsertOptions defaults(InsertOptions in) {
@@ -2438,25 +2424,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private void validateCredentials(DatabaseCredentials credentials) {
+    // Check if user is already authenticated via the interceptor (e.g., via Bearer token)
+    final String authenticatedUser = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
+    if (authenticatedUser != null && !authenticatedUser.isEmpty()) {
+      // User already authenticated via interceptor, no need to validate credentials
+      LogManager.instance().log(this, Level.FINE, "validateCredentials(): user already authenticated via interceptor: %s", authenticatedUser);
+      return;
+    }
 
     // Implement credential validation logic
     // This is a placeholder - integrate with ArcadeDB's security system
-
     if (credentials == null || credentials.getUsername().isEmpty()) {
       throw new IllegalArgumentException("Invalid credentials");
     }
-  }
-
-  private Map<String, Object> convertParameters(Map<String, GrpcValue> protoParams) {
-
-    Map<String, Object> params = new HashMap<>();
-
-    for (Map.Entry<String, GrpcValue> entry : protoParams.entrySet()) {
-
-      params.put(entry.getKey(), fromGrpcValue(entry.getValue()));
-    }
-
-    return params;
   }
 
   /**
@@ -2721,7 +2701,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     case DATETIME:
       // Prefer timestamp_value; else accept epoch ms in int64; else parse string
       return switch (v.getKindCase()) {
-        case TIMESTAMP_VALUE -> new Date(tsToMillis(v.getTimestampValue()));
+        case TIMESTAMP_VALUE -> new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue()));
         case INT64_VALUE -> new Date(v.getInt64Value());
         case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
         default -> null;
@@ -2927,7 +2907,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     case DATETIME_NANOS: {
       // Same handling as DATETIME
       return switch (v.getKindCase()) {
-        case TIMESTAMP_VALUE -> new Date(tsToMillis(v.getTimestampValue()));
+        case TIMESTAMP_VALUE -> new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue()));
         case INT64_VALUE -> new Date(v.getInt64Value()); // epoch ms expected
         case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue()));
         default -> null;
