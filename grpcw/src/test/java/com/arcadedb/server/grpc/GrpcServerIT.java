@@ -25,6 +25,7 @@ import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
+import io.grpc.ClientInterceptors;
 import io.grpc.ForwardingClientCall;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -79,7 +80,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
     blockingStub = ArcadeDbServiceGrpc.newBlockingStub(channel);
 
     // Create an authenticated channel using a client interceptor
-    Channel authenticatedChannel = io.grpc.ClientInterceptors.intercept(channel, new AuthClientInterceptor());
+    Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }
 
@@ -779,7 +780,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
     assertThat(token).startsWith("AU-");
 
     // 2. Create gRPC stub with token auth
-    final Channel tokenChannel = io.grpc.ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor(token));
+    final Channel tokenChannel = ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor(token));
     final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub tokenStub = ArcadeDbServiceGrpc.newBlockingStub(tokenChannel);
 
     // 3. Execute a query using token auth
@@ -801,7 +802,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
     logout(token);
 
     // 3. Try to use invalidated token
-    final Channel tokenChannel = io.grpc.ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor(token));
+    final Channel tokenChannel = ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor(token));
     final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub tokenStub = ArcadeDbServiceGrpc.newBlockingStub(tokenChannel);
 
     final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
@@ -818,7 +819,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
   @Test
   void invalidTokenRejected() {
     // Use a fake token that doesn't exist
-    final Channel tokenChannel = io.grpc.ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor("AU-fake-token-12345"));
+    final Channel tokenChannel = ClientInterceptors.intercept(channel, new TokenAuthClientInterceptor("AU-fake-token-12345"));
     final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub tokenStub = ArcadeDbServiceGrpc.newBlockingStub(tokenChannel);
 
     final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
