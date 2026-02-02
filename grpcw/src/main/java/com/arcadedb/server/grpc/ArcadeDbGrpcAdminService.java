@@ -165,14 +165,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // Optional: if requested 'graph', initialize default graph types
       if ("graph".equalsIgnoreCase(type)) {
         // Use getDatabase which returns a shared ServerDatabase - don't close it
-        Database db = openDatabase(name);
-        Schema s = db.getSchema();
-        if (!existsVertexType(s, "V"))
-          s.createVertexType("V");
-        if (!existsEdgeType(s, "E"))
-          s.createEdgeType("E");
+        try (Database db = openDatabase(name)) {
+          db.transaction(() -> {
+            Schema s = db.getSchema();
+            if (!existsVertexType(s, "V"))
+              s.createVertexType("V");
+            if (!existsEdgeType(s, "E"))
+              s.createEdgeType("E");
+          });
+        }
       }
-
       resp.onNext(CreateDatabaseResponse.newBuilder().build());
       resp.onCompleted();
     } catch (SecurityException se) {
