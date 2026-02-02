@@ -105,10 +105,14 @@ class HeadCollectTest {
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
 
-    assertThat(row.getProperty("document_id")).isNotNull();
-    assertThat(row.getProperty("chunk_id")).isNotNull();
-    assertThat(row.getProperty("document_name")).isNotNull();
-    assertThat(row.getProperty("document_name")).isEqualTo("ORANO-MAG-2021_205x275_FR_MEL.pdf");
+    final Object documentId = row.getProperty("document_id");
+    final Object chunkId = row.getProperty("chunk_id");
+    final Object documentName = row.getProperty("document_name");
+
+    assertThat(documentId).isNotNull();
+    assertThat(chunkId).isNotNull();
+    assertThat(documentName).isNotNull();
+    assertThat(documentName).isEqualTo("ORANO-MAG-2021_205x275_FR_MEL.pdf");
 
     assertThat(result.hasNext()).isFalse();
   }
@@ -146,8 +150,9 @@ class HeadCollectTest {
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
 
-    assertThat(row.getProperty("document_name")).isNotNull();
-    assertThat(row.getProperty("document_name")).isEqualTo("ORANO-MAG-2021_205x275_FR_MEL.pdf");
+    final Object documentName = row.getProperty("document_name");
+    assertThat(documentName).isNotNull();
+    assertThat(documentName).isEqualTo("ORANO-MAG-2021_205x275_FR_MEL.pdf");
 
     assertThat(result.hasNext()).isFalse();
   }
@@ -166,20 +171,26 @@ class HeadCollectTest {
 
     // chunk1 -> 1 document
     final Result row1 = result.next();
-    assertThat(row1.getProperty("chunk_id")).isEqualTo("chunk1");
-    assertThat(((Number) row1.getProperty("doc_count")).longValue()).isEqualTo(1L);
+    final Object chunkId1 = row1.getProperty("chunk_id");
+    final Object docCount1 = row1.getProperty("doc_count");
+    assertThat(chunkId1).isEqualTo("chunk1");
+    assertThat(((Number) docCount1).longValue()).isEqualTo(1L);
 
     // chunk2 -> 1 document
     assertThat(result.hasNext()).isTrue();
     final Result row2 = result.next();
-    assertThat(row2.getProperty("chunk_id")).isEqualTo("chunk2");
-    assertThat(((Number) row2.getProperty("doc_count")).longValue()).isEqualTo(1L);
+    final Object chunkId2 = row2.getProperty("chunk_id");
+    final Object docCount2 = row2.getProperty("doc_count");
+    assertThat(chunkId2).isEqualTo("chunk2");
+    assertThat(((Number) docCount2).longValue()).isEqualTo(1L);
 
     // chunk3 -> 1 document
     assertThat(result.hasNext()).isTrue();
     final Result row3 = result.next();
-    assertThat(row3.getProperty("chunk_id")).isEqualTo("chunk3");
-    assertThat(((Number) row3.getProperty("doc_count")).longValue()).isEqualTo(1L);
+    final Object chunkId3 = row3.getProperty("chunk_id");
+    final Object docCount3 = row3.getProperty("doc_count");
+    assertThat(chunkId3).isEqualTo("chunk3");
+    assertThat(((Number) docCount3).longValue()).isEqualTo(1L);
 
     assertThat(result.hasNext()).isFalse();
   }
