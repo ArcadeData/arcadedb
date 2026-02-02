@@ -148,9 +148,9 @@ class CypherExpressionBuilder {
 
     // Check for postfix expressions (property access, list indexing, slicing)
     // This must be checked BEFORE falling back to text parsing
-    final Cypher25Parser.Expression0Context expr0Ctx = findExpression0Recursive(ctx);
-    if (expr0Ctx != null && !expr0Ctx.postFix().isEmpty()) {
-      return parseExpression0WithPostfix(expr0Ctx);
+    final Cypher25Parser.Expression2Context expr2Ctx = findExpression2Recursive(ctx);
+    if (expr2Ctx != null && !expr2Ctx.postFix().isEmpty()) {
+      return parseExpression2WithPostfix(expr2Ctx);
     }
 
     // Use the shared text parsing logic
@@ -675,19 +675,19 @@ class CypherExpressionBuilder {
   }
 
   /**
-   * Recursively find Expression0 context (which may have postfix operations).
+   * Recursively find Expression2 context (which may have postfix operations).
    */
-  Cypher25Parser.Expression0Context findExpression0Recursive(final ParseTree node) {
+  Cypher25Parser.Expression2Context findExpression2Recursive(final ParseTree node) {
     if (node == null) {
       return null;
     }
 
-    if (node instanceof Cypher25Parser.Expression0Context) {
-      return (Cypher25Parser.Expression0Context) node;
+    if (node instanceof Cypher25Parser.Expression2Context) {
+      return (Cypher25Parser.Expression2Context) node;
     }
 
     for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.Expression0Context found = findExpression0Recursive(node.getChild(i));
+      final Cypher25Parser.Expression2Context found = findExpression2Recursive(node.getChild(i));
       if (found != null) {
         return found;
       }
@@ -701,14 +701,14 @@ class CypherExpressionBuilder {
   // ============================================================================
 
   /**
-   * Parse an Expression0 that has postfix operations (property access, list indexing, slicing).
-   * Grammar: expression0 : expression1 postFix*
+   * Parse an Expression2 that has postfix operations (property access, list indexing, slicing).
+   * Grammar: expression2 : expression1 postFix*
    * PostFix can be:
    * - PropertyPostfix: .property
    * - IndexPostfix: [expression]
    * - RangePostfix: [from..to]
    */
-  Expression parseExpression0WithPostfix(final Cypher25Parser.Expression0Context ctx) {
+  Expression parseExpression2WithPostfix(final Cypher25Parser.Expression2Context ctx) {
     // Start with the base expression (expression1)
     Expression result = parseExpression(ctx.expression1());
 
