@@ -449,6 +449,8 @@ jobs:
     needs: [ unit-tests, integration-tests, slow-unit-tests ]
     if: success() || failure()
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Download unit test coverage reports
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -479,3 +481,14 @@ jobs:
           language: java
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        if: success() || failure()
+        with:
+          fail_ci_if_error: false
+          disable_search: true
+          files:  ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: ArcadeData/arcadedb
+          verbose: true
