@@ -710,7 +710,7 @@ class CypherExpressionBuilder {
    */
   Expression parseExpression2WithPostfix(final Cypher25Parser.Expression2Context ctx) {
     // Start with the base expression (expression1)
-    Expression result = parseExpression(ctx.expression1());
+    Expression result = parseExpressionFromText(ctx.expression1());
 
     // Apply each postfix operation in order
     for (final Cypher25Parser.PostFixContext postfix : ctx.postFix()) {
