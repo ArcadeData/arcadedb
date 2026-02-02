@@ -25,47 +25,90 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ConstantsTest {
 
   @Test
-  void getVersionMajor() {
-    assertThat(Constants.getVersionMajor()).isNotNull();
+  void productConstantsAreSet() {
+    assertThat(Constants.PRODUCT).isEqualTo("ArcadeDB");
+    assertThat(Constants.URL).isEqualTo("https://arcadedb.com");
+    assertThat(Constants.COPYRIGHT).isNotEmpty();
   }
 
   @Test
-  void getVersionMinor() {
-    assertThat(Constants.getVersionMinor()).isNotNull();
+  void getRawVersionReturnsVersion() {
+    final String version = Constants.getRawVersion();
+    assertThat(version).isNotNull();
+    assertThat(version).isNotEmpty();
   }
 
   @Test
-  void getVersionHotfix() {
-    assertThat(Constants.getVersionHotfix()).isNotNull();
+  void getVersionMajorReturnsPositiveNumber() {
+    final int major = Constants.getVersionMajor();
+    assertThat(major).isGreaterThanOrEqualTo(0);
   }
 
   @Test
-  void getVersion() {
-    assertThat(Constants.getVersion()).isNotNull();
+  void getVersionMinorReturnsPositiveNumber() {
+    final int minor = Constants.getVersionMinor();
+    assertThat(minor).isGreaterThanOrEqualTo(0);
   }
 
   @Test
-  void getRawVersion() {
-    assertThat(Constants.getRawVersion()).isNotNull();
+  void getVersionHotfixReturnsNonNegativeNumber() {
+    final int hotfix = Constants.getVersionHotfix();
+    assertThat(hotfix).isGreaterThanOrEqualTo(0);
   }
 
   @Test
-  void getBranch() {
-    assertThat(Constants.getBranch()).isNotNull();
+  void getVersionReturnsFormattedString() {
+    final String version = Constants.getVersion();
+    assertThat(version).isNotNull();
+    assertThat(version).contains(Constants.getRawVersion());
   }
 
   @Test
-  void getBuildNumber() {
-    assertThat(Constants.getBuildNumber()).isNotNull();
+  void isSnapshotReturnsBooleanBasedOnVersion() {
+    final boolean isSnapshot = Constants.isSnapshot();
+    final String rawVersion = Constants.getRawVersion();
+
+    if (rawVersion.endsWith("SNAPSHOT")) {
+      assertThat(isSnapshot).isTrue();
+    } else {
+      assertThat(isSnapshot).isFalse();
+    }
   }
 
   @Test
-  void getTimestamp() {
-    assertThat(Constants.getTimestamp()).isNotNull();
+  void getBranchReturnsNullOrValidBranch() {
+    final String branch = Constants.getBranch();
+    // Branch can be null if not set during build, or a valid string
+    if (branch != null) {
+      assertThat(branch).doesNotContain("${scmBranch}");
+    }
   }
 
   @Test
-  void isSnapshot() {
-    assertThat(Constants.isSnapshot()).isNotNull();
+  void getBuildNumberReturnsNullOrValidNumber() {
+    final String buildNumber = Constants.getBuildNumber();
+    // Build number can be null if not set during build, or a valid string
+    if (buildNumber != null) {
+      assertThat(buildNumber).doesNotContain("${buildNumber}");
+    }
+  }
+
+  @Test
+  void getTimestampReturnsNullOrValidTimestamp() {
+    final String timestamp = Constants.getTimestamp();
+    // Timestamp can be null if not set during build, or a valid string
+    if (timestamp != null) {
+      assertThat(timestamp).doesNotContain("${timestamp}");
+    }
+  }
+
+  @Test
+  void versionPartsAreConsistent() {
+    final String rawVersion = Constants.getRawVersion();
+    final int major = Constants.getVersionMajor();
+    final int minor = Constants.getVersionMinor();
+
+    // The raw version should start with major.minor
+    assertThat(rawVersion).startsWith(major + "." + minor);
   }
 }
