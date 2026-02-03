@@ -1518,34 +1518,38 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean started = new AtomicBoolean(false);
 
-    final ConcurrentLinkedQueue<InsertResponse> outQueue = new ConcurrentLinkedQueue<>();
-
-    // drain helper
-    final Runnable drain = () -> {
-      while (call.isReady()) {
-        InsertResponse next = outQueue.poll();
-        if (next == null)
-          break;
-        resp.onNext(next);
-      }
-    };
-
-    // enqueue or send immediately
-    final Consumer<InsertResponse> sendOrQueue = (ir) -> {
-      outQueue.offer(ir);
-      drain.run();
-    };
-
-    call.setOnReadyHandler(drain);
-
-    call.setOnCancelHandler(() -> {
-      cancelled.set(true);
-      final InsertContext ctx = ref.getAndSet(null);
-      if (ctx != null) {
-        sessionWatermark.remove(ctx.sessionId);
-        ctx.closeQuietly();
-      }
+    // Single-threaded executor ensures all database operations for this stream happen on the same thread.
+    // This is critical because ArcadeDB transactions are ThreadLocal - if begin() and commit() happen
+    // on different threads, the transaction context is lost.
+    final ExecutorService streamExecutor = Executors.newSingleThreadExecutor(r -> {
+      Thread t = new Thread(r, "grpc-bidi-stream-" + System.nanoTime());
+      t.setDaemon(true);
+      return t;
     });
+
+    // Send responses directly - gRPC handles backpressure internally for server-side.
+    // Using a queue with isReady() check doesn't work well when sending from a non-gRPC thread
+    // because isReady() may return false, causing responses to be stuck.
+    final Consumer<InsertResponse> sendResponse = resp::onNext;
+
+    // Cleanup helper that can be called multiple times safely
+    final Runnable cleanupAndShutdown = () -> {
+      cancelled.set(true);
+      try {
+        streamExecutor.submit(() -> {
+          final InsertContext ctx = ref.getAndSet(null);
+          if (ctx != null) {
+            sessionWatermark.remove(ctx.sessionId);
+            ctx.closeQuietly();
+          }
+        });
+      } catch (java.util.concurrent.RejectedExecutionException ignore) {
+        // Executor already shut down - cleanup was already done
+      }
+      streamExecutor.shutdown();
+    };
+
+    call.setOnCancelHandler(cleanupAndShutdown);
 
     call.request(1);
 
@@ -1555,137 +1559,147 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (cancelled.get())
           return;
 
-        try {
-          switch (reqMsg.getMsgCase()) {
+        // Submit all message processing to the single-threaded executor
+        // to ensure transaction ThreadLocal context is preserved
+        streamExecutor.submit(() -> {
+          if (cancelled.get())
+            return;
 
-          case START -> {
-            if (!started.compareAndSet(false, true)) {
-              resp.onError(
-                  Status.FAILED_PRECONDITION.withDescription("insertBidirectional: START already received").asException());
-              return;
+          try {
+            switch (reqMsg.getMsgCase()) {
+
+            case START -> {
+              if (!started.compareAndSet(false, true)) {
+                resp.onError(
+                    Status.FAILED_PRECONDITION.withDescription("insertBidirectional: START already received").asException());
+                return;
+              }
+
+              final InsertOptions opts = defaults(reqMsg.getStart().getOptions());
+              final InsertContext ctx = new InsertContext(opts);
+              ctx.startedAt = System.currentTimeMillis();
+              ctx.totals = new Counts();
+
+              ref.set(ctx);
+              sessionWatermark.put(ctx.sessionId, 0L);
+
+              sendResponse.accept(
+                  InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
+
+              // pull next message
+              call.request(1);
             }
 
-            final InsertOptions opts = defaults(reqMsg.getStart().getOptions());
-            final InsertContext ctx = new InsertContext(opts);
-            ctx.startedAt = System.currentTimeMillis();
-            ctx.totals = new Counts();
+            case CHUNK -> {
+              final InsertContext ctx = require(ref.get(), "session not started");
+              final InsertChunk c = reqMsg.getChunk();
 
-            ref.set(ctx);
-            sessionWatermark.put(ctx.sessionId, 0L);
+              // idempotent replay guard
+              final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
 
-            sendOrQueue.accept(
-                InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
+              if (c.getChunkSeq() <= hi) {
 
-            // pull next message
-            call.request(1);
-          }
+                resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
+                    .setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
 
-          case CHUNK -> {
-            final InsertContext ctx = require(ref.get(), "session not started");
-            final InsertChunk c = reqMsg.getChunk();
+                call.request(1);
+                return;
+              }
 
-            // idempotent replay guard
-            final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
+              Counts perChunk;
+              try {
+                perChunk = insertRows(ctx, c.getRowsList().iterator());
+                ctx.totals.add(perChunk);
+                sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
 
-            if (c.getChunkSeq() <= hi) {
+                sendResponse.accept(InsertResponse.newBuilder()
+                    .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+                        .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+                        .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+                    .build());
 
-              resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
-                  .setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
+              } catch (Exception e) {
+                // surface as failed chunk and continue (or switch to resp.onError(...) if you
+                // want to fail fast)
+
+                perChunk = new Counts();
+
+                perChunk.failed = c.getRowsCount();
+
+                perChunk.errors.add(InsertError.newBuilder().setRowIndex(Math.max(0, ctx.received - 1)).setCode("DB_ERROR")
+                    .setMessage(String.valueOf(e.getMessage())).build());
+                ctx.totals.add(perChunk);
+                // intentionally do not advance watermark on failure; client may replay safely
+
+                sendResponse.accept(InsertResponse.newBuilder()
+                    .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+                        .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+                        .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+                    .build());
+              }
 
               call.request(1);
-              return;
             }
 
-            Counts perChunk;
-            try {
-              perChunk = insertRows(ctx, c.getRowsList().iterator());
-              ctx.totals.add(perChunk);
-              sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
-
-              sendOrQueue.accept(InsertResponse.newBuilder()
-                  .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-                      .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
-                      .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
-                  .build());
-
-            } catch (Exception e) {
-              // surface as failed chunk and continue (or switch to resp.onError(...) if you
-              // want to fail fast)
-
-              perChunk = new Counts();
-
-              perChunk.failed = c.getRowsCount();
-
-              perChunk.errors.add(InsertError.newBuilder().setRowIndex(Math.max(0, ctx.received - 1)).setCode("DB_ERROR")
-                  .setMessage(String.valueOf(e.getMessage())).build());
-              ctx.totals.add(perChunk);
-              // intentionally do not advance watermark on failure; client may replay safely
-
-              sendOrQueue.accept(InsertResponse.newBuilder()
-                  .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-                      .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
-                      .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
-                  .build());
+            case COMMIT -> {
+              final InsertContext ctx = require(ref.get(), "session not started");
+              try {
+                ctx.flushCommit(true); // commit unless validate_only in your InsertContext logic
+                final InsertSummary sum = ctx.summary(ctx.totals, ctx.startedAt);
+                resp.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
+                resp.onCompleted();
+              } catch (Exception e) {
+                resp.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
+              } finally {
+                sessionWatermark.remove(ctx.sessionId);
+                ctx.closeQuietly();
+                ref.set(null);
+              }
             }
 
-            call.request(1);
-          }
-
-          case COMMIT -> {
-            final InsertContext ctx = require(ref.get(), "session not started");
-            try {
-              ctx.flushCommit(true); // commit unless validate_only in your InsertContext logic
-              final InsertSummary sum = ctx.summary(ctx.totals, ctx.startedAt);
-              resp.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
-              resp.onCompleted();
-            } catch (Exception e) {
-              resp.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
-            } finally {
+            case MSG_NOT_SET -> {
+              // ignore
+              call.request(1);
+            }
+            }
+          } catch (Exception unexpected) {
+            // defensive: fail fast on unexpected exceptions
+            resp.onError(Status.INTERNAL.withDescription("insertBidirectional: " + unexpected.getMessage()).asException());
+            final InsertContext ctx = ref.getAndSet(null);
+            if (ctx != null) {
               sessionWatermark.remove(ctx.sessionId);
               ctx.closeQuietly();
-              ref.set(null);
             }
           }
-
-          case MSG_NOT_SET -> {
-            // ignore
-            call.request(1);
-          }
-          }
-        } catch (Exception unexpected) {
-          // defensive: fail fast on unexpected exceptions
-          resp.onError(Status.INTERNAL.withDescription("insertBidirectional: " + unexpected.getMessage()).asException());
-          final InsertContext ctx = ref.getAndSet(null);
-          if (ctx != null) {
-            sessionWatermark.remove(ctx.sessionId);
-            ctx.closeQuietly();
-          }
-        }
+        });
       }
 
       @Override
       public void onError(Throwable t) {
-        final InsertContext ctx = ref.getAndSet(null);
-        if (ctx != null) {
-          sessionWatermark.remove(ctx.sessionId);
-          ctx.closeQuietly();
-        }
+        cleanupAndShutdown.run();
       }
 
       @Override
       public void onCompleted() {
         // Define your policy for half-close without COMMIT:
-        final InsertContext ctx = ref.getAndSet(null);
-        if (ctx != null) {
-          try {
-            // Safer default is rollback; if you prefer auto-commit on close, call
-            // flushCommit(true)
-            ctx.flushCommit(false); // or ctx.rollbackQuietly() if you have a helper
-          } catch (Exception ignore) {
-          }
-          sessionWatermark.remove(ctx.sessionId);
-          ctx.closeQuietly();
+        try {
+          streamExecutor.submit(() -> {
+            final InsertContext ctx = ref.getAndSet(null);
+            if (ctx != null) {
+              try {
+                // Safer default is rollback; if you prefer auto-commit on close, call
+                // flushCommit(true)
+                ctx.flushCommit(false); // or ctx.rollbackQuietly() if you have a helper
+              } catch (Exception ignore) {
+              }
+              sessionWatermark.remove(ctx.sessionId);
+              ctx.closeQuietly();
+            }
+          });
+        } catch (java.util.concurrent.RejectedExecutionException ignore) {
+          // Executor already shut down
         }
+        streamExecutor.shutdown();
       }
     };
   }

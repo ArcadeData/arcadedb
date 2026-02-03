@@ -2052,7 +2052,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       logTx("STREAM(local)", opName);
     }
     final var stub = asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
-    StreamObserver<Req> reqObs = starter.apply(stub, wrapObserver(opName, responseObserver));
+    // Don't double-wrap if the observer is already a ClientResponseObserver (e.g. from wrapClientResponseObserver)
+    // because wrapping it again with wrapObserver would hide the ClientResponseObserver interface
+    // and prevent beforeStart() from being called.
+    StreamObserver<Resp> effectiveObserver = (responseObserver instanceof io.grpc.stub.ClientResponseObserver)
+        ? responseObserver
+        : wrapObserver(opName, responseObserver);
+    StreamObserver<Req> reqObs = starter.apply(stub, effectiveObserver);
     if (debugTx != null) {
       debugTx.rpcSeq.incrementAndGet();
     }
