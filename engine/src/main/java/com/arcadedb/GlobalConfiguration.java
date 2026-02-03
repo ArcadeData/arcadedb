@@ -436,6 +436,10 @@ public enum GlobalConfiguration {
       "Absolute timeout in seconds for a HTTP authentication session to expire from its creation time, regardless of activity. Set to 0 to disable (unlimited). Default is 0 (disabled)",
       Long.class, 0), // 0 = DISABLED/UNLIMITED BY DEFAULT
 
+  SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
+      "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
+      Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
+
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
