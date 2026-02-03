@@ -54,7 +54,7 @@ protected String parseRequestPayload(final HttpServerExchange e) {
 
 The issue is caused by **missing MAX_ENTITY_SIZE configuration** in ArcadeDB's Undertow server setup. Here's what happened:
 
-1. **Undertow 2.3.21.Final** introduced fixes for [CVE-2024-3884](https://github.com/advisories/GHSA-6h4f-pj3g-q8fq) and [CVE-2024-4027](https://app.opencve.io/cve/CVE-2024-3884) (UNDERTOW-2377)
+1. **Undertow 2.3.21.Final** introduced fixes for [CVE-2024-3884](https://github.com/advisories/GHSA-6h4f-pj3g-q8fq) and [CVE-2024-4027](https://github.com/advisories/GHSA-q23f-9g5j-phrm) (UNDERTOW-2377)
    - These CVEs addressed "OutOfMemory when parsing form data encoding with application/x-www-form-urlencoded"
    - The fix likely introduced stricter enforcement of MAX_ENTITY_SIZE limits
 
@@ -77,7 +77,7 @@ The issue is caused by **missing MAX_ENTITY_SIZE configuration** in ArcadeDB's U
 - ✅ Undertow 2.3.22.Final fails with large bodies (post-CVE fix)
 - ✅ ArcadeDB doesn't configure MAX_ENTITY_SIZE
 - ✅ [Spring Boot documentation](https://github.com/spring-projects/spring-boot/issues/18555) confirms MAX_ENTITY_SIZE is required for large request bodies
-- ✅ [Undertow documentation](https://undertow.io/javadoc/2.0.x/io/undertow/UndertowOptions.html) shows MAX_ENTITY_SIZE defaults to unlimited but CVE fixes may have changed this
+- ✅ [Undertow documentation](https://undertow.io/javadoc/2.3.x/io/undertow/UndertowOptions.html#MAX_ENTITY_SIZE) shows MAX_ENTITY_SIZE defaults to unlimited but CVE fixes may have changed this
 
 ### Solution Plan
 

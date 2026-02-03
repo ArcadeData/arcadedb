@@ -437,7 +437,7 @@ public enum GlobalConfiguration {
       Long.class, 0), // 0 = DISABLED/UNLIMITED BY DEFAULT
 
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
-      "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size. Default is 100MB",
+      "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
 
   // SERVER WS
