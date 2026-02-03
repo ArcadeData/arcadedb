@@ -1445,8 +1445,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
               r.onNext(InsertRequest.newBuilder().setCommit(Commit.newBuilder().setSessionId(sessionId)).build());
               r.onCompleted();
             }
-          } catch (Throwable ignore) {
-            /* best effort */
+          } catch (Throwable t) {
+            // Best effort - stream may be closed
+            if (LogManager.instance().isDebugEnabled())
+              LogManager.instance().log(this, Level.FINE, "CLIENT ingestBidi commit failed (best effort): %s", t.getMessage());
           }
         }
       }
@@ -1861,7 +1863,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     case NOT_FOUND:
       throw new RecordNotFoundException(msg, null);
     case ALREADY_EXISTS:
-      throw new DuplicatedKeyException("", "", null);
+      throw new DuplicatedKeyException(msg, msg, null);
     case ABORTED:
       throw new ConcurrentModificationException(msg);
     case DEADLINE_EXCEEDED:
