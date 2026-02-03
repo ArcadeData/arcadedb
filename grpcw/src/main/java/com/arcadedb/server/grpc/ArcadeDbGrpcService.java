@@ -1620,13 +1620,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   .setMessage(String.valueOf(e.getMessage())).build());
               ctx.totals.add(perChunk);
               // intentionally do not advance watermark on failure; client may replay safely
-            }
 
-            sendOrQueue.accept(InsertResponse.newBuilder()
-                .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-                    .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
-                    .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
-                .build());
+              sendOrQueue.accept(InsertResponse.newBuilder()
+                  .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+                      .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+                      .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+                  .build());
+            }
 
             call.request(1);
           }
