@@ -1425,6 +1425,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final AtomicReference<ClientCallStreamObserver<InsertRequest>> observerRef = new AtomicReference<>();
 
     final AtomicBoolean commitSent = new AtomicBoolean(false);
+    final Object streamLock = new Object();
     final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(
         r -> {
           Thread t = new Thread(r, "grpc-ack-grace-timer");
@@ -1436,15 +1437,19 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final AtomicReference<ScheduledFuture<?>> ackGraceFuture = new AtomicReference<>();
 
     final Runnable sendCommitIfNeeded = () -> {
-      if (commitSent.compareAndSet(false, true)) {
-        try {
-          final ClientCallStreamObserver<InsertRequest> r = observerRef.get();
-          if (r != null) {
-            r.onNext(InsertRequest.newBuilder().setCommit(Commit.newBuilder().setSessionId(sessionId)).build());
-            r.onCompleted();
+      synchronized (streamLock) {
+        if (commitSent.compareAndSet(false, true)) {
+          try {
+            final ClientCallStreamObserver<InsertRequest> r = observerRef.get();
+            if (r != null) {
+              r.onNext(InsertRequest.newBuilder().setCommit(Commit.newBuilder().setSessionId(sessionId)).build());
+              r.onCompleted();
+            }
+          } catch (Throwable t) {
+            // Best effort - stream may be closed
+            if (LogManager.instance().isDebugEnabled())
+              LogManager.instance().log(this, Level.FINE, "CLIENT ingestBidi commit failed (best effort): %s", t.getMessage());
           }
-        } catch (Throwable ignore) {
-          /* best effort */
         }
       }
     };
@@ -1483,36 +1488,40 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       private void drain() {
-        if (!req.isReady())
-          return;
+        synchronized (streamLock) {
+          if (commitSent.get())
+            return;
+          if (!req.isReady())
+            return;
 
-        if (!started) {
-          req.onNext(InsertRequest.newBuilder().setStart(Start.newBuilder().setOptions(effectiveOpts)).build());
-          started = true;
-          req.request(1); // pull first server response
-        }
+          if (!started) {
+            req.onNext(InsertRequest.newBuilder().setStart(Start.newBuilder().setOptions(effectiveOpts)).build());
+            started = true;
+            req.request(1); // pull first server response
+          }
 
-        while (req.isReady() && (sent.get() - acked.get()) < maxInflight) {
-          final int start = cursor.get();
-          if (start >= protoRows.size())
-            break;
+          while (req.isReady() && (sent.get() - acked.get()) < maxInflight) {
+            final int start = cursor.get();
+            if (start >= protoRows.size())
+              break;
 
-          final int end = Math.min(start + chunkSize, protoRows.size());
-          final var slice = protoRows.subList(start, end);
+            final int end = Math.min(start + chunkSize, protoRows.size());
+            final var slice = protoRows.subList(start, end);
 
-          final var chunk = InsertChunk.newBuilder().setSessionId(sessionId).setChunkSeq(seq.getAndIncrement()).addAllRows(slice)
-              .build();
+            final var chunk = InsertChunk.newBuilder().setSessionId(sessionId).setChunkSeq(seq.getAndIncrement()).addAllRows(slice)
+                .build();
 
-          req.onNext(InsertRequest.newBuilder().setChunk(chunk).build());
-          cursor.set(end);
-          sent.incrementAndGet();
-        }
+            req.onNext(InsertRequest.newBuilder().setChunk(chunk).build());
+            cursor.set(end);
+            sent.incrementAndGet();
+          }
 
-        if (cursor.get() >= protoRows.size()) {
-          if (acked.get() >= sent.get())
-            sendCommitIfNeeded.run();
-          else
-            armAckGraceTimer.run();
+          if (cursor.get() >= protoRows.size()) {
+            if (acked.get() >= sent.get())
+              sendCommitIfNeeded.run();
+            else
+              armAckGraceTimer.run();
+          }
         }
       }
 
@@ -1520,7 +1529,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       public void onNext(InsertResponse v) {
         switch (v.getMsgCase()) {
         case STARTED -> {
-          /* ok */
+          drain();
         }
         case BATCH_ACK -> {
           acks.add(v.getBatchAck());
@@ -1854,7 +1863,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     case NOT_FOUND:
       throw new RecordNotFoundException(msg, null);
     case ALREADY_EXISTS:
-      throw new DuplicatedKeyException("", "", null);
+      throw new DuplicatedKeyException(msg, msg, null);
     case ABORTED:
       throw new ConcurrentModificationException(msg);
     case DEADLINE_EXCEEDED:
@@ -2045,7 +2054,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       logTx("STREAM(local)", opName);
     }
     final var stub = asyncStub.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS);
-    StreamObserver<Req> reqObs = starter.apply(stub, wrapObserver(opName, responseObserver));
+    // Don't double-wrap if the observer is already a ClientResponseObserver (e.g. from wrapClientResponseObserver)
+    // because wrapping it again with wrapObserver would hide the ClientResponseObserver interface
+    // and prevent beforeStart() from being called.
+    StreamObserver<Resp> effectiveObserver = (responseObserver instanceof io.grpc.stub.ClientResponseObserver)
+        ? responseObserver
+        : wrapObserver(opName, responseObserver);
+    StreamObserver<Req> reqObs = starter.apply(stub, effectiveObserver);
     if (debugTx != null) {
       debugTx.rpcSeq.incrementAndGet();
     }
