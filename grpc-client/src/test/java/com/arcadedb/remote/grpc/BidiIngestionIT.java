@@ -29,7 +29,6 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -132,7 +131,6 @@ class BidiIngestionIT extends BaseGraphServerTest {
   }
 
   @Test
-  @Disabled("Bidi streaming has server-side timing issues that cause timeouts - needs investigation")
   @DisplayName("ingestBidi basic flow sends records and receives ACKs")
   void ingestBidi_basicFlow() throws InterruptedException {
     List<Map<String, Object>> rows = generateRows(50);
@@ -145,7 +143,6 @@ class BidiIngestionIT extends BaseGraphServerTest {
   }
 
   @Test
-  @Disabled("Bidi streaming has server-side timing issues that cause timeouts - needs investigation")
   @DisplayName("ingestBidi handles backpressure with maxInflight limit")
   void ingestBidi_backpressure() throws InterruptedException {
     List<Map<String, Object>> rows = generateRows(200);
@@ -158,7 +155,6 @@ class BidiIngestionIT extends BaseGraphServerTest {
   }
 
   @Test
-  @Disabled("Bidi streaming has server-side timing issues that cause timeouts - needs investigation")
   @DisplayName("ingestBidi large volume streams without blocking indefinitely")
   void ingestBidi_largeVolume() throws InterruptedException {
     // Reduced from 50K to 5K to avoid timeout issues
@@ -171,7 +167,6 @@ class BidiIngestionIT extends BaseGraphServerTest {
   }
 
   @Test
-  @Disabled("Bidi streaming has server-side timing issues that cause timeouts - needs investigation")
   @DisplayName("ingestBidi with explicit transaction commits correctly")
   void ingestBidi_withTransaction() throws InterruptedException {
     List<Map<String, Object>> rows = generateRows(30);
@@ -185,7 +180,6 @@ class BidiIngestionIT extends BaseGraphServerTest {
   }
 
   @Test
-  @Disabled("Bidi streaming has server-side timing issues that cause timeouts - needs investigation")
   @DisplayName("ingestBidi with conflict mode UPDATE performs upserts")
   void ingestBidi_upsertOnConflict() throws InterruptedException {
     // First insert
