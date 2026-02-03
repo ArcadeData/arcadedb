@@ -34,7 +34,6 @@
     <name>ArcadeDB gRPC Client</name>
 
     <properties>
-        <mockito.version>5.15.2</mockito.version>
         <jackson-databind.version>2.21.0</jackson-databind.version>
     </properties>
 
@@ -146,7 +145,6 @@
             <version>${project.parent.version}</version>
             <scope>test</scope>
         </dependency>
-
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
