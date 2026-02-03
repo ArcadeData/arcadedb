@@ -567,7 +567,7 @@
                             </execution>
                             <execution>
                                 <id>report-it</id>
-                                <phase>prepare-package</phase>
+                                <phase>report-integration</phase>
                                 <goals>
                                     <goal>report-integration</goal>
                                 </goals>
