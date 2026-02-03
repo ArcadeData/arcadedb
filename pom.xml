@@ -576,7 +576,7 @@
                             </execution>
                             <execution>
                                 <id>report-it</id>
-                                <phase>report-integration</phase>
+                                <phase>post-integration-test</phase>
                                 <goals>
                                     <goal>report-integration</goal>
                                 </goals>
