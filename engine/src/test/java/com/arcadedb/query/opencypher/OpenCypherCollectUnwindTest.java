@@ -51,14 +51,15 @@ class OpenCypherCollectUnwindTest {
     // Create test data:
     //   People with hobbies in different cities
     database.command("opencypher",
-        "CREATE (alice:Person {name: 'Alice', age: 30, hobbies: ['reading', 'hiking', 'cooking']}), " +
-            "(bob:Person {name: 'Bob', age: 25, hobbies: ['gaming', 'reading']}), " +
-            "(charlie:Person {name: 'Charlie', age: 35, hobbies: ['hiking', 'photography']}), " +
-            "(nyc:City {name: 'NYC'}), " +
-            "(la:City {name: 'LA'}), " +
-            "(alice)-[:LIVES_IN]->(nyc), " +
-            "(bob)-[:LIVES_IN]->(nyc), " +
-            "(charlie)-[:LIVES_IN]->(la)");
+        """
+            CREATE (alice:Person {name: 'Alice', age: 30, hobbies: ['reading', 'hiking', 'cooking']}),
+            (bob:Person {name: 'Bob', age: 25, hobbies: ['gaming', 'reading']}),
+            (charlie:Person {name: 'Charlie', age: 35, hobbies: ['hiking', 'photography']}),
+            (nyc:City {name: 'NYC'}),
+            (la:City {name: 'LA'}),
+            (alice)-[:LIVES_IN]->(nyc),
+            (bob)-[:LIVES_IN]->(nyc),
+            (charlie)-[:LIVES_IN]->(la)""");
   }
 
   @AfterEach
@@ -89,9 +90,10 @@ class OpenCypherCollectUnwindTest {
   void collectWithGroupBy() {
     // Collect names grouped by city
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person)-[:LIVES_IN]->(c:City) " +
-            "RETURN c.name AS city, collect(p.name) AS residents " +
-            "ORDER BY city");
+        """
+            MATCH (p:Person)-[:LIVES_IN]->(c:City)
+            RETURN c.name AS city, collect(p.name) AS residents
+            ORDER BY city""");
 
     // LA should have [Charlie]
     assertThat(result.hasNext()).isTrue();
@@ -178,9 +180,10 @@ class OpenCypherCollectUnwindTest {
   void unwindWithMatch() {
     // Unwind hobbies property from Person nodes
     final ResultSet result = database.command("opencypher",
-        "MATCH (n:Person) WHERE n.name = 'Alice' " +
-            "UNWIND n.hobbies AS hobby " +
-            "RETURN n.name AS name, hobby");
+        """
+            MATCH (n:Person) WHERE n.name = 'Alice'
+            UNWIND n.hobbies AS hobby
+            RETURN n.name AS name, hobby""");
 
     final List<String> hobbies = new ArrayList<>();
     while (result.hasNext()) {
@@ -196,18 +199,23 @@ class OpenCypherCollectUnwindTest {
   void unwindMultipleNodes() {
     // Unwind hobbies for all persons
     final ResultSet result = database.command("opencypher",
-        "MATCH (n:Person) " +
-            "UNWIND n.hobbies AS hobby " +
-            "RETURN n.name AS name, hobby " +
-            "ORDER BY name, hobby");
+        """
+            MATCH (n:Person)
+            UNWIND n.hobbies AS hobby
+            RETURN n.name AS name, hobby
+            ORDER BY name, hobby""");
 
     // Alice: cooking, hiking, reading
     // Bob: gaming, reading
     // Charlie: hiking, photography
     final List<String> expected = List.of(
-        "Alice:cooking", "Alice:hiking", "Alice:reading",
-        "Bob:gaming", "Bob:reading",
-        "Charlie:hiking", "Charlie:photography"
+        "Alice:cooking",
+        "Alice:hiking",
+        "Alice:reading",
+        "Bob:gaming",
+        "Bob:reading",
+        "Charlie:hiking",
+        "Charlie:photography"
     );
 
     final List<String> actual = new ArrayList<>();
@@ -377,21 +385,23 @@ class OpenCypherCollectUnwindTest {
 
     // Create test data: 3 chunks pointing to 2 documents
     database.command("opencypher",
-        "CREATE (doc1:DOCUMENT {name: 'Document A', id: 'doc-a'}), " +
-            "(doc2:DOCUMENT {name: 'Document B', id: 'doc-b'}), " +
-            "(chunk1:CHUNK {text: 'chunk 1'}), " +
-            "(chunk2:CHUNK {text: 'chunk 2'}), " +
-            "(chunk3:CHUNK {text: 'chunk 3'}), " +
-            "(chunk1)-[:BELONGS_TO]->(doc1), " +
-            "(chunk2)-[:BELONGS_TO]->(doc1), " +
-            "(chunk3)-[:BELONGS_TO]->(doc2)");
+        """
+            CREATE (doc1:DOCUMENT {name: 'Document A', id: 'doc-a'}),
+            (doc2:DOCUMENT {name: 'Document B', id: 'doc-b'}),
+            (chunk1:CHUNK {text: 'chunk 1'}),
+            (chunk2:CHUNK {text: 'chunk 2'}),
+            (chunk3:CHUNK {text: 'chunk 3'}),
+            (chunk1)-[:BELONGS_TO]->(doc1),
+            (chunk2)-[:BELONGS_TO]->(doc1),
+            (chunk3)-[:BELONGS_TO]->(doc2)""");
 
     // Test 1: head(collect(ID(doc))) - should return first document ID (not null!)
     ResultSet result = database.command("opencypher",
-        "MATCH (c:CHUNK)-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH c, head(collect(ID(doc))) AS documentId " +
-            "RETURN c.text AS chunk, documentId " +
-            "ORDER BY chunk");
+        """
+            MATCH (c:CHUNK)-[:BELONGS_TO]->(doc:DOCUMENT)
+            WITH c, head(collect(ID(doc))) AS documentId
+            RETURN c.text AS chunk, documentId
+            ORDER BY chunk""");
 
     // Verify chunk1 result
     assertThat(result.hasNext()).isTrue();
@@ -419,10 +429,11 @@ class OpenCypherCollectUnwindTest {
 
     // Test 2: head(collect(doc.name)) - should return first document name
     result = database.command("opencypher",
-        "MATCH (c:CHUNK)-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH c, head(collect(doc.name)) AS documentName " +
-            "RETURN c.text AS chunk, documentName " +
-            "ORDER BY chunk");
+        """
+            MATCH (c:CHUNK)-[:BELONGS_TO]->(doc:DOCUMENT)
+            WITH c, head(collect(doc.name)) AS documentName
+            RETURN c.text AS chunk, documentName
+            ORDER BY chunk""");
 
     // Verify chunk1
     assertThat(result.hasNext()).isTrue();
@@ -452,13 +463,15 @@ class OpenCypherCollectUnwindTest {
 
     // Test 3: Test with multiple documents per chunk to verify head() gets first element
     database.command("opencypher",
-        "MATCH (chunk1:CHUNK {text: 'chunk 1'}), (doc2:DOCUMENT {name: 'Document B'}) " +
-            "CREATE (chunk1)-[:BELONGS_TO]->(doc2)");
+        """
+            MATCH (chunk1:CHUNK {text: 'chunk 1'}), (doc2:DOCUMENT {name: 'Document B'})
+            CREATE (chunk1)-[:BELONGS_TO]->(doc2)""");
 
     result = database.command("opencypher",
-        "MATCH (c:CHUNK {text: 'chunk 1'})-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH c, head(collect(doc.name)) AS firstDocName, collect(doc.name) AS allDocNames " +
-            "RETURN c.text AS chunk, firstDocName, allDocNames");
+        """
+            MATCH (c:CHUNK {text: 'chunk 1'})-[:BELONGS_TO]->(doc:DOCUMENT)
+            WITH c, head(collect(doc.name)) AS firstDocName, collect(doc.name) AS allDocNames
+            RETURN c.text AS chunk, firstDocName, allDocNames""");
 
     assertThat(result.hasNext()).isTrue();
     row = result.next();
@@ -481,10 +494,11 @@ class OpenCypherCollectUnwindTest {
     database.command("opencypher", "CREATE (orphan:ORPHAN_CHUNK {text: 'orphan'})");
 
     result = database.command("opencypher",
-        "MATCH (c:ORPHAN_CHUNK) " +
-            "OPTIONAL MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH c, head(collect(doc.name)) AS documentName " +
-            "RETURN c.text AS chunk, documentName");
+        """
+            MATCH (c:ORPHAN_CHUNK)
+            OPTIONAL MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT)
+            WITH c, head(collect(doc.name)) AS documentName
+            RETURN c.text AS chunk, documentName""");
 
     assertThat(result.hasNext()).isTrue();
     row = result.next();
@@ -497,9 +511,10 @@ class OpenCypherCollectUnwindTest {
 
     // Test 5: Test head(collect(doc)) with full node objects
     result = database.command("opencypher",
-        "MATCH (c:CHUNK {text: 'chunk 3'})-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH c, head(collect(doc)) AS firstDoc " +
-            "RETURN c.text AS chunk, firstDoc.name AS docName, firstDoc.id AS docId");
+        """
+            MATCH (c:CHUNK {text: 'chunk 3'})-[:BELONGS_TO]->(doc:DOCUMENT)
+            WITH c, head(collect(doc)) AS firstDoc
+            RETURN c.text AS chunk, firstDoc.name AS docName, firstDoc.id AS docId""");
 
     assertThat(result.hasNext()).isTrue();
     row = result.next();
