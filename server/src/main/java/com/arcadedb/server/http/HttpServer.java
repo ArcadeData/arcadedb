@@ -187,8 +187,10 @@ public class HttpServer implements ServerPlugin {
 
   private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
       int httpsPortListening) throws Exception {
+    final long maxEntitySize = configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
+        .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, maxEntitySize)
         .addHttpListener(httpPortListening, host)//
         .setHandler(routes)//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
