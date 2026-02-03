@@ -21,7 +21,8 @@ package com.arcadedb.utility;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -150,7 +151,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void writeAndReadFileAsString() throws IOException {
+  void writeAndReadFileAsString() throws Exception {
     final Path file = tempDir.resolve("test.txt");
     final String content = "Hello, World!\nLine 2";
 
@@ -161,7 +162,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void writeAndReadFileAsBytes() throws IOException {
+  void writeAndReadFileAsBytes() throws Exception {
     final Path file = tempDir.resolve("test.bin");
     final byte[] content = {0x01, 0x02, 0x03, 0x04, 0x05};
 
@@ -172,7 +173,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void readStreamAsString() throws IOException {
+  void readStreamAsString() throws Exception {
     final String content = "Test content from stream";
     final InputStream stream = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
 
@@ -181,7 +182,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void deleteRecursively() throws IOException {
+  void deleteRecursively() throws Exception {
     final Path subDir = tempDir.resolve("subdir");
     Files.createDirectory(subDir);
     Files.createFile(subDir.resolve("file1.txt"));
@@ -193,7 +194,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void deleteFile() throws IOException {
+  void deleteFile() throws Exception {
     final Path file = tempDir.resolve("toDelete.txt");
     Files.createFile(file);
 
@@ -203,7 +204,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void copyFile() throws IOException {
+  void copyFile() throws Exception {
     final Path source = tempDir.resolve("source.txt");
     final Path dest = tempDir.resolve("dest.txt");
     final String content = "Content to copy";
@@ -216,7 +217,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void copyDirectory() throws IOException {
+  void copyDirectory() throws Exception {
     final Path sourceDir = tempDir.resolve("sourceDir");
     final Path destDir = tempDir.resolve("destDir");
     Files.createDirectory(sourceDir);
@@ -229,7 +230,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void renameFile() throws IOException {
+  void renameFile() throws Exception {
     final Path original = tempDir.resolve("original.txt");
     final Path renamed = tempDir.resolve("renamed.txt");
     Files.createFile(original);

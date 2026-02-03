@@ -69,7 +69,7 @@ class HeadCollectTest {
   }
 
   @Test
-  void testHeadCollectInWith() {
+  void headCollectInWith() {
     // Test the exact pattern from the issue: head(collect(...)) in WITH clause
     final ResultSet result = database.command("opencypher",
         "MATCH (c:CHUNK {id: 'chunk1'}) " +
@@ -92,7 +92,7 @@ class HeadCollectTest {
   }
 
   @Test
-  void testHeadCollectMultipleFields() {
+  void headCollectMultipleFields() {
     // Test with multiple head(collect(...)) expressions
     final ResultSet result = database.command("opencypher",
         "MATCH (c:CHUNK {id: 'chunk1'}) " +
@@ -118,7 +118,7 @@ class HeadCollectTest {
   }
 
   @Test
-  void testCollectWithoutHead() {
+  void collectWithoutHead() {
     // Control test: verify that collect() without head() works (returns a list)
     final ResultSet result = database.command("opencypher",
         "MATCH (c:CHUNK {id: 'chunk1'}) " +
@@ -139,7 +139,7 @@ class HeadCollectTest {
   }
 
   @Test
-  void testLastCollect() {
+  void lastCollect() {
     // Test with last() instead of head() - similar pattern
     final ResultSet result = database.command("opencypher",
         "MATCH (c:CHUNK {id: 'chunk1'}) " +
@@ -158,7 +158,7 @@ class HeadCollectTest {
   }
 
   @Test
-  void testSizeCollect() {
+  void sizeCollect() {
     // Test with size() wrapping collect() - another wrapped aggregation pattern
     final ResultSet result = database.command("opencypher",
         "MATCH (c:CHUNK) " +

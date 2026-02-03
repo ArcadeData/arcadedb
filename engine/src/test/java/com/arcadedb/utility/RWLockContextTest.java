@@ -51,7 +51,7 @@ class RWLockContextTest {
   }
 
   @Test
-  void executeInReadLockAllowsMultipleReaders() throws InterruptedException {
+  void executeInReadLockAllowsMultipleReaders() throws Exception {
     final AtomicInteger concurrentReaders = new AtomicInteger(0);
     final AtomicInteger maxConcurrentReaders = new AtomicInteger(0);
     final CountDownLatch startLatch = new CountDownLatch(3);
@@ -80,7 +80,7 @@ class RWLockContextTest {
   }
 
   @Test
-  void executeInWriteLockExcludesReaders() throws InterruptedException {
+  void executeInWriteLockExcludesReaders() throws Exception {
     final AtomicBoolean writerActive = new AtomicBoolean(false);
     final AtomicBoolean readerSawWriter = new AtomicBoolean(false);
     final CountDownLatch writerStarted = new CountDownLatch(1);

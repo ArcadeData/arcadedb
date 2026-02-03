@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -764,25 +767,25 @@ class CypherExpressionBuilder {
     }
 
     @Override
-    public Object evaluate(final com.arcadedb.query.sql.executor.Result result, final com.arcadedb.query.sql.executor.CommandContext context) {
+    public Object evaluate(final Result result, final CommandContext context) {
       final Object baseValue = baseExpression.evaluate(result, context);
       if (baseValue == null) {
         return null;
       }
 
       // Handle Document types
-      if (baseValue instanceof com.arcadedb.database.Document) {
-        return ((com.arcadedb.database.Document) baseValue).get(propertyName);
+      if (baseValue instanceof Document) {
+        return ((Document) baseValue).get(propertyName);
       }
 
       // Handle Map types
-      if (baseValue instanceof java.util.Map) {
-        return ((java.util.Map<?, ?>) baseValue).get(propertyName);
+      if (baseValue instanceof Map) {
+        return ((Map<?, ?>) baseValue).get(propertyName);
       }
 
       // Handle Result types
-      if (baseValue instanceof com.arcadedb.query.sql.executor.Result) {
-        return ((com.arcadedb.query.sql.executor.Result) baseValue).getProperty(propertyName);
+      if (baseValue instanceof Result) {
+        return ((Result) baseValue).getProperty(propertyName);
       }
 
       return null;
