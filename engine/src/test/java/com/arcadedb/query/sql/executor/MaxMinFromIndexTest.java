@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MaxMinFromIndexTest {
 
   @Test
-  void testMaxUsesIndexOnLongProperty() throws Exception {
+  void maxUsesIndexOnLongProperty() throws Exception {
     TestHelper.executeInNewDatabase("maxMinFromIndexTest", (db) -> {
       // Create type with indexed Long property
       final DocumentType type = db.getSchema().createDocumentType("TestType");
@@ -67,7 +67,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMinUsesIndexOnLongProperty() throws Exception {
+  void minUsesIndexOnLongProperty() throws Exception {
     TestHelper.executeInNewDatabase("minFromIndexTest", (db) -> {
       // Create type with indexed Long property
       final DocumentType type = db.getSchema().createDocumentType("TestType");
@@ -98,7 +98,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMaxWithNullValues() throws Exception {
+  void maxWithNullValues() throws Exception {
     TestHelper.executeInNewDatabase("maxNullValuesTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
@@ -121,7 +121,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMinWithNullValues() throws Exception {
+  void minWithNullValues() throws Exception {
     TestHelper.executeInNewDatabase("minNullValuesTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
@@ -143,7 +143,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMaxWithNoIndex() throws Exception {
+  void maxWithNoIndex() throws Exception {
     TestHelper.executeInNewDatabase("maxNoIndexTest", (db) -> {
       // Create type WITHOUT index
       final DocumentType type = db.getSchema().createDocumentType("TestType");
@@ -170,7 +170,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMaxWithWhereClauseFallsBackToScan() throws Exception {
+  void maxWithWhereClauseFallsBackToScan() throws Exception {
     TestHelper.executeInNewDatabase("maxWithWhereTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("category", String.class);
@@ -192,7 +192,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMaxOnIntegerProperty() throws Exception {
+  void maxOnIntegerProperty() throws Exception {
     TestHelper.executeInNewDatabase("maxIntegerTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Integer.class);
@@ -213,7 +213,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMaxOnDoubleProperty() throws Exception {
+  void maxOnDoubleProperty() throws Exception {
     TestHelper.executeInNewDatabase("maxDoubleTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Double.class);
@@ -234,7 +234,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMinOnStringProperty() throws Exception {
+  void minOnStringProperty() throws Exception {
     TestHelper.executeInNewDatabase("minStringTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("name", String.class);
@@ -255,7 +255,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMaxOnEmptyTable() throws Exception {
+  void maxOnEmptyTable() throws Exception {
     TestHelper.executeInNewDatabase("maxEmptyTableTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
@@ -271,7 +271,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMinOnEmptyTable() throws Exception {
+  void minOnEmptyTable() throws Exception {
     TestHelper.executeInNewDatabase("minEmptyTableTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
@@ -287,7 +287,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMaxWithCompositeIndexFallsBackToScan() throws Exception {
+  void maxWithCompositeIndexFallsBackToScan() throws Exception {
     TestHelper.executeInNewDatabase("maxCompositeIndexTest", (db) -> {
       // Create type with composite index (not single property)
       final DocumentType type = db.getSchema().createDocumentType("TestType");
@@ -318,7 +318,7 @@ class MaxMinFromIndexTest {
   }
 
   @Test
-  void testMaxOnPropertyWithBothSingleAndCompositeIndex() throws Exception {
+  void maxOnPropertyWithBothSingleAndCompositeIndex() throws Exception {
     TestHelper.executeInNewDatabase("maxBothIndexTypesTest", (db) -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("category", String.class);
@@ -354,7 +354,7 @@ class MaxMinFromIndexTest {
    * The query "SELECT max(property) FROM type" should use the index, not a full scan.
    */
   @Test
-  void testIssue3304HighWaterMarkPattern() throws Exception {
+  void issue3304HighWaterMarkPattern() throws Exception {
     TestHelper.executeInNewDatabase("issue3304Test", (db) -> {
       // Create type with indexed Long property (high water mark pattern)
       final DocumentType type = db.getSchema().createDocumentType("example");

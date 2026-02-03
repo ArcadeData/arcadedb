@@ -48,7 +48,7 @@ class SocketFactoryTest {
   }
 
   @Test
-  void createSocketWithoutSSL() throws IOException {
+  void createSocketWithoutSSL() throws Exception {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
 
@@ -109,7 +109,7 @@ class SocketFactoryTest {
   }
 
   @Test
-  void getAsStreamFromFilePath() throws IOException {
+  void getAsStreamFromFilePath() throws Exception {
     // Create a temporary file
     final File tempFile = tempDir.resolve("test.txt").toFile();
     try (FileOutputStream fos = new FileOutputStream(tempFile)) {
@@ -132,7 +132,7 @@ class SocketFactoryTest {
   }
 
   @Test
-  void getAsStreamFromRelativePath() throws IOException {
+  void getAsStreamFromRelativePath() throws Exception {
     // Create a temp file with a relative path test
     final File tempFile = tempDir.resolve("relative-test.txt").toFile();
     try (FileOutputStream fos = new FileOutputStream(tempFile)) {

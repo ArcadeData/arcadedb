@@ -97,7 +97,7 @@ class LockManagerTest {
   }
 
   @Test
-  void concurrentLockAttempts() throws InterruptedException {
+  void concurrentLockAttempts() throws Exception {
     final AtomicInteger successCount = new AtomicInteger(0);
     final CountDownLatch startLatch = new CountDownLatch(1);
     final CountDownLatch doneLatch = new CountDownLatch(3);
@@ -146,7 +146,7 @@ class LockManagerTest {
   }
 
   @Test
-  void lockWithWaitSucceeds() throws InterruptedException {
+  void lockWithWaitSucceeds() throws Exception {
     lockManager.tryLock("resource1", "requester1", 1000);
 
     final AtomicReference<LockManager.LOCK_STATUS> acquired = new AtomicReference<>();

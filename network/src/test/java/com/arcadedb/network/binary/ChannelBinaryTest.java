@@ -67,7 +67,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadByte() throws IOException {
+  void writeAndReadByte() throws Exception {
     channel.writeByte((byte) 42);
     channel.flush();
 
@@ -76,7 +76,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadBoolean() throws IOException {
+  void writeAndReadBoolean() throws Exception {
     channel.writeBoolean(true);
     channel.writeBoolean(false);
     channel.flush();
@@ -87,7 +87,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadInt() throws IOException {
+  void writeAndReadInt() throws Exception {
     channel.writeInt(12345);
     channel.writeInt(-67890);
     channel.writeInt(Integer.MAX_VALUE);
@@ -102,7 +102,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadUnsignedInt() throws IOException {
+  void writeAndReadUnsignedInt() throws Exception {
     channel.writeUnsignedInt(12345);
     channel.flush();
 
@@ -111,7 +111,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadLong() throws IOException {
+  void writeAndReadLong() throws Exception {
     channel.writeLong(123456789012345L);
     channel.writeLong(-987654321098765L);
     channel.writeLong(Long.MAX_VALUE);
@@ -126,7 +126,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadShort() throws IOException {
+  void writeAndReadShort() throws Exception {
     channel.writeShort((short) 1234);
     channel.writeShort((short) -5678);
     channel.writeShort(Short.MAX_VALUE);
@@ -141,7 +141,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadUnsignedShort() throws IOException {
+  void writeAndReadUnsignedShort() throws Exception {
     channel.writeUnsignedShort((short) 1234);
     channel.flush();
 
@@ -150,7 +150,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadUnsignedByte() throws IOException {
+  void writeAndReadUnsignedByte() throws Exception {
     channel.writeByte((byte) 200);
     channel.flush();
 
@@ -159,7 +159,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadString() throws IOException {
+  void writeAndReadString() throws Exception {
     channel.writeString("Hello, World!");
     channel.writeString("Test with unicode: äöü ñ 中文");
     channel.writeString("");
@@ -172,7 +172,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadNullString() throws IOException {
+  void writeAndReadNullString() throws Exception {
     channel.writeString(null);
     channel.flush();
 
@@ -181,7 +181,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadVarLengthBytes() throws IOException {
+  void writeAndReadVarLengthBytes() throws Exception {
     final byte[] data = new byte[] { 1, 2, 3, 4, 5 };
     channel.writeVarLengthBytes(data);
     channel.flush();
@@ -191,7 +191,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadVarLengthBytesWithLength() throws IOException {
+  void writeAndReadVarLengthBytesWithLength() throws Exception {
     final byte[] data = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
     channel.writeVarLengthBytes(data, 5);
     channel.flush();
@@ -201,7 +201,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeVarLengthBytesNull() throws IOException {
+  void writeVarLengthBytesNull() throws Exception {
     channel.writeVarLengthBytes(null);
     channel.flush();
 
@@ -210,7 +210,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadBytes() throws IOException {
+  void writeAndReadBytes() throws Exception {
     final byte[] data = new byte[] { 10, 20, 30, 40, 50 };
     channel.writeBytes(data);
     channel.flush();
@@ -222,7 +222,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeBytesNull() throws IOException {
+  void writeBytesNull() throws Exception {
     channel.writeBytes(null);
     channel.flush();
     // Should not throw, just writes nothing
@@ -230,7 +230,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadRID() throws IOException {
+  void writeAndReadRID() throws Exception {
     final RID rid = new RID(database, 5, 12345L);
     channel.writeRID(rid);
     channel.flush();
@@ -242,7 +242,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeAndReadVersion() throws IOException {
+  void writeAndReadVersion() throws Exception {
     channel.writeVersion(42);
     channel.flush();
 
@@ -251,7 +251,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void writeBuffer() throws IOException {
+  void writeBuffer() throws Exception {
     final ByteBuffer buffer = ByteBuffer.wrap(new byte[] { 1, 2, 3, 4, 5 });
     channel.writeBuffer(buffer);
     channel.flush();
@@ -268,7 +268,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void inputHasDataWhenDataAvailable() throws IOException {
+  void inputHasDataWhenDataAvailable() throws Exception {
     channel.writeByte((byte) 1);
     channel.flush();
     setupInputFromOutput();
@@ -311,7 +311,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void readBytesExceedsMaxChunkSize() throws IOException {
+  void readBytesExceedsMaxChunkSize() throws Exception {
     // Write a length header that exceeds max chunk size
     final DataOutputStream dos = new DataOutputStream(outputBuffer);
     dos.writeInt(2 * 1024 * 1024); // Write length > max
@@ -325,7 +325,7 @@ class ChannelBinaryTest {
   }
 
   @Test
-  void closeChannel() throws IOException {
+  void closeChannel() throws Exception {
     channel.writeByte((byte) 1);
     channel.close();
 

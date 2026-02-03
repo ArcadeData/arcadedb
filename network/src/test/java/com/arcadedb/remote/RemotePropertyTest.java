@@ -19,6 +19,8 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -49,7 +51,7 @@ class RemotePropertyTest {
   @Test
   void constructorSetsBasicProperties() {
     assertThat(property.getName()).isEqualTo("testProperty");
-    assertThat(property.getType()).isEqualTo(com.arcadedb.schema.Type.STRING);
+    assertThat(property.getType()).isEqualTo(Type.STRING);
     assertThat(property.getId()).isEqualTo(1);
   }
 

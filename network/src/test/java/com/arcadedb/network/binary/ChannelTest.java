@@ -27,8 +27,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.net.SocketException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -55,7 +55,7 @@ class ChannelTest {
   }
 
   @Test
-  void getLocalIpAddressPreferIPv4() throws SocketException {
+  void getLocalIpAddressPreferIPv4() throws Exception {
     // This test may return null on systems without network interfaces
     final String address = Channel.getLocalIpAddress(true);
     // Just verify it doesn't throw - actual address depends on system
@@ -67,7 +67,7 @@ class ChannelTest {
   }
 
   @Test
-  void getLocalIpAddressPreferIPv6() throws SocketException {
+  void getLocalIpAddressPreferIPv6() throws Exception {
     final String address = Channel.getLocalIpAddress(false);
     // Just verify it doesn't throw - actual address depends on system
   }
@@ -91,7 +91,7 @@ class ChannelTest {
   }
 
   @Test
-  void flushWhenOutputStreamExists() throws IOException {
+  void flushWhenOutputStreamExists() throws Exception {
     final ByteArrayOutputStream mockOutput = mock(ByteArrayOutputStream.class);
     channel.outStream = mockOutput;
     channel.flush();
@@ -99,14 +99,14 @@ class ChannelTest {
   }
 
   @Test
-  void flushWhenOutputStreamNull() throws IOException {
+  void flushWhenOutputStreamNull() throws Exception {
     channel.outStream = null;
     // Should not throw
     channel.flush();
   }
 
   @Test
-  void closeChannel() throws IOException {
+  void closeChannel() throws Exception {
     final InputStream mockIn = mock(InputStream.class);
     final OutputStream mockOut = mock(OutputStream.class);
     channel.inStream = mockIn;
@@ -134,7 +134,7 @@ class ChannelTest {
 
   @Test
   void toStringWhenConnected() {
-    when(mockSocket.getRemoteSocketAddress()).thenReturn(new java.net.InetSocketAddress("192.168.1.1", 2480));
+    when(mockSocket.getRemoteSocketAddress()).thenReturn(new InetSocketAddress("192.168.1.1", 2480));
     assertThat(channel.toString()).contains("192.168.1.1");
     assertThat(channel.toString()).contains("2480");
   }
@@ -147,7 +147,7 @@ class ChannelTest {
 
   @Test
   void getLocalSocketAddressWhenConnected() {
-    when(mockSocket.getLocalSocketAddress()).thenReturn(new java.net.InetSocketAddress("127.0.0.1", 12345));
+    when(mockSocket.getLocalSocketAddress()).thenReturn(new InetSocketAddress("127.0.0.1", 12345));
     assertThat(channel.getLocalSocketAddress()).contains("127.0.0.1");
   }
 
