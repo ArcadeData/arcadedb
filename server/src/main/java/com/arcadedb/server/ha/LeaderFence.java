@@ -154,7 +154,8 @@ public class LeaderFence {
     if (newEpoch == null)
       return false;
 
-    while (true) {
+    final int maxAttempts = 100;
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
       final LeaderEpoch current = currentEpoch.get();
 
       if (current != null && !newEpoch.supersedes(current)) {
@@ -170,6 +171,11 @@ public class LeaderFence {
       }
       // CAS failed, another thread updated - retry
     }
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Server '%s' failed to accept epoch %s after %d CAS attempts (high contention)",
+        serverName, newEpoch, maxAttempts);
+    return false;
   }
 
   /**
