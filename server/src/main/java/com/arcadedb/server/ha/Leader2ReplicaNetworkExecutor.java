@@ -604,22 +604,22 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   public void setStatus(final STATUS status) {
-    if (this.status == status)
-      // NO STATUS CHANGE
-      return;
-
-    // Validate state transition
-    final STATUS oldStatus = this.status;
-    if (!oldStatus.canTransitionTo(status)) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Invalid state transition: %s -> %s for replica '%s' (allowed anyway for backward compatibility)",
-          oldStatus, status, remoteServer);
-      // Allow anyway for backward compatibility, but log the warning
-    }
-
     executeInLock(new Callable<>() {
       @Override
       public Object call(final Object iArgument) {
+        if (Leader2ReplicaNetworkExecutor.this.status == status)
+          // NO STATUS CHANGE
+          return null;
+
+        // Validate state transition
+        final STATUS oldStatus = Leader2ReplicaNetworkExecutor.this.status;
+        if (!oldStatus.canTransitionTo(status)) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Invalid state transition: %s -> %s for replica '%s' (allowed anyway for backward compatibility)",
+              oldStatus, status, remoteServer);
+          // Allow anyway for backward compatibility, but log the warning
+        }
+
         Leader2ReplicaNetworkExecutor.this.status = status;
         LogManager.instance().log(this, Level.FINE,
             "Replica '%s' state: %s -> %s", remoteServer, oldStatus, status);

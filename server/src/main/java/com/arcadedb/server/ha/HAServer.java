@@ -401,10 +401,7 @@ public class HAServer implements ServerPlugin {
     if (serverAddress.equals(serverEntry))
       return true;
 
-//    final String[] localServerParts = HostUtil.parseHostAddress(serverAddress, DEFAULT_PORT);
-
     try {
-//      final String[] serverParts = HostUtil.parseHostAddress(serverEntry, DEFAULT_PORT);
       if (serverAddress.host.equals(serverEntry.host) && serverAddress.port == serverEntry.port)
         return true;
 
@@ -736,11 +733,13 @@ public class HAServer implements ServerPlugin {
     }
 
     // Update or merge ServerInfo, preserving configured addresses if known
+    // Capture cluster reference to avoid race condition during compute()
+    final HACluster currentCluster = this.cluster;
     serverInfoByName.compute(serverName, (name, existingInfo) -> {
       if (existingInfo == null) {
         // First time seeing this server - check cluster for configured address
-        if (cluster != null) {
-          final ServerInfo configuredInfo = cluster.findByAlias(serverName).orElse(null);
+        if (currentCluster != null) {
+          final ServerInfo configuredInfo = currentCluster.findByAlias(serverName).orElse(null);
           if (configuredInfo != null && !configuredInfo.host().equals(replicaServerInfo.host())) {
             // Preserve configured address, track actual address
             LogManager.instance().log(this, Level.FINE,
@@ -1411,17 +1410,6 @@ public class HAServer implements ServerPlugin {
     return configuredServers;
   }
 
-//  public Set<ServerInfo> getServerAddressList() {
-
-  /// /    final StringBuilder list = new StringBuilder();
-  /// /    for (final ServerInfo s : serverAddressList) {
-  /// /      if (list.length() > 0)
-  /// /        list.append(',');
-  /// /      list.append(s.host);
-  /// /    }
-  /// /    return list.toString();
-//    return serverAddressList;
-//  }
   public void printClusterConfiguration() {
     final StringBuilder buffer = new StringBuilder("NEW CLUSTER CONFIGURATION\n");
     final TableFormatter table = new TableFormatter((text, args) -> buffer.append(text.formatted(args)));

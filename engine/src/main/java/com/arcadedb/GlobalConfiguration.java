@@ -583,7 +583,7 @@ public enum GlobalConfiguration {
       "Timeout in milliseconds for health check responses. Default is 15000ms (15 seconds)", Long.class, 15000L),
 
   HA_ENHANCED_RECONNECTION("arcadedb.ha.enhancedReconnection", SCOPE.SERVER,
-      "Enable enhanced reconnection logic with exception classification. When true uses new state machine and intelligent recovery strategies, when false uses legacy reconnection logic. Default is false", Boolean.class, true),
+      "Enable enhanced reconnection logic with exception classification. When true uses new state machine and intelligent recovery strategies, when false uses legacy reconnection logic. EXPERIMENTAL: Recovery strategies still being refined. Default is false", Boolean.class, false),
 
   HA_TRANSIENT_FAILURE_MAX_ATTEMPTS("arcadedb.ha.transientFailure.maxAttempts", SCOPE.SERVER,
       "Maximum number of retry attempts for transient network failures (temporary connectivity issues). Uses exponential backoff: 1s, 2s, 4s for ~7s total. Default is 3", Integer.class, 3),
@@ -610,7 +610,7 @@ public enum GlobalConfiguration {
       "Timeout in milliseconds before transitioning from OPEN to HALF_OPEN state to test replica recovery. Default is 30000ms (30 seconds)", Long.class, 30000L),
 
   HA_CONSISTENCY_CHECK_ENABLED("arcadedb.ha.consistencyCheck.enabled", SCOPE.SERVER,
-      "Enable background consistency monitoring to detect data drift across replicas. Default is false", Boolean.class, true),
+      "Enable background consistency monitoring to detect data drift across replicas. EXPERIMENTAL: Currently only compares leader checksum, replica checksum collection not yet implemented. Default is false", Boolean.class, false),
 
   HA_CONSISTENCY_CHECK_INTERVAL_MS("arcadedb.ha.consistencyCheck.intervalMs", SCOPE.SERVER,
       "Interval in milliseconds between consistency checks. Default is 3600000ms (1 hour)", Long.class, 3600000L),

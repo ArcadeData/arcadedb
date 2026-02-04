@@ -101,7 +101,7 @@ public class LeaderFence {
    *
    * @param reason The reason for fencing (for logging and diagnostics)
    */
-  public void fence(final String reason) {
+  public synchronized void fence(final String reason) {
     if (!fenced) {
       fenced = true;
       fencedReason = reason;
@@ -114,7 +114,7 @@ public class LeaderFence {
    * Removes the fence, allowing write operations again.
    * This is typically called when a server becomes leader again after an election.
    */
-  public void unfence() {
+  public synchronized void unfence() {
     if (fenced) {
       fenced = false;
       fencedReason = null;
@@ -256,7 +256,7 @@ public class LeaderFence {
   /**
    * Resets the fence state. Used during testing or when rejoining cluster.
    */
-  public void reset() {
+  public synchronized void reset() {
     currentEpoch.set(null);
     fenced = false;
     fencedReason = null;

@@ -79,9 +79,14 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     db2.assertThatPhotoCountIs(300);
     db3.assertThatPhotoCountIs(300);
 
-//    logger.info("Disconnecting arcade1 form others");
-//    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
-//    arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
+    // TODO(issue-TBD): Re-enable network partition testing once leader failover is stable.
+    // The partition test was temporarily disabled because assertions on the disconnected
+    // node (arcade1) were failing during partition - which is actually correct behavior
+    // since a partitioned node cannot receive replicated data.
+    // Original code:
+    // logger.info("Disconnecting arcade1 from others");
+    // arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_DOWNSTREAM", ToxicDirection.DOWNSTREAM, 0);
+    // arcade1Proxy.toxics().bandwidth("CUT_CONNECTION_UPSTREAM", ToxicDirection.UPSTREAM, 0);
 
     logger.info("Adding data to arcade2");
     db2.addUserAndPhotos(100, 10);
@@ -91,9 +96,11 @@ public class ThreeInstancesScenarioIT extends ContainersTestTemplate {
     db2.assertThatUserCountIs(130);
     db3.assertThatUserCountIs(130);
 
-//    logger.info("Reconnecting arcade3 ");
-//    arcade1Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
-//    arcade1Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
+    // TODO(issue-TBD): Re-enable reconnection test after partition test is re-enabled
+    // Original code:
+    // logger.info("Reconnecting arcade1");
+    // arcade1Proxy.toxics().get("CUT_CONNECTION_DOWNSTREAM").remove();
+    // arcade1Proxy.toxics().get("CUT_CONNECTION_UPSTREAM").remove();
 
     logger.info("Adding data to database");
     db1.addUserAndPhotos(100, 10);
