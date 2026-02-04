@@ -28,6 +28,8 @@ import org.junit.jupiter.api.Test;
 import java.time.*;
 import java.time.temporal.*;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 class RemoteTypesIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
 
@@ -54,7 +56,7 @@ class RemoteTypesIT extends BaseGraphServerTest {
           create property SimpleVertex.fecha  if not exists  DATETIME;
           create property SimpleVertex.serial  if not exists LONG;
           create property SimpleVertex.oI  if not exists INTEGER;
-          create property SimpleVertex.oF  if not exists FLOAT;
+          create property SimpleVertex.oFl  if not exists FLOAT;
           create property SimpleVertex.oB  if not exists  BOOLEAN;
           """);
 
@@ -66,7 +68,7 @@ class RemoteTypesIT extends BaseGraphServerTest {
       nvSaved.set("oB", true);
       float f = 1.0f;
       nvSaved.set("f", f);
-      nvSaved.set("oF", 1.0f);
+      nvSaved.set("oFl", 1.0f);
       nvSaved.set("i", 1);
       nvSaved.set("oI", 1);
       LocalDateTime targetDate = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
@@ -76,24 +78,40 @@ class RemoteTypesIT extends BaseGraphServerTest {
       db.commit();
 
       RID rid = nvSaved.getIdentity();
-      System.out.println("RID: " + rid.toString() + "\n\n");
+      assertThat(rid).isNotNull();
 
       MutableVertex v = db.lookupByRID(rid).asVertex().modify();
       v.reload();
 
-      System.out.println("retrieved: " + v.getIdentity().toString());
-      System.out.println("s: " + v.get("s") + " - " + v.get("s").getClass().getName());
-      System.out.println("b: " + v.get("b") + " - " + v.get("b").getClass().getName());
-      System.out.println("ob: " + v.get("oB") + " - " + v.get("oB").getClass().getName());
-      System.out.println("f: " + v.get("f") + " - " + v.get("f").getClass().getName());
-      System.out.println("f: " + v.getFloat("f") + " - " + v.getFloat("f").getClass().getName());
-      System.out.println("oF: " + v.get("oF") + " - " + v.get("oF").getClass().getName());
-      System.out.println("i: " + v.get("i") + " - " + v.get("i").getClass().getName());
-      System.out.println("oI: " + v.get("oI") + " - " + v.get("oI").getClass().getName());
-      System.out.println("date: " + v.get("fecha") + " - " + v.get("fecha").getClass().getName());
-      System.out.println("getDate: " + v.getDate("fecha") + " - " + v.getDate("fecha").getClass().getName());
-      System.out.println("targetDate: " + targetDate.toInstant(ZoneOffset.UTC) + " --> ret.date: " + v.getLocalDateTime("fecha")
-          .toInstant(ZoneOffset.UTC) + " = " + (targetDate.equals(v.getLocalDateTime("fecha"))));
+      assertThat(v.getIdentity()).isEqualTo(rid);
+
+      // String property
+      assertThat(v.get("s")).isEqualTo("string");
+      assertThat(v.get("s")).isInstanceOf(String.class);
+
+      // Boolean properties
+      assertThat(v.get("b")).isEqualTo(true);
+      assertThat(v.get("b")).isInstanceOf(Boolean.class);
+      assertThat(v.get("oB")).isEqualTo(true);
+      assertThat(v.get("oB")).isInstanceOf(Boolean.class);
+
+      // Float properties
+      assertThat(v.get("f")).isEqualTo(1.0f);
+      assertThat(v.get("f")).isInstanceOf(Float.class);
+      assertThat(v.getFloat("f")).isEqualTo(1.0f);
+      assertThat(v.get("oFl")).isEqualTo(1.0f);
+      assertThat(v.get("oFl")).isInstanceOf(Float.class);
+
+      // Integer properties
+      assertThat(v.get("i")).isEqualTo(1);
+      assertThat(v.get("i")).isInstanceOf(Integer.class);
+      assertThat(v.get("oI")).isEqualTo(1);
+      assertThat(v.get("oI")).isInstanceOf(Integer.class);
+
+      // DateTime properties (truncate to seconds since milliseconds are not preserved)
+      assertThat(v.get("fecha")).isInstanceOf(LocalDateTime.class);
+      assertThat(v.getDate("fecha")).isInstanceOf(java.util.Date.class);
+      assertThat(v.getLocalDateTime("fecha")).isEqualTo(targetDate.truncatedTo(ChronoUnit.SECONDS));
     });
   }
 
