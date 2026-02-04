@@ -6,6 +6,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme performance. It's a Java-based project that supports multiple data models (Graph, Document, Key/Value, Search Engine, Time Series, Vector Embedding) and query languages (SQL, Cypher, Gremlin, GraphQL, MongoDB Query Language).
 
+## Project Instructions
+
+Before writing any code:
+- State how you will verify this change works (e.g., unit tests, integration tests, manual testing)
+- Write the tests first (TDD approach) whenever possible
+- Ensure code adheres to existing coding standards and styles
+- Then implement the code
+- Run verification and iterate until it passes
+- Run all the connected tests could be affected by the change to ensure nothing is broken (no need to run the whole suite, it would take too long)
+
+General design principles:
+- reuse existing components whenever is possible
+- don't use fully qualified names if possible, always import the class and just use the name
+- don't include a new dependency unless is strictly necessary, but they must be Open Source and free to use (MIT, Apache, BSD or similar licenses)
+- for Studio (webapp), limit to jquery and bootsptrap 5. If necessary use 3rd party libs, but they must be Open Source and free to use (MIT, Apache, BSD or similar licenses)
+- if you need to use JSON, use the class com.arcadedb.serializer.json.JSONObject. Leverage the getter methods that accept the default value as 2nd argument, so you don't need to check if they present or not null = less boilerplate code
+- same thing for JSON arrays: use com.arcadedb.serializer.json.JSONArray class
+- code styles:
+ - adhere to the existing code
+ - if statements with only one child sub-statement don't require a curly brace open/close, keep it simple
+ - use the final keyword when possible on variables and parameters
+- all new server-side code must be tested with a test case. Check existing test case to see the framework and style to use
+- write a regression test
+- after every change in the backend (Java), compile the project and fix all the issues until the compilation passes
+- test all the new and old components you've modified before considering the job finished. Please do not provide something untested
+- always keep in mind speed and security with ArcadeDB, do not introduce security hazard or code that could slow down other parts unless requested/approved
+- do not commit on git, I will do it after a review
+- remove any System.out you used for debug when you have finished
+- For test cases, prefer this syntax: `assertThat(property.isMandatory()).isTrue();`
+- don't add Claude as author of any source code
+
 ## Build and Development Commands
 
 ### Maven (Java)
