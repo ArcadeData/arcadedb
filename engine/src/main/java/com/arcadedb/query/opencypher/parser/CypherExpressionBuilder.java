@@ -261,7 +261,7 @@ class CypherExpressionBuilder {
     // Check for property access: variable.property
     if (text.contains(".") && !text.contains("(")) {
       final String[] parts = text.split("\\.", 2);
-      return new PropertyAccessExpression(parts[0], parts[1]);
+      return new PropertyAccessExpression(parts[0], CypherASTBuilder.stripBackticks(parts[1]));
     }
 
     // Simple variable
@@ -720,7 +720,7 @@ class CypherExpressionBuilder {
       if (postfix instanceof Cypher25Parser.PropertyPostfixContext) {
         // Property access: expr.property
         final Cypher25Parser.PropertyPostfixContext propCtx = (Cypher25Parser.PropertyPostfixContext) postfix;
-        final String propertyName = propCtx.property().propertyKeyName().getText();
+        final String propertyName = CypherASTBuilder.stripBackticks(propCtx.property().propertyKeyName().getText());
         // Create a compound expression: treat result as a variable expression
         result = createPropertyAccessFromExpression(result, propertyName);
       } else if (postfix instanceof Cypher25Parser.IndexPostfixContext) {
@@ -1117,7 +1117,7 @@ class CypherExpressionBuilder {
     final List<Cypher25Parser.ExpressionContext> values = ctx.expression();
 
     for (int i = 0; i < keys.size() && i < values.size(); i++) {
-      final String key = keys.get(i).getText();
+      final String key = CypherASTBuilder.stripBackticks(keys.get(i).getText());
       final Expression valueExpr = parseExpression(values.get(i));
       entries.put(key, valueExpr);
     }
@@ -1328,7 +1328,7 @@ class CypherExpressionBuilder {
     final List<Cypher25Parser.ExpressionContext> values = ctx.expression();
 
     for (int i = 0; i < keys.size() && i < values.size(); i++) {
-      final String key = keys.get(i).getText();
+      final String key = CypherASTBuilder.stripBackticks(keys.get(i).getText());
       final Expression expr = parseExpression(values.get(i));
       if (expr instanceof LiteralExpression) {
         map.put(key, ((LiteralExpression) expr).getValue());
@@ -1356,12 +1356,12 @@ class CypherExpressionBuilder {
     for (final Cypher25Parser.MapProjectionElementContext elemCtx : ctx.mapProjectionElement()) {
       if (elemCtx.propertyKeyName() != null && elemCtx.expression() != null) {
         // key: expression
-        final String key = elemCtx.propertyKeyName().getText();
+        final String key = CypherASTBuilder.stripBackticks(elemCtx.propertyKeyName().getText());
         final Expression expr = parseExpression(elemCtx.expression());
         elements.add(new MapProjectionExpression.ProjectionElement(key, expr));
       } else if (elemCtx.property() != null) {
         // .propertyName
-        final String propName = elemCtx.property().propertyKeyName().getText();
+        final String propName = CypherASTBuilder.stripBackticks(elemCtx.property().propertyKeyName().getText());
         elements.add(new MapProjectionExpression.ProjectionElement(propName));
       } else if (elemCtx.variable() != null) {
         // variable (include another variable's value)

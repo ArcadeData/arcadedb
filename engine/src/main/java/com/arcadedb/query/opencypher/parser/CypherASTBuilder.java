@@ -1074,7 +1074,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<Cypher25Parser.ExpressionContext> values = ctx.expression();
 
     for (int i = 0; i < keys.size() && i < values.size(); i++) {
-      final String key = keys.get(i).getText();
+      final String key = stripBackticks(keys.get(i).getText());
       // Parse as Expression
       final Expression expr = expressionBuilder.parseExpression(values.get(i));
 
@@ -1138,7 +1138,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * @param name the name potentially wrapped in backticks
    * @return the name without backticks
    */
-  private String stripBackticks(final String name) {
+  static String stripBackticks(final String name) {
     if (name == null || name.length() < 2) {
       return name;
     }
