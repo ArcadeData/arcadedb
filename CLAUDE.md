@@ -18,6 +18,7 @@ Before writing any code:
 
 General design principles:
 - reuse existing components whenever is possible
+- don't use fully qualified names if possible, always import the class and just use the name
 - don't include a new dependency unless is strictly necessary, but they must be Open Source and free to use (MIT, Apache, BSD or similar licenses)
 - for Studio (webapp), limit to jquery and bootsptrap 5. If necessary use 3rd party libs, but they must be Open Source and free to use (MIT, Apache, BSD or similar licenses)
 - if you need to use JSON, use the class com.arcadedb.serializer.json.JSONObject. Leverage the getter methods that accept the default value as 2nd argument, so you don't need to check if they present or not null = less boilerplate code
