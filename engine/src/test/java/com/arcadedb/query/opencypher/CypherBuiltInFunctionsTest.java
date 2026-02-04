@@ -27,6 +27,7 @@ import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -43,6 +44,13 @@ import static org.assertj.core.api.Assertions.within;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 class CypherBuiltInFunctionsTest extends TestHelper {
+
+  @BeforeAll
+  static void ensureRegistriesLoaded() {
+    // Force loading of CypherProcedureRegistry to ensure its static initializer
+    // registers procedures in the unified ProcedureRegistry
+    CypherProcedureRegistry.size();
+  }
 
   // ===================== REGISTRY TESTS =====================
 
