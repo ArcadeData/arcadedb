@@ -299,16 +299,11 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         currentFrom = vertexOpt.get();
       } else {
         // If no vertex, try to extract @rid property (for projection results) - issue #3315
-        if (result.hasProperty("@rid")) {
-          final Object rid = result.getProperty("@rid");
-          if (rid != null) {
-            currentFrom = rid;
-          } else {
-            throw new CommandExecutionException("Invalid vertex for edge creation: " + result);
-          }
-        } else {
+        final Object rid = result.getProperty("@rid");
+        if (rid != null)
+          currentFrom = rid;
+        else
           throw new CommandExecutionException("Invalid vertex for edge creation: " + result);
-        }
       }
     }
 

@@ -173,56 +173,23 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public Object execute(final Iterable iterable, final CommandContext context) {
-    if (star) {
+    if (star)
       return null;
-    }
+
     final List<Object> result = new ArrayList<>();
-    for (final Object o : iterable) {
-      final Object value = execute(o, context);
-      // When extracting properties from Results in collections, unwrap the value if needed (issue #3315)
-      // If execute() returned a Result when accessing a property/attribute, extract the actual value
-      if (value instanceof Result r && (identifier != null || recordAttribute != null)) {
-        // Try to get the underlying element or value from the Result
-        if (r.isElement()) {
-          result.add(r.getElement().get());
-        } else if (identifier != null && r.hasProperty(identifier.getStringValue())) {
-          result.add(r.getProperty(identifier.getStringValue()));
-        } else if (recordAttribute != null) {
-          result.add(recordAttribute.evaluate(r, context));
-        } else {
-          result.add(value);
-        }
-      } else {
-        result.add(value);
-      }
-    }
+    for (final Object o : iterable)
+      result.add(unwrapResultIfNeeded(execute(o, context), context));
     return result;
   }
 
   public Object execute(final Iterator iterator, final CommandContext context) {
-    if (star) {
+    if (star)
       return null;
-    }
+
     final List<Object> result = new ArrayList<>();
-    while (iterator.hasNext()) {
-      final Object value = execute(iterator.next(), context);
-      // When extracting properties from Results in collections, unwrap the value if needed (issue #3315)
-      // If execute() returned a Result when accessing a property/attribute, extract the actual value
-      if (value instanceof Result r && (identifier != null || recordAttribute != null)) {
-        // Try to get the underlying element or value from the Result
-        if (r.isElement()) {
-          result.add(r.getElement().get());
-        } else if (identifier != null && r.hasProperty(identifier.getStringValue())) {
-          result.add(r.getProperty(identifier.getStringValue()));
-        } else if (recordAttribute != null) {
-          result.add(recordAttribute.evaluate(r, context));
-        } else {
-          result.add(value);
-        }
-      } else {
-        result.add(value);
-      }
-    }
+    while (iterator.hasNext())
+      result.add(unwrapResultIfNeeded(execute(iterator.next(), context), context));
+
     if (iterator instanceof ResultSet set) {
       try {
         set.reset();
@@ -230,6 +197,32 @@ public class SuffixIdentifier extends SimpleNode {
       }
     }
     return result;
+  }
+
+  /**
+   * Unwraps Result objects when extracting properties from collections (issue #3315).
+   * When execute() returns a Result while accessing a property/attribute, extracts the actual value.
+   */
+  private Object unwrapResultIfNeeded(final Object value, final CommandContext context) {
+    if (!(value instanceof Result r) || (identifier == null && recordAttribute == null))
+      return value;
+
+    // Try to get the underlying element
+    if (r.isElement())
+      return r.getElement().orElse(null);
+
+    // Try to get the property value
+    if (identifier != null) {
+      final Object prop = r.getProperty(identifier.getStringValue());
+      if (prop != null)
+        return prop;
+    }
+
+    // Try to evaluate the record attribute
+    if (recordAttribute != null)
+      return recordAttribute.evaluate(r, context);
+
+    return value;
   }
 
   public Object execute(final CommandContext currentRecord) {
