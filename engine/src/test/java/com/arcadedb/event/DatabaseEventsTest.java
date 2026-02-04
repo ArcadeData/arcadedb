@@ -313,8 +313,8 @@ public class DatabaseEventsTest extends TestHelper {
   @Test
   void beforeCreateEmulateIncrement() {
     final BeforeRecordCreateListener listener = record -> {
-      int maxId = database.query("SQL", "select max(counter) from `IndexedVertex`").nextIfAvailable().getProperty("max(counter)", 0);
-      record.asVertex().modify().set("counter", maxId + 1);
+      Integer maxId = database.query("SQL", "select max(counter) from `IndexedVertex`").nextIfAvailable().getProperty("max(counter)");
+      record.asVertex().modify().set("counter", (maxId != null ? maxId : 0) + 1);
       return true;
     };
 
