@@ -69,7 +69,7 @@ class GlobalConfigurationTest extends TestHelper {
   void testHAEnhancedReconnectionConfig() {
     // Test feature flag
     assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION).isNotNull();
-    assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION.getDefValue()).isEqualTo(true);
+    assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION.getDefValue()).isEqualTo(false);
     assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION.getType()).isEqualTo(Boolean.class);
 
     assertThat(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED).isNotNull();
@@ -77,7 +77,7 @@ class GlobalConfigurationTest extends TestHelper {
     assertThat(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED.getType()).isEqualTo(Boolean.class);
 
     assertThat(GlobalConfiguration.HA_CONSISTENCY_CHECK_ENABLED).isNotNull();
-    assertThat(GlobalConfiguration.HA_CONSISTENCY_CHECK_ENABLED.getDefValue()).isEqualTo(true);
+    assertThat(GlobalConfiguration.HA_CONSISTENCY_CHECK_ENABLED.getDefValue()).isEqualTo(false);
     assertThat(GlobalConfiguration.HA_CONSISTENCY_CHECK_ENABLED.getType()).isEqualTo(Boolean.class);
 
     // Test transient failure config
