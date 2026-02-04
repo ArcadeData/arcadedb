@@ -2957,46 +2957,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public long countEntries() {
-    checkIsValid();
-    // Count entries directly from pages instead of from in-memory cache
-    // This ensures accurate counts even when using limited location cache size
-    // Apply LSM merge-on-read semantics: latest entry for each RID, filter out deleted entries
-    final Map<RID, Integer> ridToLatestVectorId = new HashMap<>();
-    final DatabaseInternal database = getDatabase();
-
-    // Read from compacted sub-index if it exists
-    if (compactedSubIndex != null) {
-      LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(),
-          compactedSubIndex.getTotalPages(), getPageSize(), true, entry -> {
-        if (!entry.deleted) {
-          // Keep latest (highest ID) vector for each RID
-          final Integer existing = ridToLatestVectorId.get(entry.rid);
-          if (existing == null || entry.vectorId > existing) {
-            ridToLatestVectorId.put(entry.rid, entry.vectorId);
-          }
-        } else {
-          // Deleted entry - remove from map
-          ridToLatestVectorId.remove(entry.rid);
-        }
-      });
-    }
-
-    // Read from mutable index (overrides compacted entries)
-    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(),
-        getPageSize(), false, entry -> {
-      if (!entry.deleted) {
-        // Keep latest (highest ID) vector for each RID
-        final Integer existing = ridToLatestVectorId.get(entry.rid);
-        if (existing == null || entry.vectorId > existing) {
-          ridToLatestVectorId.put(entry.rid, entry.vectorId);
-        }
-      } else {
-        // Deleted entry - remove from map
-        ridToLatestVectorId.remove(entry.rid);
-      }
-    });
-
-    return ridToLatestVectorId.size();
+    // Use vectorIndex which already applies LSM merge-on-read semantics
+    // (latest entry for each RID, filtering out deleted entries)
+    return vectorIndex.getActiveCount();
   }
 
   @Override
