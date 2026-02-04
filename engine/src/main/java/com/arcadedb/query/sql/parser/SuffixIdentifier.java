@@ -178,7 +178,23 @@ public class SuffixIdentifier extends SimpleNode {
     }
     final List<Object> result = new ArrayList<>();
     for (final Object o : iterable) {
-      result.add(execute(o, context));
+      final Object value = execute(o, context);
+      // When extracting properties from Results in collections, unwrap the value if needed (issue #3315)
+      // If execute() returned a Result when accessing a property/attribute, extract the actual value
+      if (value instanceof Result r && (identifier != null || recordAttribute != null)) {
+        // Try to get the underlying element or value from the Result
+        if (r.isElement()) {
+          result.add(r.getElement().get());
+        } else if (identifier != null && r.hasProperty(identifier.getStringValue())) {
+          result.add(r.getProperty(identifier.getStringValue()));
+        } else if (recordAttribute != null) {
+          result.add(recordAttribute.evaluate(r, context));
+        } else {
+          result.add(value);
+        }
+      } else {
+        result.add(value);
+      }
     }
     return result;
   }
@@ -189,7 +205,23 @@ public class SuffixIdentifier extends SimpleNode {
     }
     final List<Object> result = new ArrayList<>();
     while (iterator.hasNext()) {
-      result.add(execute(iterator.next(), context));
+      final Object value = execute(iterator.next(), context);
+      // When extracting properties from Results in collections, unwrap the value if needed (issue #3315)
+      // If execute() returned a Result when accessing a property/attribute, extract the actual value
+      if (value instanceof Result r && (identifier != null || recordAttribute != null)) {
+        // Try to get the underlying element or value from the Result
+        if (r.isElement()) {
+          result.add(r.getElement().get());
+        } else if (identifier != null && r.hasProperty(identifier.getStringValue())) {
+          result.add(r.getProperty(identifier.getStringValue()));
+        } else if (recordAttribute != null) {
+          result.add(recordAttribute.evaluate(r, context));
+        } else {
+          result.add(value);
+        }
+      } else {
+        result.add(value);
+      }
     }
     if (iterator instanceof ResultSet set) {
       try {

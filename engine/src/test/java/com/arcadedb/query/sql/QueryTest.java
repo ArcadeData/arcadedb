@@ -673,4 +673,96 @@ class QueryTest extends TestHelper {
     Assertions.assertThat(json.getInt("inE")).isEqualTo(1L);
     Assertions.assertThat(json.getInt("outE")).isEqualTo(0L);
   }
+
+  /**
+   * Test case for issue https://github.com/ArcadeData/arcadedb/issues/3315
+   * Tests CREATE EDGE with property access on query result sets and LET variables.
+   * The bug causes SuffixIdentifier to return wrapped Result objects instead of unwrapped values.
+   */
+  @Test
+  void createEdgeWithPropertyAccessOnResultSet() {
+    database.transaction(() -> {
+      // Setup: Create types and test vertices
+      database.command("SQL", "CREATE VERTEX TYPE TestVertex3315");
+      database.command("SQL", "CREATE EDGE TYPE TestEdge3315");
+      database.command("SQL", "CREATE VERTEX TestVertex3315 SET name = 'vertex1'");
+      database.command("SQL", "CREATE VERTEX TestVertex3315 SET name = 'vertex2'");
+
+      // Get the RIDs for verification
+      final ResultSet vertices = database.query("SQL", "SELECT @rid FROM TestVertex3315 ORDER BY name");
+      assertThat(vertices.hasNext()).isTrue();
+      final Object rid1 = vertices.next().getProperty("@rid");
+      assertThat(vertices.hasNext()).isTrue();
+      final Object rid2 = vertices.next().getProperty("@rid");
+      vertices.close();
+
+      // Scenario 1: LET variable with property access (should fail with current bug)
+      // This tests: LET $x = SELECT @rid FROM V; CREATE EDGE E FROM $x.@rid TO $x.@rid
+      database.command("sqlscript", """
+          LET $x = SELECT @rid FROM TestVertex3315 WHERE name = 'vertex1';
+          CREATE EDGE TestEdge3315 FROM $x.@rid TO $x.@rid;
+          """);
+
+      // Verify edge was created correctly
+      ResultSet edges = database.query("SQL", "SELECT FROM TestEdge3315");
+      assertThat(edges.hasNext()).isTrue();
+      Result edge = edges.next();
+      assertThat((Object) edge.getProperty("@in")).isEqualTo(rid1);
+      assertThat((Object) edge.getProperty("@out")).isEqualTo(rid1);
+      edges.close();
+
+      // Clean up for next scenario
+      database.command("SQL", "DELETE FROM TestEdge3315");
+
+      // Scenario 2: Direct subquery with property access (should fail with current bug)
+      // This tests: CREATE EDGE E FROM (SELECT @rid FROM V).@rid TO (SELECT @rid FROM V).@rid
+      database.command("SQL", """
+          CREATE EDGE TestEdge3315
+          FROM (SELECT @rid FROM TestVertex3315 WHERE name = 'vertex1').@rid
+          TO (SELECT @rid FROM TestVertex3315 WHERE name = 'vertex2').@rid;
+          """);
+
+      // Verify edge was created correctly
+      edges = database.query("SQL", "SELECT FROM TestEdge3315");
+      assertThat(edges.hasNext()).isTrue();
+      edge = edges.next();
+      assertThat((Object) edge.getProperty("@in")).isEqualTo(rid2);
+      assertThat((Object) edge.getProperty("@out")).isEqualTo(rid1);
+      edges.close();
+
+      // Clean up for next scenario
+      database.command("SQL", "DELETE FROM TestEdge3315");
+
+      // Scenario 3: Verify working case still works (baseline)
+      // This tests: LET $x = (SELECT @rid FROM V).@rid; CREATE EDGE E FROM $x TO $x
+      database.command("sqlscript", """
+          LET $x = (SELECT @rid FROM TestVertex3315 WHERE name = 'vertex1').@rid;
+          CREATE EDGE TestEdge3315 FROM $x TO $x;
+          """);
+
+      // Verify edge was created correctly
+      edges = database.query("SQL", "SELECT FROM TestEdge3315");
+      assertThat(edges.hasNext()).isTrue();
+      edge = edges.next();
+      assertThat((Object) edge.getProperty("@in")).isEqualTo(rid1);
+      assertThat((Object) edge.getProperty("@out")).isEqualTo(rid1);
+      edges.close();
+
+      // Clean up for next scenario
+      database.command("SQL", "DELETE FROM TestEdge3315");
+
+      // Scenario 4: Multiple edges from result set with property access
+      database.command("sqlscript", """
+          LET $vertices = SELECT @rid FROM TestVertex3315;
+          CREATE EDGE TestEdge3315 FROM $vertices.@rid TO $vertices.@rid;
+          """);
+
+      // Verify edges were created correctly (should create edges from each vertex to all vertices)
+      edges = database.query("SQL", "SELECT count(*) as cnt FROM TestEdge3315");
+      assertThat(edges.hasNext()).isTrue();
+      final long edgeCount = edges.next().getProperty("cnt");
+      assertThat(edgeCount).isGreaterThan(0);
+      edges.close();
+    });
+  }
 }
