@@ -91,14 +91,11 @@ public class ArcadeDBServer {
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private             String                                hostAddress;
   private             FileServerEventLog                    eventLog;
-  private final       Map<String, ServerPlugin>             plugins                              = new LinkedHashMap<>();
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
   private             HAServer                              haServer;
   private             ServerSecurity                        security;
   private             HttpServer                            httpServer;
-  private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
-  private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
 //  private             ServerMonitor                         serverMonitor;
 
   static {
