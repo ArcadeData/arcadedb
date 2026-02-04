@@ -115,8 +115,13 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           throw e;
         } finally {
           // Only call db.begin() if database is still open
+          // Use try-catch to handle race condition where database closes between isOpen() check and begin()
           if (db != null && db.isOpen() && !db.isTransactionActive()) {
-            db.begin();
+            try {
+              db.begin();
+            } catch (final DatabaseIsClosedException ignored) {
+              // Database closed between isOpen() check and begin() - this is expected in failover tests
+            }
           }
         }
       }
