@@ -66,12 +66,20 @@ public class ReplicationServerFixedClientConnectionIT extends ReplicationServerI
     return HAServer.ServerRole.ANY;
   }
 
+  @Override
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
   @Disabled("This test is designed for a degenerate case: MAJORITY quorum with 2 servers prevents leader election. " +
       "With 2 servers and MAJORITY quorum, a new leader cannot be elected when the first leader fails (needs 2 votes, only has 1). " +
       "This test demonstrates FIXED connection strategy behavior in this scenario, but it's not a realistic production configuration.")
-  void  testReplication() {
+  public void replication() {
+    testReplication();
+  }
+
+  @Disabled("This test is designed for a degenerate case: MAJORITY quorum with 2 servers prevents leader election. " +
+      "With 2 servers and MAJORITY quorum, a new leader cannot be elected when the first leader fails (needs 2 votes, only has 1). " +
+      "This test demonstrates FIXED connection strategy behavior in this scenario, but it's not a realistic production configuration.")
+  void testReplication() {
     checkDatabases();
 
     final String server1Address = getServer(0).getHttpServer().getListeningAddress();
