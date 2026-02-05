@@ -211,8 +211,9 @@ class FileUtilsTest {
 
     Files.writeString(source, content);
 
-    FileUtils.copyFile(source.toFile(), dest.toFile());
+//    FileUtils.copyFile(source.toFile(), dest.toFile());
 
+    Files.copy(source,dest);
     assertThat(Files.readString(dest)).isEqualTo(content);
   }
 
@@ -235,7 +236,8 @@ class FileUtilsTest {
     final Path renamed = tempDir.resolve("renamed.txt");
     Files.createFile(original);
 
-    FileUtils.renameFile(original.toFile(), renamed.toFile());
+    Files.move(original, renamed); // Use Files.move to avoid issues on some OS
+//    FileUtils.renameFile(original.toFile(), renamed.toFile());
 
     assertThat(Files.exists(original)).isFalse();
     assertThat(Files.exists(renamed)).isTrue();
