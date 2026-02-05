@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.sql.executor.*;
 
@@ -205,8 +206,16 @@ public class CreateStep extends AbstractExecutionStep {
       // Create relationships between vertices
       for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
         final RelationshipPattern relPattern = pathPattern.getRelationship(i);
-        final Vertex fromVertex = vertices.get(i);
-        final Vertex toVertex = vertices.get(i + 1);
+        final Vertex fromVertex;
+        final Vertex toVertex;
+
+        if (relPattern.getDirection() == Direction.IN) {
+          fromVertex = vertices.get(i + 1);
+          toVertex = vertices.get(i);
+        } else {
+          fromVertex = vertices.get(i);
+          toVertex = vertices.get(i + 1);
+        }
 
         final Edge edge = createEdge(fromVertex, toVertex, relPattern, result);
         if (relPattern.getVariable() != null) {

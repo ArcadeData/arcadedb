@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
@@ -278,8 +279,16 @@ public class MergeStep extends AbstractExecutionStep {
     // Merge relationships between vertices
     for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
       final RelationshipPattern relPattern = pathPattern.getRelationship(i);
-      final Vertex fromVertex = vertices.get(i);
-      final Vertex toVertex = vertices.get(i + 1);
+      final Vertex fromVertex;
+      final Vertex toVertex;
+
+      if (relPattern.getDirection() == Direction.IN) {
+        fromVertex = vertices.get(i + 1);
+        toVertex = vertices.get(i);
+      } else {
+        fromVertex = vertices.get(i);
+        toVertex = vertices.get(i + 1);
+      }
 
       // Try to find existing relationship
       Edge edge = findEdge(fromVertex, toVertex, relPattern, result);
