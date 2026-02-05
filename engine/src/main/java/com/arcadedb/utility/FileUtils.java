@@ -22,15 +22,29 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
-import java.lang.management.*;
-import java.net.*;
-import java.nio.channels.*;
-import java.nio.file.*;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.UnsupportedEncodingException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
+import java.net.URLEncoder;
+import java.nio.channels.FileChannel;
 import java.nio.file.FileSystem;
-import java.util.*;
-import java.util.logging.*;
-import java.util.zip.*;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Locale;
+import java.util.logging.Level;
+import java.util.zip.GZIPOutputStream;
 
 public class FileUtils {
   public static final int    KILOBYTE = 1024;
@@ -38,20 +52,6 @@ public class FileUtils {
   public static final int    GIGABYTE = 1073741824;
   public static final long   TERABYTE = 1099511627776L;
   public static final String UTF8_BOM = "\uFEFF";
-
-  private static final boolean useOldFileAPI;
-
-  static {
-    boolean oldAPI = false;
-
-    try {
-      Class.forName("java.nio.file.FileSystemException");
-    } catch (final ClassNotFoundException ignore) {
-      oldAPI = true;
-    }
-
-    useOldFileAPI = oldAPI;
-  }
 
   public static String getStringContent(final Object iValue) {
     if (iValue == null)
@@ -72,11 +72,11 @@ public class FileUtils {
     return s;
   }
 
-  public static boolean isLong(final String iText) {
+  public static boolean isLong(final String text) {
     boolean isLong = true;
-    final int size = iText.length();
+    final int size = text.length();
     for (int i = 0; i < size && isLong; i++) {
-      final char c = iText.charAt(i);
+      final char c = text.charAt(i);
       isLong = isLong & ((c >= '0' && c <= '9'));
     }
     return isLong;
@@ -142,15 +142,13 @@ public class FileUtils {
   }
 
   public static String getSizeAsString(final long iSize) {
-    if (iSize > TERABYTE)
-      return String.format(Locale.ENGLISH, "%2.2fTB", (float) iSize / TERABYTE);
-    if (iSize > GIGABYTE)
-      return String.format(Locale.ENGLISH, "%2.2fGB", (float) iSize / GIGABYTE);
-    if (iSize > MEGABYTE)
-      return String.format(Locale.ENGLISH, "%2.2fMB", (float) iSize / MEGABYTE);
-    if (iSize > KILOBYTE)
-      return String.format(Locale.ENGLISH, "%2.2fKB", (float) iSize / KILOBYTE);
-
+    final long[] dividers = { TERABYTE, GIGABYTE, MEGABYTE, KILOBYTE };
+    final String[] units = { "TB", "GB", "MB", "KB" };
+    for (int i = 0; i < dividers.length; i++) {
+      if (iSize > dividers[i]) {
+        return String.format(Locale.ENGLISH, "%2.2f%s", (float) iSize / dividers[i], units[i]);
+      }
+    }
     return iSize + "b";
   }
 
@@ -226,7 +224,7 @@ public class FileUtils {
     return false;
   }
 
-  public static final void copyFile(final File source, final File destination) throws IOException {
+  public static void copyFile(final File source, final File destination) throws IOException {
     try (final FileInputStream fis = new FileInputStream(source); final FileOutputStream fos = new FileOutputStream(destination)) {
       final FileChannel sourceChannel = fis.getChannel();
       final FileChannel targetChannel = fos.getChannel();
@@ -234,7 +232,7 @@ public class FileUtils {
     }
   }
 
-  public static final void copyDirectory(final File source, final File destination) throws IOException {
+  public static void copyDirectory(final File source, final File destination) throws IOException {
     if (!destination.exists())
       destination.mkdirs();
 
@@ -248,9 +246,6 @@ public class FileUtils {
   }
 
   public static boolean renameFile(final File from, final File to) throws IOException {
-    if (useOldFileAPI)
-      return from.renameTo(to);
-
     final FileSystem fileSystem = FileSystems.getDefault();
 
     final Path fromPath = fileSystem.getPath(from.getAbsolutePath());
@@ -446,8 +441,7 @@ public class FileUtils {
     result.append("\n");
 
     // PRINT UNITS
-    for (int i = 0; i < maxLineDigits + 1; i++)
-      result.append(" ");
+    result.append(" ".repeat(maxLineDigits + 1));
 
     for (int i = 0; i < maxWidth; i++) {
       final String s = "" + i;
