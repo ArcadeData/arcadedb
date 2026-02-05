@@ -348,15 +348,15 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
       if (!globalCy) return null;
 
       try {
-        // Test if cola layout can be created
-        const colaTest = globalCy.layout({ name: 'cola', infinite: false });
-        const hasColaExtension = colaTest !== null;
+        // Test if fcose layout can be created
+        const fcoseTest = globalCy.layout({ name: 'fcose', animate: false });
+        const hasFcoseExtension = fcoseTest !== null;
 
         // Test cxtmenu extension
         const hasCxtMenuExtension = typeof globalCy.cxtmenu === 'function';
 
         return {
-          hasColaExtension,
+          hasFcoseExtension,
           hasCxtMenuExtension,
           globalCyAvailable: true
         };
