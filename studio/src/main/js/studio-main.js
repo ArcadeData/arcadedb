@@ -56,12 +56,12 @@ import ClipboardJS from 'clipboard';
 window.ClipboardJS = ClipboardJS;
 
 import cytoscape from 'cytoscape';
-import cola from 'cytoscape-cola';
+import fcose from 'cytoscape-fcose';
 import cxtmenu from 'cytoscape-cxtmenu';
 import nodeHtmlLabel from 'cytoscape-node-html-label';
 
 // Register Cytoscape extensions
-cytoscape.use(cola);
+cytoscape.use(fcose);
 cytoscape.use(cxtmenu);
 cytoscape.use(nodeHtmlLabel);
 window.cytoscape = cytoscape;

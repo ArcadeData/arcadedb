@@ -125,7 +125,7 @@ function exportGraph(format) {
           data: true,
           discludeds: [],
         },
-        layoutBy: "cola",
+        layoutBy: "fcose",
       });
 
       let graphml = globalCy.graphml();
