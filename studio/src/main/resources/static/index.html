@@ -78,50 +78,49 @@
         });
       });
 
-      // Initialize Notyf with notification queue
-      let notyf = null;
+      // Initialize SweetAlert2 Toast (replacement for Notyf)
+      let Toast = null;
       let notificationQueue = [];
-      let isNotyfReady = false;
+      let isToastReady = false;
 
       document.addEventListener('DOMContentLoaded', function() {
-        // Initialize Notyf (replacement for Bootstrap Notify)
-        notyf = new Notyf({
-          duration: 4000,
-          position: {
-            x: 'right',
-            y: 'top'
-          },
-          dismissible: true,
-          ripple: false
+        // Initialize SweetAlert2 Toast mixin
+        Toast = Swal.mixin({
+          toast: true,
+          position: 'top-end',
+          showConfirmButton: false,
+          timer: 4000,
+          timerProgressBar: true,
+          didOpen: (toast) => {
+            toast.onmouseenter = Swal.stopTimer;
+            toast.onmouseleave = Swal.resumeTimer;
+          }
         });
 
         // Mark as ready and process queued notifications
-        isNotyfReady = true;
+        isToastReady = true;
         processNotificationQueue();
       });
 
       function processNotificationQueue() {
-        while (notificationQueue.length > 0 && isNotyfReady) {
+        while (notificationQueue.length > 0 && isToastReady) {
           const notification = notificationQueue.shift();
           showNotification(notification.title, notification.message, notification.type);
         }
       }
 
       function showNotification(title, message, type) {
-        const fullMessage = title ? `<strong>${title}</strong><br>${message}` : message;
-
-        if (type === 'success') {
-          notyf.success(fullMessage);
-        } else if (type === 'danger' || type === 'error') {
-          notyf.error(fullMessage);
-        } else {
-          notyf.success(fullMessage);
-        }
+        const icon = (type === 'danger' || type === 'error') ? 'error' : 'success';
+        Toast.fire({
+          icon: icon,
+          title: title || '',
+          text: message
+        });
       }
 
       // Global compatibility function for notifications
       function globalNotify(title, message, type) {
-        if (!isNotyfReady) {
+        if (!isToastReady) {
           // Queue notification for later processing
           notificationQueue.push({ title, message, type });
           return;
