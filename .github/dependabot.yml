@@ -13,6 +13,13 @@ updates:
       interval: weekly
       day: "sunday"
     open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "docker"
     directory: "/package/src/main/docker/"
@@ -20,6 +27,9 @@ updates:
       interval: weekly
       day: "sunday"
     open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "eclipse-temurin"
+        versions: [ ">21" ]
 
   # Studio Frontend Dependencies (npm) - HIGH PRIORITY
   - package-ecosystem: "npm"
