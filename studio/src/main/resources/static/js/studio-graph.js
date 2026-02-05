@@ -204,7 +204,7 @@ function importSettings() {
 function exportSettings() {
   var html = "<center><h5>This is the JSON configuration exported</h5>";
   html += "<center><textarea id='exportContent' rows='30' cols='90' readonly></textarea><br>";
-  html += "<button id='popupClipboard' type='button' data-clipboard-target='#exportContent' class='clipboard-trigger btn btn-primary'>";
+  html += "<button id='popupClipboard' type='button' class='btn btn-primary'>";
   html += "<i class='fa fa-copy'></i> Copy to clipboard and close</button> or ";
   html += "<button id='downloadFile' type='button' class='btn btn-primary'>";
   html += "<i class='fa fa-download'></i> Download it</button></center>";
@@ -215,8 +215,15 @@ function exportSettings() {
 
   $("#exportContent").text(JSON.stringify(globalGraphSettings, null, 2));
 
-  new ClipboardJS("#popupClipboard").on("success", function (e) {
-    $("#popup").modal("hide");
+  $("#popupClipboard").on("click", async function() {
+    const text = $("#exportContent").val() || $("#exportContent").text();
+    try {
+      await navigator.clipboard.writeText(text);
+      $("#popup").modal("hide");
+    } catch (err) {
+      console.error("Failed to copy to clipboard:", err);
+      globalNotify("Error", "Failed to copy to clipboard", "danger");
+    }
   });
 
   $("#downloadFile").on("click", function () {
