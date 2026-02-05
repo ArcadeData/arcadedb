@@ -40,6 +40,22 @@ public class ExecutionResponse {
     this.binary = bytes;
   }
 
+  public int getCode() {
+    return code;
+  }
+
+  public String getResponse() {
+    return response;
+  }
+
+  public byte[] getBinary() {
+    return binary;
+  }
+
+  public boolean isBinary() {
+    return binary != null;
+  }
+
   public void send(final HttpServerExchange exchange) {
     exchange.setStatusCode(code);
     if (binary != null) {
