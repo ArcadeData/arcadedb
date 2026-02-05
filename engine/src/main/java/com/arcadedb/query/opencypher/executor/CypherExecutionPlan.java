@@ -599,32 +599,35 @@ public class CypherExecutionPlan {
     if (typeCountStep != null)
       return typeCountStep;
 
-    // Special case: RETURN without MATCH (standalone expressions)
-    // E.g., RETURN abs(-42), RETURN 1+1
-    if (statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null &&
-        clausesInOrder.stream().noneMatch(c -> c.getType() == ClauseEntry.ClauseType.UNWIND)) {
-      // Create a dummy row to evaluate expressions against
-      final ResultInternal dummyRow = new ResultInternal();
-      final List<Result> singleRow = List.of(dummyRow);
+    // Special case: Standalone WITH, UNWIND, or RETURN
+    if (!clausesInOrder.isEmpty()) {
+      final ClauseEntry.ClauseType firstClauseType = clausesInOrder.get(0).getType();
+      if (firstClauseType == ClauseEntry.ClauseType.WITH ||
+          firstClauseType == ClauseEntry.ClauseType.UNWIND ||
+          (firstClauseType == ClauseEntry.ClauseType.RETURN && statement.getMatchClauses().isEmpty())) {
+        // Create a dummy row to evaluate expressions against
+        final ResultInternal dummyRow = new ResultInternal();
+        final List<Result> singleRow = List.of(dummyRow);
 
-      // Return the single row via an initial step
-      currentStep = new AbstractExecutionStep(context) {
-        private boolean consumed = false;
+        // Return the single row via an initial step
+        currentStep = new AbstractExecutionStep(context) {
+          private boolean consumed = false;
 
-        @Override
-        public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
-          if (consumed) {
-            return new IteratorResultSet(List.<ResultInternal>of().iterator());
+          @Override
+          public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+            if (consumed) {
+              return new IteratorResultSet(List.<ResultInternal>of().iterator());
+            }
+            consumed = true;
+            return new IteratorResultSet(singleRow.iterator());
           }
-          consumed = true;
-          return new IteratorResultSet(singleRow.iterator());
-        }
 
-        @Override
-        public String prettyPrint(final int depth, final int indent) {
-          return "  ".repeat(Math.max(0, depth * indent)) + "+ DUMMY ROW (for standalone expressions)";
-        }
-      };
+          @Override
+          public String prettyPrint(final int depth, final int indent) {
+            return "  ".repeat(Math.max(0, depth * indent)) + "+ DUMMY ROW (for standalone expressions)";
+          }
+        };
+      }
     }
 
     // Process clauses in order
