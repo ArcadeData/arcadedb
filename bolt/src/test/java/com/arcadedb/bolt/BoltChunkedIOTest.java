@@ -231,7 +231,7 @@ class BoltChunkedIOTest {
 
     assertThat(message).hasSize(65535);
     assertThat(message[0]).isEqualTo((byte) 0xCC);
-    assertThat(message[65534]).isEqualTo((byte) 0xCC);
+    assertThat(message[message.length - 1]).isEqualTo((byte) 0xCC);
   }
 
   @Test

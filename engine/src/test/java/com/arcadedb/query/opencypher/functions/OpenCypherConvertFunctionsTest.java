@@ -187,7 +187,7 @@ class OpenCypherConvertFunctionsTest {
         new Object[]{"{\"name\": \"Alice\", \"age\": 30}"}, null);
 
     assertThat(result).containsEntry("name", "Alice");
-    assertThat(result.get("age")).isEqualTo(30);
+    assertThat(result).containsEntry("age", 30);
   }
 
   @Test
