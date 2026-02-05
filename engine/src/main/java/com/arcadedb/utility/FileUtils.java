@@ -143,13 +143,13 @@ public class FileUtils {
 
   public static String getSizeAsString(final long iSize) {
     if (iSize > TERABYTE)
-      return "%2.2fTB".formatted((float) iSize / TERABYTE);
+      return String.format(Locale.ENGLISH, "%2.2fTB", (float) iSize / TERABYTE);
     if (iSize > GIGABYTE)
-      return "%2.2fGB".formatted((float) iSize / GIGABYTE);
+      return String.format(Locale.ENGLISH, "%2.2fGB", (float) iSize / GIGABYTE);
     if (iSize > MEGABYTE)
-      return "%2.2fMB".formatted((float) iSize / MEGABYTE);
+      return String.format(Locale.ENGLISH, "%2.2fMB", (float) iSize / MEGABYTE);
     if (iSize > KILOBYTE)
-      return "%2.2fKB".formatted((float) iSize / KILOBYTE);
+      return String.format(Locale.ENGLISH, "%2.2fKB", (float) iSize / KILOBYTE);
 
     return iSize + "b";
   }
