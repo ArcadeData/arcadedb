@@ -70,7 +70,7 @@ public class CypherFunctionFactory {
     mapping.put("floor", "floor");
     mapping.put("round", "round");
     mapping.put("sqrt", "sqrt");
-    mapping.put("rand", "randomInt");
+    // rand() is handled as Cypher-specific (returns float 0.0-1.0)
 
     // Aggregation functions
     mapping.put("count", "count");
@@ -189,6 +189,8 @@ public class CypherFunctionFactory {
       case "id", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
       // Path functions
       case "nodes", "relationships", "length" -> true;
+      // Math functions
+      case "rand", "sign" -> true;
       // List functions
       case "size", "head", "tail", "last", "range" -> true;
       // String functions
@@ -209,6 +211,9 @@ public class CypherFunctionFactory {
    */
   private StatelessFunction createCypherSpecificExecutor(final String functionName, final boolean distinct) {
     return switch (functionName) {
+      // Math functions
+      case "rand" -> new RandFunction();
+      case "sign" -> new SignFunction();
       // Graph functions
       case "id" -> new IdFunction();
       case "labels" -> new LabelsFunction();
@@ -244,6 +249,49 @@ public class CypherFunctionFactory {
   }
 
   // Cypher-specific function implementations
+
+  /**
+   * rand() function - returns a random float between 0.0 (inclusive) and 1.0 (exclusive).
+   */
+  private static class RandFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "rand";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      return Math.random();
+    }
+  }
+
+  /**
+   * sign() function - returns the signum of a number: -1, 0, or 1.
+   */
+  private static class SignFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "sign";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("sign() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      if (args[0] instanceof Number) {
+        final double value = ((Number) args[0]).doubleValue();
+        if (value > 0)
+          return 1L;
+        else if (value < 0)
+          return -1L;
+        else
+          return 0L;
+      }
+      throw new CommandExecutionException("sign() requires a numeric argument");
+    }
+  }
 
   /**
    * id() function - returns the internal ID of a node or relationship.

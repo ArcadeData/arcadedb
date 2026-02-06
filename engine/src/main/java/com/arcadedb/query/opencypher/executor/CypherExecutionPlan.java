@@ -395,7 +395,7 @@ public class CypherExecutionPlan {
 
     // Step 2: CREATE clause (if any)
     if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty()) {
-      final CreateStep createStep = new CreateStep(statement.getCreateClause(), context);
+      final CreateStep createStep = new CreateStep(statement.getCreateClause(), context, functionFactory);
       createStep.setPrevious(currentStep);
       currentStep = createStep;
     }
@@ -691,7 +691,7 @@ public class CypherExecutionPlan {
         case CREATE:
           final CreateClause createClause = entry.getTypedClause();
           if (!createClause.isEmpty()) {
-            final CreateStep createStep = new CreateStep(createClause, context);
+            final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
             if (currentStep != null) {
               createStep.setPrevious(currentStep);
             }
@@ -1520,7 +1520,7 @@ public class CypherExecutionPlan {
 
     // Step 4: CREATE clause - create vertices/edges
     if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty()) {
-      final CreateStep createStep = new CreateStep(statement.getCreateClause(), context);
+      final CreateStep createStep = new CreateStep(statement.getCreateClause(), context, functionFactory);
       if (currentStep != null) {
         // Chained CREATE (after MATCH/WHERE)
         createStep.setPrevious(currentStep);
