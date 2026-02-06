@@ -334,6 +334,54 @@ class WithAndUnwindTest {
 
   @Test
   @Order(22)
+  void standaloneWithLiteral() {
+    // Standalone WITH at the beginning of a query should create data from literals
+    final ResultSet result = database.query("opencypher", "WITH 42 AS x RETURN x");
+
+    assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    assertThat(((Number) row.getProperty("x")).intValue()).isEqualTo(42);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  @Order(23)
+  void standaloneWithNestedListUnwind_Issue3329() {
+    // Regression test for https://github.com/ArcadeData/arcadedb/issues/3329
+    // WITH nested list + double UNWIND should produce correct count
+    final ResultSet result = database.query("opencypher",
+        "WITH [[1, 2], [3, 4], []] AS nested UNWIND nested AS x UNWIND x AS y RETURN count(y) AS total");
+
+    assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    assertThat(((Number) row.getProperty("total")).intValue()).as("1,2,3,4 = 4 elements total").isEqualTo(4);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  @Order(24)
+  void standaloneWithUnwind_Issue3329() {
+    // Simpler variant: standalone WITH followed by a single UNWIND
+    final ResultSet result = database.query("opencypher",
+        "WITH [1, 2, 3] AS list UNWIND list AS x RETURN x");
+
+    int count = 0;
+    long sum = 0;
+    while (result.hasNext()) {
+      final var row = result.next();
+      sum += ((Number) row.getProperty("x")).longValue();
+      count++;
+    }
+    result.close();
+
+    assertThat(count).isEqualTo(3);
+    assertThat(sum).isEqualTo(6);
+  }
+
+  @Test
+  @Order(25)
   void withChainedMatch() {
     // Chaining MATCH after WITH is not yet fully implemented
     // For now, test a simpler pattern: MATCH -> WITH -> RETURN

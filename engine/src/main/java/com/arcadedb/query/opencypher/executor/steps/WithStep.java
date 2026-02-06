@@ -70,7 +70,7 @@ public class WithStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    checkForPrevious("WithStep requires a previous step");
+    final boolean hasPrevious = prev != null;
 
     return new ResultSet() {
       private ResultSet prevResults = null;
@@ -110,7 +110,32 @@ public class WithStep extends AbstractExecutionStep {
 
         // Initialize prevResults on first call
         if (prevResults == null) {
-          prevResults = prev.syncPull(context, nRecords);
+          if (hasPrevious) {
+            prevResults = prev.syncPull(context, nRecords);
+          } else {
+            // No previous step - create a single empty input row
+            // This allows standalone WITH at the start of a query (e.g. WITH 1 AS x ...)
+            prevResults = new ResultSet() {
+              private boolean consumed = false;
+
+              @Override
+              public boolean hasNext() {
+                return !consumed;
+              }
+
+              @Override
+              public Result next() {
+                if (consumed)
+                  throw new NoSuchElementException();
+                consumed = true;
+                return new ResultInternal();
+              }
+
+              @Override
+              public void close() {
+              }
+            };
+          }
         }
 
         // Check if LIMIT has been reached (only when not deferred to downstream)
