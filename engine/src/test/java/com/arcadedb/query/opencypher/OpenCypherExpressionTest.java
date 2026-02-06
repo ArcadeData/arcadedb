@@ -289,6 +289,32 @@ class OpenCypherExpressionTest {
     assertThat(resultSet.hasNext()).isFalse();
   }
 
+  @Test
+  void listComprehensionWithModuloFilter() {
+    // GitHub issue #3330: list comprehension with modulo filter returns empty list
+    final ResultSet resultSet = database.query("opencypher",
+        "WITH [0, 1, 2, 3, 4, 5] AS numbers RETURN [n IN numbers WHERE n % 2 = 0 | n * 10] AS evens_multiplied");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    final Object listObj = result.getProperty("evens_multiplied");
+    assertThat(listObj).isInstanceOf(List.class);
+    @SuppressWarnings("unchecked")
+    final List<Object> list = (List<Object>) listObj;
+    assertThat(list).containsExactly(0L, 20L, 40L);
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @Test
+  void comparisonWithArithmeticOperands() {
+    // Verify that comparisons work when operands contain arithmetic expressions
+    final ResultSet resultSet = database.query("opencypher", "RETURN 4 % 2 = 0 AS result");
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    assertThat((Boolean) result.getProperty("result")).isTrue();
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
   // ============================================================================
   // Map Projection Tests
   // ============================================================================
