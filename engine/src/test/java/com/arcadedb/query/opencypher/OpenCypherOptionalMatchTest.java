@@ -210,4 +210,52 @@ class OpenCypherOptionalMatchTest {
     assertThat(results.get(2).<String>getProperty("person")).isEqualTo("Charlie");
     assertThat(results.get(2).<String>getProperty("knows")).isNull();
   }
+
+  /**
+   * Test for GitHub issue #3360:
+   * OPTIONAL MATCH with pattern predicate in WHERE clause should only return
+   * nodes that satisfy the pattern, not all nodes of the label.
+   */
+  @Test
+  void optionalMatchWithPatternPredicateInWhere() {
+    // Create additional types for this test
+    database.getSchema().createVertexType("DOCUMENT");
+    database.getSchema().createVertexType("CHUNK");
+    database.getSchema().createEdgeType("RELATED_TO");
+
+    database.transaction(() -> {
+      // Create the target Document
+      database.command("opencypher", "CREATE (d:DOCUMENT {name: 'MyTargetDoc', type: 'target'})");
+
+      // Create a linked Chunk
+      database.command("opencypher", "CREATE (c1:CHUNK {name: 'LinkedChunk_1'})");
+
+      // Create unrelated Chunks (Noise)
+      database.command("opencypher", "CREATE (c2:CHUNK {name: 'UnrelatedChunk_A'})");
+      database.command("opencypher", "CREATE (c3:CHUNK {name: 'UnrelatedChunk_B'})");
+
+      // Link only c1 to d
+      database.command("opencypher",
+          "MATCH (d:DOCUMENT), (c1:CHUNK) " +
+              "WHERE d.name = 'MyTargetDoc' AND c1.name = 'LinkedChunk_1' " +
+              "CREATE (c1)-[:RELATED_TO]->(d)");
+    });
+
+    // This query should return only LinkedChunk_1 because only it has a relationship to doc
+    final ResultSet result = database.query("opencypher",
+        "MATCH (doc:DOCUMENT) WHERE doc.name = 'MyTargetDoc' " +
+            "OPTIONAL MATCH (c:CHUNK) WHERE (c)-->(doc) " +
+            "RETURN doc.name AS docName, c.name AS chunkName");
+
+    final List<Result> results = new ArrayList<>();
+    while (result.hasNext()) {
+      results.add(result.next());
+    }
+    result.close();
+
+    // Should return exactly 1 row: doc=MyTargetDoc, c=LinkedChunk_1
+    assertThat(results).hasSize(1);
+    assertThat(results.get(0).<String>getProperty("docName")).isEqualTo("MyTargetDoc");
+    assertThat(results.get(0).<String>getProperty("chunkName")).isEqualTo("LinkedChunk_1");
+  }
 }

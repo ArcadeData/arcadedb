@@ -43,19 +43,22 @@ import java.util.Set;
  */
 public class OptionalMatchStep extends AbstractExecutionStep {
   private final AbstractExecutionStep matchChainStart;
+  private final AbstractExecutionStep matchChainEnd;
   private final Set<String> variableNames;
 
   /**
    * Creates an optional match step.
    *
-   * @param matchChainStart first step in the optional match chain
+   * @param matchChainStart first step in the optional match chain (input is fed here)
+   * @param matchChainEnd   last step in the optional match chain (results are pulled from here)
    * @param variableNames   names of variables that should be set to NULL if no match
    * @param context         command context
    */
-  public OptionalMatchStep(final AbstractExecutionStep matchChainStart, final Set<String> variableNames,
-      final CommandContext context) {
+  public OptionalMatchStep(final AbstractExecutionStep matchChainStart, final AbstractExecutionStep matchChainEnd,
+      final Set<String> variableNames, final CommandContext context) {
     super(context);
     this.matchChainStart = matchChainStart;
+    this.matchChainEnd = matchChainEnd;
     this.variableNames = variableNames;
   }
 
@@ -109,8 +112,9 @@ public class OptionalMatchStep extends AbstractExecutionStep {
             final SingleRowInputStep singleRowInput = new SingleRowInputStep(inputRow, context);
             matchChainStart.setPrevious(singleRowInput);
 
-            // Execute the match chain with this input
-            final ResultSet matchResults = matchChainStart.syncPull(context, 100);
+            // Execute the match chain by pulling from the END of the chain
+            // (which pulls through any intermediate filter steps)
+            final ResultSet matchResults = matchChainEnd.syncPull(context, 100);
 
             // Collect all matches for this input
             boolean foundMatch = false;
@@ -142,7 +146,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
           // No input: standalone OPTIONAL MATCH
           // Execute match chain without input
           matchChainStart.setPrevious(null);
-          final ResultSet matchResults = matchChainStart.syncPull(context, nRecords);
+          final ResultSet matchResults = matchChainEnd.syncPull(context, nRecords);
 
           // Collect matches
           boolean foundAnyMatch = false;
