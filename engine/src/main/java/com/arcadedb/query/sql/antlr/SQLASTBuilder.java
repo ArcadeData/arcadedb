@@ -2368,6 +2368,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Array concatenation expression (||).
    * Grammar: expression SC_OR expression
+   * Flattens chained concatenations (e.g. A || B || C) into a single ArrayConcatExpression with N children.
    */
   @Override
   public Expression visitArrayConcat(final SQLParser.ArrayConcatContext ctx) {
@@ -2375,18 +2376,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Visit left side
     final Expression leftExpr = (Expression) visit(ctx.expression(0));
-    final ArrayConcatExpressionElement leftElement = new ArrayConcatExpressionElement(-1);
-    // Copy all fields from Expression to ArrayConcatExpressionElement
-    copyExpressionFields(leftExpr, leftElement);
-    // Extract and set nested projection if present in modifier chain
-    leftElement.nestedProjection = extractNestedProjectionFromBaseExpression(leftExpr);
-    concatExpr.getChildExpressions().add(leftElement);
+    // If the left side is itself an array concat, flatten its children
+    if (leftExpr.arrayConcatExpression != null)
+      concatExpr.getChildExpressions().addAll(leftExpr.arrayConcatExpression.getChildExpressions());
+    else {
+      final ArrayConcatExpressionElement leftElement = new ArrayConcatExpressionElement(-1);
+      copyExpressionFields(leftExpr, leftElement);
+      leftElement.nestedProjection = extractNestedProjectionFromBaseExpression(leftExpr);
+      concatExpr.getChildExpressions().add(leftElement);
+    }
 
     // Visit right side
     final Expression rightExpr = (Expression) visit(ctx.expression(1));
     final ArrayConcatExpressionElement rightElement = new ArrayConcatExpressionElement(-1);
     copyExpressionFields(rightExpr, rightElement);
-    // Extract and set nested projection if present in modifier chain
     rightElement.nestedProjection = extractNestedProjectionFromBaseExpression(rightExpr);
     concatExpr.getChildExpressions().add(rightElement);
 
