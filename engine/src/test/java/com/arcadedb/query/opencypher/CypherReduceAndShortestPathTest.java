@@ -20,8 +20,9 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -192,10 +193,12 @@ class CypherReduceAndShortestPathTest {
     assertThat(path).isNotNull();
     assertThat(path).isInstanceOf(List.class);
 
-    @SuppressWarnings("unchecked")
-    final List<RID> pathList = (List<RID>) path;
-    // Path should be: Alice, Bob, Charlie, David (4 nodes)
-    assertThat(pathList.size()).isEqualTo(4);
+    final List<?> pathList = (List<?>) path;
+    // Path should be: Alice, edge, Bob, edge, Charlie, edge, David (4 nodes + 3 edges = 7)
+    assertThat(pathList.size()).isEqualTo(7);
+    assertThat(pathList.get(0)).isInstanceOf(Vertex.class);
+    assertThat(pathList.get(1)).isInstanceOf(Edge.class);
+    assertThat(pathList.get(2)).isInstanceOf(Vertex.class);
 
     assertThat(resultSet.hasNext()).isFalse();
   }
@@ -215,10 +218,9 @@ class CypherReduceAndShortestPathTest {
     assertThat(path).isNotNull();
     assertThat(path).isInstanceOf(List.class);
 
-    @SuppressWarnings("unchecked")
-    final List<RID> pathList = (List<RID>) path;
-    // Path should be: Alice, Bob (2 nodes)
-    assertThat(pathList.size()).isEqualTo(2);
+    final List<?> pathList = (List<?>) path;
+    // Path should be: Alice, edge, Bob (2 nodes + 1 edge = 3)
+    assertThat(pathList.size()).isEqualTo(3);
 
     assertThat(resultSet.hasNext()).isFalse();
   }
@@ -238,10 +240,10 @@ class CypherReduceAndShortestPathTest {
     assertThat(path).isNotNull();
     assertThat(path).isInstanceOf(List.class);
 
-    @SuppressWarnings("unchecked")
-    final List<RID> pathList = (List<RID>) path;
-    // Path to self should be just the node itself
+    final List<?> pathList = (List<?>) path;
+    // Path to self should be just the node itself (resolved as Vertex)
     assertThat(pathList.size()).isEqualTo(1);
+    assertThat(pathList.get(0)).isInstanceOf(Vertex.class);
 
     assertThat(resultSet.hasNext()).isFalse();
   }
@@ -298,10 +300,9 @@ class CypherReduceAndShortestPathTest {
     assertThat(path).isNotNull();
     assertThat(path).isInstanceOf(List.class);
 
-    @SuppressWarnings("unchecked")
-    final List<RID> pathList = (List<RID>) path;
-    // Path should be: Alice, Bob, Eve (3 nodes)
-    assertThat(pathList.size()).isEqualTo(3);
+    final List<?> pathList = (List<?>) path;
+    // Path should be: Alice, edge, Bob, edge, Eve (3 nodes + 2 edges = 5)
+    assertThat(pathList.size()).isEqualTo(5);
 
     assertThat(resultSet.hasNext()).isFalse();
   }
@@ -323,7 +324,7 @@ class CypherReduceAndShortestPathTest {
 
   @Test
   void shortestPathWithPathVariable() {
-    // Test that path variable is properly bound
+    // Test that path variable is properly bound and length() works correctly
     final ResultSet resultSet = database.query("opencypher",
         """
             MATCH (a:Person {name: 'Alice'}), (d:Person {name: 'David'}),
@@ -335,6 +336,61 @@ class CypherReduceAndShortestPathTest {
 
     final Object path = result.getProperty("path");
     assertThat(path).isNotNull();
+    // Alice -> Bob -> Charlie -> David = 3 relationships
+    assertThat(result.<Long>getProperty("pathLength")).isEqualTo(3L);
+  }
+
+  @Test
+  void shortestPathLengthReturnsCorrectHops() {
+    // Regression test for https://github.com/ArcadeData/arcadedb/issues/3332
+    // length(path) on shortestPath was returning 0 instead of the actual number of hops
+    final ResultSet resultSet = database.query("opencypher",
+        """
+            MATCH (a:Person {name: 'Alice'}), (d:Person {name: 'David'}),
+            path = shortestPath((a)-[:KNOWS*]-(d))
+            RETURN length(path) AS hops""");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    // Alice -> Bob -> Charlie -> David = 3 hops
+    assertThat(result.<Long>getProperty("hops")).isEqualTo(3L);
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @Test
+  void shortestPathLengthDirectConnection() {
+    // Direct connection: length should be 1
+    final ResultSet resultSet = database.query("opencypher",
+        """
+            MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}),
+            path = shortestPath((a)-[:KNOWS*]-(b))
+            RETURN length(path) AS hops""");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    assertThat(result.<Long>getProperty("hops")).isEqualTo(1L);
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  @Test
+  void shortestPathNodesAndRelationships() {
+    // Test that nodes() and relationships() work on shortest paths
+    final ResultSet resultSet = database.query("opencypher",
+        """
+            MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}),
+            path = shortestPath((a)-[:KNOWS*]-(b))
+            RETURN nodes(path) AS pathNodes, relationships(path) AS pathRels""");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+
+    final List<?> pathNodes = result.getProperty("pathNodes");
+    assertThat(pathNodes).hasSize(2); // Alice, Bob
+
+    final List<?> pathRels = result.getProperty("pathRels");
+    assertThat(pathRels).hasSize(1); // one KNOWS edge
+
+    assertThat(resultSet.hasNext()).isFalse();
   }
 
   // ============================================================================

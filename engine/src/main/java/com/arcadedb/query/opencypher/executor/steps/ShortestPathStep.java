@@ -18,8 +18,10 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
@@ -130,8 +132,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
           final Vertex sourceVertex = (Vertex) sourceObj;
           final Vertex targetVertex = (Vertex) targetObj;
 
-          // Compute the shortest path
-          final List<RID> path = computeShortestPath(sourceVertex, targetVertex, context);
+          // Compute the shortest path and resolve RIDs to actual Vertex/Edge objects
+          final List<Object> path = computeShortestPath(sourceVertex, targetVertex, context);
 
           if (path != null && !path.isEmpty()) {
             // Create result with the path
@@ -162,8 +164,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
   /**
    * Computes the shortest path between source and target vertices.
+   * Returns a list of alternating Vertex and Edge objects representing the path.
    */
-  private List<RID> computeShortestPath(final Vertex source, final Vertex target, final CommandContext context) {
+  private List<Object> computeShortestPath(final Vertex source, final Vertex target, final CommandContext context) {
     // Get edge type from pattern
     String edgeType = null;
     if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes()) {
@@ -171,28 +174,84 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
 
     // Get direction from pattern
+    Vertex.DIRECTION vertexDirection = Vertex.DIRECTION.BOTH;
     String direction = "BOTH";
     if (pattern.getRelationshipCount() > 0) {
       final Direction dir = pattern.getRelationship(0).getDirection();
       switch (dir) {
         case OUT:
           direction = "OUT";
+          vertexDirection = Vertex.DIRECTION.OUT;
           break;
         case IN:
           direction = "IN";
+          vertexDirection = Vertex.DIRECTION.IN;
           break;
         default:
           direction = "BOTH";
       }
     }
 
-    // Use SQLFunctionShortestPath to compute the path
+    // Use SQLFunctionShortestPath to compute the path (returns vertex RIDs only)
     final SQLFunctionShortestPath shortestPathFunction = new SQLFunctionShortestPath();
     final Object[] params = edgeType != null ?
         new Object[] { source, target, direction, edgeType } :
         new Object[] { source, target, direction };
 
-    return shortestPathFunction.execute(null, null, null, params, context);
+    final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
+    if (pathRids == null || pathRids.isEmpty())
+      return null;
+
+    // Build a proper path with alternating Vertex and Edge objects
+    return resolvePathWithEdges(pathRids, vertexDirection, edgeType, context.getDatabase());
+  }
+
+  /**
+   * Resolves a list of vertex RIDs into a proper path with alternating Vertex and Edge objects.
+   */
+  public static List<Object> resolvePathWithEdges(final List<RID> vertexRids, final Vertex.DIRECTION direction,
+      final String edgeType, final Database database) {
+    final List<Object> result = new ArrayList<>(vertexRids.size() * 2 - 1);
+
+    Vertex prev = null;
+    for (final RID rid : vertexRids) {
+      final Vertex current = (Vertex) database.lookupByRID(rid, true);
+
+      if (prev != null) {
+        // Find the edge connecting prev to current
+        final Edge edge = findConnectingEdge(prev, current, direction, edgeType);
+        if (edge != null)
+          result.add(edge);
+      }
+
+      result.add(current);
+      prev = current;
+    }
+
+    return result;
+  }
+
+  /**
+   * Finds the edge connecting two vertices.
+   */
+  private static Edge findConnectingEdge(final Vertex from, final Vertex to, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    final Vertex.DIRECTION[] directions = direction == Vertex.DIRECTION.BOTH ?
+        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
+        new Vertex.DIRECTION[] { direction };
+
+    for (final Vertex.DIRECTION dir : directions) {
+      final Iterable<Edge> edges = edgeType != null ?
+          from.getEdges(dir, edgeType) :
+          from.getEdges(dir);
+
+      for (final Edge edge : edges) {
+        final RID connected = dir == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+        if (connected.equals(to.getIdentity()))
+          return edge;
+      }
+    }
+    return null;
   }
 
   @Override
