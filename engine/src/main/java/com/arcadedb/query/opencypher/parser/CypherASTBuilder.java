@@ -459,7 +459,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       }
     }
 
-    return new ReturnClause(items, true);
+    final boolean distinct = body.DISTINCT() != null;
+    return new ReturnClause(items, distinct);
   }
 
   @Override

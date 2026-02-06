@@ -445,7 +445,7 @@ public class CypherExecutionPlan {
             // GROUP BY aggregation (implicit grouping)
             final GroupByAggregationStep groupByStep =
                 new GroupByAggregationStep(
-                    new ReturnClause(withClause.getItems(), true),
+                    new ReturnClause(withClause.getItems(), false),
                     context, functionFactory);
             groupByStep.setPrevious(currentStep);
             currentStep = groupByStep;
@@ -453,7 +453,7 @@ public class CypherExecutionPlan {
             // Pure aggregation (no grouping)
             final AggregationStep aggStep =
                 new AggregationStep(
-                    new ReturnClause(withClause.getItems(), true),
+                    new ReturnClause(withClause.getItems(), false),
                     context, functionFactory);
             aggStep.setPrevious(currentStep);
             currentStep = aggStep;
@@ -796,7 +796,7 @@ public class CypherExecutionPlan {
       if (withClause.hasNonAggregations()) {
         final GroupByAggregationStep groupByStep =
             new GroupByAggregationStep(
-                new ReturnClause(withClause.getItems(), true),
+                new ReturnClause(withClause.getItems(), false),
                 context, functionFactory);
         if (currentStep != null) {
           groupByStep.setPrevious(currentStep);
@@ -805,7 +805,7 @@ public class CypherExecutionPlan {
       } else {
         final AggregationStep aggStep =
             new AggregationStep(
-                new ReturnClause(withClause.getItems(), true),
+                new ReturnClause(withClause.getItems(), false),
                 context, functionFactory);
         if (currentStep != null) {
           aggStep.setPrevious(currentStep);
@@ -1407,7 +1407,7 @@ public class CypherExecutionPlan {
           // GROUP BY aggregation (implicit grouping)
           final GroupByAggregationStep groupByStep =
               new GroupByAggregationStep(
-                  new ReturnClause(withClause.getItems(), true),
+                  new ReturnClause(withClause.getItems(), false),
                   context, functionFactory);
           if (currentStep != null) {
             groupByStep.setPrevious(currentStep);
@@ -1417,7 +1417,7 @@ public class CypherExecutionPlan {
           // Pure aggregation (no grouping)
           final AggregationStep aggStep =
               new AggregationStep(
-                  new ReturnClause(withClause.getItems(), true),
+                  new ReturnClause(withClause.getItems(), false),
                   context, functionFactory);
           if (currentStep != null) {
             aggStep.setPrevious(currentStep);

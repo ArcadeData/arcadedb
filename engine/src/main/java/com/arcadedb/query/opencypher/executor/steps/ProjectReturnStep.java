@@ -31,8 +31,10 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -68,11 +70,14 @@ public class ProjectReturnStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("ProjectReturnStep requires a previous step");
 
+    final boolean distinct = returnClause != null && returnClause.isDistinct();
+
     return new ResultSet() {
       private ResultSet prevResults = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      private final Set<String> seenResults = distinct ? new HashSet<>() : null;
 
       @Override
       public boolean hasNext() {
@@ -110,6 +115,20 @@ public class ProjectReturnStep extends AbstractExecutionStep {
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
           final ResultInternal projectedResult = projectResult(inputResult);
+
+          // Apply DISTINCT deduplication based on projected output columns only
+          if (distinct) {
+            final StringBuilder keyBuilder = new StringBuilder();
+            for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+              final String outputName = item.getOutputName();
+              keyBuilder.append(outputName).append('=');
+              final Object val = projectedResult.getProperty(outputName);
+              keyBuilder.append(val).append('|');
+            }
+            if (!seenResults.add(keyBuilder.toString()))
+              continue;
+          }
+
           buffer.add(projectedResult);
         }
 
@@ -187,6 +206,8 @@ public class ProjectReturnStep extends AbstractExecutionStep {
     final String ind = getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ PROJECT RETURN ");
+    if (returnClause != null && returnClause.isDistinct())
+      builder.append("DISTINCT ");
     if (returnClause != null) {
       builder.append(String.join(", ", returnClause.getItems()));
     }

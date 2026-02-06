@@ -27,11 +27,13 @@ import java.util.List;
  */
 public class ReturnClause {
   private final List<ReturnItem> items;
+  private final boolean distinct;
 
   /**
    * Create a ReturnClause from string items (backward compatibility).
    */
   public ReturnClause(final List<String> items) {
+    this.distinct = false;
     this.items = new ArrayList<>();
     for (final String item : items) {
       // Parse simple items into expressions
@@ -47,8 +49,9 @@ public class ReturnClause {
   /**
    * Create a ReturnClause from expression items.
    */
-  public ReturnClause(final List<ReturnItem> items, final boolean dummy) {
+  public ReturnClause(final List<ReturnItem> items, final boolean distinct) {
     this.items = items;
+    this.distinct = distinct;
   }
 
   /**
@@ -67,6 +70,13 @@ public class ReturnClause {
    */
   public List<ReturnItem> getReturnItems() {
     return items;
+  }
+
+  /**
+   * Check if this RETURN clause has the DISTINCT modifier.
+   */
+  public boolean isDistinct() {
+    return distinct;
   }
 
   /**
