@@ -854,7 +854,7 @@ public class LocalSchema implements Schema {
   }
 
   public Collection<DocumentType> getTypes() {
-    return Collections.unmodifiableCollection(types.values());
+    return new ArrayList<>(types.values());
   }
 
   public LocalDocumentType getType(final String typeName) {

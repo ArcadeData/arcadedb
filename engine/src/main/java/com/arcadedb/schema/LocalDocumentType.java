@@ -231,7 +231,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public List<DocumentType> getSuperTypes() {
-    return Collections.unmodifiableList(superTypes);
+    return new ArrayList<>(superTypes);
   }
 
   /**
@@ -271,7 +271,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public List<DocumentType> getSubTypes() {
-    return Collections.unmodifiableList(subTypes);
+    return new ArrayList<>(subTypes);
   }
 
   /**
