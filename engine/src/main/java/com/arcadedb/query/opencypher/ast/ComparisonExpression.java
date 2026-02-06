@@ -71,33 +71,30 @@ public class ComparisonExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
+    final Object ternary = evaluateTernary(result, context);
+    return Boolean.TRUE.equals(ternary);
+  }
+
+  @Override
+  public Object evaluateTernary(final Result result, final CommandContext context) {
     final Object leftValue;
     final Object rightValue;
 
-    // Use the shared expression evaluator from OpenCypherQueryEngine (stateless and thread-safe)
-    // Check if either side is a function call to decide whether to use the evaluator
     if (left instanceof FunctionCallExpression || right instanceof FunctionCallExpression) {
-      // Use ExpressionEvaluator to properly handle function calls
       leftValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(left, result, context);
       rightValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(right, result, context);
     } else {
-      // Direct evaluation for simple expressions (optimization)
       leftValue = left.evaluate(result, context);
       rightValue = right.evaluate(result, context);
     }
 
-    return compareValues(leftValue, rightValue);
+    return compareValuesTernary(leftValue, rightValue);
   }
 
-  private boolean compareValues(final Object left, final Object right) {
-    // Handle null comparisons
-    if (left == null || right == null) {
-      return switch (operator) {
-        case EQUALS -> left == right;
-        case NOT_EQUALS -> left != right;
-        default -> false;
-      };
-    }
+  private Object compareValuesTernary(final Object left, final Object right) {
+    // In OpenCypher, any comparison involving null returns null
+    if (left == null || right == null)
+      return null;
 
     // Numeric comparison
     if (left instanceof Number && right instanceof Number) {

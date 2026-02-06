@@ -131,6 +131,18 @@ public class TernaryLogicalExpression implements Expression {
     return true;
   }
 
+  public Operator getOperator() {
+    return operator;
+  }
+
+  public Expression getLeft() {
+    return left;
+  }
+
+  public Expression getRight() {
+    return right;
+  }
+
   @Override
   public boolean isAggregation() {
     return false;
