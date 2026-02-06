@@ -46,6 +46,27 @@ class CypherExpressionBuilder {
   Expression parseExpression(final Cypher25Parser.ExpressionContext ctx) {
     final String text = ctx.getText();
 
+    // Check for logical operators (OR, XOR, AND, NOT) first since they are
+    // top-level operators in the expression grammar and must support three-valued logic
+    // Grammar: expression = expression11 (OR expression11)*
+    final List<Cypher25Parser.Expression11Context> expr11List = ctx.expression11();
+    if (expr11List.size() > 1) {
+      // OR expression
+      Expression result = parseExpressionFromExpression11(expr11List.get(0));
+      for (int i = 1; i < expr11List.size(); i++) {
+        final Expression right = parseExpressionFromExpression11(expr11List.get(i));
+        result = new TernaryLogicalExpression(TernaryLogicalExpression.Operator.OR, result, right);
+      }
+      return result;
+    }
+
+    if (expr11List.size() == 1) {
+      // Check for XOR/AND/NOT at lower levels
+      final Expression logicalExpr = tryParseLogicalExpression(expr11List.get(0));
+      if (logicalExpr != null)
+        return logicalExpr;
+    }
+
     // Check for count(*) special case - has its own grammar rule
     final Cypher25Parser.CountStarContext countStarCtx = findCountStarRecursive(ctx);
     if (countStarCtx != null) {
@@ -156,6 +177,12 @@ class CypherExpressionBuilder {
       return parseExpression2WithPostfix(expr2Ctx);
     }
 
+    // Check for parenthesized expressions that may contain logical operators
+    // e.g., (true AND null), (a OR b), (NOT x)
+    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = findParenthesizedExpressionRecursive(ctx);
+    if (parenCtx != null)
+      return parseExpression(parenCtx.expression());
+
     // Use the shared text parsing logic
     return parseExpressionText(text);
   }
@@ -203,6 +230,10 @@ class CypherExpressionBuilder {
       final String parameterName = text.substring(1); // Remove the $ prefix
       return new ParameterExpression(parameterName, text);
     }
+
+    // Check for null literal explicitly (tryParseLiteral returns Java null for it)
+    if ("null".equalsIgnoreCase(text))
+      return new LiteralExpression(null, text);
 
     // Try to parse as literal FIRST (before checking for dots)
     // This prevents string literals like 'A.*' from being parsed as property access
@@ -305,8 +336,124 @@ class CypherExpressionBuilder {
   }
 
   // ============================================================================
+  // Logical Expression Parsing (three-valued logic for AND/OR/NOT/XOR)
+  // ============================================================================
+
+  /**
+   * Try to parse a logical expression (XOR, AND, NOT) from an Expression11 context.
+   * Returns null if no logical operator is found.
+   */
+  private Expression tryParseLogicalExpression(final Cypher25Parser.Expression11Context ctx) {
+    // expression11 = expression10 (XOR expression10)*
+    final List<Cypher25Parser.Expression10Context> expr10List = ctx.expression10();
+
+    if (expr10List.size() > 1) {
+      // XOR expression
+      Expression result = parseExpressionFromExpression10(expr10List.get(0));
+      for (int i = 1; i < expr10List.size(); i++) {
+        final Expression right = parseExpressionFromExpression10(expr10List.get(i));
+        result = new TernaryLogicalExpression(TernaryLogicalExpression.Operator.XOR, result, right);
+      }
+      return result;
+    }
+
+    if (expr10List.size() == 1) {
+      final Cypher25Parser.Expression10Context expr10 = expr10List.get(0);
+      // expression10 = expression9 (AND expression9)*
+      final List<Cypher25Parser.Expression9Context> expr9List = expr10.expression9();
+
+      if (expr9List.size() > 1) {
+        // AND expression
+        Expression result = parseExpressionFromExpression9(expr9List.get(0));
+        for (int i = 1; i < expr9List.size(); i++) {
+          final Expression right = parseExpressionFromExpression9(expr9List.get(i));
+          result = new TernaryLogicalExpression(TernaryLogicalExpression.Operator.AND, result, right);
+        }
+        return result;
+      }
+
+      if (expr9List.size() == 1) {
+        final Cypher25Parser.Expression9Context expr9 = expr9List.get(0);
+        // expression9 = NOT* expression8
+        if (expr9.NOT() != null && !expr9.NOT().isEmpty()) {
+          // NOT expression
+          final Expression inner = parseExpressionFromText(expr9.expression8());
+          Expression result = inner;
+          // Apply NOT for each NOT token (handles double negation)
+          for (int i = 0; i < expr9.NOT().size(); i++)
+            result = new TernaryLogicalExpression(TernaryLogicalExpression.Operator.NOT, result);
+          return result;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse an Expression11 context into an Expression.
+   */
+  private Expression parseExpressionFromExpression11(final Cypher25Parser.Expression11Context ctx) {
+    // Check for XOR/AND/NOT at this level
+    final Expression logicalExpr = tryParseLogicalExpression(ctx);
+    if (logicalExpr != null)
+      return logicalExpr;
+    // Fallback: parse as text
+    return parseExpressionFromText(ctx);
+  }
+
+  /**
+   * Parse an Expression10 context into an Expression.
+   */
+  private Expression parseExpressionFromExpression10(final Cypher25Parser.Expression10Context ctx) {
+    // expression10 = expression9 (AND expression9)*
+    final List<Cypher25Parser.Expression9Context> expr9List = ctx.expression9();
+    if (expr9List.size() > 1) {
+      Expression result = parseExpressionFromExpression9(expr9List.get(0));
+      for (int i = 1; i < expr9List.size(); i++) {
+        final Expression right = parseExpressionFromExpression9(expr9List.get(i));
+        result = new TernaryLogicalExpression(TernaryLogicalExpression.Operator.AND, result, right);
+      }
+      return result;
+    }
+    if (expr9List.size() == 1)
+      return parseExpressionFromExpression9(expr9List.get(0));
+    return parseExpressionFromText(ctx);
+  }
+
+  /**
+   * Parse an Expression9 context into an Expression.
+   */
+  private Expression parseExpressionFromExpression9(final Cypher25Parser.Expression9Context ctx) {
+    // expression9 = NOT* expression8
+    final boolean hasNot = ctx.NOT() != null && !ctx.NOT().isEmpty();
+    final Expression inner = parseExpressionFromText(ctx.expression8());
+    if (hasNot) {
+      Expression result = inner;
+      for (int i = 0; i < ctx.NOT().size(); i++)
+        result = new TernaryLogicalExpression(TernaryLogicalExpression.Operator.NOT, result);
+      return result;
+    }
+    return inner;
+  }
+
+  // ============================================================================
   // Recursive Find Methods
   // ============================================================================
+
+  /**
+   * Recursively find ParenthesizedExpressionContext in the parse tree.
+   */
+  Cypher25Parser.ParenthesizedExpressionContext findParenthesizedExpressionRecursive(final ParseTree node) {
+    if (node instanceof Cypher25Parser.ParenthesizedExpressionContext)
+      return (Cypher25Parser.ParenthesizedExpressionContext) node;
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ParenthesizedExpressionContext found = findParenthesizedExpressionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
 
   /**
    * Recursively find countStar context in the parse tree.
