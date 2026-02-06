@@ -458,6 +458,14 @@ public class CypherExecutionPlan {
             aggStep.setPrevious(currentStep);
             currentStep = aggStep;
           }
+
+          // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
+          if (withClause.getWhereClause() != null) {
+            final FilterPropertiesStep filterStep =
+                new FilterPropertiesStep(withClause.getWhereClause(), context);
+            filterStep.setPrevious(currentStep);
+            currentStep = filterStep;
+          }
         } else {
           // Regular WITH step (no aggregation)
           final WithStep withStep =
@@ -803,6 +811,14 @@ public class CypherExecutionPlan {
           aggStep.setPrevious(currentStep);
         }
         currentStep = aggStep;
+      }
+
+      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
+      if (withClause.getWhereClause() != null) {
+        final FilterPropertiesStep filterStep =
+            new FilterPropertiesStep(withClause.getWhereClause(), context);
+        filterStep.setPrevious(currentStep);
+        currentStep = filterStep;
       }
     } else {
       final WithStep withStep =
@@ -1407,6 +1423,16 @@ public class CypherExecutionPlan {
             aggStep.setPrevious(currentStep);
           }
           currentStep = aggStep;
+        }
+
+        // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
+        if (withClause.getWhereClause() != null) {
+          final FilterPropertiesStep filterStep =
+              new FilterPropertiesStep(withClause.getWhereClause(), context);
+          if (currentStep != null) {
+            filterStep.setPrevious(currentStep);
+          }
+          currentStep = filterStep;
         }
       } else {
         // Regular WITH step (no aggregation)
