@@ -520,6 +520,7 @@
                         <configuration>
                             <excludes>
                                 <exclude>com/arcadedb/graphql/parser/**/*</exclude>
+                                <exclude>com/arcadedb/query/sql/parser/*</exclude>
                                 <exclude>**/SqlParserTokenManager.*</exclude>
                                 <exclude>**/static/*</exclude>
                                 <exclude>**/*.bat</exclude>

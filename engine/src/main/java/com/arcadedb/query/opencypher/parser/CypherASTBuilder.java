@@ -202,6 +202,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       } else if (clauseCtx.foreachClause() != null) {
         final ForeachClause foreachClause = visitForeachClause(clauseCtx.foreachClause());
         clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.FOREACH, foreachClause, clauseOrder++));
+      } else if (clauseCtx.subqueryClause() != null) {
+        final SubqueryClause subqueryClause = visitSubqueryClause(clauseCtx.subqueryClause());
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.SUBQUERY, subqueryClause, clauseOrder++));
       }
     }
 
@@ -390,6 +393,29 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new CallClause(procedureName.toString(), arguments, yieldItems, yieldWhere, optional);
+  }
+
+  public SubqueryClause visitSubqueryClause(final Cypher25Parser.SubqueryClauseContext ctx) {
+    final boolean optional = ctx.OPTIONAL() != null;
+
+    // Parse scope variables: CALL (x, y) { ... }
+    List<String> scopeVariables = null;
+    if (ctx.subqueryScope() != null) {
+      final Cypher25Parser.SubqueryScopeContext scopeCtx = ctx.subqueryScope();
+      if (scopeCtx.TIMES() != null) {
+        // CALL (*) { ... } - import all variables
+        scopeVariables = List.of("*");
+      } else if (scopeCtx.variable() != null && !scopeCtx.variable().isEmpty()) {
+        scopeVariables = new ArrayList<>();
+        for (final Cypher25Parser.VariableContext varCtx : scopeCtx.variable())
+          scopeVariables.add(stripBackticks(varCtx.getText()));
+      }
+    }
+
+    // Parse the inner query
+    final CypherStatement innerStatement = (CypherStatement) visit(ctx.queryWithLocalDefinitions());
+
+    return new SubqueryClause(innerStatement, scopeVariables, optional);
   }
 
   @Override
