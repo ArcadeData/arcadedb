@@ -178,6 +178,57 @@ public class OpenCypherOrderBySkipLimitTest {
   }
 
   @Test
+  void orderByWithNullsAscending() {
+    // Issue #3335: In Cypher, null should be sorted to the end in ascending order
+    final ResultSet result = database.query("opencypher", "UNWIND [3, 1, null, 2] AS val RETURN val ORDER BY val");
+
+    assertThat((Object) result).isNotNull();
+    final List<Result> results = collectResults(result);
+
+    assertThat(results).hasSize(4);
+
+    // Ascending: non-null values first, then null at the end
+    assertThat((Long) results.get(0).getProperty("val")).isEqualTo(1);
+    assertThat((Long) results.get(1).getProperty("val")).isEqualTo(2);
+    assertThat((Long) results.get(2).getProperty("val")).isEqualTo(3);
+    assertThat((Object) results.get(3).getProperty("val")).isNull();
+  }
+
+  @Test
+  void orderByWithNullsDescending() {
+    // Issue #3335: In Cypher, null should be sorted to the beginning in descending order
+    final ResultSet result = database.query("opencypher", "UNWIND [3, 1, null, 2] AS val RETURN val ORDER BY val DESC");
+
+    assertThat((Object) result).isNotNull();
+    final List<Result> results = collectResults(result);
+
+    assertThat(results).hasSize(4);
+
+    // Descending: null first, then non-null values descending
+    assertThat((Object) results.get(0).getProperty("val")).isNull();
+    assertThat((Long) results.get(1).getProperty("val")).isEqualTo(3);
+    assertThat((Long) results.get(2).getProperty("val")).isEqualTo(2);
+    assertThat((Long) results.get(3).getProperty("val")).isEqualTo(1);
+  }
+
+  @Test
+  void orderByWithMultipleNulls() {
+    // Multiple nulls should be grouped together at the end in ascending order
+    final ResultSet result = database.query("opencypher", "UNWIND [null, 3, null, 1, 2] AS val RETURN val ORDER BY val");
+
+    assertThat((Object) result).isNotNull();
+    final List<Result> results = collectResults(result);
+
+    assertThat(results).hasSize(5);
+
+    assertThat((Long) results.get(0).getProperty("val")).isEqualTo(1);
+    assertThat((Long) results.get(1).getProperty("val")).isEqualTo(2);
+    assertThat((Long) results.get(2).getProperty("val")).isEqualTo(3);
+    assertThat((Object) results.get(3).getProperty("val")).isNull();
+    assertThat((Object) results.get(4).getProperty("val")).isNull();
+  }
+
+  @Test
   void limitLessThanResults() {
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n LIMIT 10");
 
