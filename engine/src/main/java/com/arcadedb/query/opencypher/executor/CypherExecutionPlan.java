@@ -27,6 +27,7 @@ import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
+import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
@@ -189,11 +190,15 @@ public class CypherExecutionPlan {
     // IMPORTANT: For write operations, we need to materialize the ResultSet immediately
     // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE/REMOVE
     // operations to actually execute, even when there's a RETURN clause.
+    final boolean hasForeach = statement.getClausesInOrder() != null &&
+                                statement.getClausesInOrder().stream()
+                                    .anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
     final boolean hasWriteOps = statement.getCreateClause() != null ||
                                  (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) ||
                                  (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) ||
                                  !statement.getRemoveClauses().isEmpty() ||
-                                 statement.getMergeClause() != null;
+                                 statement.getMergeClause() != null ||
+                                 hasForeach;
 
     if (hasWriteOps) {
       // Materialize the ResultSet to force write operation execution
@@ -721,6 +726,16 @@ public class CypherExecutionPlan {
             callStep.setPrevious(currentStep);
           }
           currentStep = callStep;
+          break;
+
+        case FOREACH:
+          final ForeachClause foreachClause = entry.getTypedClause();
+          final ForeachStep foreachStep =
+              new ForeachStep(foreachClause, context, functionFactory);
+          if (currentStep != null) {
+            foreachStep.setPrevious(currentStep);
+          }
+          currentStep = foreachStep;
           break;
       }
     }

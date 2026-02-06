@@ -199,6 +199,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final RemoveClause remove = visitRemoveClause(clauseCtx.removeClause());
         removeClauses.add(remove);
         clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.REMOVE, remove, clauseOrder++));
+      } else if (clauseCtx.foreachClause() != null) {
+        final ForeachClause foreachClause = visitForeachClause(clauseCtx.foreachClause());
+        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.FOREACH, foreachClause, clauseOrder++));
       }
     }
 
@@ -441,6 +444,39 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
     final String variable = stripBackticks(ctx.variable().getText());
     return new UnwindClause(listExpression, variable);
+  }
+
+  public ForeachClause visitForeachClause(final Cypher25Parser.ForeachClauseContext ctx) {
+    // Grammar: FOREACH LPAREN variable IN expression BAR clause+ RPAREN
+    final String variable = stripBackticks(ctx.variable().getText());
+    final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
+
+    // Parse inner clauses (CREATE, SET, DELETE, MERGE, FOREACH)
+    final List<ClauseEntry> innerClauses = new ArrayList<>();
+    int innerOrder = 0;
+    for (final Cypher25Parser.ClauseContext innerClauseCtx : ctx.clause()) {
+      if (innerClauseCtx.createClause() != null) {
+        final CreateClause create = visitCreateClause(innerClauseCtx.createClause());
+        innerClauses.add(new ClauseEntry(ClauseEntry.ClauseType.CREATE, create, innerOrder++));
+      } else if (innerClauseCtx.setClause() != null) {
+        final SetClause set = visitSetClause(innerClauseCtx.setClause());
+        innerClauses.add(new ClauseEntry(ClauseEntry.ClauseType.SET, set, innerOrder++));
+      } else if (innerClauseCtx.deleteClause() != null) {
+        final DeleteClause delete = visitDeleteClause(innerClauseCtx.deleteClause());
+        innerClauses.add(new ClauseEntry(ClauseEntry.ClauseType.DELETE, delete, innerOrder++));
+      } else if (innerClauseCtx.mergeClause() != null) {
+        final MergeClause merge = visitMergeClause(innerClauseCtx.mergeClause());
+        innerClauses.add(new ClauseEntry(ClauseEntry.ClauseType.MERGE, merge, innerOrder++));
+      } else if (innerClauseCtx.removeClause() != null) {
+        final RemoveClause remove = visitRemoveClause(innerClauseCtx.removeClause());
+        innerClauses.add(new ClauseEntry(ClauseEntry.ClauseType.REMOVE, remove, innerOrder++));
+      } else if (innerClauseCtx.foreachClause() != null) {
+        final ForeachClause nested = visitForeachClause(innerClauseCtx.foreachClause());
+        innerClauses.add(new ClauseEntry(ClauseEntry.ClauseType.FOREACH, nested, innerOrder++));
+      }
+    }
+
+    return new ForeachClause(variable, listExpression, innerClauses);
   }
 
   @Override

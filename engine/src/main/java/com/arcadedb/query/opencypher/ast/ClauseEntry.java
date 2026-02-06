@@ -38,7 +38,8 @@ public class ClauseEntry {
     REMOVE,
     DELETE,
     RETURN,
-    CALL
+    CALL,
+    FOREACH
   }
 
   private final ClauseType type;
