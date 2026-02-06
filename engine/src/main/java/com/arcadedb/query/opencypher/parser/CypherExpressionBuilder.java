@@ -115,6 +115,12 @@ class CypherExpressionBuilder {
       return parseListComprehension(listCompCtx);
     }
 
+    // Check for list predicate expressions: all(), any(), none(), single()
+    final Cypher25Parser.ListItemsPredicateContext listPredCtx = findListItemsPredicateRecursive(ctx);
+    if (listPredCtx != null) {
+      return parseListItemsPredicate(listPredCtx);
+    }
+
     // Check for comparison expressions (before function invocations)
     // This is critical for expressions like ID(a) = row.source_id
     // where we need to recognize the comparison operator at the top level
@@ -765,6 +771,25 @@ class CypherExpressionBuilder {
   }
 
   /**
+   * Recursively find ListItemsPredicateContext in the parse tree.
+   */
+  Cypher25Parser.ListItemsPredicateContext findListItemsPredicateRecursive(final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.ListItemsPredicateContext)
+      return (Cypher25Parser.ListItemsPredicateContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.ListItemsPredicateContext found = findListItemsPredicateRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
    * Recursively find ShortestPathExpressionContext in the parse tree.
    */
   Cypher25Parser.ShortestPathExpressionContext findShortestPathExpressionRecursive(
@@ -1299,6 +1324,38 @@ class CypherExpressionBuilder {
       mapExpression = parseExpression(ctx.barExp);
 
     return new ListComprehensionExpression(variable, listExpression, whereExpression, mapExpression, ctx.getText());
+  }
+
+  // ============================================================================
+  // List Predicate Parsing
+  // ============================================================================
+
+  /**
+   * Parse a list items predicate into a ListPredicateExpression.
+   * Syntax: (ALL|ANY|NONE|SINGLE)(variable IN listExpression WHERE filterExpression)
+   * Examples: all(x IN [1,2,3] WHERE x > 0), any(x IN list WHERE x = 4)
+   */
+  ListPredicateExpression parseListItemsPredicate(final Cypher25Parser.ListItemsPredicateContext ctx) {
+    final ListPredicateExpression.PredicateType predicateType;
+    if (ctx.ALL() != null)
+      predicateType = ListPredicateExpression.PredicateType.ALL;
+    else if (ctx.ANY() != null)
+      predicateType = ListPredicateExpression.PredicateType.ANY;
+    else if (ctx.NONE() != null)
+      predicateType = ListPredicateExpression.PredicateType.NONE;
+    else if (ctx.SINGLE() != null)
+      predicateType = ListPredicateExpression.PredicateType.SINGLE;
+    else
+      throw new IllegalStateException("Unknown list predicate type: " + ctx.getText());
+
+    final String variable = ctx.variable().getText();
+    final Expression listExpression = parseExpression(ctx.inExp);
+
+    Expression whereExpression = null;
+    if (ctx.whereExp != null)
+      whereExpression = parseExpression(ctx.whereExp);
+
+    return new ListPredicateExpression(predicateType, variable, listExpression, whereExpression, ctx.getText());
   }
 
   // ============================================================================
