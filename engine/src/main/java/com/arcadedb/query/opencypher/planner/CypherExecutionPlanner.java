@@ -166,6 +166,11 @@ public class CypherExecutionPlanner {
       }
     }
 
+    // Disable optimizer for FOREACH queries (FOREACH contains write operations)
+    if (statement.getClausesInOrder() != null &&
+        statement.getClausesInOrder().stream().anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH))
+      return false;
+
     // Phase 4: Conservative rollout - only optimize read-only queries
     // Exclude queries with write operations until Phase 5
     if (statement.hasCreate() || statement.hasMerge() || statement.hasDelete()) {
