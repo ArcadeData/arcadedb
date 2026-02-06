@@ -183,6 +183,13 @@ class CypherExpressionBuilder {
       return parseIsNullExpression(nullCtx);
     }
 
+    // Check for string matching expressions (STARTS WITH, ENDS WITH, CONTAINS, =~, IN)
+    // These are part of comparisonExpression6 inside expression7
+    final Cypher25Parser.Expression7Context expr7WithComp = findExpression7WithComparisonRecursive(ctx);
+    if (expr7WithComp != null) {
+      return parseStringComparisonExpression(expr7WithComp);
+    }
+
     // Check for postfix expressions (property access, list indexing, slicing)
     // This must be checked BEFORE falling back to text parsing
     final Cypher25Parser.Expression2Context expr2Ctx = findExpression2Recursive(ctx);
@@ -655,6 +662,29 @@ class CypherExpressionBuilder {
       if (found != null) {
         return found;
       }
+    }
+
+    return null;
+  }
+
+  /**
+   * Recursively find Expression7Context that has a comparisonExpression6 child
+   * (STARTS WITH, ENDS WITH, CONTAINS, =~, IN, label check).
+   */
+  Cypher25Parser.Expression7Context findExpression7WithComparisonRecursive(final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.Expression7Context) {
+      final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) node;
+      if (expr7.comparisonExpression6() != null)
+        return expr7;
+    }
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.Expression7Context found = findExpression7WithComparisonRecursive(node.getChild(i));
+      if (found != null)
+        return found;
     }
 
     return null;
@@ -1177,6 +1207,49 @@ class CypherExpressionBuilder {
       final IsNullExpression isNullExpr = new IsNullExpression(leftExpr, isNot);
       // Wrap BooleanExpression as Expression
       return new BooleanWrapperExpression(isNullExpr);
+    }
+
+    // Fallback: parse as text
+    return parseExpressionText(ctx.getText());
+  }
+
+  /**
+   * Parse string/list comparison from Expression7Context that has a comparisonExpression6.
+   * Handles STARTS WITH, ENDS WITH, CONTAINS, =~ (regex), and IN operators
+   * when they appear in expression positions (e.g., RETURN expressions).
+   */
+  Expression parseStringComparisonExpression(final Cypher25Parser.Expression7Context ctx) {
+    final Cypher25Parser.ComparisonExpression6Context compCtx = ctx.comparisonExpression6();
+    final Expression leftExpr = parseExpressionFromText(ctx.expression6());
+
+    if (compCtx instanceof Cypher25Parser.StringAndListComparisonContext) {
+      final Cypher25Parser.StringAndListComparisonContext strCtx =
+          (Cypher25Parser.StringAndListComparisonContext) compCtx;
+
+      if (strCtx.STARTS() != null && strCtx.WITH() != null) {
+        final Expression pattern = parseExpressionFromText(strCtx.expression6());
+        return new BooleanWrapperExpression(new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.STARTS_WITH));
+      }
+
+      if (strCtx.ENDS() != null && strCtx.WITH() != null) {
+        final Expression pattern = parseExpressionFromText(strCtx.expression6());
+        return new BooleanWrapperExpression(new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.ENDS_WITH));
+      }
+
+      if (strCtx.CONTAINS() != null) {
+        final Expression pattern = parseExpressionFromText(strCtx.expression6());
+        return new BooleanWrapperExpression(new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.CONTAINS));
+      }
+
+      if (strCtx.REGEQ() != null) {
+        final Expression pattern = parseExpressionFromText(strCtx.expression6());
+        return new BooleanWrapperExpression(new RegexExpression(leftExpr, pattern));
+      }
+
+      if (strCtx.IN() != null) {
+        final List<Expression> listItems = parseListExpression(strCtx.expression6());
+        return new BooleanWrapperExpression(new InExpression(leftExpr, listItems, false));
+      }
     }
 
     // Fallback: parse as text
