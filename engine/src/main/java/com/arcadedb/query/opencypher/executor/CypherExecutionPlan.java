@@ -41,6 +41,7 @@ import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
+import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
 import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
@@ -166,9 +167,12 @@ public class CypherExecutionPlan {
     // before UNWIND, which breaks queries like:
     //   UNWIND $batch as row MATCH (a) WHERE ID(a) = row.source_id
     // In this case, the WHERE filter needs to run AFTER UNWIND to access 'row'.
+    // Also disable optimizer when CALL subqueries are present, since the optimizer path
+    // doesn't handle SUBQUERY steps.
     final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
+    final boolean hasSubquery = hasSubqueryClause();
 
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch) {
+    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasSubquery) {
       // Use optimizer - execute physical operators directly
       // Note: For Phase 4, we only optimize MATCH patterns
       // RETURN, ORDER BY, LIMIT are still handled by execution steps
@@ -214,6 +218,55 @@ public class CypherExecutionPlan {
     }
 
     return resultSet;
+  }
+
+  /**
+   * Executes the query plan seeded with an initial input row.
+   * Used by CALL subqueries to inject outer scope variables into the inner query.
+   * The seed row provides variables that the inner query's WITH clause can import.
+   *
+   * @param seedRow the initial row providing outer scope variables
+   * @return result set from the inner query execution
+   */
+  public ResultSet executeWithSeedRow(final Result seedRow) {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+
+    // Create a seed step that returns the seed row
+    final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
+      private boolean consumed = false;
+
+      @Override
+      public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+        if (consumed)
+          return new IteratorResultSet(List.<ResultInternal>of().iterator());
+        consumed = true;
+        // Copy the seed row into a ResultInternal
+        final ResultInternal seedResult = new ResultInternal();
+        for (final String prop : seedRow.getPropertyNames())
+          seedResult.setProperty(prop, seedRow.getProperty(prop));
+        return new IteratorResultSet(List.of(seedResult).iterator());
+      }
+
+      @Override
+      public String prettyPrint(final int depth, final int indent) {
+        return "  ".repeat(Math.max(0, depth * indent)) + "+ SUBQUERY SEED ROW";
+      }
+    };
+
+    // Build execution steps with the seed as the initial step
+    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    final AbstractExecutionStep rootStep;
+    if (clausesInOrder != null && !clausesInOrder.isEmpty())
+      rootStep = buildExecutionStepsWithOrder(context, clausesInOrder, seedStep);
+    else
+      rootStep = seedStep; // Fallback: just return the seed
+
+    if (rootStep == null)
+      return new IteratorResultSet(new ArrayList<ResultInternal>().iterator());
+
+    return rootStep.syncPull(context, 100);
   }
 
   /**
@@ -594,6 +647,23 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Checks if the query contains a CALL subquery clause.
+   * The optimizer path doesn't handle SUBQUERY steps, so we fall back to the
+   * non-optimized execution path when subqueries are present.
+   */
+  private boolean hasSubqueryClause() {
+    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    if (clausesInOrder == null || clausesInOrder.isEmpty())
+      return false;
+
+    for (final ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() == ClauseEntry.ClauseType.SUBQUERY)
+        return true;
+    }
+    return false;
+  }
+
+  /**
    * Builds the execution step chain from the parsed statement.
    */
   private AbstractExecutionStep buildExecutionSteps(final CommandContext context) {
@@ -612,7 +682,17 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
       final List<ClauseEntry> clausesInOrder) {
-    AbstractExecutionStep currentStep = null;
+    return buildExecutionStepsWithOrder(context, clausesInOrder, null);
+  }
+
+  /**
+   * Builds execution steps respecting clause order, optionally seeded with an initial step.
+   * When initialStep is provided (e.g., for CALL subqueries), it serves as the starting point
+   * of the step chain, providing input rows to the first clause.
+   */
+  private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
+      final List<ClauseEntry> clausesInOrder, final AbstractExecutionStep initialStep) {
+    AbstractExecutionStep currentStep = initialStep;
 
     // Get function factory from evaluator for steps that need it
     final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
@@ -629,7 +709,8 @@ public class CypherExecutionPlan {
 
     // Special case: RETURN without MATCH (standalone expressions)
     // E.g., RETURN abs(-42), RETURN 1+1
-    if (statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null &&
+    // Skip this when a seed step is provided (e.g., CALL subquery) since the seed provides input
+    if (initialStep == null && statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null &&
         clausesInOrder.stream().noneMatch(c -> c.getType() == ClauseEntry.ClauseType.UNWIND)) {
       // Create a dummy row to evaluate expressions against
       final ResultInternal dummyRow = new ResultInternal();
@@ -751,6 +832,16 @@ public class CypherExecutionPlan {
             foreachStep.setPrevious(currentStep);
           }
           currentStep = foreachStep;
+          break;
+
+        case SUBQUERY:
+          final SubqueryClause subqueryClause = entry.getTypedClause();
+          final SubqueryStep subqueryStep =
+              new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
+          if (currentStep != null) {
+            subqueryStep.setPrevious(currentStep);
+          }
+          currentStep = subqueryStep;
           break;
       }
     }

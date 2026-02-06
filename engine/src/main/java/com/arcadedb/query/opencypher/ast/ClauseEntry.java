@@ -39,7 +39,8 @@ public class ClauseEntry {
     DELETE,
     RETURN,
     CALL,
-    FOREACH
+    FOREACH,
+    SUBQUERY
   }
 
   private final ClauseType type;
