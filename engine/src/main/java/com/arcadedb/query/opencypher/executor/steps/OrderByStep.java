@@ -141,6 +141,7 @@ public class OrderByStep extends AbstractExecutionStep {
 
       /**
        * Compares two values for sorting.
+       * In Cypher, null is considered the largest value: nulls sort last in ASC, first in DESC.
        */
       @SuppressWarnings({"unchecked", "rawtypes"})
       private int compareValues(final Object v1, final Object v2) {
@@ -148,10 +149,10 @@ public class OrderByStep extends AbstractExecutionStep {
           return 0;
         }
         if (v1 == null) {
-          return -1; // Nulls first
+          return 1; // null is the largest value
         }
         if (v2 == null) {
-          return 1;
+          return -1;
         }
 
         // Both non-null
