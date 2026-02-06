@@ -1,0 +1,5 @@
+# OpenCypher TCK Expected Failures
+# Lines starting with # are comments.
+# Each non-empty, non-comment line is a scenario name substring.
+# Scenarios matching any pattern here will be skipped (via JUnit Assumptions).
+# Remove entries as failures are fixed to ensure no regressions.

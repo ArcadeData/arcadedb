@@ -45,6 +45,8 @@
         <buildnumber-maven-plugin.version>3.3.0</buildnumber-maven-plugin.version>
         <antlr4.version>4.9.1</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
+        <cucumber.version>7.22.1</cucumber.version>
+        <junit-platform-suite.version>6.0.2</junit-platform-suite.version>
     </properties>
 
     <build>
@@ -90,6 +92,21 @@
                         </configuration>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>**/tck/OpenCypherTCKRunner.java</exclude>
+                    </excludes>
+                    <!-- Exclude Cucumber engine from normal test runs to prevent
+                         auto-discovery of TCK feature files. Run TCK explicitly with:
+                         mvn test -Dtest=OpenCypherTCKRunner -DfailIfNoTests=false -->
+                    <excludeJUnit5Engines>
+                        <excludeJUnit5Engine>cucumber</excludeJUnit5Engine>
+                    </excludeJUnit5Engines>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -185,6 +202,32 @@
             <groupId>org.openjdk.jmh</groupId>
             <artifactId>jmh-generator-annprocess</artifactId>
             <version>1.37</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Cucumber for OpenCypher TCK -->
+        <dependency>
+            <groupId>io.cucumber</groupId>
+            <artifactId>cucumber-java</artifactId>
+            <version>${cucumber.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.cucumber</groupId>
+            <artifactId>cucumber-junit-platform-engine</artifactId>
+            <version>${cucumber.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.junit.platform</groupId>
+                    <artifactId>junit-platform-engine</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-suite</artifactId>
+            <version>${junit-platform-suite.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
