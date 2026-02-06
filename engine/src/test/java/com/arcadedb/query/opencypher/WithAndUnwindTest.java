@@ -279,6 +279,60 @@ class WithAndUnwindTest {
   }
 
   @Test
+  @Order(16)
+  void withPostAggregationFiltering_Issue3338() {
+    // Regression test for https://github.com/ArcadeData/arcadedb/issues/3338
+    // Post-aggregation WHERE filtering should correctly filter grouped results
+    final ResultSet result = database.query("opencypher",
+        "UNWIND [1, 1, 2, 3] AS n WITH n, count(*) AS c WHERE c > 1 RETURN n");
+
+    assertThat(result.hasNext()).as("Should have at least one result").isTrue();
+    final var row = result.next();
+    assertThat(((Number) row.getProperty("n")).intValue()).as("Only n=1 appears twice (count=2 > 1)").isEqualTo(1);
+    assertThat(result.hasNext()).as("Should have exactly one result").isFalse();
+    result.close();
+  }
+
+  @Test
+  @Order(17)
+  void withPostAggregationFilteringNoMatch_Issue3338() {
+    // Same issue - when no groups match the filter, result should be empty
+    final ResultSet result = database.query("opencypher",
+        "UNWIND [1, 2, 3] AS n WITH n, count(*) AS c WHERE c > 1 RETURN n");
+
+    assertThat(result.hasNext()).as("No value appears more than once, so no results").isFalse();
+    result.close();
+  }
+
+  @Test
+  @Order(18)
+  void withPostAggregationFilteringWithMatch_Issue3338() {
+    // Test post-aggregation filtering with MATCH source (uses a different code path)
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WITH p.age AS age, count(*) AS c WHERE c >= 1 RETURN age ORDER BY age");
+
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+    result.close();
+
+    assertThat(count).as("Each age appears once, all counts are 1, all should pass c >= 1").isEqualTo(4);
+  }
+
+  @Test
+  @Order(19)
+  void withPureAggregationPostFiltering_Issue3338() {
+    // Test pure aggregation (no GROUP BY) with WHERE after WITH
+    final ResultSet result = database.query("opencypher",
+        "MATCH (p:Person) WITH count(p) AS c WHERE c > 10 RETURN c");
+
+    assertThat(result.hasNext()).as("4 people, count=4, 4 > 10 is false so no results").isFalse();
+    result.close();
+  }
+
+  @Test
   @Order(22)
   void withChainedMatch() {
     // Chaining MATCH after WITH is not yet fully implemented
