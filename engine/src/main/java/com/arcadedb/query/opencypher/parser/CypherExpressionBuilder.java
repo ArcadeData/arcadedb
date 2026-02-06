@@ -107,6 +107,13 @@ class CypherExpressionBuilder {
       return parseReduceExpression(reduceCtx);
     }
 
+    // Check for pattern comprehensions BEFORE list comprehensions
+    // Pattern comprehensions use graph patterns: [(a)-->(friend) WHERE ... | friend.name]
+    final Cypher25Parser.PatternComprehensionContext patternCompCtx = findPatternComprehensionRecursive(ctx);
+    if (patternCompCtx != null) {
+      return parsePatternComprehension(patternCompCtx);
+    }
+
     // Check for list comprehensions BEFORE comparison expressions
     // List comprehensions can contain comparisons in WHERE clause, e.g., [x IN list WHERE x > 2 | x * 10]
     // If we check comparisons first, the inner comparison gets matched instead
@@ -771,6 +778,25 @@ class CypherExpressionBuilder {
   }
 
   /**
+   * Recursively find PatternComprehensionContext in the parse tree.
+   */
+  Cypher25Parser.PatternComprehensionContext findPatternComprehensionRecursive(final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.PatternComprehensionContext)
+      return (Cypher25Parser.PatternComprehensionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.PatternComprehensionContext found = findPatternComprehensionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
    * Recursively find ListItemsPredicateContext in the parse tree.
    */
   Cypher25Parser.ListItemsPredicateContext findListItemsPredicateRecursive(final ParseTree node) {
@@ -1324,6 +1350,55 @@ class CypherExpressionBuilder {
       mapExpression = parseExpression(ctx.barExp);
 
     return new ListComprehensionExpression(variable, listExpression, whereExpression, mapExpression, ctx.getText());
+  }
+
+  // ============================================================================
+  // Pattern Comprehension Parsing
+  // ============================================================================
+
+  /**
+   * Parse a pattern comprehension into a PatternComprehensionExpression.
+   * Syntax: [(variable =)? pathPattern (WHERE filterExpression)? | mapExpression]
+   * Examples: [(a)-->(friend) WHERE friend.name <> 'B' | friend.name]
+   */
+  PatternComprehensionExpression parsePatternComprehension(final Cypher25Parser.PatternComprehensionContext ctx) {
+    // Optional path variable
+    String pathVariable = null;
+    if (ctx.variable() != null)
+      pathVariable = ctx.variable().getText();
+
+    // Parse the path pattern
+    final PathPattern pathPattern = parsePathPatternNonEmpty(ctx.pathPatternNonEmpty());
+
+    // Optional WHERE clause
+    Expression whereExpression = null;
+    if (ctx.whereExp != null)
+      whereExpression = parseExpression(ctx.whereExp);
+
+    // Required mapping expression after |
+    final Expression mapExpression = parseExpression(ctx.barExp);
+
+    return new PatternComprehensionExpression(pathVariable, pathPattern, whereExpression, mapExpression, ctx.getText());
+  }
+
+  /**
+   * Parse a pathPatternNonEmpty into a PathPattern.
+   * Grammar: nodePattern (relationshipPattern nodePattern)+
+   */
+  private PathPattern parsePathPatternNonEmpty(final Cypher25Parser.PathPatternNonEmptyContext ctx) {
+    final List<NodePattern> nodes = new ArrayList<>();
+    final List<RelationshipPattern> relationships = new ArrayList<>();
+
+    // First node
+    nodes.add(parseNodePattern(ctx.nodePattern(0)));
+
+    // Relationships and subsequent nodes
+    for (int i = 0; i < ctx.relationshipPattern().size(); i++) {
+      relationships.add(parseRelationshipPattern(ctx.relationshipPattern(i)));
+      nodes.add(parseNodePattern(ctx.nodePattern(i + 1)));
+    }
+
+    return new PathPattern(nodes, relationships);
   }
 
   // ============================================================================
