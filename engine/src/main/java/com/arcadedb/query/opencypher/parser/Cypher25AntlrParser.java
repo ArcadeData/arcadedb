@@ -26,6 +26,7 @@ import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.ParseCancellationException;
 
 /**
@@ -67,6 +68,13 @@ public class Cypher25AntlrParser {
 
       // Parse the statement
       final Cypher25Parser.StatementContext statementContext = parser.statement();
+
+      // Ensure all input was consumed (no trailing tokens)
+      final Token nextToken = parser.getTokenStream().LT(1);
+      if (nextToken.getType() != Token.EOF) {
+        throw new CommandParsingException(
+            String.format("Unexpected input '%s' at position %d", nextToken.getText(), nextToken.getCharPositionInLine()));
+      }
 
       // Build AST using visitor
       final CypherASTBuilder astBuilder = new CypherASTBuilder();
