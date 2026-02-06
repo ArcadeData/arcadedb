@@ -171,7 +171,10 @@ public class CypherFunctionFactory {
     final String sqlFunctionName = cypherToSqlMapping.getOrDefault(functionName, functionName);
     if (sqlFunctionFactory.hasFunction(sqlFunctionName)) {
       final SQLFunction sqlFunction = sqlFunctionFactory.getFunctionInstance(sqlFunctionName);
-      return new SQLFunctionBridge(sqlFunction, functionName);
+      final SQLFunctionBridge bridge = new SQLFunctionBridge(sqlFunction, functionName);
+      if (distinct && bridge.aggregateResults())
+        return new DistinctAggregationWrapper(bridge);
+      return bridge;
     }
 
     throw new CommandExecutionException("Unknown function: " + cypherFunctionName);
@@ -1003,6 +1006,41 @@ public class CypherFunctionFactory {
     @Override
     public Object getAggregatedResult() {
       return sqlFunction.getResult();
+    }
+  }
+
+  /**
+   * Wrapper that applies DISTINCT semantics to an aggregation function.
+   * Tracks seen argument values and only delegates to the wrapped function for unique values.
+   */
+  private static class DistinctAggregationWrapper implements StatelessFunction {
+    private final StatelessFunction delegate;
+    private final Set<List<Object>> seenValues = new HashSet<>();
+
+    DistinctAggregationWrapper(final StatelessFunction delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public String getName() {
+      return delegate.getName();
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (!seenValues.add(List.of(args)))
+        return null;
+      return delegate.execute(args, context);
+    }
+
+    @Override
+    public boolean aggregateResults() {
+      return true;
+    }
+
+    @Override
+    public Object getAggregatedResult() {
+      return delegate.getAggregatedResult();
     }
   }
 }
