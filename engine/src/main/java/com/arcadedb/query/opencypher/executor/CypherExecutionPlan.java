@@ -206,6 +206,9 @@ public class CypherExecutionPlan {
       while (resultSet.hasNext()) {
         materializedResults.add((ResultInternal) resultSet.next());
       }
+      // If no RETURN clause, return empty results (write side effects still happened)
+      if (statement.getReturnClause() == null)
+        return new IteratorResultSet(Collections.<Result>emptyList().iterator());
       // Return the materialized results
       return new IteratorResultSet(materializedResults.iterator());
     }

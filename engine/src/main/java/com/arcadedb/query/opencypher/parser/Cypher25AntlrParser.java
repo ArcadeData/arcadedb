@@ -80,6 +80,8 @@ public class Cypher25AntlrParser {
       final CypherASTBuilder astBuilder = new CypherASTBuilder();
       final CypherStatement statement = astBuilder.visitStatement(statementContext);
 
+      CypherSemanticValidator.validate(statement);
+
       return statement;
 
     } catch (final RecognitionException | ParseCancellationException e) {
