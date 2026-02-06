@@ -230,7 +230,7 @@ public class OpenCypherRelationshipTest {
     assertThat(rel2.isVariableLength()).isTrue();
 
     final RelationshipPattern rel3 = new RelationshipPattern("r", null, Direction.OUT, null, 0, null);
-    assertThat(rel3.getEffectiveMinHops()).isEqualTo(1);
+    assertThat(rel3.getEffectiveMinHops()).isEqualTo(0);
     assertThat(rel3.getEffectiveMaxHops()).isEqualTo(Integer.MAX_VALUE);
     assertThat(rel3.isVariableLength()).isTrue();
   }

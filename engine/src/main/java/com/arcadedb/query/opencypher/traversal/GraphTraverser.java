@@ -53,8 +53,8 @@ public abstract class GraphTraverser {
       final boolean trackPaths, final boolean detectCycles) {
     this.direction = direction != null ? direction : Direction.BOTH;
     this.relationshipTypes = relationshipTypes;
-    this.minHops = Math.max(1, minHops);
-    this.maxHops = maxHops > 0 ? maxHops : Integer.MAX_VALUE;
+    this.minHops = Math.max(0, minHops);
+    this.maxHops = maxHops >= 0 ? maxHops : Integer.MAX_VALUE;
     this.trackPaths = trackPaths;
     this.detectCycles = detectCycles;
 

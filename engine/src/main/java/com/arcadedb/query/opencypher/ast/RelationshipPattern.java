@@ -138,12 +138,12 @@ public class RelationshipPattern implements PatternElement {
   /**
    * Returns the effective minimum hops (default 1 if not specified).
    *
-   * @return minimum hops (at least 1)
+   * @return minimum hops (at least 0)
    */
   public int getEffectiveMinHops() {
     if (minHops == null)
       return 1;
-    return Math.max(1, minHops);
+    return Math.max(0, minHops);
   }
 
   /**
