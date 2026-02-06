@@ -215,7 +215,8 @@ function exportSettings() {
 
   $("#exportContent").text(JSON.stringify(globalGraphSettings, null, 2));
 
-  $("#popupClipboard").on("click", async function() {
+  // Use .off() first to prevent multiple bindings if exportSettings is called multiple times
+  $("#popupClipboard").off("click").on("click", async function() {
     const text = $("#exportContent").val() || $("#exportContent").text();
     try {
       await navigator.clipboard.writeText(text);
@@ -226,7 +227,7 @@ function exportSettings() {
     }
   });
 
-  $("#downloadFile").on("click", function () {
+  $("#downloadFile").off("click").on("click", function () {
     var jsonBlob = new Blob([$("#exportContent").val()], { type: "application/javascript;charset=utf-8" });
     saveAs(jsonBlob, "arcadedb-studio-settings.json");
     $("#popup").modal("hide");

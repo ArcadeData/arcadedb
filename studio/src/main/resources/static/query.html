@@ -428,7 +428,8 @@
     });
 
     // Native Clipboard API replacement for ClipboardJS
-    $("#jsonToClipboard").on("click", async function(e) {
+    // Use .off() first to prevent multiple bindings if initQuery is called multiple times
+    $("#jsonToClipboard").off("click").on("click", async function(e) {
       e.preventDefault();
       const text = $("#resultJson").val() || $("#resultJson").text();
       try {

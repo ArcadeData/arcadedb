@@ -29,7 +29,6 @@ import 'codemirror/lib/codemirror.css';
 import 'codemirror/theme/neo.css';
 import '@fortawesome/fontawesome-free/css/all.min.css';
 import 'sweetalert2/dist/sweetalert2.min.css';
-import 'notyf/notyf.min.css';
 import 'apexcharts/dist/apexcharts.css';
 
 // Import JavaScript dependencies
@@ -48,12 +47,6 @@ import 'datatables.net-select-bs5';
 
 import Swal from 'sweetalert2';
 window.Swal = Swal;
-
-import { Notyf } from 'notyf';
-window.Notyf = Notyf;
-
-import ClipboardJS from 'clipboard';
-window.ClipboardJS = ClipboardJS;
 
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
