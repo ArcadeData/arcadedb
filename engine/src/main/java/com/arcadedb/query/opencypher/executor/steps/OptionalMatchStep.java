@@ -43,20 +43,32 @@ import java.util.Set;
  */
 public class OptionalMatchStep extends AbstractExecutionStep {
   private final AbstractExecutionStep matchChainStart;
+  private final AbstractExecutionStep matchChainEnd;
   private final Set<String> variableNames;
 
   /**
    * Creates an optional match step.
    *
-   * @param matchChainStart first step in the optional match chain
+   * @param matchChainStart first step in the optional match chain (where input is injected)
+   * @param matchChainEnd   last step in the optional match chain (where execution starts)
    * @param variableNames   names of variables that should be set to NULL if no match
    * @param context         command context
    */
-  public OptionalMatchStep(final AbstractExecutionStep matchChainStart, final Set<String> variableNames,
-      final CommandContext context) {
+  public OptionalMatchStep(final AbstractExecutionStep matchChainStart, final AbstractExecutionStep matchChainEnd,
+      final Set<String> variableNames, final CommandContext context) {
     super(context);
     this.matchChainStart = matchChainStart;
+    this.matchChainEnd = matchChainEnd;
     this.variableNames = variableNames;
+  }
+
+  /**
+   * Legacy constructor for backward compatibility.
+   * Uses matchChainStart as both start and end.
+   */
+  public OptionalMatchStep(final AbstractExecutionStep matchChainStart, final Set<String> variableNames,
+      final CommandContext context) {
+    this(matchChainStart, matchChainStart, variableNames, context);
   }
 
   @Override
@@ -110,7 +122,8 @@ public class OptionalMatchStep extends AbstractExecutionStep {
             matchChainStart.setPrevious(singleRowInput);
 
             // Execute the match chain with this input
-            final ResultSet matchResults = matchChainStart.syncPull(context, 100);
+            // Call syncPull on the END of the chain to execute the full chain
+            final ResultSet matchResults = matchChainEnd.syncPull(context, 100);
 
             // Collect all matches for this input
             boolean foundMatch = false;
@@ -142,7 +155,8 @@ public class OptionalMatchStep extends AbstractExecutionStep {
           // No input: standalone OPTIONAL MATCH
           // Execute match chain without input
           matchChainStart.setPrevious(null);
-          final ResultSet matchResults = matchChainStart.syncPull(context, nRecords);
+          // Call syncPull on the END of the chain to execute the full chain
+          final ResultSet matchResults = matchChainEnd.syncPull(context, nRecords);
 
           // Collect matches
           boolean foundAnyMatch = false;
@@ -212,7 +226,8 @@ public class OptionalMatchStep extends AbstractExecutionStep {
       builder.append(" (").append(getCostFormatted()).append(")");
     }
     builder.append("\n");
-    builder.append(matchChainStart.prettyPrint(depth + 1, indent));
+    // Print the full chain starting from the end (which will recursively print previous steps)
+    builder.append(matchChainEnd.prettyPrint(depth + 1, indent));
     return builder.toString();
   }
 

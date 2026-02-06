@@ -1037,8 +1037,10 @@ public class CypherExecutionPlan {
           } else {
             // Pass target node pattern for label filtering and bound variables
             // for identity checking on already-bound target variables
+            // Create a defensive copy of boundVariables to ensure it's not modified after the step is created
+            final Set<String> boundVariablesCopy = new HashSet<>(boundVariables);
             nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
-                targetNode, boundVariables, context);
+                targetNode, boundVariablesCopy, context);
           }
 
           // Update source for next hop in multi-hop patterns
@@ -1076,8 +1078,10 @@ public class CypherExecutionPlan {
 
     // Wrap in OptionalMatchStep if this is an OPTIONAL MATCH
     if (isOptional && matchChainStart != null) {
+      // Pass the LAST step of the match chain (currentStep) to execute the full chain
+      // matchChainStart is used to inject the input row at the beginning of the chain
       final OptionalMatchStep optionalStep =
-          new OptionalMatchStep(matchChainStart, matchVariables, context);
+          new OptionalMatchStep(matchChainStart, currentStep, matchVariables, context);
 
       if (stepBeforeMatch != null) {
         optionalStep.setPrevious(stepBeforeMatch);
