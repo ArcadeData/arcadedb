@@ -1103,7 +1103,7 @@ public class CypherExecutionPlan {
     // Wrap in OptionalMatchStep if this is an OPTIONAL MATCH
     if (isOptional && matchChainStart != null) {
       final OptionalMatchStep optionalStep =
-          new OptionalMatchStep(matchChainStart, matchVariables, context);
+          new OptionalMatchStep(matchChainStart, currentStep, matchVariables, context);
 
       if (stepBeforeMatch != null) {
         optionalStep.setPrevious(stepBeforeMatch);
@@ -1396,10 +1396,10 @@ public class CypherExecutionPlan {
           // Wrap in OptionalMatchStep if this is an OPTIONAL MATCH
           if (isOptional && matchChainStart != null) {
             // We built a separate match chain - wrap it in OptionalMatchStep
-            // Pass matchChainStart (first step) not currentStep (last step)
-            // because OptionalMatchStep needs to feed input into the start of the chain
+            // Pass matchChainStart (first step) for feeding input and currentStep (last step)
+            // for pulling results through the entire chain including any filter steps
             final OptionalMatchStep optionalStep =
-                new OptionalMatchStep(matchChainStart, matchVariables, context);
+                new OptionalMatchStep(matchChainStart, currentStep, matchVariables, context);
 
             // OptionalMatchStep pulls from stepBeforeMatch
             if (stepBeforeMatch != null) {
