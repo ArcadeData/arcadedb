@@ -185,6 +185,15 @@ module.exports = {
           from: 'node_modules/cytoscape-cxtmenu/cytoscape-cxtmenu.js',
           to: 'js/cytoscape-cxtmenu.js',
         },
+        // fcose layout and its dependencies (must load in order: layout-base -> cose-base -> fcose)
+        {
+          from: 'node_modules/layout-base/layout-base.js',
+          to: 'js/layout-base.js',
+        },
+        {
+          from: 'node_modules/cose-base/cose-base.js',
+          to: 'js/cose-base.js',
+        },
         {
           from: 'node_modules/cytoscape-fcose/cytoscape-fcose.js',
           to: 'js/cytoscape-fcose.js',
