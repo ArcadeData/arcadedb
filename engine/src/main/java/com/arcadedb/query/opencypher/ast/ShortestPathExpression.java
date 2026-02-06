@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.function.graph.SQLFunctionShortestPath;
@@ -108,27 +109,42 @@ public class ShortestPathExpression implements Expression {
       }
     }
 
-    // Use SQLFunctionShortestPath to compute the path
+    // Use SQLFunctionShortestPath to compute the path (returns vertex RIDs only)
     final SQLFunctionShortestPath shortestPathFunction = new SQLFunctionShortestPath();
     final Object[] params = edgeType != null ?
         new Object[] { startVertex, endVertex, direction, edgeType } :
         new Object[] { startVertex, endVertex, direction };
 
-    final List<RID> path = shortestPathFunction.execute(null, null, null, params, context);
+    final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
 
-    if (path == null || path.isEmpty()) {
+    if (pathRids == null || pathRids.isEmpty())
       return allPaths ? new ArrayList<>() : null;
+
+    // Resolve vertex RIDs and find connecting edges to build a proper path
+    final Vertex.DIRECTION vertexDirection;
+    switch (direction) {
+      case "OUT":
+        vertexDirection = Vertex.DIRECTION.OUT;
+        break;
+      case "IN":
+        vertexDirection = Vertex.DIRECTION.IN;
+        break;
+      default:
+        vertexDirection = Vertex.DIRECTION.BOTH;
     }
+
+    final List<Object> resolved = ShortestPathStep.resolvePathWithEdges(pathRids, vertexDirection, edgeType,
+        context.getDatabase());
 
     if (allPaths) {
       // For allShortestPaths, we return a list containing the single shortest path
       // (In a complete implementation, this would find ALL paths of the same length)
       final List<Object> allPathsList = new ArrayList<>();
-      allPathsList.add(path);
+      allPathsList.add(resolved);
       return allPathsList;
     } else {
       // For shortestPath, return the single path
-      return path;
+      return resolved;
     }
   }
 
