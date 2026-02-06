@@ -482,9 +482,21 @@ public class CypherExecutionPlan {
         // Apply ORDER BY if present in WITH
         if (withClause.getOrderByClause() != null) {
           final OrderByStep orderByStep =
-              new OrderByStep(withClause.getOrderByClause(), context);
+              new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
           orderByStep.setPrevious(currentStep);
           currentStep = orderByStep;
+
+          // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
+          if (withClause.getSkip() != null) {
+            final SkipStep skipStep = new SkipStep(withClause.getSkip(), context);
+            skipStep.setPrevious(currentStep);
+            currentStep = skipStep;
+          }
+          if (withClause.getLimit() != null) {
+            final LimitStep limitStep = new LimitStep(withClause.getLimit(), context);
+            limitStep.setPrevious(currentStep);
+            currentStep = limitStep;
+          }
         }
       }
     }
@@ -518,7 +530,7 @@ public class CypherExecutionPlan {
     // Step 8: ORDER BY (if any)
     if (statement.getOrderByClause() != null) {
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -771,7 +783,7 @@ public class CypherExecutionPlan {
     // ORDER BY
     if (statement.getOrderByClause() != null && currentStep != null) {
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -847,11 +859,22 @@ public class CypherExecutionPlan {
     // Apply ORDER BY if present in WITH
     if (withClause.getOrderByClause() != null) {
       final OrderByStep orderByStep =
-          new OrderByStep(withClause.getOrderByClause(), context);
-      if (currentStep != null) {
+          new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
+      if (currentStep != null)
         orderByStep.setPrevious(currentStep);
-      }
       currentStep = orderByStep;
+
+      // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
+      if (withClause.getSkip() != null) {
+        final SkipStep skipStep = new SkipStep(withClause.getSkip(), context);
+        skipStep.setPrevious(currentStep);
+        currentStep = skipStep;
+      }
+      if (withClause.getLimit() != null) {
+        final LimitStep limitStep = new LimitStep(withClause.getLimit(), context);
+        limitStep.setPrevious(currentStep);
+        currentStep = limitStep;
+      }
     }
 
     return currentStep;
@@ -1462,11 +1485,22 @@ public class CypherExecutionPlan {
       // Apply ORDER BY if present in WITH
       if (withClause.getOrderByClause() != null) {
         final OrderByStep orderByStep =
-            new OrderByStep(withClause.getOrderByClause(), context);
-        if (currentStep != null) {
+            new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
+        if (currentStep != null)
           orderByStep.setPrevious(currentStep);
-        }
         currentStep = orderByStep;
+
+        // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
+        if (withClause.getSkip() != null) {
+          final SkipStep skipStep = new SkipStep(withClause.getSkip(), context);
+          skipStep.setPrevious(currentStep);
+          currentStep = skipStep;
+        }
+        if (withClause.getLimit() != null) {
+          final LimitStep limitStep = new LimitStep(withClause.getLimit(), context);
+          limitStep.setPrevious(currentStep);
+          currentStep = limitStep;
+        }
       }
     }
 
@@ -1546,7 +1580,7 @@ public class CypherExecutionPlan {
     // Step 8: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
       final OrderByStep orderByStep = new OrderByStep(
-          statement.getOrderByClause(), context);
+          statement.getOrderByClause(), context, functionFactory);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }

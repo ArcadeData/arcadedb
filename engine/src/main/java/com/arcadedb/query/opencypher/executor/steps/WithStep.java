@@ -56,12 +56,16 @@ import java.util.Set;
 public class WithStep extends AbstractExecutionStep {
   private final WithClause withClause;
   private final ExpressionEvaluator evaluator;
+  private final boolean skipLimitDeferred;
 
   public WithStep(final WithClause withClause, final CommandContext context,
                   final CypherFunctionFactory functionFactory) {
     super(context);
     this.withClause = withClause;
     this.evaluator = new ExpressionEvaluator(functionFactory);
+    // Defer SKIP/LIMIT to downstream steps when ORDER BY is present,
+    // so sorting happens before pagination
+    this.skipLimitDeferred = withClause.getOrderByClause() != null;
   }
 
   @Override
@@ -109,8 +113,8 @@ public class WithStep extends AbstractExecutionStep {
           prevResults = prev.syncPull(context, nRecords);
         }
 
-        // Check if LIMIT has been reached
-        final Integer limit = withClause.getLimit();
+        // Check if LIMIT has been reached (only when not deferred to downstream)
+        final Integer limit = skipLimitDeferred ? null : withClause.getLimit();
         if (limit != null && returned >= limit) {
           finished = true;
           return;
@@ -118,9 +122,8 @@ public class WithStep extends AbstractExecutionStep {
 
         // Fetch up to n results from previous step
         while (buffer.size() < n && prevResults.hasNext()) {
-          if (limit != null && returned >= limit) {
+          if (limit != null && returned >= limit)
             break;
-          }
 
           final Result inputResult = prevResults.next();
 
@@ -129,26 +132,25 @@ public class WithStep extends AbstractExecutionStep {
 
           // Apply WHERE clause filtering (after projection)
           if (withClause.getWhereClause() != null) {
-            final boolean matches = evaluateWhereClause(projectedResult);
-            if (!matches) {
-              continue; // Skip this result
-            }
+            if (!evaluateWhereClause(projectedResult))
+              continue;
           }
 
           // Apply DISTINCT
           if (withClause.isDistinct()) {
             final String resultKey = projectedResult.toString();
-            if (seenResults.contains(resultKey)) {
-              continue; // Skip duplicate
-            }
+            if (seenResults.contains(resultKey))
+              continue;
             seenResults.add(resultKey);
           }
 
-          // Apply SKIP
-          final Integer skip = withClause.getSkip();
-          if (skip != null && skipped < skip) {
-            skipped++;
-            continue;
+          // Apply SKIP (only when not deferred to downstream)
+          if (!skipLimitDeferred) {
+            final Integer skip = withClause.getSkip();
+            if (skip != null && skipped < skip) {
+              skipped++;
+              continue;
+            }
           }
 
           // Add to buffer
@@ -204,7 +206,7 @@ public class WithStep extends AbstractExecutionStep {
   private boolean evaluateWhereClause(final Result projectedResult) {
     final BooleanExpression predicate =
         withClause.getWhereClause().getConditionExpression();
-    return predicate.evaluate(projectedResult, context);
+    return Boolean.TRUE.equals(predicate.evaluateTernary(projectedResult, context));
   }
 
   @Override

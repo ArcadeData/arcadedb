@@ -43,53 +43,56 @@ public class InExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
+    final Object ternary = evaluateTernary(result, context);
+    return Boolean.TRUE.equals(ternary);
+  }
+
+  @Override
+  public Object evaluateTernary(final Result result, final CommandContext context) {
     final Object value;
 
-    // Use the shared expression evaluator from OpenCypherQueryEngine (stateless and thread-safe)
-    // Check if the expression is a function call to decide whether to use the evaluator
-    if (expression instanceof FunctionCallExpression) {
-      // Use ExpressionEvaluator to properly handle function calls
+    if (expression instanceof FunctionCallExpression)
       value = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, result, context);
-    } else {
-      // Direct evaluation for simple expressions (optimization)
+    else
       value = expression.evaluate(result, context);
-    }
 
     // Build the list of values to check against
-    // This handles both list literals [1,2,3] and parameters $ids where the parameter is a list
     final List<Object> valuesToCheck = new ArrayList<>();
 
     for (final Expression listItem : list) {
       final Object listValue;
 
-      // Similarly, check if list items are function calls
-      if (listItem instanceof FunctionCallExpression) {
+      if (listItem instanceof FunctionCallExpression)
         listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
-      } else {
+      else
         listValue = listItem.evaluate(result, context);
-      }
 
-      // If the evaluated value is itself a list/collection (e.g., from a parameter),
-      // expand it into individual values
-      if (listValue instanceof List) {
+      if (listValue instanceof List)
         valuesToCheck.addAll((List<?>) listValue);
-      } else if (listValue instanceof Collection) {
+      else if (listValue instanceof Collection)
         valuesToCheck.addAll((Collection<?>) listValue);
-      } else {
+      else
         valuesToCheck.add(listValue);
-      }
     }
 
-    // Check if value is in the expanded list
-    boolean found = false;
+    // 3VL: null IN [1,2,3] -> null, 5 IN [1,null,3] -> null (if not found otherwise)
+    boolean foundNull = false;
     for (final Object checkValue : valuesToCheck) {
-      if (valuesEqual(value, checkValue)) {
-        found = true;
-        break;
-      }
+      if (value == null || checkValue == null) {
+        if (value == null && checkValue == null) {
+          // null = null is still null in Cypher IN semantics
+          foundNull = true;
+        } else {
+          foundNull = true;
+        }
+      } else if (valuesEqual(value, checkValue))
+        return isNot ? false : true;
     }
 
-    return isNot ? !found : found;
+    if (foundNull)
+      return isNot ? null : null;
+
+    return isNot ? true : false;
   }
 
   private boolean valuesEqual(final Object a, final Object b) {
