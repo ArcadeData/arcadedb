@@ -19,13 +19,18 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Evaluates Cypher expressions in the context of query results.
@@ -50,6 +55,10 @@ public class ExpressionEvaluator {
       return evaluateListIndex((ListIndexExpression) expression, result, context);
     } else if (expression instanceof FunctionCallExpression) {
       return evaluateFunction((FunctionCallExpression) expression, result, context);
+    } else if (expression instanceof ArithmeticExpression) {
+      return evaluateArithmetic((ArithmeticExpression) expression, result, context);
+    } else if (expression instanceof ListExpression) {
+      return evaluateList((ListExpression) expression, result, context);
     }
 
     // Fallback
@@ -82,6 +91,67 @@ public class ExpressionEvaluator {
 
     // Execute function
     return function.execute(args, context);
+  }
+
+  private Object evaluateArithmetic(final ArithmeticExpression expression, final Result result,
+      final CommandContext context) {
+    final Object leftValue = evaluate(expression.getLeft(), result, context);
+    final Object rightValue = evaluate(expression.getRight(), result, context);
+
+    if (leftValue == null || rightValue == null)
+      return null;
+
+    // String concatenation for + operator
+    if (expression.getOperator() == ArithmeticExpression.Operator.ADD
+        && (leftValue instanceof String || rightValue instanceof String))
+      return leftValue.toString() + rightValue.toString();
+
+    if (!(leftValue instanceof Number) || !(rightValue instanceof Number))
+      throw new IllegalArgumentException(
+          "Arithmetic operations require numeric operands, got: " + leftValue.getClass().getSimpleName()
+              + " and " + rightValue.getClass().getSimpleName());
+
+    final Number leftNum = (Number) leftValue;
+    final Number rightNum = (Number) rightValue;
+
+    final boolean useInteger = isInteger(leftNum) && isInteger(rightNum)
+        && expression.getOperator() != ArithmeticExpression.Operator.DIVIDE
+        && expression.getOperator() != ArithmeticExpression.Operator.POWER;
+
+    if (useInteger) {
+      final long l = leftNum.longValue();
+      final long r = rightNum.longValue();
+      return switch (expression.getOperator()) {
+        case ADD -> l + r;
+        case SUBTRACT -> l - r;
+        case MULTIPLY -> l * r;
+        case MODULO -> r != 0 ? l % r : null;
+        default -> null;
+      };
+    }
+
+    final double l = leftNum.doubleValue();
+    final double r = rightNum.doubleValue();
+    return switch (expression.getOperator()) {
+      case ADD -> l + r;
+      case SUBTRACT -> l - r;
+      case MULTIPLY -> l * r;
+      case DIVIDE -> r != 0 ? l / r : null;
+      case MODULO -> r != 0 ? l % r : null;
+      case POWER -> Math.pow(l, r);
+    };
+  }
+
+  private static boolean isInteger(final Number num) {
+    return num instanceof Integer || num instanceof Long || num instanceof Short || num instanceof Byte;
+  }
+
+  private Object evaluateList(final ListExpression expression, final Result result,
+      final CommandContext context) {
+    final List<Object> values = new ArrayList<>();
+    for (final Expression element : expression.getElements())
+      values.add(evaluate(element, result, context));
+    return values;
   }
 
   /**

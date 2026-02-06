@@ -30,7 +30,8 @@ public class LogicalExpression implements BooleanExpression {
   public enum Operator {
     AND,
     OR,
-    NOT
+    NOT,
+    XOR
   }
 
   private final Operator operator;
@@ -49,11 +50,64 @@ public class LogicalExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
+    final Object ternary = evaluateTernary(result, context);
+    return Boolean.TRUE.equals(ternary);
+  }
+
+  @Override
+  public Object evaluateTernary(final Result result, final CommandContext context) {
     return switch (operator) {
-      case AND -> left.evaluate(result, context) && right.evaluate(result, context);
-      case OR -> left.evaluate(result, context) || right.evaluate(result, context);
-      case NOT -> !left.evaluate(result, context);
+      case AND -> evaluateAnd(result, context);
+      case OR -> evaluateOr(result, context);
+      case NOT -> evaluateNot(result, context);
+      case XOR -> evaluateXor(result, context);
     };
+  }
+
+  private Object evaluateAnd(final Result result, final CommandContext context) {
+    final Boolean leftBool = toBoolean(left.evaluateTernary(result, context));
+    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
+
+    if (Boolean.FALSE.equals(leftBool) || Boolean.FALSE.equals(rightBool))
+      return false;
+    if (leftBool == null || rightBool == null)
+      return null;
+    return true;
+  }
+
+  private Object evaluateOr(final Result result, final CommandContext context) {
+    final Boolean leftBool = toBoolean(left.evaluateTernary(result, context));
+    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
+
+    if (Boolean.TRUE.equals(leftBool) || Boolean.TRUE.equals(rightBool))
+      return true;
+    if (leftBool == null || rightBool == null)
+      return null;
+    return false;
+  }
+
+  private Object evaluateNot(final Result result, final CommandContext context) {
+    final Boolean leftBool = toBoolean(left.evaluateTernary(result, context));
+    if (leftBool == null)
+      return null;
+    return !leftBool;
+  }
+
+  private Object evaluateXor(final Result result, final CommandContext context) {
+    final Boolean leftBool = toBoolean(left.evaluateTernary(result, context));
+    final Boolean rightBool = toBoolean(right.evaluateTernary(result, context));
+
+    if (leftBool == null || rightBool == null)
+      return null;
+    return leftBool ^ rightBool;
+  }
+
+  private static Boolean toBoolean(final Object value) {
+    if (value == null)
+      return null;
+    if (value instanceof Boolean)
+      return (Boolean) value;
+    return true;
   }
 
   @Override
@@ -62,6 +116,7 @@ public class LogicalExpression implements BooleanExpression {
       case NOT -> "NOT " + left.getText();
       case AND -> "(" + left.getText() + " AND " + right.getText() + ")";
       case OR -> "(" + left.getText() + " OR " + right.getText() + ")";
+      case XOR -> "(" + left.getText() + " XOR " + right.getText() + ")";
     };
   }
 

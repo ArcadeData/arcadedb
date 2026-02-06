@@ -214,26 +214,64 @@ class CypherExpressionBuilder {
   Expression parseExpressionFromText(final ParseTree node) {
     // Check for CASE expressions in the parse tree
     final Cypher25Parser.CaseExpressionContext caseCtx = findCaseExpressionRecursive(node);
-    if (caseCtx != null) {
+    if (caseCtx != null)
       return parseCaseExpression(caseCtx);
-    }
 
     final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = findExtendedCaseExpressionRecursive(node);
-    if (extCaseCtx != null) {
+    if (extCaseCtx != null)
       return parseExtendedCaseExpression(extCaseCtx);
-    }
 
     // Check for EXISTS expressions
     final Cypher25Parser.ExistsExpressionContext existsCtx = findExistsExpressionRecursive(node);
-    if (existsCtx != null) {
+    if (existsCtx != null)
       return parseExistsExpression(existsCtx);
+
+    // Check for logical expressions (AND, OR, XOR, NOT) in the parse tree
+    // This handles cases like (a AND b) appearing as children of comparisons
+    if (node instanceof Cypher25Parser.ExpressionContext)
+      return parseExpression((Cypher25Parser.ExpressionContext) node);
+
+    if (node instanceof Cypher25Parser.Expression11Context) {
+      final Expression logicalExpr = tryParseLogicalExpression((Cypher25Parser.Expression11Context) node);
+      if (logicalExpr != null)
+        return logicalExpr;
     }
 
-    // Check for IS NULL / IS NOT NULL expressions
-    final Cypher25Parser.NullComparisonContext nullCtx = findNullComparisonRecursive(node);
-    if (nullCtx != null) {
-      return parseIsNullExpression(nullCtx);
+    if (node instanceof Cypher25Parser.Expression10Context) {
+      final Cypher25Parser.Expression10Context e10 = (Cypher25Parser.Expression10Context) node;
+      if (e10.expression9().size() > 1) {
+        Expression result = parseExpressionFromExpression9(e10.expression9().get(0));
+        for (int i = 1; i < e10.expression9().size(); i++) {
+          final Expression right = parseExpressionFromExpression9(e10.expression9().get(i));
+          result = new TernaryLogicalExpression(TernaryLogicalExpression.Operator.AND, result, right);
+        }
+        return result;
+      }
+      if (e10.expression9().size() == 1)
+        return parseExpressionFromExpression9(e10.expression9().get(0));
     }
+
+    if (node instanceof Cypher25Parser.Expression9Context)
+      return parseExpressionFromExpression9((Cypher25Parser.Expression9Context) node);
+
+    // Check for IS NULL / IS NOT NULL expressions BEFORE parenthesized expressions
+    // because (a AND b) IS NULL should be parsed as IS_NULL(a AND b), not just (a AND b)
+    final Cypher25Parser.NullComparisonContext nullCtx = findNullComparisonRecursive(node);
+    if (nullCtx != null)
+      return parseIsNullExpression(nullCtx);
+
+    // Check for string matching expressions (STARTS WITH, ENDS WITH, CONTAINS, IN)
+    // These must also be checked before parenthesized expressions
+    if (node instanceof Cypher25Parser.Expression7Context) {
+      final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) node;
+      if (expr7.comparisonExpression6() != null && !expr7.comparisonExpression6().isEmpty())
+        return parseStringComparisonExpression(expr7);
+    }
+
+    // Check for parenthesized expressions containing logical operators
+    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = findParenthesizedExpressionRecursive(node);
+    if (parenCtx != null)
+      return parseExpression(parenCtx.expression());
 
     // Check for arithmetic expressions (+ - * / % ^)
     final Cypher25Parser.Expression6Context arith6Ctx = findArithmeticExpression6Recursive(node);
@@ -1213,11 +1251,9 @@ class CypherExpressionBuilder {
 
     if (parent instanceof Cypher25Parser.Expression7Context) {
       final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) parent;
-      final String leftText = expr7.expression6().getText();
-      final Expression leftExpr = parseExpressionText(leftText);
+      final Expression leftExpr = parseExpressionFromText(expr7.expression6());
       final boolean isNot = ctx.NOT() != null;
       final IsNullExpression isNullExpr = new IsNullExpression(leftExpr, isNot);
-      // Wrap BooleanExpression as Expression
       return new BooleanWrapperExpression(isNullExpr);
     }
 

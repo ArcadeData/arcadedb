@@ -185,7 +185,7 @@ public class ForeachStep extends AbstractExecutionStep {
     switch (clauseEntry.getType()) {
       case CREATE:
         final CreateClause createClause = clauseEntry.getTypedClause();
-        step = new CreateStep(createClause, context);
+        step = new CreateStep(createClause, context, functionFactory);
         break;
       case SET:
         final SetClause setClause = clauseEntry.getTypedClause();

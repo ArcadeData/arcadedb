@@ -35,7 +35,7 @@ public class BooleanWrapperExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    return booleanExpression.evaluate(result, context);
+    return booleanExpression.evaluateTernary(result, context);
   }
 
   @Override

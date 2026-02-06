@@ -36,6 +36,15 @@ public interface BooleanExpression {
   boolean evaluate(Result result, CommandContext context);
 
   /**
+   * Evaluate with three-valued logic (true/false/null).
+   * Returns Boolean.TRUE, Boolean.FALSE, or null for unknown.
+   * Default implementation delegates to evaluate() for backward compatibility.
+   */
+  default Object evaluateTernary(Result result, CommandContext context) {
+    return evaluate(result, context);
+  }
+
+  /**
    * Get the text representation of this expression.
    *
    * @return The text representation

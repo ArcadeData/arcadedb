@@ -32,6 +32,8 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.sql.executor.*;
 
@@ -54,10 +56,13 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class CreateStep extends AbstractExecutionStep {
   private final CreateClause createClause;
+  private final ExpressionEvaluator evaluator;
 
-  public CreateStep(final CreateClause createClause, final CommandContext context) {
+  public CreateStep(final CreateClause createClause, final CommandContext context,
+                    final CypherFunctionFactory functionFactory) {
     super(context);
     this.createClause = createClause;
+    this.evaluator = functionFactory != null ? new ExpressionEvaluator(functionFactory) : null;
   }
 
   @Override
@@ -291,12 +296,13 @@ public class CreateStep extends AbstractExecutionStep {
         final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
         value = context.getInputParameters().get(paramName);
       }
-      // Evaluate Expression objects (e.g., property access like BatchEntry.vector)
+      // Evaluate Expression objects (e.g., property access, function calls like rand())
       else if (value instanceof Expression) {
         final Expression expr = (Expression) value;
-        // Evaluate the expression in the context of the current result
-        // This allows UNWIND variables to be accessed
-        value = expr.evaluate(currentResult, context);
+        if (evaluator != null)
+          value = evaluator.evaluate(expr, currentResult, context);
+        else
+          value = expr.evaluate(currentResult, context);
       }
 
       document.set(key, value);
@@ -320,12 +326,13 @@ public class CreateStep extends AbstractExecutionStep {
         final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
         value = context.getInputParameters().get(paramName);
       }
-      // Evaluate Expression objects (e.g., property access like BatchEntry.vector)
+      // Evaluate Expression objects (e.g., property access, function calls like rand())
       else if (value instanceof Expression) {
         final Expression expr = (Expression) value;
-        // Evaluate the expression in the context of the current result
-        // This allows UNWIND variables to be accessed
-        value = expr.evaluate(currentResult, context);
+        if (evaluator != null)
+          value = evaluator.evaluate(expr, currentResult, context);
+        else
+          value = expr.evaluate(currentResult, context);
       }
 
       edge.set(key, value);

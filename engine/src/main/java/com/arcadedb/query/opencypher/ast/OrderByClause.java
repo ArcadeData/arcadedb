@@ -64,43 +64,32 @@ public class OrderByClause {
   public static class OrderByItem {
     private final String expression;
     private final boolean ascending;
+    private final Expression expressionAST;
 
-    /**
-     * Creates an order by item.
-     *
-     * @param expression expression to order by (e.g., "n.name")
-     * @param ascending  true for ASC, false for DESC
-     */
     public OrderByItem(final String expression, final boolean ascending) {
-      this.expression = expression;
-      this.ascending = ascending;
+      this(expression, ascending, null);
     }
 
-    /**
-     * Returns the expression to order by.
-     *
-     * @return expression
-     */
+    public OrderByItem(final String expression, final boolean ascending, final Expression expressionAST) {
+      this.expression = expression;
+      this.ascending = ascending;
+      this.expressionAST = expressionAST;
+    }
+
     public String getExpression() {
       return expression;
     }
 
-    /**
-     * Returns true if ascending order.
-     *
-     * @return true if ascending
-     */
     public boolean isAscending() {
       return ascending;
     }
 
-    /**
-     * Returns true if descending order.
-     *
-     * @return true if descending
-     */
     public boolean isDescending() {
       return !ascending;
+    }
+
+    public Expression getExpressionAST() {
+      return expressionAST;
     }
   }
 }

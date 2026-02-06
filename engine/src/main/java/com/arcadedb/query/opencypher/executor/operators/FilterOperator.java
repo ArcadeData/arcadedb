@@ -93,11 +93,10 @@ public class FilterOperator extends AbstractPhysicalOperator {
 
           final Result inputResult = inputResults.next();
 
-          // Evaluate predicate on input row
-          final boolean predicateValue = predicate.evaluate(inputResult, context);
+          // Evaluate predicate with 3VL; null coerces to false at top level
+          final Object predicateValue = predicate.evaluateTernary(inputResult, context);
 
-          // Pass through if predicate evaluates to true
-          if (predicateValue) {
+          if (Boolean.TRUE.equals(predicateValue)) {
             buffer.add(inputResult);
           }
         }

@@ -36,7 +36,7 @@ public class ComparisonExpressionWrapper implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    return comparison.evaluate(result, context);
+    return comparison.evaluateTernary(result, context);
   }
 
   @Override

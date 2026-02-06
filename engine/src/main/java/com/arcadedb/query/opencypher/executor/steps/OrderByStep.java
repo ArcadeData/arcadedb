@@ -21,7 +21,10 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -42,16 +45,17 @@ import java.util.NoSuchElementException;
  */
 public class OrderByStep extends AbstractExecutionStep {
   private final OrderByClause orderByClause;
+  private final ExpressionEvaluator evaluator;
 
-  /**
-   * Creates an order by step.
-   *
-   * @param orderByClause order by clause with sort specifications
-   * @param context       command context
-   */
   public OrderByStep(final OrderByClause orderByClause, final CommandContext context) {
+    this(orderByClause, context, null);
+  }
+
+  public OrderByStep(final OrderByClause orderByClause, final CommandContext context,
+                     final CypherFunctionFactory functionFactory) {
     super(context);
     this.orderByClause = orderByClause;
+    this.evaluator = functionFactory != null ? new ExpressionEvaluator(functionFactory) : null;
   }
 
   @Override
@@ -102,8 +106,8 @@ public class OrderByStep extends AbstractExecutionStep {
       private Comparator<Result> createComparator() {
         return (r1, r2) -> {
           for (final OrderByClause.OrderByItem item : orderByClause.getItems()) {
-            final Object v1 = extractValue(r1, item.getExpression());
-            final Object v2 = extractValue(r2, item.getExpression());
+            final Object v1 = extractValue(r1, item);
+            final Object v2 = extractValue(r2, item);
 
             final int comparison = compareValues(v1, v2);
             if (comparison != 0) {
@@ -114,28 +118,26 @@ public class OrderByStep extends AbstractExecutionStep {
         };
       }
 
-      /**
-       * Extracts a value from a result using an expression.
-       * Supports simple property access like "n.name".
-       */
-      private Object extractValue(final Result result, final String expression) {
+      private Object extractValue(final Result result, final OrderByClause.OrderByItem item) {
+        // If we have a parsed Expression AST, use ExpressionEvaluator for full expression support
+        final Expression exprAST = item.getExpressionAST();
+        if (exprAST != null && evaluator != null)
+          return evaluator.evaluate(exprAST, result, context);
+
+        // Fallback to string-based extraction
+        final String expression = item.getExpression();
         if (expression.contains(".")) {
-          // Property access: variable.property
           final String[] parts = expression.split("\\.", 2);
           final Object obj = result.getProperty(parts[0]);
-          if (obj == null) {
+          if (obj == null)
             return null;
-          }
 
-          // Try to get property from vertex/edge
-          if (obj instanceof Vertex) {
+          if (obj instanceof Vertex)
             return ((Vertex) obj).get(parts[1]);
-          } else if (obj instanceof Edge) {
+          else if (obj instanceof Edge)
             return ((Edge) obj).get(parts[1]);
-          }
         }
 
-        // Simple variable access
         return result.getProperty(expression);
       }
 

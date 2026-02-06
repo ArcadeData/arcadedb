@@ -505,9 +505,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     for (final Cypher25Parser.OrderItemContext itemCtx : ctx.orderItem()) {
       final String expression = itemCtx.expression().getText();
-      final boolean ascending = itemCtx.descToken() == null; // DESC means not ascending
+      final boolean ascending = itemCtx.descToken() == null;
+      final Expression exprAST = expressionBuilder.parseExpression(itemCtx.expression());
 
-      items.add(new OrderByClause.OrderByItem(expression, ascending));
+      items.add(new OrderByClause.OrderByItem(expression, ascending, exprAST));
     }
 
     return new OrderByClause(items);
@@ -637,18 +638,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   private BooleanExpression parseBooleanFromExpression11(final Cypher25Parser.Expression11Context ctx) {
     // expression11: expression10 (XOR expression10)*
-    // Note: XOR is rare, for now we just delegate to expression10 if there's only one
-    // TODO: Implement XOR operator support if needed
     final List<Cypher25Parser.Expression10Context> expr10List = ctx.expression10();
 
-    if (expr10List.size() == 1) {
-      // No XOR operator, just delegate
+    if (expr10List.size() == 1)
       return parseBooleanFromExpression10(expr10List.get(0));
-    }
 
-    // For now, if multiple expression10 with XOR, use fallback
-    // TODO: Implement proper XOR support
-    return createFallbackComparison(ctx);
+    // Multiple expression10 connected with XOR
+    BooleanExpression result = parseBooleanFromExpression10(expr10List.get(0));
+    for (int i = 1; i < expr10List.size(); i++) {
+      final BooleanExpression right = parseBooleanFromExpression10(expr10List.get(i));
+      result = new LogicalExpression(LogicalExpression.Operator.XOR, result, right);
+    }
+    return result;
   }
 
   private BooleanExpression parseBooleanFromExpression10(final Cypher25Parser.Expression10Context ctx) {
