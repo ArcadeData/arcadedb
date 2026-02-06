@@ -235,6 +235,20 @@ class CypherExpressionBuilder {
       return parseIsNullExpression(nullCtx);
     }
 
+    // Check for arithmetic expressions (+ - * / % ^)
+    final Cypher25Parser.Expression6Context arith6Ctx = findArithmeticExpression6Recursive(node);
+    if (arith6Ctx != null)
+      return parseArithmeticExpression6(arith6Ctx);
+
+    final Cypher25Parser.Expression5Context arith5Ctx = findArithmeticExpression5Recursive(node);
+    if (arith5Ctx != null)
+      return parseArithmeticExpression5(arith5Ctx);
+
+    // Check for function invocations
+    final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(node);
+    if (funcCtx != null)
+      return parseFunctionInvocation(funcCtx);
+
     // Fallback to text parsing
     final String text = node.getText();
     return parseExpressionText(text);
@@ -1173,10 +1187,8 @@ class CypherExpressionBuilder {
           else if (type == Cypher25Parser.GE) op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
 
           if (op != null) {
-            final String leftText = ctx.expression7(0).getText();
-            final String rightText = ctx.expression7(1).getText();
-            final Expression left = parseExpressionText(leftText);
-            final Expression right = parseExpressionText(rightText);
+            final Expression left = parseExpressionFromText(ctx.expression7(0));
+            final Expression right = parseExpressionFromText(ctx.expression7(1));
             final ComparisonExpression comparison = new ComparisonExpression(left, op, right);
             // Wrap BooleanExpression in an Expression adapter
             return new BooleanWrapperExpression(comparison);
