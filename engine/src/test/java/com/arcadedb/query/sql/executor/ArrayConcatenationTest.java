@@ -85,4 +85,40 @@ class ArrayConcatenationTest {
     assertThat(combined).hasSize(4);
     assertThat(combined).containsExactly("a", "b", "c", "d");
   }
+
+  @Test
+  void arrayConcatChainedWithoutParentheses() {
+    // Issue #3314: chained || without parentheses should work
+    ResultSet result = database.query("sql", "SELECT [1,2] || [3,4] || [5,6] as combined");
+
+    assertThat(result.hasNext()).isTrue();
+    Result row = result.next();
+    List combined = row.getProperty("combined");
+    assertThat(combined).hasSize(6);
+    assertThat(combined).containsExactly(1, 2, 3, 4, 5, 6);
+  }
+
+  @Test
+  void arrayConcatChainedMultiple() {
+    // Chain four arrays with ||
+    ResultSet result = database.query("sql", "SELECT [1] || [2] || [3] || [4] as combined");
+
+    assertThat(result.hasNext()).isTrue();
+    Result row = result.next();
+    List combined = row.getProperty("combined");
+    assertThat(combined).hasSize(4);
+    assertThat(combined).containsExactly(1, 2, 3, 4);
+  }
+
+  @Test
+  void arrayConcatChainedWithFields() {
+    // Chain field || literal || field
+    ResultSet result = database.query("sql", "SELECT tags || ['middle'] || categories as combined FROM V LIMIT 1");
+
+    assertThat(result.hasNext()).isTrue();
+    Result row = result.next();
+    List combined = row.getProperty("combined");
+    assertThat(combined).hasSize(5);
+    assertThat(combined).containsExactly("java", "database", "middle", "tech", "software");
+  }
 }
