@@ -35,6 +35,9 @@ import static com.arcadedb.query.opencypher.temporal.CypherDate.toDouble;
 public class CypherDuration implements CypherTemporalValue {
   private static final Pattern ISO_PATTERN = Pattern.compile(
       "P(?:([-\\d.]+)Y)?(?:([-\\d.]+)M)?(?:([-\\d.]+)W)?(?:([-\\d.]+)D)?(?:T(?:([-\\d.]+)H)?(?:([-\\d.]+)M)?(?:([-\\d.]+)S)?)?");
+  // Alternative date-based format: P<years>-<months>-<days>T<hours>:<minutes>:<seconds>[.fraction]
+  private static final Pattern DATE_BASED_PATTERN = Pattern.compile(
+      "P(\\d+)-(\\d+)-(\\d+)T(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
 
   private final long months;
   private final long days;
@@ -57,6 +60,18 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   public static CypherDuration parse(final String str) {
+    // Try alternative date-based format first: P<years>-<months>-<days>T<hours>:<minutes>:<seconds>
+    final Matcher dm = DATE_BASED_PATTERN.matcher(str);
+    if (dm.matches()) {
+      final double years = Double.parseDouble(dm.group(1));
+      final double months = Double.parseDouble(dm.group(2));
+      final double daysVal = Double.parseDouble(dm.group(3));
+      final double hours = Double.parseDouble(dm.group(4));
+      final double minutes = Double.parseDouble(dm.group(5));
+      final double secs = Double.parseDouble(dm.group(6));
+      return fromComponents(years, months, 0, daysVal, hours, minutes, secs, 0);
+    }
+
     final Matcher m = ISO_PATTERN.matcher(str);
     if (!m.matches())
       throw new IllegalArgumentException("Invalid duration string: " + str);
@@ -98,7 +113,7 @@ public class CypherDuration implements CypherTemporalValue {
     final long wholeMonths = (long) totalMonths;
     final double fracMonths = totalMonths - wholeMonths;
 
-    double totalDays = weeks * 7 + days + fracMonths * 30; // fractional months → approximate days
+    double totalDays = weeks * 7 + days + fracMonths * (365.2425 / 12); // fractional months → average days per month
     final long wholeDays = (long) totalDays;
     final double fracDays = totalDays - wholeDays;
 
@@ -179,10 +194,15 @@ public class CypherDuration implements CypherTemporalValue {
   @Override
   public int compareTo(final CypherTemporalValue other) {
     if (other instanceof CypherDuration d) {
-      // Approximate comparison: convert everything to nanoseconds
-      final long thisTotal = (months * 30 * 86400 + days * 86400 + seconds) * 1_000_000_000L + nanosAdjustment;
-      final long otherTotal = (d.months * 30 * 86400 + d.days * 86400 + d.seconds) * 1_000_000_000L + d.nanosAdjustment;
-      return Long.compare(thisTotal, otherTotal);
+      // Per Cypher spec, durations compare component-by-component (months, days, seconds, nanos).
+      // They do NOT normalize across components (e.g. 24h != 1 day).
+      int cmp = Long.compare(months, d.months);
+      if (cmp != 0) return cmp;
+      cmp = Long.compare(days, d.days);
+      if (cmp != 0) return cmp;
+      cmp = Long.compare(seconds, d.seconds);
+      if (cmp != 0) return cmp;
+      return Integer.compare(nanosAdjustment, d.nanosAdjustment);
     }
     throw new IllegalArgumentException("Cannot compare Duration with " + other.getClass().getSimpleName());
   }

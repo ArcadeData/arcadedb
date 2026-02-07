@@ -181,15 +181,27 @@ class CypherExpressionBuilder {
     if (topExpr2 != null && !topExpr2.postFix().isEmpty())
       return parseExpression2WithPostfix(topExpr2);
 
-    // Check for function invocations BEFORE list literals
+    // Check for list literals BEFORE function invocations when the top-level expression
+    // is a list. Otherwise, [date({...}), date({...})] would be parsed as a single date()
+    // function call because findFunctionInvocationRecursive finds date() inside the list.
+    // For cases like tail([1,2,3]), the function invocation is at the top level and will
+    // be caught by the postfix/expression2 checks above.
+    final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
+    if (listCtx != null) {
+      // Only use list literal if it's at the top level (i.e. the list text covers most of the expression)
+      final String listText = listCtx.getText();
+      if (listText.length() >= text.length() - 2) // Allow for whitespace
+        return parseListLiteral(listCtx);
+    }
+
+    // Check for function invocations (after top-level list check)
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
     if (funcCtx != null) {
       return parseFunctionInvocation(funcCtx);
     }
 
-    // Check for list literals (after arithmetic and postfix to avoid matching inner lists)
-    final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
+    // Check for list literals (fallback for other cases)
     if (listCtx != null) {
       return parseListLiteral(listCtx);
     }

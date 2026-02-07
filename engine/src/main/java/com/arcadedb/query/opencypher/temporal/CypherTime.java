@@ -73,15 +73,18 @@ public class CypherTime implements CypherTemporalValue {
   public static CypherTime fromMap(final Map<String, Object> map) {
     // Check for base time
     OffsetTime base = null;
+    boolean baseHasTimezone = false;
     if (map.containsKey("time")) {
       final Object timeVal = map.get("time");
-      if (timeVal instanceof CypherTime)
+      if (timeVal instanceof CypherTime) {
         base = ((CypherTime) timeVal).value;
-      else if (timeVal instanceof CypherLocalTime)
+        baseHasTimezone = true;
+      } else if (timeVal instanceof CypherLocalTime)
         base = ((CypherLocalTime) timeVal).getValue().atOffset(ZoneOffset.UTC);
-      else if (timeVal instanceof CypherDateTime)
+      else if (timeVal instanceof CypherDateTime) {
         base = ((CypherDateTime) timeVal).getValue().toOffsetDateTime().toOffsetTime();
-      else if (timeVal instanceof CypherLocalDateTime)
+        baseHasTimezone = true;
+      } else if (timeVal instanceof CypherLocalDateTime)
         base = ((CypherLocalDateTime) timeVal).getValue().toLocalTime().atOffset(ZoneOffset.UTC);
     }
 
@@ -93,11 +96,20 @@ public class CypherTime implements CypherTemporalValue {
     ZoneOffset offset = base != null ? base.getOffset() : ZoneOffset.UTC;
     if (map.containsKey("timezone")) {
       final ZoneOffset newOffset = TemporalUtil.parseOffset(map.get("timezone").toString());
-      if (base != null && !map.containsKey("hour") && !map.containsKey("minute") && !map.containsKey("second")) {
-        // Convert time to new timezone (same instant, different representation)
+      if (base != null && baseHasTimezone) {
+        // Convert base to new timezone first (same instant), then apply field overrides
         final OffsetTime converted = base.withOffsetSameInstant(newOffset);
-        return new CypherTime(converted);
+        if (!map.containsKey("hour") && !map.containsKey("minute") && !map.containsKey("second"))
+          return new CypherTime(converted);
+        // Apply field overrides on the timezone-converted time
+        final int h = map.containsKey("hour") ? toInt(map.get("hour")) : converted.getHour();
+        final int m = map.containsKey("minute") ? toInt(map.get("minute")) : converted.getMinute();
+        final int s = map.containsKey("second") ? toInt(map.get("second")) : converted.getSecond();
+        final int n = TemporalUtil.computeNanos(map, converted.getNano());
+        return new CypherTime(OffsetTime.of(h, m, s, n, newOffset));
       }
+      if (base != null && !map.containsKey("hour") && !map.containsKey("minute") && !map.containsKey("second"))
+        return new CypherTime(base.withOffsetSameLocal(newOffset));
       offset = newOffset;
     }
 

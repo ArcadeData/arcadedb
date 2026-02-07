@@ -314,14 +314,32 @@ public class CreateStep extends AbstractExecutionStep {
 
   /**
    * Convert CypherTemporalValue objects to java.time types for ArcadeDB storage.
+   * Handles both single values and collections/arrays of temporal values.
    */
   private static Object convertTemporalForStorage(final Object value) {
+    // Handle collections (lists/arrays of temporal values)
+    if (value instanceof java.util.Collection<?> collection) {
+      final java.util.List<Object> converted = new java.util.ArrayList<>(collection.size());
+      for (final Object item : collection) {
+        converted.add(convertTemporalForStorage(item));
+      }
+      return converted;
+    }
+    if (value instanceof Object[] array) {
+      final Object[] converted = new Object[array.length];
+      for (int i = 0; i < array.length; i++) {
+        converted[i] = convertTemporalForStorage(array[i]);
+      }
+      return converted;
+    }
+
+    // Handle single temporal values
     if (value instanceof CypherDate)
       return ((CypherDate) value).getValue();
     if (value instanceof CypherLocalDateTime)
       return ((CypherLocalDateTime) value).getValue();
     if (value instanceof CypherDateTime)
-      return ((CypherDateTime) value).getValue().toLocalDateTime();
+      return value.toString(); // Store as String to preserve timezone info
     if (value instanceof CypherLocalTime)
       return ((CypherLocalTime) value).getValue().toString();
     if (value instanceof CypherTime)

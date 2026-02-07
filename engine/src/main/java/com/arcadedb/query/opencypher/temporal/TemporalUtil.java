@@ -318,21 +318,23 @@ public final class TemporalUtil {
     long seconds = clockDuration.getSeconds();
     int nanos = clockDuration.getNano();
 
-    // Normalize: if clock is negative but calendar is positive, borrow from days
-    if ((seconds < 0 || (seconds == 0 && nanos < 0)) && (days > 0 || months > 0)) {
-      if (days > 0) {
-        days--;
-        seconds += 86400;
-      } else {
-        months--;
-        days += 29; // Borrow 30 days, subtract 1 (the borrowed day)
-        seconds += 86400;
-      }
-    } else if (seconds >= 86400 && (months > 0 || days > 0)) {
-      // If seconds >= 1 day, carry forward to days
-      final long extraDays = seconds / 86400;
-      days += extraDays;
-      seconds %= 86400;
+    // Normalize: ensure days and seconds have the same sign
+    if (days < 0 && (seconds > 0 || (seconds == 0 && nanos > 0))) {
+      // Negative days with positive clock: roll seconds back into days
+      days++;
+      seconds -= 86400;
+    } else if ((seconds < 0 || (seconds == 0 && nanos < 0)) && days > 0) {
+      // Positive days with negative clock: borrow from days
+      days--;
+      seconds += 86400;
+    } else if (months < 0 && days > 0) {
+      // Negative months with positive days: borrow from months
+      months++;
+      days -= 30;
+    } else if (months > 0 && days < 0) {
+      // Positive months with negative days: borrow from months
+      months--;
+      days += 30;
     }
 
     return new CypherDuration(months, days, seconds, nanos);
@@ -349,13 +351,21 @@ public final class TemporalUtil {
     final boolean hasNs = map.containsKey("nanosecond");
     if (!hasMs && !hasUs && !hasNs)
       return defaultNanos;
+    // Preserve unspecified higher-order portions from defaultNanos.
+    // E.g. truncate('millisecond', t, {nanosecond: 2}) should keep the millisecond portion.
     int nanos = 0;
     if (hasMs)
       nanos += ((Number) map.get("millisecond")).intValue() * 1_000_000;
+    else
+      nanos += (defaultNanos / 1_000_000) * 1_000_000;
     if (hasUs)
       nanos += ((Number) map.get("microsecond")).intValue() * 1_000;
+    else
+      nanos += ((defaultNanos % 1_000_000) / 1_000) * 1_000;
     if (hasNs)
       nanos += ((Number) map.get("nanosecond")).intValue();
+    else
+      nanos += defaultNanos % 1_000;
     return nanos;
   }
 

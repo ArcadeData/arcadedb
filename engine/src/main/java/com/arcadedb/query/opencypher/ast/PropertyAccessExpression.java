@@ -44,7 +44,8 @@ public class PropertyAccessExpression implements Expression {
   public Object evaluate(final Result result, final CommandContext context) {
     final Object variable = result.getProperty(variableName);
     if (variable instanceof Document) {
-      return convertFromStorage(((Document) variable).get(propertyName));
+      final Object rawValue = ((Document) variable).get(propertyName);
+      return convertFromStorage(rawValue);
     } else if (variable instanceof Map) {
       // Handle Map types (e.g., from UNWIND with parameter maps)
       return ((Map<?, ?>) variable).get(propertyName);
@@ -88,6 +89,23 @@ public class PropertyAccessExpression implements Expression {
    * doesn't have native binary types for them.
    */
   private static Object convertFromStorage(final Object value) {
+    // Handle collections (lists/arrays of temporal values)
+    if (value instanceof java.util.Collection<?> collection) {
+      final java.util.List<Object> converted = new java.util.ArrayList<>(collection.size());
+      for (final Object item : collection) {
+        converted.add(convertFromStorage(item));
+      }
+      return converted;
+    }
+    if (value instanceof Object[] array) {
+      final Object[] converted = new Object[array.length];
+      for (int i = 0; i < array.length; i++) {
+        converted[i] = convertFromStorage(array[i]);
+      }
+      return converted;
+    }
+
+    // Handle single values
     if (value instanceof LocalDate ld)
       return new CypherDate(ld);
     if (value instanceof LocalDateTime ldt)
@@ -99,6 +117,16 @@ public class PropertyAccessExpression implements Expression {
           return CypherDuration.parse(str);
         } catch (final Exception ignored) {
           // Not a valid duration string
+        }
+      }
+      // DateTime strings: contain 'T' with date part before it and timezone/offset
+      // e.g., 1912-01-01T00:00Z, 1984-10-11T12:31:14+01:00[Europe/Stockholm]
+      final int tIdx = str.indexOf('T');
+      if (tIdx >= 4 && tIdx < str.length() - 1 && Character.isDigit(str.charAt(0))) {
+        try {
+          return CypherDateTime.parse(str);
+        } catch (final Exception ignored) {
+          // Not a valid datetime string
         }
       }
       // Time strings: HH:MM:SS[.nanos][+/-offset] or HH:MM:SS[.nanos]Z

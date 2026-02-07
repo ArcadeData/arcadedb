@@ -1190,8 +1190,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final ParameterExpression paramExpr = (ParameterExpression) expr;
         value = new ParameterReference(paramExpr.getParameterName());
       } else if (expr instanceof ListExpression) {
-        // Evaluate list literals immediately
-        value = expr.evaluate(null, null);
+        // Evaluate list literals immediately, but only if all elements are simple literals
+        if (isStaticListExpression((ListExpression) expr))
+          value = expr.evaluate(null, null);
+        else
+          value = expr; // Keep as Expression for runtime evaluation (e.g., [date({...})])
       } else {
         // Keep dynamic expressions as Expression objects for runtime evaluation
         value = expr;
@@ -1201,6 +1204,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return map;
+  }
+
+  private static boolean isStaticListExpression(final ListExpression listExpr) {
+    for (final Expression element : listExpr.getElements()) {
+      if (!(element instanceof LiteralExpression))
+        return false;
+    }
+    return true;
   }
 
   private List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
