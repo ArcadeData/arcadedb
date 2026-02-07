@@ -21,8 +21,12 @@ package com.arcadedb.query.opencypher.tck;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -360,6 +364,12 @@ public class TCKResultMatcher {
       return ((Byte) value).longValue();
     if (value instanceof Float)
       return ((Float) value).doubleValue();
+    if (value instanceof CypherTemporalValue)
+      return value.toString();
+    if (value instanceof LocalDate)
+      return value.toString();
+    if (value instanceof LocalDateTime)
+      return value.toString();
     if (value instanceof Result) {
       final Result r = (Result) value;
       if (r.isElement())

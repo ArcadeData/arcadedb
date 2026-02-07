@@ -18,10 +18,12 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Expression representing list/array indexing.
@@ -50,13 +52,25 @@ public class ListIndexExpression implements Expression {
       return null;
     }
 
+    // Map/Document property access via bracket notation: map['key']
+    if (indexValue instanceof String) {
+      final String key = (String) indexValue;
+      if (listValue instanceof Map)
+        return ((Map<?, ?>) listValue).get(key);
+      if (listValue instanceof Result)
+        return ((Result) listValue).getProperty(key);
+      if (listValue instanceof Document)
+        return ((Document) listValue).get(key);
+      // For lists with string index, return null (Cypher behavior)
+      return null;
+    }
+
     // Convert index to integer
     final int index;
-    if (indexValue instanceof Number) {
+    if (indexValue instanceof Number)
       index = ((Number) indexValue).intValue();
-    } else {
-      throw new IllegalArgumentException("List index must be a number, got: " + indexValue.getClass().getSimpleName());
-    }
+    else
+      return null;
 
     // Handle list types
     if (listValue instanceof List) {

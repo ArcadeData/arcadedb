@@ -19,9 +19,12 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Map;
 
 /**
@@ -48,6 +51,15 @@ public class PropertyAccessExpression implements Expression {
     } else if (variable instanceof Result) {
       // Handle Result types (nested results)
       return ((Result) variable).getProperty(propertyName);
+    } else if (variable instanceof CypherTemporalValue) {
+      // Handle temporal value property access (e.g., date.year, time.hour)
+      return ((CypherTemporalValue) variable).getTemporalProperty(propertyName);
+    } else if (variable instanceof LocalDate) {
+      // java.time.LocalDate stored in ArcadeDB → wrap in CypherDate for property access
+      return new CypherDate((LocalDate) variable).getTemporalProperty(propertyName);
+    } else if (variable instanceof LocalDateTime) {
+      // java.time.LocalDateTime stored in ArcadeDB → wrap in CypherLocalDateTime for property access
+      return new CypherLocalDateTime((LocalDateTime) variable).getTemporalProperty(propertyName);
     }
     return null;
   }
