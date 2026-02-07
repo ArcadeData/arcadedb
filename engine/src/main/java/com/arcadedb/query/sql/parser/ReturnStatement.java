@@ -45,7 +45,7 @@ public class ReturnStatement extends SimpleExecStatement {
     if (result instanceof Result result1) {
       rs.add(result1);
     } else if (result instanceof Identifiable identifiable) {
-      final ResultInternal res = new ResultInternal((Document) identifiable.getRecord());
+      final ResultInternal res = new ResultInternal(identifiable.getRecord());
       rs.add(res);
     } else if (result instanceof Iterable iterable) {
       for (Object o : iterable) {

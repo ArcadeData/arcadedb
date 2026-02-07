@@ -107,7 +107,7 @@ public class TraverseExecutionPlanner {
       handleInputParamAsTarget(result, target.getInputParam(), context);
     } else if (target.getIndex() != null) {
       handleIndexAsTarget(result, target.getIndex(), context);
-    } else if (target.getRids() != null && target.getRids().size() > 0) {
+    } else if (target.getRids() != null && !target.getRids().isEmpty()) {
       handleRidsAsTarget(result, target.getRids(), context);
     } else if (target.getResultSet() != null) {
       result.chain(new FetchFromResultsetStep(target.getResultSet(), context));

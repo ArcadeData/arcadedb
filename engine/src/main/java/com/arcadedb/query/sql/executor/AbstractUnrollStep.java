@@ -20,7 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 
 /**
  * unwinds a result-set.
@@ -54,26 +56,25 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (localCount >= nRecords) {
+        if (localCount >= nRecords)
           return false;
-        }
-        if (nextElement == null) {
+
+        if (nextElement == null)
           fetchNext(context, nRecords);
-        }
+
         return nextElement != null;
       }
 
       @Override
       public Result next() {
-        if (localCount >= nRecords) {
+        if (localCount >= nRecords)
           throw new NoSuchElementException();
-        }
-        if (nextElement == null) {
+
+        if (nextElement == null)
           fetchNext(context, nRecords);
-        }
-        if (nextElement == null) {
+
+        if (nextElement == null)
           throw new NoSuchElementException();
-        }
 
         final Result result = nextElement;
         localCount++;
@@ -91,20 +92,17 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
         break;
       }
 
-      if (lastResult == null || !lastResult.hasNext()) {
+      if (lastResult == null || !lastResult.hasNext())
         lastResult = getPrev().syncPull(context, n);
-      }
-      if (!lastResult.hasNext()) {
+
+      if (!lastResult.hasNext())
         return;
-      }
 
       final Result nextAggregateItem = lastResult.next();
       nextSubsequence = unroll(nextAggregateItem, context).iterator();
 
     } while (true);
-
   }
 
   protected abstract Collection<Result> unroll(final Result doc, final CommandContext context);
-
 }

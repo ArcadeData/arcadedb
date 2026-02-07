@@ -54,9 +54,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private final   List<IndexCursor>                              nextCursors = new ArrayList<>();
   protected       RangeIndex                                     index;
   protected       BooleanExpression                              condition;
-  private         BinaryCondition                                additionalRangeCondition;
-  private         boolean                                        orderAsc;
-  private         long                                           count       = 0;
+  private       BinaryCondition additionalRangeCondition;
+  private final boolean         orderAsc;
+  private       long            count       = 0;
   private         boolean                                        inited      = false;
   private         IndexCursor                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;

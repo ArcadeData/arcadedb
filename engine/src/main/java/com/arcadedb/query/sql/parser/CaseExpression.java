@@ -168,10 +168,7 @@ public class CaseExpression extends MathExpression {
         return true;
     }
 
-    if (elseExpression != null && elseExpression.isAggregate(ctx))
-      return true;
-
-    return false;
+    return elseExpression != null && elseExpression.isAggregate(ctx);
   }
 
   /**

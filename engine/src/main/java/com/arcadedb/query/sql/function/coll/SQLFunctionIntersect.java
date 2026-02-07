@@ -56,7 +56,7 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
         } else if (value instanceof Iterable iterable) {
           context = iterable.iterator();
         } else {
-          context = Arrays.asList(value).iterator();
+          context = List.of(value).iterator();
         }
       } else {
         Iterator contextIterator = null;

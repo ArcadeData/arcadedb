@@ -23,22 +23,11 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
-import com.arcadedb.query.sql.parser.AndBlock;
-import com.arcadedb.query.sql.parser.BetweenCondition;
-import com.arcadedb.query.sql.parser.BinaryCompareOperator;
-import com.arcadedb.query.sql.parser.BinaryCondition;
-import com.arcadedb.query.sql.parser.BooleanExpression;
-import com.arcadedb.query.sql.parser.EqualsCompareOperator;
-import com.arcadedb.query.sql.parser.Expression;
-import com.arcadedb.query.sql.parser.GeOperator;
-import com.arcadedb.query.sql.parser.GtOperator;
-import com.arcadedb.query.sql.parser.LeOperator;
-import com.arcadedb.query.sql.parser.LtOperator;
-import com.arcadedb.query.sql.parser.PCollection;
+import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.NoSuchElementException;
 
 /**
  * Created by luigidellaquila on 11/08/16.
@@ -53,18 +42,19 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
   final BooleanExpression condition;
 
-  private boolean     inited = false;
+  private boolean     initialized = false;
   private IndexCursor cursor;
 
   public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition,
-      final BinaryCondition additionalRangeCondition,
-      final BooleanExpression ridCondition, final CommandContext context) {
+                             final BinaryCondition additionalRangeCondition,
+                             final BooleanExpression ridCondition, final CommandContext context) {
     this(index, condition, additionalRangeCondition, ridCondition, true, context);
   }
 
   public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition,
-      final BinaryCondition additionalRangeCondition,
-      final BooleanExpression ridCondition, final boolean orderAsc, final CommandContext context) {
+                             final BinaryCondition additionalRangeCondition,
+                             final BooleanExpression ridCondition, final boolean orderAsc,
+                             final CommandContext context) {
     super(context);
     this.index = index;
     this.condition = condition;
@@ -98,7 +88,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
           final ResultInternal result = new ResultInternal(context.getDatabase());
           final Identifiable value = entry.getSecond();
 
-          index.remove(new Object[] { entry.getFirst() }, value);
+          index.remove(new Object[]{entry.getFirst()}, value);
           localCount++;
           nextEntry = loadNextEntry(context);
           return result;
@@ -112,10 +102,10 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   }
 
   private synchronized void init() {
-    if (inited) {
+    if (initialized) {
       return;
     }
-    inited = true;
+    initialized = true;
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       init(condition);
@@ -176,23 +166,25 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   }
 
   private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
-      final boolean toKeyIncluded) {
+                    final boolean toKeyIncluded) {
     final Object secondValue = fromKey.execute((Result) null, context);
     final Object thirdValue = toKey.execute((Result) null, context);
 
     if (index.supportsOrderedIterations()) {
       if (isOrderAsc())
-        cursor = index.range(true, new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
+        cursor = index.range(true, new Object[]{secondValue}, fromKeyIncluded, new Object[]{thirdValue}, toKeyIncluded);
       else
-        cursor = index.range(false, new Object[] { thirdValue }, fromKeyIncluded, new Object[] { secondValue }, toKeyIncluded);
+        cursor = index.range(false, new Object[]{thirdValue}, fromKeyIncluded, new Object[]{secondValue},
+            toKeyIncluded);
     } else if (additional == null && allEqualities((AndBlock) condition)) {
 
       if (isOrderAsc())
-        cursor = index.range(true, new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
+        cursor = index.range(true, new Object[]{secondValue}, fromKeyIncluded, new Object[]{thirdValue}, toKeyIncluded);
       else
-        cursor = index.range(false, new Object[] { thirdValue }, fromKeyIncluded, new Object[] { secondValue }, toKeyIncluded);
+        cursor = index.range(false, new Object[]{thirdValue}, fromKeyIncluded, new Object[]{secondValue},
+            toKeyIncluded);
 
-      cursor = index.iterator(isOrderAsc(), new Object[] { secondValue }, true);
+      cursor = index.iterator(isOrderAsc(), new Object[]{secondValue}, true);
     } else {
       throw new UnsupportedOperationException("Cannot evaluate " + this.condition + " on index " + index);
     }
@@ -225,9 +217,9 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     final Object secondValue = second.execute((Result) null, context);
     final Object thirdValue = third.execute((Result) null, context);
     if (isOrderAsc())
-      cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
+      cursor = index.range(true, new Object[]{secondValue}, true, new Object[]{thirdValue}, true);
     else
-      cursor = index.range(false, new Object[] { thirdValue }, true, new Object[] { secondValue }, true);
+      cursor = index.range(false, new Object[]{thirdValue}, true, new Object[]{secondValue}, true);
   }
 
   private void processBinaryCondition() {
@@ -243,15 +235,15 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   private IndexCursor createCursor(final BinaryCompareOperator operator, final Object value) {
     final boolean orderAsc = isOrderAsc();
     if (operator instanceof EqualsCompareOperator) {
-      return index.iterator(orderAsc, new Object[] { value }, true);
+      return index.iterator(orderAsc, new Object[]{value}, true);
     } else if (operator instanceof GeOperator) {
-      return index.iterator(orderAsc, new Object[] { value }, true);
+      return index.iterator(orderAsc, new Object[]{value}, true);
     } else if (operator instanceof GtOperator) {
-      return index.iterator(orderAsc, new Object[] { value }, false);
+      return index.iterator(orderAsc, new Object[]{value}, false);
     } else if (operator instanceof LeOperator) {
-      return index.iterator(orderAsc, new Object[] { value }, true);
+      return index.iterator(orderAsc, new Object[]{value}, true);
     } else if (operator instanceof LtOperator) {
-      return index.iterator(orderAsc, new Object[] { value }, false);
+      return index.iterator(orderAsc, new Object[]{value}, false);
     } else {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
@@ -265,10 +257,9 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     final PCollection result = new PCollection(-1);
     for (final BooleanExpression exp : keyCondition.getSubBlocks()) {
       if (exp instanceof BinaryCondition binaryCondition) {
-        final BinaryCondition binaryCond = binaryCondition;
-        final BinaryCompareOperator operator = binaryCond.getOperator();
+        final BinaryCompareOperator operator = binaryCondition.getOperator();
         if ((operator instanceof EqualsCompareOperator) || (operator instanceof GtOperator) || (operator instanceof GeOperator)) {
-          result.add(binaryCond.getRight());
+          result.add(binaryCondition.getRight());
         } else if (additional != null) {
           result.add(additional.getRight());
         }
@@ -298,7 +289,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   }
 
   private boolean indexKeyFromIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
-    final BooleanExpression exp = keyCondition.getSubBlocks().get(keyCondition.getSubBlocks().size() - 1);
+    final BooleanExpression exp = keyCondition.getSubBlocks().getLast();
     if (exp instanceof BinaryCondition binaryCondition) {
       final BinaryCompareOperator operator = binaryCondition.getOperator();
       final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();

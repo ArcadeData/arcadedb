@@ -27,8 +27,8 @@ import com.arcadedb.query.sql.parser.Identifier;
  * Created by luigidellaquila on 14/02/17.
  */
 public class MoveVertexStep extends AbstractExecutionStep {
-  private String targetBucket;
-  private String targetType;
+  private       String targetBucket;
+  private final String targetType;
 
   public MoveVertexStep(final Identifier targetType, final Bucket targetBucket, final CommandContext ctx) {
     super(ctx);

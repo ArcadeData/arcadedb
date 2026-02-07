@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.function.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import java.util.List;
 
 /**
  * Quantizes a float vector to int8 (byte) representation using min-max scaling.
@@ -102,29 +101,8 @@ public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   /**
-   * Result object containing quantized bytes and metadata.
-   */
-  public static class QuantizationResult {
-    public final byte[] quantized;
-    public final float min;
-    public final float max;
-
-    public QuantizationResult(final byte[] quantized, final float min, final float max) {
-      this.quantized = quantized;
-      this.min = min;
-      this.max = max;
-    }
-
-    public byte[] getQuantized() {
-      return quantized;
-    }
-
-    public float getMin() {
-      return min;
-    }
-
-    public float getMax() {
-      return max;
-    }
+     * Result object containing quantized bytes and metadata.
+     */
+    public record QuantizationResult(byte[] quantized, float min, float max) {
   }
 }

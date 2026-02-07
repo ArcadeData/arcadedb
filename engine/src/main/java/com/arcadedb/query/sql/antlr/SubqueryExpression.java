@@ -89,7 +89,7 @@ public class SubqueryExpression extends BaseExpression {
     final StringBuilder sb = new StringBuilder();
     sb.append("(").append(statement.toString()).append(")");
     if (modifier != null)
-      sb.append(modifier.toString());
+      sb.append(modifier);
     return sb.toString();
   }
 

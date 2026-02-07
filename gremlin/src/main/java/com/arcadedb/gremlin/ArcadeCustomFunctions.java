@@ -26,13 +26,11 @@ import org.opencypher.gremlin.translation.exception.ConstraintException;
 import org.opencypher.gremlin.translation.exception.CypherExceptions;
 import org.opencypher.gremlin.translation.exception.TypeException;
 
-import java.util.ArrayList;
 import java.util.*;
-import java.util.function.*;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 
-import static java.lang.String.*;
-import static java.util.Arrays.*;
-import static java.util.stream.Collectors.*;
+import static java.util.Arrays.asList;
 
 /**
  * Override Open-Cypher-Gremlin's default CustomFunctions to manage NPE with parameters.
@@ -41,7 +39,7 @@ import static java.util.stream.Collectors.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-@SuppressWarnings({ "unchecked", "WeakerAccess", "ArraysAsListWithZeroOrOneArgument" })
+@SuppressWarnings({"unchecked", "WeakerAccess", "ArraysAsListWithZeroOrOneArgument"})
 public final class ArcadeCustomFunctions {
   private ArcadeCustomFunctions() {
   }
@@ -79,12 +77,12 @@ public final class ArcadeCustomFunctions {
           .map(String::valueOf)
           .map(v -> {
             switch (v.toLowerCase()) {
-            case "true":
-              return true;
-            case "false":
-              return false;
-            default:
-              return Tokens.NULL;
+              case "true":
+                return true;
+              case "false":
+                return false;
+              default:
+                return Tokens.NULL;
             }
           })
           .orElse(Tokens.NULL);
@@ -390,7 +388,7 @@ public final class ArcadeCustomFunctions {
         return new StringBuilder(string).reverse().toString();
       } else {
         throw new TypeException("Expected a string or list value for reverse, but got: %s(%s)".formatted(
-          o.getClass().getSimpleName(), o));
+            o.getClass().getSimpleName(), o));
       }
     };
   }
@@ -405,10 +403,10 @@ public final class ArcadeCustomFunctions {
         return Tokens.NULL;
       } else if (!(a instanceof String) || (!(b instanceof Number))) {
         throw new TypeException("Expected substring(String, Integer, [Integer]), but got: (%s, %s)".formatted(
-          a, b));
+            a, b));
       } else if (args.size() == 3 && (!(args.get(2) instanceof Number))) {
         throw new TypeException("Expected substring(String, Integer, [Integer]), but got: (%s, %s, %s)".formatted(
-          a, b, args.get(2)));
+            a, b, args.get(2)));
       } else if (args.size() == 3) {
         String s = (String) a;
         int endIndex = ((Number) b).intValue() + ((Number) args.get(2)).intValue();
@@ -431,9 +429,9 @@ public final class ArcadeCustomFunctions {
 
         if (!clazzes[i].isInstance(args.get(i))) {
           throw new TypeException("Expected a %s value for <function1>, but got: %s(%s)".formatted(
-            clazzes[i].getSimpleName(),
-            args.get(i).getClass().getSimpleName(),
-            args.get(i)));
+              clazzes[i].getSimpleName(),
+              args.get(i).getClass().getSimpleName(),
+              args.get(i)));
         }
       }
 
@@ -483,7 +481,7 @@ public final class ArcadeCustomFunctions {
       return clazz.cast(o);
     } else {
       throw new TypeException("Expected %s to be %s, but it was %s".formatted(
-        o, clazz.getSimpleName(), o.getClass().getSimpleName()));
+          o, clazz.getSimpleName(), o.getClass().getSimpleName()));
     }
   }
 }

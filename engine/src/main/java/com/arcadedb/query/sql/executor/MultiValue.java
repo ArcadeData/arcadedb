@@ -474,9 +474,9 @@ public class MultiValue {
         } else if (iToAdd instanceof Map<?, ?>) {
           // MAP
           coll.add(iToAdd);
-        } else if (iToAdd instanceof Iterator<?>) {
+        } else if (iToAdd instanceof final Iterator<?> it) {
           // ITERATOR
-          for (final Iterator<?> it = (Iterator<?>) iToAdd; it.hasNext(); )
+          for (; it.hasNext(); )
             coll.add(it.next());
         } else
           coll.add(iToAdd);

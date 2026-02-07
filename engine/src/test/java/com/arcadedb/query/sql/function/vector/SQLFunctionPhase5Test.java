@@ -45,9 +45,9 @@ class SQLFunctionPhase5Test extends TestHelper {
             context);
 
     assertThat(result).isNotNull();
-    assertThat(result.getMin()).isEqualTo(0.1f);
-    assertThat(result.getMax()).isEqualTo(0.9f);
-    assertThat(result.getQuantized().length).isEqualTo(3);
+    assertThat(result.min()).isEqualTo(0.1f);
+    assertThat(result.max()).isEqualTo(0.9f);
+    assertThat(result.quantized().length).isEqualTo(3);
   }
 
   @Test
@@ -63,10 +63,10 @@ class SQLFunctionPhase5Test extends TestHelper {
             context);
 
     assertThat(result).isNotNull();
-    assertThat(result.getMin()).isEqualTo(0.5f);
-    assertThat(result.getMax()).isEqualTo(0.5f);
+    assertThat(result.min()).isEqualTo(0.5f);
+    assertThat(result.max()).isEqualTo(0.5f);
     // When all values are same, they should quantize to 0
-    for (final byte b : result.getQuantized()) {
+    for (final byte b : result.quantized()) {
       assertThat((int) b).isEqualTo(0);
     }
   }
@@ -90,7 +90,7 @@ class SQLFunctionPhase5Test extends TestHelper {
 
     // Original: 1000 floats * 4 bytes = 4000 bytes
     // Quantized: 1000 bytes + 2 floats metadata = ~1008 bytes
-    assertThat(result.getQuantized().length).isEqualTo(1000);
+    assertThat(result.quantized().length).isEqualTo(1000);
   }
 
   @Test
@@ -106,10 +106,10 @@ class SQLFunctionPhase5Test extends TestHelper {
             context);
 
     assertThat(result).isNotNull();
-    assertThat(result.getMedian()).isEqualTo(0.5f);
-    assertThat(result.getOriginalLength()).isEqualTo(3);
+    assertThat(result.median()).isEqualTo(0.5f);
+    assertThat(result.originalLength()).isEqualTo(3);
     // 3 bits need 1 byte
-    assertThat(result.getPacked().length).isEqualTo(1);
+    assertThat(result.packed().length).isEqualTo(1);
   }
 
   @Test
@@ -128,7 +128,7 @@ class SQLFunctionPhase5Test extends TestHelper {
 
     assertThat(result).isNotNull();
     // Packed bits should be 110 (bits 1 and 2 set, bit 0 not set)
-    assertThat((result.getPacked()[0] & 0xFF) & 0b00000110).isNotZero();
+    assertThat((result.packed()[0] & 0xFF) & 0b00000110).isNotZero();
   }
 
   @Test
@@ -150,7 +150,7 @@ class SQLFunctionPhase5Test extends TestHelper {
 
     // Original: 1000 floats * 4 bytes = 4000 bytes
     // Binary quantized: 1000 bits / 8 = 125 bytes + metadata
-    assertThat(result.getPacked().length).isLessThanOrEqualTo(125 + 1);
+    assertThat(result.packed().length).isLessThanOrEqualTo(125 + 1);
   }
 
   @Test
@@ -169,7 +169,7 @@ class SQLFunctionPhase5Test extends TestHelper {
 
     // Dequantize back
     final float[] recovered = (float[]) dequantize.execute(null, null, null,
-        new Object[] { quantized.getQuantized(), quantized.getMin(), quantized.getMax() },
+        new Object[] { quantized.quantized(), quantized.min(), quantized.max() },
         context);
 
     assertThat(recovered).isNotNull();
@@ -220,7 +220,7 @@ class SQLFunctionPhase5Test extends TestHelper {
 
     // Compute approximate distance
     final float distance = (float) function.execute(null, null, null,
-        new Object[] { q1.getQuantized(), q2.getQuantized(), "INT8" },
+        new Object[] { q1.quantized(), q2.quantized(), "INT8" },
         context);
 
     assertThat(distance).isGreaterThan(0);
@@ -411,7 +411,7 @@ class SQLFunctionPhase5Test extends TestHelper {
 
     // Dequantize
     final float[] recovered = (float[]) dequantize.execute(null, null, null,
-        new Object[] { q.getQuantized(), q.getMin(), q.getMax() },
+        new Object[] { q.quantized(), q.min(), q.max() },
         context);
 
     // Check recovery (with tolerance for quantization loss)

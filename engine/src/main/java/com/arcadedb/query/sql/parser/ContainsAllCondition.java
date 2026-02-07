@@ -233,7 +233,7 @@ public class ContainsAllCondition extends BooleanExpression {
       }
     }
 
-    if (fieldName != null && info.getField().equals(fieldName)) {
+    if (info.getField().equals(fieldName)) {
       // CONTAINSALL operator only works with BY-ITEM indexes, not regular list indexes
       if (info.isIndexByItem() && right != null && right.isEarlyCalculated(info.getContext())) {
         // For CONTAINSALL with multiple values, the current index execution merges results (UNION)

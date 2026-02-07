@@ -485,7 +485,7 @@ public class Expression extends SimpleNode {
 
   public String prettyPrint(final int depth, final int indent) {
     if (mathExpression instanceof ParenthesisExpression expression && expression.getExecutionPlan() != null)
-      return toString() + "\n" + expression.getExecutionPlan().prettyPrint(depth + 1, indent);
+      return this + "\n" + expression.getExecutionPlan().prettyPrint(depth + 1, indent);
 
     return toString();
   }

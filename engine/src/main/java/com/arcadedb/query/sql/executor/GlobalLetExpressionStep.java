@@ -75,8 +75,7 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
     result.append("\n").append(spaces).append("  + ").append(varname).append(" = ");
 
     // Check if the expression contains a ParenthesisExpression with a subquery
-    if (expression.mathExpression instanceof ParenthesisExpression) {
-      final ParenthesisExpression parenthesisExpr = (ParenthesisExpression) expression.mathExpression;
+    if (expression.mathExpression instanceof final ParenthesisExpression parenthesisExpr) {
 
       // First check if there's an already executed plan
       InternalExecutionPlan executionPlan = parenthesisExpr.getExecutionPlan();

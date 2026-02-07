@@ -111,7 +111,7 @@ public class MergeRelationship implements CypherProcedure {
 
     // Create new relationship with both matchProps and createProps
     // Note: using bidirectional=true so the edge can be traversed from both ends
-    final MutableEdge newEdge = startNode.newEdge(relType, endNode, Boolean.TRUE, new Object[0]);
+    final MutableEdge newEdge = startNode.newEdge(relType, endNode);
 
     // Apply matchProps
     if (matchProps != null) {

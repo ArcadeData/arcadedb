@@ -119,7 +119,7 @@ public class CreateVertexStatement extends Statement {
 
   @Override
   public CreateVertexStatement copy() {
-    CreateVertexStatement result = null;
+    CreateVertexStatement result;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (final Exception e) {

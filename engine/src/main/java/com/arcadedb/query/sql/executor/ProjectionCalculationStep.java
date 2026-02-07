@@ -78,7 +78,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
     if ( context.isProfiling() )
       result += " (" + getCostFormatted() + ")";
 
-    result += ("\n" + spaces + "  " + projection.toString() + "");
+    result += ("\n" + spaces + "  " + projection.toString());
     return result;
   }
 

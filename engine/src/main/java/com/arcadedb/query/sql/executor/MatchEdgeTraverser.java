@@ -203,7 +203,7 @@ public class MatchEdgeTraverser {
 
       if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(
           clusterId, startingPoint) && matchesRid(iCommandContext, targetRid, startingPoint)) {
-        final ResultInternal rs = new ResultInternal((Document) startingPoint.getRecord());
+        final ResultInternal rs = new ResultInternal(startingPoint.getRecord());
         // set traversal depth in the metadata
         rs.setMetadata("$depth", depth);
         // set traversal path in the metadata

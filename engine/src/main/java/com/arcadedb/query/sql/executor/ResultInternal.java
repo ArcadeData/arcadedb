@@ -384,10 +384,9 @@ public class ResultInternal implements Result {
     if (this == other)
       return true;
 
-    if (!(other instanceof ResultInternal))
+    if (!(other instanceof final ResultInternal otherResult))
       return false;
 
-    final ResultInternal otherResult = (ResultInternal) other;
     if (element != null) {
       if (otherResult.getElement().isEmpty())
         return false;

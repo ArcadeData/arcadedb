@@ -23,7 +23,6 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Arrays;
-import java.util.List;
 
 /**
  * Quantizes a float vector to binary (1-bit per dimension) using median threshold.
@@ -106,46 +105,25 @@ public class SQLFunctionVectorQuantizeBinary extends SQLFunctionVectorAbstract {
   }
 
   /**
-   * Result of binary quantization containing packed bits and metadata.
-   */
-  public static class BinaryQuantizationResult {
-    public final byte[] packed;
-    public final float median;
-    public final int originalLength;
-
-    public BinaryQuantizationResult(final byte[] packed, final float median, final int originalLength) {
-      this.packed = packed;
-      this.median = median;
-      this.originalLength = originalLength;
-    }
-
-    public byte[] getPacked() {
-      return packed;
-    }
-
-    public float getMedian() {
-      return median;
-    }
-
-    public int getOriginalLength() {
-      return originalLength;
-    }
+     * Result of binary quantization containing packed bits and metadata.
+     */
+    public record BinaryQuantizationResult(byte[] packed, float median, int originalLength) {
 
     /**
-     * Calculate Hamming distance to another binary quantized vector.
-     */
-    public int hammingDistance(final BinaryQuantizationResult other) {
-      if (this.originalLength != other.originalLength)
-        throw new IllegalArgumentException("Vectors must have same length");
+       * Calculate Hamming distance to another binary quantized vector.
+       */
+      public int hammingDistance(final BinaryQuantizationResult other) {
+        if (this.originalLength != other.originalLength)
+          throw new IllegalArgumentException("Vectors must have same length");
 
-      int distance = 0;
-      // Count differing bits
-      for (int i = 0; i < Math.min(packed.length, other.packed.length); i++) {
-        // XOR gives 1 for differing bits, count the 1s
-        distance += Integer.bitCount(packed[i] ^ other.packed[i]);
+        int distance = 0;
+        // Count differing bits
+        for (int i = 0; i < Math.min(packed.length, other.packed.length); i++) {
+          // XOR gives 1 for differing bits, count the 1s
+          distance += Integer.bitCount(packed[i] ^ other.packed[i]);
+        }
+
+        return distance;
       }
-
-      return distance;
     }
-  }
 }
