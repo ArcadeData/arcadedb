@@ -202,16 +202,23 @@ public class CypherDuration implements CypherTemporalValue {
 
     if (seconds != 0 || nanosAdjustment != 0) {
       sb.append('T');
-      final long h = seconds / 3600;
-      final long m = (seconds % 3600) / 60;
-      final long s = seconds % 60;
+      // When seconds < 0 and nanosAdjustment > 0, the effective time is (seconds + nanos/1e9),
+      // which is less negative than seconds alone. We need to use the effective value for h/m extraction.
+      long effectiveSecs = seconds;
+      int effectiveNanos = nanosAdjustment;
+      if (seconds < 0 && nanosAdjustment > 0) {
+        effectiveSecs = seconds + 1;
+        effectiveNanos = 1_000_000_000 - nanosAdjustment;
+      }
+      final long h = effectiveSecs / 3600;
+      final long m = (effectiveSecs % 3600) / 60;
+      final long s = effectiveSecs % 60;
       if (h != 0)
         sb.append(h).append('H');
       if (m != 0)
         sb.append(m).append('M');
-      if (s != 0 || nanosAdjustment != 0) {
-        appendSecondsWithNanos(sb, s, nanosAdjustment);
-      }
+      if (s != 0 || effectiveNanos != 0)
+        appendSecondsWithFraction(sb, s, effectiveNanos, seconds < 0 && nanosAdjustment > 0);
     }
 
     // Empty duration
@@ -222,29 +229,20 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   /**
-   * Append seconds with nanosecond fraction. Handles negative seconds with positive nanos
-   * and vice versa correctly (e.g., -2 seconds + 1ms = -1.999S).
+   * Append seconds with nanosecond fraction.
+   * When negativeAdjusted is true, s and nanos represent the already-adjusted values
+   * (s is negative, nanos is the positive fractional part of the negative number).
    */
-  private static void appendSecondsWithNanos(final StringBuilder sb, final long s, final int nanos) {
+  private static void appendSecondsWithFraction(final StringBuilder sb, final long s, final int nanos,
+      final boolean negativeAdjusted) {
     if (nanos == 0) {
       sb.append(s).append('S');
       return;
     }
-    // Both same sign or one is zero — simple case
-    if (s >= 0 && nanos > 0) {
+    if (s == 0 && negativeAdjusted)
+      sb.append("-0.").append(formatNanos(nanos)).append('S');
+    else
       sb.append(s).append('.').append(formatNanos(nanos)).append('S');
-    } else if (s <= 0 && nanos > 0 && s != 0) {
-      // Negative seconds + positive nanos: e.g., -2s + 1ms = -1.999s
-      final long adjSec = s + 1;
-      final int adjNanos = 1_000_000_000 - nanos;
-      if (adjSec == 0)
-        sb.append("-0.").append(formatNanos(adjNanos)).append('S');
-      else
-        sb.append(adjSec).append('.').append(formatNanos(adjNanos)).append('S');
-    } else {
-      // nanos should already be normalized positive, but handle edge cases
-      sb.append(s).append('.').append(formatNanos(nanos)).append('S');
-    }
   }
 
   private static String formatNanos(final int nanos) {

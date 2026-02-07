@@ -26,8 +26,9 @@ import java.util.List;
  * <p>
  * Examples:
  * - SET n.name = 'Alice'
- * - SET n.name = 'Alice', n.age = 30
- * - SET r.weight = 1.5
+ * - SET n = {name: 'Alice', age: 30}
+ * - SET n += {name: 'Alice'}
+ * - SET n:Label
  */
 public class SetClause {
   private final List<SetItem> items;
@@ -44,19 +45,48 @@ public class SetClause {
     return items == null || items.isEmpty();
   }
 
+  public enum SetType {
+    PROPERTY,       // SET n.prop = value
+    REPLACE_MAP,    // SET n = {map}
+    MERGE_MAP,      // SET n += {map}
+    LABELS          // SET n:Label:Label2
+  }
+
   /**
-   * Represents a single property assignment in a SET clause.
-   * Example: n.name = 'Alice'
+   * Represents a single item in a SET clause.
    */
   public static class SetItem {
     private final String variable;
     private final String property;
     private final Expression valueExpression;
+    private final SetType type;
+    private final List<String> labels;
 
+    /** Property assignment: SET n.prop = value */
     public SetItem(final String variable, final String property, final Expression valueExpression) {
       this.variable = variable;
       this.property = property;
       this.valueExpression = valueExpression;
+      this.type = SetType.PROPERTY;
+      this.labels = null;
+    }
+
+    /** Map replacement (SET n = expr) or map merge (SET n += expr) */
+    public SetItem(final String variable, final Expression valueExpression, final SetType type) {
+      this.variable = variable;
+      this.property = null;
+      this.valueExpression = valueExpression;
+      this.type = type;
+      this.labels = null;
+    }
+
+    /** Label assignment: SET n:Label */
+    public SetItem(final String variable, final List<String> labels) {
+      this.variable = variable;
+      this.property = null;
+      this.valueExpression = null;
+      this.type = SetType.LABELS;
+      this.labels = labels;
     }
 
     public String getVariable() {
@@ -69,6 +99,14 @@ public class SetClause {
 
     public Expression getValueExpression() {
       return valueExpression;
+    }
+
+    public SetType getType() {
+      return type;
+    }
+
+    public List<String> getLabels() {
+      return labels;
     }
   }
 }

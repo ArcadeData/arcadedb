@@ -44,7 +44,7 @@ public class PropertyAccessExpression implements Expression {
   public Object evaluate(final Result result, final CommandContext context) {
     final Object variable = result.getProperty(variableName);
     if (variable instanceof Document) {
-      return ((Document) variable).get(propertyName);
+      return convertFromStorage(((Document) variable).get(propertyName));
     } else if (variable instanceof Map) {
       // Handle Map types (e.g., from UNWIND with parameter maps)
       return ((Map<?, ?>) variable).get(propertyName);
@@ -80,5 +80,46 @@ public class PropertyAccessExpression implements Expression {
 
   public String getPropertyName() {
     return propertyName;
+  }
+
+  /**
+   * Convert ArcadeDB-stored values back to Cypher temporal types.
+   * Duration, LocalTime, and Time are stored as Strings because ArcadeDB
+   * doesn't have native binary types for them.
+   */
+  private static Object convertFromStorage(final Object value) {
+    if (value instanceof LocalDate ld)
+      return new CypherDate(ld);
+    if (value instanceof LocalDateTime ldt)
+      return new CypherLocalDateTime(ldt);
+    if (value instanceof String str) {
+      // Duration strings start with P (ISO-8601)
+      if (str.length() > 1 && str.charAt(0) == 'P') {
+        try {
+          return CypherDuration.parse(str);
+        } catch (final Exception ignored) {
+          // Not a valid duration string
+        }
+      }
+      // Time strings: HH:MM:SS[.nanos][+/-offset] or HH:MM:SS[.nanos]Z
+      if (str.length() >= 8 && str.charAt(2) == ':' && str.charAt(5) == ':') {
+        // Check if it has a timezone offset
+        final boolean hasOffset = str.contains("+") || str.contains("-") || str.endsWith("Z");
+        if (hasOffset) {
+          try {
+            return CypherTime.parse(str);
+          } catch (final Exception ignored) {
+            // Not a valid time string
+          }
+        } else {
+          try {
+            return CypherLocalTime.parse(str);
+          } catch (final Exception ignored) {
+            // Not a valid local time string
+          }
+        }
+      }
+    }
+    return value;
   }
 }

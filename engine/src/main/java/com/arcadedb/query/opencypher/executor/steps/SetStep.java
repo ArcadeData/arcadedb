@@ -21,6 +21,10 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -33,18 +37,13 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Execution step for SET clause.
- * Updates properties on existing vertices and edges.
- * <p>
- * Examples:
- * - MATCH (n:Person {name: 'Alice'}) SET n.age = 31
- * - MATCH (n:Person) WHERE n.age > 30 SET n.senior = true
- * - MATCH (a)-[r:KNOWS]->(b) SET r.weight = 1.5
- * <p>
- * The SET step modifies documents in place and passes them through to the next step.
+ * Supports: SET n.prop = value, SET n = {map}, SET n += {map}, SET n:Label
  */
 public class SetStep extends AbstractExecutionStep {
   private final SetClause setClause;
@@ -69,50 +68,33 @@ public class SetStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (bufferIndex < buffer.size()) {
+        if (bufferIndex < buffer.size())
           return true;
-        }
-
-        if (finished) {
+        if (finished)
           return false;
-        }
-
-        // Fetch more results
         fetchMore(nRecords);
         return bufferIndex < buffer.size();
       }
 
       @Override
       public Result next() {
-        if (!hasNext()) {
+        if (!hasNext())
           throw new NoSuchElementException();
-        }
         return buffer.get(bufferIndex++);
       }
 
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
-
-        // Initialize prevResults on first call
-        if (prevResults == null) {
+        if (prevResults == null)
           prevResults = prev.syncPull(context, nRecords);
-        }
-
-        // Process each input result
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
-
-          // Apply SET operations to this result
           applySetOperations(inputResult);
-
-          // Pass through the modified result
           buffer.add(inputResult);
         }
-
-        if (!prevResults.hasNext()) {
+        if (!prevResults.hasNext())
           finished = true;
-        }
       }
 
       @Override
@@ -122,91 +104,160 @@ public class SetStep extends AbstractExecutionStep {
     };
   }
 
-  /**
-   * Applies all SET operations to a result.
-   *
-   * @param result the result containing variables to update
-   */
   private void applySetOperations(final Result result) {
-    if (setClause == null || setClause.isEmpty()) {
+    if (setClause == null || setClause.isEmpty())
       return;
-    }
 
-    // Check if we're already in a transaction
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
-    boolean success = false;
 
     try {
-      // Begin transaction if not already active
-      if (!wasInTransaction) {
+      if (!wasInTransaction)
         context.getDatabase().begin();
-      }
 
       for (final SetClause.SetItem item : setClause.getItems()) {
-        final String variable = item.getVariable();
-        final String property = item.getProperty();
-        final Expression valueExpression = item.getValueExpression();
-
-        // Get the object from the result
-        final Object obj = result.getProperty(variable);
-        if (obj == null) {
-          // Variable not found in result - skip this SET item
-          continue;
+        switch (item.getType()) {
+          case PROPERTY:
+            applyPropertySet(item, result);
+            break;
+          case REPLACE_MAP:
+            applyReplaceMap(item, result);
+            break;
+          case MERGE_MAP:
+            applyMergeMap(item, result);
+            break;
+          case LABELS:
+            applyLabels(item, result);
+            break;
         }
-
-        if (!(obj instanceof Document)) {
-          // Not a document - skip
-          continue;
-        }
-
-        final Document doc = (Document) obj;
-
-        // Make document mutable
-        final MutableDocument mutableDoc = doc.modify();
-
-        // Evaluate the value expression and set the property
-        final Object value = evaluator.evaluate(valueExpression, result, context);
-        mutableDoc.set(property, value);
-
-        // Save the modified document
-        mutableDoc.save();
-
-        // Update the result with the modified document
-        ((ResultInternal) result).setProperty(variable, mutableDoc);
       }
 
-      success = true;
-
-      // Commit transaction if we started it
-      if (!wasInTransaction) {
+      if (!wasInTransaction)
         context.getDatabase().commit();
-      }
     } catch (final Exception e) {
-      // Rollback if we started the transaction
-      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
+      if (!wasInTransaction && context.getDatabase().isTransactionActive())
         context.getDatabase().rollback();
-      }
       throw e;
     }
   }
 
+  private void applyPropertySet(final SetClause.SetItem item, final Result result) {
+    final Object obj = result.getProperty(item.getVariable());
+    if (!(obj instanceof Document doc))
+      return;
+
+    final MutableDocument mutableDoc = doc.modify();
+    final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
+    if (value == null)
+      mutableDoc.remove(item.getProperty());
+    else
+      mutableDoc.set(item.getProperty(), value);
+    mutableDoc.save();
+    ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+  }
+
+  @SuppressWarnings("unchecked")
+  private void applyReplaceMap(final SetClause.SetItem item, final Result result) {
+    final Object obj = result.getProperty(item.getVariable());
+    if (!(obj instanceof Document doc))
+      return;
+
+    final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
+    if (!(mapValue instanceof Map))
+      return;
+
+    final Map<String, Object> map = (Map<String, Object>) mapValue;
+    final MutableDocument mutableDoc = doc.modify();
+
+    // Remove all existing properties except internal ones
+    final Set<String> existingProps = new java.util.HashSet<>(mutableDoc.getPropertyNames());
+    for (final String prop : existingProps) {
+      if (!prop.startsWith("@"))
+        mutableDoc.remove(prop);
+    }
+
+    // Set new properties from map (skip null values - they mean "remove")
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      if (entry.getValue() != null)
+        mutableDoc.set(entry.getKey(), entry.getValue());
+    }
+
+    mutableDoc.save();
+    ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+  }
+
+  @SuppressWarnings("unchecked")
+  private void applyMergeMap(final SetClause.SetItem item, final Result result) {
+    final Object obj = result.getProperty(item.getVariable());
+    if (!(obj instanceof Document doc))
+      return;
+
+    final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
+    if (!(mapValue instanceof Map))
+      return;
+
+    final Map<String, Object> map = (Map<String, Object>) mapValue;
+    final MutableDocument mutableDoc = doc.modify();
+
+    // Merge: add/update properties from map, null removes
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      if (entry.getValue() == null)
+        mutableDoc.remove(entry.getKey());
+      else
+        mutableDoc.set(entry.getKey(), entry.getValue());
+    }
+
+    mutableDoc.save();
+    ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+  }
+
+  private void applyLabels(final SetClause.SetItem item, final Result result) {
+    final Object obj = result.getProperty(item.getVariable());
+    if (!(obj instanceof Vertex vertex))
+      return;
+
+    // Get existing labels and add new ones
+    final List<String> existingLabels = Labels.getLabels(vertex);
+    final List<String> allLabels = new ArrayList<>(existingLabels);
+    for (final String label : item.getLabels())
+      if (!allLabels.contains(label))
+        allLabels.add(label);
+
+    // Create the composite type for the combined labels
+    final String newTypeName = Labels.ensureCompositeType(
+        context.getDatabase().getSchema(), allLabels);
+
+    // If the type hasn't changed, nothing to do
+    if (vertex.getTypeName().equals(newTypeName))
+      return;
+
+    // Create new vertex with the composite type, copy all properties
+    final MutableVertex newVertex = context.getDatabase().newVertex(newTypeName);
+    for (final String prop : vertex.getPropertyNames())
+      newVertex.set(prop, vertex.get(prop));
+    newVertex.save();
+
+    // Copy edges from old vertex to new vertex
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
+      newVertex.newEdge(edge.getTypeName(), edge.getVertex(Vertex.DIRECTION.IN));
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+      edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex);
+
+    // Delete old vertex
+    vertex.delete();
+
+    ((ResultInternal) result).setProperty(item.getVariable(), newVertex);
+  }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder builder = new StringBuilder();
-    final String ind = getIndent(depth, indent);
+    final String ind = "  ".repeat(Math.max(0, depth * indent));
     builder.append(ind);
     builder.append("+ SET");
-    if (setClause != null && !setClause.isEmpty()) {
+    if (setClause != null && !setClause.isEmpty())
       builder.append(" (").append(setClause.getItems().size()).append(" items)");
-    }
-    if (context.isProfiling()) {
+    if (context.isProfiling())
       builder.append(" (").append(getCostFormatted()).append(")");
-    }
     return builder.toString();
-  }
-
-  private static String getIndent(final int depth, final int indent) {
-    return "  ".repeat(Math.max(0, depth * indent));
   }
 }
