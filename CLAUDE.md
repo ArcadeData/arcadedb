@@ -19,8 +19,11 @@ Before writing any code:
 General design principles:
 - reuse existing components whenever is possible
 - don't use fully qualified names if possible, always import the class and just use the name
-- don't include a new dependency unless is strictly necessary, but they must be Open Source and free to use (MIT, Apache, BSD or similar licenses)
-- for Studio (webapp), limit to jquery and bootsptrap 5. If necessary use 3rd party libs, but they must be Open Source and free to use (MIT, Apache, BSD or similar licenses)
+- don't include a new dependency unless is strictly necessary, and they MUST be Apache 2.0 compatible:
+  - ✅ ALLOWED: Apache 2.0, MIT, BSD (2/3-Clause), EPL 1.0/2.0, UPL 1.0, EDL 1.0, LGPL 2.1+ (for libraries only), CC0/Public Domain
+  - ❌ FORBIDDEN: GPL, AGPL, proprietary licenses without explicit permission, SSPL, Commons Clause
+  - When adding a dependency, you MUST update ATTRIBUTIONS.md and, if Apache-licensed with a NOTICE file, incorporate required notices into the main NOTICE file
+- for Studio (webapp), limit to jquery and bootsptrap 5. If necessary use 3rd party libs, but they must be Apache 2.0 compatible (see allowed licenses above)
 - if you need to use JSON, use the class com.arcadedb.serializer.json.JSONObject. Leverage the getter methods that accept the default value as 2nd argument, so you don't need to check if they present or not null = less boilerplate code
 - same thing for JSON arrays: use com.arcadedb.serializer.json.JSONArray class
 - code styles:

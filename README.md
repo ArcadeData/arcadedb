@@ -57,11 +57,11 @@
 	<a href="https://blog.arcadedb.com/"><img height="25" src="studio/src/main/resources/static/images/social/blog.svg" alt="Blog"></a>
 </p>
 
-ArcadeDB is a Multi-Model DBMS (created originally as a fork
-from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand-new
-engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
-minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java21+ but only using low level API to use advanced
-mechanical sympathy techniques and a reduced pressure of the Garbage Collector. It's highly optimized for extreme performance. Runs
+ArcadeDB is a Multi-Model DBMS created by Luca Garulli, the same founder of [OrientDB](https://github.com/orientechnologies/orientdb),
+after SAP's acquisition. Written from scratch with a brand-new engine made of Alien Technology, ArcadeDB is able to crunch millions
+of records per second on common hardware with minimal resource usage. ArcadeDB reuses OrientDB's SQL engine (heavily modified) and
+some utility classes. It's written in LLJ: Low Level Java - still Java21+ but only using low level APIs to leverage advanced
+mechanical sympathy techniques and reduce Garbage Collector pressure. Highly optimized for extreme performance, it runs
 from a Raspberry Pi to multiple servers on the cloud.
 
 ArcadeDB is fully transactional DBMS with support for ACID transactions, structured and unstructured data, native graph engine (no
@@ -174,11 +174,16 @@ Join our growing community around the world, for ideas, discussions and help reg
 
 For security issues kindly email us at support@arcadedb.com instead of posting a public issue on GitHub.
 
-### License
+### License and Attribution
 
 ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). If you need commercial
 support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both
 Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
+
+For third-party attributions and copyright notices, see:
+- [NOTICE](NOTICE) - Required legal attributions
+- [ATTRIBUTIONS.md](ATTRIBUTIONS.md) - Detailed third-party acknowledgments
+- [LICENSE](LICENSE) - Full license text
 
 ### Thanks To
 
