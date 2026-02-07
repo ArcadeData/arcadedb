@@ -349,6 +349,7 @@ public final class TemporalUtil {
     final boolean hasNs = map.containsKey("nanosecond");
     if (!hasMs && !hasUs && !hasNs)
       return defaultNanos;
+
     int nanos = 0;
     if (hasMs)
       nanos += ((Number) map.get("millisecond")).intValue() * 1_000_000;
