@@ -30,6 +30,14 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 
+import com.arcadedb.query.opencypher.temporal.*;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -201,6 +209,20 @@ public class CypherFunctionFactory {
       case "tostring", "tointeger", "tofloat", "toboolean" -> true;
       // Aggregation functions
       case "collect" -> true;
+      // Temporal constructor functions
+      case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
+      // Temporal truncation functions
+      case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" -> true;
+      // Temporal epoch functions
+      case "datetime.fromepoch", "datetime.fromepochmillis" -> true;
+      // Duration calculation functions
+      case "duration.between", "duration.inmonths", "duration.indays", "duration.inseconds" -> true;
+      // Temporal clock functions (realtime/statement/transaction are aliases for current instant)
+      case "date.realtime", "date.statement", "date.transaction" -> true;
+      case "localtime.realtime", "localtime.statement", "localtime.transaction" -> true;
+      case "time.realtime", "time.statement", "time.transaction" -> true;
+      case "localdatetime.realtime", "localdatetime.statement", "localdatetime.transaction" -> true;
+      case "datetime.realtime", "datetime.statement", "datetime.transaction" -> true;
       default -> false;
     };
   }
@@ -248,6 +270,33 @@ public class CypherFunctionFactory {
       case "toboolean" -> new ToBooleanFunction();
       // Aggregation functions
       case "collect" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
+      // Temporal constructor functions
+      case "date" -> new DateConstructorFunction();
+      case "localtime" -> new LocalTimeConstructorFunction();
+      case "time" -> new TimeConstructorFunction();
+      case "localdatetime" -> new LocalDateTimeConstructorFunction();
+      case "datetime" -> new DateTimeConstructorFunction();
+      case "duration" -> new DurationConstructorFunction();
+      // Temporal truncation functions
+      case "date.truncate" -> new DateTruncateFunction();
+      case "localtime.truncate" -> new LocalTimeTruncateFunction();
+      case "time.truncate" -> new TimeTruncateFunction();
+      case "localdatetime.truncate" -> new LocalDateTimeTruncateFunction();
+      case "datetime.truncate" -> new DateTimeTruncateFunction();
+      // Temporal epoch functions
+      case "datetime.fromepoch" -> new DateTimeFromEpochFunction();
+      case "datetime.fromepochmillis" -> new DateTimeFromEpochMillisFunction();
+      // Duration calculation functions
+      case "duration.between" -> new DurationBetweenFunction();
+      case "duration.inmonths" -> new DurationInMonthsFunction();
+      case "duration.indays" -> new DurationInDaysFunction();
+      case "duration.inseconds" -> new DurationInSecondsFunction();
+      // Temporal clock functions (aliases for no-arg constructors)
+      case "date.realtime", "date.statement", "date.transaction" -> new DateConstructorFunction();
+      case "localtime.realtime", "localtime.statement", "localtime.transaction" -> new LocalTimeConstructorFunction();
+      case "time.realtime", "time.statement", "time.transaction" -> new TimeConstructorFunction();
+      case "localdatetime.realtime", "localdatetime.statement", "localdatetime.transaction" -> new LocalDateTimeConstructorFunction();
+      case "datetime.realtime", "datetime.statement", "datetime.transaction" -> new DateTimeConstructorFunction();
       default -> throw new CommandExecutionException("Cypher function not implemented: " + functionName);
     };
   }
@@ -498,18 +547,16 @@ public class CypherFunctionFactory {
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
-      if (args.length != 1) {
+      if (args.length != 1)
         throw new CommandExecutionException("nodes() requires exactly one argument");
-      }
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof List) {
-        // Path is represented as a list of alternating vertices and edges
         final List<?> path = (List<?>) args[0];
         final List<Vertex> nodes = new ArrayList<>();
-        for (final Object element : path) {
-          if (element instanceof Vertex) {
+        for (final Object element : path)
+          if (element instanceof Vertex)
             nodes.add((Vertex) element);
-          }
-        }
         return nodes;
       }
       return Collections.emptyList();
@@ -527,18 +574,16 @@ public class CypherFunctionFactory {
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
-      if (args.length != 1) {
+      if (args.length != 1)
         throw new CommandExecutionException("relationships() requires exactly one argument");
-      }
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof List) {
-        // Path is represented as a list of alternating vertices and edges
         final List<?> path = (List<?>) args[0];
         final List<Edge> edges = new ArrayList<>();
-        for (final Object element : path) {
-          if (element instanceof Edge) {
+        for (final Object element : path)
+          if (element instanceof Edge)
             edges.add((Edge) element);
-          }
-        }
         return edges;
       }
       return Collections.emptyList();
@@ -821,10 +866,21 @@ public class CypherFunctionFactory {
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
-      if (args.length != 1) {
+      if (args.length != 1)
         throw new CommandExecutionException("toString() requires exactly one argument");
-      }
-      return args[0] == null ? null : args[0].toString();
+      if (args[0] == null)
+        return null;
+      if (args[0] instanceof String || args[0] instanceof Number || args[0] instanceof Boolean)
+        return args[0].toString();
+      // Temporal types
+      if (args[0] instanceof CypherTemporalValue)
+        return args[0].toString();
+      // Unsupported types: List, Map, Node, Relationship, Path
+      if (args[0] instanceof List || args[0] instanceof Map
+          || args[0] instanceof Vertex || args[0] instanceof Edge
+          || args[0] instanceof Document)
+        throw new CommandExecutionException("TypeError: InvalidArgumentValue - toString() cannot convert " + args[0].getClass().getSimpleName());
+      return args[0].toString();
     }
   }
 
@@ -839,23 +895,26 @@ public class CypherFunctionFactory {
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
-      if (args.length != 1) {
+      if (args.length != 1)
         throw new CommandExecutionException("toInteger() requires exactly one argument");
-      }
-      if (args[0] == null) {
+      if (args[0] == null)
         return null;
-      }
-      if (args[0] instanceof Number) {
+      if (args[0] instanceof Boolean)
+        return ((Boolean) args[0]) ? 1L : 0L;
+      if (args[0] instanceof Number)
         return ((Number) args[0]).longValue();
-      }
       if (args[0] instanceof String) {
         try {
-          return Long.parseLong((String) args[0]);
+          // Try integer first, then float (truncating)
+          final String s = ((String) args[0]).trim();
+          if (s.contains(".") || s.contains("e") || s.contains("E"))
+            return (long) Double.parseDouble(s);
+          return Long.parseLong(s);
         } catch (final NumberFormatException e) {
           return null;
         }
       }
-      return null;
+      throw new CommandExecutionException("TypeError: InvalidArgumentValue - toInteger() cannot convert " + args[0].getClass().getSimpleName());
     }
   }
 
@@ -870,15 +929,12 @@ public class CypherFunctionFactory {
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
-      if (args.length != 1) {
+      if (args.length != 1)
         throw new CommandExecutionException("toFloat() requires exactly one argument");
-      }
-      if (args[0] == null) {
+      if (args[0] == null)
         return null;
-      }
-      if (args[0] instanceof Number) {
+      if (args[0] instanceof Number)
         return ((Number) args[0]).doubleValue();
-      }
       if (args[0] instanceof String) {
         try {
           return Double.parseDouble((String) args[0]);
@@ -886,7 +942,7 @@ public class CypherFunctionFactory {
           return null;
         }
       }
-      return null;
+      throw new CommandExecutionException("TypeError: InvalidArgumentValue - toFloat() cannot convert " + args[0].getClass().getSimpleName());
     }
   }
 
@@ -903,29 +959,21 @@ public class CypherFunctionFactory {
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
-      if (args.length != 1) {
+      if (args.length != 1)
         throw new CommandExecutionException("toBoolean() requires exactly one argument");
-      }
-      if (args[0] == null) {
+      if (args[0] == null)
         return null;
-      }
-      if (args[0] instanceof Boolean) {
+      if (args[0] instanceof Boolean)
         return args[0];
-      }
-      if (args[0] instanceof Number) {
-        // In Cypher: 0 is false, non-zero is true
-        final double value = ((Number) args[0]).doubleValue();
-        return value != 0.0;
-      }
       if (args[0] instanceof String) {
         final String str = ((String) args[0]).toLowerCase();
-        if ("true".equals(str)) {
+        if ("true".equals(str))
           return Boolean.TRUE;
-        } else if ("false".equals(str)) {
+        else if ("false".equals(str))
           return Boolean.FALSE;
-        }
+        return null;
       }
-      return null;
+      throw new CommandExecutionException("TypeError: InvalidArgumentValue - toBoolean() cannot convert " + args[0].getClass().getSimpleName());
     }
   }
 
@@ -946,8 +994,9 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("collect() requires exactly one argument");
       }
-      // Collect the value (including nulls)
-      collectedValues.add(args[0]);
+      // Collect the value (skip nulls per OpenCypher spec)
+      if (args[0] != null)
+        collectedValues.add(args[0]);
       return null; // Intermediate result doesn't matter
     }
 
@@ -1042,6 +1091,422 @@ public class CypherFunctionFactory {
     public int hashCode() {
       return identifiable.getIdentity().hashCode();
     }
+  }
+
+  // ======================== Temporal Functions ========================
+
+  @SuppressWarnings("unchecked")
+  private static class DateConstructorFunction implements StatelessFunction {
+    @Override public String getName() { return "date"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length == 0)
+        return CypherDate.now();
+      if (args[0] instanceof String)
+        return CypherDate.parse((String) args[0]);
+      if (args[0] instanceof Map)
+        return CypherDate.fromMap((Map<String, Object>) args[0]);
+      if (args[0] instanceof CypherDate)
+        return args[0];
+      if (args[0] instanceof CypherLocalDateTime)
+        return new CypherDate(((CypherLocalDateTime) args[0]).getValue().toLocalDate());
+      if (args[0] instanceof CypherDateTime)
+        return new CypherDate(((CypherDateTime) args[0]).getValue().toLocalDate());
+      if (args[0] instanceof LocalDate)
+        return new CypherDate((LocalDate) args[0]);
+      if (args[0] instanceof LocalDateTime)
+        return new CypherDate(((LocalDateTime) args[0]).toLocalDate());
+      if (args[0] instanceof CypherTemporalValue) {
+        // Generic temporal → extract date part
+        final CypherTemporalValue tv = (CypherTemporalValue) args[0];
+        final Object year = tv.getTemporalProperty("year");
+        if (year != null)
+          return new CypherDate(LocalDate.of(((Number) year).intValue(),
+              ((Number) tv.getTemporalProperty("month")).intValue(),
+              ((Number) tv.getTemporalProperty("day")).intValue()));
+      }
+      throw new CommandExecutionException("date() expects a string, map, or temporal argument");
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static class LocalTimeConstructorFunction implements StatelessFunction {
+    @Override public String getName() { return "localtime"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length == 0)
+        return CypherLocalTime.now();
+      if (args[0] instanceof String)
+        return CypherLocalTime.parse((String) args[0]);
+      if (args[0] instanceof Map)
+        return CypherLocalTime.fromMap((Map<String, Object>) args[0]);
+      if (args[0] instanceof CypherLocalTime)
+        return args[0];
+      if (args[0] instanceof CypherTime)
+        return new CypherLocalTime(((CypherTime) args[0]).getValue().toLocalTime());
+      if (args[0] instanceof CypherLocalDateTime)
+        return new CypherLocalTime(((CypherLocalDateTime) args[0]).getValue().toLocalTime());
+      if (args[0] instanceof CypherDateTime)
+        return new CypherLocalTime(((CypherDateTime) args[0]).getValue().toLocalTime());
+      if (args[0] instanceof LocalDateTime)
+        return new CypherLocalTime(((LocalDateTime) args[0]).toLocalTime());
+      throw new CommandExecutionException("localtime() expects a string, map, or temporal argument");
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static class TimeConstructorFunction implements StatelessFunction {
+    @Override public String getName() { return "time"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length == 0)
+        return CypherTime.now();
+      if (args[0] instanceof String)
+        return CypherTime.parse((String) args[0]);
+      if (args[0] instanceof Map)
+        return CypherTime.fromMap((Map<String, Object>) args[0]);
+      if (args[0] instanceof CypherTime)
+        return args[0];
+      if (args[0] instanceof CypherDateTime)
+        return new CypherTime(((CypherDateTime) args[0]).getValue().toOffsetDateTime().toOffsetTime());
+      if (args[0] instanceof CypherLocalTime)
+        return new CypherTime(((CypherLocalTime) args[0]).getValue().atOffset(ZoneOffset.UTC));
+      if (args[0] instanceof CypherLocalDateTime)
+        return new CypherTime(((CypherLocalDateTime) args[0]).getValue().toLocalTime().atOffset(ZoneOffset.UTC));
+      throw new CommandExecutionException("time() expects a string, map, or temporal argument");
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static class LocalDateTimeConstructorFunction implements StatelessFunction {
+    @Override public String getName() { return "localdatetime"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length == 0)
+        return CypherLocalDateTime.now();
+      if (args[0] instanceof String)
+        return CypherLocalDateTime.parse((String) args[0]);
+      if (args[0] instanceof Map)
+        return CypherLocalDateTime.fromMap((Map<String, Object>) args[0]);
+      if (args[0] instanceof CypherLocalDateTime)
+        return args[0];
+      if (args[0] instanceof CypherDateTime)
+        return new CypherLocalDateTime(((CypherDateTime) args[0]).getValue().toLocalDateTime());
+      if (args[0] instanceof CypherDate)
+        return new CypherLocalDateTime(((CypherDate) args[0]).getValue().atStartOfDay());
+      if (args[0] instanceof LocalDateTime)
+        return new CypherLocalDateTime((LocalDateTime) args[0]);
+      if (args[0] instanceof LocalDate)
+        return new CypherLocalDateTime(((LocalDate) args[0]).atStartOfDay());
+      if (args[0] instanceof CypherTime)
+        return new CypherLocalDateTime(LocalDateTime.of(LocalDate.now(), ((CypherTime) args[0]).getValue().toLocalTime()));
+      throw new CommandExecutionException("localdatetime() expects a string, map, or temporal argument");
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static class DateTimeConstructorFunction implements StatelessFunction {
+    @Override public String getName() { return "datetime"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length == 0)
+        return CypherDateTime.now();
+      if (args[0] instanceof String)
+        return CypherDateTime.parse((String) args[0]);
+      if (args[0] instanceof Map)
+        return CypherDateTime.fromMap((Map<String, Object>) args[0]);
+      if (args[0] instanceof CypherDateTime)
+        return args[0];
+      if (args[0] instanceof CypherLocalDateTime)
+        return new CypherDateTime(((CypherLocalDateTime) args[0]).getValue().atZone(ZoneOffset.UTC));
+      if (args[0] instanceof CypherDate)
+        return new CypherDateTime(((CypherDate) args[0]).getValue().atStartOfDay(ZoneOffset.UTC));
+      if (args[0] instanceof LocalDateTime)
+        return new CypherDateTime(((LocalDateTime) args[0]).atZone(ZoneOffset.UTC));
+      if (args[0] instanceof LocalDate)
+        return new CypherDateTime(((LocalDate) args[0]).atStartOfDay(ZoneOffset.UTC));
+      throw new CommandExecutionException("datetime() expects a string, map, or temporal argument");
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static class DurationConstructorFunction implements StatelessFunction {
+    @Override public String getName() { return "duration"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("duration() requires exactly one argument");
+      if (args[0] instanceof String)
+        return CypherDuration.parse((String) args[0]);
+      if (args[0] instanceof Map)
+        return CypherDuration.fromMap((Map<String, Object>) args[0]);
+      if (args[0] instanceof CypherDuration)
+        return args[0];
+      throw new CommandExecutionException("duration() expects a string or map argument");
+    }
+  }
+
+  // Truncation functions
+
+  private static class DateTruncateFunction implements StatelessFunction {
+    @Override public String getName() { return "date.truncate"; }
+    @SuppressWarnings("unchecked")
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length < 2)
+        throw new CommandExecutionException("date.truncate() requires at least 2 arguments: unit, temporal");
+      final String unit = args[0].toString();
+      final LocalDate date;
+      if (args[1] instanceof CypherDate)
+        date = ((CypherDate) args[1]).getValue();
+      else if (args[1] instanceof CypherLocalDateTime)
+        date = ((CypherLocalDateTime) args[1]).getValue().toLocalDate();
+      else if (args[1] instanceof CypherDateTime)
+        date = ((CypherDateTime) args[1]).getValue().toLocalDate();
+      else if (args[1] instanceof LocalDate)
+        date = (LocalDate) args[1];
+      else if (args[1] instanceof LocalDateTime)
+        date = ((LocalDateTime) args[1]).toLocalDate();
+      else
+        throw new CommandExecutionException("date.truncate() second argument must be a temporal value with a date");
+      LocalDate truncated = TemporalUtil.truncateDate(date, unit);
+      // Apply optional map adjustment
+      if (args.length >= 3 && args[2] instanceof Map) {
+        truncated = applyDateMap(truncated, (Map<String, Object>) args[2]);
+      }
+      return new CypherDate(truncated);
+    }
+  }
+
+  private static class LocalTimeTruncateFunction implements StatelessFunction {
+    @Override public String getName() { return "localtime.truncate"; }
+    @SuppressWarnings("unchecked")
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length < 2)
+        throw new CommandExecutionException("localtime.truncate() requires at least 2 arguments");
+      final String unit = args[0].toString();
+      final LocalTime time;
+      if (args[1] instanceof CypherLocalTime)
+        time = ((CypherLocalTime) args[1]).getValue();
+      else if (args[1] instanceof CypherTime)
+        time = ((CypherTime) args[1]).getValue().toLocalTime();
+      else if (args[1] instanceof CypherLocalDateTime)
+        time = ((CypherLocalDateTime) args[1]).getValue().toLocalTime();
+      else if (args[1] instanceof CypherDateTime)
+        time = ((CypherDateTime) args[1]).getValue().toLocalTime();
+      else
+        throw new CommandExecutionException("localtime.truncate() second argument must be a temporal value with a time");
+      LocalTime truncated = TemporalUtil.truncateLocalTime(time, unit);
+      if (args.length >= 3 && args[2] instanceof Map)
+        truncated = applyTimeMap(truncated, (Map<String, Object>) args[2]);
+      return new CypherLocalTime(truncated);
+    }
+  }
+
+  private static class TimeTruncateFunction implements StatelessFunction {
+    @Override public String getName() { return "time.truncate"; }
+    @SuppressWarnings("unchecked")
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length < 2)
+        throw new CommandExecutionException("time.truncate() requires at least 2 arguments");
+      final String unit = args[0].toString();
+      final OffsetTime time;
+      if (args[1] instanceof CypherTime)
+        time = ((CypherTime) args[1]).getValue();
+      else if (args[1] instanceof CypherDateTime)
+        time = ((CypherDateTime) args[1]).getValue().toOffsetDateTime().toOffsetTime();
+      else if (args[1] instanceof CypherLocalTime)
+        time = ((CypherLocalTime) args[1]).getValue().atOffset(ZoneOffset.UTC);
+      else if (args[1] instanceof CypherLocalDateTime)
+        time = ((CypherLocalDateTime) args[1]).getValue().toLocalTime().atOffset(ZoneOffset.UTC);
+      else
+        throw new CommandExecutionException("time.truncate() second argument must be a temporal value with a time");
+      LocalTime truncated = TemporalUtil.truncateLocalTime(time.toLocalTime(), unit);
+      if (args.length >= 3 && args[2] instanceof Map)
+        truncated = applyTimeMap(truncated, (Map<String, Object>) args[2]);
+      return new CypherTime(OffsetTime.of(truncated, time.getOffset()));
+    }
+  }
+
+  private static class LocalDateTimeTruncateFunction implements StatelessFunction {
+    @Override public String getName() { return "localdatetime.truncate"; }
+    @SuppressWarnings("unchecked")
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length < 2)
+        throw new CommandExecutionException("localdatetime.truncate() requires at least 2 arguments");
+      final String unit = args[0].toString();
+      final LocalDateTime dt;
+      if (args[1] instanceof CypherLocalDateTime)
+        dt = ((CypherLocalDateTime) args[1]).getValue();
+      else if (args[1] instanceof CypherDateTime)
+        dt = ((CypherDateTime) args[1]).getValue().toLocalDateTime();
+      else if (args[1] instanceof CypherDate)
+        dt = ((CypherDate) args[1]).getValue().atStartOfDay();
+      else if (args[1] instanceof LocalDateTime)
+        dt = (LocalDateTime) args[1];
+      else if (args[1] instanceof LocalDate)
+        dt = ((LocalDate) args[1]).atStartOfDay();
+      else
+        throw new CommandExecutionException("localdatetime.truncate() second argument must be a temporal value");
+      LocalDateTime truncated = TemporalUtil.truncateLocalDateTime(dt, unit);
+      if (args.length >= 3 && args[2] instanceof Map)
+        truncated = applyDateTimeMap(truncated, (Map<String, Object>) args[2]);
+      return new CypherLocalDateTime(truncated);
+    }
+  }
+
+  private static class DateTimeTruncateFunction implements StatelessFunction {
+    @Override public String getName() { return "datetime.truncate"; }
+    @SuppressWarnings("unchecked")
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length < 2)
+        throw new CommandExecutionException("datetime.truncate() requires at least 2 arguments");
+      final String unit = args[0].toString();
+      final ZonedDateTime dt;
+      if (args[1] instanceof CypherDateTime)
+        dt = ((CypherDateTime) args[1]).getValue();
+      else if (args[1] instanceof CypherLocalDateTime)
+        dt = ((CypherLocalDateTime) args[1]).getValue().atZone(ZoneOffset.UTC);
+      else if (args[1] instanceof CypherDate)
+        dt = ((CypherDate) args[1]).getValue().atStartOfDay(ZoneOffset.UTC);
+      else if (args[1] instanceof LocalDateTime)
+        dt = ((LocalDateTime) args[1]).atZone(ZoneOffset.UTC);
+      else if (args[1] instanceof LocalDate)
+        dt = ((LocalDate) args[1]).atStartOfDay(ZoneOffset.UTC);
+      else
+        throw new CommandExecutionException("datetime.truncate() second argument must be a temporal value");
+      LocalDateTime truncated = TemporalUtil.truncateLocalDateTime(dt.toLocalDateTime(), unit);
+      if (args.length >= 3 && args[2] instanceof Map)
+        truncated = applyDateTimeMap(truncated, (Map<String, Object>) args[2]);
+      return new CypherDateTime(ZonedDateTime.of(truncated, dt.getZone()));
+    }
+  }
+
+  // Epoch functions
+
+  private static class DateTimeFromEpochFunction implements StatelessFunction {
+    @Override public String getName() { return "datetime.fromepoch"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("datetime.fromepoch() requires 2 arguments: seconds, nanoseconds");
+      final long seconds = ((Number) args[0]).longValue();
+      final long nanos = ((Number) args[1]).longValue();
+      return CypherDateTime.fromEpoch(seconds, nanos);
+    }
+  }
+
+  private static class DateTimeFromEpochMillisFunction implements StatelessFunction {
+    @Override public String getName() { return "datetime.fromepochmillis"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("datetime.fromepochmillis() requires 1 argument: milliseconds");
+      final long millis = ((Number) args[0]).longValue();
+      return CypherDateTime.fromEpochMillis(millis);
+    }
+  }
+
+  // Duration calculation functions
+
+  private static class DurationBetweenFunction implements StatelessFunction {
+    @Override public String getName() { return "duration.between"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("duration.between() requires 2 arguments");
+      if (args[0] == null || args[1] == null)
+        return null;
+      return TemporalUtil.durationBetween(wrapTemporal(args[0]), wrapTemporal(args[1]));
+    }
+  }
+
+  private static class DurationInMonthsFunction implements StatelessFunction {
+    @Override public String getName() { return "duration.inMonths"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("duration.inMonths() requires 2 arguments");
+      if (args[0] == null || args[1] == null)
+        return null;
+      return TemporalUtil.durationInMonths(wrapTemporal(args[0]), wrapTemporal(args[1]));
+    }
+  }
+
+  private static class DurationInDaysFunction implements StatelessFunction {
+    @Override public String getName() { return "duration.inDays"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("duration.inDays() requires 2 arguments");
+      if (args[0] == null || args[1] == null)
+        return null;
+      return TemporalUtil.durationInDays(wrapTemporal(args[0]), wrapTemporal(args[1]));
+    }
+  }
+
+  private static class DurationInSecondsFunction implements StatelessFunction {
+    @Override public String getName() { return "duration.inSeconds"; }
+    @Override public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("duration.inSeconds() requires 2 arguments");
+      if (args[0] == null || args[1] == null)
+        return null;
+      return TemporalUtil.durationInSeconds(wrapTemporal(args[0]), wrapTemporal(args[1]));
+    }
+  }
+
+  /**
+   * Wrap a java.time value from ArcadeDB storage into the corresponding CypherTemporalValue.
+   */
+  private static CypherTemporalValue wrapTemporal(final Object val) {
+    if (val instanceof CypherTemporalValue)
+      return (CypherTemporalValue) val;
+    if (val instanceof LocalDate)
+      return new CypherDate((LocalDate) val);
+    if (val instanceof LocalDateTime)
+      return new CypherLocalDateTime((LocalDateTime) val);
+    if (val instanceof java.time.ZonedDateTime)
+      return new CypherDateTime((java.time.ZonedDateTime) val);
+    throw new CommandExecutionException("Expected temporal value but got: " + (val == null ? "null" : val.getClass().getSimpleName()));
+  }
+
+  /**
+   * Apply a map of adjustments to a truncated date.
+   * The map can contain: year, month, day, dayOfWeek, ordinalDay, dayOfQuarter.
+   */
+  private static LocalDate applyDateMap(LocalDate date, final Map<String, Object> map) {
+    if (map == null || map.isEmpty())
+      return date;
+    if (map.containsKey("year"))
+      date = date.withYear(((Number) map.get("year")).intValue());
+    if (map.containsKey("month"))
+      date = date.withMonth(((Number) map.get("month")).intValue());
+    if (map.containsKey("day"))
+      date = date.withDayOfMonth(((Number) map.get("day")).intValue());
+    if (map.containsKey("dayOfWeek"))
+      date = date.with(java.time.temporal.WeekFields.ISO.dayOfWeek(), ((Number) map.get("dayOfWeek")).longValue());
+    return date;
+  }
+
+  /**
+   * Apply a map of adjustments to a truncated time.
+   */
+  private static LocalTime applyTimeMap(LocalTime time, final Map<String, Object> map) {
+    if (map == null || map.isEmpty())
+      return time;
+    if (map.containsKey("hour"))
+      time = time.withHour(((Number) map.get("hour")).intValue());
+    if (map.containsKey("minute"))
+      time = time.withMinute(((Number) map.get("minute")).intValue());
+    if (map.containsKey("second"))
+      time = time.withSecond(((Number) map.get("second")).intValue());
+    if (map.containsKey("nanosecond"))
+      time = time.withNano(((Number) map.get("nanosecond")).intValue());
+    else if (map.containsKey("microsecond"))
+      time = time.withNano(((Number) map.get("microsecond")).intValue() * 1000);
+    else if (map.containsKey("millisecond"))
+      time = time.withNano(((Number) map.get("millisecond")).intValue() * 1_000_000);
+    return time;
+  }
+
+  /**
+   * Apply a map of adjustments to a truncated local datetime.
+   */
+  private static LocalDateTime applyDateTimeMap(LocalDateTime dt, final Map<String, Object> map) {
+    if (map == null || map.isEmpty())
+      return dt;
+    final LocalDate date = applyDateMap(dt.toLocalDate(), map);
+    final LocalTime time = applyTimeMap(dt.toLocalTime(), map);
+    return LocalDateTime.of(date, time);
   }
 
   /**

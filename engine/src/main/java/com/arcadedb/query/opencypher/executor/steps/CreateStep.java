@@ -28,6 +28,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -305,8 +306,27 @@ public class CreateStep extends AbstractExecutionStep {
           value = expr.evaluate(currentResult, context);
       }
 
-      document.set(key, value);
+      document.set(key, convertTemporalForStorage(value));
     }
+  }
+
+  /**
+   * Convert CypherTemporalValue objects to java.time types for ArcadeDB storage.
+   */
+  private static Object convertTemporalForStorage(final Object value) {
+    if (value instanceof CypherDate)
+      return ((CypherDate) value).getValue();
+    if (value instanceof CypherLocalDateTime)
+      return ((CypherLocalDateTime) value).getValue();
+    if (value instanceof CypherDateTime)
+      return ((CypherDateTime) value).getValue().toLocalDateTime();
+    if (value instanceof CypherLocalTime)
+      return ((CypherLocalTime) value).getValue().toString();
+    if (value instanceof CypherTime)
+      return ((CypherTime) value).getValue().toString();
+    if (value instanceof CypherDuration)
+      return value.toString();
+    return value;
   }
 
   /**
@@ -335,7 +355,7 @@ public class CreateStep extends AbstractExecutionStep {
           value = expr.evaluate(currentResult, context);
       }
 
-      edge.set(key, value);
+      edge.set(key, convertTemporalForStorage(value));
     }
   }
 

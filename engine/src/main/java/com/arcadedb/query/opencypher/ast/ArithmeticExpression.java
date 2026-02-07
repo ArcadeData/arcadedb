@@ -18,9 +18,15 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -115,6 +121,11 @@ public class ArithmeticExpression implements Expression {
       }
     }
 
+    // Temporal arithmetic: date/time ± duration, duration ± duration, duration * number
+    final Object temporalResult = evaluateTemporalArithmetic(leftValue, rightValue);
+    if (temporalResult != null)
+      return temporalResult;
+
     // Numeric operations
     if (!(leftValue instanceof Number) || !(rightValue instanceof Number))
       throw new IllegalArgumentException(
@@ -124,7 +135,7 @@ public class ArithmeticExpression implements Expression {
     final Number rightNum = (Number) rightValue;
 
     // Determine result type (preserve integer if possible)
-    final boolean useInteger = isInteger(leftNum) && isInteger(rightNum) && operator != Operator.DIVIDE && operator != Operator.POWER;
+    final boolean useInteger = isInteger(leftNum) && isInteger(rightNum) && operator != Operator.POWER;
 
     if (useInteger) {
       final long l = leftNum.longValue();
@@ -134,8 +145,9 @@ public class ArithmeticExpression implements Expression {
         case ADD -> l + r;
         case SUBTRACT -> l - r;
         case MULTIPLY -> l * r;
+        case DIVIDE -> r != 0 ? l / r : null; // Integer division (truncation)
         case MODULO -> r != 0 ? l % r : null;
-        default -> null; // DIVIDE and POWER handled below
+        default -> null; // POWER handled below
       };
     }
 
@@ -151,6 +163,88 @@ public class ArithmeticExpression implements Expression {
       case MODULO -> r != 0 ? l % r : null;
       case POWER -> Math.pow(l, r);
     };
+  }
+
+  private Object evaluateTemporalArithmetic(final Object leftValue, final Object rightValue) {
+    // Duration + Duration or Duration - Duration
+    if (leftValue instanceof CypherDuration ld && rightValue instanceof CypherDuration rd) {
+      if (operator == Operator.ADD)
+        return ld.add(rd);
+      if (operator == Operator.SUBTRACT)
+        return ld.subtract(rd);
+    }
+
+    // Duration * Number or Number * Duration
+    if (operator == Operator.MULTIPLY) {
+      if (leftValue instanceof CypherDuration ld && rightValue instanceof Number)
+        return ld.multiply(((Number) rightValue).doubleValue());
+      if (leftValue instanceof Number && rightValue instanceof CypherDuration rd)
+        return rd.multiply(((Number) leftValue).doubleValue());
+    }
+
+    // Duration / Number
+    if (operator == Operator.DIVIDE && leftValue instanceof CypherDuration ld && rightValue instanceof Number)
+      return ld.divide(((Number) rightValue).doubleValue());
+
+    // java.time.LocalDate (from ArcadeDB storage) ± Duration
+    if (leftValue instanceof LocalDate ld && rightValue instanceof CypherDuration dur) {
+      final LocalDate d = ld.plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays());
+      return new CypherDate(d);
+    }
+
+    // java.time.LocalDateTime (from ArcadeDB storage) ± Duration
+    if (leftValue instanceof LocalDateTime ldt && rightValue instanceof CypherDuration dur) {
+      LocalDateTime dt = ldt
+          .plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays())
+          .plusSeconds(operator == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
+          .plusNanos(operator == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
+      return new CypherLocalDateTime(dt);
+    }
+
+    // Date ± Duration
+    if (leftValue instanceof CypherDate cd && rightValue instanceof CypherDuration dur) {
+      final LocalDate d = cd.getValue().plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays());
+      return new CypherDate(d);
+    }
+
+    // LocalTime ± Duration
+    if (leftValue instanceof CypherLocalTime clt && rightValue instanceof CypherDuration dur) {
+      final long totalNanos = dur.getSeconds() * 1_000_000_000L + dur.getNanosAdjustment();
+      final LocalTime t = operator == Operator.ADD ? clt.getValue().plusNanos(totalNanos) : clt.getValue().minusNanos(totalNanos);
+      return new CypherLocalTime(t);
+    }
+
+    // Time ± Duration
+    if (leftValue instanceof CypherTime ct && rightValue instanceof CypherDuration dur) {
+      final long totalNanos = dur.getSeconds() * 1_000_000_000L + dur.getNanosAdjustment();
+      final OffsetTime t = operator == Operator.ADD ? ct.getValue().plusNanos(totalNanos) : ct.getValue().minusNanos(totalNanos);
+      return new CypherTime(t);
+    }
+
+    // LocalDateTime ± Duration
+    if (leftValue instanceof CypherLocalDateTime cldt && rightValue instanceof CypherDuration dur) {
+      LocalDateTime dt = cldt.getValue()
+          .plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays())
+          .plusSeconds(operator == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
+          .plusNanos(operator == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
+      return new CypherLocalDateTime(dt);
+    }
+
+    // DateTime ± Duration
+    if (leftValue instanceof CypherDateTime cdt && rightValue instanceof CypherDuration dur) {
+      ZonedDateTime dt = cdt.getValue()
+          .plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays())
+          .plusSeconds(operator == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
+          .plusNanos(operator == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
+      return new CypherDateTime(dt);
+    }
+
+    return null; // Not a temporal arithmetic operation
   }
 
   private boolean isInteger(final Number num) {
