@@ -28,15 +28,7 @@ import java.util.*;
  * It is used to keep info about an index range search,
  * where the main condition has the lower bound and the additional condition has the upper bound on last field only
  */
-class IndexCondPair {
-
-  final AndBlock        mainCondition;
-  final BinaryCondition additionalRange;
-
-  public IndexCondPair(final AndBlock keyCondition, final BinaryCondition additionalRangeCondition) {
-    this.mainCondition = keyCondition;
-    this.additionalRange = additionalRangeCondition;
-  }
+record IndexCondPair(AndBlock mainCondition, BinaryCondition additionalRange) {
 
   @Override
   public boolean equals(final Object o) {
@@ -52,10 +44,4 @@ class IndexCondPair {
     return Objects.equals(additionalRange, that.additionalRange);
   }
 
-  @Override
-  public int hashCode() {
-    int result = mainCondition != null ? mainCondition.hashCode() : 0;
-    result = 31 * result + (additionalRange != null ? additionalRange.hashCode() : 0);
-    return result;
-  }
 }

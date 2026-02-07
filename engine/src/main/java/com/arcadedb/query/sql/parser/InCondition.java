@@ -57,7 +57,7 @@ public class InCondition extends BooleanExpression {
       return false;
 
     final boolean result = evaluateExpression(leftVal, rightVal);
-    return not ? !result : result;
+    return not != result;
   }
 
   public Object evaluateRight(final Identifiable currentRecord, final CommandContext context) {
@@ -97,7 +97,7 @@ public class InCondition extends BooleanExpression {
       return false;
 
     final boolean result = evaluateExpression(leftVal, rightVal);
-    return not ? !result : result;
+    return not != result;
   }
 
   public Object evaluateRight(final Result currentRecord, final CommandContext context) {
@@ -312,7 +312,7 @@ public class InCondition extends BooleanExpression {
         }
       }
 
-      if (fieldName != null && info.getField().equals(fieldName)) {
+      if (info.getField().equals(fieldName)) {
         // The right side matches the indexed field, and left side is the search value
         return left.isEarlyCalculated(info.getContext());
       }

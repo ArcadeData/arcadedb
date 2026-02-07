@@ -26,9 +26,8 @@ import com.arcadedb.query.sql.parser.Batch;
  * Created by luigidellaquila on 14/02/17.
  */
 public class BatchStep extends AbstractExecutionStep {
-
-  private Integer batchSize;
-  private int     count = 0;
+  private final int batchSize;
+  private       int count = 0;
 
   public BatchStep(Batch batch, CommandContext ctx) {
     super(ctx);
@@ -65,9 +64,8 @@ public class BatchStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    final StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ BATCH COMMIT EVERY " + batchSize);
-    return result.toString();
+    final String result = spaces +
+        "+ BATCH COMMIT EVERY " + batchSize;
+    return result;
   }
 }

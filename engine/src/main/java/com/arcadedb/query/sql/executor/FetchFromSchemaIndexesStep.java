@@ -65,7 +65,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
             r.setProperty("indexType", index.getType());
             r.setProperty("typeName", index.getTypeName());
             if (index.getPropertyNames() != null)
-              r.setProperty("properties", Arrays.asList(index.getPropertyNames()));
+              r.setProperty("properties", Collections.singletonList(index.getPropertyNames()));
 
             // KEY TYPES
             final List<String> keyTypes = new ArrayList<>();

@@ -144,10 +144,7 @@ public class CreateEdgeStatement extends Statement {
     if (this.rightExpression != null && !this.rightExpression.isCacheable())
       return false;
 
-    if (this.body != null && !body.isCacheable())
-      return false;
-
-    return true;
+    return this.body == null || body.isCacheable();
   }
 
   public Identifier getTargetType() {

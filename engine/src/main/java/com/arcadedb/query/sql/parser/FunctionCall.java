@@ -49,10 +49,9 @@ public class FunctionCall extends SimpleNode {
       return false;
 
     final Expression param = params.getFirst();
-    if (param.mathExpression == null || !(param.mathExpression instanceof BaseExpression))
+    if (param.mathExpression == null || !(param.mathExpression instanceof final BaseExpression base))
       return false;
 
-    final BaseExpression base = (BaseExpression) param.mathExpression;
     if (base.identifier == null || base.identifier.suffix == null)
       return false;
 

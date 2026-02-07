@@ -138,7 +138,7 @@ public class RebuildIndexStatement extends DDLStatement {
     // to allow the operation to be retried in a non-async context.
     // See: https://github.com/ArcadeData/arcadedb/issues/2097
     final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(
-        ((DatabaseInternal) database).getDatabasePath());
+        database.getDatabasePath());
     if (context != null && context.asyncMode) {
       throw new NeedRetryException(
           "Cannot rebuild index '" + idx.getName() + "' while running in asynchronous context. " +
@@ -194,7 +194,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
       } catch (NeedRetryException e) {
         try {
-          Thread.sleep(200 + 200 * attempt);
+          Thread.sleep(200 + 200L * attempt);
         } catch (InterruptedException ex) {
           throw e;
         }

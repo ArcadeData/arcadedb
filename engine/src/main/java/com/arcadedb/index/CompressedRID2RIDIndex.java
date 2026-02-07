@@ -228,7 +228,7 @@ public class CompressedRID2RIDIndex {
     } else {
       // SLOT OCCUPIED, CHECK FOR THE KEY
       chunk.position(pos);
-      int lastNextPos = 0;
+      int lastNextPos;
       while (true) {
         final RID slotKey = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 

@@ -302,10 +302,7 @@ public class SelectStatement extends Statement {
     if (projection != null && !this.projection.isCacheable())
       return false;
 
-    if (whereClause != null && !whereClause.isCacheable())
-      return false;
-
-    return true;
+    return whereClause == null || whereClause.isCacheable();
   }
 
   private void setProfilingConstraints(final DatabaseInternal db) {

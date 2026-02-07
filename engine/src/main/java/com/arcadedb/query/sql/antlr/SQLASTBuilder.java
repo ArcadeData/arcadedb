@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.antlr;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -28,12 +27,10 @@ import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.utility.CollectionUtils;
-
-import java.util.ArrayList;
-
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -49,12 +46,7 @@ import java.util.Map;
  */
 public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
-  private final Database database;
-  private       int      positionalParamCounter = 0;
-
-  public SQLASTBuilder(final Database database) {
-    this.database = database;
-  }
+  private int positionalParamCounter = 0;
 
   // ENTRY POINTS
 
@@ -431,14 +423,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             final MatchPathItem pathItem = (MatchPathItem) visit(methodCtx);
             if (pathItem != null) {
               // If this is a MultiMatchPathItem from chained method calls (not nested syntax), flatten it
-              if (pathItem instanceof MultiMatchPathItem && !((MultiMatchPathItem) pathItem).isNestedPath()) {
-                final MultiMatchPathItem multiItem = (MultiMatchPathItem) pathItem;
+              if (pathItem instanceof final MultiMatchPathItem multiItem && !((MultiMatchPathItem) pathItem).isNestedPath()) {
                 // Add each sub-item as a separate path item
                 if (multiItem.getItems() != null) {
                   for (final MatchPathItem subItem : multiItem.getItems()) {
                     // For MatchPathItemFirst, convert to regular MatchPathItem
-                    if (subItem instanceof MatchPathItemFirst) {
-                      final MatchPathItemFirst firstSubItem = (MatchPathItemFirst) subItem;
+                    if (subItem instanceof final MatchPathItemFirst firstSubItem) {
                       final MatchPathItem regularItem = new MatchPathItem(-1);
                       // Convert function to method
                       if (firstSubItem.getFunction() != null) {
@@ -483,14 +473,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             final MatchPathItem pathItem = (MatchPathItem) visit(methodCtx);
             if (pathItem != null) {
               // If this is a MultiMatchPathItem from chained method calls (not nested syntax), flatten it
-              if (pathItem instanceof MultiMatchPathItem && !((MultiMatchPathItem) pathItem).isNestedPath()) {
-                final MultiMatchPathItem multiItem = (MultiMatchPathItem) pathItem;
+              if (pathItem instanceof final MultiMatchPathItem multiItem && !((MultiMatchPathItem) pathItem).isNestedPath()) {
                 // Add each sub-item as a separate path item
                 if (multiItem.getItems() != null) {
                   for (final MatchPathItem subItem : multiItem.getItems()) {
                     // For MatchPathItemFirst, convert to regular MatchPathItem
-                    if (subItem instanceof MatchPathItemFirst) {
-                      final MatchPathItemFirst firstSubItem = (MatchPathItemFirst) subItem;
+                    if (subItem instanceof final MatchPathItemFirst firstSubItem) {
                       final MatchPathItem regularItem = new MatchPathItem(-1);
                       // Convert function to method
                       if (firstSubItem.getFunction() != null) {
@@ -641,9 +629,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       if (methodObj instanceof MethodCall) {
         method = (MethodCall) methodObj;
-      } else if (methodObj instanceof FunctionCall) {
+      } else if (methodObj instanceof final FunctionCall funcCall) {
         // Convert FunctionCall to MethodCall (they have the same structure)
-        final FunctionCall funcCall = (FunctionCall) methodObj;
         method = new MethodCall(-1);
         method.methodName = funcCall.name;
         method.params.addAll(funcCall.params);
@@ -733,13 +720,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Nested match method visitor.
    * Handles methods within .(chain) syntax including arrow notation.
    * Grammar alternatives:
-   *   - identifier LPAREN ... RPAREN matchProperties? (function call without chains)
-   *   - DOT identifier LPAREN ... RPAREN matchProperties? (explicit dot prefix)
-   *   - identifier matchProperties? (simple method name)
-   *   - (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchProperties?
-   *   - DECR GT matchProperties?
-   *   - ARROW_LEFT MINUS matchProperties?
-   *   - DECR matchProperties?
+   * - identifier LPAREN ... RPAREN matchProperties? (function call without chains)
+   * - DOT identifier LPAREN ... RPAREN matchProperties? (explicit dot prefix)
+   * - identifier matchProperties? (simple method name)
+   * - (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT) matchProperties?
+   * - DECR GT matchProperties?
+   * - ARROW_LEFT MINUS matchProperties?
+   * - DECR matchProperties?
    */
   @Override
   public MatchPathItem visitNestedMatchMethod(final SQLParser.NestedMatchMethodContext ctx) {
@@ -996,8 +983,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // Could be bucket name (string) or bucket id (integer)
         if (valueObj instanceof PInteger) {
           item.bucketId = (PInteger) valueObj;
-        } else if (valueObj instanceof BaseExpression) {
-          final BaseExpression baseExpr = (BaseExpression) valueObj;
+        } else if (valueObj instanceof final BaseExpression baseExpr) {
           if (baseExpr.number instanceof PInteger) {
             item.bucketId = (PInteger) baseExpr.number;
           } else {
@@ -1020,8 +1006,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final StringBuilder sb = new StringBuilder();
           ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
           item.alias = new Identifier(sb.toString());
-        } else if (valueObj instanceof BaseExpression) {
-          final BaseExpression baseExpr = (BaseExpression) valueObj;
+        } else if (valueObj instanceof final BaseExpression baseExpr) {
           if (baseExpr.identifier != null) {
             final StringBuilder sb = new StringBuilder();
             baseExpr.identifier.toString(Collections.emptyMap(), sb);
@@ -1041,12 +1026,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final WhereClause whereClause = new WhereClause(-1);
           whereClause.baseExpression = (BooleanExpression) valueObj;
           item.filter = whereClause;
-        } else if (valueObj instanceof Expression) {
+        } else if (valueObj instanceof final Expression expr) {
           // Expression containing the WHERE condition: where:(name = 'n1')
-          final Expression expr = (Expression) valueObj;
           // Check if it's a BaseExpression containing a boolean value like (true) or (false)
-          if (expr.mathExpression instanceof BaseExpression) {
-            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
             if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
               // Handle boolean literals wrapped in BaseExpression: where: (true)
               final WhereClause whereClause = new WhereClause(-1);
@@ -1056,8 +1039,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             }
           }
           // For parenthesized conditions like (name = 'n1'), mathExpression is a ParenthesisExpression
-          else if (expr.mathExpression instanceof ParenthesisExpression) {
-            final ParenthesisExpression parenExpr = (ParenthesisExpression) expr.mathExpression;
+          else if (expr.mathExpression instanceof final ParenthesisExpression parenExpr) {
             // Extract the inner expression's whereCondition from the parentheses
             if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
               item.filter = parenExpr.expression.whereCondition;
@@ -1087,12 +1069,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final WhereClause whereClause = new WhereClause(-1);
           whereClause.baseExpression = (BooleanExpression) valueObj;
           item.whileCondition = whereClause;
-        } else if (valueObj instanceof Expression) {
+        } else if (valueObj instanceof final Expression expr) {
           // Expression containing the WHILE condition
-          final Expression expr = (Expression) valueObj;
           // Check if it's a BaseExpression containing a boolean value like (true) or (false)
-          if (expr.mathExpression instanceof BaseExpression) {
-            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
             if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
               // Handle boolean literals wrapped in BaseExpression: while: (true)
               final WhereClause whereClause = new WhereClause(-1);
@@ -1102,8 +1082,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             }
           }
           // For parenthesized conditions, mathExpression is a ParenthesisExpression
-          else if (expr.mathExpression instanceof ParenthesisExpression) {
-            final ParenthesisExpression parenExpr = (ParenthesisExpression) expr.mathExpression;
+          else if (expr.mathExpression instanceof final ParenthesisExpression parenExpr) {
             // Extract the inner expression's whereCondition from the parentheses
             if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
               item.whileCondition = parenExpr.expression.whereCondition;
@@ -1129,15 +1108,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       case "maxdepth":
         if (valueObj instanceof PInteger) {
           item.maxDepth = (PInteger) valueObj;
-        } else if (valueObj instanceof BaseExpression) {
-          final BaseExpression baseExpr = (BaseExpression) valueObj;
+        } else if (valueObj instanceof final BaseExpression baseExpr) {
           if (baseExpr.number instanceof PInteger) {
             item.maxDepth = (PInteger) baseExpr.number;
           }
-        } else if (valueObj instanceof Expression) {
-          final Expression expr = (Expression) valueObj;
-          if (expr.mathExpression instanceof BaseExpression) {
-            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+        } else if (valueObj instanceof final Expression expr) {
+          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
             if (baseExpr.number instanceof PInteger) {
               item.maxDepth = (PInteger) baseExpr.number;
             }
@@ -1162,17 +1138,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final StringBuilder sb = new StringBuilder();
           ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
           item.depthAlias = new Identifier(sb.toString());
-        } else if (valueObj instanceof BaseExpression) {
-          final BaseExpression baseExpr = (BaseExpression) valueObj;
+        } else if (valueObj instanceof final BaseExpression baseExpr) {
           if (baseExpr.identifier != null) {
             final StringBuilder sb = new StringBuilder();
             baseExpr.identifier.toString(Collections.emptyMap(), sb);
             item.depthAlias = new Identifier(sb.toString());
           }
-        } else if (valueObj instanceof Expression) {
-          final Expression expr = (Expression) valueObj;
-          if (expr.mathExpression instanceof BaseExpression) {
-            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+        } else if (valueObj instanceof final Expression expr) {
+          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
             if (baseExpr.identifier != null) {
               final StringBuilder sb = new StringBuilder();
               baseExpr.identifier.toString(Collections.emptyMap(), sb);
@@ -1187,17 +1160,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final StringBuilder sb = new StringBuilder();
           ((BaseIdentifier) valueObj).toString(Collections.emptyMap(), sb);
           item.pathAlias = new Identifier(sb.toString());
-        } else if (valueObj instanceof BaseExpression) {
-          final BaseExpression baseExpr = (BaseExpression) valueObj;
+        } else if (valueObj instanceof final BaseExpression baseExpr) {
           if (baseExpr.identifier != null) {
             final StringBuilder sb = new StringBuilder();
             baseExpr.identifier.toString(Collections.emptyMap(), sb);
             item.pathAlias = new Identifier(sb.toString());
           }
-        } else if (valueObj instanceof Expression) {
-          final Expression expr = (Expression) valueObj;
-          if (expr.mathExpression instanceof BaseExpression) {
-            final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+        } else if (valueObj instanceof final Expression expr) {
+          if (expr.mathExpression instanceof final BaseExpression baseExpr) {
             if (baseExpr.identifier != null) {
               final StringBuilder sb = new StringBuilder();
               baseExpr.identifier.toString(Collections.emptyMap(), sb);
@@ -1213,6 +1183,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     return item;
   }
+
   /**
    * TRAVERSE statement visitor.
    * Maps to TraverseStatement AST class.
@@ -1305,6 +1276,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     return item;
   }
+
   public Projection visitProjection(final SQLParser.ProjectionContext ctx) {
     final Projection projection = new Projection(-1);
 
@@ -1399,9 +1371,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final ArrayConcatExpressionElement firstElement = children.get(0);
         // Recursively extract from the first element
         final NestedProjection result = extractNestedProjectionFromExpression(firstElement);
-        if (result != null) {
-          return result;
-        }
+        return result;
       }
     }
 
@@ -1470,13 +1440,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public NestedProjection visitNestedProjection(final SQLParser.NestedProjectionContext ctx) {
     final NestedProjection nestedProjection = new NestedProjection(-1);
 
-    @SuppressWarnings("unchecked") final List<NestedProjectionItem> includeItems = (List<NestedProjectionItem>) nestedProjection.includeItems;
-    @SuppressWarnings("unchecked") final List<NestedProjectionItem> excludeItems = (List<NestedProjectionItem>) nestedProjection.excludeItems;
+    @SuppressWarnings("unchecked") final List<NestedProjectionItem> includeItems =
+        nestedProjection.includeItems;
+    @SuppressWarnings("unchecked") final List<NestedProjectionItem> excludeItems =
+        nestedProjection.excludeItems;
 
     for (final SQLParser.NestedProjectionItemContext itemCtx : ctx.nestedProjectionItem()) {
       final NestedProjectionItem item = (NestedProjectionItem) visit(itemCtx);
-      final boolean isExclude = (Boolean) item.exclude;
-      final boolean isStar = (Boolean) item.star;
+      final boolean isExclude = item.exclude;
+      final boolean isStar = item.star;
 
       if (isStar)
         nestedProjection.starItem = item;
@@ -1888,8 +1860,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final SQLParser.MathExpressionContext leftMathCtx = ((SQLParser.MathExprContext) leftExprCtx).mathExpression();
       if (leftMathCtx instanceof SQLParser.BaseContext) {
         final SQLParser.BaseExpressionContext leftBaseCtx = ((SQLParser.BaseContext) leftMathCtx).baseExpression();
-        if (leftBaseCtx instanceof SQLParser.ParenthesizedStmtContext) {
-          final SQLParser.ParenthesizedStmtContext leftParenCtx = (SQLParser.ParenthesizedStmtContext) leftBaseCtx;
+        if (leftBaseCtx instanceof final SQLParser.ParenthesizedStmtContext leftParenCtx) {
           if (leftParenCtx.statement() != null) {
             // (SELECT ...) IN tags - create expression wrapper for subquery
             condition.left = createStatementExpression((SelectStatement) visit(leftParenCtx.statement()));
@@ -1904,8 +1875,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               condition.right = expressions;
             } else {
               final Expression rightExpr = (Expression) visit(ctx.expression(1));
-              if (rightExpr.mathExpression instanceof BaseExpression) {
-                final BaseExpression baseExpr = (BaseExpression) rightExpr.mathExpression;
+              if (rightExpr.mathExpression instanceof final BaseExpression baseExpr) {
                 if (baseExpr.inputParam != null) {
                   condition.rightParam = baseExpr.inputParam;
                   return condition;
@@ -1942,8 +1912,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Expression rightExpr = (Expression) visit(ctx.expression(1));
 
         // Check if this is an input parameter
-        if (rightExpr.mathExpression instanceof BaseExpression) {
-          final BaseExpression baseExpr = (BaseExpression) rightExpr.mathExpression;
+        if (rightExpr.mathExpression instanceof final BaseExpression baseExpr) {
           if (baseExpr.inputParam != null) {
             // IN (?), IN (:name), or IN ($1)
             condition.rightParam = baseExpr.inputParam;
@@ -1967,8 +1936,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final SQLParser.MathExpressionContext mathCtx = ((SQLParser.MathExprContext) exprCtx).mathExpression();
         if (mathCtx instanceof SQLParser.BaseContext) {
           final SQLParser.BaseExpressionContext baseCtx = ((SQLParser.BaseContext) mathCtx).baseExpression();
-          if (baseCtx instanceof SQLParser.ParenthesizedStmtContext) {
-            final SQLParser.ParenthesizedStmtContext parenCtx = (SQLParser.ParenthesizedStmtContext) baseCtx;
+          if (baseCtx instanceof final SQLParser.ParenthesizedStmtContext parenCtx) {
             if (parenCtx.statement() != null) {
               // IN (SELECT ...) - extract the subquery
               condition.rightStatement = (SelectStatement) visit(parenCtx.statement());
@@ -1982,8 +1950,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final Expression rightExpr = (Expression) visit(exprCtx);
 
       // Check if it's an input parameter
-      if (rightExpr.mathExpression instanceof BaseExpression) {
-        final BaseExpression baseExpr = (BaseExpression) rightExpr.mathExpression;
+      if (rightExpr.mathExpression instanceof final BaseExpression baseExpr) {
         if (baseExpr.inputParam != null) {
           condition.rightParam = baseExpr.inputParam;
           return condition;
@@ -2093,8 +2060,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final SQLParser.MathExpressionContext mathCtx = ((SQLParser.MathExprContext) exprCtx).mathExpression();
           if (mathCtx instanceof SQLParser.BaseContext) {
             final SQLParser.BaseExpressionContext baseCtx = ((SQLParser.BaseContext) mathCtx).baseExpression();
-            if (baseCtx instanceof SQLParser.ParenthesizedStmtContext) {
-              final SQLParser.ParenthesizedStmtContext parenCtx = (SQLParser.ParenthesizedStmtContext) baseCtx;
+            if (baseCtx instanceof final SQLParser.ParenthesizedStmtContext parenCtx) {
               if (parenCtx.statement() != null) {
                 // CONTAINS (SELECT ...) - need to handle as subquery
                 // ContainsCondition doesn't have a rightStatement field, so wrap in expression
@@ -3288,7 +3254,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Visit modifier (DOT identifier with optional parentheses or array selector).
    * Grammar: modifier: DOT identifier (LPAREN (expression (COMMA expression)*)? RPAREN)? | arraySelector
-   *
+   * <p>
    * Handles both property access (.identifier) and method calls (.identifier(args))
    */
   @Override
@@ -3875,13 +3841,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Extract the number from the expression
     try {
-      if (expr.mathExpression instanceof BaseExpression) {
-        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+      if (expr.mathExpression instanceof final BaseExpression baseExpr) {
 
         if (baseExpr.number instanceof PInteger) {
-          timeout.setValue(((PInteger) baseExpr.number).getValue().longValue());
+          timeout.setValue(baseExpr.number.getValue().longValue());
         } else if (baseExpr.number instanceof PNumber) {
-          timeout.setValue(((PNumber) baseExpr.number).getValue());
+          timeout.setValue(baseExpr.number.getValue());
         }
       }
     } catch (final Exception e) {
@@ -3942,8 +3907,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     try {
       // ORDER BY item can be an identifier or expression
       // Try to extract simple identifier case
-      if (expr.mathExpression instanceof BaseExpression) {
-        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+      if (expr.mathExpression instanceof final BaseExpression baseExpr) {
 
         // Check if there's a modifier chain (like .num2 in a.num2)
         if (baseExpr.modifier != null) {
@@ -3962,7 +3926,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           }
         } else {
           // No modifiers - try simple identifier extraction
-          final SuffixIdentifier suffix = (SuffixIdentifier) baseExpr.identifier.suffix;
+          final SuffixIdentifier suffix = baseExpr.identifier.suffix;
 
           if (suffix != null) {
             final Identifier id = suffix.identifier;
@@ -4042,8 +4006,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // The expression is typically a simple identifier like "iSeq"
       Identifier unwindField = null;
 
-      if (expr != null && expr.mathExpression instanceof BaseExpression) {
-        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+      if (expr != null && expr.mathExpression instanceof final BaseExpression baseExpr) {
         if (baseExpr.identifier != null) {
           // Access suffix field directly
           final Object suffix = baseExpr.identifier.suffix;
@@ -4101,19 +4064,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Check if we have a statement in parentheses within the expression
     // This happens when the grammar matches: identifier EQ expression
-    // where expression → MathExprContext → mathExpression (BaseContext) → baseExpression (ParenthesizedExprContext) → statement
+    // where expression → MathExprContext → mathExpression (BaseContext) → baseExpression (ParenthesizedExprContext)
+    // → statement
     Statement statementFromExpr = null;
-    if (ctx.expression() != null && ctx.expression() instanceof SQLParser.MathExprContext) {
+    if (ctx.expression() != null && ctx.expression() instanceof final SQLParser.MathExprContext mathExprCtx) {
       // Navigate the parse tree to find if this is a parenthesizedExpr with a statement
-      final SQLParser.MathExprContext mathExprCtx = (SQLParser.MathExprContext) ctx.expression();
       final SQLParser.MathExpressionContext mathCtx = mathExprCtx.mathExpression();
 
-      if (mathCtx != null && mathCtx instanceof SQLParser.BaseContext) {
-        final SQLParser.BaseContext baseCtx = (SQLParser.BaseContext) mathCtx;
+      if (mathCtx != null && mathCtx instanceof final SQLParser.BaseContext baseCtx) {
         final SQLParser.BaseExpressionContext baseExprCtx = baseCtx.baseExpression();
 
-        if (baseExprCtx != null && baseExprCtx instanceof SQLParser.ParenthesizedStmtContext) {
-          final SQLParser.ParenthesizedStmtContext parenCtx = (SQLParser.ParenthesizedStmtContext) baseExprCtx;
+        if (baseExprCtx != null && baseExprCtx instanceof final SQLParser.ParenthesizedStmtContext parenCtx) {
           if (parenCtx.statement() != null) {
             // Found a statement inside parentheses - visit it directly
             statementFromExpr = (Statement) visit(parenCtx.statement());
@@ -4370,9 +4331,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (expr.json != null) {
         // Direct JSON literal from jsonLiteral alternative
         ops.json = expr.json;
-      } else if (expr.mathExpression instanceof BaseExpression) {
+      } else if (expr.mathExpression instanceof final BaseExpression baseExpr) {
         // JSON literal parsed as baseExpression mapLit alternative
-        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
         if (baseExpr.expression != null && baseExpr.expression.json != null) {
           ops.json = baseExpr.expression.json;
         }
@@ -4496,9 +4456,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     } else if (sourceObj instanceof SubqueryExpression) {
       // Parenthesized SELECT statement wrapped in SubqueryExpression
       fromItem.statement = ((SubqueryExpression) sourceObj).getStatement();
-    } else if (sourceObj instanceof Expression) {
+    } else if (sourceObj instanceof final Expression expr) {
       // Expression that contains a subquery - try to extract the SelectStatement
-      final Expression expr = (Expression) sourceObj;
 
       // Check if the mathExpression is a SubqueryExpression
       if (expr.mathExpression instanceof SubqueryExpression) {
@@ -4543,7 +4502,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final Batch batch = new Batch(-1);
       // BATCH expression - get the last expression (index 1 if there was a source expression)
       final int batchExprIndex = moveCtx.expression().size() - 1;
-      batch.value = (Expression) visit(moveCtx.expression(batchExprIndex));
+      batch.value = visit(moveCtx.expression(batchExprIndex));
       stmt.batch = batch;
     }
 
@@ -4555,7 +4514,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Visit bucket identifier (integer ID, bucket name, BUCKET:name/BUCKET:id syntax, or BUCKET:parameter).
    * Grammar: bucketIdentifier : INTEGER_LITERAL | identifier | BUCKET_IDENTIFIER | BUCKET_NUMBER_IDENTIFIER
-   *                           | BUCKET_NAMED_PARAM | BUCKET_POSITIONAL_PARAM
+   * | BUCKET_NAMED_PARAM | BUCKET_POSITIONAL_PARAM
    */
   @Override
   public BucketIdentifier visitBucketIdentifier(final SQLParser.BucketIdentifierContext ctx) {
@@ -4636,8 +4595,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       boolean foundBuckets = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
         final ParseTree child = bodyCtx.getChild(i);
-        if (foundBuckets && child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (foundBuckets && child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4645,8 +4603,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
             foundBuckets = true;
           }
@@ -4660,8 +4617,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       boolean foundPageSize = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
         final ParseTree child = bodyCtx.getChild(i);
-        if (foundPageSize && child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (foundPageSize && child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4669,8 +4625,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.PAGESIZE) {
             foundPageSize = true;
           }
@@ -4718,8 +4673,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       boolean foundBuckets = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
         final ParseTree child = bodyCtx.getChild(i);
-        if (foundBuckets && child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (foundBuckets && child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4727,8 +4681,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
             foundBuckets = true;
           }
@@ -4742,8 +4695,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       boolean foundPageSize = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
         final ParseTree child = bodyCtx.getChild(i);
-        if (foundPageSize && child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (foundPageSize && child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4751,8 +4703,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.PAGESIZE) {
             foundPageSize = true;
           }
@@ -4803,8 +4754,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       boolean foundBuckets = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
         final ParseTree child = bodyCtx.getChild(i);
-        if (foundBuckets && child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (foundBuckets && child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4812,8 +4762,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.BUCKETS) {
             foundBuckets = true;
           }
@@ -4827,8 +4776,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       boolean foundPageSize = false;
       for (int i = 0; i < bodyCtx.getChildCount(); i++) {
         final ParseTree child = bodyCtx.getChild(i);
-        if (foundPageSize && child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (foundPageSize && child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
             final PInteger pInt = new PInteger(-1);
             pInt.setValue(Integer.parseInt(termNode.getText()));
@@ -4836,8 +4784,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             break;
           }
         }
-        if (child instanceof TerminalNode) {
-          final TerminalNode termNode = (TerminalNode) child;
+        if (child instanceof final TerminalNode termNode) {
           if (termNode.getSymbol().getType() == SQLParser.PAGESIZE) {
             foundPageSize = true;
           }
@@ -4871,7 +4818,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // Handle VALUES clause - (field1, field2) VALUES (val1, val2), (val3, val4)
         if (bodyCtx.VALUES() != null) {
           // Build identifier list from identifiers (skipping first if it's target type)
-          final int startIdx = (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty() && stmt.targetType != null) ? 1 : 0;
+          final int startIdx =
+              (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty() && stmt.targetType != null) ? 1 : 0;
           if (bodyCtx.identifier() != null && bodyCtx.identifier().size() > startIdx) {
             body.identifierList = new ArrayList<>();
             for (int i = startIdx; i < bodyCtx.identifier().size(); i++) {
@@ -5070,13 +5018,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         if (contentExpr.json != null) {
           // Direct JSON literal like {'x':0}
           body.contentJson = contentExpr.json;
-        } else if (contentExpr.mathExpression instanceof BaseExpression) {
+        } else if (contentExpr.mathExpression instanceof final BaseExpression baseExpr) {
           // BaseExpression wrapping an array literal, map literal, or input parameter
-          final BaseExpression baseExpr = (BaseExpression) contentExpr.mathExpression;
 
           // Check if it contains an array literal
-          if (baseExpr.expression != null && baseExpr.expression.mathExpression instanceof ArrayLiteralExpression) {
-            final ArrayLiteralExpression arrayLit = (ArrayLiteralExpression) baseExpr.expression.mathExpression;
+          if (baseExpr.expression != null && baseExpr.expression.mathExpression instanceof final ArrayLiteralExpression arrayLit) {
 
             // For CREATE EDGE, if array has single element, extract it as contentJson
             // If array has multiple elements, store as contentArray (executor will validate)
@@ -5086,8 +5032,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               Json itemJson = firstItem.json;
 
               // If json is null, try unwrapping from BaseExpression
-              if (itemJson == null && firstItem.mathExpression instanceof BaseExpression) {
-                final BaseExpression itemBaseExpr = (BaseExpression) firstItem.mathExpression;
+              if (itemJson == null && firstItem.mathExpression instanceof final BaseExpression itemBaseExpr) {
                 if (itemBaseExpr.expression != null && itemBaseExpr.expression.json != null) {
                   itemJson = itemBaseExpr.expression.json;
                 }
@@ -5102,8 +5047,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               for (final Expression itemExpr : arrayLit.items) {
                 Json itemJson = itemExpr.json;
                 // If json is null, try unwrapping from BaseExpression
-                if (itemJson == null && itemExpr.mathExpression instanceof BaseExpression) {
-                  final BaseExpression itemBaseExpr = (BaseExpression) itemExpr.mathExpression;
+                if (itemJson == null && itemExpr.mathExpression instanceof final BaseExpression itemBaseExpr) {
                   if (itemBaseExpr.expression != null && itemBaseExpr.expression.json != null) {
                     itemJson = itemBaseExpr.expression.json;
                   }
@@ -5117,9 +5061,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           } else if (baseExpr.inputParam != null) {
             body.contentInputParam = baseExpr.inputParam;
           }
-        } else if (contentExpr.mathExpression instanceof ArrayLiteralExpression) {
+        } else if (contentExpr.mathExpression instanceof final ArrayLiteralExpression arrayLit) {
           // Direct ArrayLiteralExpression (shouldn't happen with current grammar, but handle it)
-          final ArrayLiteralExpression arrayLit = (ArrayLiteralExpression) contentExpr.mathExpression;
           if (arrayLit.items.size() == 1 && arrayLit.items.get(0).json != null) {
             body.contentJson = arrayLit.items.get(0).json;
           } else {
@@ -5231,8 +5174,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Find the ON token position in the token stream
     for (int i = 0; i < bodyCtx.getChildCount(); i++) {
-      if (bodyCtx.getChild(i) instanceof TerminalNode) {
-        final TerminalNode termNode = (TerminalNode) bodyCtx.getChild(i);
+      if (bodyCtx.getChild(i) instanceof final TerminalNode termNode) {
         if (termNode.getSymbol().getType() == SQLParser.ON) {
           onTokenIndex = i;
           break;
@@ -5342,7 +5284,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit DEFINE FUNCTION statement.
-   * Grammar: DEFINE FUNCTION identifier DOT identifier STRING_LITERAL (PARAMETERS LBRACKET parameterList RBRACKET)? (LANGUAGE identifier)?
+   * Grammar: DEFINE FUNCTION identifier DOT identifier STRING_LITERAL (PARAMETERS LBRACKET parameterList RBRACKET)?
+   * (LANGUAGE identifier)?
    */
   @Override
   public DefineFunctionStatement visitDefineFunctionStatement(final SQLParser.DefineFunctionStatementContext ctx) {
@@ -5464,8 +5407,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         int identifierIndex = 0;
         for (int i = 0; i < itemCtx.getChildCount(); i++) {
           final var child = itemCtx.getChild(i);
-          if (child instanceof TerminalNode) {
-            final TerminalNode terminal = (TerminalNode) child;
+          if (child instanceof final TerminalNode terminal) {
             if (terminal.getSymbol().getType() == SQLParser.PLUS) {
               nextIsAdd = true;
             } else if (terminal.getSymbol().getType() == SQLParser.MINUS) {
@@ -5487,8 +5429,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         int identifierIndex = 0;
         for (int i = 0; i < itemCtx.getChildCount(); i++) {
           final var child = itemCtx.getChild(i);
-          if (child instanceof TerminalNode) {
-            final TerminalNode terminal = (TerminalNode) child;
+          if (child instanceof final TerminalNode terminal) {
             if (terminal.getSymbol().getType() == SQLParser.PLUS) {
               stmt.identifierListAddRemove.add(true);
             } else if (terminal.getSymbol().getType() == SQLParser.MINUS) {
@@ -5981,7 +5922,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit IF statement.
-   * Grammar: IF LPAREN orBlock RPAREN LBRACE (scriptStatement SEMICOLON?)* RBRACE (ELSE LBRACE (scriptStatement SEMICOLON?)* RBRACE)?
+   * Grammar: IF LPAREN orBlock RPAREN LBRACE (scriptStatement SEMICOLON?)* RBRACE (ELSE LBRACE (scriptStatement
+   * SEMICOLON?)* RBRACE)?
    */
   @Override
   public IfStatement visitIfStmt(final SQLParser.IfStmtContext ctx) {
@@ -6773,8 +6715,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   private Integer tryExtractIntegerLiteral(final Expression expr) {
     try {
-      if (expr != null && expr.mathExpression instanceof BaseExpression) {
-        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+      if (expr != null && expr.mathExpression instanceof final BaseExpression baseExpr) {
         if (baseExpr.number != null && baseExpr.number.getValue() != null) {
           return baseExpr.number.getValue().intValue();
         }
@@ -6794,8 +6735,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     try {
       // Check if the expression is an input parameter
-      if (expr != null && expr.mathExpression instanceof BaseExpression) {
-        final BaseExpression baseExpr = (BaseExpression) expr.mathExpression;
+      if (expr != null && expr.mathExpression instanceof final BaseExpression baseExpr) {
 
         if (baseExpr.inputParam != null) {
           // Input parameter like ? or :name or $1

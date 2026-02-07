@@ -77,10 +77,8 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract {
       if (index == null)
         throw new CommandExecutionException("Index '" + indexName + "' not found");
 
-      if (!(index instanceof TypeIndex))
+      if (!(index instanceof final TypeIndex typeIndex))
         throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
-
-      final TypeIndex typeIndex = (TypeIndex) index;
 
       // Get the underlying full-text index
       final Index[] bucketIndexes = typeIndex.getIndexesOnBuckets();
@@ -89,8 +87,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract {
 
       // Execute search across all bucket indexes using QueryExecutor
       for (final Index bucketIndex : bucketIndexes) {
-        if (bucketIndex instanceof LSMTreeFullTextIndex) {
-          final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) bucketIndex;
+        if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
           final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
           final IndexCursor cursor = executor.search(queryString, -1);
 

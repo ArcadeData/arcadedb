@@ -62,7 +62,7 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
       return Collections.emptyList();
     }
     if (qR instanceof Identifiable identifiable) {
-      return Set.of(new ResultInternal((Document) identifiable.getRecord()));
+      return Set.of(new ResultInternal(identifiable.getRecord()));
     }
     if (qR instanceof Iterable iterable) {
       final Iterator<Object> iter = iterable.iterator();

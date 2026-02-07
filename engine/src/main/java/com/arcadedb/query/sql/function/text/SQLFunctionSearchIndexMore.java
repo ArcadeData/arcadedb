@@ -98,10 +98,9 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
       if (index == null)
         throw new CommandExecutionException("Index '" + indexName + "' not found");
 
-      if (!(index instanceof TypeIndex))
+      if (!(index instanceof final TypeIndex typeIndex))
         throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
 
-      final TypeIndex typeIndex = (TypeIndex) index;
       final Index[] bucketIndexes = typeIndex.getIndexesOnBuckets();
 
       if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
@@ -117,8 +116,7 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
       float maxScore = 0f;
 
       for (final Index bucketIndex : bucketIndexes) {
-        if (bucketIndex instanceof LSMTreeFullTextIndex) {
-          final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) bucketIndex;
+        if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
           final IndexCursor cursor = ftIndex.searchMoreLikeThis(sourceRids, config);
 
           while (cursor.hasNext()) {

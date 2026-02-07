@@ -137,8 +137,7 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
       float maxScore = 0f;
 
       for (final Index bucketIndex : matchingIndex.getIndexesOnBuckets()) {
-        if (bucketIndex instanceof LSMTreeFullTextIndex) {
-          final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) bucketIndex;
+        if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
           final IndexCursor cursor = ftIndex.searchMoreLikeThis(sourceRids, config);
 
           while (cursor.hasNext()) {

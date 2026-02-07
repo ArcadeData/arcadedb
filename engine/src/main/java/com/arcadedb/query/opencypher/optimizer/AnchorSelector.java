@@ -383,7 +383,7 @@ public class AnchorSelector {
 
         if (propAccess.getVariableName().equals(variable)) {
           final String propertyName = propAccess.getPropertyName();
-          Object value = null;
+          Object value;
           boolean isParameter = false;
 
           if (right instanceof LiteralExpression) {
@@ -407,7 +407,7 @@ public class AnchorSelector {
 
         if (propAccess.getVariableName().equals(variable)) {
           final String propertyName = propAccess.getPropertyName();
-          Object value = null;
+          Object value;
           boolean isParameter = false;
 
           if (left instanceof LiteralExpression) {

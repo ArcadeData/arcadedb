@@ -25,8 +25,9 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
-import java.util.function.*;
-import java.util.stream.*;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * Result set returned from queries. This class implements can be used as an Iterator of Result.
@@ -50,7 +51,8 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
   }
 
   /**
-   * Returns the first element of the resultset if any, otherwise an empty Result object. This allows to write code without null check. Example:<br>
+   * Returns the first element of the resultset if any, otherwise an empty Result object. This allows to write code
+   * without null check. Example:<br>
    * <code>
    * int updated = result.first().getProperty("count", 0);
    * </code>
@@ -93,18 +95,14 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
 
   /**
    * Returns the result set as a stream. IMPORTANT: the stream consumes the result set!
-   *
-   * @return
    */
   default Stream<Result> stream() {
     return StreamSupport.stream(this, false).onClose(() -> this.close());
   }
 
   /**
-   * Returns the result set as a stream of elements (filters only the results that are elements - where the isElement() method
-   * returns true). IMPORTANT: the stream consumes the result set!
-   *
-   * @return
+   * Returns the result set as a stream of elements (filters only the results that are elements - where the isElement
+   * () method returns true). IMPORTANT: the stream consumes the result set!
    */
 
   default Stream<Record> elementStream() {
@@ -135,14 +133,12 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
       public int characteristics() {
         return ORDERED;
       }
-    }, false).onClose(() -> this.close());
+    }, false).onClose(this::close);
   }
 
   /**
-   * Returns the result set as a stream of vertices (filters only the results that are vertices - where the isVertex() method
-   * returns true). IMPORTANT: the stream consumes the result set!
-   *
-   * @return
+   * Returns the result set as a stream of vertices (filters only the results that are vertices - where the isVertex
+   * () method returns true). IMPORTANT: the stream consumes the result set!
    */
 
   default Stream<Vertex> vertexStream() {
@@ -173,14 +169,12 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
       public int characteristics() {
         return ORDERED;
       }
-    }, false).onClose(() -> this.close());
+    }, false).onClose(this::close);
   }
 
   /**
    * Returns the result set as a stream of vertices (filters only the results that are edges - where the isEdge() method
    * returns true). IMPORTANT: the stream consumes the result set!
-   *
-   * @return
    */
 
   default Stream<Edge> edgeStream() {
@@ -211,7 +205,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
       public int characteristics() {
         return ORDERED;
       }
-    }, false).onClose(() -> this.close());
+    }, false).onClose(this::close);
   }
 
   /**
@@ -228,8 +222,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
     final List<Document> result = new ArrayList<>();
     while (hasNext()) {
       final Result r = next();
-      if (r.isElement())
-        result.add(r.getElement().get());
+      if (r.isElement()) result.add(r.getElement().get());
     }
     return result;
   }
@@ -241,8 +234,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
     final List<Vertex> result = new ArrayList<>();
     while (hasNext()) {
       final Result r = next();
-      if (r.isVertex())
-        result.add(r.getVertex().get());
+      if (r.isVertex()) result.add(r.getVertex().get());
     }
     return result;
   }
@@ -254,8 +246,7 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
     final List<Edge> result = new ArrayList<>();
     while (hasNext()) {
       final Result r = next();
-      if (r.isEdge())
-        result.add(r.getEdge().get());
+      if (r.isEdge()) result.add(r.getEdge().get());
     }
     return result;
   }

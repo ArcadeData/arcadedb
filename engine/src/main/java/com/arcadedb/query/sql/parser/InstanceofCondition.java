@@ -48,10 +48,9 @@ public class InstanceofCondition extends BooleanExpression {
     if (record == null) {
       return false;
     }
-    if (!(record instanceof Document)) {
+    if (!(record instanceof final Document doc)) {
       return false;
     }
-    final Document doc = (Document) record;
     final String typez = doc.getTypeName();
     if (typez == null) {
       return false;
@@ -76,10 +75,9 @@ public class InstanceofCondition extends BooleanExpression {
     if (record == null)
       return false;
 
-    if (!(record instanceof Document))
+    if (!(record instanceof final Document doc))
       return false;
 
-    final Document doc = (Document) record;
     final DocumentType typez = doc.getType();
     if (typez == null)
       return false;

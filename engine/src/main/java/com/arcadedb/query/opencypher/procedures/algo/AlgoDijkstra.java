@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.function.graph.SQLFunctionDijkstra;
 
-import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -88,7 +87,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
 
     // Use ArcadeDB's existing Dijkstra implementation
     final SQLFunctionDijkstra dijkstra = new SQLFunctionDijkstra();
-    final Object[] params = new Object[] { startNode, endNode, weightProperty, direction };
+    final Object[] params = new Object[]{startNode, endNode, weightProperty, direction};
     final LinkedList<RID> pathRids = dijkstra.execute(null, null, null, params, context);
 
     if (pathRids == null || pathRids.isEmpty())

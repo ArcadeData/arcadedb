@@ -296,10 +296,9 @@ public class SelectExecutionPlanner {
     if (item.getExpression().getMathExpression() == null) {
       return false;
     }
-    if (!(item.getExpression().getMathExpression() instanceof BaseExpression)) {
+    if (!(item.getExpression().getMathExpression() instanceof final BaseExpression base)) {
       return false;
     }
-    final BaseExpression base = (BaseExpression) item.getExpression().getMathExpression();
     if (base.getIdentifier() == null) {
       return false;
     }
@@ -393,8 +392,7 @@ public class SelectExecutionPlanner {
     }
     final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
     final Expression exp = item.getExpression();
-    if (exp.getMathExpression() != null && exp.getMathExpression() instanceof BaseExpression) {
-      final BaseExpression base = (BaseExpression) exp.getMathExpression();
+    if (exp.getMathExpression() != null && exp.getMathExpression() instanceof final BaseExpression base) {
       return base.isCount() && base.getModifier() == null;
     }
     return false;
@@ -455,15 +453,10 @@ public class SelectExecutionPlanner {
 
   /**
    * Information about a MAX/MIN aggregate function.
+   *
+   * @param isMax true for MAX, false for MIN
    */
-  private static class MaxMinInfo {
-    final String propertyName;
-    final boolean isMax; // true for MAX, false for MIN
-
-    MaxMinInfo(final String propertyName, final boolean isMax) {
-      this.propertyName = propertyName;
-      this.isMax = isMax;
-    }
+    private record MaxMinInfo(String propertyName, boolean isMax) {
   }
 
   /**
@@ -2588,10 +2581,9 @@ public class SelectExecutionPlanner {
   }
 
   private boolean createsRangeWith(final BinaryCondition left, final BooleanExpression next) {
-    if (!(next instanceof BinaryCondition))
+    if (!(next instanceof final BinaryCondition right))
       return false;
 
-    final BinaryCondition right = (BinaryCondition) next;
     if (!left.getLeft().equals(right.getLeft()))
       return false;
 
@@ -2664,7 +2656,7 @@ public class SelectExecutionPlanner {
     final List<IndexSearchDescriptor> result = new ArrayList<>();
     for (final Map.Entry<RangeIndex, Map<IndexCondPair, OrBlock>> item : aggregation.entrySet()) {
       for (final Map.Entry<IndexCondPair, OrBlock> filters : item.getValue().entrySet()) {
-        result.add(new IndexSearchDescriptor(item.getKey(), filters.getKey().mainCondition, filters.getKey().additionalRange,
+        result.add(new IndexSearchDescriptor(item.getKey(), filters.getKey().mainCondition(), filters.getKey().additionalRange(),
             filters.getValue()));
       }
     }

@@ -39,8 +39,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   private              String                             typeName;
   private              boolean                            orderByRidAsc  = false;
   private              boolean                            orderByRidDesc = false;
-  private              List<ExecutionStep>                subSteps       = new ArrayList<>();
-  private static       ConcurrentHashMap<String, Integer> WARNINGS       = new ConcurrentHashMap<>();
+  private              List<ExecutionStep>                subSteps = new ArrayList<>();
+  private static final ConcurrentHashMap<String, Integer> WARNINGS = new ConcurrentHashMap<>();
   private static final int                                WARNINGS_EVERY;
 
   ResultSet currentResultSet;

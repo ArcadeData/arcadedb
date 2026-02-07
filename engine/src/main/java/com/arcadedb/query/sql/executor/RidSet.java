@@ -224,10 +224,8 @@ public class RidSet implements Set<RID> {
 
   @Override
   public boolean remove(final Object o) {
-    if (!(o instanceof RID))
+    if (!(o instanceof final RID identifiable))
       throw new IllegalArgumentException();
-
-    final RID identifiable = ((RID) o);
 
     final int bucket = identifiable.getBucketId();
     final long position = identifiable.getPosition();

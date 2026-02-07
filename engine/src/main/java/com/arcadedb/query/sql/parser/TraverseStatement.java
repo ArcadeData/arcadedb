@@ -147,10 +147,7 @@ public class TraverseStatement extends Statement {
     if (this.target != null && this.target.refersToParent())
       return true;
 
-    if (this.whileClause != null && this.whileClause.refersToParent())
-      return true;
-
-    return false;
+    return this.whileClause != null && this.whileClause.refersToParent();
   }
 
   @Override

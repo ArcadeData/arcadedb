@@ -120,7 +120,7 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
     final int hammingDistance = bq1.hammingDistance(bq2);
 
     // Normalize to [0, 1]: divide by max possible distance (original length)
-    return (float) hammingDistance / bq1.getOriginalLength();
+    return (float) hammingDistance / bq1.originalLength();
   }
 
   private byte[] toByteArray(final Object quantized) {
