@@ -2165,59 +2165,10 @@ class CypherExpressionBuilder {
 
   /**
    * Find an operator outside of parentheses in the given text.
-   * This ensures we don't match operators inside function calls like ID(a).
+   * Delegates to ParserUtils for implementation.
    */
   int findOperatorOutsideParentheses(final String text, final String op) {
-    int parenDepth = 0;
-    int bracketDepth = 0;
-    boolean inString = false;
-    char stringChar = 0;
-
-    for (int i = 0; i <= text.length() - op.length(); i++) {
-      final char c = text.charAt(i);
-
-      // Track string literals
-      if ((c == '\'' || c == '"') && (i == 0 || text.charAt(i - 1) != '\\')) {
-        if (!inString) {
-          inString = true;
-          stringChar = c;
-        } else if (c == stringChar) {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (inString) {
-        continue;
-      }
-
-      // Track parentheses
-      if (c == '(') {
-        parenDepth++;
-        continue;
-      }
-      if (c == ')') {
-        parenDepth--;
-        continue;
-      }
-      // Track brackets
-      if (c == '[') {
-        bracketDepth++;
-        continue;
-      }
-      if (c == ']') {
-        bracketDepth--;
-        continue;
-      }
-
-      // Only match operator at top level
-      if (parenDepth == 0 && bracketDepth == 0) {
-        if (text.substring(i).startsWith(op)) {
-          return i;
-        }
-      }
-    }
-    return -1;
+    return ParserUtils.findOperatorOutsideParentheses(text, op);
   }
 
   /**
