@@ -497,7 +497,7 @@ public class MultiValue {
           // ARRAY - ARRAY
           final int tot = Array.getLength(iObject) + Array.getLength(iToAdd);
           copy = Arrays.copyOf((Object[]) iObject, tot);
-          System.arraycopy(iToAdd, 0, iObject, Array.getLength(iObject), Array.getLength(iToAdd));
+          System.arraycopy(iToAdd, 0, copy, Array.getLength(iObject), Array.getLength(iToAdd));
 
         } else {
           copy = Arrays.copyOf((Object[]) iObject, Array.getLength(iObject) + 1);
