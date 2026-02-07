@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -139,6 +140,35 @@ class CypherExpressionBuilder {
       }
     }
 
+    // Check for string/list comparison (IN, STARTS WITH, ENDS WITH, CONTAINS, =~) and IS NULL
+    // at the TOP LEVEL of the expression tree only (non-recursive spine walk).
+    // MUST be checked BEFORE list literals, because `1 IN [1, 2]` contains a list literal [1, 2]
+    // as the RHS of the IN comparison — if we check list literals first, we'd return just the list.
+    // MUST be non-recursive to avoid matching comparisons inside function arguments, quantifier
+    // WHERE clauses, and other nested expressions (e.g., `all(x IN list WHERE x IN [1,2])`).
+    final Cypher25Parser.Expression7Context topExpr7 = findTopLevelExpression7(ctx);
+    if (topExpr7 != null) {
+      final Cypher25Parser.ComparisonExpression6Context comp = topExpr7.comparisonExpression6();
+      if (comp instanceof Cypher25Parser.StringAndListComparisonContext)
+        return parseStringComparisonExpression(topExpr7);
+      if (comp instanceof Cypher25Parser.NullComparisonContext)
+        return parseIsNullExpression((Cypher25Parser.NullComparisonContext) comp);
+    }
+
+    // Check for TOP-LEVEL arithmetic expressions (+ - * / % ^) using spine walk
+    // Must be checked BEFORE list/map literals because [1,10,100]+[4,5] should be
+    // arithmetic (list concatenation), not just [1,10,100] (ignoring +[4,5])
+    final Cypher25Parser.Expression6Context topArith6 = findTopLevelExpression6(ctx);
+    if (topArith6 != null)
+      return parseArithmeticExpression6(topArith6);
+
+    // Check for TOP-LEVEL postfix expressions (property access, list indexing, slicing)
+    // using spine walk. Must be before list/map literals because [1,2,3][0] should be
+    // postfix indexing, not just [1,2,3]
+    final Cypher25Parser.Expression2Context topExpr2 = findTopLevelExpression2(ctx);
+    if (topExpr2 != null && !topExpr2.postFix().isEmpty())
+      return parseExpression2WithPostfix(topExpr2);
+
     // Check for function invocations BEFORE list literals
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
@@ -146,28 +176,25 @@ class CypherExpressionBuilder {
       return parseFunctionInvocation(funcCtx);
     }
 
-    // Check for list literals (after list comprehensions to avoid matching inner lists)
+    // Check for list literals (after arithmetic and postfix to avoid matching inner lists)
     final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
     if (listCtx != null) {
       return parseListLiteral(listCtx);
     }
 
-    // Check for map projections BEFORE arithmetic expressions
-    // Map projections have syntax: n{.name, .age} and can contain arithmetic inside
+    // Check for map projections
     final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
     if (mapProjCtx != null) {
       return parseMapProjection(mapProjCtx);
     }
 
-    // Check for map literals BEFORE arithmetic expressions
-    // Map literals can contain arithmetic expressions inside, e.g., {doubled: n.age * 2}
+    // Check for map literals
     final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
     if (mapCtx != null) {
       return parseMapLiteralExpression(mapCtx);
     }
 
-    // Check for arithmetic expressions (+ - * / % ^)
-    // Must be checked BEFORE falling back to text parsing
+    // Fallback: recursive arithmetic expression checks
     final Cypher25Parser.Expression6Context arith6Ctx = findArithmeticExpression6Recursive(ctx);
     if (arith6Ctx != null) {
       return parseArithmeticExpression6(arith6Ctx);
@@ -177,21 +204,7 @@ class CypherExpressionBuilder {
       return parseArithmeticExpression5(arith5Ctx);
     }
 
-    // Check for IS NULL / IS NOT NULL expressions
-    final Cypher25Parser.NullComparisonContext nullCtx = findNullComparisonRecursive(ctx);
-    if (nullCtx != null) {
-      return parseIsNullExpression(nullCtx);
-    }
-
-    // Check for string matching expressions (STARTS WITH, ENDS WITH, CONTAINS, =~, IN)
-    // These are part of comparisonExpression6 inside expression7
-    final Cypher25Parser.Expression7Context expr7WithComp = findExpression7WithComparisonRecursive(ctx);
-    if (expr7WithComp != null) {
-      return parseStringComparisonExpression(expr7WithComp);
-    }
-
-    // Check for postfix expressions (property access, list indexing, slicing)
-    // This must be checked BEFORE falling back to text parsing
+    // Fallback: recursive postfix expression check
     final Cypher25Parser.Expression2Context expr2Ctx = findExpression2Recursive(ctx);
     if (expr2Ctx != null && !expr2Ctx.postFix().isEmpty()) {
       return parseExpression2WithPostfix(expr2Ctx);
@@ -254,6 +267,16 @@ class CypherExpressionBuilder {
     if (node instanceof Cypher25Parser.Expression9Context)
       return parseExpressionFromExpression9((Cypher25Parser.Expression9Context) node);
 
+    // Handle Expression8 (comparison operators: =, <>, <, >, <=, >=)
+    if (node instanceof Cypher25Parser.Expression8Context) {
+      final Cypher25Parser.Expression8Context expr8 = (Cypher25Parser.Expression8Context) node;
+      if (expr8.expression7().size() > 1)
+        return parseComparisonFromExpression8(expr8);
+      // Single Expression7 child, delegate to it
+      if (!expr8.expression7().isEmpty())
+        return parseExpressionFromText(expr8.expression7().get(0));
+    }
+
     // Check for IS NULL / IS NOT NULL expressions BEFORE parenthesized expressions
     // because (a AND b) IS NULL should be parsed as IS_NULL(a AND b), not just (a AND b)
     final Cypher25Parser.NullComparisonContext nullCtx = findNullComparisonRecursive(node);
@@ -282,10 +305,35 @@ class CypherExpressionBuilder {
     if (arith5Ctx != null)
       return parseArithmeticExpression5(arith5Ctx);
 
+    // Check for list predicates (all/any/none/single) BEFORE function invocations
+    // to avoid misinterpreting them as regular function calls
+    final Cypher25Parser.ListItemsPredicateContext listPredCtx = findListItemsPredicateRecursive(node);
+    if (listPredCtx != null)
+      return parseListItemsPredicate(listPredCtx);
+
+    // Check for reduce expressions
+    final Cypher25Parser.ReduceExpressionContext reduceCtx = findReduceExpressionRecursive(node);
+    if (reduceCtx != null)
+      return parseReduceExpression(reduceCtx);
+
+    // Check for list comprehensions [x IN list | expr]
+    final Cypher25Parser.ListComprehensionContext listCompCtx = findListComprehensionRecursive(node);
+    if (listCompCtx != null)
+      return parseListComprehension(listCompCtx);
+
     // Check for function invocations
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(node);
     if (funcCtx != null)
       return parseFunctionInvocation(funcCtx);
+
+    // Check for list/map literals
+    final Cypher25Parser.ListLiteralContext listLitCtx = findListLiteralRecursive(node);
+    if (listLitCtx != null)
+      return parseListLiteral(listLitCtx);
+
+    final Cypher25Parser.MapContext mapCtx = findMapRecursive(node);
+    if (mapCtx != null)
+      return parseMapLiteralExpression(mapCtx);
 
     // Fallback to text parsing
     final String text = node.getText();
@@ -720,6 +768,128 @@ class CypherExpressionBuilder {
   }
 
   /**
+   * Walk the expression tree spine (non-recursive) to find the top-level Expression7.
+   * Returns the Expression7 only when there's a single child at each level
+   * (no OR, AND, NOT, or comparison operators at higher levels).
+   * This prevents matching comparisons inside nested expressions like function arguments
+   * or quantifier WHERE clauses.
+   */
+  private Cypher25Parser.Expression7Context findTopLevelExpression7(final Cypher25Parser.ExpressionContext ctx) {
+    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
+    if (e11List == null || e11List.size() != 1)
+      return null;
+
+    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
+    if (e10List == null || e10List.size() != 1)
+      return null;
+
+    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
+    if (e9List == null || e9List.size() != 1)
+      return null;
+
+    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
+    if (e9.NOT() != null && !e9.NOT().isEmpty())
+      return null;
+
+    final Cypher25Parser.Expression8Context e8 = e9.expression8();
+    if (e8 == null || e8.expression7().size() != 1)
+      return null;
+
+    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
+    if (e7.comparisonExpression6() != null)
+      return e7;
+
+    return null;
+  }
+
+  /**
+   * Walk the expression tree spine (non-recursive) to find the top-level Expression6
+   * that has arithmetic operators (+, -, ||).
+   * Returns null if there's no top-level arithmetic at the Expression6 level.
+   */
+  private Cypher25Parser.Expression6Context findTopLevelExpression6(final Cypher25Parser.ExpressionContext ctx) {
+    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
+    if (e11List == null || e11List.size() != 1)
+      return null;
+
+    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
+    if (e10List == null || e10List.size() != 1)
+      return null;
+
+    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
+    if (e9List == null || e9List.size() != 1)
+      return null;
+
+    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
+    if (e9.NOT() != null && !e9.NOT().isEmpty())
+      return null;
+
+    final Cypher25Parser.Expression8Context e8 = e9.expression8();
+    if (e8 == null || e8.expression7().size() != 1)
+      return null;
+
+    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
+    if (e7.comparisonExpression6() != null)
+      return null; // Has IN/STARTS WITH comparison, not arithmetic
+
+    final Cypher25Parser.Expression6Context e6 = e7.expression6();
+    if (e6 != null && e6.expression5().size() > 1)
+      return e6; // Has arithmetic operators
+
+    return null;
+  }
+
+  /**
+   * Walk the expression tree spine (non-recursive) to find the top-level Expression2
+   * that has postfix operations (property access, indexing, slicing).
+   */
+  private Cypher25Parser.Expression2Context findTopLevelExpression2(final Cypher25Parser.ExpressionContext ctx) {
+    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
+    if (e11List == null || e11List.size() != 1)
+      return null;
+
+    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
+    if (e10List == null || e10List.size() != 1)
+      return null;
+
+    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
+    if (e9List == null || e9List.size() != 1)
+      return null;
+
+    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
+    if (e9.NOT() != null && !e9.NOT().isEmpty())
+      return null;
+
+    final Cypher25Parser.Expression8Context e8 = e9.expression8();
+    if (e8 == null || e8.expression7().size() != 1)
+      return null;
+
+    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
+    if (e7.comparisonExpression6() != null)
+      return null;
+
+    final Cypher25Parser.Expression6Context e6 = e7.expression6();
+    if (e6 == null || e6.expression5().size() != 1)
+      return null; // Has arithmetic at this level
+
+    final Cypher25Parser.Expression5Context e5 = e6.expression5().get(0);
+    if (e5 == null || e5.expression4().size() != 1)
+      return null; // Has * / % operators
+
+    final Cypher25Parser.Expression4Context e4 = e5.expression4().get(0);
+    if (e4 == null || e4.expression3().size() != 1)
+      return null; // Has ^ operator
+
+    // expression3 → (MINUS | PLUS)? expression2
+    final Cypher25Parser.Expression3Context e3 = e4.expression3().get(0);
+    final Cypher25Parser.Expression2Context e2 = e3.expression2();
+    if (e2 != null && !e2.postFix().isEmpty())
+      return e2;
+
+    return null;
+  }
+
+  /**
    * Recursively find Expression7Context that has a comparisonExpression6 child
    * (STARTS WITH, ENDS WITH, CONTAINS, =~, IN, label check).
    */
@@ -1010,8 +1180,10 @@ class CypherExpressionBuilder {
         result = new ListIndexExpression(result, indexExpr);
       } else if (postfix instanceof Cypher25Parser.RangePostfixContext) {
         // Range slicing: expr[from..to]
-        // TODO: Implement range slicing if needed
-        throw new UnsupportedOperationException("Range slicing (list[from..to]) is not yet implemented");
+        final Cypher25Parser.RangePostfixContext rangeCtx = (Cypher25Parser.RangePostfixContext) postfix;
+        final Expression fromExpr = rangeCtx.fromExp != null ? parseExpression(rangeCtx.fromExp) : null;
+        final Expression toExpr = rangeCtx.toExp != null ? parseExpression(rangeCtx.toExp) : null;
+        result = new ListSliceExpression(result, fromExpr, toExpr);
       }
     }
 
@@ -1864,16 +2036,38 @@ class CypherExpressionBuilder {
 
     // Number
     try {
+      // Handle floats without integer part (.1, .5e-3, etc.)
+      if (text.startsWith(".") && text.length() > 1 && Character.isDigit(text.charAt(1)))
+        return Double.parseDouble(text);
+      if (text.startsWith("-.") && text.length() > 2 && Character.isDigit(text.charAt(2)))
+        return Double.parseDouble(text);
+
       // Handle negative numbers
       if (text.startsWith("-") || text.startsWith("+") || Character.isDigit(text.charAt(0))) {
-        if (text.contains(".")) {
+        if (text.contains(".") || text.contains("e") || text.contains("E")) {
           return Double.parseDouble(text);
+        } else if (text.startsWith("0x") || text.startsWith("0X") ||
+            text.startsWith("-0x") || text.startsWith("-0X")) {
+          final String hexPart = text.startsWith("-") ? text.substring(3) : text.substring(2);
+          final long val = Long.parseLong(hexPart, 16);
+          return text.startsWith("-") ? -val : val;
+        } else if (text.startsWith("0o") || text.startsWith("0O") ||
+            text.startsWith("-0o") || text.startsWith("-0O")) {
+          final String octPart = text.startsWith("-") ? text.substring(3) : text.substring(2);
+          final long val = Long.parseLong(octPart, 8);
+          return text.startsWith("-") ? -val : val;
         } else {
           return Long.parseLong(text);
         }
       }
     } catch (final NumberFormatException e) {
-      // Not a number
+      // Check if it looks like a number but overflowed or is invalid
+      final String numText = text.startsWith("-") || text.startsWith("+") ? text.substring(1) : text;
+      if (numText.startsWith("0x") || numText.startsWith("0X") ||
+          numText.startsWith("0o") || numText.startsWith("0O"))
+        throw new CommandParsingException("InvalidNumberLiteral: Invalid number literal: " + text);
+      if (!numText.isEmpty() && Character.isDigit(numText.charAt(0)) && numText.chars().allMatch(c -> Character.isDigit(c)))
+        throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + text);
     }
 
     return null; // Not a literal

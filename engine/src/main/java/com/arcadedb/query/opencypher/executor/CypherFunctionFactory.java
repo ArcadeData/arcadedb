@@ -191,6 +191,8 @@ public class CypherFunctionFactory {
       case "nodes", "relationships", "length" -> true;
       // Math functions
       case "rand", "sign" -> true;
+      // General functions
+      case "coalesce" -> true;
       // List functions
       case "size", "head", "tail", "last", "range" -> true;
       // String functions
@@ -214,6 +216,8 @@ public class CypherFunctionFactory {
       // Math functions
       case "rand" -> new RandFunction();
       case "sign" -> new SignFunction();
+      // General functions
+      case "coalesce" -> new CoalesceFunction();
       // Graph functions
       case "id" -> new IdFunction();
       case "labels" -> new LabelsFunction();
@@ -290,6 +294,24 @@ public class CypherFunctionFactory {
           return 0L;
       }
       throw new CommandExecutionException("sign() requires a numeric argument");
+    }
+  }
+
+  /**
+   * coalesce() function - returns the first non-null argument.
+   */
+  private static class CoalesceFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "coalesce";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      for (final Object arg : args)
+        if (arg != null)
+          return arg;
+      return null;
     }
   }
 
@@ -375,9 +397,14 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("keys() requires exactly one argument");
       }
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof Document) {
         final Document doc = (Document) args[0];
         return new ArrayList<>(doc.getPropertyNames());
+      }
+      if (args[0] instanceof Map) {
+        return new ArrayList<>(((Map<?, ?>) args[0]).keySet());
       }
       return Collections.emptyList();
     }
@@ -397,14 +424,17 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("properties() requires exactly one argument");
       }
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof Document) {
         final Document doc = (Document) args[0];
-        final Map<String, Object> props = new HashMap<>();
-        for (final String propName : doc.getPropertyNames()) {
+        final Map<String, Object> props = new LinkedHashMap<>();
+        for (final String propName : doc.getPropertyNames())
           props.put(propName, doc.get(propName));
-        }
         return props;
       }
+      if (args[0] instanceof Map)
+        return new LinkedHashMap<>((Map<?, ?>) args[0]);
       return Collections.emptyMap();
     }
   }
@@ -564,12 +594,14 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("size() requires exactly one argument");
       }
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof List) {
         return (long) ((List<?>) args[0]).size();
       } else if (args[0] instanceof String) {
         return (long) ((String) args[0]).length();
       }
-      return 0L;
+      return null;
     }
   }
 
@@ -1076,7 +1108,7 @@ public class CypherFunctionFactory {
 
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
-      if (!seenValues.add(List.of(args)))
+      if (!seenValues.add(java.util.Arrays.asList(args)))
         return null;
       return delegate.execute(args, context);
     }
