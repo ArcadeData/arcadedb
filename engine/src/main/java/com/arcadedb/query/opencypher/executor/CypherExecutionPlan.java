@@ -173,8 +173,9 @@ public class CypherExecutionPlan {
     // doesn't handle SUBQUERY steps.
     final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
     final boolean hasSubquery = hasSubqueryClause();
+    final boolean hasWithBeforeMatch = hasWithPrecedingMatch();
 
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasSubquery) {
+    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasSubquery && !hasWithBeforeMatch) {
       // Use optimizer - execute physical operators directly
       // Note: For Phase 4, we only optimize MATCH patterns
       // RETURN, ORDER BY, LIMIT are still handled by execution steps
@@ -381,8 +382,9 @@ public class CypherExecutionPlan {
         // Build execution steps
         AbstractExecutionStep rootStep;
         final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
+        final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
 
-        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch) {
+        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2) {
           rootStep = buildExecutionStepsWithOptimizer(context);
         } else {
           rootStep = buildExecutionSteps(context);
@@ -668,6 +670,30 @@ public class CypherExecutionPlan {
 
     // Return true if UNWIND appears before MATCH
     return firstUnwindOrder < firstMatchOrder;
+  }
+
+  /**
+   * Checks if the query has WITH before MATCH in clause order.
+   * The optimizer path processes all MATCH clauses first via the physical plan,
+   * which breaks queries like: WITH date(...) AS x MATCH (d:Duration) RETURN x + d.dur
+   * because WITH needs to execute before MATCH to provide variables.
+   */
+  private boolean hasWithPrecedingMatch() {
+    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    if (clausesInOrder == null || clausesInOrder.isEmpty())
+      return !statement.getWithClauses().isEmpty() && !statement.getMatchClauses().isEmpty();
+
+    int firstWithOrder = Integer.MAX_VALUE;
+    int firstMatchOrder = Integer.MAX_VALUE;
+
+    for (final ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() == ClauseEntry.ClauseType.WITH)
+        firstWithOrder = Math.min(firstWithOrder, entry.getOrder());
+      else if (entry.getType() == ClauseEntry.ClauseType.MATCH)
+        firstMatchOrder = Math.min(firstMatchOrder, entry.getOrder());
+    }
+
+    return firstWithOrder < firstMatchOrder;
   }
 
   /**

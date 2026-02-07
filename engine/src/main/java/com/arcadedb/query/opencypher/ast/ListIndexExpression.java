@@ -67,12 +67,26 @@ public class ListIndexExpression implements Expression {
       return null;
     }
 
-    // Convert index to integer
+    // Convert index to integer — validate type for list indexing
     final int index;
-    if (indexValue instanceof Number)
+    if (indexValue instanceof Long || indexValue instanceof Integer)
       index = ((Number) indexValue).intValue();
-    else
+    else if (indexValue instanceof Double || indexValue instanceof Float) {
+      // Float indices are a type error for lists in Cypher
+      if (listValue instanceof List)
+        throw new IllegalArgumentException("TypeError: list index must be an integer, got Float");
+      index = ((Number) indexValue).intValue();
+    } else if (indexValue instanceof Boolean) {
+      if (listValue instanceof List)
+        throw new IllegalArgumentException("TypeError: list index must be an integer, got Boolean");
       return null;
+    } else if (indexValue instanceof Number)
+      index = ((Number) indexValue).intValue();
+    else {
+      if (listValue instanceof List)
+        throw new IllegalArgumentException("TypeError: list index must be an integer, got " + indexValue.getClass().getSimpleName());
+      return null;
+    }
 
     // Handle list types
     if (listValue instanceof List) {

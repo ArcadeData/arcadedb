@@ -180,8 +180,42 @@ public class ComparisonExpression implements BooleanExpression {
           return null;
         return operator == Operator.EQUALS;
       }
-      // Ordering comparisons on lists return null in Cypher
-      return null;
+      // List ordering: lexicographic comparison with null propagation
+      final int minSize = Math.min(leftList.size(), rightList.size());
+      for (int i = 0; i < minSize; i++) {
+        final Object elemCmp = new ComparisonExpression(
+            new LiteralExpression(leftList.get(i), ""), Operator.EQUALS,
+            new LiteralExpression(rightList.get(i), ""))
+            .evaluateTernary(null, null);
+        if (elemCmp == null)
+          return null; // null element makes ordering undefined
+        if (Boolean.TRUE.equals(elemCmp))
+          continue; // elements are equal, compare next
+        // Elements differ: check less than
+        final Object ltResult = new ComparisonExpression(
+            new LiteralExpression(leftList.get(i), ""), Operator.LESS_THAN,
+            new LiteralExpression(rightList.get(i), ""))
+            .evaluateTernary(null, null);
+        if (ltResult == null)
+          return null;
+        final boolean isLess = Boolean.TRUE.equals(ltResult);
+        return switch (operator) {
+          case LESS_THAN -> isLess;
+          case GREATER_THAN -> !isLess;
+          case LESS_THAN_OR_EQUAL -> isLess;
+          case GREATER_THAN_OR_EQUAL -> !isLess;
+          default -> null;
+        };
+      }
+      // All compared elements are equal; compare by length
+      final int sizeCmp = Integer.compare(leftList.size(), rightList.size());
+      return switch (operator) {
+        case LESS_THAN -> sizeCmp < 0;
+        case GREATER_THAN -> sizeCmp > 0;
+        case LESS_THAN_OR_EQUAL -> sizeCmp <= 0;
+        case GREATER_THAN_OR_EQUAL -> sizeCmp >= 0;
+        default -> null;
+      };
     }
 
     // Map comparison
