@@ -89,9 +89,8 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     final Map<String, Object> options = new HashMap<>();
     options.put("emptyIfMaxDepth", true);
 
-    if (relType != null && !relType.isEmpty()) {
+    if (relType != null && !relType.isEmpty())
       options.put("edgeTypeNames", new String[] { relType });
-    }
 
     // Geographic heuristic coordinates
     if (args.length > 4 && args[4] != null && args.length > 5 && args[5] != null) {

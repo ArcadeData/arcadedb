@@ -25,11 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -39,48 +35,38 @@ import java.util.Map;
 public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   protected Vertex extractVertex(final Object arg, final String paramName) {
-    if (arg == null) {
-      throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
-    }
-    if (arg instanceof Vertex) {
-      return (Vertex) arg;
-    }
-    if (arg instanceof Document doc && doc instanceof Vertex v) {
-      return v;
-    }
-    throw new IllegalArgumentException(
-        getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
+    return switch (arg) {
+      case null -> throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
+      case Vertex vertex -> vertex;
+      case Document doc when doc instanceof Vertex v -> v;
+      default -> throw new IllegalArgumentException(
+          getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
+    };
   }
 
   protected String extractString(final Object arg, final String paramName) {
-    if (arg == null) {
+    if (arg == null)
       return null;
-    }
     return arg.toString();
   }
 
   @SuppressWarnings("unchecked")
   protected String[] extractRelTypes(final Object arg) {
-    if (arg == null) {
-      return null;
-    }
-    if (arg instanceof String s) {
-      return new String[] { s };
-    }
-    if (arg instanceof Collection<?> coll) {
-      return coll.stream().map(Object::toString).toArray(String[]::new);
-    }
-    return new String[] { arg.toString() };
+    return switch (arg) {
+      case null -> null;
+      case String s -> new String[]{s};
+      case Collection<?> coll -> coll.stream().map(Object::toString).toArray(String[]::new);
+      default -> new String[]{arg.toString()};
+    };
   }
 
   @SuppressWarnings("unchecked")
   protected Map<String, Object> extractMap(final Object arg, final String paramName) {
-    if (arg == null) {
+    if (arg == null)
       return null;
-    }
-    if (arg instanceof Map) {
+    else if (arg instanceof Map)
       return (Map<String, Object>) arg;
-    }
+
     throw new IllegalArgumentException(
         getName() + "(): " + paramName + " must be a map, got " + arg.getClass().getSimpleName());
   }

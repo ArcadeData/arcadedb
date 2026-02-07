@@ -29,6 +29,8 @@ import org.antlr.v4.runtime.Token;
 /**
  * Cypher parser using ANTLR4 with the official Cypher 2.5 grammar.
  * This replaces the regex-based parser with a proper grammar-based implementation.
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class Cypher25AntlrParser {
   /**

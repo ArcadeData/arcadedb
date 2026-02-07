@@ -34,6 +34,8 @@ import java.util.*;
  * - Boolean operand types (reject non-boolean literals)
  * - Nested aggregations and aggregation in WHERE
  * - CREATE/MERGE/DELETE structural constraints
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherSemanticValidator {
 
@@ -68,25 +70,25 @@ public class CypherSemanticValidator {
     if (clausesInOrder != null && !clausesInOrder.isEmpty()) {
       for (final ClauseEntry entry : clausesInOrder) {
         switch (entry.getType()) {
-        case MATCH:
-          final MatchClause matchClause = entry.getTypedClause();
-          if (matchClause.hasPathPatterns())
-            for (final PathPattern path : matchClause.getPathPatterns())
-              registerPathPatternVarTypes(path, varTypes);
-          break;
-        case CREATE:
-          final CreateClause createClause = entry.getTypedClause();
-          if (createClause != null && !createClause.isEmpty())
-            for (final PathPattern path : createClause.getPathPatterns())
-              registerPathPatternVarTypes(path, varTypes);
-          break;
-        case MERGE:
-          final MergeClause mergeClause = entry.getTypedClause();
-          if (mergeClause != null)
-            registerPathPatternVarTypes(mergeClause.getPathPattern(), varTypes);
-          break;
-        default:
-          break;
+          case MATCH:
+            final MatchClause matchClause = entry.getTypedClause();
+            if (matchClause.hasPathPatterns())
+              for (final PathPattern path : matchClause.getPathPatterns())
+                registerPathPatternVarTypes(path, varTypes);
+            break;
+          case CREATE:
+            final CreateClause createClause = entry.getTypedClause();
+            if (createClause != null && !createClause.isEmpty())
+              for (final PathPattern path : createClause.getPathPatterns())
+                registerPathPatternVarTypes(path, varTypes);
+            break;
+          case MERGE:
+            final MergeClause mergeClause = entry.getTypedClause();
+            if (mergeClause != null)
+              registerPathPatternVarTypes(mergeClause.getPathPattern(), varTypes);
+            break;
+          default:
+            break;
         }
       }
     } else {
@@ -136,41 +138,41 @@ public class CypherSemanticValidator {
     if (clausesInOrder != null && !clausesInOrder.isEmpty()) {
       for (final ClauseEntry entry : clausesInOrder) {
         switch (entry.getType()) {
-        case MATCH:
-          final MatchClause matchClause = entry.getTypedClause();
-          if (matchClause.hasPathPatterns())
-            for (final PathPattern path : matchClause.getPathPatterns())
-              addBoundVarsFromPattern(path, boundVars);
-          break;
-        case CREATE:
-          final CreateClause createClause = entry.getTypedClause();
-          if (createClause != null && !createClause.isEmpty())
-            for (final PathPattern path : createClause.getPathPatterns())
-              checkCreateBinding(path, boundVars);
-          break;
-        case MERGE:
-          final MergeClause mergeClause = entry.getTypedClause();
-          if (mergeClause != null)
-            checkMergeBinding(mergeClause.getPathPattern(), boundVars);
-          break;
-        case WITH:
-          // WITH resets scope to only the projected aliases
-          final WithClause withClause = entry.getTypedClause();
-          boundVars.clear();
-          for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-            final String alias = item.getAlias();
-            if (alias != null)
-              boundVars.add(alias);
-            else if (item.getExpression() instanceof VariableExpression)
-              boundVars.add(((VariableExpression) item.getExpression()).getVariableName());
-          }
-          break;
-        case UNWIND:
-          final UnwindClause unwindClause = entry.getTypedClause();
-          boundVars.add(unwindClause.getVariable());
-          break;
-        default:
-          break;
+          case MATCH:
+            final MatchClause matchClause = entry.getTypedClause();
+            if (matchClause.hasPathPatterns())
+              for (final PathPattern path : matchClause.getPathPatterns())
+                addBoundVarsFromPattern(path, boundVars);
+            break;
+          case CREATE:
+            final CreateClause createClause = entry.getTypedClause();
+            if (createClause != null && !createClause.isEmpty())
+              for (final PathPattern path : createClause.getPathPatterns())
+                checkCreateBinding(path, boundVars);
+            break;
+          case MERGE:
+            final MergeClause mergeClause = entry.getTypedClause();
+            if (mergeClause != null)
+              checkMergeBinding(mergeClause.getPathPattern(), boundVars);
+            break;
+          case WITH:
+            // WITH resets scope to only the projected aliases
+            final WithClause withClause = entry.getTypedClause();
+            boundVars.clear();
+            for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+              final String alias = item.getAlias();
+              if (alias != null)
+                boundVars.add(alias);
+              else if (item.getExpression() instanceof VariableExpression)
+                boundVars.add(((VariableExpression) item.getExpression()).getVariableName());
+            }
+            break;
+          case UNWIND:
+            final UnwindClause unwindClause = entry.getTypedClause();
+            boundVars.add(unwindClause.getVariable());
+            break;
+          default:
+            break;
         }
       }
     } else {
@@ -204,7 +206,8 @@ public class CypherSemanticValidator {
         // It's a rebinding error if CREATE defines a new entity for an already-bound var
         // (i.e., it has labels or properties that would make it a new entity definition)
         if (node.hasLabels() || node.hasProperties())
-          throw new CommandParsingException("VariableAlreadyBound: Variable '" + var + "' already defined, cannot rebind in CREATE");
+          throw new CommandParsingException("VariableAlreadyBound: Variable '" + var + "' already defined, cannot " +
+              "rebind in CREATE");
       }
     }
     // After checking, add the new bindings from this CREATE
@@ -229,96 +232,96 @@ public class CypherSemanticValidator {
 
     for (final ClauseEntry entry : clausesInOrder) {
       switch (entry.getType()) {
-      case MATCH:
-        final MatchClause matchClause = entry.getTypedClause();
-        if (matchClause.hasPathPatterns())
-          for (final PathPattern path : matchClause.getPathPatterns())
-            addBoundVarsFromPattern(path, scope);
-        break;
-      case CREATE:
-        final CreateClause createClause = entry.getTypedClause();
-        if (createClause != null && !createClause.isEmpty())
-          for (final PathPattern path : createClause.getPathPatterns())
-            addBoundVarsFromPattern(path, scope);
-        break;
-      case MERGE:
-        final MergeClause mergeClause = entry.getTypedClause();
-        if (mergeClause != null)
-          addBoundVarsFromPattern(mergeClause.getPathPattern(), scope);
-        break;
-      case UNWIND:
-        final UnwindClause unwindClause = entry.getTypedClause();
-        // The list expression in UNWIND may reference outer scope variables
-        // but the unwind variable itself is new
-        scope.add(unwindClause.getVariable());
-        break;
-      case WITH:
-        // WITH resets scope to only projected aliases
-        final WithClause withClause = entry.getTypedClause();
-        // Check for WITH * — passes all variables through
-        boolean hasWildcard = false;
-        for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-          if (item.getExpression() instanceof StarExpression ||
-              (item.getExpression() instanceof VariableExpression &&
-               "*".equals(((VariableExpression) item.getExpression()).getVariableName()))) {
-            hasWildcard = true;
+        case MATCH:
+          final MatchClause matchClause = entry.getTypedClause();
+          if (matchClause.hasPathPatterns())
+            for (final PathPattern path : matchClause.getPathPatterns())
+              addBoundVarsFromPattern(path, scope);
+          break;
+        case CREATE:
+          final CreateClause createClause = entry.getTypedClause();
+          if (createClause != null && !createClause.isEmpty())
+            for (final PathPattern path : createClause.getPathPatterns())
+              addBoundVarsFromPattern(path, scope);
+          break;
+        case MERGE:
+          final MergeClause mergeClause = entry.getTypedClause();
+          if (mergeClause != null)
+            addBoundVarsFromPattern(mergeClause.getPathPattern(), scope);
+          break;
+        case UNWIND:
+          final UnwindClause unwindClause = entry.getTypedClause();
+          // The list expression in UNWIND may reference outer scope variables
+          // but the unwind variable itself is new
+          scope.add(unwindClause.getVariable());
+          break;
+        case WITH:
+          // WITH resets scope to only projected aliases
+          final WithClause withClause = entry.getTypedClause();
+          // Check for WITH * — passes all variables through
+          boolean hasWildcard = false;
+          for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+            if (item.getExpression() instanceof StarExpression ||
+                (item.getExpression() instanceof VariableExpression &&
+                    "*".equals(((VariableExpression) item.getExpression()).getVariableName()))) {
+              hasWildcard = true;
+              break;
+            }
+          }
+          if (hasWildcard) {
+            // WITH * keeps all variables in scope — don't validate or reset
             break;
           }
-        }
-        if (hasWildcard) {
-          // WITH * keeps all variables in scope — don't validate or reset
-          break;
-        }
-        // First validate that all referenced variables in WITH are in scope
-        for (final ReturnClause.ReturnItem item : withClause.getItems())
-          checkExpressionScope(item.getExpression(), scope);
-        // Then reset scope
-        scope.clear();
-        for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-          final String alias = item.getAlias();
-          if (alias != null)
-            scope.add(alias);
-          else if (item.getExpression() instanceof VariableExpression)
-            scope.add(((VariableExpression) item.getExpression()).getVariableName());
-        }
-        break;
-      case SET:
-      case DELETE:
-      case REMOVE:
-        // These reference variables that must be in scope — but the TCK
-        // primarily tests RETURN, so we skip detailed validation here
-        break;
-      case RETURN:
-        // Validate RETURN references — only check top-level variable references
-        // to avoid false positives from complex expression types that the AST builder
-        // creates as VariableExpression with raw text
-        if (statement.getReturnClause() != null)
-          for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
+          // First validate that all referenced variables in WITH are in scope
+          for (final ReturnClause.ReturnItem item : withClause.getItems())
             checkExpressionScope(item.getExpression(), scope);
-        break;
-      case CALL:
-        // Procedure CALL with YIELD — exported yield variables enter scope
-        final CallClause callClause = entry.getTypedClause();
-        if (callClause != null && callClause.hasYield())
-          for (final CallClause.YieldItem item : callClause.getYieldItems())
-            scope.add(item.getOutputName());
-        break;
-      case SUBQUERY:
-        // CALL { ... RETURN x AS y } — exported return variables enter outer scope
-        final SubqueryClause subqueryClause = entry.getTypedClause();
-        if (subqueryClause != null && subqueryClause.getInnerStatement() != null) {
-          final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
-          if (innerReturn != null)
-            for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
-              if (item.getAlias() != null)
-                scope.add(item.getAlias());
-              else if (item.getExpression() instanceof VariableExpression)
-                scope.add(((VariableExpression) item.getExpression()).getVariableName());
-            }
-        }
-        break;
-      case FOREACH:
-        break;
+          // Then reset scope
+          scope.clear();
+          for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+            final String alias = item.getAlias();
+            if (alias != null)
+              scope.add(alias);
+            else if (item.getExpression() instanceof VariableExpression)
+              scope.add(((VariableExpression) item.getExpression()).getVariableName());
+          }
+          break;
+        case SET:
+        case DELETE:
+        case REMOVE:
+          // These reference variables that must be in scope — but the TCK
+          // primarily tests RETURN, so we skip detailed validation here
+          break;
+        case RETURN:
+          // Validate RETURN references — only check top-level variable references
+          // to avoid false positives from complex expression types that the AST builder
+          // creates as VariableExpression with raw text
+          if (statement.getReturnClause() != null)
+            for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
+              checkExpressionScope(item.getExpression(), scope);
+          break;
+        case CALL:
+          // Procedure CALL with YIELD — exported yield variables enter scope
+          final CallClause callClause = entry.getTypedClause();
+          if (callClause != null && callClause.hasYield())
+            for (final CallClause.YieldItem item : callClause.getYieldItems())
+              scope.add(item.getOutputName());
+          break;
+        case SUBQUERY:
+          // CALL { ... RETURN x AS y } — exported return variables enter outer scope
+          final SubqueryClause subqueryClause = entry.getTypedClause();
+          if (subqueryClause != null && subqueryClause.getInnerStatement() != null) {
+            final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+            if (innerReturn != null)
+              for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
+                if (item.getAlias() != null)
+                  scope.add(item.getAlias());
+                else if (item.getExpression() instanceof VariableExpression)
+                  scope.add(((VariableExpression) item.getExpression()).getVariableName());
+              }
+          }
+          break;
+        case FOREACH:
+          break;
       }
     }
   }
@@ -527,10 +530,10 @@ public class CypherSemanticValidator {
     // Reject list expressions as boolean operands (e.g., [1,2] AND true)
     else if (operand instanceof ListExpression)
       throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got List");
-    // Reject map expressions as boolean operands (e.g., {a: 1} AND true)
+      // Reject map expressions as boolean operands (e.g., {a: 1} AND true)
     else if (operand instanceof MapExpression)
       throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got Map");
-    // Reject arithmetic expressions (always return numbers)
+      // Reject arithmetic expressions (always return numbers)
     else if (operand instanceof ArithmeticExpression)
       throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got Number");
   }
@@ -790,7 +793,7 @@ public class CypherSemanticValidator {
   private static boolean hasBoundaryKeyword(final String name) {
     // Check for specific keyword patterns where the keyword is preceded by a lowercase letter
     // and followed by a lowercase letter or another uppercase sequence
-    final String[] keywords = { "IN", "WHERE", "AND", "OR", "XOR", "NOT", "AS", "IS" };
+    final String[] keywords = {"IN", "WHERE", "AND", "OR", "XOR", "NOT", "AS", "IS"};
     for (final String kw : keywords) {
       int idx = 0;
       while ((idx = name.indexOf(kw, idx)) >= 0) {

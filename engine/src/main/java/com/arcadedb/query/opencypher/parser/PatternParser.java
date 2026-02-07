@@ -23,11 +23,7 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -35,6 +31,8 @@ import java.util.regex.Pattern;
  * Simple regex-based pattern parser for Cypher path patterns.
  * Phase 2: Handles basic relationship patterns.
  * TODO: Replace with full ANTLR4 parser integration in later phases.
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class PatternParser {
 
@@ -88,9 +86,8 @@ public class PatternParser {
    * @return parsed NodePattern
    */
   public static NodePattern parseNodePattern(final String nodeStr) {
-    if (nodeStr.isEmpty()) {
+    if (nodeStr.isEmpty())
       return new NodePattern(null, null, null);
-    }
 
     String variable = null;
     List<String> labels = null;
@@ -111,15 +108,14 @@ public class PatternParser {
     // Check for label: n:Label or :Label
     if (remainingStr.contains(":")) {
       final String[] parts = remainingStr.split(":", 2);
-      if (!parts[0].trim().isEmpty()) {
+      if (!parts[0].trim().isEmpty())
         variable = parts[0].trim();
-      }
-      if (parts.length > 1 && !parts[1].trim().isEmpty()) {
-        labels = Arrays.asList(parts[1].trim());
-      }
-    } else {
+
+      if (parts.length > 1 && !parts[1].trim().isEmpty())
+        labels = List.of(parts[1].trim());
+
+    } else
       variable = remainingStr.trim();
-    }
 
     return new NodePattern(variable, labels, properties);
   }
@@ -182,7 +178,7 @@ public class PatternParser {
    * @return parsed RelationshipPattern
    */
   public static RelationshipPattern parseRelationshipPattern(final String relStr, final String leftArrow,
-      final String rightArrow) {
+                                                             final String rightArrow) {
     String variable = null;
     List<String> types = null;
     Integer minHops = null;

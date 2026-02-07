@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -109,10 +108,9 @@ public class MergeNode implements CypherProcedure {
     // Try to find existing node matching the criteria
     final Vertex existingNode = findMatchingNode(database, typeName, labels, matchProps);
 
-    if (existingNode != null) {
+    if (existingNode != null)
       // Return existing node
       return createResultStream(existingNode);
-    }
 
     // Create new node with both matchProps and createProps
     final MutableVertex newNode = database.newVertex(typeName);
@@ -140,7 +138,7 @@ public class MergeNode implements CypherProcedure {
    * Finds an existing vertex with the given type/labels that matches all the specified properties.
    */
   private Vertex findMatchingNode(final Database database, final String typeName,
-                                   final List<String> labels, final Map<String, Object> matchProps) {
+                                  final List<String> labels, final Map<String, Object> matchProps) {
     // Build query to find matching node
     final StringBuilder query = new StringBuilder("SELECT FROM `");
     query.append(typeName);
@@ -183,30 +181,35 @@ public class MergeNode implements CypherProcedure {
 
   @SuppressWarnings("unchecked")
   private List<String> extractLabels(final Object arg) {
-    if (arg == null) {
-      return List.of();
-    }
-    if (arg instanceof List) {
-      final List<String> result = new ArrayList<>();
-      for (final Object item : (List<?>) arg) {
-        if (item != null) {
-          result.add(item.toString());
-        }
+    switch (arg) {
+      case null -> {
+        return List.of();
       }
-      return result;
+      case List<?> list -> {
+        final List<String> result = new ArrayList<>();
+        for (final Object item : list) {
+          if (item != null) {
+            result.add(item.toString());
+          }
+        }
+        return result;
+      }
+      case String s -> {
+        return List.of(s);
+      }
+      default -> {
+      }
     }
-    if (arg instanceof String) {
-      return List.of((String) arg);
-    }
+
     throw new IllegalArgumentException(
         getName() + "(): labels must be a list or string, got " + arg.getClass().getSimpleName());
   }
 
   @SuppressWarnings("unchecked")
   private Map<String, Object> extractMap(final Object arg, final String paramName) {
-    if (arg == null) {
+    if (arg == null)
       return null;
-    }
+
     if (!(arg instanceof Map)) {
       throw new IllegalArgumentException(
           getName() + "(): " + paramName + " must be a map, got " + arg.getClass().getSimpleName());

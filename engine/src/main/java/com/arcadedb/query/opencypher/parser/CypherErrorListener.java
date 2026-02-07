@@ -25,6 +25,8 @@ import org.antlr.v4.runtime.Recognizer;
 
 /**
  * Custom ANTLR error listener that converts parsing errors to CommandParsingException.
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherErrorListener extends BaseErrorListener {
 
