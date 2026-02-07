@@ -4,7 +4,7 @@
 
 **Architecture:** A materialized view is a special `DocumentType` that wraps a defining SQL SELECT query. Its data lives in standard buckets and can be indexed like any other type. Refresh is driven by the existing `RecordEventsRegistry` listener infrastructure (for incremental) or by re-executing the defining query (for full). Schema persistence uses the existing `schema.json` mechanism with a new `"materializedViews"` top-level section.
 
-**Tech Stack:** Java 21, ArcadeDB engine (schema, events, query, indexing), SQL parser (JavaCC)
+**Tech Stack:** Java 21, ArcadeDB engine (schema, events, query, indexing), SQL parser (ANTLR4)
 
 ---
 
@@ -290,21 +290,39 @@ Truncation of buckets uses the existing `database.command("sql", "TRUNCATE TYPE 
 
 **Files:**
 - Create: `engine/src/main/java/com/arcadedb/query/sql/parser/CreateMaterializedViewStatement.java`
-- Modify: `engine/src/main/java/com/arcadedb/query/sql/parser/SqlParser.jj` (grammar file)
+- Modify: `engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLLexer.g4` (add new keywords)
+- Modify: `engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLParser.g4` (add grammar rules)
+- Modify: `engine/src/main/java/com/arcadedb/query/sql/antlr/SQLASTBuilder.java` (add visitor methods)
 
 The statement class extends `DDLStatement` and implements `executeDDL()` following the same pattern as `CreateTriggerStatement`:
 1. Validate inputs
 2. Delegate to `database.getSchema().buildMaterializedView()...create()`
 3. Return result set with `{ "operation": "create materialized view", "name": viewName }`
 
-Parser grammar addition:
+ANTLR4 grammar rules (added to `SQLParser.g4`):
 
+```antlr
+createMaterializedViewBody
+    : (IF NOT EXISTS)? identifier
+      AS selectStatement
+      materializedViewRefreshClause?
+      (BUCKETS POSITIVE_INTEGER)?
+    ;
+
+materializedViewRefreshClause
+    : REFRESH MANUAL
+    | REFRESH ON COMMIT
+    | REFRESH EVERY POSITIVE_INTEGER materializedViewTimeUnit
+    ;
+
+materializedViewTimeUnit
+    : SECOND | MINUTE | HOUR
+    ;
 ```
-CreateMaterializedViewStatement ::= CREATE MATERIALIZED VIEW [IF NOT EXISTS] <Identifier>
-    AS <SelectStatement>
-    [ REFRESH ( MANUAL | ON COMMIT | EVERY <PInteger> ( SECOND | MINUTE | HOUR ) ) ]
-    [ BUCKETS <PInteger> ]
-```
+
+New keywords added to `SQLLexer.g4`: `MATERIALIZED`, `VIEW`, `REFRESH`, `EVERY`, `SECOND`, `MINUTE`, `HOUR`, `MANUAL` (only those not already present in the lexer).
+
+Visitor methods added to `SQLASTBuilder.java` following the existing `visitCreateTriggerStmt` pattern.
 
 #### Task 2.2: DROP MATERIALIZED VIEW Statement
 
@@ -550,7 +568,9 @@ The existing `GET /api/v1/schema/{database}` returns the schema JSON. The `mater
 |------|--------|
 | `schema/Schema.java` | Add materialized view methods |
 | `schema/LocalSchema.java` | Add `materializedViews` map, extend `toJSON()`, `readConfiguration()`, `close()`, `dropType()` |
-| `query/sql/parser/SqlParser.jj` | Add grammar rules for MATERIALIZED VIEW statements |
+| `query/sql/grammar/SQLLexer.g4` | Add new keywords (MATERIALIZED, VIEW, REFRESH, EVERY, SECOND, MINUTE, HOUR, MANUAL) |
+| `query/sql/grammar/SQLParser.g4` | Add grammar rules for MATERIALIZED VIEW statements (CREATE, DROP, REFRESH, ALTER) |
+| `query/sql/antlr/SQLASTBuilder.java` | Add ANTLR4 visitor methods for materialized view statement contexts |
 
 ### Test Files
 
