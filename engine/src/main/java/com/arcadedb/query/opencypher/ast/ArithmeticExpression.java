@@ -122,7 +122,7 @@ public class ArithmeticExpression implements Expression {
     }
 
     // Temporal arithmetic: date/time ± duration, duration ± duration, duration * number
-    final Object temporalResult = evaluateTemporalArithmetic(leftValue, rightValue);
+    final Object temporalResult = evaluateTemporalArithmetic(leftValue, rightValue, operator);
     if (temporalResult != null)
       return temporalResult;
 
@@ -159,23 +159,29 @@ public class ArithmeticExpression implements Expression {
       case ADD -> l + r;
       case SUBTRACT -> l - r;
       case MULTIPLY -> l * r;
-      case DIVIDE -> r != 0 ? l / r : null;
-      case MODULO -> r != 0 ? l % r : null;
+      case DIVIDE -> l / r; // IEEE 754: 0.0/0.0=NaN, x/0.0=±Infinity
+      case MODULO -> r != 0 ? l % r : Double.NaN;
       case POWER -> Math.pow(l, r);
     };
   }
 
-  private Object evaluateTemporalArithmetic(final Object leftValue, final Object rightValue) {
+  /**
+   * Evaluate temporal arithmetic with pre-evaluated operands.
+   * Can be called from ExpressionEvaluator with already-resolved values.
+   *
+   * @return the result, or null if not a temporal arithmetic operation
+   */
+  public static Object evaluateTemporalArithmetic(final Object leftValue, final Object rightValue, final Operator op) {
     // Duration + Duration or Duration - Duration
     if (leftValue instanceof CypherDuration ld && rightValue instanceof CypherDuration rd) {
-      if (operator == Operator.ADD)
+      if (op == Operator.ADD)
         return ld.add(rd);
-      if (operator == Operator.SUBTRACT)
+      if (op == Operator.SUBTRACT)
         return ld.subtract(rd);
     }
 
     // Duration * Number or Number * Duration
-    if (operator == Operator.MULTIPLY) {
+    if (op == Operator.MULTIPLY) {
       if (leftValue instanceof CypherDuration ld && rightValue instanceof Number)
         return ld.multiply(((Number) rightValue).doubleValue());
       if (leftValue instanceof Number && rightValue instanceof CypherDuration rd)
@@ -183,64 +189,64 @@ public class ArithmeticExpression implements Expression {
     }
 
     // Duration / Number
-    if (operator == Operator.DIVIDE && leftValue instanceof CypherDuration ld && rightValue instanceof Number)
+    if (op == Operator.DIVIDE && leftValue instanceof CypherDuration ld && rightValue instanceof Number)
       return ld.divide(((Number) rightValue).doubleValue());
 
     // java.time.LocalDate (from ArcadeDB storage) ± Duration
     if (leftValue instanceof LocalDate ld && rightValue instanceof CypherDuration dur) {
-      final LocalDate d = ld.plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays());
+      final LocalDate d = ld.plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays());
       return new CypherDate(d);
     }
 
     // java.time.LocalDateTime (from ArcadeDB storage) ± Duration
     if (leftValue instanceof LocalDateTime ldt && rightValue instanceof CypherDuration dur) {
       LocalDateTime dt = ldt
-          .plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays())
-          .plusSeconds(operator == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
-          .plusNanos(operator == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
+          .plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays())
+          .plusSeconds(op == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
+          .plusNanos(op == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
       return new CypherLocalDateTime(dt);
     }
 
     // Date ± Duration
     if (leftValue instanceof CypherDate cd && rightValue instanceof CypherDuration dur) {
-      final LocalDate d = cd.getValue().plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays());
+      final LocalDate d = cd.getValue().plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays());
       return new CypherDate(d);
     }
 
     // LocalTime ± Duration
     if (leftValue instanceof CypherLocalTime clt && rightValue instanceof CypherDuration dur) {
       final long totalNanos = dur.getSeconds() * 1_000_000_000L + dur.getNanosAdjustment();
-      final LocalTime t = operator == Operator.ADD ? clt.getValue().plusNanos(totalNanos) : clt.getValue().minusNanos(totalNanos);
+      final LocalTime t = op == Operator.ADD ? clt.getValue().plusNanos(totalNanos) : clt.getValue().minusNanos(totalNanos);
       return new CypherLocalTime(t);
     }
 
     // Time ± Duration
     if (leftValue instanceof CypherTime ct && rightValue instanceof CypherDuration dur) {
       final long totalNanos = dur.getSeconds() * 1_000_000_000L + dur.getNanosAdjustment();
-      final OffsetTime t = operator == Operator.ADD ? ct.getValue().plusNanos(totalNanos) : ct.getValue().minusNanos(totalNanos);
+      final OffsetTime t = op == Operator.ADD ? ct.getValue().plusNanos(totalNanos) : ct.getValue().minusNanos(totalNanos);
       return new CypherTime(t);
     }
 
     // LocalDateTime ± Duration
     if (leftValue instanceof CypherLocalDateTime cldt && rightValue instanceof CypherDuration dur) {
       LocalDateTime dt = cldt.getValue()
-          .plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays())
-          .plusSeconds(operator == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
-          .plusNanos(operator == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
+          .plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays())
+          .plusSeconds(op == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
+          .plusNanos(op == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
       return new CypherLocalDateTime(dt);
     }
 
     // DateTime ± Duration
     if (leftValue instanceof CypherDateTime cdt && rightValue instanceof CypherDuration dur) {
       ZonedDateTime dt = cdt.getValue()
-          .plusMonths(operator == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(operator == Operator.ADD ? dur.getDays() : -dur.getDays())
-          .plusSeconds(operator == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
-          .plusNanos(operator == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
+          .plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
+          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays())
+          .plusSeconds(op == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
+          .plusNanos(op == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
       return new CypherDateTime(dt);
     }
 

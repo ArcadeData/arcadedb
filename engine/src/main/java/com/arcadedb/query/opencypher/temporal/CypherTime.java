@@ -38,16 +38,16 @@ public class CypherTime implements CypherTemporalValue {
   }
 
   public static CypherTime now() {
-    return new CypherTime(OffsetTime.now());
+    return new CypherTime(OffsetTime.now(ZoneOffset.UTC));
   }
 
   public static CypherTime parse(final String str) {
     // Split time part from offset
     final int offsetIdx = findOffsetIndex(str);
     if (offsetIdx < 0) {
-      // No timezone offset — use system default offset
+      // No timezone offset — default to UTC for deterministic behavior
       final LocalTime localTime = CypherLocalTime.parseLocalTime(str);
-      return new CypherTime(OffsetTime.of(localTime, java.time.OffsetDateTime.now().getOffset()));
+      return new CypherTime(OffsetTime.of(localTime, ZoneOffset.UTC));
     }
 
     final String timePart = str.substring(0, offsetIdx);
@@ -88,13 +88,7 @@ public class CypherTime implements CypherTemporalValue {
     final int hour = map.containsKey("hour") ? toInt(map.get("hour")) : (base != null ? base.getHour() : 0);
     final int minute = map.containsKey("minute") ? toInt(map.get("minute")) : (base != null ? base.getMinute() : 0);
     final int second = map.containsKey("second") ? toInt(map.get("second")) : (base != null ? base.getSecond() : 0);
-    int nanos = base != null ? base.getNano() : 0;
-    if (map.containsKey("nanosecond"))
-      nanos = toInt(map.get("nanosecond"));
-    else if (map.containsKey("microsecond"))
-      nanos = toInt(map.get("microsecond")) * 1000;
-    else if (map.containsKey("millisecond"))
-      nanos = toInt(map.get("millisecond")) * 1_000_000;
+    final int nanos = TemporalUtil.computeNanos(map, base != null ? base.getNano() : 0);
 
     ZoneOffset offset = base != null ? base.getOffset() : ZoneOffset.UTC;
     if (map.containsKey("timezone")) {

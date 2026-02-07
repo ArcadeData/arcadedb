@@ -126,10 +126,16 @@ public class ExpressionEvaluator {
       }
     }
 
-    if (!(leftValue instanceof Number) || !(rightValue instanceof Number))
+    // Temporal arithmetic with pre-evaluated values
+    if (!(leftValue instanceof Number) || !(rightValue instanceof Number)) {
+      final Object temporalResult = ArithmeticExpression.evaluateTemporalArithmetic(
+          leftValue, rightValue, expression.getOperator());
+      if (temporalResult != null)
+        return temporalResult;
       throw new IllegalArgumentException(
           "Arithmetic operations require numeric operands, got: " + leftValue.getClass().getSimpleName()
               + " and " + rightValue.getClass().getSimpleName());
+    }
 
     final Number leftNum = (Number) leftValue;
     final Number rightNum = (Number) rightValue;
@@ -156,8 +162,8 @@ public class ExpressionEvaluator {
       case ADD -> l + r;
       case SUBTRACT -> l - r;
       case MULTIPLY -> l * r;
-      case DIVIDE -> r != 0 ? l / r : null;
-      case MODULO -> r != 0 ? l % r : null;
+      case DIVIDE -> l / r; // IEEE 754: 0.0/0.0=NaN, x/0.0=±Infinity
+      case MODULO -> r != 0 ? l % r : Double.NaN;
       case POWER -> Math.pow(l, r);
     };
   }

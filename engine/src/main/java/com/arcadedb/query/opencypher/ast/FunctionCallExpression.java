@@ -31,10 +31,12 @@ import java.util.function.Function;
  */
 public class FunctionCallExpression implements Expression {
   private final String functionName;
+  private final String originalFunctionName;
   private final List<Expression> arguments;
   private final boolean distinct;
 
   public FunctionCallExpression(final String functionName, final List<Expression> arguments, final boolean distinct) {
+    this.originalFunctionName = functionName;
     this.functionName = functionName.toLowerCase(); // Cypher functions are case-insensitive
     this.arguments = arguments;
     this.distinct = distinct;
@@ -90,7 +92,7 @@ public class FunctionCallExpression implements Expression {
   @Override
   public String getText() {
     final StringBuilder sb = new StringBuilder();
-    sb.append(functionName).append("(");
+    sb.append(originalFunctionName).append("(");
     if (distinct) {
       sb.append("DISTINCT ");
     }

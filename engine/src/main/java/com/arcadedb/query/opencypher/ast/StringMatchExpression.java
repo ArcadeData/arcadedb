@@ -45,29 +45,29 @@ public class StringMatchExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
+    final Object ternary = evaluateTernary(result, context);
+    return Boolean.TRUE.equals(ternary);
+  }
+
+  @Override
+  public Object evaluateTernary(final Result result, final CommandContext context) {
     final Object value = expression.evaluate(result, context);
-    if (value == null) {
-      return false;
-    }
-
     final Object patternObj = pattern.evaluate(result, context);
-    if (patternObj == null) {
-      return false;
-    }
 
-    final String valueStr = value.toString();
-    final String patternStr = patternObj.toString();
+    // Null or non-string operands return null (three-valued logic)
+    if (value == null || patternObj == null)
+      return null;
+    if (!(value instanceof String) || !(patternObj instanceof String))
+      return null;
 
-    switch (matchType) {
-      case STARTS_WITH:
-        return valueStr.startsWith(patternStr);
-      case ENDS_WITH:
-        return valueStr.endsWith(patternStr);
-      case CONTAINS:
-        return valueStr.contains(patternStr);
-      default:
-        return false;
-    }
+    final String valueStr = (String) value;
+    final String patternStr = (String) patternObj;
+
+    return switch (matchType) {
+      case STARTS_WITH -> valueStr.startsWith(patternStr);
+      case ENDS_WITH -> valueStr.endsWith(patternStr);
+      case CONTAINS -> valueStr.contains(patternStr);
+    };
   }
 
   @Override

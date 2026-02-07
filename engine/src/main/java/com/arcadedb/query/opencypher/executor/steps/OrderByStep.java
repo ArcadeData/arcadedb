@@ -22,6 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
@@ -144,30 +145,92 @@ public class OrderByStep extends AbstractExecutionStep {
       /**
        * Compares two values for sorting.
        * In Cypher, null is considered the largest value: nulls sort last in ASC, first in DESC.
+       * NaN sorts between null and all other values.
+       * Type ordering: Map < Node < Relationship < List < Path < String < Boolean < Number < Temporal
        */
       @SuppressWarnings({"unchecked", "rawtypes"})
       private int compareValues(final Object v1, final Object v2) {
-        if (v1 == null && v2 == null) {
+        if (v1 == null && v2 == null)
           return 0;
-        }
-        if (v1 == null) {
+        if (v1 == null)
           return 1; // null is the largest value
-        }
-        if (v2 == null) {
+        if (v2 == null)
           return -1;
+
+        // Handle NaN: NaN sorts just before null
+        final boolean nan1 = v1 instanceof Double && Double.isNaN((Double) v1) ||
+            v1 instanceof Float && Float.isNaN((Float) v1);
+        final boolean nan2 = v2 instanceof Double && Double.isNaN((Double) v2) ||
+            v2 instanceof Float && Float.isNaN((Float) v2);
+        if (nan1 && nan2) return 0;
+        if (nan1) return 1;
+        if (nan2) return -1;
+
+        // Compare lists element-by-element
+        if (v1 instanceof List && v2 instanceof List) {
+          final List<?> l1 = (List<?>) v1;
+          final List<?> l2 = (List<?>) v2;
+          final int minSize = Math.min(l1.size(), l2.size());
+          for (int i = 0; i < minSize; i++) {
+            final int cmp = compareValues(l1.get(i), l2.get(i));
+            if (cmp != 0) return cmp;
+          }
+          return Integer.compare(l1.size(), l2.size());
         }
 
-        // Both non-null
+        // Compare booleans: false < true
+        if (v1 instanceof Boolean && v2 instanceof Boolean)
+          return Boolean.compare((Boolean) v1, (Boolean) v2);
+
+        // Compare temporal values
+        if (v1 instanceof CypherTemporalValue && v2 instanceof CypherTemporalValue) {
+          try {
+            return ((CypherTemporalValue) v1).compareTo((CypherTemporalValue) v2);
+          } catch (final IllegalArgumentException e) {
+            // Different temporal types — fall through to type rank
+          }
+        }
+
+        // Same-type Comparable comparison
+        if (v1.getClass().equals(v2.getClass()) && v1 instanceof Comparable) {
+          try {
+            return ((Comparable) v1).compareTo(v2);
+          } catch (final ClassCastException e) {
+            // Fall through
+          }
+        }
+
+        // Cross-type number comparison
+        if (v1 instanceof Number && v2 instanceof Number)
+          return Double.compare(((Number) v1).doubleValue(), ((Number) v2).doubleValue());
+
+        // Different types: order by type rank
+        final int rank1 = typeRank(v1);
+        final int rank2 = typeRank(v2);
+        if (rank1 != rank2)
+          return Integer.compare(rank1, rank2);
+
+        // Same rank, try Comparable
         if (v1 instanceof Comparable && v2 instanceof Comparable) {
           try {
             return ((Comparable) v1).compareTo(v2);
           } catch (final ClassCastException e) {
-            // Fall through to string comparison
+            // Fall through
           }
         }
 
-        // Fallback to string comparison
         return v1.toString().compareTo(v2.toString());
+      }
+
+      private int typeRank(final Object v) {
+        if (v instanceof java.util.Map) return 0;
+        if (v instanceof Vertex) return 1;
+        if (v instanceof Edge) return 2;
+        if (v instanceof List) return 3;
+        if (v instanceof String) return 5;
+        if (v instanceof Boolean) return 6;
+        if (v instanceof Number) return 7;
+        return 8; // temporal and other types
       }
 
       @Override

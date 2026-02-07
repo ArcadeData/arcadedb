@@ -109,17 +109,27 @@ public final class Labels {
    */
   public static List<String> getLabels(final Vertex vertex) {
     final DocumentType type = vertex.getType();
+    final String typeName = type.getName();
+
+    // If the vertex was created without labels, it has the base "Vertex" type
+    // In Cypher, unlabeled nodes have an empty label list
+    if ("Vertex".equals(typeName) || "V".equals(typeName))
+      return List.of();
+
     final List<DocumentType> superTypes = type.getSuperTypes();
 
     if (superTypes.isEmpty()) {
       // Single-label vertex - type name is the label
-      return List.of(type.getName());
+      return List.of(typeName);
     }
 
-    // Multi-label vertex - supertypes are the labels
+    // Multi-label vertex - supertypes are the labels, filter out base types
     final List<String> labels = new ArrayList<>(superTypes.size());
-    for (final DocumentType superType : superTypes)
-      labels.add(superType.getName());
+    for (final DocumentType superType : superTypes) {
+      final String name = superType.getName();
+      if (!"Vertex".equals(name) && !"V".equals(name))
+        labels.add(name);
+    }
     Collections.sort(labels);
     return labels;
   }

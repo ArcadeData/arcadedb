@@ -44,9 +44,11 @@ public class CypherSemanticValidator {
   }
 
   public static void validate(final CypherStatement statement) {
-    // Skip validation for UnionStatement — validate each subquery separately
-    if (statement instanceof UnionStatement)
+    // For UNION statements, validate union-specific constraints then each subquery
+    if (statement instanceof UnionStatement) {
+      validateUnion((UnionStatement) statement);
       return;
+    }
 
     final CypherSemanticValidator v = new CypherSemanticValidator();
     v.validateVariableTypes(statement);
@@ -56,6 +58,42 @@ public class CypherSemanticValidator {
     v.validateAggregations(statement);
     v.validateBooleanOperandTypes(statement);
     v.validateSkipLimit(statement);
+    v.validateColumnNames(statement);
+    v.validateExpressionAliases(statement);
+  }
+
+  // ========================
+  // Phase 0: UNION Validation
+  // ========================
+
+  private static void validateUnion(final UnionStatement unionStmt) {
+    final List<CypherStatement> queries = unionStmt.getQueries();
+    final List<Boolean> flags = unionStmt.getUnionAllFlags();
+
+    // Check that mixing UNION and UNION ALL is not allowed
+    if (flags.size() > 1) {
+      final boolean firstIsAll = flags.get(0);
+      for (int i = 1; i < flags.size(); i++) {
+        if (flags.get(i) != firstIsAll)
+          throw new CommandParsingException("InvalidClauseComposition: Cannot mix UNION and UNION ALL");
+      }
+    }
+
+    // Check that all queries have the same return columns
+    List<String> firstColumns = null;
+    for (final CypherStatement query : queries) {
+      final ReturnClause returnClause = query.getReturnClause();
+      if (returnClause == null)
+        continue;
+      final List<String> columns = returnClause.getItems();
+      if (firstColumns == null) {
+        firstColumns = columns;
+      } else if (!firstColumns.equals(columns)) {
+        throw new CommandParsingException("DifferentColumnsInUnion: All sub queries in a UNION must have the same column names");
+      }
+      // Validate each subquery
+      validate(query);
+    }
   }
 
   // ========================
@@ -275,7 +313,21 @@ public class CypherSemanticValidator {
           // First validate that all referenced variables in WITH are in scope
           for (final ReturnClause.ReturnItem item : withClause.getItems())
             checkExpressionScope(item.getExpression(), scope);
-          // Then reset scope
+          // Build the combined scope for ORDER BY: pre-WITH scope + projected aliases
+          // ORDER BY in WITH can reference both original variables and new aliases
+          if (withClause.getOrderByClause() != null) {
+            final Set<String> orderByScope = new HashSet<>(scope);
+            for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+              if (item.getAlias() != null)
+                orderByScope.add(item.getAlias());
+              else if (item.getExpression() instanceof VariableExpression)
+                orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+            }
+            for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems())
+              if (item.getExpressionAST() != null)
+                checkExpressionScope(item.getExpressionAST(), orderByScope);
+          }
+          // Reset scope to only projected aliases
           scope.clear();
           for (final ReturnClause.ReturnItem item : withClause.getItems()) {
             final String alias = item.getAlias();
@@ -286,10 +338,21 @@ public class CypherSemanticValidator {
           }
           break;
         case SET:
-        case DELETE:
+          final SetClause setClause = entry.getTypedClause();
+          if (setClause != null && !setClause.isEmpty())
+            for (final SetClause.SetItem item : setClause.getItems())
+              if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
+                throw new CommandParsingException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+          break;
         case REMOVE:
-          // These reference variables that must be in scope — but the TCK
-          // primarily tests RETURN, so we skip detailed validation here
+          // REMOVE references variables that must be in scope — but complex to validate
+          break;
+        case DELETE:
+          final DeleteClause deleteClause2 = entry.getTypedClause();
+          if (deleteClause2 != null && !deleteClause2.isEmpty())
+            for (final String var : deleteClause2.getVariables())
+              if (isValidVariableName(var) && !scope.contains(var))
+                throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
           break;
         case RETURN:
           // Validate RETURN references — only check top-level variable references
@@ -580,6 +643,9 @@ public class CypherSemanticValidator {
     }
     if (statement.getWhereClause() != null)
       checkAggregationInWhere(statement.getWhereClause());
+
+    // Note: RETURN ORDER BY aggregation validation is complex (need to distinguish
+    // between returned vs non-returned aggregations) — skipping for now to avoid false positives
   }
 
   private void checkNestedAggregation(final Expression expr, final boolean insideAggregation) {
@@ -644,6 +710,21 @@ public class CypherSemanticValidator {
       checkAggregationInExpression(inExpr.getExpression());
       for (final Expression elem : inExpr.getList())
         checkAggregationInExpression(elem);
+    }
+  }
+
+  private void checkAggregationInOrderBy(final Expression expr) {
+    if (expr == null)
+      return;
+
+    if (expr instanceof FunctionCallExpression) {
+      if (((FunctionCallExpression) expr).isAggregation())
+        throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in ORDER BY after RETURN");
+      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+        checkAggregationInOrderBy(arg);
+    } else if (expr instanceof ArithmeticExpression) {
+      checkAggregationInOrderBy(((ArithmeticExpression) expr).getLeft());
+      checkAggregationInOrderBy(((ArithmeticExpression) expr).getRight());
     }
   }
 
@@ -749,6 +830,54 @@ public class CypherSemanticValidator {
         throw new CommandParsingException("NegativeIntegerArgument: SKIP value cannot be negative: " + withClause.getSkip());
       if (withClause.getLimit() != null && withClause.getLimit() < 0)
         throw new CommandParsingException("NegativeIntegerArgument: LIMIT value cannot be negative: " + withClause.getLimit());
+    }
+  }
+
+  // ==========================================
+  // Phase 7: Column Name Conflict
+  // ==========================================
+
+  private void validateColumnNames(final CypherStatement statement) {
+    // Check RETURN clause for duplicate aliases
+    if (statement.getReturnClause() != null)
+      checkDuplicateAliases(statement.getReturnClause().getReturnItems());
+
+    // Check WITH clauses for duplicate aliases
+    for (final WithClause withClause : statement.getWithClauses())
+      checkDuplicateAliases(withClause.getItems());
+  }
+
+  private void checkDuplicateAliases(final List<ReturnClause.ReturnItem> items) {
+    final Set<String> seen = new HashSet<>();
+    for (final ReturnClause.ReturnItem item : items) {
+      String name = item.getAlias();
+      if (name == null && item.getExpression() instanceof VariableExpression)
+        name = ((VariableExpression) item.getExpression()).getVariableName();
+      if (name != null && !name.equals("*")) {
+        if (!seen.add(name))
+          throw new CommandParsingException("ColumnNameConflict: Column name '" + name + "' is defined more than once");
+      }
+    }
+  }
+
+  // ==========================================
+  // Phase 8: Expression Alias Validation
+  // ==========================================
+
+  private void validateExpressionAliases(final CypherStatement statement) {
+    // In WITH, non-variable expressions (aggregations, function calls, arithmetic, etc.)
+    // must have an alias. Simple variable references don't need one.
+    for (final WithClause withClause : statement.getWithClauses()) {
+      // Only enforce if WITH has aggregations (mixed aggregation/non-aggregation context)
+      if (withClause.hasAggregations()) {
+        for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+          final Expression expr = item.getExpression();
+          if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation()) {
+            if (item.getAlias() == null)
+              throw new CommandParsingException("NoExpressionAlias: Expression in WITH must be aliased (use AS)");
+          }
+        }
+      }
     }
   }
 

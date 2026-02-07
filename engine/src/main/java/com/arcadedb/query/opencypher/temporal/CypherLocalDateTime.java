@@ -87,6 +87,7 @@ public class CypherLocalDateTime implements CypherTemporalValue {
           result = result.withMinute(toInt(map.get("minute")));
         if (map.containsKey("second"))
           result = result.withSecond(toInt(map.get("second")));
+        result = result.withNano(TemporalUtil.computeNanos(map, result.getNano()));
         return new CypherLocalDateTime(result);
       }
     }
@@ -127,12 +128,7 @@ public class CypherLocalDateTime implements CypherTemporalValue {
       minute = toInt(map.get("minute"));
     if (map.containsKey("second"))
       second = toInt(map.get("second"));
-    if (map.containsKey("nanosecond"))
-      nanos = toInt(map.get("nanosecond"));
-    else if (map.containsKey("microsecond"))
-      nanos = toInt(map.get("microsecond")) * 1000;
-    else if (map.containsKey("millisecond"))
-      nanos = toInt(map.get("millisecond")) * 1_000_000;
+    nanos = TemporalUtil.computeNanos(map, nanos);
 
     return new CypherLocalDateTime(LocalDateTime.of(datePart, LocalTime.of(hour, minute, second, nanos)));
   }

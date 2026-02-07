@@ -27,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 
@@ -93,7 +94,6 @@ public class CypherFunctionFactory {
     mapping.put("toupper", "upper");
     mapping.put("tolower", "lower");
     mapping.put("trim", "trim");
-    mapping.put("substring", "substring");
     mapping.put("replace", "replace");
 
     // Date/Time functions
@@ -204,11 +204,11 @@ public class CypherFunctionFactory {
       // List functions
       case "size", "head", "tail", "last", "range" -> true;
       // String functions
-      case "left", "right", "reverse", "split" -> true;
+      case "left", "right", "reverse", "split", "substring" -> true;
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean" -> true;
       // Aggregation functions
-      case "collect" -> true;
+      case "collect", "percentiledisc", "percentilecont" -> true;
       // Temporal constructor functions
       case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
       // Temporal truncation functions
@@ -263,6 +263,7 @@ public class CypherFunctionFactory {
       case "right" -> new RightFunction();
       case "reverse" -> new ReverseFunction();
       case "split" -> new SplitFunction();
+      case "substring" -> new SubstringFunction();
       // Type conversion functions
       case "tostring" -> new ToStringFunction();
       case "tointeger" -> new ToIntegerFunction();
@@ -270,6 +271,8 @@ public class CypherFunctionFactory {
       case "toboolean" -> new ToBooleanFunction();
       // Aggregation functions
       case "collect" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
+      case "percentiledisc" -> new PercentileDiscFunction();
+      case "percentilecont" -> new PercentileContFunction();
       // Temporal constructor functions
       case "date" -> new DateConstructorFunction();
       case "localtime" -> new LocalTimeConstructorFunction();
@@ -484,7 +487,15 @@ public class CypherFunctionFactory {
       }
       if (args[0] instanceof Map)
         return new LinkedHashMap<>((Map<?, ?>) args[0]);
-      return Collections.emptyMap();
+      if (args[0] instanceof Result) {
+        final Result r = (Result) args[0];
+        final Map<String, Object> props = new LinkedHashMap<>();
+        for (final String propName : r.getPropertyNames())
+          props.put(propName, r.getProperty(propName));
+        return props;
+      }
+      throw new CommandExecutionException("TypeError: properties() requires a node, relationship, or map argument, got " +
+          args[0].getClass().getSimpleName());
     }
   }
 
@@ -730,6 +741,15 @@ public class CypherFunctionFactory {
       if (args.length < 2 || args.length > 3) {
         throw new CommandExecutionException("range() requires 2 or 3 arguments: range(start, end) or range(start, end, step)");
       }
+      // Validate that arguments are integers, not floats
+      for (int i = 0; i < args.length; i++) {
+        if (args[i] instanceof Double || args[i] instanceof Float)
+          throw new CommandExecutionException("InvalidArgumentType: range() requires integer arguments, got float for argument " + (i + 1));
+        if (args[i] == null)
+          throw new CommandExecutionException("InvalidArgumentType: range() does not accept null arguments");
+        if (!(args[i] instanceof Number))
+          throw new CommandExecutionException("InvalidArgumentType: range() requires integer arguments, got " + args[i].getClass().getSimpleName());
+      }
       final long start = ((Number) args[0]).longValue();
       final long end = ((Number) args[1]).longValue();
       final long step = args.length == 3 ? ((Number) args[2]).longValue() : 1L;
@@ -833,6 +853,30 @@ public class CypherFunctionFactory {
   /**
    * split() function - splits a string by a delimiter.
    */
+  private static class SubstringFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "substring";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length < 2 || args.length > 3)
+        throw new CommandExecutionException("substring() requires 2 or 3 arguments: substring(string, start[, length])");
+      if (args[0] == null)
+        return null;
+      final String str = args[0].toString();
+      final int start = ((Number) args[1]).intValue();
+      if (start < 0 || start > str.length())
+        return "";
+      if (args.length == 3 && args[2] != null) {
+        final int length = ((Number) args[2]).intValue();
+        return str.substring(start, Math.min(start + length, str.length()));
+      }
+      return str.substring(start);
+    }
+  }
+
   private static class SplitFunction implements StatelessFunction {
     @Override
     public String getName() {
@@ -1489,12 +1533,7 @@ public class CypherFunctionFactory {
       time = time.withMinute(((Number) map.get("minute")).intValue());
     if (map.containsKey("second"))
       time = time.withSecond(((Number) map.get("second")).intValue());
-    if (map.containsKey("nanosecond"))
-      time = time.withNano(((Number) map.get("nanosecond")).intValue());
-    else if (map.containsKey("microsecond"))
-      time = time.withNano(((Number) map.get("microsecond")).intValue() * 1000);
-    else if (map.containsKey("millisecond"))
-      time = time.withNano(((Number) map.get("millisecond")).intValue() * 1_000_000);
+    time = time.withNano(TemporalUtil.computeNanos(map, time.getNano()));
     return time;
   }
 
@@ -1507,6 +1546,109 @@ public class CypherFunctionFactory {
     final LocalDate date = applyDateMap(dt.toLocalDate(), map);
     final LocalTime time = applyTimeMap(dt.toLocalTime(), map);
     return LocalDateTime.of(date, time);
+  }
+
+  /**
+   * percentileDisc() aggregation function - computes the discrete percentile.
+   * Returns the nearest value to the given percentile (no interpolation).
+   * Example: percentileDisc(n.age, 0.5) returns the median age
+   */
+  private static class PercentileDiscFunction implements StatelessFunction {
+    private final List<Number> values = new ArrayList<>();
+    private double percentile = -1;
+
+    @Override
+    public String getName() {
+      return "percentileDisc";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("percentileDisc() requires exactly 2 arguments: percentileDisc(expr, percentile)");
+      if (percentile < 0) {
+        if (args[1] == null)
+          throw new CommandExecutionException("percentileDisc() percentile argument must not be null");
+        percentile = ((Number) args[1]).doubleValue();
+        if (percentile < 0.0 || percentile > 1.0)
+          throw new CommandExecutionException("NumberOutOfRange: percentile must be between 0.0 and 1.0, got: " + percentile);
+      }
+      if (args[0] instanceof Number)
+        values.add((Number) args[0]);
+      return null;
+    }
+
+    @Override
+    public boolean aggregateResults() {
+      return true;
+    }
+
+    @Override
+    public Object getAggregatedResult() {
+      if (values.isEmpty())
+        return null;
+      values.sort((a, b) -> Double.compare(a.doubleValue(), b.doubleValue()));
+      final int index = (int) Math.ceil(percentile * values.size()) - 1;
+      final Number result = values.get(Math.max(0, Math.min(index, values.size() - 1)));
+      // Return as long if it's an integer type
+      if (result instanceof Long || result instanceof Integer)
+        return result.longValue();
+      return result.doubleValue();
+    }
+  }
+
+  /**
+   * percentileCont() aggregation function - computes the continuous (interpolated) percentile.
+   * Uses linear interpolation between values.
+   * Example: percentileCont(n.age, 0.4) returns the 40th percentile age
+   */
+  private static class PercentileContFunction implements StatelessFunction {
+    private final List<Number> values = new ArrayList<>();
+    private double percentile = -1;
+
+    @Override
+    public String getName() {
+      return "percentileCont";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("percentileCont() requires exactly 2 arguments: percentileCont(expr, percentile)");
+      if (percentile < 0) {
+        if (args[1] == null)
+          throw new CommandExecutionException("percentileCont() percentile argument must not be null");
+        percentile = ((Number) args[1]).doubleValue();
+        if (percentile < 0.0 || percentile > 1.0)
+          throw new CommandExecutionException("NumberOutOfRange: percentile must be between 0.0 and 1.0, got: " + percentile);
+      }
+      if (args[0] instanceof Number)
+        values.add((Number) args[0]);
+      return null;
+    }
+
+    @Override
+    public boolean aggregateResults() {
+      return true;
+    }
+
+    @Override
+    public Object getAggregatedResult() {
+      if (values.isEmpty())
+        return null;
+      values.sort((a, b) -> Double.compare(a.doubleValue(), b.doubleValue()));
+      if (percentile == 1.0)
+        return values.getLast().doubleValue();
+      if (percentile == 0.0)
+        return values.getFirst().doubleValue();
+      final double pos = percentile * (values.size() - 1);
+      final int lower = (int) Math.floor(pos);
+      final int upper = (int) Math.ceil(pos);
+      if (lower == upper)
+        return values.get(lower).doubleValue();
+      final double fraction = pos - lower;
+      return values.get(lower).doubleValue() + fraction * (values.get(upper).doubleValue() - values.get(lower).doubleValue());
+    }
   }
 
   /**
