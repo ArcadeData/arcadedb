@@ -1,0 +1,132 @@
+#
+# Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
+
+name: License Compliance Check
+
+on:
+  schedule:
+    # Run weekly on Sunday at midnight UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    # Allow manual trigger
+  pull_request:
+    # Run on PRs that modify dependencies
+    paths:
+      - '**/pom.xml'
+      - 'NOTICE'
+      - 'ATTRIBUTIONS.md'
+
+jobs:
+  license-check:
+    name: Check License Compliance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Generate third-party license report
+        run: |
+          echo "Generating license report..."
+          mvn org.codehaus.mojo:license-maven-plugin:2.4.0:add-third-party -DskipTests
+        continue-on-error: false
+
+      - name: Check for blacklisted licenses
+        run: |
+          echo "Checking for incompatible licenses (GPL, AGPL, SSPL)..."
+          if grep -iE "(GPL|AGPL|SSPL|Commons Clause)" target/generated-sources/license/THIRD-PARTY.txt 2>/dev/null; then
+            echo "❌ ERROR: Found incompatible licenses!"
+            grep -iE "(GPL|AGPL|SSPL|Commons Clause)" target/generated-sources/license/THIRD-PARTY.txt
+            exit 1
+          else
+            echo "✅ No blacklisted licenses found"
+          fi
+
+      - name: Aggregate license information
+        run: |
+          echo "Aggregating license information from all modules..."
+          mvn org.codehaus.mojo:license-maven-plugin:2.4.0:aggregate-add-third-party -DskipTests
+        continue-on-error: true
+
+      - name: Download license files
+        run: |
+          echo "Downloading license files..."
+          mvn org.codehaus.mojo:license-maven-plugin:2.4.0:aggregate-download-licenses -DskipTests
+        continue-on-error: true
+
+      - name: Upload license report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: license-compliance-report
+          path: |
+            target/generated-sources/license/
+            target/generated-resources/licenses/
+          retention-days: 30
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '## 📜 License Compliance Check\n\n';
+
+            try {
+              const report = fs.readFileSync('target/generated-sources/license/THIRD-PARTY.txt', 'utf8');
+              const lines = report.split('\n').slice(0, 50);
+              comment += '✅ License check passed. See artifacts for full report.\n\n';
+              comment += '<details><summary>License Summary (first 50 lines)</summary>\n\n```\n';
+              comment += lines.join('\n');
+              comment += '\n```\n</details>';
+            } catch (error) {
+              comment += '⚠️ Could not read license report.\n';
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### License Compliance Check Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📋 **Reports generated:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Third-party licenses list" >> $GITHUB_STEP_SUMMARY
+          echo "- Aggregated module licenses" >> $GITHUB_STEP_SUMMARY
+          echo "- Downloaded license texts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Download the 'license-compliance-report' artifact to review full details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 **How to review locally:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "mvn org.codehaus.mojo:license-maven-plugin:2.4.0:add-third-party" >> $GITHUB_STEP_SUMMARY
+          echo "cat target/generated-sources/license/THIRD-PARTY.txt" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

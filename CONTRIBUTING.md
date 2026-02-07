@@ -27,6 +27,25 @@ Changes that are cosmetic in nature and do not add anything substantial to the s
 
 - Do not open an issue on GitHub until you have collected positive feedback about the change. GitHub issues are primarily intended for bug reports and fixes.
 
+#### **Are you adding a new dependency?**
+
+When adding new third-party dependencies to ArcadeDB:
+
+1. **Check License Compatibility** - Ensure the license is compatible with Apache License 2.0
+   - ✅ Compatible: Apache 2.0, MIT, BSD (2/3-Clause), EPL, UPL, EDL, public domain
+   - ❌ Incompatible: GPL, AGPL, proprietary licenses without explicit permission
+
+2. **Update Attribution Files**:
+   - Add the dependency to [ATTRIBUTIONS.md](ATTRIBUTIONS.md) in the appropriate section
+   - If the dependency is Apache-licensed and includes a NOTICE file, incorporate required notices into the main [NOTICE](NOTICE) file
+   - If introducing a new license type, add the full license text to the `LICENSES/` directory
+
+3. **Maintain SPDX Compliance** - All new source files must include:
+   - `SPDX-FileCopyrightText:` with copyright holder and years
+   - `SPDX-License-Identifier:` with the SPDX license identifier (e.g., Apache-2.0)
+
+For questions about licensing, please ask in the [discussion forum](https://github.com/ArcadeData/arcadedb/discussions) before adding the dependency.
+
 ### Prepare your environment
 
 ## Pre-commit

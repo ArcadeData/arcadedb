@@ -92,6 +92,14 @@
             <source>${basedir}/../LICENSE</source>
             <fileMode>666</fileMode>
         </file>
+        <file>
+            <source>${basedir}/../NOTICE</source>
+            <fileMode>666</fileMode>
+        </file>
+        <file>
+            <source>${basedir}/../ATTRIBUTIONS.md</source>
+            <fileMode>666</fileMode>
+        </file>
     </files>
     <!--
      | all artifacts in a /lib dir, except plugins which go to /lib/plugins

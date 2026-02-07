@@ -25,7 +25,7 @@
     <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-parent</artifactId>
     <packaging>pom</packaging>
-    <version>26.1.1-SNAPSHOT</version>
+    <version>26.2.1-SNAPSHOT</version>
 
     <name>ArcadeDB</name>
     <url>https://arcadedata.com/</url>
@@ -46,7 +46,7 @@
     </licenses>
 
     <properties>
-        <maven-compiler-plugin.release>17</maven-compiler-plugin.release>
+        <maven-compiler-plugin.release>21</maven-compiler-plugin.release>
         <exclude.tests></exclude.tests>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
@@ -122,19 +122,6 @@
         <url>https://github.com/ArcadeData/arcadedb</url>
         <tag>HEAD</tag>
     </scm>
-
-    <distributionManagement>
-        <repository>
-            <id>github</id>
-            <name>GitHub ArcadeDb Apache Maven Packages</name>
-            <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
-        </repository>
-        <snapshotRepository>
-            <id>github</id>
-            <name>GitHub ArcadeDb Apache Maven Packages Snapshots</name>
-            <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
-        </snapshotRepository>
-    </distributionManagement>
 
     <modules>
         <module>engine</module>
@@ -276,14 +263,6 @@
                 </configuration>
             </plugin>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-deploy-plugin</artifactId>
-                <version>${maven-deploy-plugin.version}</version>
-                <configuration>
-                    <deployAtEnd>true</deployAtEnd>
-                </configuration>
-            </plugin>
-            <plugin>
                 <groupId>com.mycila</groupId>
                 <artifactId>license-maven-plugin</artifactId>
                 <version>${license-maven-plugin.version}</version>
@@ -310,6 +289,45 @@
                     </licenseSets>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>${maven-central-publishing-plugin.version}</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>true</autoPublish>
+                    <excludeArtifacts>
+                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf
+                    </excludeArtifacts>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+                <version>2.4.0</version>
+                <configuration>
+                    <licenseMerges>
+                        <!-- Group similar licenses to avoid duplicates -->
+                        <licenseMerge>Apache License 2.0|Apache 2.0|Apache License, Version 2.0|The Apache Software License, Version 2.0|Apache-2.0</licenseMerge>
+                        <licenseMerge>MIT License|MIT|The MIT License</licenseMerge>
+                        <licenseMerge>BSD 3-Clause|BSD-3-Clause|3-Clause BSD License|BSD 3-Clause License</licenseMerge>
+                        <licenseMerge>BSD 2-Clause|BSD-2-Clause|2-Clause BSD License</licenseMerge>
+                        <licenseMerge>EPL 1.0|Eclipse Public License 1.0|Eclipse Public License - v 1.0</licenseMerge>
+                        <licenseMerge>EPL 2.0|Eclipse Public License 2.0|Eclipse Public License - v 2.0</licenseMerge>
+                        <licenseMerge>LGPL 2.1|LGPL-2.1|GNU Lesser General Public License v2.1|LGPL 2.1 or later</licenseMerge>
+                    </licenseMerges>
+                    <failOnBlacklist>true</failOnBlacklist>
+                    <excludedLicenses>
+                        <!-- Licenses incompatible with Apache 2.0 -->
+                        <excludedLicense>GPL</excludedLicense>
+                        <excludedLicense>AGPL</excludedLicense>
+                        <excludedLicense>LGPL 2.0</excludedLicense>
+                        <excludedLicense>SSPL</excludedLicense>
+                        <excludedLicense>Commons Clause</excludedLicense>
+                    </excludedLicenses>
+                </configuration>
+            </plugin>
         </plugins>
 
         <pluginManagement>
@@ -318,7 +336,6 @@
                     <artifactId>maven-assembly-plugin</artifactId>
                     <version>${maven-assembly-plugin.version}</version>
                 </plugin>
-
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-jar-plugin</artifactId>

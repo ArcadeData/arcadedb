@@ -1,0 +1,167 @@
+ArcadeDB
+Copyright 2021-present Arcade Data Ltd
+
+This product includes software developed at
+Arcade Data Ltd (https://arcadedata.com/).
+
+================================================================================
+
+This product includes components originally developed for OrientDB, an Open
+Source Multi-Model NoSQL Database.
+Copyright 2010-2020 OrientDB LTD (https://orientdb.com)
+
+ArcadeDB was created by Luca Garulli, the same founder of OrientDB, and written
+from scratch after SAP's acquisition of OrientDB in 2020. ArcadeDB reuses
+OrientDB's SQL engine (now heavily modified) and some utility classes.
+
+OrientDB source code is available at: https://github.com/orientechnologies/orientdb
+
+================================================================================
+
+This product includes openCypher grammar files and Technology Compatibility Kit
+(TCK) test suite, developed by the openCypher community.
+
+  Copyright (c) "Neo4j"
+  Neo4j Sweden AB [https://neo4j.com]
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+
+  openCypher project website: https://opencypher.org/
+
+Cypher® is a registered trademark of Neo4j Inc.
+
+The included openCypher TCK tests contain the following attribution notice:
+
+  "This work was created by the collective efforts of the openCypher community.
+  Without limiting the terms of Section 6, any Derivative Work that is not
+  approved by the public consensus process of the openCypher Implementers Group
+  should not be described as 'Cypher' (and Cypher® is a registered trademark of
+  Neo4j Inc.) or as 'openCypher'. Extensions by implementers or prototypes or
+  proposals for change that have been documented or implemented should only be
+  described as 'implementation extensions to Cypher' or as 'proposed changes to
+  Cypher that are not yet approved by the openCypher community'."
+
+The following files contain openCypher content:
+  - engine/src/main/antlr4/com/arcadedb/query/opencypher/grammar/Cypher25Parser.g4
+  - engine/src/main/antlr4/com/arcadedb/query/opencypher/grammar/Cypher25Lexer.g4
+  - engine/src/test/resources/opencypher/tck/features/**/*.feature (220 test files)
+
+
+This product includes software from the OpenCypher-Gremlin project.
+
+  Copyright 2018-2019 Neueda
+
+  The following file is a security-patched override of unmaintained upstream code:
+    gremlin/src/main/java/org/opencypher/gremlin/translation/groovy/StringTranslationUtils.java
+
+  OpenCypher-Gremlin project: https://github.com/opencypher/cypher-for-gremlin
+
+================================================================================
+
+This product includes software developed by The Apache Software Foundation
+(https://www.apache.org/).
+
+Apache Lucene
+Copyright 2001-2024 The Apache Software Foundation
+
+This product includes software developed by
+The Apache Software Foundation (https://www.apache.org/).
+
+Includes software from other Apache copyright owners, as follows:
+ - ICU4J, (c) 1995-2014 International Business Machines Corporation and others
+ - ANTLR4 grammar from C parser (BSD 3-clause license)
+ - JFlex lexer generator (BSD license)
+
+Apache ANTLR4
+Copyright 2012-2021 The ANTLR Project
+
+Apache TinkerPop (Gremlin)
+Copyright 2015-2024 The Apache Software Foundation
+
+Apache Commons Compress
+Copyright 2002-2024 The Apache Software Foundation
+
+Apache Commons Lang
+Copyright 2001-2024 The Apache Software Foundation
+
+Apache Commons Codec
+Copyright 2002-2024 The Apache Software Foundation
+
+Apache HttpComponents
+Copyright 1999-2024 The Apache Software Foundation
+
+================================================================================
+
+This product includes software developed by GraalVM (Oracle).
+
+  GraalVM SDK, Truffle API, and JavaScript implementation
+  Copyright (c) 2012, 2024, Oracle and/or its affiliates
+
+  https://www.graalvm.org/
+
+================================================================================
+
+This product includes software developed by Google Inc.
+
+  Protocol Buffers
+  Copyright 2008 Google Inc.
+
+  Guava Libraries
+  Copyright (C) 2010-2024 The Guava Authors
+
+  Gson
+  Copyright 2008-2024 Google Inc.
+
+  gRPC
+  Copyright 2015-2024 The gRPC Authors
+
+================================================================================
+
+This product includes software developed by Red Hat, Inc.
+
+  Undertow
+  Copyright 2013 Red Hat, Inc., and individual contributors
+
+  https://undertow.io/
+
+================================================================================
+
+This product includes software developed by the Netty project.
+
+  Netty
+  Copyright 2014 The Netty Project
+
+  https://netty.io/
+
+================================================================================
+
+This product includes JUnit 5 test framework.
+
+  JUnit 5
+  Copyright 2015-2024 the original author or authors
+
+  https://junit.org/junit5/
+
+================================================================================
+
+This product includes Testcontainers framework.
+
+  Testcontainers
+  Copyright (c) 2015-2024 Richard North and other authors
+
+  https://testcontainers.com/
+
+================================================================================
+
+This product includes software developed by FasterXML, LLC.
+
+  Jackson JSON processor
+  Copyright (c) 2007-2024 Tatu Saloranta and other contributors
+
+  https://github.com/FasterXML/jackson
+
+================================================================================
+
+For the complete list of third-party components and their licenses, see the
+ATTRIBUTIONS.md file in the root directory of this distribution.
