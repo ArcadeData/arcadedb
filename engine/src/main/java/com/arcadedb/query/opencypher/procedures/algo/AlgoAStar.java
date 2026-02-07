@@ -113,9 +113,7 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     double totalWeight = 0.0;
     for (int i = 0; i < pathRids.size() - 1; i++) {
       final RID current = pathRids.get(i);
-      final RID next = pathRids.get(i + 1);
       final var currentDoc = context.getDatabase().lookupByRID(current, true);
-      final var nextDoc = context.getDatabase().lookupByRID(next, true);
 
       if (currentDoc.getRecord() instanceof Edge edge) {
         final Object weight = edge.get(weightProperty);
