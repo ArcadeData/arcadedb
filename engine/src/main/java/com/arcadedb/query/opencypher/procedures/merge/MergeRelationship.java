@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.merge;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
@@ -27,9 +26,7 @@ import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.schema.EdgeType;
 
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -102,17 +99,15 @@ public class MergeRelationship implements CypherProcedure {
     final Database database = context.getDatabase();
 
     // Ensure edge type exists
-    if (!database.getSchema().existsType(relType)) {
+    if (!database.getSchema().existsType(relType))
       database.getSchema().createEdgeType(relType);
-    }
 
     // Try to find existing relationship matching the criteria
     Edge existingEdge = findMatchingEdge(startNode, endNode, relType, matchProps);
 
-    if (existingEdge != null) {
+    if (existingEdge != null)
       // Return existing relationship
       return createResultStream(existingEdge);
-    }
 
     // Create new relationship with both matchProps and createProps
     // Note: using bidirectional=true so the edge can be traversed from both ends
@@ -142,22 +137,17 @@ public class MergeRelationship implements CypherProcedure {
    * that matches all the specified properties.
    */
   private Edge findMatchingEdge(final Vertex startNode, final Vertex endNode,
-                                 final String relType, final Map<String, Object> matchProps) {
+                                final String relType, final Map<String, Object> matchProps) {
     // Get outgoing edges of the specified type
-    final Iterator<Edge> edges = startNode.getEdges(Vertex.DIRECTION.OUT, relType).iterator();
 
-    while (edges.hasNext()) {
-      final Edge edge = edges.next();
-
+    for (final Edge edge : startNode.getEdges(Vertex.DIRECTION.OUT, relType)) {
       // Check if edge connects to the endNode
-      if (!edge.getIn().equals(endNode.getIdentity())) {
+      if (!edge.getIn().equals(endNode.getIdentity()))
         continue;
-      }
 
       // Check if all matchProps match
-      if (matchProps == null || matchProps.isEmpty()) {
+      if (matchProps == null || matchProps.isEmpty())
         return edge; // No props to match, found a match
-      }
 
       boolean allMatch = true;
       for (final Map.Entry<String, Object> entry : matchProps.entrySet()) {
@@ -190,32 +180,32 @@ public class MergeRelationship implements CypherProcedure {
   }
 
   private Vertex extractVertex(final Object arg, final String paramName) {
-    if (arg == null) {
+    if (arg == null)
       throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
-    }
-    if (!(arg instanceof Vertex)) {
+
+    if (!(arg instanceof Vertex))
       throw new IllegalArgumentException(
           getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
-    }
+
     return (Vertex) arg;
   }
 
   private String extractString(final Object arg, final String paramName) {
-    if (arg == null) {
+    if (arg == null)
       throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
-    }
+
     return arg.toString();
   }
 
   @SuppressWarnings("unchecked")
   private Map<String, Object> extractMap(final Object arg, final String paramName) {
-    if (arg == null) {
+    if (arg == null)
       return null;
-    }
-    if (!(arg instanceof Map)) {
+
+    if (!(arg instanceof Map))
       throw new IllegalArgumentException(
           getName() + "(): " + paramName + " must be a map, got " + arg.getClass().getSimpleName());
-    }
+
     return (Map<String, Object>) arg;
   }
 }

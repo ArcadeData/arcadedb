@@ -86,9 +86,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     final String[] relTypes = extractRelTypes(args[2]);
     final int maxDepth = ((Number) args[3]).intValue();
 
-    if (maxDepth < 1) {
+    if (maxDepth < 1)
       throw new IllegalArgumentException(getName() + "(): maxDepth must be at least 1");
-    }
 
     // Find all simple paths using DFS
     final List<List<Object>> allPaths = new ArrayList<>();
@@ -121,7 +120,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
 
       final ResultInternal result = new ResultInternal();
       result.setProperty("path", path);
-      return (Result) result;
+      return result;
     });
   }
 
