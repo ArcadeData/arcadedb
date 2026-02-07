@@ -106,6 +106,26 @@ public class ExpressionEvaluator {
         && (leftValue instanceof String || rightValue instanceof String))
       return leftValue.toString() + rightValue.toString();
 
+    // List concatenation/append for + operator
+    if (expression.getOperator() == ArithmeticExpression.Operator.ADD) {
+      if (leftValue instanceof List && rightValue instanceof List) {
+        final List<Object> combined = new ArrayList<>((List<?>) leftValue);
+        combined.addAll((List<?>) rightValue);
+        return combined;
+      }
+      if (leftValue instanceof List) {
+        final List<Object> appended = new ArrayList<>((List<?>) leftValue);
+        appended.add(rightValue);
+        return appended;
+      }
+      if (rightValue instanceof List) {
+        final List<Object> prepended = new ArrayList<>();
+        prepended.add(leftValue);
+        prepended.addAll((List<?>) rightValue);
+        return prepended;
+      }
+    }
+
     if (!(leftValue instanceof Number) || !(rightValue instanceof Number))
       throw new IllegalArgumentException(
           "Arithmetic operations require numeric operands, got: " + leftValue.getClass().getSimpleName()
@@ -115,7 +135,6 @@ public class ExpressionEvaluator {
     final Number rightNum = (Number) rightValue;
 
     final boolean useInteger = isInteger(leftNum) && isInteger(rightNum)
-        && expression.getOperator() != ArithmeticExpression.Operator.DIVIDE
         && expression.getOperator() != ArithmeticExpression.Operator.POWER;
 
     if (useInteger) {
@@ -125,6 +144,7 @@ public class ExpressionEvaluator {
         case ADD -> l + r;
         case SUBTRACT -> l - r;
         case MULTIPLY -> l * r;
+        case DIVIDE -> r != 0 ? l / r : null;
         case MODULO -> r != 0 ? l % r : null;
         default -> null;
       };

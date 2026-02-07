@@ -96,20 +96,20 @@ public class InExpression implements BooleanExpression {
   }
 
   private boolean valuesEqual(final Object a, final Object b) {
-    if (a == null && b == null) {
+    if (a == null && b == null)
       return true;
-    }
-    if (a == null || b == null) {
+    if (a == null || b == null)
       return false;
-    }
 
-    // Numeric comparison
-    if (a instanceof Number && b instanceof Number) {
+    // Direct equality (handles booleans, strings, etc.)
+    if (a.equals(b))
+      return true;
+
+    // Numeric comparison (handles int/long/double cross-type)
+    if (a instanceof Number && b instanceof Number)
       return ((Number) a).doubleValue() == ((Number) b).doubleValue();
-    }
 
-    // Default to string comparison
-    return a.toString().equals(b.toString());
+    return false;
   }
 
   @Override
