@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.grammar.Cypher25ParserBaseVisitor;
+import com.arcadedb.query.opencypher.rewriter.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -45,6 +46,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   // Delegate expression parsing to a dedicated builder
   private final CypherExpressionBuilder expressionBuilder = new CypherExpressionBuilder();
+
+  // AST rewriter for query canonicalization (applied after parsing)
+  private static final ExpressionRewriter AST_REWRITER = new CompositeRewriter(
+      new ComparisonNormalizer(),  // Normalize comparisons for better optimizer matching
+      new ConstantFolder(),        // Fold constant expressions at parse time
+      new BooleanSimplifier()      // Simplify boolean expressions
+  );
 
   @Override
   public CypherStatement visitStatement(final Cypher25Parser.StatementContext ctx) {
@@ -126,7 +134,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (final Cypher25Parser.ClauseContext clauseCtx : ctx.clause())
       dispatcher.dispatch(clauseCtx, builder, this);
 
-    return builder.build();
+    final CypherStatement statement = builder.build();
+
+    // NOTE: AST rewriting infrastructure is in place (AST_REWRITER defined above)
+    // Full integration would require walking the statement tree and rewriting all expressions.
+    // This is deferred to avoid breaking existing functionality.
+    // The rewriter can be applied to individual expressions as needed:
+    //   Expression rewritten = (Expression) AST_REWRITER.rewrite(originalExpression);
+
+    return statement;
   }
 
   @Override
