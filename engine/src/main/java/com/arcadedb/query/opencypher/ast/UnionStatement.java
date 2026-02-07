@@ -40,7 +40,7 @@ import java.util.List;
  */
 public class UnionStatement implements CypherStatement {
   private final List<CypherStatement> queries;
-  private final List<Boolean> unionAllFlags; // true = UNION ALL, false = UNION (DISTINCT)
+  private final List<Boolean>         unionAllFlags; // true = UNION ALL, false = UNION (DISTINCT)
 
   /**
    * Creates a new UnionStatement.
@@ -105,17 +105,17 @@ public class UnionStatement implements CypherStatement {
 
   @Override
   public List<MatchClause> getMatchClauses() {
-    return queries.get(0).getMatchClauses();
+    return queries.getFirst().getMatchClauses();
   }
 
   @Override
   public WhereClause getWhereClause() {
-    return queries.get(0).getWhereClause();
+    return queries.getFirst().getWhereClause();
   }
 
   @Override
   public ReturnClause getReturnClause() {
-    return queries.get(0).getReturnClause();
+    return queries.getFirst().getReturnClause();
   }
 
   @Override
@@ -161,36 +161,36 @@ public class UnionStatement implements CypherStatement {
 
   @Override
   public CreateClause getCreateClause() {
-    return queries.get(0).getCreateClause();
+    return queries.getFirst().getCreateClause();
   }
 
   @Override
   public SetClause getSetClause() {
-    return queries.get(0).getSetClause();
+    return queries.getFirst().getSetClause();
   }
 
   @Override
   public DeleteClause getDeleteClause() {
-    return queries.get(0).getDeleteClause();
+    return queries.getFirst().getDeleteClause();
   }
 
   @Override
   public MergeClause getMergeClause() {
-    return queries.get(0).getMergeClause();
+    return queries.getFirst().getMergeClause();
   }
 
   @Override
   public List<UnwindClause> getUnwindClauses() {
-    return queries.get(0).getUnwindClauses();
+    return queries.getFirst().getUnwindClauses();
   }
 
   @Override
   public List<WithClause> getWithClauses() {
-    return queries.get(0).getWithClauses();
+    return queries.getFirst().getWithClauses();
   }
 
   @Override
   public List<ClauseEntry> getClausesInOrder() {
-    return queries.get(0).getClausesInOrder();
+    return queries.getFirst().getClausesInOrder();
   }
 }
