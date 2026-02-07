@@ -37,6 +37,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.*;
@@ -1139,12 +1140,35 @@ public class CypherFunctionFactory {
 
   // ======================== Temporal Functions ========================
 
+  /**
+   * Get or initialize statement time for temporal constructors.
+   * In Cypher, temporal functions like date(), localtime(), etc. should return the same
+   * frozen time throughout the entire query execution to ensure consistent results.
+   */
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> getStatementTime(final CommandContext context) {
+    Map<String, Object> statementTime = (Map<String, Object>) context.getVariable("$statementTime");
+    if (statementTime == null) {
+      // First call - freeze the current time
+      statementTime = new java.util.HashMap<>();
+      statementTime.put("date", CypherDate.now());
+      statementTime.put("localtime", CypherLocalTime.now());
+      statementTime.put("time", CypherTime.now());
+      statementTime.put("localdatetime", CypherLocalDateTime.now());
+      statementTime.put("datetime", CypherDateTime.now());
+      context.setVariable("$statementTime", statementTime);
+    }
+    return statementTime;
+  }
+
   @SuppressWarnings("unchecked")
   private static class DateConstructorFunction implements StatelessFunction {
     @Override public String getName() { return "date"; }
     @Override public Object execute(final Object[] args, final CommandContext context) {
       if (args.length == 0)
-        return CypherDate.now();
+        return getStatementTime(context).get("date");
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof String)
         return CypherDate.parse((String) args[0]);
       if (args[0] instanceof Map)
@@ -1177,7 +1201,9 @@ public class CypherFunctionFactory {
     @Override public String getName() { return "localtime"; }
     @Override public Object execute(final Object[] args, final CommandContext context) {
       if (args.length == 0)
-        return CypherLocalTime.now();
+        return getStatementTime(context).get("localtime");
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof String)
         return CypherLocalTime.parse((String) args[0]);
       if (args[0] instanceof Map)
@@ -1201,7 +1227,9 @@ public class CypherFunctionFactory {
     @Override public String getName() { return "time"; }
     @Override public Object execute(final Object[] args, final CommandContext context) {
       if (args.length == 0)
-        return CypherTime.now();
+        return getStatementTime(context).get("time");
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof String)
         return CypherTime.parse((String) args[0]);
       if (args[0] instanceof Map)
@@ -1223,7 +1251,9 @@ public class CypherFunctionFactory {
     @Override public String getName() { return "localdatetime"; }
     @Override public Object execute(final Object[] args, final CommandContext context) {
       if (args.length == 0)
-        return CypherLocalDateTime.now();
+        return getStatementTime(context).get("localdatetime");
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof String)
         return CypherLocalDateTime.parse((String) args[0]);
       if (args[0] instanceof Map)
@@ -1249,7 +1279,9 @@ public class CypherFunctionFactory {
     @Override public String getName() { return "datetime"; }
     @Override public Object execute(final Object[] args, final CommandContext context) {
       if (args.length == 0)
-        return CypherDateTime.now();
+        return getStatementTime(context).get("datetime");
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof String)
         return CypherDateTime.parse((String) args[0]);
       if (args[0] instanceof Map)
@@ -1274,6 +1306,8 @@ public class CypherFunctionFactory {
     @Override public Object execute(final Object[] args, final CommandContext context) {
       if (args.length != 1)
         throw new CommandExecutionException("duration() requires exactly one argument");
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof String)
         return CypherDuration.parse((String) args[0]);
       if (args[0] instanceof Map)
@@ -1359,9 +1393,14 @@ public class CypherFunctionFactory {
       else
         throw new CommandExecutionException("time.truncate() second argument must be a temporal value with a time");
       LocalTime truncated = TemporalUtil.truncateLocalTime(time.toLocalTime(), unit);
-      if (args.length >= 3 && args[2] instanceof Map)
-        truncated = applyTimeMap(truncated, (Map<String, Object>) args[2]);
-      return new CypherTime(OffsetTime.of(truncated, time.getOffset()));
+      ZoneOffset offset = time.getOffset();
+      if (args.length >= 3 && args[2] instanceof Map) {
+        final Map<String, Object> adjustMap = (Map<String, Object>) args[2];
+        truncated = applyTimeMap(truncated, adjustMap);
+        if (adjustMap.containsKey("timezone"))
+          offset = TemporalUtil.parseOffset(adjustMap.get("timezone").toString());
+      }
+      return new CypherTime(OffsetTime.of(truncated, offset));
     }
   }
 
@@ -1413,9 +1452,14 @@ public class CypherFunctionFactory {
       else
         throw new CommandExecutionException("datetime.truncate() second argument must be a temporal value");
       LocalDateTime truncated = TemporalUtil.truncateLocalDateTime(dt.toLocalDateTime(), unit);
-      if (args.length >= 3 && args[2] instanceof Map)
-        truncated = applyDateTimeMap(truncated, (Map<String, Object>) args[2]);
-      return new CypherDateTime(ZonedDateTime.of(truncated, dt.getZone()));
+      ZoneId zone = dt.getZone();
+      if (args.length >= 3 && args[2] instanceof Map) {
+        final Map<String, Object> adjustMap = (Map<String, Object>) args[2];
+        truncated = applyDateTimeMap(truncated, adjustMap);
+        if (adjustMap.containsKey("timezone"))
+          zone = TemporalUtil.parseZone(adjustMap.get("timezone").toString());
+      }
+      return new CypherDateTime(ZonedDateTime.of(truncated, zone));
     }
   }
 

@@ -80,7 +80,10 @@ public class CypherDateTime implements CypherTemporalValue {
     if (offsetIdx >= 0) {
       // Has offset: parse as standard datetime with offset
       try {
-        return new CypherDateTime(ZonedDateTime.parse(input));
+        ZonedDateTime parsed = ZonedDateTime.parse(input);
+        if (namedZone != null)
+          parsed = parsed.withZoneSameLocal(namedZone);
+        return new CypherDateTime(parsed);
       } catch (final Exception e) {
         // Fall through to manual parsing
       }
@@ -134,17 +137,24 @@ public class CypherDateTime implements CypherTemporalValue {
     if (map.containsKey("datetime")) {
       final Object dtVal = map.get("datetime");
       ZonedDateTime base = null;
-      if (dtVal instanceof CypherDateTime)
+      boolean baseHasTimezone = false;
+      if (dtVal instanceof CypherDateTime) {
         base = ((CypherDateTime) dtVal).getValue();
-      else if (dtVal instanceof CypherLocalDateTime)
+        baseHasTimezone = true;
+      } else if (dtVal instanceof CypherLocalDateTime)
         base = ((CypherLocalDateTime) dtVal).getValue().atZone(ZoneOffset.UTC);
       if (base != null) {
-        // Apply timezone conversion if specified (same instant, different zone)
-        if (map.containsKey("timezone") && !hasTimeOverrides(map)) {
+        // Apply timezone conversion FIRST if specified
+        if (map.containsKey("timezone")) {
           final ZoneId newZone = TemporalUtil.parseZone(map.get("timezone").toString());
-          return new CypherDateTime(base.withZoneSameInstant(newZone));
+          if (baseHasTimezone)
+            base = base.withZoneSameInstant(newZone);
+          else
+            base = base.withZoneSameLocal(newZone);
         }
-        // Apply individual field overrides
+        if (!hasTimeOverrides(map))
+          return new CypherDateTime(base);
+        // Apply individual field overrides on the (possibly timezone-converted) base
         ZonedDateTime result = base;
         if (map.containsKey("year"))
           result = result.withYear(toInt(map.get("year")));
@@ -159,6 +169,7 @@ public class CypherDateTime implements CypherTemporalValue {
         if (map.containsKey("second"))
           result = result.withSecond(toInt(map.get("second")));
         result = result.withNano(TemporalUtil.computeNanos(map, result.getNano()));
+
         if (map.containsKey("timezone"))
           result = result.withZoneSameLocal(TemporalUtil.parseZone(map.get("timezone").toString()));
         return new CypherDateTime(result);
@@ -171,6 +182,8 @@ public class CypherDateTime implements CypherTemporalValue {
     // Time part — check if there's a base temporal with time
     int hour = 0, minute = 0, second = 0;
     int nanos = 0;
+    ZoneId timeZone = null; // timezone from time source (null = no timezone)
+    boolean timeHasTimezone = false;
     if (map.containsKey("time")) {
       final Object timeVal = map.get("time");
       if (timeVal instanceof CypherTime ct) {
@@ -178,11 +191,25 @@ public class CypherDateTime implements CypherTemporalValue {
         minute = ct.getValue().getMinute();
         second = ct.getValue().getSecond();
         nanos = ct.getValue().getNano();
+        timeZone = ct.getValue().getOffset();
+        timeHasTimezone = true;
       } else if (timeVal instanceof CypherLocalTime clt) {
         hour = clt.getValue().getHour();
         minute = clt.getValue().getMinute();
         second = clt.getValue().getSecond();
         nanos = clt.getValue().getNano();
+      } else if (timeVal instanceof CypherLocalDateTime cldt) {
+        hour = cldt.getValue().getHour();
+        minute = cldt.getValue().getMinute();
+        second = cldt.getValue().getSecond();
+        nanos = cldt.getValue().getNano();
+      } else if (timeVal instanceof CypherDateTime cdt) {
+        hour = cdt.getValue().getHour();
+        minute = cdt.getValue().getMinute();
+        second = cdt.getValue().getSecond();
+        nanos = cdt.getValue().getNano();
+        timeZone = cdt.getValue().getZone();
+        timeHasTimezone = true;
       }
     }
     if (map.containsKey("hour"))
@@ -193,14 +220,19 @@ public class CypherDateTime implements CypherTemporalValue {
       second = toInt(map.get("second"));
     nanos = TemporalUtil.computeNanos(map, nanos);
 
-    // Timezone
-    ZoneId zone = ZoneOffset.UTC;
+    // Determine timezone: time source timezone → explicit timezone override
+    final ZoneId initialZone = timeZone != null ? timeZone : ZoneOffset.UTC;
+    ZonedDateTime result = ZonedDateTime.of(datePart, LocalTime.of(hour, minute, second, nanos), initialZone);
+
     if (map.containsKey("timezone")) {
-      final String tz = map.get("timezone").toString();
-      zone = TemporalUtil.parseZone(tz);
+      final ZoneId newZone = TemporalUtil.parseZone(map.get("timezone").toString());
+      if (timeHasTimezone)
+        result = result.withZoneSameInstant(newZone);
+      else
+        result = result.withZoneSameLocal(newZone);
     }
 
-    return new CypherDateTime(ZonedDateTime.of(datePart, LocalTime.of(hour, minute, second, nanos), zone));
+    return new CypherDateTime(result);
   }
 
   private static boolean hasTimeOverrides(final Map<String, Object> map) {

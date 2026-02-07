@@ -31,6 +31,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -134,12 +136,79 @@ public class OrderByStep extends AbstractExecutionStep {
             return null;
 
           if (obj instanceof Vertex)
-            return ((Vertex) obj).get(parts[1]);
+            return convertFromStorage(((Vertex) obj).get(parts[1]));
           else if (obj instanceof Edge)
-            return ((Edge) obj).get(parts[1]);
+            return convertFromStorage(((Edge) obj).get(parts[1]));
         }
 
-        return result.getProperty(expression);
+        return convertFromStorage(result.getProperty(expression));
+      }
+
+      /**
+       * Convert ArcadeDB-stored values back to Cypher temporal types for proper comparison.
+       * Duration, LocalTime, and Time are stored as Strings because ArcadeDB
+       * doesn't have native binary types for them.
+       */
+      private static Object convertFromStorage(final Object value) {
+        // Handle collections (lists/arrays of temporal values)
+        if (value instanceof java.util.Collection<?> collection) {
+          final java.util.List<Object> converted = new java.util.ArrayList<>(collection.size());
+          for (final Object item : collection) {
+            converted.add(convertFromStorage(item));
+          }
+          return converted;
+        }
+        if (value instanceof Object[] array) {
+          final Object[] converted = new Object[array.length];
+          for (int i = 0; i < array.length; i++) {
+            converted[i] = convertFromStorage(array[i]);
+          }
+          return converted;
+        }
+
+        // Handle single values
+        if (value instanceof LocalDate ld)
+          return new CypherDate(ld);
+        if (value instanceof LocalDateTime ldt)
+          return new CypherLocalDateTime(ldt);
+        if (value instanceof String str) {
+          // Duration strings start with P (ISO-8601)
+          if (str.length() > 1 && str.charAt(0) == 'P') {
+            try {
+              return CypherDuration.parse(str);
+            } catch (final Exception ignored) {
+              // Not a valid duration string
+            }
+          }
+          // DateTime strings: contain 'T' with date part before it and timezone/offset
+          final int tIdx = str.indexOf('T');
+          if (tIdx >= 4 && tIdx < str.length() - 1 && Character.isDigit(str.charAt(0))) {
+            try {
+              return CypherDateTime.parse(str);
+            } catch (final Exception ignored) {
+              // Not a valid datetime string
+            }
+          }
+          // Time strings: HH:MM:SS[.nanos][+/-offset] or HH:MM:SS[.nanos]Z
+          if (str.length() >= 8 && str.charAt(2) == ':' && str.charAt(5) == ':') {
+            // Check if it has a timezone offset
+            final boolean hasOffset = str.contains("+") || str.contains("-") || str.endsWith("Z");
+            if (hasOffset) {
+              try {
+                return CypherTime.parse(str);
+              } catch (final Exception ignored) {
+                // Not a valid time string
+              }
+            } else {
+              try {
+                return CypherLocalTime.parse(str);
+              } catch (final Exception ignored) {
+                // Not a valid local time string
+              }
+            }
+          }
+        }
+        return value;
       }
 
       /**

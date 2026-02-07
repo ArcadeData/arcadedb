@@ -138,7 +138,95 @@ class CypherExpressionBuilder {
     if (expr != null)
       return expr;
 
-    // === ULTIMATE FALLBACK: Text parsing ===
+    // Check for TOP-LEVEL arithmetic expressions using spine walks.
+    // Must be checked BEFORE list/map literals because [1,10,100]+[4,5] should be
+    // arithmetic (list concatenation), not just [1,10,100] (ignoring +[4,5])
+    final Cypher25Parser.Expression6Context topArith6 = findTopLevelExpression6(ctx);
+    if (topArith6 != null)
+      return parseArithmeticExpression6(topArith6);
+
+    // Check for TOP-LEVEL multiplicative (*, /, %) using spine walk
+    final Cypher25Parser.Expression5Context topArith5 = findTopLevelExpression5(ctx);
+    if (topArith5 != null)
+      return parseArithmeticExpression5(topArith5);
+
+    // Check for TOP-LEVEL exponentiation (^) using spine walk
+    final Cypher25Parser.Expression4Context topArith4 = findTopLevelExpression4(ctx);
+    if (topArith4 != null)
+      return parseArithmeticExpression4(topArith4);
+
+    // Check for TOP-LEVEL unary operator (-, +) using spine walk
+    final Cypher25Parser.Expression3Context topExpr3 = findTopLevelExpression3(ctx);
+    if (topExpr3 != null)
+      return parseArithmeticExpression3(topExpr3);
+
+    // Check for TOP-LEVEL postfix expressions (property access, list indexing, slicing)
+    // using spine walk. Must be before list/map literals because [1,2,3][0] should be
+    // postfix indexing, not just [1,2,3]
+    final Cypher25Parser.Expression2Context topExpr2 = findTopLevelExpression2(ctx);
+    if (topExpr2 != null && !topExpr2.postFix().isEmpty())
+      return parseExpression2WithPostfix(topExpr2);
+
+    // Check for list literals BEFORE function invocations when the top-level expression
+    // is a list. Otherwise, [date({...}), date({...})] would be parsed as a single date()
+    // function call because findFunctionInvocationRecursive finds date() inside the list.
+    // For cases like tail([1,2,3]), the function invocation is at the top level and will
+    // be caught by the postfix/expression2 checks above.
+    final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
+    if (listCtx != null) {
+      // Only use list literal if it's at the top level (i.e. the list text covers most of the expression)
+      final String listText = listCtx.getText();
+      if (listText.length() >= text.length() - 2) // Allow for whitespace
+        return parseListLiteral(listCtx);
+    }
+
+    // Check for function invocations (after top-level list check)
+    // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
+    final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
+    if (funcCtx != null) {
+      return parseFunctionInvocation(funcCtx);
+    }
+
+    // Check for list literals (fallback for other cases)
+    if (listCtx != null) {
+      return parseListLiteral(listCtx);
+    }
+
+    // Check for map projections
+    final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
+    if (mapProjCtx != null) {
+      return parseMapProjection(mapProjCtx);
+    }
+
+    // Check for map literals
+    final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
+    if (mapCtx != null) {
+      return parseMapLiteralExpression(mapCtx);
+    }
+
+    // Fallback: recursive arithmetic expression checks
+    final Cypher25Parser.Expression6Context arith6Ctx = findArithmeticExpression6Recursive(ctx);
+    if (arith6Ctx != null) {
+      return parseArithmeticExpression6(arith6Ctx);
+    }
+    final Cypher25Parser.Expression5Context arith5Ctx = findArithmeticExpression5Recursive(ctx);
+    if (arith5Ctx != null) {
+      return parseArithmeticExpression5(arith5Ctx);
+    }
+
+    // Fallback: recursive postfix expression check
+    final Cypher25Parser.Expression2Context expr2Ctx = findExpression2Recursive(ctx);
+    if (expr2Ctx != null && !expr2Ctx.postFix().isEmpty()) {
+      return parseExpression2WithPostfix(expr2Ctx);
+    }
+
+    // Check for parenthesized expressions that may contain logical operators
+    // e.g., (true AND null), (a OR b), (NOT x)
+    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = findParenthesizedExpressionRecursive(ctx);
+    if (parenCtx != null)
+      return parseExpression(parenCtx.expression());
+
+    // Use the shared text parsing logic
     return parseExpressionText(text);
   }
 

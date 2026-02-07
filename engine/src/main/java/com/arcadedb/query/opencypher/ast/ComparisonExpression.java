@@ -112,7 +112,10 @@ public class ComparisonExpression implements BooleanExpression {
           case GREATER_THAN_OR_EQUAL -> cmp >= 0;
         };
       } catch (final IllegalArgumentException e) {
-        return null; // Incompatible temporal types
+        // Different temporal types: for equality, return false/true; for ordering, return null
+        if (operator == Operator.EQUALS) return false;
+        if (operator == Operator.NOT_EQUALS) return true;
+        return null;
       }
     }
 
