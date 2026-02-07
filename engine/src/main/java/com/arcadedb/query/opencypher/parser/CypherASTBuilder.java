@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.grammar.Cypher25ParserBaseVisitor;
+import com.arcadedb.query.opencypher.rewriter.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -45,6 +46,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   // Delegate expression parsing to a dedicated builder
   private final CypherExpressionBuilder expressionBuilder = new CypherExpressionBuilder();
+
+  // AST rewriter for query canonicalization (applied after parsing)
+  private static final ExpressionRewriter AST_REWRITER = new CompositeRewriter(
+      new ComparisonNormalizer(),  // Normalize comparisons for better optimizer matching
+      new ConstantFolder(),        // Fold constant expressions at parse time
+      new BooleanSimplifier()      // Simplify boolean expressions
+  );
 
   @Override
   public CypherStatement visitStatement(final Cypher25Parser.StatementContext ctx) {
@@ -118,130 +126,23 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   @Override
   public CypherStatement visitSingleQuery(final Cypher25Parser.SingleQueryContext ctx) {
-    // Process all clauses in the query
-    final List<MatchClause> matchClauses = new ArrayList<>();
-    CreateClause createClause = null;
-    SetClause setClause = null;
-    DeleteClause deleteClause = null;
-    MergeClause mergeClause = null;
-    final List<UnwindClause> unwindClauses = new ArrayList<>();
-    final List<WithClause> withClauses = new ArrayList<>();
-    final List<CallClause> callClauses = new ArrayList<>();
-    final List<RemoveClause> removeClauses = new ArrayList<>();
-    final List<ClauseEntry> clausesInOrder = new ArrayList<>();
-    WhereClause whereClause = null;
-    ReturnClause returnClause = null;
-    OrderByClause orderByClause = null;
-    Integer skip = null;
-    Integer limit = null;
+    // Use builder pattern with dispatch table to eliminate cascading if/else statements
+    final StatementBuilder builder = new StatementBuilder();
+    final ClauseDispatcher dispatcher = new ClauseDispatcher();
 
-    int clauseOrder = 0;
-    for (final Cypher25Parser.ClauseContext clauseCtx : ctx.clause()) {
-      if (clauseCtx.matchClause() != null) {
-        final MatchClause match = visitMatchClause(clauseCtx.matchClause());
-        matchClauses.add(match);
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.MATCH, match, clauseOrder++));
+    // Process all clauses using dispatch pattern
+    for (final Cypher25Parser.ClauseContext clauseCtx : ctx.clause())
+      dispatcher.dispatch(clauseCtx, builder, this);
 
-        // WHERE clause is now scoped to the MatchClause itself, not extracted at statement level
-      } else if (clauseCtx.createClause() != null) {
-        createClause = visitCreateClause(clauseCtx.createClause());
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.CREATE, createClause, clauseOrder++));
-      } else if (clauseCtx.setClause() != null) {
-        setClause = visitSetClause(clauseCtx.setClause());
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.SET, setClause, clauseOrder++));
-      } else if (clauseCtx.deleteClause() != null) {
-        deleteClause = visitDeleteClause(clauseCtx.deleteClause());
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.DELETE, deleteClause, clauseOrder++));
-      } else if (clauseCtx.mergeClause() != null) {
-        mergeClause = visitMergeClause(clauseCtx.mergeClause());
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.MERGE, mergeClause, clauseOrder++));
-      } else if (clauseCtx.unwindClause() != null) {
-        final UnwindClause unwind = visitUnwindClause(clauseCtx.unwindClause());
-        unwindClauses.add(unwind);
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.UNWIND, unwind, clauseOrder++));
-      } else if (clauseCtx.withClause() != null) {
-        final WithClause with = visitWithClause(clauseCtx.withClause());
-        withClauses.add(with);
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.WITH, with, clauseOrder++));
-      } else if (clauseCtx.returnClause() != null) {
-        // RETURN clause with embedded ORDER BY, SKIP, LIMIT
-        final Cypher25Parser.ReturnBodyContext body = clauseCtx.returnClause().returnBody();
-        returnClause = visitReturnClause(clauseCtx.returnClause());
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.RETURN, returnClause, clauseOrder++));
+    final CypherStatement statement = builder.build();
 
-        // Extract ORDER BY, SKIP, LIMIT from returnBody
-        if (body.orderBy() != null) {
-          orderByClause = visitOrderBy(body.orderBy());
-        }
-        if (body.skip() != null) {
-          skip = visitSkip(body.skip());
-        }
-        if (body.limit() != null) {
-          limit = visitLimit(body.limit());
-        }
-      } else if (clauseCtx.orderBySkipLimitClause() != null) {
-        // Standalone ORDER BY, SKIP, LIMIT clause
-        final Cypher25Parser.OrderBySkipLimitClauseContext orderBySkipLimit = clauseCtx.orderBySkipLimitClause();
-        if (orderBySkipLimit.orderBy() != null) {
-          orderByClause = visitOrderBy(orderBySkipLimit.orderBy());
-        }
-        if (orderBySkipLimit.skip() != null) {
-          skip = visitSkip(orderBySkipLimit.skip());
-        }
-        if (orderBySkipLimit.limit() != null) {
-          limit = visitLimit(orderBySkipLimit.limit());
-        }
-      } else if (clauseCtx.callClause() != null) {
-        final CallClause call = visitCallClause(clauseCtx.callClause());
-        callClauses.add(call);
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.CALL, call, clauseOrder++));
-      } else if (clauseCtx.removeClause() != null) {
-        final RemoveClause remove = visitRemoveClause(clauseCtx.removeClause());
-        removeClauses.add(remove);
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.REMOVE, remove, clauseOrder++));
-      } else if (clauseCtx.foreachClause() != null) {
-        final ForeachClause foreachClause = visitForeachClause(clauseCtx.foreachClause());
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.FOREACH, foreachClause, clauseOrder++));
-      } else if (clauseCtx.subqueryClause() != null) {
-        final SubqueryClause subqueryClause = visitSubqueryClause(clauseCtx.subqueryClause());
-        clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.SUBQUERY, subqueryClause, clauseOrder++));
-      }
-    }
+    // NOTE: AST rewriting infrastructure is in place (AST_REWRITER defined above)
+    // Full integration would require walking the statement tree and rewriting all expressions.
+    // This is deferred to avoid breaking existing functionality.
+    // The rewriter can be applied to individual expressions as needed:
+    //   Expression rewritten = (Expression) AST_REWRITER.rewrite(originalExpression);
 
-    // Extract WHERE clause from MATCH if present
-    if (!matchClauses.isEmpty() && matchClauses.get(0) != null) {
-      // WHERE is embedded in matchClause in the grammar
-      // We'll handle it when visiting matchClause
-    }
-
-    // Determine if query has write operations
-    final boolean hasCreate = createClause != null;
-    final boolean hasMerge = mergeClause != null;
-    final boolean hasDelete = deleteClause != null;
-    final boolean hasRemove = !removeClauses.isEmpty();
-
-    return new SimpleCypherStatement(
-        "", // Original query string (we'll set this later)
-        matchClauses,
-        whereClause,
-        returnClause,
-        orderByClause,
-        skip,
-        limit,
-        createClause,
-        setClause,
-        deleteClause,
-        mergeClause,
-        unwindClauses,
-        withClauses,
-        callClauses,
-        removeClauses,
-        clausesInOrder,
-        hasCreate,
-        hasMerge,
-        hasDelete,
-        hasRemove
-    );
+    return statement;
   }
 
   @Override
@@ -967,24 +868,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return new LabelCheckExpression(variableExpr, labels, operator, text);
   }
 
-  private Object parseValueString(String value) {
-    // Remove quotes from strings
-    if (value.startsWith("'") && value.endsWith("'")) {
-      return value.substring(1, value.length() - 1);
-    } else if (value.startsWith("\"") && value.endsWith("\"")) {
-      return value.substring(1, value.length() - 1);
-    }
-
-    // Try to parse as number
-    try {
-      if (value.contains(".")) {
-        return Double.parseDouble(value);
-      } else {
-        return Long.parseLong(value);
-      }
-    } catch (final NumberFormatException e) {
-      return value;
-    }
+  private Object parseValueString(final String value) {
+    // Delegate to ParserUtils for value parsing
+    return ParserUtils.parseValueString(value);
   }
 
   public List<PathPattern> visitPatternList(final Cypher25Parser.PatternListContext ctx) {
@@ -1215,50 +1101,19 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   private List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
-    // Label expression handling:
-    // - Multiple labels: :Person:Developer -> ["Person", "Developer"]
-    // - Alternative labels: :Person|Developer -> ["Person", "Developer"] (treated same for MATCH)
-    // - Combination: :Person:Developer|Manager -> ["Person", "Developer", "Manager"]
-    final String text = ctx.getText();
-
-    // Remove leading colon and split by both : and | to get all labels
-    final String cleanText = text.replaceAll("^:+", "");
-
-    // Split by both : and | to handle multiple labels and alternatives
-    final String[] parts = cleanText.split("[:&|]+");
-
-    // Strip backticks from each label if present
-    final List<String> labels = new ArrayList<>();
-    for (String part : parts) {
-      if (!part.isEmpty()) {
-        labels.add(stripBackticks(part));
-      }
-    }
-    return labels;
+    // Delegate to ParserUtils for grammar-based label extraction
+    return ParserUtils.extractLabels(ctx);
   }
 
   /**
    * Strips backticks from an escaped symbolic name.
-   * Handles both regular backticks and double backticks (escaped backticks).
+   * Delegates to ParserUtils for implementation.
    *
    * @param name the name potentially wrapped in backticks
    * @return the name without backticks
    */
   static String stripBackticks(final String name) {
-    if (name == null || name.length() < 2) {
-      return name;
-    }
-
-    // Check if wrapped in backticks
-    if (name.startsWith("`") && name.endsWith("`")) {
-      // Remove outer backticks
-      String inner = name.substring(1, name.length() - 1);
-      // Replace double backticks (escaped backticks) with single backticks
-      inner = inner.replace("``", "`");
-      return inner;
-    }
-
-    return name;
+    return ParserUtils.stripBackticks(name);
   }
 
   private Object evaluateExpression(final Cypher25Parser.ExpressionContext ctx) {
@@ -1343,74 +1198,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   /**
    * Decodes escape sequences in a string literal.
-   * Handles: \n (newline), \t (tab), \r (carriage return), \\ (backslash), \' (single quote), \" (double quote)
+   * Delegates to ParserUtils for implementation.
    *
    * @param input the string with escape sequences (without surrounding quotes)
    * @return the decoded string
    */
   static String decodeStringLiteral(final String input) {
-    if (input == null || input.isEmpty()) {
-      return input;
-    }
-
-    // Quick check: if no backslash, return as-is to avoid allocation
-    if (input.indexOf('\\') == -1) {
-      return input;
-    }
-
-    final StringBuilder result = new StringBuilder(input.length());
-    boolean escaped = false;
-
-    for (int i = 0; i < input.length(); i++) {
-      final char c = input.charAt(i);
-
-      if (escaped) {
-        escaped = false;
-        switch (c) {
-          case 'n':
-            result.append('\n');
-            break;
-          case 't':
-            result.append('\t');
-            break;
-          case 'r':
-            result.append('\r');
-            break;
-          case 'b':
-            result.append('\b');
-            break;
-          case 'f':
-            result.append('\f');
-            break;
-          case '\\':
-            result.append('\\');
-            break;
-          case '\'':
-            result.append('\'');
-            break;
-          case '"':
-            result.append('"');
-            break;
-          case '0':
-            result.append('\0');
-            break;
-          default:
-            // For unrecognized escape sequences, keep the character as-is
-            result.append(c);
-            break;
-        }
-      } else if (c == '\\') {
-        escaped = true;
-      } else {
-        result.append(c);
-      }
-    }
-
-    // Handle trailing backslash (keep it as-is)
-    if (escaped) {
-      result.append('\\');
-    }
-
-    return result.toString();
+    return ParserUtils.decodeStringLiteral(input);
   }
 }

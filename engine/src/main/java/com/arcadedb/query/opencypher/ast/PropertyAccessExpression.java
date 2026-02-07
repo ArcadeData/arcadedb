@@ -119,6 +119,7 @@ public class PropertyAccessExpression implements Expression {
           // Not a valid duration string
         }
       }
+
       // DateTime strings: contain 'T' with date part before it and timezone/offset
       // e.g., 1912-01-01T00:00Z, 1984-10-11T12:31:14+01:00[Europe/Stockholm]
       final int tIdx = str.indexOf('T');
@@ -129,6 +130,7 @@ public class PropertyAccessExpression implements Expression {
           // Not a valid datetime string
         }
       }
+
       // Time strings: HH:MM:SS[.nanos][+/-offset] or HH:MM:SS[.nanos]Z
       if (str.length() >= 8 && str.charAt(2) == ':' && str.charAt(5) == ':') {
         // Check if it has a timezone offset

@@ -169,6 +169,9 @@ public class CypherDateTime implements CypherTemporalValue {
         if (map.containsKey("second"))
           result = result.withSecond(toInt(map.get("second")));
         result = result.withNano(TemporalUtil.computeNanos(map, result.getNano()));
+
+        if (map.containsKey("timezone"))
+          result = result.withZoneSameLocal(TemporalUtil.parseZone(map.get("timezone").toString()));
         return new CypherDateTime(result);
       }
     }
