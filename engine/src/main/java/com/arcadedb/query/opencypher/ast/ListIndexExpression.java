@@ -57,11 +57,13 @@ public class ListIndexExpression implements Expression {
       final String key = (String) indexValue;
       if (listValue instanceof Map)
         return ((Map<?, ?>) listValue).get(key);
-      if (listValue instanceof Result)
-        return ((Result) listValue).getProperty(key);
       if (listValue instanceof Document)
         return ((Document) listValue).get(key);
-      // For lists with string index, return null (Cypher behavior)
+      if (listValue instanceof Result)
+        return ((Result) listValue).getProperty(key);
+      // List with string index is a type error in Cypher
+      if (listValue instanceof List)
+        throw new IllegalArgumentException("List index must be a number, got: String");
       return null;
     }
 
