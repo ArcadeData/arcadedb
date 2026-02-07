@@ -24,8 +24,9 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.function.graph.SQLFunctionDijkstra;
+import com.arcadedb.query.sql.function.graph.SQLFunctionAstar;
 
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -85,10 +86,18 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
     final String weightProperty = extractString(args[3], "weightProperty");
     final String direction = args.length > 4 ? extractString(args[4], "direction") : "BOTH";
 
-    // Use ArcadeDB's existing Dijkstra implementation
-    final SQLFunctionDijkstra dijkstra = new SQLFunctionDijkstra();
-    final Object[] params = new Object[]{startNode, endNode, weightProperty, direction};
-    final LinkedList<RID> pathRids = dijkstra.execute(null, null, null, params, context);
+    // Build options map for edge type filtering
+    final Map<String, Object> options = new HashMap<>();
+    options.put("emptyIfMaxDepth", true);
+    if (direction != null && !direction.isEmpty())
+      options.put("direction", direction);
+    if (relType != null && !relType.isEmpty())
+      options.put("edgeTypeNames", new String[] { relType });
+
+    // Use ArcadeDB's existing A* implementation (Dijkstra internally uses A*)
+    final SQLFunctionAstar astar = new SQLFunctionAstar();
+    final Object[] params = new Object[]{startNode, endNode, weightProperty, options};
+    final LinkedList<RID> pathRids = astar.execute(null, null, null, params, context);
 
     if (pathRids == null || pathRids.isEmpty())
       return Stream.empty();
@@ -97,9 +106,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
     double totalWeight = 0.0;
     for (int i = 0; i < pathRids.size() - 1; i++) {
       final RID current = pathRids.get(i);
-      final RID next = pathRids.get(i + 1);
       final var currentDoc = context.getDatabase().lookupByRID(current, true);
-      final var nextDoc = context.getDatabase().lookupByRID(next, true);
 
       // If this is an edge, get its weight
       if (currentDoc.getRecord() instanceof Edge edge) {
