@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 ;
 
@@ -233,11 +234,9 @@ class OpenCypherAdvancedFunctionTest {
 
   @Test
   void toBooleanFunctionWithNumber() {
-    final ResultSet result = database.command("opencypher",
-        "RETURN toBoolean(1) AS result");
-
-    assertThat(result.hasNext()).isTrue();
-    assertThat((Boolean) result.next().getProperty("result")).isTrue();
+    // Per Cypher spec, toBoolean() does not accept numbers — throws TypeError
+    assertThatThrownBy(() -> database.command("opencypher", "RETURN toBoolean(1) AS result").nextIfAvailable())
+        .isInstanceOf(Exception.class);
   }
 
   // ==================== Path Functions ====================

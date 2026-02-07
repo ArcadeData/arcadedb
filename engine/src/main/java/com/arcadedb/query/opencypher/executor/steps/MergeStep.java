@@ -557,42 +557,91 @@ public class MergeStep extends AbstractExecutionStep {
    * @param setClause the SET clause to apply
    * @param result the result containing variables to update
    */
+  @SuppressWarnings("unchecked")
   private void applySetClause(final SetClause setClause, final Result result) {
-    if (setClause == null || setClause.isEmpty()) {
+    if (setClause == null || setClause.isEmpty())
       return;
-    }
 
     for (final SetClause.SetItem item : setClause.getItems()) {
       final String variable = item.getVariable();
-      final String property = item.getProperty();
-      final Expression valueExpression = item.getValueExpression();
-
-      // Get the object from the result
       final Object obj = result.getProperty(variable);
-      if (obj == null) {
-        // Variable not found in result - skip this SET item
+      if (obj == null)
         continue;
+
+      switch (item.getType()) {
+        case PROPERTY: {
+          if (!(obj instanceof Document doc))
+            break;
+          final MutableDocument mutableDoc = doc.modify();
+          final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
+          if (value == null)
+            mutableDoc.remove(item.getProperty());
+          else
+            mutableDoc.set(item.getProperty(), value);
+          mutableDoc.save();
+          ((ResultInternal) result).setProperty(variable, mutableDoc);
+          break;
+        }
+        case REPLACE_MAP: {
+          if (!(obj instanceof Document doc))
+            break;
+          final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
+          if (!(mapValue instanceof java.util.Map))
+            break;
+          final java.util.Map<String, Object> map = (java.util.Map<String, Object>) mapValue;
+          final MutableDocument mutableDoc = doc.modify();
+          for (final String prop : new java.util.HashSet<>(mutableDoc.getPropertyNames()))
+            if (!prop.startsWith("@"))
+              mutableDoc.remove(prop);
+          for (final java.util.Map.Entry<String, Object> entry : map.entrySet())
+            if (entry.getValue() != null)
+              mutableDoc.set(entry.getKey(), entry.getValue());
+          mutableDoc.save();
+          ((ResultInternal) result).setProperty(variable, mutableDoc);
+          break;
+        }
+        case MERGE_MAP: {
+          if (!(obj instanceof Document doc))
+            break;
+          final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
+          if (!(mapValue instanceof java.util.Map))
+            break;
+          final java.util.Map<String, Object> map = (java.util.Map<String, Object>) mapValue;
+          final MutableDocument mutableDoc = doc.modify();
+          for (final java.util.Map.Entry<String, Object> entry : map.entrySet())
+            if (entry.getValue() == null)
+              mutableDoc.remove(entry.getKey());
+            else
+              mutableDoc.set(entry.getKey(), entry.getValue());
+          mutableDoc.save();
+          ((ResultInternal) result).setProperty(variable, mutableDoc);
+          break;
+        }
+        case LABELS: {
+          if (!(obj instanceof Vertex vertex))
+            break;
+          final java.util.List<String> existingLabels = com.arcadedb.query.opencypher.Labels.getLabels(vertex);
+          final java.util.List<String> allLabels = new java.util.ArrayList<>(existingLabels);
+          for (final String label : item.getLabels())
+            if (!allLabels.contains(label))
+              allLabels.add(label);
+          final String newTypeName = com.arcadedb.query.opencypher.Labels.ensureCompositeType(
+              context.getDatabase().getSchema(), allLabels);
+          if (!vertex.getTypeName().equals(newTypeName)) {
+            final MutableVertex newVertex = context.getDatabase().newVertex(newTypeName);
+            for (final String prop : vertex.getPropertyNames())
+              newVertex.set(prop, vertex.get(prop));
+            newVertex.save();
+            for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
+              newVertex.newEdge(edge.getTypeName(), edge.getVertex(Vertex.DIRECTION.IN));
+            for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+              edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex);
+            vertex.delete();
+            ((ResultInternal) result).setProperty(variable, newVertex);
+          }
+          break;
+        }
       }
-
-      if (!(obj instanceof Document)) {
-        // Not a document - skip
-        continue;
-      }
-
-      final Document doc = (Document) obj;
-
-      // Make document mutable
-      final MutableDocument mutableDoc = doc.modify();
-
-      // Evaluate the value expression and set the property
-      final Object value = evaluator.evaluate(valueExpression, result, context);
-      mutableDoc.set(property, value);
-
-      // Save the modified document
-      mutableDoc.save();
-
-      // Update the result with the modified document
-      ((ResultInternal) result).setProperty(variable, mutableDoc);
     }
   }
 

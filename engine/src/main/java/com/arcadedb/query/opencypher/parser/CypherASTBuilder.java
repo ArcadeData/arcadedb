@@ -269,18 +269,46 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<SetClause.SetItem> items = new ArrayList<>();
 
     for (final Cypher25Parser.SetItemContext itemCtx : ctx.setItem()) {
-      if (itemCtx instanceof Cypher25Parser.SetPropContext) {
-        final Cypher25Parser.SetPropContext propCtx = (Cypher25Parser.SetPropContext) itemCtx;
+      if (itemCtx instanceof Cypher25Parser.SetPropContext propCtx) {
         final String propExpr = propCtx.propertyExpression().getText();
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
-
-        // Parse property expression: variable.property
         if (propExpr.contains(".")) {
           final String[] parts = propExpr.split("\\.", 2);
           items.add(new SetClause.SetItem(parts[0], parts[1], valueExpr));
         }
+      } else if (itemCtx instanceof Cypher25Parser.SetPropsContext propsCtx) {
+        // SET n = {map} — replace all properties
+        final String variable = propsCtx.variable().getText();
+        final Expression valueExpr = expressionBuilder.parseExpression(propsCtx.expression());
+        items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.REPLACE_MAP));
+      } else if (itemCtx instanceof Cypher25Parser.AddPropContext addCtx) {
+        // SET n += {map} — merge properties
+        final String variable = addCtx.variable().getText();
+        final Expression valueExpr = expressionBuilder.parseExpression(addCtx.expression());
+        items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.MERGE_MAP));
+      } else if (itemCtx instanceof Cypher25Parser.SetLabelsContext labelsCtx) {
+        // SET n:Label — add labels
+        final String variable = labelsCtx.variable().getText();
+        final String labelsText = labelsCtx.nodeLabels().getText();
+        final String cleanText = labelsText.replaceAll("^:+", "");
+        final String[] parts = cleanText.split("[:&|]+");
+        final List<String> labelList = new ArrayList<>();
+        for (final String part : parts)
+          if (!part.isEmpty())
+            labelList.add(stripBackticks(part));
+        items.add(new SetClause.SetItem(variable, labelList));
+      } else if (itemCtx instanceof Cypher25Parser.SetLabelsIsContext labelsIsCtx) {
+        // SET n IS Label — add labels (IS syntax)
+        final String variable = labelsIsCtx.variable().getText();
+        final String labelsText = labelsIsCtx.nodeLabelsIs().getText();
+        final String cleanText = labelsText.replaceAll("^\\s*IS\\s+", "").replaceAll("^:+", "");
+        final String[] parts = cleanText.split("[:&|]+");
+        final List<String> labelList = new ArrayList<>();
+        for (final String part : parts)
+          if (!part.isEmpty())
+            labelList.add(stripBackticks(part));
+        items.add(new SetClause.SetItem(variable, labelList));
       }
-      // TODO: Handle other SetItem types (SetProps, AddProp, SetLabels, etc.)
     }
 
     return new SetClause(items);

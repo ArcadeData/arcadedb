@@ -122,7 +122,7 @@ class OpenCypherExpressionTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.<Double>getProperty("halfAge")).isEqualTo(15.0);
+    assertThat(result.<Long>getProperty("halfAge")).isEqualTo(15L);
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -388,8 +388,8 @@ class OpenCypherExpressionTest {
     final Map<String, Object> info = (Map<String, Object>) infoObj;
     assertThat(info.get("name")).isEqualTo("Alice");
     assertThat(info.get("nextYearAge")).isEqualTo(Long.valueOf(31L));
-    // 50000 / 12 ≈ 4166.67
-    assertThat(info.get("monthlySalary")).isInstanceOf(Double.class);
+    // 50000 / 12 = 4166 (Cypher integer division truncates)
+    assertThat(info.get("monthlySalary")).isEqualTo(4166L);
     assertThat(resultSet.hasNext()).isFalse();
   }
 }

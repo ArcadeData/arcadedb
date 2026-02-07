@@ -59,20 +59,33 @@ public class InExpression implements BooleanExpression {
     // Build the list of values to check against
     final List<Object> valuesToCheck = new ArrayList<>();
 
-    for (final Expression listItem : list) {
+    if (list.size() == 1) {
+      // Single expression on RHS (e.g., x IN listVar, or x IN [1,2,3] parsed as single list expr)
+      final Expression listItem = list.get(0);
       final Object listValue;
-
       if (listItem instanceof FunctionCallExpression)
         listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
       else
         listValue = listItem.evaluate(result, context);
 
+      if (listValue == null)
+        return null; // x IN null -> null
       if (listValue instanceof List)
         valuesToCheck.addAll((List<?>) listValue);
       else if (listValue instanceof Collection)
         valuesToCheck.addAll((Collection<?>) listValue);
       else
+        throw new IllegalArgumentException("InvalidArgumentType: IN requires a list on the right side, got " + listValue.getClass().getSimpleName());
+    } else {
+      // Multiple expressions (parsed list literal items)
+      for (final Expression listItem : list) {
+        final Object listValue;
+        if (listItem instanceof FunctionCallExpression)
+          listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
+        else
+          listValue = listItem.evaluate(result, context);
         valuesToCheck.add(listValue);
+      }
     }
 
     // 3VL: null IN [1,2,3] -> null, 5 IN [1,null,3] -> null (if not found otherwise)
@@ -108,6 +121,18 @@ public class InExpression implements BooleanExpression {
     // Numeric comparison (handles int/long/double cross-type)
     if (a instanceof Number && b instanceof Number)
       return ((Number) a).doubleValue() == ((Number) b).doubleValue();
+
+    // List equality (deep comparison)
+    if (a instanceof List && b instanceof List) {
+      final List<?> listA = (List<?>) a;
+      final List<?> listB = (List<?>) b;
+      if (listA.size() != listB.size())
+        return false;
+      for (int i = 0; i < listA.size(); i++)
+        if (!valuesEqual(listA.get(i), listB.get(i)))
+          return false;
+      return true;
+    }
 
     return false;
   }
