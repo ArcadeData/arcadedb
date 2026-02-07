@@ -18,10 +18,12 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * Expression representing a function call.
@@ -38,11 +40,30 @@ public class FunctionCallExpression implements Expression {
     this.distinct = distinct;
   }
 
+  /**
+   * Key used to store the function resolver in the CommandContext.
+   * The resolver is a Function&lt;String, StatelessFunction&gt; that maps function names to executors.
+   */
+  public static final String FUNCTION_RESOLVER_KEY = "cypherFunctionResolver";
+
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    // Evaluation will be delegated to StatelessFunction
-    // This method is overridden during execution phase
-    throw new UnsupportedOperationException("Function evaluation requires StatelessFunction");
+    // Try to resolve the function through the context-stored resolver
+    if (context != null) {
+      @SuppressWarnings("unchecked")
+      final Function<String, StatelessFunction> resolver =
+          (Function<String, StatelessFunction>) context.getVariable(FUNCTION_RESOLVER_KEY);
+      if (resolver != null) {
+        final StatelessFunction function = resolver.apply(functionName);
+        if (function != null) {
+          final Object[] args = new Object[arguments.size()];
+          for (int i = 0; i < args.length; i++)
+            args[i] = arguments.get(i).evaluate(result, context);
+          return function.execute(args, context);
+        }
+      }
+    }
+    throw new UnsupportedOperationException("Function evaluation requires StatelessFunction: " + functionName);
   }
 
   @Override
