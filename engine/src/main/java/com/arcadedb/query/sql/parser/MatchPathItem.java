@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.InternalException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 
@@ -179,7 +180,7 @@ public class MatchPathItem extends SimpleNode {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (final Exception e) {
-      throw new ArcadeDBException(e);
+      throw new InternalException(e);
     }
     result.method = method == null ? null : method.copy();
     result.filter = filter == null ? null : filter.copy();

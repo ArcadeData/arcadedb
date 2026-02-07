@@ -18,7 +18,10 @@
  */
 package com.arcadedb.redis;
 
-import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.ErrorCode;
+import com.arcadedb.exception.StorageException;
+import com.arcadedb.network.exception.NetworkException;
+import com.arcadedb.network.exception.NetworkErrorCode;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
@@ -124,10 +127,14 @@ public class RedisNetworkListener extends Thread {
         LogManager.instance().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
       } catch (final SocketException se) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
-        throw new ArcadeDBException(se);
+        throw new NetworkException(NetworkErrorCode.CONNECTION_ERROR, "Unable to create socket", se)
+            .withContext("hostName", hostName)
+            .withContext("port", tryPort);
       } catch (final IOException ioe) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
-        throw new ArcadeDBException(ioe);
+        throw new StorageException(ErrorCode.STORAGE_IO_ERROR, "Unable to read data from an open socket", ioe)
+            .withContext("hostName", hostName)
+            .withContext("port", tryPort);
       }
     }
 

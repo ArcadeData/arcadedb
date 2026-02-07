@@ -18,7 +18,11 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.ErrorCode;
+import com.arcadedb.exception.ExceptionBuilder;
+import com.arcadedb.exception.StorageException;
+import com.arcadedb.network.exception.NetworkException;
+import com.arcadedb.network.exception.NetworkErrorCode;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
@@ -118,10 +122,18 @@ public class PostgresNetworkListener extends Thread {
             tryPort);
       } catch (final SocketException se) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
-        throw new ArcadeDBException(se);
+        throw new NetworkException(NetworkErrorCode.CONNECTION_ERROR, "Unable to create socket", se)
+            .withContext("hostName", hostName)
+            .withContext("port", tryPort);
       } catch (final IOException ioe) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
-        throw new ArcadeDBException(ioe);
+        throw ExceptionBuilder.storage()
+            .code(ErrorCode.STORAGE_IO_ERROR)
+            .message("Unable to read data from an open socket")
+            .cause(ioe)
+            .context("hostName", hostName)
+            .context("port", tryPort)
+            .build();
       }
     }
 

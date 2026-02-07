@@ -30,4 +30,9 @@ public class CommandExecutionException extends ArcadeDBException {
   public CommandExecutionException(final Throwable cause) {
     super(cause);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.QUERY_COMMAND_ERROR;
+  }
 }
