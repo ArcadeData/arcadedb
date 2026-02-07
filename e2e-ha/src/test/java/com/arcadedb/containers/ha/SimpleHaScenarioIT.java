@@ -27,18 +27,18 @@ public class SimpleHaScenarioIT extends ContainersTestTemplate {
     createArcadeContainer("arcade2", "{arcade1}arcade1:2424", "none", "any", network);
 
     logger.info("Starting the containers in sequence: arcade1 will be the leader");
+    List<ServerWrapper> servers = startContainers();
 //    List<ServerWrapper> servers = startContainersDeeply();
-    List<ServerWrapper> servers = startContainersDeeply();
 
     // DIAGNOSTIC: Check if containers are healthy after startup
     logger.info("DIAGNOSTIC: Checking container health after startup");
     Thread.sleep(5000); // Wait 5 seconds for containers to stabilize
-    diagnoseContainers();
+//    diagnoseContainers();
 
     logger.info("Creating the database on the first arcade container");
     DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier);
     logger.info("Creating the database on arcade server 1");
-    db1.createDatabase();
+//    db1.createDatabase();
     db1.createSchema();
 
     // DIAGNOSTIC: Check if arcade2 is still running after arcade1 creates database
