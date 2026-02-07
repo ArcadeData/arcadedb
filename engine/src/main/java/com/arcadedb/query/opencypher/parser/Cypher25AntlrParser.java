@@ -18,28 +18,19 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Token;
-import org.antlr.v4.runtime.misc.ParseCancellationException;
 
 /**
  * Cypher parser using ANTLR4 with the official Cypher 2.5 grammar.
  * This replaces the regex-based parser with a proper grammar-based implementation.
  */
 public class Cypher25AntlrParser {
-  private final DatabaseInternal database;
-
-  public Cypher25AntlrParser(final DatabaseInternal database) {
-    this.database = database;
-  }
-
   /**
    * Parses a Cypher query string into a CypherStatement AST.
    *
@@ -48,9 +39,8 @@ public class Cypher25AntlrParser {
    * @throws CommandParsingException if query cannot be parsed
    */
   public CypherStatement parse(final String query) {
-    if (query == null || query.trim().isEmpty()) {
+    if (query == null || query.trim().isEmpty())
       throw new CommandParsingException("Query cannot be empty");
-    }
 
     try {
       // Create lexer
@@ -73,7 +63,8 @@ public class Cypher25AntlrParser {
       final Token nextToken = parser.getTokenStream().LT(1);
       if (nextToken.getType() != Token.EOF) {
         throw new CommandParsingException(
-            String.format("Unexpected input '%s' at position %d", nextToken.getText(), nextToken.getCharPositionInLine()));
+            String.format("Unexpected input '%s' at position %d", nextToken.getText(),
+                nextToken.getCharPositionInLine()));
       }
 
       // Build AST using visitor
@@ -84,8 +75,6 @@ public class Cypher25AntlrParser {
 
       return statement;
 
-    } catch (final RecognitionException | ParseCancellationException e) {
-      throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
     } catch (final Exception e) {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
     }

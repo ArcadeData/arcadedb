@@ -25,32 +25,10 @@ import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
-import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.*;
 import com.arcadedb.engine.Dictionary;
-import com.arcadedb.engine.ErrorRecordCallback;
-import com.arcadedb.engine.FileManager;
-import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.TransactionManager;
-import com.arcadedb.engine.WALFile;
-import com.arcadedb.engine.WALFileFactory;
-import com.arcadedb.engine.WALFileFactoryEmbedded;
-import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.DatabaseIsClosedException;
-import com.arcadedb.exception.DatabaseIsReadOnlyException;
-import com.arcadedb.exception.DatabaseMetadataException;
-import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.InvalidDatabaseInstanceException;
-import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.TransactionException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GraphEngine;
-import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
-import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.exception.*;
+import com.arcadedb.graph.*;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
@@ -69,14 +47,7 @@ import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.LocalDocumentType;
-import com.arcadedb.schema.LocalSchema;
-import com.arcadedb.schema.LocalVertexType;
-import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.*;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
@@ -94,17 +65,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Random;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -134,22 +95,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
       LSMVectorIndex.FILE_EXT,
       LSMVectorIndexGraphFile.FILE_EXT);
-  public final         AtomicLong                                indexCompactions                     = new AtomicLong();
+  public final         AtomicLong                                indexCompactions                     =
+      new AtomicLong();
   protected final      String                                    name;
   protected final      ComponentFile.MODE                        mode;
   protected final      ContextConfiguration                      configuration;
   protected final      String                                    databasePath;
   protected final      BinarySerializer                          serializer;
-  protected final      RecordFactory                             recordFactory                        = new RecordFactory();
+  protected final      RecordFactory                             recordFactory                        =
+      new RecordFactory();
   protected final      GraphEngine                               graphEngine;
   protected final      WALFileFactory                            walFactory;
   protected final      DocumentIndexer                           indexer;
-  protected final      DatabaseStats                             stats                                = new DatabaseStats();
+  protected final      DatabaseStats                             stats                                =
+      new DatabaseStats();
   protected            FileManager                               fileManager;
   protected            LocalSchema                               schema;
   protected            TransactionManager                        transactionManager;
   protected volatile   DatabaseAsyncExecutorImpl                 async                                = null;
-  protected final      Lock                                      asyncLock                            = new ReentrantLock();
+  protected final      Lock                                      asyncLock                            =
+      new ReentrantLock();
   protected            boolean                                   autoTransaction                      = false;
   protected volatile   boolean                                   open                                 = false;
   private              boolean                                   readYourWrites                       = true;
@@ -160,24 +125,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final        CypherPlanCache                           cypherPlanCache;
   private final        File                                      configurationFile;
   private              DatabaseInternal                          wrappedDatabaseInstance              = this;
-  private              int                                       edgeListSize                         = EDGE_LIST_INITIAL_CHUNK_SIZE;
+  private              int                                       edgeListSize                         =
+      EDGE_LIST_INITIAL_CHUNK_SIZE;
   private final        SecurityManager                           security;
   private final        Map<String, Object>                       wrappers                             = new HashMap<>();
   private              File                                      lockFile;
   private              RandomAccessFile                          lockFileIO;
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
-  private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
-  private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
-  private final        ConcurrentHashMap<String, Object>         globalVariables                      = new ConcurrentHashMap<>();
-  private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            = TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private final        RecordEventsRegistry                      events                               =
+      new RecordEventsRegistry();
+  private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 =
+      new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<String, Object>         globalVariables                      =
+      new ConcurrentHashMap<>();
+  private              TRANSACTION_ISOLATION_LEVEL               transactionIsolationLevel            =
+      TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private              long                                      openedOn;
   private              long                                      lastUpdatedOn;
   private              long                                      lastUsedOn;
   private              int                                       cachedHashCode                       = 0;
 
   protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
-      final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
+                          final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
     try {
       this.mode = mode;
       this.configuration = configuration;
@@ -185,11 +155,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       this.callbacks = callbacks;
       this.serializer = new BinarySerializer(configuration);
       this.walFactory = mode == ComponentFile.MODE.READ_WRITE ? new WALFileFactoryEmbedded() : null;
-      this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
+      this.statementCache = new StatementCache(this,
+          configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
-      this.cypherStatementCache = new CypherStatementCache(this,
-          configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
+      this.cypherStatementCache =
+          new CypherStatementCache(configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
       this.cypherPlanCache = new CypherPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_PLAN_CACHE));
 
@@ -228,7 +199,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         configuration.reset();
         configuration.fromJSON(content);
       } catch (final IOException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, configurationFile);
+        LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e,
+            configurationFile);
       }
     }
 
@@ -452,7 +424,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     executeInReadLock(() -> {
       checkTransactionIsActive(false);
 
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
+      final DatabaseContext.DatabaseContextTL current =
+          DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
         current.getLastTransaction().commit();
       } finally {
@@ -471,7 +444,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       try {
         checkTransactionIsActive(false);
 
-        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
+        final DatabaseContext.DatabaseContextTL current =
+            DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
         current.popIfNotLastTransaction().rollback();
 
       } catch (final TransactionException e) {
@@ -489,7 +463,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     stats.txRollbacks.incrementAndGet();
 
     executeInReadLock(() -> {
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
+      final DatabaseContext.DatabaseContextTL current =
+          DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
 
       TransactionContext tx;
       while ((tx = current.popIfNotLastTransaction()) != null) {
@@ -537,7 +512,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback,
-      final ErrorRecordCallback errorRecordCallback) {
+                       final ErrorRecordCallback errorRecordCallback) {
     stats.scanType.incrementAndGet();
 
     executeInReadLock(() -> {
@@ -550,7 +525,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         for (final Bucket b : type.getBuckets(polymorphic)) {
           b.scan((rid, view) -> {
-            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
+            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid,
+                view, null);
             continueScan.set(callback.onRecord(record));
             return continueScan.get();
           }, errorRecordCallback);
@@ -578,7 +554,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public void scanBucket(final String bucketName, final RecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
+  public void scanBucket(final String bucketName, final RecordCallback callback,
+                         final ErrorRecordCallback errorRecordCallback) {
     stats.scanBucket.incrementAndGet();
 
     executeInReadLock(() -> {
@@ -587,7 +564,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       final String typeName = schema.getTypeNameByBucketId(schema.getBucketByName(bucketName).getFileId());
       schema.getBucketByName(bucketName).scan((rid, view) -> {
-        final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getType(typeName), rid, view, null);
+        final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getType(typeName), rid
+            , view, null);
         return callback.onRecord(record);
       }, errorRecordCallback);
       return null;
@@ -757,7 +735,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public IndexCursor lookupByKey(final String type, final String keyName, final Object keyValue) {
-    return lookupByKey(type, new String[] { keyName }, new Object[] { keyValue });
+    return lookupByKey(type, new String[]{keyName}, new Object[]{keyValue});
   }
 
   @Override
@@ -873,7 +851,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
     if (record.getIdentity() != null)
-      throw new IllegalArgumentException("Cannot create record " + record.getIdentity() + " because it is already persistent");
+      throw new IllegalArgumentException("Cannot create record " + record.getIdentity() + " because it is already " +
+          "persistent");
 
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot create a new record");
@@ -896,7 +875,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final LocalBucket bucket;
 
       if (bucketName == null && record instanceof Document doc)
-        bucket = (LocalBucket) doc.getType().getBucketIdByRecord(doc, DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
+        bucket = (LocalBucket) doc.getType().getBucketIdByRecord(doc,
+            DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
       else
         bucket = (LocalBucket) schema.getBucketByName(bucketName);
 
@@ -948,9 +928,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     executeInReadLock(() -> {
       if (isTransactionActive()) {
-        // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
-        // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE IS CREATED IN THE SAME CHUNK.
-        // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED RECORD
+        // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
+        // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
+        // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE
+        // IS CREATED IN THE SAME CHUNK.
+        // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED
+        // RECORD
         try {
           getTransaction().addUpdatedRecord(record);
 
@@ -964,7 +947,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             }
           }
         } catch (final IOException e) {
-          throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in transaction", e);
+          throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
+              "transaction", e);
         }
       } else
         updateRecordNoLock(record, false);
@@ -984,7 +968,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalStateException("Cannot read original buffer for record " + record.getIdentity()
           + ". In case of tx retry check the record is created inside the transaction");
     originalBuffer.rewind();
-    return (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer,
+    return (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(),
+        originalBuffer,
         null);
   }
 
@@ -994,7 +979,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
     try {
-      final List<IndexInternal> indexes = record instanceof Document d ? indexer.getInvolvedIndexes(d) : Collections.emptyList();
+      final List<IndexInternal> indexes = record instanceof Document d ? indexer.getInvolvedIndexes(d) :
+          Collections.emptyList();
 
       if (!indexes.isEmpty()) {
         // UPDATE THE INDEXES TOO
@@ -1100,7 +1086,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx) {
-    return transaction(txBlock, joinCurrentTx, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
+    return transaction(txBlock, joinCurrentTx, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
+        null);
   }
 
   @Override
@@ -1109,8 +1096,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, int attempts, final OkCallback ok,
-      final ErrorCallback error) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, int attempts,
+                             final OkCallback ok,
+                             final ErrorCallback error) {
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
 
@@ -1199,7 +1187,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     final LocalDocumentType type = schema.getType(typeName);
     if (!type.getClass().equals(LocalDocumentType.class))
-      throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a document type");
+      throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a " +
+          "document type");
 
     stats.createRecord.incrementAndGet();
 
@@ -1227,7 +1216,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     final LocalDocumentType type = schema.getType(typeName);
     if (!type.getClass().equals(LocalVertexType.class))
-      throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex type");
+      throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex " +
+          "type");
 
     stats.createRecord.incrementAndGet();
 
@@ -1235,9 +1225,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames,
-      final Object[] sourceVertexKeyValues, final String destinationVertexType, final String[] destinationVertexKeyNames,
-      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
-      final boolean bidirectional, final Object... properties) {
+                            final Object[] sourceVertexKeyValues, final String destinationVertexType,
+                            final String[] destinationVertexKeyNames,
+                            final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
+                            final String edgeType,
+                            final boolean bidirectional, final Object... properties) {
     if (sourceVertexKeyNames == null)
       throw new IllegalArgumentException("Source vertex key is null");
 
@@ -1288,9 +1280,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Deprecated
-  public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType, final String[] destinationVertexKeyNames,
-      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
-      final boolean bidirectional, final Object... properties) {
+  public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType,
+                            final String[] destinationVertexKeyNames,
+                            final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
+                            final String edgeType,
+                            final boolean bidirectional, final Object... properties) {
     if (!bidirectional && ((EdgeType) schema.getType(edgeType)).isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 
@@ -1298,9 +1292,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         createVertexIfNotExist, edgeType, properties);
   }
 
-  public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType, final String[] destinationVertexKeyNames,
-      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
-      final Object... properties) {
+  public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType,
+                            final String[] destinationVertexKeyNames,
+                            final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
+                            final String edgeType,
+                            final Object... properties) {
     if (sourceVertex == null)
       throw new IllegalArgumentException("Source vertex is null");
 
@@ -1401,7 +1397,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
-      final Object... parameters) {
+                           final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     return getQueryEngine(language).command(query, configuration, parameters);
@@ -1414,7 +1410,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
-      final Map<String, Object> parameters) {
+                           final Map<String, Object> parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     return getQueryEngine(language).command(query, configuration, parameters);
@@ -1749,7 +1745,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             "Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")");
       }
 
-      //LogManager.instance().log(this, Level.INFO, "LOCKED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().threadId());
+      //LogManager.instance().log(this, Level.INFO, "LOCKED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread
+      // .currentThread().threadId());
 
     } catch (final Exception e) {
       try {
@@ -1762,7 +1759,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       throw new LockException(
-          "Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")", e);
+          "Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() +
+              ")", e);
     }
   }
 
@@ -1779,7 +1777,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database " +
+                "'%s'", e, name);
       }
     }
 
@@ -1789,7 +1788,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         try {
           ((IndexInternal) idx).flush();
         } catch (Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on flushing index %s: %s", e, idx.getName(), e.getMessage());
+          LogManager.instance().log(this, Level.SEVERE, "Error on flushing index %s: %s", e, idx.getName(),
+              e.getMessage());
         }
       }
     }
@@ -1803,7 +1803,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database " +
+                "'%s'", e, name);
       }
 
       if (drop)
@@ -1816,7 +1817,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
 
       try {
-        final List<DatabaseContext.DatabaseContextTL> dbContexts = DatabaseContext.INSTANCE.removeAllContexts(databasePath);
+        final List<DatabaseContext.DatabaseContextTL> dbContexts =
+            DatabaseContext.INSTANCE.removeAllContexts(databasePath);
         for (DatabaseContext.DatabaseContextTL dbContext : dbContexts) {
           if (!dbContext.transactions.isEmpty()) {
             // ROLLBACK ALL THE TX FROM LAST TO FIRST
@@ -1831,7 +1833,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on clearing transaction status during closing operation for database '%s'", e, name);
+            .log(this, Level.WARNING, "Error on clearing transaction status during closing operation for database " +
+                "'%s'", e, name);
       }
 
       for (QueryEngine e : reusableQueryEngines.values())
@@ -1846,7 +1849,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on closing internal components during closing operation for database '%s'", e, name);
+            .log(this, Level.WARNING, "Error on closing internal components during closing operation for database " +
+                "'%s'", e, name);
       } finally {
         Profiler.INSTANCE.unregisterDatabase(LocalDatabase.this);
       }
@@ -1855,7 +1859,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         try {
           if (lockFileLock != null) {
             lockFileLock.release();
-            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().threadId());
+            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile,
+            // Thread.currentThread().threadId());
           }
           if (lockFileIOChannel != null)
             lockFileIOChannel.close();
