@@ -302,6 +302,32 @@
                     </excludeArtifacts>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+                <version>2.4.0</version>
+                <configuration>
+                    <licenseMerges>
+                        <!-- Group similar licenses to avoid duplicates -->
+                        <licenseMerge>Apache License 2.0|Apache 2.0|Apache License, Version 2.0|The Apache Software License, Version 2.0|Apache-2.0</licenseMerge>
+                        <licenseMerge>MIT License|MIT|The MIT License</licenseMerge>
+                        <licenseMerge>BSD 3-Clause|BSD-3-Clause|3-Clause BSD License|BSD 3-Clause License</licenseMerge>
+                        <licenseMerge>BSD 2-Clause|BSD-2-Clause|2-Clause BSD License</licenseMerge>
+                        <licenseMerge>EPL 1.0|Eclipse Public License 1.0|Eclipse Public License - v 1.0</licenseMerge>
+                        <licenseMerge>EPL 2.0|Eclipse Public License 2.0|Eclipse Public License - v 2.0</licenseMerge>
+                        <licenseMerge>LGPL 2.1|LGPL-2.1|GNU Lesser General Public License v2.1|LGPL 2.1 or later</licenseMerge>
+                    </licenseMerges>
+                    <failOnBlacklist>true</failOnBlacklist>
+                    <excludedLicenses>
+                        <!-- Licenses incompatible with Apache 2.0 -->
+                        <excludedLicense>GPL</excludedLicense>
+                        <excludedLicense>AGPL</excludedLicense>
+                        <excludedLicense>LGPL 2.0</excludedLicense>
+                        <excludedLicense>SSPL</excludedLicense>
+                        <excludedLicense>Commons Clause</excludedLicense>
+                    </excludedLicenses>
+                </configuration>
+            </plugin>
         </plugins>
 
         <pluginManagement>
