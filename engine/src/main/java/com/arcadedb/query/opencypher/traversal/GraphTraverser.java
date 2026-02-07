@@ -58,9 +58,8 @@ public abstract class GraphTraverser {
     this.trackPaths = trackPaths;
     this.detectCycles = detectCycles;
 
-    if (this.minHops > this.maxHops) {
-      throw new IllegalArgumentException("minHops (" + minHops + ") cannot be greater than maxHops (" + maxHops + ")");
-    }
+    // When minHops > maxHops, traversal naturally returns empty results
+    // (no path can satisfy depth >= minHops AND depth <= maxHops)
   }
 
   /**

@@ -21,6 +21,9 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Expression representing an arithmetic operation.
  * Supports: +, -, *, /, %, ^ (power)
@@ -91,6 +94,26 @@ public class ArithmeticExpression implements Expression {
     // String concatenation for + operator
     if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String))
       return leftValue.toString() + rightValue.toString();
+
+    // List concatenation/append for + operator
+    if (operator == Operator.ADD) {
+      if (leftValue instanceof List && rightValue instanceof List) {
+        final List<Object> combined = new ArrayList<>((List<?>) leftValue);
+        combined.addAll((List<?>) rightValue);
+        return combined;
+      }
+      if (leftValue instanceof List) {
+        final List<Object> appended = new ArrayList<>((List<?>) leftValue);
+        appended.add(rightValue);
+        return appended;
+      }
+      if (rightValue instanceof List) {
+        final List<Object> prepended = new ArrayList<>();
+        prepended.add(leftValue);
+        prepended.addAll((List<?>) rightValue);
+        return prepended;
+      }
+    }
 
     // Numeric operations
     if (!(leftValue instanceof Number) || !(rightValue instanceof Number))

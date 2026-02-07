@@ -58,6 +58,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 
 import java.util.*;
+import java.util.function.Function;
 
 /**
  * Execution plan for a Cypher query.
@@ -158,6 +159,7 @@ public class CypherExecutionPlan {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    setupFunctionResolver(context);
 
     AbstractExecutionStep rootStep;
 
@@ -232,6 +234,7 @@ public class CypherExecutionPlan {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    setupFunctionResolver(context);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
@@ -279,11 +282,31 @@ public class CypherExecutionPlan {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    setupFunctionResolver(context);
 
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
 
     return unionStep.syncPull(context, 100);
+  }
+
+  /**
+   * Stores a function resolver in the context so that FunctionCallExpression.evaluate()
+   * can look up and execute functions when called from compound expressions (AND, OR,
+   * CASE, etc.) that evaluate their children directly.
+   */
+  private void setupFunctionResolver(final BasicCommandContext context) {
+    if (expressionEvaluator != null) {
+      final CypherFunctionFactory factory = expressionEvaluator.getFunctionFactory();
+      context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,
+          (Function<String, com.arcadedb.function.StatelessFunction>) name -> {
+            try {
+              return factory.getFunctionExecutor(name);
+            } catch (final Exception e) {
+              return null;
+            }
+          });
+    }
   }
 
   /**
@@ -337,6 +360,7 @@ public class CypherExecutionPlan {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    setupFunctionResolver(context);
     context.setProfiling(true); // Enable profiling
 
     // Execute the query and collect results

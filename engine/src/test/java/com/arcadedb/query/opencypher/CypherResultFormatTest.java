@@ -63,8 +63,8 @@ class CypherResultFormatTest {
   }
 
   @Test
-  void returnSingleNodeIsElement() {
-    // MATCH (n) RETURN n should return elements directly, not wrapped in {"n": element}
+  void returnSingleNodeHasVariableColumn() {
+    // MATCH (n) RETURN n should return result with column "n" containing the vertex
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n");
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
@@ -73,14 +73,14 @@ class CypherResultFormatTest {
 
     assertThat(results).hasSize(2);
     for (final Result r : results) {
-      assertThat(r.isElement()).as("Result should be an element, not a projection wrapping the element").isTrue();
-      assertThat(r.toElement()).isInstanceOf(Vertex.class);
+      assertThat(r.getPropertyNames()).contains("n");
+      assertThat((Object) r.getProperty("n")).isInstanceOf(Vertex.class);
     }
   }
 
   @Test
-  void returnSingleEdgeIsElement() {
-    // MATCH ()-[r]->() RETURN r should return elements directly
+  void returnSingleEdgeHasVariableColumn() {
+    // MATCH ()-[r]->() RETURN r should return result with column "r"
     final ResultSet result = database.query("opencypher", "MATCH ()-[r:KNOWS]->() RETURN r");
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
@@ -88,8 +88,7 @@ class CypherResultFormatTest {
     }
 
     assertThat(results).hasSize(1);
-    assertThat(results.getFirst().isElement())
-        .as("Edge result should be an element, not a projection").isTrue();
+    assertThat(results.getFirst().getPropertyNames()).contains("r");
   }
 
   @Test
@@ -126,7 +125,7 @@ class CypherResultFormatTest {
 
   @Test
   void returnNodeWithAlias() {
-    // MATCH (n) RETURN n AS person - single element with alias should still unwrap
+    // MATCH (n) RETURN n AS person — result should have column "person" with the vertex
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n AS person");
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
@@ -135,7 +134,8 @@ class CypherResultFormatTest {
 
     assertThat(results).hasSize(2);
     for (final Result r : results) {
-      assertThat(r.isElement()).as("Single aliased element should be unwrapped").isTrue();
+      assertThat(r.getPropertyNames()).contains("person");
+      assertThat((Object) r.getProperty("person")).isInstanceOf(Vertex.class);
     }
   }
 
@@ -155,6 +155,7 @@ class CypherResultFormatTest {
   @Test
   void singleNodeHasProjectionNameMetadata() {
     // RETURN n should have _projectionName metadata for wire protocols
+    // The result should have column "n" with the vertex as value
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) RETURN n");
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
@@ -163,7 +164,7 @@ class CypherResultFormatTest {
 
     assertThat(results).hasSize(2);
     for (final Result r : results) {
-      assertThat(r.isElement()).isTrue();
+      assertThat(r.getPropertyNames()).contains("n");
       assertThat(r.getMetadata(PROJECTION_NAME_METADATA)).isEqualTo("n");
     }
   }

@@ -49,9 +49,11 @@ public class CypherSemanticValidator {
     final CypherSemanticValidator v = new CypherSemanticValidator();
     v.validateVariableTypes(statement);
     v.validateVariableBinding(statement);
+    v.validateVariableScope(statement);
     v.validateCreateConstraints(statement);
     v.validateAggregations(statement);
     v.validateBooleanOperandTypes(statement);
+    v.validateSkipLimit(statement);
   }
 
   // ========================
@@ -295,6 +297,26 @@ public class CypherSemanticValidator {
             checkExpressionScope(item.getExpression(), scope);
         break;
       case CALL:
+        // Procedure CALL with YIELD — exported yield variables enter scope
+        final CallClause callClause = entry.getTypedClause();
+        if (callClause != null && callClause.hasYield())
+          for (final CallClause.YieldItem item : callClause.getYieldItems())
+            scope.add(item.getOutputName());
+        break;
+      case SUBQUERY:
+        // CALL { ... RETURN x AS y } — exported return variables enter outer scope
+        final SubqueryClause subqueryClause = entry.getTypedClause();
+        if (subqueryClause != null && subqueryClause.getInnerStatement() != null) {
+          final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+          if (innerReturn != null)
+            for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
+              if (item.getAlias() != null)
+                scope.add(item.getAlias());
+              else if (item.getExpression() instanceof VariableExpression)
+                scope.add(((VariableExpression) item.getExpression()).getVariableName());
+            }
+        }
+        break;
       case FOREACH:
         break;
       }
@@ -502,9 +524,12 @@ public class CypherSemanticValidator {
       if (value != null && !(value instanceof Boolean))
         throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + value.getClass().getSimpleName());
     }
-    // Note: ListExpression and MapExpression are NOT rejected here because
-    // they can appear in boolean contexts through subexpressions like
-    // "NOT true IN [true, false]" where the list is the right side of IN.
+    // Reject list expressions as boolean operands (e.g., [1,2] AND true)
+    else if (operand instanceof ListExpression)
+      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got List");
+    // Reject map expressions as boolean operands (e.g., {a: 1} AND true)
+    else if (operand instanceof MapExpression)
+      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got Map");
     // Reject arithmetic expressions (always return numbers)
     else if (operand instanceof ArithmeticExpression)
       throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got Number");
@@ -701,6 +726,27 @@ public class CypherSemanticValidator {
     // The TCK's InvalidDelete tests involve deleting labels (DELETE n:Person)
     // which would need AST-level detection, not simple string checks.
     // For now, skip this validation to avoid false positives on map access patterns.
+  }
+
+  // ==============================
+  // Phase 6: SKIP/LIMIT Validation
+  // ==============================
+
+  private void validateSkipLimit(final CypherStatement statement) {
+    final Integer skip = statement.getSkip();
+    if (skip != null && skip < 0)
+      throw new CommandParsingException("NegativeIntegerArgument: SKIP value cannot be negative: " + skip);
+    final Integer limit = statement.getLimit();
+    if (limit != null && limit < 0)
+      throw new CommandParsingException("NegativeIntegerArgument: LIMIT value cannot be negative: " + limit);
+
+    // Check WITH clauses
+    for (final WithClause withClause : statement.getWithClauses()) {
+      if (withClause.getSkip() != null && withClause.getSkip() < 0)
+        throw new CommandParsingException("NegativeIntegerArgument: SKIP value cannot be negative: " + withClause.getSkip());
+      if (withClause.getLimit() != null && withClause.getLimit() < 0)
+        throw new CommandParsingException("NegativeIntegerArgument: LIMIT value cannot be negative: " + withClause.getLimit());
+    }
   }
 
   /**

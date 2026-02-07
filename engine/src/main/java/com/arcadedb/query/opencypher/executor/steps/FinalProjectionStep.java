@@ -127,30 +127,27 @@ public class FinalProjectionStep extends AbstractExecutionStep {
    * for wire protocols that need field names.
    */
   private ResultInternal filterResult(final Result inputResult) {
-    // When returning a single variable that resolves to an element (vertex/edge),
-    // return the element directly instead of wrapping it as {"varName": element}.
-    // This matches standard Cypher behavior: MATCH (n) RETURN n returns nodes, not maps.
-    if (requestedProperties.size() == 1) {
-      final String singleProp = requestedProperties.iterator().next();
-      if (inputResult.hasProperty(singleProp)) {
-        final Object value = inputResult.getProperty(singleProp);
+    final ResultInternal result = new ResultInternal();
+
+    // Only include properties that were explicitly requested in the RETURN clause
+    Document singleDocument = null;
+    int documentCount = 0;
+    for (final String prop : requestedProperties) {
+      if (inputResult.hasProperty(prop)) {
+        final Object value = inputResult.getProperty(prop);
+        result.setProperty(prop, value);
         if (value instanceof Document doc) {
-          final ResultInternal result = new ResultInternal(doc);
-          // Store the original projection name for wire protocols (Bolt, HTTP, etc.)
-          result.setMetadata(PROJECTION_NAME_METADATA, singleProp);
-          return result;
+          result.setMetadata(PROJECTION_NAME_METADATA, prop);
+          singleDocument = doc;
+          documentCount++;
         }
       }
     }
 
-    final ResultInternal result = new ResultInternal();
-
-    // Only include properties that were explicitly requested in the RETURN clause
-    for (final String prop : requestedProperties) {
-      if (inputResult.hasProperty(prop)) {
-        result.setProperty(prop, inputResult.getProperty(prop));
-      }
-    }
+    // When returning a single document element, also set it as the element
+    // so that toElement() and isElement() work for backward compatibility
+    if (documentCount == 1 && requestedProperties.size() == 1)
+      result.setElement(singleDocument);
 
     return result;
   }
