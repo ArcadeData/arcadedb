@@ -37,6 +37,8 @@ import java.util.Map;
 /**
  * Handles expression parsing for the Cypher AST builder.
  * Extracts expression-related visitor methods from CypherASTBuilder for better separation of concerns.
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 class CypherExpressionBuilder {
 

@@ -24,12 +24,10 @@ import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.grammar.Cypher25ParserBaseVisitor;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +38,8 @@ import java.util.stream.Collectors;
 /**
  * ANTLR4 visitor that builds our internal AST from the Cypher parse tree.
  * Transforms ANTLR's parse tree into CypherStatement objects.
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
@@ -601,7 +601,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return (Cypher25Parser.ParenthesizedExpressionContext) node;
     }
     for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ParenthesizedExpressionContext found = findParenthesizedExpressionRecursive(node.getChild(i));
+      final Cypher25Parser.ParenthesizedExpressionContext found =
+          findParenthesizedExpressionRecursive(node.getChild(i));
       if (found != null) return found;
     }
     return null;
@@ -760,7 +761,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new BooleanExpression() {
         @Override
         public boolean evaluate(final Result result,
-                               final CommandContext context) {
+                                final CommandContext context) {
           final Object value = exists.evaluate(result, context);
           return value instanceof Boolean && (Boolean) value;
         }
@@ -863,7 +864,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final String text = ctx.getText();
 
     // Try to parse as "variable.property operator value"
-    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)?)");
+    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)" +
+        "?)");
     final Matcher matcher = pattern.matcher(text);
 
     if (matcher.find()) {
@@ -898,8 +900,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * labelExpression1 : symbolicNameString  # label name
    */
   private LabelCheckExpression parseLabelCheckExpression(final Expression variableExpr,
-                                                          final Cypher25Parser.LabelExpressionContext labelExprCtx,
-                                                          final String text) {
+                                                         final Cypher25Parser.LabelExpressionContext labelExprCtx,
+                                                         final String text) {
     // Extract labels and operator from the label expression
     final List<String> labels = new ArrayList<>();
     LabelCheckExpression.LabelOperator operator = LabelCheckExpression.LabelOperator.AND;
@@ -986,7 +988,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       if (basePath instanceof ShortestPathPattern) {
         // Preserve ShortestPathPattern type
         final ShortestPathPattern shortestBase = (ShortestPathPattern) basePath;
-        return new ShortestPathPattern(basePath.getNodes(), basePath.getRelationships(), pathVariable, shortestBase.isAllPaths());
+        return new ShortestPathPattern(basePath.getNodes(), basePath.getRelationships(), pathVariable,
+            shortestBase.isAllPaths());
       }
       return new PathPattern(basePath.getNodes(), basePath.getRelationships(), pathVariable);
     }

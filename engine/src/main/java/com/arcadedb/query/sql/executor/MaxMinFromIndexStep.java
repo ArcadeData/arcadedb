@@ -84,8 +84,7 @@ public class MaxMinFromIndexStep extends AbstractExecutionStep {
 
             if (key != null) {
               // Handle single-key vs multi-key indexes
-              if (key instanceof Object[]) {
-                final Object[] keys = (Object[]) key;
+              if (key instanceof final Object[] keys) {
                 if (keys.length > 0 && keys[0] != null) {
                   resultValue = keys[0];
                   break;

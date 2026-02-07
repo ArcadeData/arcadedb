@@ -27,79 +27,99 @@ import java.util.List;
  * Will be replaced with full ANTLR-based implementation in later phases.
  */
 public class SimpleCypherStatement implements CypherStatement {
-  private final String originalQuery;
-  private final List<MatchClause> matchClauses;
-  private final WhereClause whereClause;
-  private final ReturnClause returnClause;
-  private final OrderByClause orderByClause;
-  private final Integer skip;
-  private final Integer limit;
-  private final CreateClause createClause;
-  private final SetClause setClause;
-  private final DeleteClause deleteClause;
-  private final MergeClause mergeClause;
+  private final String             originalQuery;
+  private final List<MatchClause>  matchClauses;
+  private final WhereClause        whereClause;
+  private final ReturnClause       returnClause;
+  private final OrderByClause      orderByClause;
+  private final Integer            skip;
+  private final Integer            limit;
+  private final CreateClause       createClause;
+  private final SetClause          setClause;
+  private final DeleteClause       deleteClause;
+  private final MergeClause        mergeClause;
   private final List<UnwindClause> unwindClauses;
-  private final List<WithClause> withClauses;
-  private final List<CallClause> callClauses;
+  private final List<WithClause>   withClauses;
+  private final List<CallClause>   callClauses;
   private final List<RemoveClause> removeClauses;
-  private final List<ClauseEntry> clausesInOrder;
-  private final boolean hasCreate;
-  private final boolean hasMerge;
-  private final boolean hasDelete;
-  private final boolean hasRemove;
+  private final List<ClauseEntry>  clausesInOrder;
+  private final boolean            hasCreate;
+  private final boolean            hasMerge;
+  private final boolean            hasDelete;
+  private final boolean            hasRemove;
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
-      final WhereClause whereClause, final ReturnClause returnClause, final boolean hasCreate, final boolean hasMerge,
-      final boolean hasDelete) {
-    this(originalQuery, matchClauses, whereClause, returnClause, null, null, null, null, null, null, null, null, null, null,
+                               final WhereClause whereClause, final ReturnClause returnClause,
+                               final boolean hasCreate, final boolean hasMerge,
+                               final boolean hasDelete) {
+    this(originalQuery, matchClauses, whereClause, returnClause, null, null, null, null, null, null, null, null, null
+        , null,
         hasCreate, hasMerge, hasDelete);
   }
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
-      final WhereClause whereClause, final ReturnClause returnClause, final OrderByClause orderByClause,
-      final Integer skip, final Integer limit, final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
-    this(originalQuery, matchClauses, whereClause, returnClause, orderByClause, skip, limit, null, null, null, null, null, null, null,
+                               final WhereClause whereClause, final ReturnClause returnClause,
+                               final OrderByClause orderByClause,
+                               final Integer skip, final Integer limit, final boolean hasCreate,
+                               final boolean hasMerge, final boolean hasDelete) {
+    this(originalQuery, matchClauses, whereClause, returnClause, orderByClause, skip, limit, null, null, null, null,
+        null, null, null,
         hasCreate, hasMerge, hasDelete);
   }
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
-      final WhereClause whereClause, final ReturnClause returnClause, final OrderByClause orderByClause,
-      final Integer skip, final Integer limit, final CreateClause createClause, final SetClause setClause,
-      final DeleteClause deleteClause, final MergeClause mergeClause, final List<UnwindClause> unwindClauses,
-      final List<WithClause> withClauses,
-      final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
+                               final WhereClause whereClause, final ReturnClause returnClause,
+                               final OrderByClause orderByClause,
+                               final Integer skip, final Integer limit, final CreateClause createClause,
+                               final SetClause setClause,
+                               final DeleteClause deleteClause, final MergeClause mergeClause,
+                               final List<UnwindClause> unwindClauses,
+                               final List<WithClause> withClauses,
+                               final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
     this(originalQuery, matchClauses, whereClause, returnClause, orderByClause, skip, limit, createClause, setClause,
         deleteClause, mergeClause, unwindClauses, withClauses, null, hasCreate, hasMerge, hasDelete);
   }
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
-      final WhereClause whereClause, final ReturnClause returnClause, final OrderByClause orderByClause,
-      final Integer skip, final Integer limit, final CreateClause createClause, final SetClause setClause,
-      final DeleteClause deleteClause, final MergeClause mergeClause, final List<UnwindClause> unwindClauses,
-      final List<WithClause> withClauses, final List<ClauseEntry> clausesInOrder,
-      final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
+                               final WhereClause whereClause, final ReturnClause returnClause,
+                               final OrderByClause orderByClause,
+                               final Integer skip, final Integer limit, final CreateClause createClause,
+                               final SetClause setClause,
+                               final DeleteClause deleteClause, final MergeClause mergeClause,
+                               final List<UnwindClause> unwindClauses,
+                               final List<WithClause> withClauses, final List<ClauseEntry> clausesInOrder,
+                               final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
     this(originalQuery, matchClauses, whereClause, returnClause, orderByClause, skip, limit, createClause, setClause,
         deleteClause, mergeClause, unwindClauses, withClauses, null, clausesInOrder, hasCreate, hasMerge, hasDelete);
   }
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
-      final WhereClause whereClause, final ReturnClause returnClause, final OrderByClause orderByClause,
-      final Integer skip, final Integer limit, final CreateClause createClause, final SetClause setClause,
-      final DeleteClause deleteClause, final MergeClause mergeClause, final List<UnwindClause> unwindClauses,
-      final List<WithClause> withClauses, final List<CallClause> callClauses, final List<ClauseEntry> clausesInOrder,
-      final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
+                               final WhereClause whereClause, final ReturnClause returnClause,
+                               final OrderByClause orderByClause,
+                               final Integer skip, final Integer limit, final CreateClause createClause,
+                               final SetClause setClause,
+                               final DeleteClause deleteClause, final MergeClause mergeClause,
+                               final List<UnwindClause> unwindClauses,
+                               final List<WithClause> withClauses, final List<CallClause> callClauses,
+                               final List<ClauseEntry> clausesInOrder,
+                               final boolean hasCreate, final boolean hasMerge, final boolean hasDelete) {
     this(originalQuery, matchClauses, whereClause, returnClause, orderByClause, skip, limit, createClause, setClause,
         deleteClause, mergeClause, unwindClauses, withClauses, callClauses, null, clausesInOrder,
         hasCreate, hasMerge, hasDelete, false);
   }
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
-      final WhereClause whereClause, final ReturnClause returnClause, final OrderByClause orderByClause,
-      final Integer skip, final Integer limit, final CreateClause createClause, final SetClause setClause,
-      final DeleteClause deleteClause, final MergeClause mergeClause, final List<UnwindClause> unwindClauses,
-      final List<WithClause> withClauses, final List<CallClause> callClauses, final List<RemoveClause> removeClauses,
-      final List<ClauseEntry> clausesInOrder,
-      final boolean hasCreate, final boolean hasMerge, final boolean hasDelete, final boolean hasRemove) {
+                               final WhereClause whereClause, final ReturnClause returnClause,
+                               final OrderByClause orderByClause,
+                               final Integer skip, final Integer limit, final CreateClause createClause,
+                               final SetClause setClause,
+                               final DeleteClause deleteClause, final MergeClause mergeClause,
+                               final List<UnwindClause> unwindClauses,
+                               final List<WithClause> withClauses, final List<CallClause> callClauses,
+                               final List<RemoveClause> removeClauses,
+                               final List<ClauseEntry> clausesInOrder,
+                               final boolean hasCreate, final boolean hasMerge, final boolean hasDelete,
+                               final boolean hasRemove) {
     this.originalQuery = originalQuery;
     this.matchClauses = matchClauses != null ? matchClauses : new ArrayList<>();
     this.whereClause = whereClause;
@@ -124,7 +144,7 @@ public class SimpleCypherStatement implements CypherStatement {
 
   @Override
   public boolean isReadOnly() {
-    return !hasCreate && !hasMerge && !hasDelete && !hasRemove;
+    return !hasCreate && !hasMerge && !hasDelete && !hasRemove && (setClause == null || setClause.isEmpty());
   }
 
   @Override

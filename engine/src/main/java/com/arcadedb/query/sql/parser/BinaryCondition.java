@@ -145,10 +145,9 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   private boolean checkCanTransformToUpdate() {
-    if (left == null || left.mathExpression == null || !(left.mathExpression instanceof BaseExpression)) {
+    if (left == null || left.mathExpression == null || !(left.mathExpression instanceof final BaseExpression base)) {
       return false;
     }
-    final BaseExpression base = (BaseExpression) left.mathExpression;
     return base.identifier != null && base.identifier.suffix != null && base.identifier.suffix.identifier != null;
   }
 
@@ -196,10 +195,7 @@ public class BinaryCondition extends BooleanExpression {
               && info.isMap()
               && info.isIndexByKey()) {
             return true;
-          } else if (info.allowsRange() && operator.isRangeOperator()) {
-            return true;
-          }
-          return false;
+          } else return info.allowsRange() && operator.isRangeOperator();
         }
       }
     }
@@ -230,10 +226,9 @@ public class BinaryCondition extends BooleanExpression {
 
   @Override
   public boolean createRangeWith(final BooleanExpression match) {
-    if (!(match instanceof BinaryCondition))
+    if (!(match instanceof final BinaryCondition metchingCondition))
       return false;
 
-    final BinaryCondition metchingCondition = (BinaryCondition) match;
     if (!metchingCondition.getLeft().equals(this.getLeft()))
       return false;
 

@@ -147,7 +147,7 @@ public class SuffixIdentifier extends SimpleNode {
       final ResultInternal result = new ResultInternal(context.getDatabase());
       if (currentRecord != null) {
         for (final Map.Entry<String, Object> x : ((Map<String, Object>) currentRecord).entrySet()) {
-          result.setProperty("" + x.getKey(), x.getValue());
+          result.setProperty(x.getKey(), x.getValue());
         }
         return result;
       }

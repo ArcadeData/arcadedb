@@ -25,12 +25,7 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
 import java.io.IOException;
-import java.net.BindException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.SocketException;
+import java.net.*;
 import java.util.logging.Level;
 
 public class PostgresNetworkListener extends Thread {
@@ -40,14 +35,10 @@ public class PostgresNetworkListener extends Thread {
   private volatile boolean             active          = true;
   private final    int                 protocolVersion = -1;
 
-  public interface ClientConnected {
-    void connected();
-  }
-
   public PostgresNetworkListener(final ArcadeDBServer server,
-      final ServerSocketFactory iSocketFactory,
-      final String hostName,
-      final String hostPortRange) {
+                                 final ServerSocketFactory iSocketFactory,
+                                 final String hostName,
+                                 final String hostPortRange) {
     super(server.getServerName() + " PostgresW listening at " + hostName + ":" + hostPortRange);
 
     this.server = server;
@@ -123,7 +114,8 @@ public class PostgresNetworkListener extends Thread {
           return;
         }
       } catch (final BindException be) {
-        LogManager.instance().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
+        LogManager.instance().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName,
+            tryPort);
       } catch (final SocketException se) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
         throw new ArcadeDBException(se);
@@ -134,11 +126,13 @@ public class PostgresNetworkListener extends Thread {
     }
 
     LogManager.instance()
-        .log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", hostPortRange,
+        .log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'",
+            hostPortRange,
             hostName);
 
     throw new ServerException(
-        "Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
+        "Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName +
+            "'");
   }
 
   private static int[] getPorts(final String iHostPortRange) {
@@ -162,7 +156,7 @@ public class PostgresNetworkListener extends Thread {
 
     } else
       // SINGLE PORT SPECIFIED
-      ports = new int[] { Integer.parseInt(iHostPortRange) };
+      ports = new int[]{Integer.parseInt(iHostPortRange)};
 
     return ports;
   }

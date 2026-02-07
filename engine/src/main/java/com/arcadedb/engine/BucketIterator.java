@@ -25,9 +25,9 @@ import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.Iterator;
+import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
@@ -38,14 +38,14 @@ public class BucketIterator implements Iterator<Record> {
   final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
   private              int              prefetchIndex = 0;
   final                long             limit;
+  private final        boolean          forwardDirection;
   int      nextPageNumber;
   BasePage currentPage = null;
   short    recordCountInCurrentPage;
   int      totalPages;
   int      currentRecordInPage;
   long     browsed     = 0;
-  private int     writeIndex       = 0;
-  private boolean forwardDirection = true;
+  private int writeIndex = 0;
 
   BucketIterator(final LocalBucket bucket, final boolean forwardDirection) {
     final DatabaseInternal db = bucket.getDatabase();
@@ -78,7 +78,8 @@ public class BucketIterator implements Iterator<Record> {
     nextBatch[prefetchIndex] = position.getRecord();
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;
-    currentPage = database.getTransaction().getPage(new PageId(database, position.getBucketId(), nextPageNumber), bucket.pageSize);
+    currentPage = database.getTransaction().getPage(new PageId(database, position.getBucketId(), nextPageNumber),
+        bucket.pageSize);
     recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
 
@@ -158,17 +159,19 @@ public class BucketIterator implements Iterator<Record> {
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
               final Binary view = bucket.getRecordInternal(
-                  new RID(database, bucket.fileId, currentPage.readLong((int) (recordPositionInPage + recordSize[1]))), true);
+                  new RID(database, bucket.fileId,
+                      currentPage.readLong((int) (recordPositionInPage + recordSize[1]))), true);
 
               if (view == null)
                 continue;
 
               nextBatch[writeIndex++] = database.getRecordFactory().newImmutableRecord(database,
-                  database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
+                  database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid,
+                  view, null);
             }
           } catch (final Exception e) {
             final String msg = "Error on loading record #%d:%d (error: %s)".formatted(currentPage.pageId.getFileId(),
-              (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
+                (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
             LogManager.instance().log(this, Level.SEVERE, msg);
           } finally {
             if (forwardDirection)

@@ -21,18 +21,26 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.List;
 
 /**
- * <p>Execution Steps are the building blocks of a query execution plan</p> <p>Typically an execution plan is made of a chain of
- * steps. The execution is pull-based, meaning that the result set that the client iterates is conceptually the one returned by
- * <i>last</i> step of the execution plan</p> <p>At each `next()` invocation, the step typically fetches a record from the previous
- * (upstream) step, does its elaboration (eg. for a filtering step, it can discard the record and fetch another one if it doesn't
+ * <p>Execution Steps are the building blocks of a query execution plan</p> <p>Typically an execution plan is made of
+ * a chain of
+ * steps. The execution is pull-based, meaning that the result set that the client iterates is conceptually the one
+ * returned by
+ * <i>last</i> step of the execution plan</p> <p>At each `next()` invocation, the step typically fetches a record
+ * from the previous
+ * (upstream) step, does its elaboration (eg. for a filtering step, it can discard the record and fetch another one
+ * if it doesn't
  * match the conditions) and returns the elaborated step</p>
  * <br>
- * <p>The invocation of {@literal syncPull(context, nResults)} has to return a result set of at most nResults records. If the upstream
- * (the previous steps) return more records, they have to be returned by next call of {@literal syncPull()}. The returned result
- * set can have less than nResults records ONLY if current step cannot produce any more records (eg. the upstream does not have any
+ * <p>The invocation of {@literal syncPull(context, nResults)} has to return a result set of at most nResults records
+ * . If the upstream
+ * (the previous steps) return more records, they have to be returned by next call of {@literal syncPull()}. The
+ * returned result
+ * set can have less than nResults records ONLY if current step cannot produce any more records (eg. the upstream
+ * does not have any
  * more records)</p>
  *
  * @author Luigi Dell'Aquila luigi.dellaquila-(at)-gmail.com
@@ -42,11 +50,9 @@ public interface ExecutionStepInternal extends ExecutionStep {
 
   static String getIndent(final int depth, final int indent) {
     final StringBuilder result = new StringBuilder();
-    for (int i = 0; i < depth; i++) {
-      for (int j = 0; j < indent; j++) {
-        result.append(" ");
-      }
-    }
+    for (int i = 0; i < depth; i++)
+      result.append(" ".repeat(Math.max(0, indent)));
+
     return result.toString();
   }
 

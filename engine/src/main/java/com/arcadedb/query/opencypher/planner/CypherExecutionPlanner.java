@@ -34,16 +34,16 @@ import java.util.Map;
  * Creates optimized execution plans for Cypher statements.
  * Analyzes the query and determines the best execution strategy.
  *
- * Phase 4: Integrated with Cost-Based Query Optimizer for MATCH queries.
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherExecutionPlanner {
-  private final DatabaseInternal database;
-  private final CypherStatement statement;
+  private final DatabaseInternal    database;
+  private final CypherStatement     statement;
   private final Map<String, Object> parameters;
   private final ExpressionEvaluator expressionEvaluator;
 
   public CypherExecutionPlanner(final DatabaseInternal database, final CypherStatement statement,
-      final Map<String, Object> parameters, final ExpressionEvaluator expressionEvaluator) {
+                                final Map<String, Object> parameters, final ExpressionEvaluator expressionEvaluator) {
     this.database = database;
     this.statement = statement;
     this.parameters = parameters;
@@ -95,7 +95,8 @@ public class CypherExecutionPlanner {
     // Create execution plans for each subquery
     final List<CypherExecutionPlan> subqueryPlans = new ArrayList<>();
     for (final CypherStatement subquery : unionStatement.getQueries()) {
-      final CypherExecutionPlanner subPlanner = new CypherExecutionPlanner(database, subquery, parameters, expressionEvaluator);
+      final CypherExecutionPlanner subPlanner = new CypherExecutionPlanner(database, subquery, parameters,
+          expressionEvaluator);
       subqueryPlans.add(subPlanner.createExecutionPlan(configuration));
     }
 
@@ -110,7 +111,7 @@ public class CypherExecutionPlanner {
   /**
    * Determines if the optimizer should be used for this query.
    * Currently conservative - only optimizes simple MATCH queries.
-   *
+   * <p>
    * Criteria:
    * - Must have exactly one MATCH clause (multiple MATCH not yet supported)
    * - All nodes must have labels (no unlabeled nodes)
@@ -120,14 +121,12 @@ public class CypherExecutionPlanner {
    */
   private boolean shouldUseOptimizer() {
     // Must have MATCH clauses
-    if (statement.getMatchClauses() == null || statement.getMatchClauses().isEmpty()) {
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().isEmpty())
       return false;
-    }
 
     // Phase 4: Only support single MATCH clause (multiple MATCH requires Cartesian product handling)
-    if (statement.getMatchClauses().size() > 1) {
+    if (statement.getMatchClauses().size() > 1)
       return false; // Multiple MATCH clauses not yet fully integrated
-    }
 
     // For Phase 4: Start with simple queries only
     // Disable optimizer for queries with features not yet fully integrated:
@@ -138,29 +137,25 @@ public class CypherExecutionPlanner {
 
     // Check for OPTIONAL MATCH and unlabeled nodes
     for (final MatchClause match : statement.getMatchClauses()) {
-      if (match.isOptional()) {
+      if (match.isOptional())
         return false; // Not yet supported in optimizer
-      }
 
       // Check if all nodes have labels, no named path variables, and no unsupported property constraints
       if (match.hasPathPatterns()) {
         for (final PathPattern path : match.getPathPatterns()) {
           // Named path variables not yet supported (e.g., "p = (a)-[r]->(b)")
-          if (path.hasPathVariable()) {
+          if (path.hasPathVariable())
             return false;
-          }
 
           for (final NodePattern node : path.getNodes()) {
-            if (!node.hasLabels()) {
+            if (!node.hasLabels())
               return false; // Unlabeled nodes not supported yet
-            }
 
             // Phase 4: Property constraints without indexes not yet supported
             // The optimizer doesn't apply property filters when using NodeByLabelScan
             // This will be fixed in Phase 5
-            if (node.hasProperties()) {
+            if (node.hasProperties())
               return false; // Property constraints not yet fully integrated
-            }
           }
         }
       }
@@ -173,19 +168,16 @@ public class CypherExecutionPlanner {
 
     // Phase 4: Conservative rollout - only optimize read-only queries
     // Exclude queries with write operations until Phase 5
-    if (statement.hasCreate() || statement.hasMerge() || statement.hasDelete()) {
+    if (statement.hasCreate() || statement.hasMerge() || statement.hasDelete())
       return false; // Write operations not yet fully integrated with optimizer
-    }
 
-    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) {
+    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty())
       return false; // SET operations not yet fully integrated
-    }
 
     // Phase 4: Aggregation functions not yet fully integrated with optimizer
     // The optimizer doesn't handle GROUP BY and aggregation properly yet
-    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()) {
+    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations())
       return false; // Aggregation queries use traditional execution
-    }
 
     // Enable optimizer for simple read-only single MATCH queries with all labeled nodes
     return true;

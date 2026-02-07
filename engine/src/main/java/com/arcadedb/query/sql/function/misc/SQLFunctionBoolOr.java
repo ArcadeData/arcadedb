@@ -78,6 +78,6 @@ public class SQLFunctionBoolOr extends SQLAggregatedFunction {
 
   @Override
   public Object getResult() {
-    return or == null ? false : or;
+    return or != null && or;
   }
 }

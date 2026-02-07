@@ -30,7 +30,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -39,33 +38,33 @@ import java.util.NoSuchElementException;
  * Physical operator that checks for the existence of a relationship between two known vertices.
  * This is a semi-join optimization that is much more efficient than ExpandAll when both
  * the source and target vertices are already bound.
- *
+ * <p>
  * KEY OPTIMIZATION: Uses Vertex.isConnectedTo() for O(m) RID-level existence checks
  * instead of loading and iterating through all edges. This provides 5-10x speedup
  * compared to ExpandAll for bounded patterns.
- *
+ * <p>
  * Example query:
- *   MATCH (a:Person {id: 1}), (b:Person {id: 2})
- *   MATCH (a)-[r:KNOWS]->(b)
- *   RETURN r
- *
+ * MATCH (a:Person {id: 1}), (b:Person {id: 2})
+ * MATCH (a)-[r:KNOWS]->(b)
+ * RETURN r
+ * <p>
  * Instead of expanding all KNOWS edges from 'a' and filtering, we directly check
  * if there's a connection between 'a' and 'b'.
- *
+ * <p>
  * Cost: O(M) where M is input rows (much cheaper than ExpandAll)
  * Cardinality: Subset of input rows where connection exists
  */
 public class ExpandInto extends AbstractPhysicalOperator {
-  private final String sourceVariable;
-  private final String targetVariable;
-  private final String edgeVariable;
+  private final String    sourceVariable;
+  private final String    targetVariable;
+  private final String    edgeVariable;
   private final Direction direction;
-  private final String[] edgeTypes;
+  private final String[]  edgeTypes;
 
   public ExpandInto(final PhysicalOperator child, final String sourceVariable,
-                   final String targetVariable, final String edgeVariable,
-                   final Direction direction, final String[] edgeTypes,
-                   final double estimatedCost, final long estimatedCardinality) {
+                    final String targetVariable, final String edgeVariable,
+                    final Direction direction, final String[] edgeTypes,
+                    final double estimatedCost, final long estimatedCardinality) {
     super(child, estimatedCost, estimatedCardinality);
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
@@ -79,9 +78,9 @@ public class ExpandInto extends AbstractPhysicalOperator {
     final ResultSet inputResults = child.execute(context, nRecords);
 
     return new ResultSet() {
-      private final List<Result> buffer = new ArrayList<>();
-      private int bufferIndex = 0;
-      private boolean finished = false;
+      private final List<Result> buffer      = new ArrayList<>();
+      private       int          bufferIndex = 0;
+      private       boolean      finished    = false;
 
       @Override
       public boolean hasNext() {
@@ -179,7 +178,7 @@ public class ExpandInto extends AbstractPhysicalOperator {
        * at the EdgeSegment level for maximum performance.
        */
       private Edge findEdge(final Vertex source, final Vertex target,
-                           final Vertex.DIRECTION direction, final String edgeType) {
+                            final Vertex.DIRECTION direction, final String edgeType) {
         final DatabaseInternal database = (DatabaseInternal) source.getDatabase();
         final VertexInternal sourceInternal = (VertexInternal) source;
 
@@ -187,14 +186,14 @@ public class ExpandInto extends AbstractPhysicalOperator {
         final int[] edgeBucketFilter;
         if (edgeType != null) {
           edgeBucketFilter = database.getSchema().getType(edgeType).getBuckets(true).stream()
-                  .mapToInt(b -> b.getFileId()).toArray();
+              .mapToInt(b -> b.getFileId()).toArray();
         } else {
           edgeBucketFilter = null;
         }
 
         // Use GraphEngine API for optimal performance
         final RID edgeRID = database.getGraphEngine()
-                .getFirstEdgeConnectedToVertex(sourceInternal, target, direction, edgeBucketFilter);
+            .getFirstEdgeConnectedToVertex(sourceInternal, target, direction, edgeBucketFilter);
 
         if (edgeRID != null) {
           return database.lookupByRID(edgeRID, true).asEdge();

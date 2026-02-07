@@ -127,10 +127,7 @@ public class ContainsCondition extends BooleanExpression {
     if (right != null && !right.isCacheable()) {
       return false;
     }
-    if (condition != null && !condition.isCacheable()) {
-      return false;
-    }
-    return true;
+    return condition == null || condition.isCacheable();
   }
 
   private boolean equalsInContainsSpace(final Object left, final Object right) {
@@ -282,7 +279,7 @@ public class ContainsCondition extends BooleanExpression {
       }
     }
 
-    if (fieldName != null && info.getField().equals(fieldName)) {
+    if (info.getField().equals(fieldName)) {
       // CONTAINS operator only works with BY-ITEM indexes, not regular list indexes
       if (info.isIndexByItem() && right != null)
         return right.isEarlyCalculated(info.getContext());

@@ -37,30 +37,27 @@ import java.util.List;
 
 /**
  * ANTLR4-based SQL parser for ArcadeDB.
- *
+ * <p>
  * This class wraps the ANTLR-generated lexer and parser, providing a clean API
  * for parsing SQL statements into ArcadeDB's internal AST representation.
- *
+ * <p>
  * It produces identical AST structures to the JavaCC-based SqlParser, ensuring
  * 100% backward compatibility with existing code.
- *
+ * <p>
  * Usage:
  * <pre>
  *   SQLAntlrParser parser = new SQLAntlrParser(database);
  *   Statement stmt = parser.parse("SELECT * FROM User WHERE name = 'John'");
  * </pre>
  */
-public class SQLAntlrParser {
-
-  private final Database database;
+public record SQLAntlrParser(Database database) {
 
   /**
    * Create a new SQL parser.
    *
    * @param database The database context (may be null for syntax-only parsing)
    */
-  public SQLAntlrParser(final Database database) {
-    this.database = database;
+  public SQLAntlrParser {
   }
 
   /**
@@ -109,7 +106,7 @@ public class SQLAntlrParser {
       }
 
       // Build AST
-      final SQLASTBuilder builder = new SQLASTBuilder(database);
+      final SQLASTBuilder builder = new SQLASTBuilder();
       final Statement stmt = (Statement) builder.visit(parseTree);
 
       // Set original statement text (used for caching and error messages)
@@ -171,7 +168,7 @@ public class SQLAntlrParser {
       }
 
       // Build AST
-      final SQLASTBuilder builder = new SQLASTBuilder(database);
+      final SQLASTBuilder builder = new SQLASTBuilder();
       final List<Statement> statements = (List<Statement>) builder.visit(parseTree);
 
       // Set original statement text for each statement
@@ -235,10 +232,9 @@ public class SQLAntlrParser {
       }
 
       // Build AST
-      final SQLASTBuilder builder = new SQLASTBuilder(database);
-      final Expression expr = (Expression) builder.visit(parseTree);
+      final SQLASTBuilder builder = new SQLASTBuilder();
 
-      return expr;
+      return (Expression) builder.visit(parseTree);
 
     } catch (final CommandSQLParsingException e) {
       throw e;
@@ -290,10 +286,9 @@ public class SQLAntlrParser {
       }
 
       // Build AST
-      final SQLASTBuilder builder = new SQLASTBuilder(database);
-      final WhereClause whereClause = (WhereClause) builder.visit(parseTree);
+      final SQLASTBuilder builder = new SQLASTBuilder();
 
-      return whereClause;
+      return (WhereClause) builder.visit(parseTree);
 
     } catch (final CommandSQLParsingException e) {
       throw e;
@@ -307,7 +302,8 @@ public class SQLAntlrParser {
    *
    * @return The database, or null if none was provided
    */
-  public Database getDatabase() {
+  @Override
+  public Database database() {
     return database;
   }
 }

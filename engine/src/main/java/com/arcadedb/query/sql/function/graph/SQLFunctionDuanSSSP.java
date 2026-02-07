@@ -193,20 +193,13 @@ public class SQLFunctionDuanSSSP extends SQLFunctionMathAbstract {
   }
 
   /**
-   * Helper class for priority queue
-   */
-  private static class VertexDistance implements Comparable<VertexDistance> {
-    final RID rid;
-    final double distance;
-
-    VertexDistance(final RID rid, final double distance) {
-      this.rid = rid;
-      this.distance = distance;
-    }
+     * Helper class for priority queue
+     */
+    private record VertexDistance(RID rid, double distance) implements Comparable<VertexDistance> {
 
     @Override
-    public int compareTo(final VertexDistance other) {
-      return Double.compare(this.distance, other.distance);
+      public int compareTo(final VertexDistance other) {
+        return Double.compare(this.distance, other.distance);
+      }
     }
-  }
 }

@@ -216,7 +216,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
 
-    result += "\n" + spaces + "      " + projection.toString() + "" + (groupBy == null ? "" : (spaces + "\n  " + groupBy));
+    result += "\n" + spaces + "      " + projection.toString() + (groupBy == null ? "" : (spaces + "\n  " + groupBy));
     return result;
   }
 }

@@ -124,10 +124,7 @@ public class Identifier extends SimpleNode {
       return true;
 
     String stringVal = getStringValue();
-    if (ctx.isScriptVariableDeclared(stringVal))
-      return true; // context variable, for batch scripts
-
-    return false;
+    return ctx.isScriptVariableDeclared(stringVal); // context variable, for batch scripts
   }
 
   @Override

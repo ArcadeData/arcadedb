@@ -78,6 +78,6 @@ public class SQLFunctionBoolAnd extends SQLAggregatedFunction {
 
   @Override
   public Object getResult() {
-    return and == null ? true : and;
+    return and == null || and;
   }
 }

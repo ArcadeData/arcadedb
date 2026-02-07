@@ -235,7 +235,7 @@ public class ContainsAnyCondition extends BooleanExpression {
       }
     }
 
-    if (fieldName != null && info.getField().equals(fieldName)) {
+    if (info.getField().equals(fieldName)) {
       // CONTAINSANY operator only works with BY-ITEM indexes, not regular list indexes
       if (info.isIndexByItem() && right != null)
         return right.isEarlyCalculated(info.getContext());

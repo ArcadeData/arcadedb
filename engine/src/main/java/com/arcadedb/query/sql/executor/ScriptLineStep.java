@@ -68,8 +68,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
       return executionPlan.containsReturn();
 
     else if (plan instanceof SingleOpExecutionPlan executionPlan) {
-      if (executionPlan.statement instanceof ReturnStatement)
-        return true;
+      return executionPlan.statement instanceof ReturnStatement;
 
     } else if (plan instanceof IfExecutionPlan) {
       final IfStep step = (IfStep) plan.getSteps().getFirst();
@@ -105,7 +104,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
       return executionPlan.executeUntilReturn();
     else if (plan instanceof SingleOpExecutionPlan executionPlan) {
       if (executionPlan.statement instanceof ReturnStatement)
-        return new ReturnStep(((SingleOpExecutionPlan) plan).statement, context);
+        return new ReturnStep(executionPlan.statement, context);
     } else if (plan instanceof IfExecutionPlan executionPlan)
       return executionPlan.executeUntilReturn();
     else if (plan instanceof BreakStatement)

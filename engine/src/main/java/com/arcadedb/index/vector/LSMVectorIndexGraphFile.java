@@ -63,17 +63,6 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   private LSMVectorIndex mainIndex;
 
   /**
-   * Factory handler for loading graph files from disk during schema initialization.
-   */
-  public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
-    @Override
-    public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-                                  final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new LSMVectorIndexGraphFile(database, name, filePath, id, mode, pageSize, version);
-    }
-  }
-
-  /**
    * Constructor for creating a new graph file
    */
   protected LSMVectorIndexGraphFile(final DatabaseInternal database, final String name, final String filePath,

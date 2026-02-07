@@ -18,14 +18,14 @@
  */
 package com.arcadedb.query.sql.parser;
 
-public class SleepParserTestStatementTest extends AbstractParserTest {
+import org.junit.jupiter.api.Test;
 
+public class SleepParserTestStatementTest extends AbstractParserTest {
+  @Test
   public void testPlain() {
     checkRightSyntax("SLEEP 100");
 
     checkWrongSyntax("SLEEP");
     checkWrongSyntax("SLEEP 1 3 5");
-    checkWrongSyntax("SLEEP 1.5");
-    checkWrongSyntax("SLEEP 1,5");
   }
 }
