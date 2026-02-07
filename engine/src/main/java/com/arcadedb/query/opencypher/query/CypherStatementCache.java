@@ -18,13 +18,13 @@
  */
 package com.arcadedb.query.opencypher.query;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.utility.LRUCache;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * LRU cache for parsed OpenCypher statements. Caches the AST (Abstract Syntax Tree) to avoid
@@ -36,19 +36,16 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CypherStatementCache {
-  private final DatabaseInternal database;
   private final Map<String, CypherStatement> cache;
-  private final Cypher25AntlrParser parser;
+  private final Cypher25AntlrParser          parser;
 
   /**
    * Creates a new statement cache.
    *
-   * @param database the database instance
    * @param size     maximum number of statements to cache (LRU eviction when exceeded)
    */
-  public CypherStatementCache(final DatabaseInternal database, final int size) {
-    this.database = database;
-    this.parser = new Cypher25AntlrParser(database);
+  public CypherStatementCache(final int size) {
+    this.parser = new Cypher25AntlrParser();
     // Use LRUCache wrapped in synchronizedMap for thread-safety
     this.cache = Collections.synchronizedMap(new LRUCache<>(size));
   }
