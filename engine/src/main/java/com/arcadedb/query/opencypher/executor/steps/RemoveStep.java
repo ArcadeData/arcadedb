@@ -135,10 +135,10 @@ public class RemoveStep extends AbstractExecutionStep {
       }
 
       for (final RemoveClause.RemoveItem item : removeClause.getItems()) {
-        if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY) {
+        if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
           removeProperty(item, result);
-        }
-        // TODO: Handle label removal (REMOVE n:Label)
+        else if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
+          removeLabels(item, result);
       }
 
       // Commit transaction if we started it
@@ -189,6 +189,63 @@ public class RemoveStep extends AbstractExecutionStep {
 
     // Update the result with the modified document
     ((ResultInternal) result).setProperty(variable, mutableDoc);
+  }
+
+  /**
+   * Removes labels from a vertex by changing its type.
+   * Creates a new vertex with the reduced label set and migrates properties/edges.
+   */
+  private void removeLabels(final RemoveClause.RemoveItem item, final Result result) {
+    final String variable = item.getVariable();
+    final Object obj = result.getProperty(variable);
+    if (!(obj instanceof com.arcadedb.graph.Vertex vertex))
+      return;
+
+    final java.util.List<String> currentLabels = com.arcadedb.query.opencypher.Labels.getLabels(vertex);
+    final java.util.List<String> labelsToRemove = item.getLabels();
+
+    // Check if any of the labels to remove actually exist
+    boolean needsChange = false;
+    for (final String label : labelsToRemove) {
+      if (currentLabels.contains(label)) {
+        needsChange = true;
+        break;
+      }
+    }
+    if (!needsChange)
+      return;
+
+    // Compute remaining labels
+    final java.util.List<String> remainingLabels = new java.util.ArrayList<>(currentLabels);
+    remainingLabels.removeAll(labelsToRemove);
+
+    final String newTypeName;
+    if (remainingLabels.isEmpty()) {
+      newTypeName = "V";
+      context.getDatabase().getSchema().getOrCreateVertexType("V");
+    } else {
+      newTypeName = com.arcadedb.query.opencypher.Labels.ensureCompositeType(
+          context.getDatabase().getSchema(), remainingLabels);
+    }
+
+    if (vertex.getTypeName().equals(newTypeName))
+      return;
+
+    // Create new vertex with the reduced type, copy properties
+    final com.arcadedb.graph.MutableVertex newVertex = context.getDatabase().newVertex(newTypeName);
+    for (final String prop : vertex.getPropertyNames())
+      newVertex.set(prop, vertex.get(prop));
+    newVertex.save();
+
+    // Migrate edges
+    for (final com.arcadedb.graph.Edge edge : vertex.getEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT))
+      newVertex.newEdge(edge.getTypeName(), edge.getVertex(com.arcadedb.graph.Vertex.DIRECTION.IN));
+    for (final com.arcadedb.graph.Edge edge : vertex.getEdges(com.arcadedb.graph.Vertex.DIRECTION.IN))
+      edge.getVertex(com.arcadedb.graph.Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex);
+
+    vertex.delete();
+
+    ((ResultInternal) result).setProperty(variable, newVertex);
   }
 
   @Override

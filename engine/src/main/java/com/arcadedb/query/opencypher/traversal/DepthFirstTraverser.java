@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
@@ -40,6 +41,12 @@ public class DepthFirstTraverser extends GraphTraverser {
   public DepthFirstTraverser(final Direction direction, final String[] relationshipTypes, final int minHops,
       final int maxHops, final boolean trackPaths, final boolean detectCycles) {
     super(direction, relationshipTypes, minHops, maxHops, trackPaths, detectCycles);
+  }
+
+  public DepthFirstTraverser(final Direction direction, final String[] relationshipTypes,
+      final Map<String, Object> edgePropertyFilters, final int minHops,
+      final int maxHops, final boolean trackPaths, final boolean detectCycles) {
+    super(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, detectCycles);
   }
 
   @Override
@@ -118,50 +125,45 @@ public class DepthFirstTraverser extends GraphTraverser {
     private int currentIndex = 0;
 
     DFSPathIterator(final Vertex startVertex) {
-      final Set<RID> globalVisited = detectCycles ? createVisitedSet() : new HashSet<>();
       final TraversalPath initialPath = new TraversalPath(startVertex);
-      performDFS(initialPath, 0, globalVisited);
+      performDFS(initialPath, 0);
     }
 
-    private void performDFS(final TraversalPath path, final int depth, final Set<RID> globalVisited) {
+    private void performDFS(final TraversalPath path, final int depth) {
       final Vertex vertex = path.getEndVertex();
 
-      // Skip if already globally visited (cycle detection)
-      if (detectCycles && isVisited(vertex, globalVisited)) {
-        return;
-      }
-
-      // Mark as visited
-      if (detectCycles) {
-        markVisited(vertex, globalVisited);
-      }
-
       // Add to results if depth is within bounds
-      if (depth >= minHops && depth <= maxHops) {
+      if (depth >= minHops && depth <= maxHops)
         results.add(path);
-      }
 
       // Stop if we've reached max depth
-      if (depth >= maxHops) {
+      if (depth >= maxHops)
         return;
-      }
 
       // Recursively explore neighbors
       for (final Edge edge : getEdges(vertex)) {
-        if (!matchesTypeFilter(edge)) {
+        if (!matchesTypeFilter(edge))
           continue;
-        }
+
+        if (!matchesPropertyFilter(edge))
+          continue;
+
+        // Cypher relationship uniqueness: skip edges already used in this path
+        if (detectCycles && pathContainsEdge(path, edge))
+          continue;
 
         final Vertex nextVertex = getOtherVertex(edge, vertex);
-
-        // Skip if creates cycle in current path or already visited globally
-        if (path.containsVertex(nextVertex) || (detectCycles && isVisited(nextVertex, globalVisited))) {
-          continue;
-        }
-
         final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
-        performDFS(newPath, depth + 1, globalVisited);
+        performDFS(newPath, depth + 1);
       }
+    }
+
+    private boolean pathContainsEdge(final TraversalPath path, final Edge edge) {
+      final RID edgeRid = edge.getIdentity();
+      for (final Edge pathEdge : path.getEdges())
+        if (pathEdge.getIdentity().equals(edgeRid))
+          return true;
+      return false;
     }
 
     @Override

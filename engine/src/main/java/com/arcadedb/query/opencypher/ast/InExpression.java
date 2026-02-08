@@ -60,7 +60,8 @@ public class InExpression implements BooleanExpression {
     final List<Object> valuesToCheck = new ArrayList<>();
 
     if (list.size() == 1) {
-      // Single expression on RHS (e.g., x IN listVar, or x IN [1,2,3] parsed as single list expr)
+      // Single expression on RHS (e.g., x IN listVar, x IN func(), x IN [1,2,3])
+      // Evaluate and unwrap the list value
       final Expression listItem = list.get(0);
       final Object listValue;
       if (listItem instanceof FunctionCallExpression)
@@ -91,49 +92,58 @@ public class InExpression implements BooleanExpression {
     // 3VL: null IN [1,2,3] -> null, 5 IN [1,null,3] -> null (if not found otherwise)
     boolean foundNull = false;
     for (final Object checkValue : valuesToCheck) {
-      if (value == null || checkValue == null) {
-        if (value == null && checkValue == null) {
-          // null = null is still null in Cypher IN semantics
-          foundNull = true;
-        } else {
-          foundNull = true;
-        }
-      } else if (valuesEqual(value, checkValue))
+      final Boolean cmp = valuesCompare(value, checkValue);
+      if (cmp == null)
+        foundNull = true;
+      else if (cmp)
         return isNot ? false : true;
     }
 
     if (foundNull)
-      return isNot ? null : null;
+      return null;
 
     return isNot ? true : false;
   }
 
-  private boolean valuesEqual(final Object a, final Object b) {
-    if (a == null && b == null)
-      return true;
+  /**
+   * Three-valued comparison for IN operator.
+   * Returns Boolean.TRUE if definitely equal, Boolean.FALSE if definitely not equal,
+   * null if uncertain (involves null comparisons where non-null elements match).
+   */
+  private Boolean valuesCompare(final Object a, final Object b) {
     if (a == null || b == null)
-      return false;
+      return null; // null = anything is null in Cypher
+
+    // List equality: must use 3VL element-wise comparison (not Java equals)
+    // because Java's ArrayList.equals treats null==null as true, but Cypher requires null
+    if (a instanceof List && b instanceof List) {
+      final List<?> listA = (List<?>) a;
+      final List<?> listB = (List<?>) b;
+      if (listA.size() != listB.size())
+        return false;
+      boolean hasNull = false;
+      for (int i = 0; i < listA.size(); i++) {
+        final Boolean elemCmp = valuesCompare(listA.get(i), listB.get(i));
+        if (elemCmp == null)
+          hasNull = true;
+        else if (!elemCmp)
+          return false; // Definitely not equal
+      }
+      return hasNull ? null : true;
+    }
 
     // Direct equality (handles booleans, strings, etc.)
     if (a.equals(b))
       return true;
 
     // Numeric comparison (handles int/long/double cross-type)
-    if (a instanceof Number && b instanceof Number)
+    if (a instanceof Number && b instanceof Number) {
+      if ((a instanceof Long || a instanceof Integer) && (b instanceof Long || b instanceof Integer))
+        return ((Number) a).longValue() == ((Number) b).longValue();
       return ((Number) a).doubleValue() == ((Number) b).doubleValue();
-
-    // List equality (deep comparison)
-    if (a instanceof List && b instanceof List) {
-      final List<?> listA = (List<?>) a;
-      final List<?> listB = (List<?>) b;
-      if (listA.size() != listB.size())
-        return false;
-      for (int i = 0; i < listA.size(); i++)
-        if (!valuesEqual(listA.get(i), listB.get(i)))
-          return false;
-      return true;
     }
 
+    // Different types that aren't both numbers
     return false;
   }
 

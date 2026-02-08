@@ -156,6 +156,12 @@ public class CypherExecutionPlanner {
             if (!node.hasLabels())
               return false; // Unlabeled nodes not supported yet
 
+            // Multi-label nodes not yet supported in optimizer
+            // NodeByLabelScan uses composite type name which doesn't match
+            // superset labels (e.g., A~B~C doesn't extend A~B)
+            if (node.getLabels().size() > 1)
+              return false;
+
             // Phase 4: Property constraints without indexes not yet supported
             // The optimizer doesn't apply property filters when using NodeByLabelScan
             // This will be fixed in Phase 5

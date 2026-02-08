@@ -42,13 +42,15 @@ import java.util.Set;
  */
 public class FinalProjectionStep extends AbstractExecutionStep {
   private final Set<String> requestedProperties;
+  private final boolean returnAll;
 
   public FinalProjectionStep(final ReturnClause returnClause, final CommandContext context) {
     super(context);
     this.requestedProperties = new HashSet<>();
+    this.returnAll = returnClause != null && returnClause.isReturnAll();
 
     // Collect the output names from the RETURN clause
-    if (returnClause != null && returnClause.getReturnItems() != null) {
+    if (!returnAll && returnClause != null && returnClause.getReturnItems() != null) {
       for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
         requestedProperties.add(item.getOutputName());
       }
@@ -128,6 +130,24 @@ public class FinalProjectionStep extends AbstractExecutionStep {
    */
   private ResultInternal filterResult(final Result inputResult) {
     final ResultInternal result = new ResultInternal();
+
+    if (returnAll) {
+      // RETURN * - pass through all properties
+      Document singleDocument = null;
+      int documentCount = 0;
+      for (final String prop : inputResult.getPropertyNames()) {
+        final Object value = inputResult.getProperty(prop);
+        result.setProperty(prop, value);
+        if (value instanceof Document doc) {
+          result.setMetadata(PROJECTION_NAME_METADATA, prop);
+          singleDocument = doc;
+          documentCount++;
+        }
+      }
+      if (documentCount == 1 && inputResult.getPropertyNames().size() == 1)
+        result.setElement(singleDocument);
+      return result;
+    }
 
     // Only include properties that were explicitly requested in the RETURN clause
     Document singleDocument = null;

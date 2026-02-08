@@ -70,11 +70,16 @@ public class LabelCheckExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
-    // Evaluate the variable expression to get the vertex
+    final Object ternary = evaluateTernary(result, context);
+    return Boolean.TRUE.equals(ternary);
+  }
+
+  @Override
+  public Object evaluateTernary(final Result result, final CommandContext context) {
     final Object value = variableExpression.evaluate(result, context);
 
     if (value == null)
-      return false;
+      return null; // null:Label -> null in Cypher 3VL
 
     if (!(value instanceof Vertex))
       return false;
@@ -82,14 +87,12 @@ public class LabelCheckExpression implements BooleanExpression {
     final Vertex vertex = (Vertex) value;
 
     if (operator == LabelOperator.OR) {
-      // OR: vertex must have at least one of the labels
       for (final String label : labels) {
         if (Labels.hasLabel(vertex, label))
           return true;
       }
       return false;
     } else {
-      // AND: vertex must have all labels
       for (final String label : labels) {
         if (!Labels.hasLabel(vertex, label))
           return false;

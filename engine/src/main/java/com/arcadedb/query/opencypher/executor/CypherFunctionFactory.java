@@ -407,6 +407,8 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("labels() requires exactly one argument");
       }
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof Vertex vertex) {
         // Use the Labels helper class which handles composite types
         return Labels.getLabels(vertex);

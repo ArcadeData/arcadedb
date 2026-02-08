@@ -136,7 +136,25 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 break;
               }
               currentInputResult = prevResults.next();
-              iterator = getVertexIterator();
+
+              // Check if the variable is already bound in the input result.
+              // This happens in OPTIONAL MATCH when a variable from a previous MATCH
+              // is reused (e.g., MATCH (a)...(c) OPTIONAL MATCH (a)-[r]->(c)).
+              // In this case, use the bound vertex directly instead of scanning all vertices.
+              if (variable != null && currentInputResult.getPropertyNames().contains(variable)) {
+                final Object boundValue = currentInputResult.getProperty(variable);
+                if (boundValue instanceof Vertex) {
+                  final Vertex boundVertex = (Vertex) boundValue;
+                  if (matchesAllLabels(boundVertex) && matchesProperties(boundVertex))
+                    iterator = Collections.singletonList((Identifiable) boundVertex).iterator();
+                  else
+                    iterator = Collections.<Identifiable>emptyList().iterator();
+                } else {
+                  iterator = Collections.<Identifiable>emptyList().iterator();
+                }
+              } else {
+                iterator = getVertexIterator();
+              }
             }
 
             // Match nodes and add to input result
@@ -147,10 +165,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
               if (record instanceof Vertex) {
                 final Vertex vertex = (Vertex) record;
 
-                // Apply property filters if specified in pattern
-                if (!matchesProperties(vertex)) {
+                // Apply label and property filters
+                if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
                   continue;
-                }
 
                 // Copy input result and add our vertex
                 final ResultInternal result = new ResultInternal();
@@ -180,10 +197,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
             if (record instanceof Vertex) {
               final Vertex vertex = (Vertex) record;
 
-              // Apply property filters if specified in pattern
-              if (!matchesProperties(vertex)) {
+              // Apply label and property filters
+              if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
                 continue;
-              }
 
               // Create result with vertex bound to variable
               final ResultInternal result = new ResultInternal();
@@ -261,18 +277,28 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return Collections.emptyIterator();
       }
 
-      // Multiple labels - check if composite type exists
-      final String compositeType = Labels.getCompositeTypeName(labels);
-      if (context.getDatabase().getSchema().existsType(compositeType)) {
-        // Direct iteration on composite type (polymorphic to include subtypes)
-        @SuppressWarnings("unchecked")
-        final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(compositeType, true);
-        return iter;
+      // Multiple labels - iterate all vertex types that extend ALL required labels.
+      // We can't use simple polymorphic iteration because A~B~C extends A, B, C
+      // individually but iterateType("A", true) may not include A~B~C.
+      // Instead, find all types that are instanceOf ALL labels and iterate them.
+      final List<Iterator<Identifiable>> iterators = new ArrayList<>();
+      for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
+        if (type instanceof VertexType) {
+          boolean matchesAll = true;
+          for (final String label : labels) {
+            if (!type.instanceOf(label)) {
+              matchesAll = false;
+              break;
+            }
+          }
+          if (matchesAll) {
+            @SuppressWarnings("unchecked")
+            final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
+            iterators.add(iter);
+          }
+        }
       }
-
-      // No composite type exists - no matches possible
-      // (vertices with these labels would have created the composite type)
-      return Collections.emptyIterator();
+      return new ChainedIterator(iterators);
     } else {
       // No label specified - iterate ALL vertex types
       // Get all vertex types from schema and chain their iterators
@@ -413,6 +439,20 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param vertex vertex to check
    * @return true if matches or no properties specified
    */
+  /**
+   * Checks if a vertex has ALL labels specified in the pattern.
+   * For single-label patterns, this is handled by type iteration.
+   * For multi-label patterns (e.g., :A:B:C), checks type hierarchy.
+   */
+  private boolean matchesAllLabels(final Vertex vertex) {
+    if (!pattern.hasLabels() || pattern.getLabels().size() <= 1)
+      return true; // Single label already filtered by iterator
+    for (final String label : pattern.getLabels())
+      if (!Labels.hasLabel(vertex, label))
+        return false;
+    return true;
+  }
+
   private boolean matchesProperties(final Vertex vertex) {
     if (!pattern.hasProperties()) {
       return true; // No property filters

@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.grammar.Cypher25ParserBaseVisitor;
 import com.arcadedb.query.opencypher.rewriter.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -175,7 +176,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
         if (propExpr.contains(".")) {
           final String[] parts = propExpr.split("\\.", 2);
-          items.add(new SetClause.SetItem(parts[0], parts[1], valueExpr));
+          // Strip parentheses from variable name: (n).name -> n.name
+          String varName = parts[0].trim();
+          if (varName.startsWith("(") && varName.endsWith(")"))
+            varName = varName.substring(1, varName.length() - 1).trim();
+          items.add(new SetClause.SetItem(varName, parts[1], valueExpr));
         }
       } else if (itemCtx instanceof Cypher25Parser.SetPropsContext propsCtx) {
         // SET n = {map} — replace all properties
@@ -240,11 +245,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           items.add(new RemoveClause.RemoveItem(parts[0], parts[1]));
         }
       } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext) {
-        // REMOVE n:Label (not yet fully implemented)
         final Cypher25Parser.RemoveLabelsContext labelsCtx = (Cypher25Parser.RemoveLabelsContext) itemCtx;
         final String variable = stripBackticks(labelsCtx.variable().getText());
         final List<String> labels = new ArrayList<>();
-        // TODO: Extract labels from nodeLabels context
+        for (final Cypher25Parser.LabelTypeContext lt : labelsCtx.nodeLabels().labelType())
+          labels.add(stripBackticks(lt.symbolicNameString().getText()));
         items.add(new RemoveClause.RemoveItem(variable, labels));
       }
       // TODO: Handle RemoveDynamicProp and RemoveLabelsIs
@@ -361,7 +366,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
         final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
         final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
-        items.add(new ReturnClause.ReturnItem(expr, alias));
+        final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
+        if (alias == null)
+          item.setOriginalText(getOriginalText(itemCtx.expression()));
+        items.add(item);
       }
     }
 
@@ -446,7 +454,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
         final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
         final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
-        items.add(new ReturnClause.ReturnItem(expr, alias));
+        final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
+        // When no alias, preserve original text from the query (whitespace and case)
+        if (alias == null)
+          item.setOriginalText(getOriginalText(itemCtx.expression()));
+        items.add(item);
       }
     }
 
@@ -737,10 +749,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
         // Check for IN operator
         if (strListCtx.IN() != null) {
-          // Parse the list from expression6
-          final List<Expression> listItems = expressionBuilder.parseListExpression(strListCtx.expression6());
-          final boolean isNot = false; // IN doesn't have NOT variant in this grammar rule
-          return new InExpression(leftExpr, listItems, isNot);
+          // Parse the right side as a single expression so that complex expressions like [3]+4 work correctly
+          final Expression rhsExpr = expressionBuilder.parseExpressionFromText(strListCtx.expression6());
+          final List<Expression> listItems = new ArrayList<>();
+          listItems.add(rhsExpr);
+          return new InExpression(leftExpr, listItems, false);
         }
 
         // Check for REGEX (=~)
@@ -1023,6 +1036,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       if (pathLen.single != null) {
         minHops = maxHops = Integer.parseInt(pathLen.single.getText());
       }
+      // Bare * with no range: [*] means [*1..] (min=1, max=unbounded)
+      if (minHops == null && maxHops == null)
+        minHops = 1;
     }
 
     // Direction
@@ -1114,6 +1130,17 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   static String stripBackticks(final String name) {
     return ParserUtils.stripBackticks(name);
+  }
+
+  /**
+   * Gets the original text from the input stream for a parse tree context,
+   * preserving whitespace and case from the query.
+   */
+  static String getOriginalText(final org.antlr.v4.runtime.ParserRuleContext ctx) {
+    if (ctx.getStart() == null || ctx.getStop() == null)
+      return ctx.getText();
+    return ctx.getStart().getInputStream().getText(
+        Interval.of(ctx.getStart().getStartIndex(), ctx.getStop().getStopIndex()));
   }
 
   private Object evaluateExpression(final Cypher25Parser.ExpressionContext ctx) {

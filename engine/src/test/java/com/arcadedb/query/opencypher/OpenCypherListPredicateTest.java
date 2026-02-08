@@ -150,6 +150,82 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
+  void testNestedQuantifiers() {
+    // TCK Quantifier5 [1]: none(x IN list WHERE none(y IN x WHERE y = 'abc'))
+    final ResultSet rs = database.query("opencypher",
+        "RETURN none(x IN [['abc'], ['abc', 'def']] WHERE none(y IN x WHERE y = 'abc')) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Boolean) rs.next().getProperty("result")).isTrue();
+  }
+
+  @Test
+  void testQuantifierWithSharedList() {
+    // TCK Quantifier5 [2]: none(x IN list WHERE none(y IN list WHERE x <= y))
+    final ResultSet rs = database.query("opencypher",
+        "WITH [1, 2, 3, 4, 5, 6, 7, 8, 9] AS list " +
+            "RETURN none(x IN list WHERE none(y IN list WHERE x <= y)) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Boolean) rs.next().getProperty("result")).isTrue();
+  }
+
+  @Test
+  void testNoneEqualsNotAny() {
+    // TCK Quantifier5 [3]: none(...) = (NOT any(...))
+    final ResultSet rs = database.query("opencypher",
+        "RETURN none(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2) = " +
+            "(NOT any(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2)) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Boolean) rs.next().getProperty("result")).isTrue();
+  }
+
+  @Test
+  void testAllWithNot() {
+    // Test all() with NOT inside WHERE
+    ResultSet rs = database.query("opencypher",
+        "RETURN all(x IN [1, 2, 3] WHERE NOT (x = 2)) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Boolean) rs.next().getProperty("result")).isFalse();
+  }
+
+  @Test
+  void testQuantifierEqualsQuantifier() {
+    // Compare two quantifier results
+    final ResultSet rs = database.query("opencypher",
+        "RETURN none(x IN [1, 2, 3] WHERE x = 2) = all(x IN [1, 2, 3] WHERE NOT (x = 2)) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Boolean) rs.next().getProperty("result")).isTrue();
+  }
+
+  @Test
+  void testSizeOfListComprehension() {
+    // Test size() on list comprehension
+    ResultSet rs1 = database.query("opencypher",
+        "RETURN size([x IN [1, 2, 3, 4, 5] WHERE x > 3 | x]) AS result");
+    assertThat(rs1.hasNext()).isTrue();
+    Object r1 = rs1.next().getProperty("result");
+    assertThat(r1).isEqualTo(2L);
+  }
+
+  @Test
+  void testSizeComprehensionInComparison() {
+    // Test size() on list comprehension compared to number without parens
+    final ResultSet rs = database.query("opencypher",
+        "RETURN size([x IN [1, 2, 3, 4, 5] WHERE x > 3 | x]) = 2 AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Boolean) rs.next().getProperty("result")).isTrue();
+  }
+
+  @Test
+  void testNoneEqualsSizeFilter() {
+    // TCK Quantifier5 [5]
+    final ResultSet rs = database.query("opencypher",
+        "RETURN none(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2) = " +
+            "(size([x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2 | x]) = 0) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Boolean) rs.next().getProperty("result")).isTrue();
+  }
+
+  @Test
   void testWithMatchedNodes() {
     database.getSchema().createVertexType("Item");
     database.transaction(() -> {

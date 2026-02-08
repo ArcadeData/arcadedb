@@ -41,6 +41,7 @@ import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
+import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
@@ -175,14 +176,15 @@ public class CypherExecutionPlan {
     final boolean hasSubquery = hasSubqueryClause();
     final boolean hasWithBeforeMatch = hasWithPrecedingMatch();
 
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasSubquery && !hasWithBeforeMatch) {
+    final boolean hasVLP = hasVariableLengthPath();
+    if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasSubquery && !hasWithBeforeMatch && !hasVLP) {
       // Use optimizer - execute physical operators directly
       // Note: For Phase 4, we only optimize MATCH patterns
       // RETURN, ORDER BY, LIMIT are still handled by execution steps
       rootStep = buildExecutionStepsWithOptimizer(context);
     } else {
       // Fall back to non-optimized execution
-      // This path correctly handles clause ordering (UNWIND before MATCH)
+      // This path correctly handles clause ordering (UNWIND before MATCH), VLP patterns, etc.
       rootStep = buildExecutionSteps(context);
     }
 
@@ -384,7 +386,8 @@ public class CypherExecutionPlan {
         final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
         final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
 
-        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2) {
+        final boolean hasVLP2 = hasVariableLengthPath();
+        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2 && !hasVLP2) {
           rootStep = buildExecutionStepsWithOptimizer(context);
         } else {
           rootStep = buildExecutionSteps(context);
@@ -714,6 +717,23 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Checks if any MATCH clause contains a variable-length path pattern.
+   * The optimizer doesn't support VLP (it only uses ExpandAll for fixed-length),
+   * so we fall back to the step-based execution path.
+   */
+  private boolean hasVariableLengthPath() {
+    for (final MatchClause matchClause : statement.getMatchClauses()) {
+      for (final PathPattern path : matchClause.getPathPatterns()) {
+        for (int i = 0; i < path.getRelationshipCount(); i++) {
+          if (path.getRelationship(i).isVariableLength())
+            return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * Builds the execution step chain from the parsed statement.
    */
   private AbstractExecutionStep buildExecutionSteps(final CommandContext context) {
@@ -757,11 +777,12 @@ public class CypherExecutionPlan {
     if (typeCountStep != null)
       return typeCountStep;
 
-    // Special case: RETURN without MATCH (standalone expressions)
-    // E.g., RETURN abs(-42), RETURN 1+1
+    // Special case: no MATCH as first clause (standalone expressions, WITH before MATCH, etc.)
+    // E.g., RETURN abs(-42), WITH collect([0, 0.0]) AS numbers UNWIND ...
     // Skip this when a seed step is provided (e.g., CALL subquery) since the seed provides input
-    if (initialStep == null && statement.getMatchClauses().isEmpty() && statement.getReturnClause() != null &&
-        clausesInOrder.stream().noneMatch(c -> c.getType() == ClauseEntry.ClauseType.UNWIND)) {
+    final boolean firstClauseIsMatch = !clausesInOrder.isEmpty() &&
+        clausesInOrder.get(0).getType() == ClauseEntry.ClauseType.MATCH;
+    if (initialStep == null && !firstClauseIsMatch) {
       // Create a dummy row to evaluate expressions against
       final ResultInternal dummyRow = new ResultInternal();
       final List<Result> singleRow = List.of(dummyRow);
@@ -807,6 +828,12 @@ public class CypherExecutionPlan {
         case WITH:
           final WithClause withClause = entry.getTypedClause();
           currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
+          // WITH resets the scope: only WITH output variables are in scope afterwards
+          boundVariables.clear();
+          for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+            final String alias = item.getAlias();
+            boundVariables.add(alias != null ? alias : item.getExpression().getText());
+          }
           break;
 
         case MERGE:
@@ -1068,7 +1095,14 @@ public class CypherExecutionPlan {
         // Check if this variable was already bound in a previous MATCH clause
         if (boundVariables.contains(variable)) {
           // Variable already bound - skip creating a new MatchNodeStep
-          // The bound value will be used from the input result
+          // But still handle zero-length named paths
+          final String singlePathVar = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
+          if (singlePathVar != null) {
+            matchVariables.add(singlePathVar);
+            final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(variable, singlePathVar, context);
+            zeroPathStep.setPrevious(currentStep);
+            currentStep = zeroPathStep;
+          }
           continue;
         }
 
@@ -1089,6 +1123,17 @@ public class CypherExecutionPlan {
             matchStep.setPrevious(currentStep);
           }
           currentStep = matchStep;
+        }
+
+        // Handle zero-length named paths: p = (n)
+        final String singlePathVar = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
+        if (singlePathVar != null) {
+          matchVariables.add(singlePathVar);
+          final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(variable, singlePathVar, context);
+          zeroPathStep.setPrevious(currentStep);
+          currentStep = zeroPathStep;
+          if (isOptional && matchChainStart == matchStep)
+            matchChainStart = zeroPathStep;
         }
       } else if (pathPattern instanceof ShortestPathPattern) {
         // Handle shortestPath or allShortestPaths patterns
@@ -1146,10 +1191,9 @@ public class CypherExecutionPlan {
         final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
 
         // Check if source node variable is already bound (either from previous MATCH or
-        // from being in the boundVariables set). Previously this only checked for
-        // unlabeled/unpropertied nodes, which broke when labels were repeated.
+        // from earlier patterns in this same MATCH clause)
         final boolean sourceAlreadyBound = stepBeforeMatch != null &&
-            (boundVariables.contains(sourceVar) || (!sourceNode.hasLabels() && !sourceNode.hasProperties()));
+            (boundVariables.contains(sourceVar) || matchVariables.contains(sourceVar));
 
         if (!sourceAlreadyBound) {
           matchVariables.add(sourceVar);
@@ -1183,6 +1227,20 @@ public class CypherExecutionPlan {
           matchVariables.add(pathVariable);
         }
 
+        // Handle zero-length named paths: p = (n) with no relationships
+        if (pathVariable != null && pathPattern.getRelationshipCount() == 0) {
+          final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(sourceVar, pathVariable, context);
+          if (isOptional) {
+            if (matchChainStart == null) {
+              zeroPathStep.setPrevious(currentStep);
+              matchChainStart = zeroPathStep;
+            } else
+              zeroPathStep.setPrevious(currentStep);
+          } else
+            zeroPathStep.setPrevious(currentStep);
+          currentStep = zeroPathStep;
+        }
+
         // Track current source variable through multi-hop patterns
         // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
         String currentSourceVar = sourceVar;
@@ -1200,7 +1258,8 @@ public class CypherExecutionPlan {
 
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
-            nextStep = new ExpandPathStep(currentSourceVar, pathVariable, targetVar, relPattern, context);
+            nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
+                targetNode, context);
           } else {
             // Pass target node pattern for label filtering and bound variables
             // for identity checking on already-bound target variables
@@ -1417,9 +1476,8 @@ public class CypherExecutionPlan {
             final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : "a";
 
             // Check if source node is already bound (for multiple MATCH clauses or OPTIONAL MATCH)
-            // Check both legacy bound variables AND the old heuristic (no labels/properties)
             final boolean sourceAlreadyBound = stepBeforeMatch != null &&
-                (legacyBoundVariables.contains(sourceVar) || (!sourceNode.hasLabels() && !sourceNode.hasProperties()));
+                (legacyBoundVariables.contains(sourceVar) || matchVariables.contains(sourceVar));
 
             if (!sourceAlreadyBound) {
               // Only track the source variable if we're creating a new binding for it
@@ -1466,6 +1524,20 @@ public class CypherExecutionPlan {
               matchVariables.add(pathVariable); // Track path variable
             }
 
+            // Handle zero-length named paths: p = (n) with no relationships
+            if (pathVariable != null && pathPattern.getRelationshipCount() == 0) {
+              final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(sourceVar, pathVariable, context);
+              if (isOptional) {
+                if (matchChainStart == null) {
+                  zeroPathStep.setPrevious(currentStep);
+                  matchChainStart = zeroPathStep;
+                } else
+                  zeroPathStep.setPrevious(currentStep);
+              } else
+                zeroPathStep.setPrevious(currentStep);
+              currentStep = zeroPathStep;
+            }
+
             // Track current source variable through multi-hop patterns
             // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
             String currentSourceVar = sourceVar;
@@ -1484,8 +1556,9 @@ public class CypherExecutionPlan {
 
               AbstractExecutionStep nextStep;
               if (relPattern.isVariableLength()) {
-                // Variable-length path - pass path variable for named path support
-                nextStep = new ExpandPathStep(currentSourceVar, pathVariable, targetVar, relPattern, context);
+                // Variable-length path - pass path variable, relationship variable, and target node for label filtering
+                nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
+                    targetNode, context);
               } else {
                 // Fixed-length relationship - pass path variable, target node pattern, and bound variables
                 nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
