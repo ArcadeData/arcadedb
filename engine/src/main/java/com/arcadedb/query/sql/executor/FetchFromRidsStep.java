@@ -59,15 +59,12 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           if (nextRid == null)
             continue;
 
-          Identifiable nextDoc = null;
+          final Identifiable nextDoc;
           try {
             nextDoc = context.getDatabase().lookupByRID(nextRid, false);
           } catch (final RecordNotFoundException e) {
-            // IGNORE HERE< HANDLED BELOW
-          }
-
-          if (nextDoc == null)
             continue;
+          }
 
           nextResult = new ResultInternal(nextDoc);
           break;
