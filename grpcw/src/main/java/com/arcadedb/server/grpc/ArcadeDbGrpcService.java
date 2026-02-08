@@ -70,9 +70,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -105,9 +103,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * transaction operations run on the same thread (required by ArcadeDB's thread-local transactions).
    */
   private static final class TransactionContext {
-    final Database db;
+    final Database        db;
     final ExecutorService executor;
-    final String txId;
+    final String          txId;
 
     TransactionContext(Database db, String txId) {
       this.db = db;
@@ -166,7 +164,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             try {
               txCtx.db.rollback();
             } catch (Exception e) {
-              LogManager.instance().log(this, Level.WARNING, "Failed to rollback transaction %s during shutdown", e, txCtx.txId);
+              LogManager.instance().log(this, Level.WARNING, "Failed to rollback transaction %s during shutdown", e,
+                  txCtx.txId);
             }
           }).get();
         }
@@ -235,14 +234,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /**
    * Internal implementation of executeCommand that runs on the appropriate thread.
    *
-   * @param req the command request
-   * @param t0 start time in nanos
-   * @param db the database to use
+   * @param req                   the command request
+   * @param t0                    start time in nanos
+   * @param db                    the database to use
    * @param isExternalTransaction true if this is part of an externally-managed transaction
    * @return the response
    */
   private ExecuteCommandResponse executeCommandInternal(ExecuteCommandRequest req, long t0,
-      Database db, boolean isExternalTransaction) {
+                                                        Database db, boolean isExternalTransaction) {
 
     boolean beganHere = false;
 
@@ -319,15 +318,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 }
               }
 
-                if (emitted < maxRows) {
+              if (emitted < maxRows) {
 
                 // Convert Result to GrpcRecord, preserving aliases and all properties
                 GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
                     new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
                 out.addRecords(grpcRecord);
 
-                  emitted++;
-                }
+                emitted++;
+              }
 
             }
           } else {
@@ -362,23 +361,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Transaction end — precedence: rollback > commit > begin-only⇒commit
         if (tx.getRollback()) {
           LogManager.instance()
-              .log(this, Level.FINE, "executeCommandInternal(): rolling back db=%s tid=%s", db.getName(), tx.getTransactionId());
+              .log(this, Level.FINE, "executeCommandInternal(): rolling back db=%s tid=%s", db.getName(),
+                  tx.getTransactionId());
           db.rollback();
         } else if (tx.getCommit()) {
           LogManager.instance()
-              .log(this, Level.FINE, "executeCommandInternal(): committing [tx.getCommit() == true] db=%s tid=%s", db.getName(),
+              .log(this, Level.FINE, "executeCommandInternal(): committing [tx.getCommit() == true] db=%s tid=%s",
+                  db.getName(),
                   tx.getTransactionId());
           db.commit();
         } else if (beganHere && db.isTransactionActive()) {
           // Began but no explicit commit/rollback flag — default to commit (HTTP parity)
           LogManager.instance()
-              .log(this, Level.FINE, "executeCommandInternal(): committing [beganHere == true] db=%s tid=%s", db.getName(),
+              .log(this, Level.FINE, "executeCommandInternal(): committing [beganHere == true] db=%s tid=%s",
+                  db.getName(),
                   tx.getTransactionId());
           db.commit();
         }
       } else if (beganHere && db.isTransactionActive()) {
         // Auto-wrapped tx: ensure we commit after fully draining ResultSet
-        LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): committing [autoWrap] db=%s", db.getName());
+        LogManager.instance().log(this, Level.FINE, "executeCommandInternal(): committing [autoWrap] db=%s",
+            db.getName());
         db.commit();
       }
 
@@ -458,13 +461,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (props.containsKey("out")) {
 
           GrpcValue pv = props.get("out");
-          outStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() : String.valueOf(fromGrpcValue(pv));
+          outStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
+              String.valueOf(fromGrpcValue(pv));
         }
 
         if (props.containsKey("in")) {
 
           GrpcValue pv = props.get("in");
-          inStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() : String.valueOf(fromGrpcValue(pv));
+          inStr = (pv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) ? pv.getStringValue() :
+              String.valueOf(fromGrpcValue(pv));
         }
 
         if (outStr == null || inStr == null)
@@ -473,14 +478,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         var outEl = db.lookupByRID(new RID(outStr), true);
         var inEl = db.lookupByRID(new RID(inStr), true);
 
-        if (outEl == null || inEl == null)
-          throw new IllegalArgumentException("Cannot resolve out/in vertices for edge");
+        final Vertex outV = outEl.asVertex(true);
 
-        // IMPORTANT: use MutableVertex to avoid newEdge(...) ambiguity
-        MutableVertex outV = (MutableVertex) outEl.asVertex(true);
-        MutableVertex inV = (MutableVertex) inEl.asVertex(true);
+        if (!db.isTransactionActive())
+          db.begin();
 
-        MutableEdge e = outV.newEdge(cls, inV);
+        MutableEdge e = outV.newEdge(cls, inEl);
 
         // apply remaining properties (skip endpoints)
 
@@ -491,6 +494,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         });
 
         e.save();
+        db.commit();
 
         CreateRecordResponse.Builder b = CreateRecordResponse.newBuilder();
 
@@ -737,7 +741,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       ProjectionConfig projectionConfig = getProjectionConfig(request);
 
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): projectionConfig.include = %s projectionConfig.mode = %s",
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): projectionConfig.include = %s projectionConfig" +
+              ".mode = %s",
           projectionConfig.isInclude(),
           projectionConfig.getEnc());
 
@@ -749,7 +754,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Check if this is part of a transaction
       if (request.hasTransaction()) {
 
-        LogManager.instance().log(this, Level.FINE, "executeQuery(): has Tx %s", request.getTransaction().getTransactionId());
+        LogManager.instance().log(this, Level.FINE, "executeQuery(): has Tx %s",
+            request.getTransaction().getTransactionId());
 
         TransactionContext txCtx = activeTransactions.get(request.getTransaction().getTransactionId());
         if (txCtx == null) {
@@ -763,7 +769,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       LogManager.instance().log(this, Level.FINE, "executeQuery(): query = %s", request.getQuery());
 
-      ResultSet resultSet = database.query("sql", request.getQuery(), GrpcTypeConverter.convertParameters(request.getParametersMap()));
+      ResultSet resultSet = database.query("sql", request.getQuery(),
+          GrpcTypeConverter.convertParameters(request.getParametersMap()));
 
       LogManager.instance()
           .log(this, Level.FINE, "executeQuery(): to get resultSet = %s", (System.currentTimeMillis() - startTime));
@@ -774,7 +781,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Process results
       int count = 0;
 
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): resultSet.size = %s", resultSet.getExactSizeIfKnown());
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): resultSet.size = %s",
+          resultSet.getExactSizeIfKnown());
 
       while (resultSet.hasNext()) {
 
@@ -785,16 +793,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Convert Result to GrpcRecord, preserving aliases and all properties
         GrpcRecord grpcRecord = convertResultToGrpcRecord(result, database, projectionConfig);
 
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
+        LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
 
-          resultBuilder.addRecords(grpcRecord);
+        resultBuilder.addRecords(grpcRecord);
 
-          count++;
+        count++;
 
-          // Apply limit if specified
-          if (request.getLimit() > 0 && count >= request.getLimit()) {
-            break;
-          }
+        // Apply limit if specified
+        if (request.getLimit() > 0 && count >= request.getLimit()) {
+          break;
+        }
       }
 
       LogManager.instance().log(this, Level.FINE, "executeQuery(): count = %s", count);
@@ -807,7 +815,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .setExecutionTimeMs(executionTime)
           .build();
 
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): executionTime + response generation = %s", executionTime);
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): executionTime + response generation = %s",
+          executionTime);
 
       responseObserver.onNext(response);
       responseObserver.onCompleted();
@@ -842,7 +851,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   @Override
-  public void beginTransaction(BeginTransactionRequest request, StreamObserver<BeginTransactionResponse> responseObserver) {
+  public void beginTransaction(BeginTransactionRequest request,
+                               StreamObserver<BeginTransactionResponse> responseObserver) {
     final String reqDb = request.getDatabase();
     final String user = (request.hasCredentials() ? request.getCredentials().getUsername() : null);
 
@@ -857,8 +867,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
 
-      LogManager.instance().log(this, Level.FINE, "beginTransaction(): resolved database instance dbName=%s class=%s hash=%s",
-          (database != null ? database.getName() : "<null>"), (database != null ? database.getClass().getSimpleName() : "<null>"),
+      LogManager.instance().log(this, Level.FINE, "beginTransaction(): resolved database instance dbName=%s class=%s " +
+              "hash=%s",
+          (database != null ? database.getName() : "<null>"), (database != null ?
+              database.getClass().getSimpleName() : "<null>"),
           (database != null ? System.identityHashCode(database) : 0));
 
       // Generate transaction ID first so we can create the context
@@ -867,7 +879,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Create transaction context with dedicated executor thread
       txCtx = new TransactionContext(database, transactionId);
 
-      LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin() on dedicated thread for txId=%s", transactionId);
+      LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin() on dedicated thread " +
+          "for txId=%s", transactionId);
 
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
@@ -895,7 +908,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
       Throwable cause = (t instanceof ExecutionException && t.getCause() != null) ? t.getCause() : t;
       LogManager.instance()
-          .log(this, Level.FINE, "beginTransaction(): FAILED db=%s user=%s err=%s", reqDb, (user != null ? user : "<none>"),
+          .log(this, Level.FINE, "beginTransaction(): FAILED db=%s user=%s err=%s", reqDb, (user != null ? user :
+                  "<none>"),
               cause.toString(), cause);
       LogManager.instance().log(this, Level.SEVERE, "Error beginning transaction: %s", cause, cause.getMessage());
       responseObserver.onError(Status.INTERNAL.withDescription("Failed to begin transaction: " + cause.getMessage()).asException());
@@ -933,7 +947,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      LogManager.instance().log(this, Level.FINE, "commitTransaction(): committing txId=%s on db=%s (on dedicated thread)", txId, txCtx.db.getName());
+      LogManager.instance().log(this, Level.FINE, "commitTransaction(): committing txId=%s on db=%s (on dedicated " +
+          "thread)", txId, txCtx.db.getName());
 
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
@@ -946,7 +961,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       rsp.onCompleted();
     } catch (Throwable t) {
       Throwable cause = (t instanceof ExecutionException && t.getCause() != null) ? t.getCause() : t;
-      LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit FAILED txId=%s err=%s", txId, cause.toString(), cause);
+      LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit FAILED txId=%s err=%s", txId,
+          cause.toString(), cause);
       // tx is unusable; do not reinsert into the map
       rsp.onError(Status.ABORTED.withDescription("Commit failed: " + cause.getMessage()).asException());
     } finally {
@@ -970,7 +986,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final TransactionContext txCtx = activeTransactions.remove(txId);
 
     LogManager.instance()
-        .log(this, Level.FINE, "rollbackTransaction(): removed txId=%s, presentPreviously=%s, remainingActiveTx=%s", txId,
+        .log(this, Level.FINE, "rollbackTransaction(): removed txId=%s, presentPreviously=%s, remainingActiveTx=%s",
+            txId,
             txCtx != null,
             activeTransactions.size());
 
@@ -984,7 +1001,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated thread)", txId, txCtx.db.getName());
+      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated" +
+          " thread)", txId, txCtx.db.getName());
 
       // Execute rollback ON THE SAME THREAD that began the transaction
       Future<?> rollbackFuture = txCtx.executor.submit(() -> {
@@ -997,7 +1015,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       rsp.onCompleted();
     } catch (Throwable t) {
       Throwable cause = (t instanceof ExecutionException && t.getCause() != null) ? t.getCause() : t;
-      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback FAILED txId=%s err=%s", txId, cause.toString(), cause);
+      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback FAILED txId=%s err=%s", txId,
+          cause.toString(), cause);
       rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + cause.getMessage()).asException());
     } finally {
       // Always shutdown the executor
@@ -1032,10 +1051,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // --- Dispatch on mode (helpers do NOT manage transactions) ---
       switch (request.getRetrievalMode()) {
-      case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig);
-      case PAGED -> streamPaged(db, request, batchSize, scso, cancelled, projectionConfig);
-      case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
-      default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
+        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig);
+        case PAGED -> streamPaged(db, request, batchSize, scso, cancelled, projectionConfig);
+        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
+        default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig);
       }
 
       // If the client cancelled mid-stream, choose rollback unless caller explicitly
@@ -1094,15 +1113,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * Mode 1 (existing behavior-ish): run once and iterate results, batching as we
    * go.
    */
-  private void streamCursor(Database db, StreamQueryRequest request, int batchSize, ServerCallStreamObserver<QueryResult> scso,
-      AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+  private void streamCursor(Database db, StreamQueryRequest request, int batchSize,
+                            ServerCallStreamObserver<QueryResult> scso,
+                            AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
 
     long running = 0L;
 
     QueryResult.Builder batch = QueryResult.newBuilder();
     int inBatch = 0;
 
-    try (ResultSet rs = db.query("sql", request.getQuery(), GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
+    try (ResultSet rs = db.query("sql", request.getQuery(),
+        GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
       while (rs.hasNext()) {
 
@@ -1164,12 +1185,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * @param projectionConfig
    */
   private void streamMaterialized(Database db, StreamQueryRequest request, int batchSize,
-      ServerCallStreamObserver<QueryResult> scso,
-      AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+                                  ServerCallStreamObserver<QueryResult> scso,
+                                  AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
 
     final List<GrpcRecord> all = new ArrayList<>();
 
-    try (ResultSet rs = db.query("sql", request.getQuery(), GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
+    try (ResultSet rs = db.query("sql", request.getQuery(),
+        GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
       while (rs.hasNext()) {
         if (cancelled.get())
@@ -1215,8 +1237,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    *
    * @param projectionConfig
    */
-  private void streamPaged(Database db, StreamQueryRequest request, int batchSize, ServerCallStreamObserver<QueryResult> scso,
-      AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
+  private void streamPaged(Database db, StreamQueryRequest request, int batchSize,
+                           ServerCallStreamObserver<QueryResult> scso,
+                           AtomicBoolean cancelled, ProjectionConfig projectionConfig) {
 
     final String pagedSql = wrapWithSkipLimit(request.getQuery()); // see helper below
     int offset = 0;
@@ -1265,7 +1288,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       running += count;
       boolean last = count < batchSize;
 
-      safeOnNext(scso, cancelled, b.setTotalRecordsInBatch(count).setRunningTotalEmitted(running).setIsLastBatch(last).build());
+      safeOnNext(scso, cancelled,
+          b.setTotalRecordsInBatch(count).setRunningTotalEmitted(running).setIsLastBatch(last).build());
 
       if (last)
         return;
@@ -1420,7 +1444,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
             firstOptsRef.set(effective);
 
-            LogManager.instance().log(this, Level.FINE, "insertStream: initialized context with options:\n%s", effective);
+            LogManager.instance().log(this, Level.FINE, "insertStream: initialized context with options:\n%s",
+                effective);
           } else {
 
             // -------- Subsequent chunks: optionally validate option consistency --------
@@ -1441,7 +1466,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } catch (Exception e) {
           // Register as an error on totals; keep stream alive unless you prefer to fail
           // the call
-          totals.err(Math.max(0, (ctxRef.get() != null ? ctxRef.get().received : 0) - 1), "DB_ERROR", e.getMessage(), "");
+          totals.err(Math.max(0, (ctxRef.get() != null ? ctxRef.get().received : 0) - 1), "DB_ERROR", e.getMessage(),
+              "");
         } finally {
           if (!cancelled.get())
             call.request(1);
@@ -1568,99 +1594,100 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           try {
             switch (reqMsg.getMsgCase()) {
 
-            case START -> {
-              if (!started.compareAndSet(false, true)) {
-                resp.onError(
-                    Status.FAILED_PRECONDITION.withDescription("insertBidirectional: START already received").asException());
-                return;
+              case START -> {
+                if (!started.compareAndSet(false, true)) {
+                  resp.onError(
+                      Status.FAILED_PRECONDITION.withDescription("insertBidirectional: START already received").asException());
+                  return;
+                }
+
+                final InsertOptions opts = defaults(reqMsg.getStart().getOptions());
+                final InsertContext ctx = new InsertContext(opts);
+                ctx.startedAt = System.currentTimeMillis();
+                ctx.totals = new Counts();
+
+                ref.set(ctx);
+                sessionWatermark.put(ctx.sessionId, 0L);
+
+                sendResponse.accept(
+                    InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
+
+                // pull next message
+                call.request(1);
               }
 
-              final InsertOptions opts = defaults(reqMsg.getStart().getOptions());
-              final InsertContext ctx = new InsertContext(opts);
-              ctx.startedAt = System.currentTimeMillis();
-              ctx.totals = new Counts();
+              case CHUNK -> {
+                final InsertContext ctx = require(ref.get(), "session not started");
+                final InsertChunk c = reqMsg.getChunk();
 
-              ref.set(ctx);
-              sessionWatermark.put(ctx.sessionId, 0L);
+                // idempotent replay guard
+                final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
 
-              sendResponse.accept(
-                  InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
+                if (c.getChunkSeq() <= hi) {
 
-              // pull next message
-              call.request(1);
-            }
+                  resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
+                      .setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
 
-            case CHUNK -> {
-              final InsertContext ctx = require(ref.get(), "session not started");
-              final InsertChunk c = reqMsg.getChunk();
+                  call.request(1);
+                  return;
+                }
 
-              // idempotent replay guard
-              final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
+                Counts perChunk;
+                try {
+                  perChunk = insertRows(ctx, c.getRowsList().iterator());
+                  ctx.totals.add(perChunk);
+                  sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
 
-              if (c.getChunkSeq() <= hi) {
+                  sendResponse.accept(InsertResponse.newBuilder()
+                      .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+                          .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+                          .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+                      .build());
 
-                resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
-                    .setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
+                } catch (Exception e) {
+                  // surface as failed chunk and continue (or switch to resp.onError(...) if you
+                  // want to fail fast)
+
+                  perChunk = new Counts();
+
+                  perChunk.failed = c.getRowsCount();
+
+                  perChunk.errors.add(InsertError.newBuilder().setRowIndex(Math.max(0, ctx.received - 1)).setCode(
+                          "DB_ERROR")
+                      .setMessage(String.valueOf(e.getMessage())).build());
+                  ctx.totals.add(perChunk);
+                  // intentionally do not advance watermark on failure; client may replay safely
+
+                  sendResponse.accept(InsertResponse.newBuilder()
+                      .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
+                          .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
+                          .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
+                      .build());
+                }
 
                 call.request(1);
-                return;
               }
 
-              Counts perChunk;
-              try {
-                perChunk = insertRows(ctx, c.getRowsList().iterator());
-                ctx.totals.add(perChunk);
-                sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
-
-                sendResponse.accept(InsertResponse.newBuilder()
-                    .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-                        .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
-                        .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
-                    .build());
-
-              } catch (Exception e) {
-                // surface as failed chunk and continue (or switch to resp.onError(...) if you
-                // want to fail fast)
-
-                perChunk = new Counts();
-
-                perChunk.failed = c.getRowsCount();
-
-                perChunk.errors.add(InsertError.newBuilder().setRowIndex(Math.max(0, ctx.received - 1)).setCode("DB_ERROR")
-                    .setMessage(String.valueOf(e.getMessage())).build());
-                ctx.totals.add(perChunk);
-                // intentionally do not advance watermark on failure; client may replay safely
-
-                sendResponse.accept(InsertResponse.newBuilder()
-                    .setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId).setChunkSeq(c.getChunkSeq())
-                        .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
-                        .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
-                    .build());
+              case COMMIT -> {
+                final InsertContext ctx = require(ref.get(), "session not started");
+                try {
+                  ctx.flushCommit(true); // commit unless validate_only in your InsertContext logic
+                  final InsertSummary sum = ctx.summary(ctx.totals, ctx.startedAt);
+                  resp.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
+                  resp.onCompleted();
+                } catch (Exception e) {
+                  resp.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
+                } finally {
+                  sessionWatermark.remove(ctx.sessionId);
+                  ctx.closeQuietly();
+                  ref.set(null);
+                }
               }
 
-              call.request(1);
-            }
-
-            case COMMIT -> {
-              final InsertContext ctx = require(ref.get(), "session not started");
-              try {
-                ctx.flushCommit(true); // commit unless validate_only in your InsertContext logic
-                final InsertSummary sum = ctx.summary(ctx.totals, ctx.startedAt);
-                resp.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
-                resp.onCompleted();
-              } catch (Exception e) {
-                resp.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
-              } finally {
-                sessionWatermark.remove(ctx.sessionId);
-                ctx.closeQuietly();
-                ref.set(null);
+              case MSG_NOT_SET -> {
+                // ignore
+                call.request(1);
               }
-            }
-
-            case MSG_NOT_SET -> {
-              // ignore
-              call.request(1);
-            }
             }
           } catch (Exception unexpected) {
             // defensive: fail fast on unexpected exceptions
@@ -1846,11 +1873,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
                 .setMessage("Edge requires 'out' and 'in'").build());
           } else {
-            var outV = ctx.db.lookupByRID(new RID(outRid), true).asVertex(true);
-            var inV = ctx.db.lookupByRID(new RID(inRid), true).asVertex(true);
+            var outV = ctx.db.lookupByRID(new RID(outRid), true).asVertex(false);
 
             // Create edge from the OUT vertex
-            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), inV);
+            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), new RID(inRid));
             applyGrpcRecord(e, r); // sets edge properties
             e.save();
             c.inserted++;
@@ -1868,10 +1894,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       } catch (DuplicatedKeyException dup) {
         switch (ctx.opts.getConflictMode()) {
-        case CONFLICT_IGNORE -> c.ignored++;
-        case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
-        case CONFLICT_UPDATE -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
-        case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+          case CONFLICT_IGNORE -> c.ignored++;
+          case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+          case CONFLICT_UPDATE -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+          case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
         }
       } catch (Exception e) {
         c.err(ctx.received - 1, "DB_ERROR", e.getMessage(), "");
@@ -1910,7 +1936,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      LogManager.instance().log(this, Level.FINE, "APPLY-DOC %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+      LogManager.instance().log(this, Level.FINE, "APPLY-DOC %s <= %s -> %s", k, summarizeGrpc(grpcVal),
+          summarizeJava(javaVal));
       doc.set(k, javaVal);
     });
   }
@@ -1933,7 +1960,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+      LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal),
+          summarizeJava(javaVal));
       edge.set(k, javaVal);
     });
   }
@@ -1942,52 +1970,52 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (v == null)
       return dbgDec("fromGrpcValue", v, null, null);
     switch (v.getKindCase()) {
-    case BOOL_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getBoolValue(), null);
-    case INT32_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getInt32Value(), null);
-    case INT64_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getInt64Value(), null);
-    case FLOAT_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getFloatValue(), null);
-    case DOUBLE_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getDoubleValue(), null);
-    case STRING_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getStringValue(), null);
-    case BYTES_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
-    case TIMESTAMP_VALUE:
-      return dbgDec("fromGrpcValue", v, new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue())), null);
-    case LINK_VALUE:
-      return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()), null);
+      case BOOL_VALUE:
+        return dbgDec("fromGrpcValue", v, v.getBoolValue(), null);
+      case INT32_VALUE:
+        return dbgDec("fromGrpcValue", v, v.getInt32Value(), null);
+      case INT64_VALUE:
+        return dbgDec("fromGrpcValue", v, v.getInt64Value(), null);
+      case FLOAT_VALUE:
+        return dbgDec("fromGrpcValue", v, v.getFloatValue(), null);
+      case DOUBLE_VALUE:
+        return dbgDec("fromGrpcValue", v, v.getDoubleValue(), null);
+      case STRING_VALUE:
+        return dbgDec("fromGrpcValue", v, v.getStringValue(), null);
+      case BYTES_VALUE:
+        return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
+      case TIMESTAMP_VALUE:
+        return dbgDec("fromGrpcValue", v, new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue())), null);
+      case LINK_VALUE:
+        return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()), null);
 
-    case DECIMAL_VALUE: {
-      var d = v.getDecimalValue();
-      return dbgDec("fromGrpcValue", v, new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale()),
-          null);
-    }
+      case DECIMAL_VALUE: {
+        var d = v.getDecimalValue();
+        return dbgDec("fromGrpcValue", v, new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale()),
+            null);
+      }
 
-    case LIST_VALUE: {
-      var out = new ArrayList<>();
-      for (GrpcValue e : v.getListValue().getValuesList())
-        out.add(fromGrpcValue(e));
-      return dbgDec("fromGrpcValue", v, out, null);
-    }
+      case LIST_VALUE: {
+        var out = new ArrayList<>();
+        for (GrpcValue e : v.getListValue().getValuesList())
+          out.add(fromGrpcValue(e));
+        return dbgDec("fromGrpcValue", v, out, null);
+      }
 
-    case MAP_VALUE: {
-      var out = new LinkedHashMap<String, Object>();
-      v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
-      return dbgDec("fromGrpcValue", v, out, null);
-    }
+      case MAP_VALUE: {
+        var out = new LinkedHashMap<String, Object>();
+        v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+        return dbgDec("fromGrpcValue", v, out, null);
+      }
 
-    case EMBEDDED_VALUE: {
-      var out = new LinkedHashMap<String, Object>();
-      v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
-      return dbgDec("fromGrpcValue", v, out, null);
-    }
+      case EMBEDDED_VALUE: {
+        var out = new LinkedHashMap<String, Object>();
+        v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+        return dbgDec("fromGrpcValue", v, out, null);
+      }
 
-    case KIND_NOT_SET:
-      return dbgDec("fromGrpcValue", v, null, null);
+      case KIND_NOT_SET:
+        return dbgDec("fromGrpcValue", v, null, null);
     }
     return dbgDec("fromGrpcValue", v, null, null);
   }
@@ -2028,12 +2056,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     if (o instanceof Date v) {
       return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setTimestampValue(GrpcTypeConverter.msToTimestamp(v.getTime())).setLogicalType("datetime").build(), null);
+          GrpcValue.newBuilder().setTimestampValue(GrpcTypeConverter.msToTimestamp(v.getTime())).setLogicalType(
+              "datetime").build(), null);
     }
 
     if (o instanceof RID rid) {
       return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build(),
+          GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType(
+              "rid").build(),
           null);
     }
 
@@ -2046,7 +2076,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } else {
         // if you need >64-bit unscaled, switch GrpcDecimal.unscaled to bytes in the
         // proto
-        return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build(),
+        return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType(
+                "decimal").build(),
             null);
       }
     }
@@ -2091,7 +2122,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // 3.1 LINK mode
       if (enc == ProjectionEncoding.PROJECTION_AS_LINK) {
         if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
-          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> LINK rid=%s", doc.getIdentity());
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> LINK rid=%s",
+              doc.getIdentity());
           return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
               .setLogicalType("rid").build();
         }
@@ -2103,13 +2135,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // 3.2 MAP mode
       if (enc == ProjectionEncoding.PROJECTION_AS_MAP) {
         LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> MAP rid=%s type=%s",
-            (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"));
+            (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() :
+                "null"));
         GrpcMap.Builder mb = GrpcMap.newBuilder();
 
         // meta
         if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
-          GrpcValue ridVal = GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
-              .setLogicalType("rid").build();
+          GrpcValue ridVal =
+              GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
+                  .setLogicalType("rid").build();
           // soft limit accounting (precise, using serialized sizes)
           if (!pc.wouldExceed(GrpcTypeConverter.bytesOf("@rid") + ridVal.getSerializedSize())) {
             mb.putEntries("@rid", ridVal);
@@ -2131,7 +2165,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           int add = GrpcTypeConverter.bytesOf(k) + child.getSerializedSize();
           if (pc.wouldExceed(add)) {
             LogManager.instance()
-                .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' (limit=%s, used~%s)",
+                .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' " +
+                        "(limit=%s, used~%s)",
                     k,
                     pc.softLimitBytes, pc.used.get());
             pc.truncated = true;
@@ -2146,7 +2181,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // 3.3 JSON mode
       if (enc == ProjectionEncoding.PROJECTION_AS_JSON) {
         LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> JSON rid=%s type=%s",
-            (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"));
+            (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() :
+                "null"));
 
         try {
 
@@ -2168,7 +2204,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Soft limit handling
           if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
             pc.truncated = true;
-            LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; size=%s limit=%s",
+            LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; " +
+                    "size=%s limit=%s",
                 jsonBytes.length,
                 pc.softLimitBytes);
             // Prefer a RID fallback if we have one
@@ -2188,14 +2225,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Safe fallback: send as MAP (typed GrpcValue tree)
           LogManager.instance().log(this, Level.WARNING,
               "GRPC-ENC [toGrpcValue] PROJECTION_AS_JSON failed for rid=%s type=%s, falling back to MAP; err=%s",
-              (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() : "null"),
+              (doc.getIdentity() != null ? doc.getIdentity() : "null"), (doc.getType() != null ? doc.getTypeName() :
+                  "null"),
               t.toString());
 
           GrpcMap.Builder mb = GrpcMap.newBuilder();
 
           if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
             mb.putEntries("@rid", GrpcValue.newBuilder()
-                .setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build()).setLogicalType("rid").build());
+                .setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build()).setLogicalType("rid"
+                ).build());
           }
           if (doc.getType() != null) {
             mb.putEntries("@type", GrpcValue.newBuilder().setStringValue(doc.getTypeName()).build());
@@ -2268,7 +2307,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Fallback
     LogManager.instance()
-        .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class=%s value=%s", o.getClass().getName(),
+        .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class=%s value=%s",
+            o.getClass().getName(),
             String.valueOf(o));
 
     return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
@@ -2320,7 +2360,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       this.updateCols = opts.getUpdateColumnsOnConflictList();
 
       if (!opts.getValidateOnly()) {
-        if (opts.getTransactionMode() == TransactionMode.PER_STREAM || opts.getTransactionMode() == TransactionMode.PER_BATCH) {
+        if (opts.getTransactionMode() == TransactionMode.PER_STREAM || opts.getTransactionMode() == TransactionMode.PER_BATCH
+            || opts.getTransactionMode() == TransactionMode.PER_REQUEST || opts.getTransactionMode() == TransactionMode.PER_ROW) {
           db.begin();
         }
       }
@@ -2334,19 +2375,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
       }
       switch (opts.getTransactionMode()) {
-      case PER_ROW -> db.commit();
-      case PER_REQUEST -> db.commit();
-      case PER_BATCH -> {
-        db.commit();
-        if (!end)
-          db.begin();
-      }
-      case PER_STREAM -> {
-        if (end)
+        case PER_ROW -> {
           db.commit();
-      }
-      default -> {
-      }
+          if (!end)
+            db.begin();
+        }
+        case PER_REQUEST -> {
+          if (end)
+            db.commit();
+        }
+        case PER_BATCH -> {
+          db.commit();
+          if (!end)
+            db.begin();
+        }
+        case PER_STREAM -> {
+          if (end)
+            db.commit();
+        }
+        default -> {
+        }
       }
     }
 
@@ -2442,7 +2490,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String authenticatedUser = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
     if (authenticatedUser != null && !authenticatedUser.isEmpty()) {
       // User already authenticated via interceptor, no need to validate credentials
-      LogManager.instance().log(this, Level.FINE, "validateCredentials(): user already authenticated via interceptor: %s", authenticatedUser);
+      LogManager.instance().log(this, Level.FINE, "validateCredentials(): user already authenticated via interceptor:" +
+          " %s", authenticatedUser);
       return;
     }
 
@@ -2460,7 +2509,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * @param result           the Result object from a query execution
    * @param db               the database instance
    * @param projectionConfig optional projection configuration
-   *
    * @return GrpcRecord with all properties and aliases preserved
    */
   private GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
@@ -2530,6 +2578,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     return builder.build();
   }
+
   private GrpcRecord convertToGrpcRecord(Record dbRecord, Database db) {
 
     GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
@@ -2550,7 +2599,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (value != null) {
 
           LogManager.instance()
-              .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName, value,
+              .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
+                  , value,
                   value.getClass());
 
           GrpcValue gv = toGrpcValue(value);
@@ -2576,7 +2626,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    LogManager.instance().log(this, Level.FINE, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(), builder.getType(),
+    LogManager.instance().log(this, Level.FINE, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(),
+        builder.getType(),
         builder.getPropertiesCount());
 
     return builder.build();
@@ -2587,7 +2638,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     Object propValue = result.getProperty(propName);
 
     LogManager.instance()
-        .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName, propValue,
+        .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
+            propValue,
             propValue.getClass());
 
     return toGrpcValue(propValue, pc);
@@ -2598,14 +2650,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     Object propValue = result.getProperty(propName);
 
     LogManager.instance()
-        .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName, propValue,
+        .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
+            propValue,
             propValue.getClass());
 
     return toGrpcValue(propValue);
   }
 
-  private Object toJavaForProperty(final Database db, final MutableDocument parent, final DocumentType dtype, final String propName,
-      final GrpcValue grpcValue) {
+  private Object toJavaForProperty(final Database db, final MutableDocument parent, final DocumentType dtype,
+                                   final String propName,
+                                   final GrpcValue grpcValue) {
 
     if (grpcValue == null)
       return null;
@@ -2625,308 +2679,317 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private Object convertWithSchemaType(Database db, MutableDocument parent, Property prop, String propName,
-      GrpcValue v) {
+                                       GrpcValue v) {
 
     var t = prop.getType();
 
     switch (t) {
 
-    case BOOLEAN:
-      return switch (v.getKindCase()) {
-        case BOOL_VALUE -> v.getBoolValue();
-        case STRING_VALUE -> Boolean.parseBoolean(v.getStringValue());
-        default -> null;
-      };
+      case BOOLEAN:
+        return switch (v.getKindCase()) {
+          case BOOL_VALUE -> v.getBoolValue();
+          case STRING_VALUE -> Boolean.parseBoolean(v.getStringValue());
+          default -> null;
+        };
 
-    case BYTE:
-      return switch (v.getKindCase()) {
-        case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (byte) (long) fromGrpcValue(v);
-        case STRING_VALUE -> Byte.parseByte(v.getStringValue());
-        default -> null;
-      };
+      case BYTE:
+        return switch (v.getKindCase()) {
+          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (byte) (long) fromGrpcValue(v);
+          case STRING_VALUE -> Byte.parseByte(v.getStringValue());
+          default -> null;
+        };
 
-    case SHORT:
-      return switch (v.getKindCase()) {
-        case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (short) (long) fromGrpcValue(v);
-        case STRING_VALUE -> Short.parseShort(v.getStringValue());
-        default -> null;
-      };
+      case SHORT:
+        return switch (v.getKindCase()) {
+          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (short) (long) fromGrpcValue(v);
+          case STRING_VALUE -> Short.parseShort(v.getStringValue());
+          default -> null;
+        };
 
-    case INTEGER:
-      return switch (v.getKindCase()) {
-        case INT32_VALUE -> v.getInt32Value();
-        case INT64_VALUE -> (int) v.getInt64Value();
-        case DOUBLE_VALUE -> (int) v.getDoubleValue();
-        case FLOAT_VALUE -> (int) v.getFloatValue();
-        case STRING_VALUE -> Integer.parseInt(v.getStringValue());
-        default -> null;
-      };
+      case INTEGER:
+        return switch (v.getKindCase()) {
+          case INT32_VALUE -> v.getInt32Value();
+          case INT64_VALUE -> (int) v.getInt64Value();
+          case DOUBLE_VALUE -> (int) v.getDoubleValue();
+          case FLOAT_VALUE -> (int) v.getFloatValue();
+          case STRING_VALUE -> Integer.parseInt(v.getStringValue());
+          default -> null;
+        };
 
-    case LONG:
-      return switch (v.getKindCase()) {
-        case INT64_VALUE -> v.getInt64Value();
-        case INT32_VALUE -> (long) v.getInt32Value();
-        case DOUBLE_VALUE -> (long) v.getDoubleValue();
-        case FLOAT_VALUE -> (long) v.getFloatValue();
-        case STRING_VALUE -> Long.parseLong(v.getStringValue());
-        default -> null;
-      };
+      case LONG:
+        return switch (v.getKindCase()) {
+          case INT64_VALUE -> v.getInt64Value();
+          case INT32_VALUE -> (long) v.getInt32Value();
+          case DOUBLE_VALUE -> (long) v.getDoubleValue();
+          case FLOAT_VALUE -> (long) v.getFloatValue();
+          case STRING_VALUE -> Long.parseLong(v.getStringValue());
+          default -> null;
+        };
 
-    case FLOAT:
-      return switch (v.getKindCase()) {
-        case FLOAT_VALUE -> v.getFloatValue();
-        case DOUBLE_VALUE -> (float) v.getDoubleValue();
-        case INT32_VALUE -> (float) v.getInt32Value();
-        case INT64_VALUE -> (float) v.getInt64Value();
-        case STRING_VALUE -> Float.parseFloat(v.getStringValue());
-        default -> null;
-      };
+      case FLOAT:
+        return switch (v.getKindCase()) {
+          case FLOAT_VALUE -> v.getFloatValue();
+          case DOUBLE_VALUE -> (float) v.getDoubleValue();
+          case INT32_VALUE -> (float) v.getInt32Value();
+          case INT64_VALUE -> (float) v.getInt64Value();
+          case STRING_VALUE -> Float.parseFloat(v.getStringValue());
+          default -> null;
+        };
 
-    case DOUBLE:
-      return switch (v.getKindCase()) {
-        case DOUBLE_VALUE -> v.getDoubleValue();
-        case FLOAT_VALUE -> (double) v.getFloatValue();
-        case INT32_VALUE -> (double) v.getInt32Value();
-        case INT64_VALUE -> (double) v.getInt64Value();
-        case STRING_VALUE -> Double.parseDouble(v.getStringValue());
-        default -> null;
-      };
+      case DOUBLE:
+        return switch (v.getKindCase()) {
+          case DOUBLE_VALUE -> v.getDoubleValue();
+          case FLOAT_VALUE -> (double) v.getFloatValue();
+          case INT32_VALUE -> (double) v.getInt32Value();
+          case INT64_VALUE -> (double) v.getInt64Value();
+          case STRING_VALUE -> Double.parseDouble(v.getStringValue());
+          default -> null;
+        };
 
-    case STRING:
-      return switch (v.getKindCase()) {
-        case STRING_VALUE -> v.getStringValue();
-        default -> String.valueOf(fromGrpcValue(v));
-      };
+      case STRING:
+        return switch (v.getKindCase()) {
+          case STRING_VALUE -> v.getStringValue();
+          default -> String.valueOf(fromGrpcValue(v));
+        };
 
-    case DECIMAL:
-      return switch (v.getKindCase()) {
-        case DECIMAL_VALUE -> {
-          var d = v.getDecimalValue();
-          yield new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale());
-        }
-        case STRING_VALUE -> new BigDecimal(v.getStringValue());
-        case DOUBLE_VALUE -> BigDecimal.valueOf(v.getDoubleValue());
-        case INT32_VALUE -> BigDecimal.valueOf(v.getInt32Value());
-        case INT64_VALUE -> BigDecimal.valueOf(v.getInt64Value());
-        default -> null;
-      };
+      case DECIMAL:
+        return switch (v.getKindCase()) {
+          case DECIMAL_VALUE -> {
+            var d = v.getDecimalValue();
+            yield new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale());
+          }
+          case STRING_VALUE -> new BigDecimal(v.getStringValue());
+          case DOUBLE_VALUE -> BigDecimal.valueOf(v.getDoubleValue());
+          case INT32_VALUE -> BigDecimal.valueOf(v.getInt32Value());
+          case INT64_VALUE -> BigDecimal.valueOf(v.getInt64Value());
+          default -> null;
+        };
 
-    case DATE:
-    case DATETIME:
-      // Prefer timestamp_value; else accept epoch ms in int64; else parse string
-      return switch (v.getKindCase()) {
-        case TIMESTAMP_VALUE -> new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue()));
-        case INT64_VALUE -> new Date(v.getInt64Value());
-        case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
-        default -> null;
-      };
+      case DATE:
+      case DATETIME:
+        // Prefer timestamp_value; else accept epoch ms in int64; else parse string
+        return switch (v.getKindCase()) {
+          case TIMESTAMP_VALUE -> new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue()));
+          case INT64_VALUE -> new Date(v.getInt64Value());
+          case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
+          default -> null;
+        };
 
-    case BINARY:
-      return switch (v.getKindCase()) {
-        case BYTES_VALUE -> v.getBytesValue().toByteArray();
-        case STRING_VALUE -> v.getStringValue().getBytes(StandardCharsets.UTF_8);
-        default -> null;
-      };
+      case BINARY:
+        return switch (v.getKindCase()) {
+          case BYTES_VALUE -> v.getBytesValue().toByteArray();
+          case STRING_VALUE -> v.getStringValue().getBytes(StandardCharsets.UTF_8);
+          default -> null;
+        };
 
-    case LINK:
-      return switch (v.getKindCase()) {
-        case LINK_VALUE -> new RID(v.getLinkValue().getRid());
-        case STRING_VALUE -> new RID(v.getStringValue());
-        default -> null;
-      };
+      case LINK:
+        return switch (v.getKindCase()) {
+          case LINK_VALUE -> new RID(v.getLinkValue().getRid());
+          case STRING_VALUE -> new RID(v.getStringValue());
+          default -> null;
+        };
 
-    case EMBEDDED: {
+      case EMBEDDED: {
 
-      // Use schema ofType if present; otherwise use embedded.type from the payload
-      LogManager.instance()
-          .log(this, Level.FINE, "EMBEDDED: prop='%s', incoming kind=%s, schema ofType='%s'", propName, v.getKindCase(),
-              prop.getOfType());
-
-      String embeddedTypeName = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
-          ? v.getEmbeddedValue().getType()
-          : prop.getOfType();
-
-      // If still unknown, try to discover from MAP payload keys
-      // (type/@type/empowerType)
-      if ((embeddedTypeName == null || embeddedTypeName.isEmpty()) && v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
-        var entries = v.getMapValue().getEntriesMap();
-        GrpcValue tv = entries.getOrDefault("type", entries.getOrDefault("@type", entries.get("empowerType")));
-        if (tv != null && tv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) {
-          embeddedTypeName = tv.getStringValue();
-          LogManager.instance()
-              .log(this, Level.FINE, "EMBEDDED: discovered embeddedTypeName='%s' from MAP payload", embeddedTypeName);
-        }
-      }
-
-      // If we still don't know the type and payload isn't EMBEDDED, fall back to Map
-      if ((embeddedTypeName == null || embeddedTypeName.isEmpty()) && v.getKindCase() != GrpcValue.KindCase.EMBEDDED_VALUE) {
-
+        // Use schema ofType if present; otherwise use embedded.type from the payload
         LogManager.instance()
-            .log(this, Level.FINE, "EMBEDDED: fallback to Map for prop='%s' (kind=%s, embeddedTypeName='%s')", propName,
+            .log(this, Level.FINE, "EMBEDDED: prop='%s', incoming kind=%s, schema ofType='%s'", propName,
                 v.getKindCase(),
-                embeddedTypeName);
-        return fromGrpcValue(v);
-      }
+                prop.getOfType());
 
-      final String source = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
-          ? "payload"
-          : "schema/discovered";
-      int fields = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE) ? v.getEmbeddedValue().getFieldsCount()
-          : (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) ? v.getMapValue().getEntriesCount() : 0;
-      LogManager.instance()
-          .log(this, Level.FINE, "EMBEDDED: resolved embeddedTypeName='%s' (source=%s), fields=%s", embeddedTypeName, source,
-              fields);
+        String embeddedTypeName =
+            (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
+                ? v.getEmbeddedValue().getType()
+                : prop.getOfType();
 
-      // Build typed embedded document
-      MutableEmbeddedDocument ed = parent.newEmbeddedDocument(embeddedTypeName, propName);
-      DocumentType embeddedType = null;
-      try {
-        embeddedType = db.getSchema().getType(embeddedTypeName);
-        LogManager.instance().log(this, Level.FINE, "EMBEDDED: schema type lookup '%s' -> %s", embeddedTypeName,
-            (embeddedType != null ? "FOUND" : "NOT FOUND"));
-      } catch (Exception e) {
+        // If still unknown, try to discover from MAP payload keys
+        // (type/@type/empowerType)
+        if ((embeddedTypeName == null || embeddedTypeName.isEmpty()) && v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
+          var entries = v.getMapValue().getEntriesMap();
+          GrpcValue tv = entries.getOrDefault("type", entries.getOrDefault("@type", entries.get("empowerType")));
+          if (tv != null && tv.getKindCase() == GrpcValue.KindCase.STRING_VALUE) {
+            embeddedTypeName = tv.getStringValue();
+            LogManager.instance()
+                .log(this, Level.FINE, "EMBEDDED: discovered embeddedTypeName='%s' from MAP payload", embeddedTypeName);
+          }
+        }
+
+        // If we still don't know the type and payload isn't EMBEDDED, fall back to Map
+        if ((embeddedTypeName == null || embeddedTypeName.isEmpty()) && v.getKindCase() != GrpcValue.KindCase.EMBEDDED_VALUE) {
+
+          LogManager.instance()
+              .log(this, Level.FINE, "EMBEDDED: fallback to Map for prop='%s' (kind=%s, embeddedTypeName='%s')",
+                  propName,
+                  v.getKindCase(),
+                  embeddedTypeName);
+          return fromGrpcValue(v);
+        }
+
+        final String source =
+            (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE && !v.getEmbeddedValue().getType().isEmpty())
+                ? "payload"
+                : "schema/discovered";
+        int fields = (v.getKindCase() == GrpcValue.KindCase.EMBEDDED_VALUE) ? v.getEmbeddedValue().getFieldsCount()
+            : (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) ? v.getMapValue().getEntriesCount() : 0;
         LogManager.instance()
-            .log(this, Level.FINE, "EMBEDDED: schema type lookup failed for '%s': %s", embeddedTypeName, e.toString());
-      }
-      final DocumentType embeddedTypeFinal = embeddedType;
+            .log(this, Level.FINE, "EMBEDDED: resolved embeddedTypeName='%s' (source=%s), fields=%s",
+                embeddedTypeName, source,
+                fields);
 
-      // Populate from either EMBEDDED_VALUE.fields or MAP_VALUE.entries
-      switch (v.getKindCase()) {
-      case EMBEDDED_VALUE:
-        v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> {
-          LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' raw kind=%s", k, vv.getKindCase());
-          Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
-          LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' converted -> %s", k,
-              (j == null ? "null" : j.getClass().getSimpleName()));
-          ed.set(k, j);
-        });
-        break;
+        // Build typed embedded document
+        MutableEmbeddedDocument ed = parent.newEmbeddedDocument(embeddedTypeName, propName);
+        DocumentType embeddedType = null;
+        try {
+          embeddedType = db.getSchema().getType(embeddedTypeName);
+          LogManager.instance().log(this, Level.FINE, "EMBEDDED: schema type lookup '%s' -> %s", embeddedTypeName,
+              (embeddedType != null ? "FOUND" : "NOT FOUND"));
+        } catch (Exception e) {
+          LogManager.instance()
+              .log(this, Level.FINE, "EMBEDDED: schema type lookup failed for '%s': %s", embeddedTypeName,
+                  e.toString());
+        }
+        final DocumentType embeddedTypeFinal = embeddedType;
 
-      case MAP_VALUE:
-        v.getMapValue().getEntriesMap().forEach((k, vv) -> {
-          LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' raw kind=%s", k, vv.getKindCase());
-          Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) : fromGrpcValue(vv);
-          LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' converted -> %s", k,
-              (j == null ? "null" : j.getClass().getSimpleName()));
-          ed.set(k, j);
-        });
-        break;
+        // Populate from either EMBEDDED_VALUE.fields or MAP_VALUE.entries
+        switch (v.getKindCase()) {
+          case EMBEDDED_VALUE:
+            v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> {
+              LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' raw kind=%s", k, vv.getKindCase());
+              Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) :
+                  fromGrpcValue(vv);
+              LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' converted -> %s", k,
+                  (j == null ? "null" : j.getClass().getSimpleName()));
+              ed.set(k, j);
+            });
+            break;
 
-      default:
-        // Shouldn't happen; be safe
+          case MAP_VALUE:
+            v.getMapValue().getEntriesMap().forEach((k, vv) -> {
+              LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' raw kind=%s", k, vv.getKindCase());
+              Object j = (embeddedTypeFinal != null) ? toJavaForProperty(db, ed, embeddedTypeFinal, k, vv) :
+                  fromGrpcValue(vv);
+              LogManager.instance().log(this, Level.FINE, "EMBEDDED: field '%s' converted -> %s", k,
+                  (j == null ? "null" : j.getClass().getSimpleName()));
+              ed.set(k, j);
+            });
+            break;
+
+          default:
+            // Shouldn't happen; be safe
+            LogManager.instance()
+                .log(this, Level.FINE, "EMBEDDED: unexpected kind=%s, falling back to Map for prop='%s'",
+                    v.getKindCase(), propName);
+            return fromGrpcValue(v);
+        }
+
         LogManager.instance()
-            .log(this, Level.FINE, "EMBEDDED: unexpected kind=%s, falling back to Map for prop='%s'", v.getKindCase(), propName);
-        return fromGrpcValue(v);
+            .log(this, Level.FINE, "EMBEDDED: built embedded doc type='%s' for prop='%s'", embeddedTypeName, propName);
+        return ed;
       }
 
-      LogManager.instance()
-          .log(this, Level.FINE, "EMBEDDED: built embedded doc type='%s' for prop='%s'", embeddedTypeName, propName);
-      return ed;
-    }
-
-    case MAP:
-      if (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
-        var m = new LinkedHashMap<String, Object>();
-        v.getMapValue().getEntriesMap().forEach((k, vv) -> m.put(k, fromGrpcValue(vv)));
-        return m;
-      }
-      return null;
-
-    case LIST:
-      if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var list = new ArrayList<>();
-        for (GrpcValue item : v.getListValue().getValuesList()) {
-          list.add(fromGrpcValue(item));
+      case MAP:
+        if (v.getKindCase() == GrpcValue.KindCase.MAP_VALUE) {
+          var m = new LinkedHashMap<String, Object>();
+          v.getMapValue().getEntriesMap().forEach((k, vv) -> m.put(k, fromGrpcValue(vv)));
+          return m;
         }
-        return list;
-      }
-      return null;
-    case ARRAY_OF_SHORTS: {
-      if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new ArrayList<Short>();
-        for (GrpcValue item : v.getListValue().getValuesList()) {
-          Object o = fromGrpcValue(item);
-          if (o instanceof Number n)
-            out.add(n.shortValue());
-          else if (o instanceof String s)
-            out.add(Short.parseShort(s));
-        }
-        return out;
-      }
-      return null;
-    }
+        return null;
 
-    case ARRAY_OF_INTEGERS: {
-      if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new ArrayList<Integer>();
-        for (GrpcValue item : v.getListValue().getValuesList()) {
-          Object o = fromGrpcValue(item);
-          if (o instanceof Number n)
-            out.add(n.intValue());
-          else if (o instanceof String s)
-            out.add(Integer.parseInt(s));
+      case LIST:
+        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+          var list = new ArrayList<>();
+          for (GrpcValue item : v.getListValue().getValuesList()) {
+            list.add(fromGrpcValue(item));
+          }
+          return list;
         }
-        return out;
-      }
-      return null;
-    }
-
-    case ARRAY_OF_LONGS: {
-      if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new ArrayList<Long>();
-        for (GrpcValue item : v.getListValue().getValuesList()) {
-          Object o = fromGrpcValue(item);
-          if (o instanceof Number n)
-            out.add(n.longValue());
-          else if (o instanceof String s)
-            out.add(Long.parseLong(s));
+        return null;
+      case ARRAY_OF_SHORTS: {
+        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+          var out = new ArrayList<Short>();
+          for (GrpcValue item : v.getListValue().getValuesList()) {
+            Object o = fromGrpcValue(item);
+            if (o instanceof Number n)
+              out.add(n.shortValue());
+            else if (o instanceof String s)
+              out.add(Short.parseShort(s));
+          }
+          return out;
         }
-        return out;
+        return null;
       }
-      return null;
-    }
 
-    case ARRAY_OF_FLOATS: {
-      if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new ArrayList<Float>();
-        for (GrpcValue item : v.getListValue().getValuesList()) {
-          Object o = fromGrpcValue(item);
-          if (o instanceof Number n)
-            out.add(n.floatValue());
-          else if (o instanceof String s)
-            out.add(Float.parseFloat(s));
+      case ARRAY_OF_INTEGERS: {
+        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+          var out = new ArrayList<Integer>();
+          for (GrpcValue item : v.getListValue().getValuesList()) {
+            Object o = fromGrpcValue(item);
+            if (o instanceof Number n)
+              out.add(n.intValue());
+            else if (o instanceof String s)
+              out.add(Integer.parseInt(s));
+          }
+          return out;
         }
-        return out;
+        return null;
       }
-      return null;
-    }
 
-    case ARRAY_OF_DOUBLES: {
-      if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-        var out = new ArrayList<Double>();
-        for (GrpcValue item : v.getListValue().getValuesList()) {
-          Object o = fromGrpcValue(item);
-          if (o instanceof Number n)
-            out.add(n.doubleValue());
-          else if (o instanceof String s)
-            out.add(Double.parseDouble(s));
+      case ARRAY_OF_LONGS: {
+        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+          var out = new ArrayList<Long>();
+          for (GrpcValue item : v.getListValue().getValuesList()) {
+            Object o = fromGrpcValue(item);
+            if (o instanceof Number n)
+              out.add(n.longValue());
+            else if (o instanceof String s)
+              out.add(Long.parseLong(s));
+          }
+          return out;
         }
-        return out;
+        return null;
       }
-      return null;
-    }
 
-    case DATETIME_SECOND:
-    case DATETIME_MICROS:
-    case DATETIME_NANOS: {
-      // Same handling as DATETIME
-      return switch (v.getKindCase()) {
-        case TIMESTAMP_VALUE -> new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue()));
-        case INT64_VALUE -> new Date(v.getInt64Value()); // epoch ms expected
-        case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue()));
-        default -> null;
-      };
-    }
+      case ARRAY_OF_FLOATS: {
+        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+          var out = new ArrayList<Float>();
+          for (GrpcValue item : v.getListValue().getValuesList()) {
+            Object o = fromGrpcValue(item);
+            if (o instanceof Number n)
+              out.add(n.floatValue());
+            else if (o instanceof String s)
+              out.add(Float.parseFloat(s));
+          }
+          return out;
+        }
+        return null;
+      }
+
+      case ARRAY_OF_DOUBLES: {
+        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
+          var out = new ArrayList<Double>();
+          for (GrpcValue item : v.getListValue().getValuesList()) {
+            Object o = fromGrpcValue(item);
+            if (o instanceof Number n)
+              out.add(n.doubleValue());
+            else if (o instanceof String s)
+              out.add(Double.parseDouble(s));
+          }
+          return out;
+        }
+        return null;
+      }
+
+      case DATETIME_SECOND:
+      case DATETIME_MICROS:
+      case DATETIME_NANOS: {
+        // Same handling as DATETIME
+        return switch (v.getKindCase()) {
+          case TIMESTAMP_VALUE -> new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue()));
+          case INT64_VALUE -> new Date(v.getInt64Value()); // epoch ms expected
+          case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue()));
+          default -> null;
+        };
+      }
     }
 
     // default fallback
@@ -2960,50 +3023,52 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (v == null)
       return "GrpcValue(null)";
     switch (v.getKindCase()) {
-    case BOOL_VALUE:
-      return "BOOL(" + v.getBoolValue() + ")";
-    case INT32_VALUE:
-      return "INT32(" + v.getInt32Value() + ")";
-    case INT64_VALUE:
-      return "INT64(" + v.getInt64Value() + ")";
-    case FLOAT_VALUE:
-      return "FLOAT(" + v.getFloatValue() + ")";
-    case DOUBLE_VALUE:
-      return "DOUBLE(" + v.getDoubleValue() + ")";
-    case STRING_VALUE: {
-      String s = v.getStringValue();
-      return "STRING(" + s.length() + ")=\"" + (s.length() > 120 ? s.substring(0, 120) + "…" : s) + "\"";
-    }
-    case BYTES_VALUE:
-      return "BYTES[" + v.getBytesValue().size() + "]";
-    case TIMESTAMP_VALUE:
-      return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
-    case LIST_VALUE:
-      return "LIST[size=" + v.getListValue().getValuesCount() + "]";
-    case MAP_VALUE:
-      return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
-    case EMBEDDED_VALUE:
-      return "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
-    case LINK_VALUE:
-      return "LINK(" + v.getLinkValue().getRid() + ")";
-    case DECIMAL_VALUE:
-      return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
-    case KIND_NOT_SET:
-    default:
-      return "GrpcValue(KIND_NOT_SET)";
+      case BOOL_VALUE:
+        return "BOOL(" + v.getBoolValue() + ")";
+      case INT32_VALUE:
+        return "INT32(" + v.getInt32Value() + ")";
+      case INT64_VALUE:
+        return "INT64(" + v.getInt64Value() + ")";
+      case FLOAT_VALUE:
+        return "FLOAT(" + v.getFloatValue() + ")";
+      case DOUBLE_VALUE:
+        return "DOUBLE(" + v.getDoubleValue() + ")";
+      case STRING_VALUE: {
+        String s = v.getStringValue();
+        return "STRING(" + s.length() + ")=\"" + (s.length() > 120 ? s.substring(0, 120) + "…" : s) + "\"";
+      }
+      case BYTES_VALUE:
+        return "BYTES[" + v.getBytesValue().size() + "]";
+      case TIMESTAMP_VALUE:
+        return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
+      case LIST_VALUE:
+        return "LIST[size=" + v.getListValue().getValuesCount() + "]";
+      case MAP_VALUE:
+        return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
+      case EMBEDDED_VALUE:
+        return "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
+      case LINK_VALUE:
+        return "LINK(" + v.getLinkValue().getRid() + ")";
+      case DECIMAL_VALUE:
+        return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
+      case KIND_NOT_SET:
+      default:
+        return "GrpcValue(KIND_NOT_SET)";
     }
   }
 
   private GrpcValue dbgEnc(String where, Object in, GrpcValue out, String ctx) {
     LogManager.instance()
-        .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, (ctx == null ? "" : " " + ctx), summarizeJava(in),
+        .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, (ctx == null ? "" : " " + ctx),
+            summarizeJava(in),
             summarizeGrpc(out));
     return out;
   }
 
   private Object dbgDec(String where, GrpcValue in, Object out, String ctx) {
     LogManager.instance()
-        .log(this, Level.FINE, "GRPC-DEC [%s]%s in=%s -> out=%s", where, (ctx == null ? "" : " " + ctx), summarizeGrpc(in),
+        .log(this, Level.FINE, "GRPC-DEC [%s]%s in=%s -> out=%s", where, (ctx == null ? "" : " " + ctx),
+            summarizeGrpc(in),
             summarizeJava(out));
     return out;
   }
