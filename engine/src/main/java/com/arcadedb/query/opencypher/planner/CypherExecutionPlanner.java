@@ -135,10 +135,15 @@ public class CypherExecutionPlanner {
     // - Variable-length paths (already work but have known issues)
     // - Unlabeled nodes (optimizer requires labels for physical operators)
 
-    // Check for OPTIONAL MATCH and unlabeled nodes
+    // Check for OPTIONAL MATCH, unlabeled nodes, and disconnected patterns
     for (final MatchClause match : statement.getMatchClauses()) {
       if (match.isOptional())
         return false; // Not yet supported in optimizer
+
+      // Multiple path patterns in a single MATCH (e.g., MATCH (a:T1), (b:T2))
+      // require Cartesian product which the optimizer doesn't support yet
+      if (match.hasPathPatterns() && match.getPathPatterns().size() > 1)
+        return false;
 
       // Check if all nodes have labels, no named path variables, and no unsupported property constraints
       if (match.hasPathPatterns()) {
