@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
@@ -32,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 
 /**
@@ -44,22 +46,26 @@ import java.util.NoSuchElementException;
 public class ExpandPathStep extends AbstractExecutionStep {
   private final String sourceVariable;
   private final String pathVariable;
+  private final String relationshipVariable;
   private final String targetVariable;
   private final RelationshipPattern pattern;
+  private final NodePattern targetNodePattern;
   private final boolean useBFS;
 
   /**
    * Creates an expand path step.
    *
-   * @param sourceVariable variable name for source vertex
-   * @param pathVariable   variable name for the path (can be null)
-   * @param targetVariable variable name for target vertex
-   * @param pattern        relationship pattern with variable-length specification
-   * @param useBFS         true for BFS (shortest paths), false for DFS (all paths)
-   * @param context        command context
+   * @param sourceVariable       variable name for source vertex
+   * @param pathVariable         variable name for the path (can be null)
+   * @param relationshipVariable variable name for the relationship list (can be null)
+   * @param targetVariable       variable name for target vertex
+   * @param pattern              relationship pattern with variable-length specification
+   * @param useBFS               true for BFS (shortest paths), false for DFS (all paths)
+   * @param context              command context
    */
-  public ExpandPathStep(final String sourceVariable, final String pathVariable, final String targetVariable,
-      final RelationshipPattern pattern, final boolean useBFS, final CommandContext context) {
+  public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
+      final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
+      final NodePattern targetNodePattern, final CommandContext context) {
     super(context);
 
     if (!pattern.isVariableLength()) {
@@ -68,37 +74,39 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
     this.sourceVariable = sourceVariable;
     this.pathVariable = pathVariable;
+    this.relationshipVariable = relationshipVariable;
     this.targetVariable = targetVariable;
     this.pattern = pattern;
+    this.targetNodePattern = targetNodePattern;
     this.useBFS = useBFS;
   }
 
   /**
    * Creates an expand path step with BFS (default).
    *
-   * @param sourceVariable variable name for source vertex
-   * @param pathVariable   variable name for the path (can be null)
-   * @param targetVariable variable name for target vertex
-   * @param pattern        relationship pattern with variable-length specification
-   * @param context        command context
+   * @param sourceVariable       variable name for source vertex
+   * @param pathVariable         variable name for the path (can be null)
+   * @param relationshipVariable variable name for the relationship list (can be null)
+   * @param targetVariable       variable name for target vertex
+   * @param pattern              relationship pattern with variable-length specification
+   * @param context              command context
    */
-  public ExpandPathStep(final String sourceVariable, final String pathVariable, final String targetVariable,
-      final RelationshipPattern pattern, final CommandContext context) {
-    this(sourceVariable, pathVariable, targetVariable, pattern, true, context);
+  public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
+      final String targetVariable, final RelationshipPattern pattern, final CommandContext context) {
+    this(sourceVariable, pathVariable, relationshipVariable, targetVariable, pattern, true, null, context);
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("ExpandPathStep requires a previous step");
 
-    // Optimization: Use vertex iterator when path variable is not needed (avoids loading edges)
-    final boolean needsPath = pathVariable != null && !pathVariable.isEmpty();
+    final boolean hasPathVar = pathVariable != null && !pathVariable.isEmpty();
+    final boolean hasRelVar = relationshipVariable != null && !relationshipVariable.isEmpty();
 
     return new ResultSet() {
       private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<TraversalPath> currentPaths = null;
-      private Iterator<Vertex> currentVertices = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -131,88 +139,55 @@ public class ExpandPathStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         while (buffer.size() < n) {
-          // Optimization: Use vertex-only iterator when path is not needed
-          if (needsPath) {
-            // Path needed: use full path traversal (slower, loads edges)
-            if (currentPaths != null && currentPaths.hasNext()) {
-              final TraversalPath path = currentPaths.next();
-              final Vertex targetVertex = path.getEndVertex();
+          // Always use path traversal for correct Cypher edge-based relationship uniqueness
+          if (currentPaths != null && currentPaths.hasNext()) {
+            final TraversalPath path = currentPaths.next();
+            final Vertex targetVertex = path.getEndVertex();
 
-              // Create result with path and target vertex
-              final ResultInternal result = new ResultInternal();
+            // Filter by target node label if specified
+            if (targetNodePattern != null && targetNodePattern.hasLabels()) {
+              if (!matchesTargetLabel(targetVertex))
+                continue;
+            }
 
-              // Copy all properties from previous result
-              for (final String prop : lastResult.getPropertyNames()) {
-                result.setProperty(prop, lastResult.getProperty(prop));
-              }
+            final ResultInternal result = new ResultInternal();
 
-              // Add path binding
+            // Copy all properties from previous result
+            for (final String prop : lastResult.getPropertyNames()) {
+              result.setProperty(prop, lastResult.getProperty(prop));
+            }
+
+            // Add path binding
+            if (hasPathVar)
               result.setProperty(pathVariable, path);
 
-              // Add target vertex binding
-              result.setProperty(targetVariable, targetVertex);
+            // Add relationship variable as list of edges
+            if (hasRelVar)
+              result.setProperty(relationshipVariable, new ArrayList<>(path.getEdges()));
 
-              buffer.add(result);
-            } else {
-              // Get next source vertex from previous step
-              if (prevResults == null) {
-                prevResults = prev.syncPull(context, nRecords);
-              }
+            // Add target vertex binding
+            result.setProperty(targetVariable, targetVertex);
 
-              if (!prevResults.hasNext()) {
-                finished = true;
-                break;
-              }
-
-              lastResult = prevResults.next();
-              final Object sourceObj = lastResult.getProperty(sourceVariable);
-
-              if (sourceObj instanceof Vertex) {
-                final Vertex sourceVertex = (Vertex) sourceObj;
-                currentPaths = createTraverser().traversePaths(sourceVertex);
-              } else {
-                // Source is not a vertex, skip
-                currentPaths = null;
-              }
-            }
+            buffer.add(result);
           } else {
-            // Path not needed: use vertex-only traversal (faster, no edge loading)
-            if (currentVertices != null && currentVertices.hasNext()) {
-              final Vertex targetVertex = currentVertices.next();
+            // Get next source vertex from previous step
+            if (prevResults == null) {
+              prevResults = prev.syncPull(context, nRecords);
+            }
 
-              // Create result with target vertex only
-              final ResultInternal result = new ResultInternal();
+            if (!prevResults.hasNext()) {
+              finished = true;
+              break;
+            }
 
-              // Copy all properties from previous result
-              for (final String prop : lastResult.getPropertyNames()) {
-                result.setProperty(prop, lastResult.getProperty(prop));
-              }
+            lastResult = prevResults.next();
+            final Object sourceObj = lastResult.getProperty(sourceVariable);
 
-              // Add target vertex binding
-              result.setProperty(targetVariable, targetVertex);
-
-              buffer.add(result);
+            if (sourceObj instanceof Vertex) {
+              final Vertex sourceVertex = (Vertex) sourceObj;
+              currentPaths = createTraverser().traversePaths(sourceVertex);
             } else {
-              // Get next source vertex from previous step
-              if (prevResults == null) {
-                prevResults = prev.syncPull(context, nRecords);
-              }
-
-              if (!prevResults.hasNext()) {
-                finished = true;
-                break;
-              }
-
-              lastResult = prevResults.next();
-              final Object sourceObj = lastResult.getProperty(sourceVariable);
-
-              if (sourceObj instanceof Vertex) {
-                final Vertex sourceVertex = (Vertex) sourceObj;
-                currentVertices = createTraverser().traverse(sourceVertex);
-              } else {
-                // Source is not a vertex, skip
-                currentVertices = null;
-              }
+              currentPaths = null;
             }
           }
         }
@@ -233,14 +208,24 @@ public class ExpandPathStep extends AbstractExecutionStep {
         pattern.getTypes().toArray(new String[0]) :
         null;
 
+    final Map<String, Object> props = pattern.hasProperties() ? pattern.getProperties() : null;
+
     return new VariableLengthPathTraverser(
         pattern.getDirection(),
         types,
+        props,
         pattern.getEffectiveMinHops(),
         pattern.getEffectiveMaxHops(),
         true, // always track paths
         useBFS
     );
+  }
+
+  private boolean matchesTargetLabel(final Vertex vertex) {
+    for (final String label : targetNodePattern.getLabels())
+      if (!vertex.getType().instanceOf(label))
+        return false;
+    return true;
   }
 
   @Override

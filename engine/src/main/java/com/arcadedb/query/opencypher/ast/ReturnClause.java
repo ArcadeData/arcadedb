@@ -80,6 +80,13 @@ public class ReturnClause {
   }
 
   /**
+   * Check if this is a RETURN * (return all variables).
+   */
+  public boolean isReturnAll() {
+    return items.size() == 1 && "*".equals(items.get(0).getOutputName());
+  }
+
+  /**
    * Check if any return item is or contains an aggregation function.
    * This includes both direct aggregations (e.g., COLLECT(x)) and
    * wrapped aggregations (e.g., HEAD(COLLECT(x))).
@@ -114,6 +121,7 @@ public class ReturnClause {
   public static class ReturnItem {
     private final Expression expression;
     private final String alias;
+    private String originalText;
 
     public ReturnItem(final Expression expression, final String alias) {
       this.expression = expression;
@@ -128,8 +136,16 @@ public class ReturnClause {
       return alias;
     }
 
+    public void setOriginalText(final String originalText) {
+      this.originalText = originalText;
+    }
+
     public String getOutputName() {
-      return alias != null ? alias : expression.getText();
+      if (alias != null)
+        return alias;
+      if (originalText != null)
+        return originalText;
+      return expression.getText();
     }
   }
 }

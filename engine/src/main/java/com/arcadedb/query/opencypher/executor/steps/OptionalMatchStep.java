@@ -128,12 +128,14 @@ public class OptionalMatchStep extends AbstractExecutionStep {
             if (!foundMatch) {
               final ResultInternal nullResult = new ResultInternal();
               // Copy all properties from input row
-              for (final String prop : inputRow.getPropertyNames()) {
+              final Set<String> inputProps = inputRow.getPropertyNames();
+              for (final String prop : inputProps) {
                 nullResult.setProperty(prop, inputRow.getProperty(prop));
               }
-              // Add NULL values for optional match variables
+              // Add NULL values only for NEW optional match variables (not already bound)
               for (final String varName : variableNames) {
-                nullResult.setProperty(varName, null);
+                if (!inputProps.contains(varName))
+                  nullResult.setProperty(varName, null);
               }
               buffer.add(nullResult);
             }

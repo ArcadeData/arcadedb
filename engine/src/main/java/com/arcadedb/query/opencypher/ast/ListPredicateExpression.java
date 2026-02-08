@@ -85,45 +85,86 @@ public class ListPredicateExpression implements Expression {
     }
   }
 
-  private boolean evaluateAll(final Iterable<?> iterable, final Result result, final CommandContext context) {
+  /**
+   * Evaluates all() with three-valued logic.
+   * Returns null if any condition is null and none is false.
+   */
+  private Object evaluateAll(final Iterable<?> iterable, final Result result, final CommandContext context) {
+    boolean hasNull = false;
     for (final Object item : iterable) {
-      if (!testItem(item, result, context))
+      final Boolean test = testItem(item, result, context);
+      if (test == null)
+        hasNull = true;
+      else if (!test)
         return false;
     }
-    return true;
+    return hasNull ? null : true;
   }
 
-  private boolean evaluateAny(final Iterable<?> iterable, final Result result, final CommandContext context) {
+  /**
+   * Evaluates any() with three-valued logic.
+   * Returns null if any condition is null and none is true.
+   */
+  private Object evaluateAny(final Iterable<?> iterable, final Result result, final CommandContext context) {
+    boolean hasNull = false;
     for (final Object item : iterable) {
-      if (testItem(item, result, context))
+      final Boolean test = testItem(item, result, context);
+      if (test == null)
+        hasNull = true;
+      else if (test)
         return true;
     }
-    return false;
+    return hasNull ? null : false;
   }
 
-  private boolean evaluateNone(final Iterable<?> iterable, final Result result, final CommandContext context) {
+  /**
+   * Evaluates none() with three-valued logic.
+   * Returns null if any condition is null and none is true.
+   */
+  private Object evaluateNone(final Iterable<?> iterable, final Result result, final CommandContext context) {
+    boolean hasNull = false;
     for (final Object item : iterable) {
-      if (testItem(item, result, context))
+      final Boolean test = testItem(item, result, context);
+      if (test == null)
+        hasNull = true;
+      else if (test)
         return false;
     }
-    return true;
+    return hasNull ? null : true;
   }
 
-  private boolean evaluateSingle(final Iterable<?> iterable, final Result result, final CommandContext context) {
-    int count = 0;
+  /**
+   * Evaluates single() with three-valued logic.
+   * Returns null if uncertain due to nulls.
+   */
+  private Object evaluateSingle(final Iterable<?> iterable, final Result result, final CommandContext context) {
+    int trueCount = 0;
+    boolean hasNull = false;
     for (final Object item : iterable) {
-      if (testItem(item, result, context)) {
-        count++;
-        if (count > 1)
+      final Boolean test = testItem(item, result, context);
+      if (test == null)
+        hasNull = true;
+      else if (test) {
+        trueCount++;
+        if (trueCount > 1)
           return false;
       }
     }
-    return count == 1;
+    if (trueCount == 1 && !hasNull)
+      return true;
+    if (trueCount == 0 && !hasNull)
+      return false;
+    // With nulls: uncertain
+    return null;
   }
 
-  private boolean testItem(final Object item, final Result baseResult, final CommandContext context) {
+  /**
+   * Tests a single item against the WHERE expression.
+   * Returns Boolean.TRUE, Boolean.FALSE, or null (for three-valued logic).
+   */
+  private Boolean testItem(final Object item, final Result baseResult, final CommandContext context) {
     if (whereExpression == null)
-      return item != null;
+      return item != null ? Boolean.TRUE : null;
 
     final ResultInternal iterResult = new ResultInternal();
     if (baseResult != null)
@@ -132,7 +173,11 @@ public class ListPredicateExpression implements Expression {
     iterResult.setProperty(variable, item);
 
     final Object filterValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, iterResult, context);
-    return filterValue instanceof Boolean && (Boolean) filterValue;
+    if (filterValue == null)
+      return null;
+    if (filterValue instanceof Boolean)
+      return (Boolean) filterValue;
+    return null;
   }
 
   private List<Object> arrayToList(final Object array) {
@@ -165,6 +210,18 @@ public class ListPredicateExpression implements Expression {
     if (whereExpression != null && whereExpression.containsAggregation())
       return true;
     return false;
+  }
+
+  public String getVariable() {
+    return variable;
+  }
+
+  public Expression getListExpression() {
+    return listExpression;
+  }
+
+  public Expression getWhereExpression() {
+    return whereExpression;
   }
 
   @Override

@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.tck;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
@@ -199,15 +200,24 @@ public class TCKResultMatcher {
     if (doc == null)
       return false;
 
-    // Check labels
+    // Check labels (exact match: node must have all expected labels and no extras)
     if (!expected.labels.isEmpty()) {
-      final String typeName = doc.getTypeName();
-      if (typeName == null)
-        return false;
-      // ArcadeDB uses type name as primary label; multi-label support may vary
-      for (final String label : expected.labels)
-        if (!typeName.equals(label) && !hasLabel(doc, label))
+      if (doc instanceof Vertex) {
+        final List<String> actualLabels = Labels.getLabels((Vertex) doc);
+        // Check exact label set match
+        if (actualLabels.size() != expected.labels.size())
           return false;
+        for (final String label : expected.labels)
+          if (!actualLabels.contains(label))
+            return false;
+      } else {
+        final String typeName = doc.getTypeName();
+        if (typeName == null)
+          return false;
+        for (final String label : expected.labels)
+          if (!typeName.equals(label) && !hasLabel(doc, label))
+            return false;
+      }
     }
 
     // Check properties
@@ -224,7 +234,10 @@ public class TCKResultMatcher {
     // Check if the document's type hierarchy includes this label
     if (doc.getTypeName().equals(label))
       return true;
-    // Check superTypes
+    // Use Labels utility for robust multi-label checking
+    if (doc instanceof Vertex)
+      return Labels.hasLabel((Vertex) doc, label);
+    // Fallback to type hierarchy check
     try {
       return doc.getType().instanceOf(label);
     } catch (final Exception e) {

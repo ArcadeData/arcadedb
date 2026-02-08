@@ -157,8 +157,8 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       result.setProperty(prop, inputResult.getProperty(prop));
     }
 
-    if (returnClause == null || returnClause.getItems().isEmpty()) {
-      // No RETURN clause - return everything (already copied above)
+    if (returnClause == null || returnClause.getItems().isEmpty() || returnClause.isReturnAll()) {
+      // No RETURN clause or RETURN * - return everything (already copied above)
       return result;
     }
 

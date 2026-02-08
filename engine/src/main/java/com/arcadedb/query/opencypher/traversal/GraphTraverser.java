@@ -23,8 +23,10 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -34,6 +36,7 @@ import java.util.Set;
 public abstract class GraphTraverser {
   protected final Direction direction;
   protected final String[] relationshipTypes;
+  protected final Map<String, Object> edgePropertyFilters;
   protected final int minHops;
   protected final int maxHops;
   protected final boolean trackPaths;
@@ -51,8 +54,15 @@ public abstract class GraphTraverser {
    */
   protected GraphTraverser(final Direction direction, final String[] relationshipTypes, final int minHops, final int maxHops,
       final boolean trackPaths, final boolean detectCycles) {
+    this(direction, relationshipTypes, null, minHops, maxHops, trackPaths, detectCycles);
+  }
+
+  protected GraphTraverser(final Direction direction, final String[] relationshipTypes,
+      final Map<String, Object> edgePropertyFilters, final int minHops, final int maxHops,
+      final boolean trackPaths, final boolean detectCycles) {
     this.direction = direction != null ? direction : Direction.BOTH;
     this.relationshipTypes = relationshipTypes;
+    this.edgePropertyFilters = edgePropertyFilters != null ? edgePropertyFilters : Collections.emptyMap();
     this.minHops = Math.max(0, minHops);
     this.maxHops = maxHops >= 0 ? maxHops : Integer.MAX_VALUE;
     this.trackPaths = trackPaths;
@@ -147,6 +157,31 @@ public abstract class GraphTraverser {
       }
     }
     return false;
+  }
+
+  /**
+   * Checks if an edge matches the property filter constraints.
+   *
+   * @param edge edge to check
+   * @return true if edge matches all property filters (or no filters set)
+   */
+  protected boolean matchesPropertyFilter(final Edge edge) {
+    if (edgePropertyFilters.isEmpty())
+      return true;
+
+    for (final Map.Entry<String, Object> entry : edgePropertyFilters.entrySet()) {
+      final Object actual = edge.get(entry.getKey());
+      final Object expected = entry.getValue();
+      if (actual == null)
+        return false;
+      // Handle numeric type coercion (Integer vs Long)
+      if (actual instanceof Number && expected instanceof Number) {
+        if (((Number) actual).longValue() != ((Number) expected).longValue())
+          return false;
+      } else if (!actual.equals(expected))
+        return false;
+    }
+    return true;
   }
 
   /**

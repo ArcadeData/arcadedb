@@ -77,19 +77,21 @@ class ExpressionTypeDetector {
    * Returns null if not a comprehension.
    */
   Expression tryParseComprehensions(final Cypher25Parser.ExpressionContext ctx) {
+    final String exprText = ctx.getText();
+
     // reduce expressions
     final Cypher25Parser.ReduceExpressionContext reduceCtx = builder.findReduceExpressionRecursive(ctx);
-    if (reduceCtx != null)
+    if (reduceCtx != null && reduceCtx.getText().length() >= exprText.length() - 2)
       return builder.parseReduceExpression(reduceCtx);
 
     // Pattern comprehensions
     final Cypher25Parser.PatternComprehensionContext patternCompCtx = builder.findPatternComprehensionRecursive(ctx);
-    if (patternCompCtx != null)
+    if (patternCompCtx != null && patternCompCtx.getText().length() >= exprText.length() - 2)
       return builder.parsePatternComprehension(patternCompCtx);
 
     // List comprehensions
     final Cypher25Parser.ListComprehensionContext listCompCtx = builder.findListComprehensionRecursive(ctx);
-    if (listCompCtx != null)
+    if (listCompCtx != null && listCompCtx.getText().length() >= exprText.length() - 2)
       return builder.parseListComprehension(listCompCtx);
 
     return null;
@@ -101,8 +103,15 @@ class ExpressionTypeDetector {
    */
   Expression tryParseListPredicates(final Cypher25Parser.ExpressionContext ctx) {
     final Cypher25Parser.ListItemsPredicateContext listPredCtx = builder.findListItemsPredicateRecursive(ctx);
-    if (listPredCtx != null)
-      return builder.parseListItemsPredicate(listPredCtx);
+    if (listPredCtx != null) {
+      // Only return list predicate if it covers the entire expression.
+      // Otherwise, it's a sub-expression (e.g., none(...) = false) and should
+      // be handled by comparison/arithmetic parsing instead.
+      final String predText = listPredCtx.getText();
+      final String exprText = ctx.getText();
+      if (predText.length() >= exprText.length() - 2) // allow for whitespace
+        return builder.parseListItemsPredicate(listPredCtx);
+    }
 
     return null;
   }
@@ -131,6 +140,8 @@ class ExpressionTypeDetector {
         return builder.parseStringComparisonExpression(topExpr7);
       if (comp instanceof Cypher25Parser.NullComparisonContext)
         return builder.parseIsNullExpression((Cypher25Parser.NullComparisonContext) comp);
+      if (comp instanceof Cypher25Parser.LabelComparisonContext)
+        return builder.parseLabelComparisonExpression(topExpr7);
     }
     return null;
   }

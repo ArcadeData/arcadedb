@@ -121,9 +121,22 @@ public class ComparisonExpression implements BooleanExpression {
 
     // Numeric comparison
     if (left instanceof Number && right instanceof Number) {
+      // Use long comparison when both are integer types to avoid precision loss
+      if ((left instanceof Long || left instanceof Integer) &&
+          (right instanceof Long || right instanceof Integer)) {
+        final long leftNum = ((Number) left).longValue();
+        final long rightNum = ((Number) right).longValue();
+        return switch (operator) {
+          case EQUALS -> leftNum == rightNum;
+          case NOT_EQUALS -> leftNum != rightNum;
+          case LESS_THAN -> leftNum < rightNum;
+          case GREATER_THAN -> leftNum > rightNum;
+          case LESS_THAN_OR_EQUAL -> leftNum <= rightNum;
+          case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
+        };
+      }
       final double leftNum = ((Number) left).doubleValue();
       final double rightNum = ((Number) right).doubleValue();
-
       return switch (operator) {
         case EQUALS -> leftNum == rightNum;
         case NOT_EQUALS -> leftNum != rightNum;
@@ -221,14 +234,31 @@ public class ComparisonExpression implements BooleanExpression {
       };
     }
 
-    // Map comparison
+    // Map comparison with 3VL null propagation
     if (left instanceof java.util.Map && right instanceof java.util.Map) {
       final java.util.Map<?, ?> leftMap = (java.util.Map<?, ?>) left;
       final java.util.Map<?, ?> rightMap = (java.util.Map<?, ?>) right;
-      if (operator == Operator.EQUALS)
-        return leftMap.equals(rightMap);
-      if (operator == Operator.NOT_EQUALS)
-        return !leftMap.equals(rightMap);
+      if (operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) {
+        // Different key sets means definitely not equal
+        if (!leftMap.keySet().equals(rightMap.keySet()))
+          return operator == Operator.NOT_EQUALS;
+        // Same key set: compare values with 3VL
+        boolean hasNull = false;
+        for (final Object key : leftMap.keySet()) {
+          final Object lv = leftMap.get(key);
+          final Object rv = rightMap.get(key);
+          final Object cmp = new ComparisonExpression(
+              new LiteralExpression(lv, ""), Operator.EQUALS,
+              new LiteralExpression(rv, "")).evaluateTernary(null, null);
+          if (cmp == null)
+            hasNull = true;
+          else if (!Boolean.TRUE.equals(cmp))
+            return operator == Operator.NOT_EQUALS;
+        }
+        if (hasNull)
+          return null;
+        return operator == Operator.EQUALS;
+      }
       return null;
     }
 

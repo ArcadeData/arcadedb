@@ -22,6 +22,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 
 import java.util.Iterator;
+import java.util.Map;
 
 /**
  * Specialized traverser for variable-length path patterns.
@@ -48,6 +49,13 @@ public class VariableLengthPathTraverser extends GraphTraverser {
     this.useBFS = useBFS;
   }
 
+  public VariableLengthPathTraverser(final Direction direction, final String[] relationshipTypes,
+      final Map<String, Object> edgePropertyFilters, final int minHops,
+      final int maxHops, final boolean trackPaths, final boolean useBFS) {
+    super(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, true);
+    this.useBFS = useBFS;
+  }
+
   /**
    * Creates a variable-length path traverser with BFS (default).
    *
@@ -65,12 +73,12 @@ public class VariableLengthPathTraverser extends GraphTraverser {
   @Override
   public Iterator<Vertex> traverse(final Vertex startVertex) {
     if (useBFS) {
-      final BreadthFirstTraverser bfs = new BreadthFirstTraverser(direction, relationshipTypes, minHops, maxHops, trackPaths,
-          detectCycles);
+      final BreadthFirstTraverser bfs = new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
+          minHops, maxHops, trackPaths, detectCycles);
       return bfs.traverse(startVertex);
     } else {
-      final DepthFirstTraverser dfs = new DepthFirstTraverser(direction, relationshipTypes, minHops, maxHops, trackPaths,
-          detectCycles);
+      final DepthFirstTraverser dfs = new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
+          minHops, maxHops, trackPaths, detectCycles);
       return dfs.traverse(startVertex);
     }
   }
@@ -78,12 +86,12 @@ public class VariableLengthPathTraverser extends GraphTraverser {
   @Override
   public Iterator<TraversalPath> traversePaths(final Vertex startVertex) {
     if (useBFS) {
-      final BreadthFirstTraverser bfs = new BreadthFirstTraverser(direction, relationshipTypes, minHops, maxHops, trackPaths,
-          detectCycles);
+      final BreadthFirstTraverser bfs = new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
+          minHops, maxHops, trackPaths, detectCycles);
       return bfs.traversePaths(startVertex);
     } else {
-      final DepthFirstTraverser dfs = new DepthFirstTraverser(direction, relationshipTypes, minHops, maxHops, trackPaths,
-          detectCycles);
+      final DepthFirstTraverser dfs = new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
+          minHops, maxHops, trackPaths, detectCycles);
       return dfs.traversePaths(startVertex);
     }
   }

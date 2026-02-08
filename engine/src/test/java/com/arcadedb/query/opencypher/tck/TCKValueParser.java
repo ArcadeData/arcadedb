@@ -54,6 +54,11 @@ public class TCKValueParser {
     if (trimmed.startsWith("'") && trimmed.endsWith("'"))
       return unescapeString(trimmed.substring(1, trimmed.length() - 1));
 
+    // relationship (must be checked before list since both start with '[')
+    // A relationship starts with '[:'  e.g., [:TYPE] or [:TYPE {prop: val}]
+    if (trimmed.startsWith("[:") && trimmed.endsWith("]"))
+      return parseRelationship(trimmed);
+
     // list
     if (trimmed.startsWith("[") && trimmed.endsWith("]"))
       return parseList(trimmed);
@@ -65,10 +70,6 @@ public class TCKValueParser {
     // node
     if (trimmed.startsWith("(") && trimmed.endsWith(")"))
       return parseNode(trimmed);
-
-    // relationship
-    if (trimmed.startsWith("[") && trimmed.endsWith("]") && trimmed.contains(":"))
-      return parseRelationship(trimmed);
 
     // path
     if (trimmed.startsWith("<") && trimmed.endsWith(">"))

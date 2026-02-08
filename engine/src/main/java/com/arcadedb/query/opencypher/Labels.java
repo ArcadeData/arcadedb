@@ -123,13 +123,10 @@ public final class Labels {
       return List.of(typeName);
     }
 
-    // Multi-label vertex - supertypes are the labels, filter out base types
+    // Multi-label vertex - supertypes are the labels
     final List<String> labels = new ArrayList<>(superTypes.size());
-    for (final DocumentType superType : superTypes) {
-      final String name = superType.getName();
-      if (!"Vertex".equals(name) && !"V".equals(name))
-        labels.add(name);
-    }
+    for (final DocumentType superType : superTypes)
+      labels.add(superType.getName());
     Collections.sort(labels);
     return labels;
   }

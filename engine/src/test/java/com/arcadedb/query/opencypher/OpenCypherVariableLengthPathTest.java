@@ -111,4 +111,70 @@ public class OpenCypherVariableLengthPathTest {
     assertThat(result.hasNext()).as("Single-hop should return exactly 1 result").isFalse();
     result.close();
   }
+
+  @Test
+  void vlpPropertyPredicate() {
+    // Create a separate database for this test with the TCK scenario
+    final Database db2 = new DatabaseFactory("./target/databases/testopencypher-vlp-prop").create();
+    try {
+      db2.transaction(() -> {
+        db2.command("opencypher",
+            "CREATE (a:Artist:A), (b:Artist:B), (c:Artist:C) " +
+                "CREATE (a)-[:WORKED_WITH {year: 1987}]->(b), " +
+                "(b)-[:WORKED_WITH {year: 1988}]->(c)");
+      });
+
+      db2.transaction(() -> {
+        // First: check all artists exist
+        final ResultSet rs1 = db2.command("opencypher", "MATCH (n:Artist) RETURN n");
+        int count = 0;
+        while (rs1.hasNext()) {
+          rs1.next();
+          count++;
+        }
+        assertThat(count).as("Should have 3 Artist nodes").isEqualTo(3);
+
+        // Second: VLP without property filter
+        final ResultSet rs2 = db2.command("opencypher", "MATCH (a:Artist)-[:WORKED_WITH*]->(b) RETURN a, b");
+        int count2 = 0;
+        while (rs2.hasNext()) {
+          rs2.next();
+          count2++;
+        }
+        assertThat(count2).as("VLP without property filter should find paths").isGreaterThan(0);
+
+        // Third: VLP WITHOUT target label filter to isolate the issue
+        final ResultSet rs3a = db2.command("opencypher",
+            "MATCH (a:Artist)-[:WORKED_WITH* {year: 1988}]->(b) RETURN a, b");
+        int count3a = 0;
+        while (rs3a.hasNext()) {
+          rs3a.next();
+          count3a++;
+        }
+
+        // Fourth: VLP WITH target label only (no property filter)
+        final ResultSet rs3b = db2.command("opencypher",
+            "MATCH (a:Artist)-[:WORKED_WITH*]->(b:Artist) RETURN a, b");
+        int count3b = 0;
+        while (rs3b.hasNext()) {
+          rs3b.next();
+          count3b++;
+        }
+
+        // Fifth: VLP WITH property filter AND target label
+        final ResultSet rs3 = db2.command("opencypher",
+            "MATCH (a:Artist)-[:WORKED_WITH* {year: 1988}]->(b:Artist) RETURN a, b");
+        int count3 = 0;
+        while (rs3.hasNext()) {
+          final Result r = rs3.next();
+          count3++;
+        }
+        assertThat(count3a).as("VLP with property filter {year: 1988} without target label should find results").isGreaterThan(0);
+        assertThat(count3b).as("VLP with target label :Artist but no property filter should find results").isGreaterThan(0);
+        assertThat(count3).as("VLP with property filter {year: 1988} AND target label should find 1 result").isEqualTo(1);
+      });
+    } finally {
+      db2.drop();
+    }
+  }
 }

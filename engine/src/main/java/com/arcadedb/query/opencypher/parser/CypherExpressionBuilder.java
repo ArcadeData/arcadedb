@@ -283,6 +283,8 @@ class CypherExpressionBuilder {
       final Cypher25Parser.Expression2Context e2 = (Cypher25Parser.Expression2Context) node;
       if (!e2.postFix().isEmpty())
         return parseExpression2WithPostfix(e2);
+      // No postfix — delegate to expression1
+      return parseExpressionFromText(e2.expression1());
     }
 
     // Handle Expression8 (comparison operators: =, <>, <, >, <=, >=)
@@ -295,7 +297,7 @@ class CypherExpressionBuilder {
         return parseExpressionFromText(expr8.expression7().get(0));
     }
 
-    // Handle Expression7 (IS NULL, STARTS WITH, ENDS WITH, CONTAINS, IN)
+    // Handle Expression7 (IS NULL, STARTS WITH, ENDS WITH, CONTAINS, IN, label check)
     if (node instanceof Cypher25Parser.Expression7Context) {
       final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) node;
       final Cypher25Parser.ComparisonExpression6Context comp = expr7.comparisonExpression6();
@@ -303,6 +305,8 @@ class CypherExpressionBuilder {
         return parseIsNullExpression((Cypher25Parser.NullComparisonContext) comp);
       if (comp instanceof Cypher25Parser.StringAndListComparisonContext)
         return parseStringComparisonExpression(expr7);
+      if (comp instanceof Cypher25Parser.LabelComparisonContext)
+        return parseLabelComparisonExpression(expr7);
       // No comparison, delegate to expression6
       return parseExpressionFromText(expr7.expression6());
     }
@@ -330,8 +334,49 @@ class CypherExpressionBuilder {
       return parseExpressionFromText(e4.expression3().get(0));
     }
 
-    if (node instanceof Cypher25Parser.Expression3Context)
+    if (node instanceof Cypher25Parser.Expression3Context) {
       return parseArithmeticExpression3((Cypher25Parser.Expression3Context) node);
+    }
+
+    // Handle Expression1 (atom level: literals, variables, function calls, list predicates, etc.)
+    if (node instanceof Cypher25Parser.Expression1Context) {
+      final Cypher25Parser.Expression1Context e1 = (Cypher25Parser.Expression1Context) node;
+      if (e1.listItemsPredicate() != null)
+        return parseListItemsPredicate(e1.listItemsPredicate());
+      if (e1.functionInvocation() != null)
+        return parseFunctionInvocation(e1.functionInvocation());
+      if (e1.caseExpression() != null)
+        return parseCaseExpression(e1.caseExpression());
+      if (e1.extendedCaseExpression() != null)
+        return parseExtendedCaseExpression(e1.extendedCaseExpression());
+      if (e1.listLiteral() != null)
+        return parseListLiteral(e1.listLiteral());
+      if (e1.mapProjection() != null)
+        return parseMapProjection(e1.mapProjection());
+      if (e1.listComprehension() != null)
+        return parseListComprehension(e1.listComprehension());
+      if (e1.patternComprehension() != null)
+        return parsePatternComprehension(e1.patternComprehension());
+      if (e1.reduceExpression() != null)
+        return parseReduceExpression(e1.reduceExpression());
+      if (e1.existsExpression() != null)
+        return parseExistsExpression(e1.existsExpression());
+      if (e1.countStar() != null) {
+        final java.util.List<Expression> e1Args = new java.util.ArrayList<>();
+        e1Args.add(new StarExpression());
+        return new FunctionCallExpression("count", e1Args, false);
+      }
+      if (e1.parenthesizedExpression() != null)
+        return parseExpression(e1.parenthesizedExpression().expression());
+      if (e1.shortestPathExpression() != null)
+        return parseShortestPathExpression(e1.shortestPathExpression());
+      // Check for map literal
+      final Cypher25Parser.MapContext e1MapCtx = findMapRecursive(e1);
+      if (e1MapCtx != null)
+        return parseMapLiteralExpression(e1MapCtx);
+      // Fallback: parse as variable or literal
+      // (will be handled by the text-based parsing below)
+    }
 
     // Check for IS NULL / IS NOT NULL expressions BEFORE parenthesized expressions
     // because (a AND b) IS NULL should be parsed as IS_NULL(a AND b), not just (a AND b)
@@ -1676,13 +1721,57 @@ class CypherExpressionBuilder {
       }
 
       if (strCtx.IN() != null) {
-        final List<Expression> listItems = parseListExpression(strCtx.expression6());
+        // Parse the right side as a single expression (not a list literal)
+        // so that expressions like [3]+4 are correctly handled as arithmetic
+        final Expression rhsExpr = parseExpressionFromText(strCtx.expression6());
+        final List<Expression> listItems = new ArrayList<>();
+        listItems.add(rhsExpr);
         return new BooleanWrapperExpression(new InExpression(leftExpr, listItems, false));
       }
     }
 
     // Fallback: parse as text
     return parseExpressionText(ctx.getText());
+  }
+
+  /**
+   * Parse a label comparison expression from Expression7Context (e.g., a:B, n:A:B, n:Person|Developer).
+   * Returns a BooleanWrapperExpression wrapping a LabelCheckExpression.
+   */
+  Expression parseLabelComparisonExpression(final Cypher25Parser.Expression7Context ctx) {
+    final Expression leftExpr = parseExpressionFromText(ctx.expression6());
+    final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) ctx.comparisonExpression6();
+    final Cypher25Parser.LabelExpressionContext labelExprCtx = labelCtx.labelExpression();
+
+    final List<String> labels = new ArrayList<>();
+    LabelCheckExpression.LabelOperator operator = LabelCheckExpression.LabelOperator.AND;
+
+    String labelText = labelExprCtx.getText();
+    if (labelText.startsWith(":"))
+      labelText = labelText.substring(1);
+    else if (labelText.toUpperCase().startsWith("IS"))
+      labelText = labelText.substring(2).trim();
+
+    if (labelText.contains("|")) {
+      operator = LabelCheckExpression.LabelOperator.OR;
+      final String[] parts = labelText.split("\\|:?");
+      for (final String part : parts) {
+        final String label = part.trim();
+        if (!label.isEmpty())
+          labels.add(label);
+      }
+    } else if (labelText.contains("&") || labelText.contains(":")) {
+      final String[] parts = labelText.split("[&:]");
+      for (final String part : parts) {
+        final String label = part.trim();
+        if (!label.isEmpty())
+          labels.add(label);
+      }
+    } else {
+      labels.add(labelText.trim());
+    }
+
+    return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels, operator, ctx.getText()));
   }
 
   // ============================================================================
@@ -2204,18 +2293,17 @@ class CypherExpressionBuilder {
 
       // Handle negative numbers
       if (text.startsWith("-") || text.startsWith("+") || Character.isDigit(text.charAt(0))) {
-        if (text.contains(".") || text.contains("e") || text.contains("E")) {
-          return Double.parseDouble(text);
-        } else if (text.startsWith("0x") || text.startsWith("0X") ||
+        // Check hex/octal BEFORE float detection because hex digits can contain 'e'/'E'
+        if (text.startsWith("0x") || text.startsWith("0X") ||
             text.startsWith("-0x") || text.startsWith("-0X")) {
           final String hexPart = text.startsWith("-") ? text.substring(3) : text.substring(2);
-          final long val = Long.parseLong(hexPart, 16);
-          return text.startsWith("-") ? -val : val;
+          return parseSignedHexOrOctal(hexPart, 16, text.startsWith("-"), text);
         } else if (text.startsWith("0o") || text.startsWith("0O") ||
             text.startsWith("-0o") || text.startsWith("-0O")) {
           final String octPart = text.startsWith("-") ? text.substring(3) : text.substring(2);
-          final long val = Long.parseLong(octPart, 8);
-          return text.startsWith("-") ? -val : val;
+          return parseSignedHexOrOctal(octPart, 8, text.startsWith("-"), text);
+        } else if (text.contains(".") || text.contains("e") || text.contains("E")) {
+          return Double.parseDouble(text);
         } else {
           return Long.parseLong(text);
         }
@@ -2231,5 +2319,27 @@ class CypherExpressionBuilder {
     }
 
     return null; // Not a literal
+  }
+
+  private static long parseSignedHexOrOctal(final String digits, final int radix,
+      final boolean negative, final String originalText) {
+    final long val;
+    try {
+      val = Long.parseUnsignedLong(digits, radix);
+    } catch (final NumberFormatException e) {
+      throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + originalText);
+    }
+    if (negative) {
+      // -0x8000000000000000 is Long.MIN_VALUE, anything more negative overflows
+      if (val == Long.MIN_VALUE)
+        return Long.MIN_VALUE; // -(-2^63) would overflow, but -val wraps correctly for MIN_VALUE
+      if (val < 0) // unsigned value > Long.MAX_VALUE (bit 63 set), so magnitude > 2^63
+        throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + originalText);
+      return -val;
+    } else {
+      if (val < 0) // unsigned value > Long.MAX_VALUE (bit 63 set)
+        throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + originalText);
+      return val;
+    }
   }
 }

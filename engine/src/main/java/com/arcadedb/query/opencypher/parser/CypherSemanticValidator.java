@@ -455,6 +455,14 @@ public class CypherSemanticValidator {
       final ListIndexExpression lie = (ListIndexExpression) expr;
       checkExpressionScope(lie.getListExpression(), scope);
       checkExpressionScope(lie.getIndexExpression(), scope);
+    } else if (expr instanceof ListPredicateExpression) {
+      final ListPredicateExpression lpe = (ListPredicateExpression) expr;
+      checkExpressionScope(lpe.getListExpression(), scope);
+      // The variable introduces a new scope binding for the WHERE expression
+      final Set<String> innerScope = new HashSet<>(scope);
+      innerScope.add(lpe.getVariable());
+      if (lpe.getWhereExpression() != null)
+        checkExpressionScope(lpe.getWhereExpression(), innerScope);
     }
     // LiteralExpression, ParameterExpression, StarExpression — no variables to check
   }
@@ -644,8 +652,17 @@ public class CypherSemanticValidator {
     if (statement.getWhereClause() != null)
       checkAggregationInWhere(statement.getWhereClause());
 
-    // Note: RETURN ORDER BY aggregation validation is complex (need to distinguish
-    // between returned vs non-returned aggregations) — skipping for now to avoid false positives
+    // Check for aggregation in ORDER BY after non-aggregating RETURN
+    if (statement.getReturnClause() != null && statement.getOrderByClause() != null
+        && !statement.getReturnClause().hasAggregations())
+      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
+        checkAggregationInOrderBy(item.getExpressionAST());
+
+    // Check for aggregation in ORDER BY after non-aggregating WITH
+    for (final WithClause withClause : statement.getWithClauses())
+      if (withClause.getOrderByClause() != null && !withClause.hasAggregations())
+        for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems())
+          checkAggregationInOrderBy(item.getExpressionAST());
   }
 
   private void checkNestedAggregation(final Expression expr, final boolean insideAggregation) {

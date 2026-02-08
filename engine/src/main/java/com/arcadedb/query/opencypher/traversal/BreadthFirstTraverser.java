@@ -28,6 +28,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Queue;
 import java.util.Set;
@@ -42,6 +43,12 @@ public class BreadthFirstTraverser extends GraphTraverser {
   public BreadthFirstTraverser(final Direction direction, final String[] relationshipTypes, final int minHops,
       final int maxHops, final boolean trackPaths, final boolean detectCycles) {
     super(direction, relationshipTypes, minHops, maxHops, trackPaths, detectCycles);
+  }
+
+  public BreadthFirstTraverser(final Direction direction, final String[] relationshipTypes,
+      final Map<String, Object> edgePropertyFilters, final int minHops,
+      final int maxHops, final boolean trackPaths, final boolean detectCycles) {
+    super(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, detectCycles);
   }
 
   @Override
@@ -128,12 +135,10 @@ public class BreadthFirstTraverser extends GraphTraverser {
    */
   private class BFSPathIterator implements Iterator<TraversalPath> {
     private final Queue<PathWithDepth> queue = new LinkedList<>();
-    private final Set<RID> visited;
     private final List<TraversalPath> results = new ArrayList<>();
     private int currentIndex = 0;
 
     BFSPathIterator(final Vertex startVertex) {
-      this.visited = detectCycles ? createVisitedSet() : new HashSet<>();
       final TraversalPath initialPath = new TraversalPath(startVertex);
       queue.add(new PathWithDepth(initialPath, 0));
 
@@ -142,11 +147,6 @@ public class BreadthFirstTraverser extends GraphTraverser {
     }
 
     private void performTraversal() {
-      // Mark start vertex as visited
-      if (detectCycles && !queue.isEmpty()) {
-        markVisited(queue.peek().path.getEndVertex(), visited);
-      }
-
       while (!queue.isEmpty()) {
         final PathWithDepth current = queue.poll();
         final TraversalPath path = current.path;
@@ -159,32 +159,37 @@ public class BreadthFirstTraverser extends GraphTraverser {
         }
 
         // Stop expanding if we've reached max depth
-        if (depth >= maxHops) {
+        if (depth >= maxHops)
           continue;
-        }
 
         // Expand to neighbors
         for (final Edge edge : getEdges(vertex)) {
-          if (!matchesTypeFilter(edge)) {
+          if (!matchesTypeFilter(edge))
             continue;
-          }
+
+          if (!matchesPropertyFilter(edge))
+            continue;
+
+          // Cypher relationship uniqueness: skip edges already used in this path
+          if (detectCycles && pathContainsEdge(path, edge))
+            continue;
 
           final Vertex nextVertex = getOtherVertex(edge, vertex);
-
-          // Skip if already visited or creates cycle in path
-          if (detectCycles && (isVisited(nextVertex, visited) || path.containsVertex(nextVertex))) {
-            continue;
-          }
-
-          // Mark as visited BEFORE adding to queue (prevents duplicates)
-          if (detectCycles) {
-            markVisited(nextVertex, visited);
-          }
-
           final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
           queue.add(new PathWithDepth(newPath, depth + 1));
         }
       }
+    }
+
+    /**
+     * Checks if a path already contains the given edge (relationship uniqueness).
+     */
+    private boolean pathContainsEdge(final TraversalPath path, final Edge edge) {
+      final RID edgeRid = edge.getIdentity();
+      for (final Edge pathEdge : path.getEdges())
+        if (pathEdge.getIdentity().equals(edgeRid))
+          return true;
+      return false;
     }
 
     @Override

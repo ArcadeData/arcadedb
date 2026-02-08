@@ -246,6 +246,9 @@ public class PatternParser {
           minHops = maxHops = Integer.parseInt(rangeStr);
         }
       }
+      // Bare * with no range: [*] means [*1..] (min=1, max=unbounded)
+      if (minHops == null && maxHops == null)
+        minHops = 1;
     } else {
       // Fixed-length relationship
       if (remainingStr.contains(":")) {

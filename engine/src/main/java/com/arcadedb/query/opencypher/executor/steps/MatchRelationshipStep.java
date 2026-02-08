@@ -31,9 +31,13 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import com.arcadedb.database.RID;
+
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
@@ -117,6 +121,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<Edge> currentEdges = null;
+      private Set<RID> seenEdges = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -152,12 +157,26 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
           // Get edges from current vertex
           if (currentEdges != null && currentEdges.hasNext()) {
             final Edge edge = currentEdges.next();
+
+            // For undirected patterns, deduplicate self-loop edges
+            // (self-loops appear twice: once as OUT, once as IN)
+            if (seenEdges != null && !seenEdges.add(edge.getIdentity()))
+              continue;
+
             final Vertex targetVertex = getTargetVertex(edge, (Vertex) lastResult.getProperty(sourceVariable));
 
             // Filter by edge type if specified
-            if (pattern.hasTypes() && !matchesEdgeType(edge)) {
+            if (pattern.hasTypes() && !matchesEdgeType(edge))
               continue;
-            }
+
+            // Filter by inline relationship properties if specified
+            if (pattern.hasProperties() && !matchesEdgeProperties(edge))
+              continue;
+
+            // Relationship uniqueness: Cypher requires each relationship in a pattern
+            // to be matched to a distinct edge (no edge traversed twice)
+            if (isEdgeAlreadyUsed(lastResult, edge))
+              continue;
 
             // Filter by target node label if specified in the pattern
             if (targetNodePattern != null && targetNodePattern.hasLabels()) {
@@ -195,10 +214,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // Add path binding if path variable is specified (e.g., p = (a)-[r]->(b))
             if (pathVariable != null && !pathVariable.isEmpty()) {
-              // Create a TraversalPath with source vertex, edge, and target vertex
-              final TraversalPath path =
-                  new TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
-              path.addStep(edge, targetVertex);
+              // Check if there's an existing path from a previous hop to extend
+              final Object existingPath = lastResult.getProperty(pathVariable);
+              final TraversalPath path;
+              if (existingPath instanceof TraversalPath)
+                // Extend existing path (multi-hop pattern)
+                path = new TraversalPath((TraversalPath) existingPath, edge, targetVertex);
+              else {
+                // Create new path starting from source vertex
+                path = new TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
+                path.addStep(edge, targetVertex);
+              }
               result.setProperty(pathVariable, path);
             }
 
@@ -221,9 +247,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;
               currentEdges = getEdges(sourceVertex);
+              // Track seen edges for BOTH direction to deduplicate self-loops
+              seenEdges = pattern.getDirection() == Direction.BOTH ? new HashSet<>() : null;
             } else {
               // Source is not a vertex, skip
               currentEdges = null;
+              seenEdges = null;
             }
           }
         }
@@ -278,14 +307,38 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * Checks if a target vertex matches the label constraints from the target node pattern.
    */
   private boolean matchesTargetLabel(final Vertex vertex) {
-    if (targetNodePattern == null || !targetNodePattern.hasLabels()) {
+    if (targetNodePattern == null || !targetNodePattern.hasLabels())
       return true;
-    }
 
-    final String vertexType = vertex.getTypeName();
-    for (final String label : targetNodePattern.getLabels()) {
-      if (label.equals(vertexType)) {
+    // Check that the vertex has ALL required labels using type hierarchy
+    for (final String label : targetNodePattern.getLabels())
+      if (!vertex.getType().instanceOf(label))
+        return false;
+    return true;
+  }
+
+  /**
+   * Checks if an edge is already used in the result.
+   * Enforces Cypher's relationship uniqueness constraint.
+   * Checks both Edge-typed properties and edges inside TraversalPaths.
+   */
+  @SuppressWarnings("unchecked")
+  private boolean isEdgeAlreadyUsed(final Result result, final Edge edge) {
+    final RID edgeRid = edge.getIdentity();
+    for (final String prop : result.getPropertyNames()) {
+      final Object val = result.getProperty(prop);
+      if (val instanceof Edge && ((Edge) val).getIdentity().equals(edgeRid))
         return true;
+      if (val instanceof TraversalPath) {
+        for (final Edge pathEdge : ((TraversalPath) val).getEdges())
+          if (pathEdge.getIdentity().equals(edgeRid))
+            return true;
+      }
+      // Check edge lists from VLP relationship variables
+      if (val instanceof List) {
+        for (final Object item : (List<Object>) val)
+          if (item instanceof Edge && ((Edge) item).getIdentity().equals(edgeRid))
+            return true;
       }
     }
     return false;
@@ -295,17 +348,30 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * Checks if an edge matches the type filter.
    */
   private boolean matchesEdgeType(final Edge edge) {
-    if (!pattern.hasTypes()) {
+    if (!pattern.hasTypes())
       return true;
-    }
 
     final String edgeType = edge.getTypeName();
-    for (final String type : pattern.getTypes()) {
-      if (type.equals(edgeType)) {
+    for (final String type : pattern.getTypes())
+      if (type.equals(edgeType))
         return true;
-      }
-    }
     return false;
+  }
+
+  /**
+   * Checks if an edge matches the inline property filters.
+   */
+  private boolean matchesEdgeProperties(final Edge edge) {
+    if (!pattern.hasProperties())
+      return true;
+
+    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+      final Object actual = edge.get(entry.getKey());
+      final Object expected = entry.getValue();
+      if (actual == null || !actual.equals(expected))
+        return false;
+    }
+    return true;
   }
 
   @Override
