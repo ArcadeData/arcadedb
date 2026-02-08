@@ -48,6 +48,11 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
+      - name: Buid jars
+        run: ./mvnw clean install  -DskipTests --batch-mode --errors  --show-version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Generate third-party license report
         run: |
           echo "Generating license report..."
