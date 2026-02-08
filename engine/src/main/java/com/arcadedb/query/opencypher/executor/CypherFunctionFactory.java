@@ -86,8 +86,7 @@ public class CypherFunctionFactory {
     mapping.put("count", "count");
     mapping.put("sum", "sum");
     mapping.put("avg", "avg");
-    mapping.put("min", "min");
-    mapping.put("max", "max");
+    // min/max handled as Cypher-specific to support mixed-type comparison
     mapping.put("stdev", "stddev");
     mapping.put("stdevp", "stddev");
 
@@ -209,7 +208,7 @@ public class CypherFunctionFactory {
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean" -> true;
       // Aggregation functions
-      case "collect", "percentiledisc", "percentilecont" -> true;
+      case "collect", "percentiledisc", "percentilecont", "min", "max" -> true;
       // Temporal constructor functions
       case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
       // Temporal truncation functions
@@ -281,6 +280,8 @@ public class CypherFunctionFactory {
       case "toboolean" -> new ToBooleanFunction();
       // Aggregation functions
       case "collect" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
+      case "min" -> distinct ? new DistinctAggregationWrapper(new CypherMinFunction()) : new CypherMinFunction();
+      case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
       case "percentiledisc" -> new PercentileDiscFunction();
       case "percentilecont" -> new PercentileContFunction();
       // Temporal constructor functions
@@ -452,11 +453,15 @@ public class CypherFunctionFactory {
       }
       if (args[0] == null)
         return null;
+      DeletedEntityMarker.checkNotDeleted(args[0]);
       if (args[0] instanceof Vertex vertex) {
         // Use the Labels helper class which handles composite types
         return Labels.getLabels(vertex);
       }
-      return Collections.emptyList();
+      if (args[0] instanceof Result result && result.getElement().isPresent() && result.getElement().get() instanceof Vertex v)
+        return Labels.getLabels(v);
+      throw new CommandExecutionException("InvalidArgumentValue: labels() requires a node argument, got: " +
+          args[0].getClass().getSimpleName());
     }
   }
 
@@ -474,8 +479,13 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("type() requires exactly one argument");
       }
-      if (args[0] instanceof Edge) {
+      if (args[0] instanceof Edge)
         return ((Edge) args[0]).getTypeName();
+      if (args[0] instanceof DeletedEntityMarker) {
+        final String relType = ((DeletedEntityMarker) args[0]).getRelationshipType();
+        if (relType != null)
+          return relType;
+        DeletedEntityMarker.checkNotDeleted(args[0]);
       }
       return null;
     }
@@ -1120,6 +1130,146 @@ public class CypherFunctionFactory {
         return null;
       }
       throw new CommandExecutionException("TypeError: InvalidArgumentValue - toBoolean() cannot convert " + args[0].getClass().getSimpleName());
+    }
+  }
+
+  /**
+   * Returns the Cypher type order rank for mixed-type comparison.
+   * Order: MAP(0) < NODE(1) < RELATIONSHIP(2) < LIST(3) < PATH(4) < STRING(5) < BOOLEAN(6) < NUMBER(7) < NaN(8) < NULL(9)
+   */
+  static int cypherTypeRank(final Object value) {
+    if (value == null)
+      return 9;
+    if (value instanceof Number) {
+      final double d = ((Number) value).doubleValue();
+      return Double.isNaN(d) ? 8 : 7;
+    }
+    if (value instanceof Boolean)
+      return 6;
+    if (value instanceof String)
+      return 5;
+    if (value instanceof List)
+      return 3;
+    if (value instanceof Vertex)
+      return 1;
+    if (value instanceof Edge)
+      return 2;
+    if (value instanceof Map)
+      return 0;
+    return 4; // path or other
+  }
+
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  static int cypherCompare(final Object a, final Object b) {
+    if (a == null && b == null)
+      return 0;
+    if (a == null)
+      return 1;
+    if (b == null)
+      return -1;
+    final int rankA = cypherTypeRank(a);
+    final int rankB = cypherTypeRank(b);
+    if (rankA != rankB)
+      return Integer.compare(rankA, rankB);
+    // Same type category - compare within type
+    if (a instanceof Number && b instanceof Number) {
+      return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
+    }
+    if (a instanceof String && b instanceof String)
+      return ((String) a).compareTo((String) b);
+    if (a instanceof Boolean && b instanceof Boolean)
+      return Boolean.compare((Boolean) a, (Boolean) b);
+    if (a instanceof List && b instanceof List) {
+      final List<?> la = (List<?>) a;
+      final List<?> lb = (List<?>) b;
+      for (int i = 0; i < Math.min(la.size(), lb.size()); i++) {
+        final int cmp = cypherCompare(la.get(i), lb.get(i));
+        if (cmp != 0)
+          return cmp;
+      }
+      return Integer.compare(la.size(), lb.size());
+    }
+    if (a instanceof Comparable && b instanceof Comparable) {
+      try {
+        return ((Comparable) a).compareTo(b);
+      } catch (final ClassCastException e) {
+        return 0;
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * min() aggregation function with Cypher mixed-type support.
+   * Skips nulls. For mixed types uses Cypher type ordering.
+   */
+  private static class CypherMinFunction implements StatelessFunction {
+    private Object minValue = null;
+    private boolean hasValue = false;
+
+    @Override
+    public String getName() {
+      return "min";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("min() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      if (!hasValue || cypherCompare(args[0], minValue) < 0) {
+        minValue = args[0];
+        hasValue = true;
+      }
+      return null;
+    }
+
+    @Override
+    public boolean aggregateResults() {
+      return true;
+    }
+
+    @Override
+    public Object getAggregatedResult() {
+      return hasValue ? minValue : null;
+    }
+  }
+
+  /**
+   * max() aggregation function with Cypher mixed-type support.
+   * Skips nulls. For mixed types uses Cypher type ordering.
+   */
+  private static class CypherMaxFunction implements StatelessFunction {
+    private Object maxValue = null;
+    private boolean hasValue = false;
+
+    @Override
+    public String getName() {
+      return "max";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("max() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      if (!hasValue || cypherCompare(args[0], maxValue) > 0) {
+        maxValue = args[0];
+        hasValue = true;
+      }
+      return null;
+    }
+
+    @Override
+    public boolean aggregateResults() {
+      return true;
+    }
+
+    @Override
+    public Object getAggregatedResult() {
+      return hasValue ? maxValue : null;
     }
   }
 

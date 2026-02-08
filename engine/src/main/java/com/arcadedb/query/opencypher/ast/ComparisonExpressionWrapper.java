@@ -45,6 +45,12 @@ public class ComparisonExpressionWrapper implements Expression {
   }
 
   @Override
+  public boolean containsAggregation() {
+    return comparison.getLeft().containsAggregation()
+        || comparison.getRight().containsAggregation();
+  }
+
+  @Override
   public String getText() {
     return comparison.getText();
   }

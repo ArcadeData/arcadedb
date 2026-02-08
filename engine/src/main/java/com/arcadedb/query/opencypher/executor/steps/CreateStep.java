@@ -375,7 +375,9 @@ public class CreateStep extends AbstractExecutionStep {
           value = expr.evaluate(currentResult, context);
       }
 
-      edge.set(key, convertTemporalForStorage(value));
+      // In Cypher, null property values are not stored
+      if (value != null)
+        edge.set(key, convertTemporalForStorage(value));
     }
   }
 

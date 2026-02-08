@@ -773,7 +773,10 @@ public class CypherSemanticValidator {
       final FunctionCallExpression func = (FunctionCallExpression) expr;
       if (func.isAggregation()) {
         if (insideAggregation)
-          throw new CommandParsingException("InvalidAggregation: Nested aggregation functions are not allowed");
+          throw new CommandParsingException("NestedAggregation: Nested aggregation functions are not allowed");
+        // Check for non-deterministic functions inside aggregation (e.g., count(rand()))
+        for (final Expression arg : func.getArguments())
+          checkNonConstantInAggregation(arg);
         for (final Expression arg : func.getArguments())
           checkNestedAggregation(arg, true);
         return;
@@ -787,9 +790,17 @@ public class CypherSemanticValidator {
       checkNestedAggregation(((TernaryLogicalExpression) expr).getLeft(), insideAggregation);
       if (((TernaryLogicalExpression) expr).getRight() != null)
         checkNestedAggregation(((TernaryLogicalExpression) expr).getRight(), insideAggregation);
+    } else if (expr instanceof BooleanWrapperExpression) {
+      final BooleanExpression boolExpr = ((BooleanWrapperExpression) expr).getBooleanExpression();
+      checkNestedAggregationInBoolean(boolExpr, insideAggregation);
     } else if (expr instanceof ListExpression) {
       for (final Expression elem : ((ListExpression) expr).getElements())
         checkNestedAggregation(elem, insideAggregation);
+    } else if (expr instanceof ListComprehensionExpression) {
+      final ListComprehensionExpression lce = (ListComprehensionExpression) expr;
+      checkNestedAggregation(lce.getListExpression(), insideAggregation);
+      if (lce.getMapExpression() != null)
+        checkAggregationInListComprehension(lce.getMapExpression());
     } else if (expr instanceof CaseExpression) {
       final CaseExpression caseExpr = (CaseExpression) expr;
       if (caseExpr.getCaseExpression() != null)
@@ -800,6 +811,38 @@ public class CypherSemanticValidator {
       }
       if (caseExpr.getElseExpression() != null)
         checkNestedAggregation(caseExpr.getElseExpression(), insideAggregation);
+    }
+  }
+
+  private void checkNestedAggregationInBoolean(final BooleanExpression boolExpr, final boolean insideAggregation) {
+    if (boolExpr instanceof ComparisonExpression) {
+      checkNestedAggregation(((ComparisonExpression) boolExpr).getLeft(), insideAggregation);
+      checkNestedAggregation(((ComparisonExpression) boolExpr).getRight(), insideAggregation);
+    } else if (boolExpr instanceof LogicalExpression) {
+      checkNestedAggregationInBoolean(((LogicalExpression) boolExpr).getLeft(), insideAggregation);
+      if (((LogicalExpression) boolExpr).getRight() != null)
+        checkNestedAggregationInBoolean(((LogicalExpression) boolExpr).getRight(), insideAggregation);
+    }
+  }
+
+  private static final java.util.Set<String> NON_DETERMINISTIC_FUNCTIONS = java.util.Set.of("rand", "randomuuid");
+
+  private void checkNonConstantInAggregation(final Expression expr) {
+    if (expr instanceof FunctionCallExpression) {
+      final FunctionCallExpression func = (FunctionCallExpression) expr;
+      if (NON_DETERMINISTIC_FUNCTIONS.contains(func.getFunctionName().toLowerCase(java.util.Locale.ROOT)))
+        throw new CommandParsingException("NonConstantExpression: Non-constant expression is not allowed inside aggregation: " + func.getFunctionName());
+    }
+  }
+
+  private void checkAggregationInListComprehension(final Expression expr) {
+    if (expr == null)
+      return;
+    if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
+      throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in list comprehensions");
+    if (expr instanceof ArithmeticExpression) {
+      checkAggregationInListComprehension(((ArithmeticExpression) expr).getLeft());
+      checkAggregationInListComprehension(((ArithmeticExpression) expr).getRight());
     }
   }
 
@@ -1135,6 +1178,9 @@ public class CypherSemanticValidator {
     if (expr instanceof FunctionCallExpression) {
       final FunctionCallExpression func = (FunctionCallExpression) expr;
       final String name = func.getFunctionName().toLowerCase();
+      // Check for unknown functions (skip namespaced functions like date.truncate, they're handled by CypherFunctionRegistry)
+      if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
+        throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");
       final List<Expression> args = func.getArguments();
       if (args.size() == 1) {
         final Expression arg = args.get(0);

@@ -162,6 +162,40 @@ public class FunctionValidator {
     registerFunction("datetime", 0, 1, "Current or parsed datetime", false);
     registerFunction("date", 0, 1, "Current or parsed date", false);
     registerFunction("time", 0, 1, "Current or parsed time", false);
+    registerFunction("localtime", 0, 1, "Current or parsed local time", false);
+    registerFunction("localdatetime", 0, 1, "Current or parsed local datetime", false);
+    registerFunction("duration", 1, 1, "Duration value", false);
+
+    // Path/Graph functions
+    registerFunction("nodes", 1, 1, "Nodes in path", false);
+    registerFunction("relationships", 1, 1, "Relationships in path", false);
+    registerFunction("startnode", 1, 1, "Start node of relationship", false);
+    registerFunction("endnode", 1, 1, "End node of relationship", false);
+
+    // Additional type conversions
+    registerFunction("tostringornull", 1, 1, "Convert to string or null", false);
+    registerFunction("tointegerornull", 1, 1, "Convert to integer or null", false);
+    registerFunction("tofloatornull", 1, 1, "Convert to float or null", false);
+    registerFunction("tobooleanornull", 1, 1, "Convert to boolean or null", false);
+
+    // Additional functions
+    registerFunction("randomuuid", 0, 0, "Random UUID", false);
+    registerFunction("pi", 0, 0, "Pi constant", false);
+    registerFunction("e", 0, 0, "Euler's number", false);
+    registerFunction("point", 1, 1, "Create point", false);
+    registerFunction("distance", 2, 2, "Distance between points", false);
+    registerFunction("degrees", 1, 1, "Radians to degrees", false);
+    registerFunction("radians", 1, 1, "Degrees to radians", false);
+    registerFunction("haversin", 1, 1, "Haversine", false);
+    registerFunction("charlength", 1, 1, "Character length", false);
+    registerFunction("charat", 2, 2, "Character at position", false);
+    registerFunction("normalize", 1, 2, "Normalize string", false);
+    registerFunction("isnormalized", 1, 2, "Check if normalized", false);
+    registerFunction("char_length", 1, 1, "Character length", false);
+    registerFunction("character_length", 1, 1, "Character length", false);
+    registerFunction("nullif", 2, 2, "Null if equal", false);
+    registerFunction("valuetype", 1, 1, "Value type string", false);
+    registerFunction("elementid", 1, 1, "Element ID", false);
   }
 
   private static void registerFunction(final String name, final int minArgs, final int maxArgs,
