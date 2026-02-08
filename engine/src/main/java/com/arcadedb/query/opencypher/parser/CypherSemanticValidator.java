@@ -287,8 +287,12 @@ public class CypherSemanticValidator {
           break;
         case MERGE:
           final MergeClause mergeClause = entry.getTypedClause();
-          if (mergeClause != null)
+          if (mergeClause != null) {
             addBoundVarsFromPattern(mergeClause.getPathPattern(), scope);
+            // Validate ON CREATE SET / ON MATCH SET variables
+            validateSetClauseScope(mergeClause.getOnCreateSet(), scope);
+            validateSetClauseScope(mergeClause.getOnMatchSet(), scope);
+          }
           break;
         case UNWIND:
           final UnwindClause unwindClause = entry.getTypedClause();
@@ -343,9 +347,12 @@ public class CypherSemanticValidator {
         case SET:
           final SetClause setClause = entry.getTypedClause();
           if (setClause != null && !setClause.isEmpty())
-            for (final SetClause.SetItem item : setClause.getItems())
+            for (final SetClause.SetItem item : setClause.getItems()) {
               if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
                 throw new CommandParsingException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+              if (item.getValueExpression() != null)
+                checkExpressionScope(item.getValueExpression(), scope);
+            }
           break;
         case REMOVE:
           // REMOVE references variables that must be in scope — but complex to validate
@@ -510,6 +517,17 @@ public class CypherSemanticValidator {
       final String var = rel.getVariable();
       if (var != null && !var.isEmpty() && isValidVariableName(var) && !scope.contains(var))
         throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+    }
+  }
+
+  private void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
+    if (setClause == null || setClause.isEmpty())
+      return;
+    for (final SetClause.SetItem item : setClause.getItems()) {
+      if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
+        throw new CommandParsingException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+      if (item.getValueExpression() != null)
+        checkExpressionScope(item.getValueExpression(), scope);
     }
   }
 
