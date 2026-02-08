@@ -23,8 +23,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -52,9 +52,9 @@ import java.util.NoSuchElementException;
  * - Binds each vertex to variable 'n'
  */
 public class MatchNodeStep extends AbstractExecutionStep {
-  private final String variable;
+  private final String      variable;
   private final NodePattern pattern;
-  private final String idFilter; // Optional ID filter to apply (e.g., "#1:0")
+  private final String      idFilter; // Optional ID filter to apply (e.g., "#1:0")
 
   /**
    * Creates a match node step.
@@ -75,7 +75,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param context  command context
    * @param idFilter optional ID filter to apply (e.g., "#1:0")
    */
-  public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context, final String idFilter) {
+  public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context,
+                       final String idFilter) {
     super(context);
     this.variable = variable;
     this.pattern = pattern;
@@ -87,12 +88,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final boolean hasInput = prev != null;
 
     return new ResultSet() {
-      private ResultSet prevResults = null;
-      private Iterator<Identifiable> iterator = null;
-      private final List<Result> buffer = new ArrayList<>();
-      private int bufferIndex = 0;
-      private boolean finished = false;
-      private Result currentInputResult = null;
+      private       ResultSet              prevResults        = null;
+      private       Iterator<Identifiable> iterator           = null;
+      private final List<Result>           buffer             = new ArrayList<>();
+      private       int                    bufferIndex        = 0;
+      private       boolean                finished           = false;
+      private       Result                 currentInputResult = null;
 
       @Override
       public boolean hasNext() {
@@ -236,13 +237,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
       try {
         final RID rid = new RID(context.getDatabase(), idFilter);
         final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
-        if (vertex != null) {
-          // Return single-element iterator for the matched vertex
-          return List.of(vertex).iterator();
-        } else {
-          // ID not found - return empty iterator
-          return List.<Identifiable>of().iterator();
-        }
+        // Return single-element iterator for the matched vertex
+        return List.of(vertex).iterator();
       } catch (final Exception e) {
         // Invalid ID format - return empty iterator
         return List.<Identifiable>of().iterator();
@@ -270,8 +266,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
         // No index available - fall back to full type scan
         if (context.getDatabase().getSchema().existsType(label)) {
-          @SuppressWarnings("unchecked")
-          final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
+          @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
+              (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
           return iter;
         }
         return Collections.emptyIterator();
@@ -292,8 +288,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
             }
           }
           if (matchesAll) {
-            @SuppressWarnings("unchecked")
-            final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
+            @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
+                (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
             iterators.add(iter);
           }
         }
@@ -307,8 +303,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
       for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
         // Only include vertex types (not edge types or document types)
         if (type instanceof VertexType) {
-          @SuppressWarnings("unchecked")
-          final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
+          @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
+              (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
           iterators.add(iter);
         }
       }
@@ -323,7 +319,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
    */
   private static class ChainedIterator implements Iterator<Identifiable> {
     private final List<Iterator<Identifiable>> iterators;
-    private int currentIndex = 0;
+    private       int                          currentIndex = 0;
 
     public ChainedIterator(final List<Iterator<Identifiable>> iterators) {
       this.iterators = iterators;
@@ -424,8 +420,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       }
 
       // Use the index for lookup
-      @SuppressWarnings("unchecked")
-      final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
+      @SuppressWarnings("unchecked") final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
           context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
       return iter;
     }
