@@ -45,15 +45,19 @@ import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.net.http.*;
-import java.util.*;
-import java.util.logging.*;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 /**
- * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
+ * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase
+ * per thread.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -63,19 +67,20 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   private final String                               databaseName;
   private       BinarySerializer                     serializer;
   private       String                               sessionId;
-  private       Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       Database.TRANSACTION_ISOLATION_LEVEL transactionIsolationLevel =
+      Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private final RemoteSchema                         schema                    = new RemoteSchema(this);
   private       boolean                              open                      = true;
   private       RemoteTransactionExplicitLock        explicitLock;
   private       int                                  cachedHashCode            = 0;
 
   public RemoteDatabase(final String server, final int port, final String databaseName, final String userName,
-      final String userPassword) {
+                        final String userPassword) {
     this(server, port, databaseName, userName, userPassword, new ContextConfiguration());
   }
 
   public RemoteDatabase(final String server, final int port, final String databaseName, final String userName,
-      final String userPassword, final ContextConfiguration configuration) {
+                        final String userPassword, final ContextConfiguration configuration) {
     super(server, port, userName, userPassword, configuration);
     this.databaseName = databaseName;
     try {
@@ -130,8 +135,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject jsonRequest = new JSONObject().put("command", "drop database " + databaseName);
       String payload = getRequestPayload(jsonRequest);
 
-      HttpRequest request = createRequestBuilder("POST", getUrl("server")).POST(HttpRequest.BodyPublishers.ofString(payload))
-          .header("Content-Type", "application/json").build();
+      HttpRequest request =
+          createRequestBuilder("POST", getUrl("server")).POST(HttpRequest.BodyPublishers.ofString(payload))
+              .header("Content-Type", "application/json").build();
 
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -178,7 +184,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction) {
-    return transaction(txBlock, joinCurrentTransaction, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
+    return transaction(txBlock, joinCurrentTransaction,
+        configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
         null);
   }
 
@@ -189,7 +196,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTransaction, int attempts,
-      final OkCallback ok, final ErrorCallback error) {
+                             final OkCallback ok, final ErrorCallback error) {
     checkDatabaseIsOpen();
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
@@ -294,8 +301,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction not begun");
 
     try {
-      HttpRequest request = createRequestBuilder("POST", getUrl("commit", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
-          .build();
+      HttpRequest request =
+          createRequestBuilder("POST", getUrl("commit", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
+              .build();
 
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -325,8 +333,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction not begun");
 
     try {
-      HttpRequest request = createRequestBuilder("POST", getUrl("rollback", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
-          .build();
+      HttpRequest request =
+          createRequestBuilder("POST", getUrl("rollback", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
+              .build();
 
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -345,7 +354,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public long countBucket(final String bucketName) {
     checkDatabaseIsOpen();
     stats.countBucket.incrementAndGet();
-    return ((Number) ((ResultSet) databaseCommand("query", "sql", "select count(*) as count from bucket:" + bucketName, null, false,
+    return ((Number) ((ResultSet) databaseCommand("query", "sql",
+        "select count(*) as count from bucket:" + bucketName, null, false,
         (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -354,7 +364,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     stats.countType.incrementAndGet();
     final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
-    return ((Number) ((ResultSet) databaseCommand("query", "sql", "select count(*) as count from " + typeName + appendix, null,
+    return ((Number) ((ResultSet) databaseCommand("query", "sql",
+        "select count(*) as count from " + typeName + appendix, null,
         false, (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -390,7 +401,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (!result.hasNext())
       throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-    return result.next().getRecord().get();
+    final Record record = result.next().getRecord().get();
+    if (record == null)
+      throw new RecordNotFoundException("Record " + rid + " not found", rid);
+
+    return record;
   }
 
   @Override
@@ -447,13 +462,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public ResultSet command(final String language, final String command, final ContextConfiguration configuration,
-      final Object... args) {
+                           final Object... args) {
     return command(language, command, args);
   }
 
   @Override
   public ResultSet command(final String language, final String command, final ContextConfiguration configuration,
-      final Map<String, Object> params) {
+                           final Map<String, Object> params) {
     checkDatabaseIsOpen();
     stats.commands.incrementAndGet();
 
@@ -518,9 +533,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   private Object databaseCommand(final String operation, final String language, final String payloadCommand,
-      final Map<String, Object> params, final boolean requiresLeader, final Callback callback) {
+                                 final Map<String, Object> params, final boolean requiresLeader,
+                                 final Callback callback) {
     checkDatabaseIsOpen();
-    return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true, callback);
+    return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true,
+        callback);
   }
 
   String getSessionId() {
