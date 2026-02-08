@@ -22,10 +22,10 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -47,7 +47,7 @@ import java.util.NoSuchElementException;
  * Note: This step materializes all results in memory for sorting.
  */
 public class OrderByStep extends AbstractExecutionStep {
-  private final OrderByClause orderByClause;
+  private final OrderByClause       orderByClause;
   private final ExpressionEvaluator evaluator;
 
   public OrderByStep(final OrderByClause orderByClause, final CommandContext context) {
@@ -67,7 +67,7 @@ public class OrderByStep extends AbstractExecutionStep {
 
     return new ResultSet() {
       private List<Result> sortedResults = null;
-      private int currentIndex = 0;
+      private int          currentIndex  = 0;
 
       @Override
       public boolean hasNext() {
