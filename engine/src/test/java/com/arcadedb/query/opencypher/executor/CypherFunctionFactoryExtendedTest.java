@@ -41,7 +41,7 @@ class CypherFunctionFactoryExtendedTest {
   @BeforeEach
   void setup() {
     database = new DatabaseFactory("./target/databases/test-cypher-factory-extended").create();
-    factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.INSTANCE);
+    factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
   }
 
   @AfterEach
@@ -198,7 +198,7 @@ class CypherFunctionFactoryExtendedTest {
   @Test
   void shouldReturnSQLFunctionFactory() {
     assertThat(factory.getSQLFunctionFactory()).isNotNull();
-    assertThat(factory.getSQLFunctionFactory()).isSameAs(DefaultSQLFunctionFactory.INSTANCE);
+    assertThat(factory.getSQLFunctionFactory()).isSameAs(DefaultSQLFunctionFactory.getInstance());
   }
 
   // ========== Integration Tests with Database ==========
@@ -283,7 +283,7 @@ class CypherFunctionFactoryExtendedTest {
   void shouldExecuteSplitFunction() {
     final var result = database.query("opencypher", "RETURN split('a,b,c', ',') AS result");
     assertThat(result.hasNext()).isTrue();
-    assertThat(result.next().getProperty("result")).isNotNull();
+    assertThat(result.next().<Object>getProperty("result")).isNotNull();
   }
 
   @Test
