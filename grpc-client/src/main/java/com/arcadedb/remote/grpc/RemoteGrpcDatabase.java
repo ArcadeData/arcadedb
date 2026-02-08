@@ -1223,7 +1223,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
     try {
-      return lookupByRID(rid, false) != null;
+      lookupByRID(rid, false);
+      return true;
     } catch (RecordNotFoundException e) {
       return false;
     }

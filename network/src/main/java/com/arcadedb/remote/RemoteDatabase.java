@@ -410,7 +410,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new IllegalArgumentException("Record is null");
 
     try {
-      return lookupByRID(rid, false) != null;
+      lookupByRID(rid, false);
+      return true;
     } catch (RecordNotFoundException e) {
       return false;
     }

@@ -112,7 +112,6 @@ class TransactionBucketTest extends TestHelper {
 
     database.scanBucket("V_0", record -> {
       final Document record2 = (Document) database.lookupByRID(record.getIdentity(), false);
-      assertThat(record2).isNotNull();
       assertThat(record2).isEqualTo(record);
 
       final Set<String> prop = new HashSet<String>();
