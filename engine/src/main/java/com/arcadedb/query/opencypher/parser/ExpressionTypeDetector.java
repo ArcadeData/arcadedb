@@ -215,19 +215,19 @@ class ExpressionTypeDetector {
     if (funcCtx != null)
       return builder.parseFunctionInvocation(funcCtx);
 
-    // List literals (non-top-level, e.g., inside other expressions)
-    if (listCtx != null)
-      return builder.parseListLiteral(listCtx);
-
-    // Map projections
+    // Map projections (before list fallback to avoid inner lists taking priority over maps)
     final Cypher25Parser.MapProjectionContext mapProjCtx = builder.findMapProjectionRecursive(ctx);
     if (mapProjCtx != null)
       return builder.parseMapProjection(mapProjCtx);
 
-    // Map literals
+    // Map literals (before list fallback)
     final Cypher25Parser.MapContext mapCtx = builder.findMapRecursive(ctx);
     if (mapCtx != null)
       return builder.parseMapLiteralExpression(mapCtx);
+
+    // List literals (non-top-level fallback, after map check)
+    if (listCtx != null)
+      return builder.parseListLiteral(listCtx);
 
     // Parenthesized expressions
     final Cypher25Parser.ParenthesizedExpressionContext parenCtx = builder.findParenthesizedExpressionRecursive(ctx);
