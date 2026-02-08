@@ -25,7 +25,7 @@
     "apexcharts": "^5.3.6",
     "bootstrap": "^5.3.8",
     "clipboard": "^2.0.11",
-    "codemirror": "^5.65.20",
+    "codemirror": "^5.65.21",
     "cytoscape": "^3.33.1",
     "cytoscape-cola": "^2.5.1",
     "cytoscape-cxtmenu": "^3.5.0",
