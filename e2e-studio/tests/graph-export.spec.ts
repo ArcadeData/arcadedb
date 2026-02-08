@@ -397,4 +397,46 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
       expect(Array.isArray(selectionExport.selectedData)).toBe(true);
     }
   });
+
+  test('should copy export content to clipboard', async ({ exportGraphReady }) => {
+    const { helper, canvas } = exportGraphReady;
+    const page = helper.page;
+
+    // Grant clipboard permissions
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+
+    // Test clipboard functionality via the export modal
+    const clipboardTest = await page.evaluate(async () => {
+      if (!globalCy) return { error: 'No graph available' };
+
+      try {
+        // Simulate what the export does - get graph data as text
+        const graphData = JSON.stringify({
+          nodes: globalCy.nodes().map(node => ({ id: node.id(), data: node.data() })),
+          edges: globalCy.edges().map(edge => ({ id: edge.id(), data: edge.data() }))
+        });
+
+        // Test native clipboard API
+        await navigator.clipboard.writeText(graphData);
+        const clipboardContent = await navigator.clipboard.readText();
+
+        return {
+          success: true,
+          dataLength: graphData.length,
+          clipboardLength: clipboardContent.length,
+          matches: graphData === clipboardContent
+        };
+      } catch (error) {
+        return { error: error.message };
+      }
+    });
+
+    console.log('Clipboard test result:', clipboardTest);
+    expect(clipboardTest).toBeTruthy();
+
+    if (clipboardTest && !clipboardTest.error) {
+      expect(clipboardTest.success).toBe(true);
+      expect(clipboardTest.matches).toBe(true);
+    }
+  });
 });

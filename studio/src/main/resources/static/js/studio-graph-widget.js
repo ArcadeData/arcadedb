@@ -53,14 +53,14 @@ function renderGraph() {
   }
 
   globalLayout = {
-    name: "cola",
+    name: "fcose",
     animate: true,
-    refresh: 2,
-    ungrabifyWhileSimulating: true,
-    nodeSpacing: function (node) {
-      return globalGraphSettings.graphSpacing;
-    },
-    spacingFactor: 1.75,
+    animationDuration: 500,
+    nodeSeparation: globalGraphSettings.graphSpacing * 1.75,
+    quality: "default",
+    randomize: false,
+    fit: true,
+    padding: 30,
   };
 
   let styles = [

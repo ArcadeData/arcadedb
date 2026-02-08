@@ -21,10 +21,13 @@ import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
 let arcadedbContainer: StartedTestContainer | null = null;
 
 async function globalSetup(config: FullConfig) {
-  console.log('🚀 Starting ArcadeDB container for e2e tests...');
+  // Use environment variable to specify image, default to 'latest' for CI/CD
+  // For local testing with unreleased changes, set ARCADEDB_DOCKER_IMAGE=arcadedata/arcadedb:26.2.1-SNAPSHOT
+  const dockerImage = process.env.ARCADEDB_DOCKER_IMAGE || 'arcadedata/arcadedb:latest';
+  console.log(`🚀 Starting ArcadeDB container for e2e tests using image: ${dockerImage}`);
 
   try {
-    arcadedbContainer = await new GenericContainer('arcadedata/arcadedb:latest')
+    arcadedbContainer = await new GenericContainer(dockerImage)
       .withExposedPorts(2480)
       .withEnvironment({
         JAVA_OPTS: '-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}'
