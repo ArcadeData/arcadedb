@@ -44,7 +44,7 @@ import java.util.Set;
  * Features:
  * - Projection (select and alias columns)
  * - DISTINCT (remove duplicates)
- * - WHERE filtering (after projection)
+ * - WHERE filtering (using merged scope: both pre-projection and projected variables)
  * - ORDER BY, SKIP, LIMIT
  * - Aggregation support
  * <p>
@@ -155,9 +155,17 @@ public class WithStep extends AbstractExecutionStep {
           // Project the result
           final ResultInternal projectedResult = projectResult(inputResult);
 
-          // Apply WHERE clause filtering (after projection)
+          // Apply WHERE clause filtering using a merged scope that contains
+          // both the pre-projection variables AND the projected aliases.
+          // In Cypher, WITH c WHERE r IS NULL can reference 'r' (pre-projection)
+          // and WITH a.name2 AS name WHERE name = 'B' can reference 'name' (projected).
           if (withClause.getWhereClause() != null) {
-            if (!evaluateWhereClause(projectedResult))
+            final ResultInternal mergedScope = new ResultInternal();
+            for (final String prop : inputResult.getPropertyNames())
+              mergedScope.setProperty(prop, inputResult.getProperty(prop));
+            for (final String prop : projectedResult.getPropertyNames())
+              mergedScope.setProperty(prop, projectedResult.getProperty(prop));
+            if (!evaluateWhereClause(mergedScope))
               continue;
           }
 
@@ -226,12 +234,12 @@ public class WithStep extends AbstractExecutionStep {
   }
 
   /**
-   * Evaluates WHERE clause predicate on the projected result.
+   * Evaluates WHERE clause predicate on the input result (before projection).
    */
-  private boolean evaluateWhereClause(final Result projectedResult) {
+  private boolean evaluateWhereClause(final Result inputResult) {
     final BooleanExpression predicate =
         withClause.getWhereClause().getConditionExpression();
-    return Boolean.TRUE.equals(predicate.evaluateTernary(projectedResult, context));
+    return Boolean.TRUE.equals(predicate.evaluateTernary(inputResult, context));
   }
 
   @Override

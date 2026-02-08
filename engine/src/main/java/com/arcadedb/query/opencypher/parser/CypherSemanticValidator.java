@@ -275,6 +275,9 @@ public class CypherSemanticValidator {
           if (matchClause.hasPathPatterns())
             for (final PathPattern path : matchClause.getPathPatterns())
               addBoundVarsFromPattern(path, scope);
+          // Validate WHERE clause references against scope
+          if (matchClause.getWhereClause() != null)
+            checkBooleanExpressionScope(matchClause.getWhereClause().getConditionExpression(), scope);
           break;
         case CREATE:
           final CreateClause createClause = entry.getTypedClause();
@@ -485,9 +488,29 @@ public class CypherSemanticValidator {
       checkExpressionScope(inExpr.getExpression(), scope);
       for (final Expression elem : inExpr.getList())
         checkExpressionScope(elem, scope);
+    } else if (boolExpr instanceof PatternPredicateExpression) {
+      // Pattern predicates in WHERE must not introduce new variables
+      final PathPattern path = ((PatternPredicateExpression) boolExpr).getPathPattern();
+      if (path != null)
+        checkPatternPredicateVariables(path, scope);
+    } else if (boolExpr instanceof IsNullExpression) {
+      checkExpressionScope(((IsNullExpression) boolExpr).getExpression(), scope);
+    } else if (boolExpr instanceof LabelCheckExpression) {
+      checkExpressionScope(((LabelCheckExpression) boolExpr).getVariableExpression(), scope);
     }
-    // Other BooleanExpression types (IsNullExpression, LabelCheckExpression, etc.)
-    // are less commonly tested in TCK scope validation
+  }
+
+  private void checkPatternPredicateVariables(final PathPattern path, final Set<String> scope) {
+    for (final NodePattern node : path.getNodes()) {
+      final String var = node.getVariable();
+      if (var != null && !var.isEmpty() && isValidVariableName(var) && !scope.contains(var))
+        throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+    }
+    for (final RelationshipPattern rel : path.getRelationships()) {
+      final String var = rel.getVariable();
+      if (var != null && !var.isEmpty() && isValidVariableName(var) && !scope.contains(var))
+        throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+    }
   }
 
   // ==============================
