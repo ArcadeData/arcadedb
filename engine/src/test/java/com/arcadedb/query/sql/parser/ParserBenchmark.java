@@ -83,7 +83,7 @@ class ParserBenchmark {
       "DELETE FROM TempData WHERE createdAt < '2024-01-01'"
   };
 
-  private static final String MANY_PARENTHESIS = "SELECT (((((((1 > 0))))))) AS ref0 FROM t0;";
+  private static final String MANY_PARENTHESIS = "SELECT ((((((((((1 > 0)))))))))) AS ref0 FROM t0;";
 
   @BeforeAll
   static void setup() {
