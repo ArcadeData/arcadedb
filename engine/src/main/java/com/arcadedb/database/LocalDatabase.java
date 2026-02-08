@@ -767,6 +767,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
+        return record;
       }
 
       record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
