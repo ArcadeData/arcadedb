@@ -25,12 +25,17 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.nio.*;
-import java.nio.channels.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.logging.Level;
 
 /**
  * Replication Log File. Writes the messages to send to a remote node on reconnection.
@@ -41,22 +46,20 @@ import java.util.logging.*;
  * ( MSG ID + COMMAND( CMD ID + MSG ID + SERIALIZATION ) )
  */
 public class ReplicationLogFile extends LockContext {
+  private static final int                           BUFFER_FOOTER_SIZE   = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+  private static final int                           BUFFER_HEADER_SIZE   = Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
+  private static final long                          MAGIC_NUMBER         = 93719829258702L;
+  private static final long                          CHUNK_SIZE           = 64L * 1024L * 1024L;
   private final        String                        filePath;
+  private final        ByteBuffer                    bufferHeader         = ByteBuffer.allocate(BUFFER_HEADER_SIZE);
+  private final        ByteBuffer                    bufferFooter         = ByteBuffer.allocate(BUFFER_FOOTER_SIZE);
   private              FileChannel                   lastChunkChannel;
   private              FileChannel                   searchChannel        = null;
   private              long                          searchChannelChunkId = -1;
-  private static final int                           BUFFER_HEADER_SIZE   =
-      Binary.LONG_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
-  private final        ByteBuffer                    bufferHeader         = ByteBuffer.allocate(BUFFER_HEADER_SIZE);
-  private static final int                           BUFFER_FOOTER_SIZE   =
-      Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
-  private final        ByteBuffer                    bufferFooter         = ByteBuffer.allocate(BUFFER_FOOTER_SIZE);
-  private static final long                          MAGIC_NUMBER         = 93719829258702L;
   private              long                          lastMessageNumber    = -1L;
-  private final static long                          CHUNK_SIZE           = 64L * 1024L * 1024L;
-  private long                          chunkNumber          = 0L;
-  private WALFile.FlushType             flushPolicy          = WALFile.FlushType.NO;
-  private ReplicationLogArchiveCallback archiveChunkCallback = null;
+  private              long                          chunkNumber          = 0L;
+  private              WALFile.FlushType             flushPolicy          = WALFile.FlushType.NO;
+  private              ReplicationLogArchiveCallback archiveChunkCallback = null;
   private              long                          totalArchivedChunks  = 0L;
   private              long                          maxArchivedChunks    = 200L;
 
@@ -68,18 +71,6 @@ public class ReplicationLogFile extends LockContext {
 
   public interface ReplicationLogArchiveCallback {
     void archiveChunk(File chunkFile, int chunkId);
-  }
-
-  public static class Entry {
-    public final long   messageNumber;
-    public final Binary payload;
-    public final int    length;
-
-    public Entry(final long messageNumber, final Binary payload, final int length) {
-      this.messageNumber = messageNumber;
-      this.payload = payload;
-      this.length = length;
-    }
   }
 
   public ReplicationLogFile(final String filePath) throws FileNotFoundException {
@@ -114,7 +105,7 @@ public class ReplicationLogFile extends LockContext {
   public boolean appendMessage(final ReplicationMessage message) {
     return (boolean) executeInLock(() -> {
       try {
-        if (!checkMessageOrder(message))
+        if (isWrongMessageOrder(message))
           return false;
 
         if (lastChunkChannel == null)
@@ -177,7 +168,7 @@ public class ReplicationLogFile extends LockContext {
       long chunkId = chunkNumber;
 
       while (chunkId > -1) {
-        if (!openChunk(chunkId))
+        if (unableToOpenChunk(chunkId))
           return -1L;
 
         bufferHeader.clear();
@@ -233,7 +224,7 @@ public class ReplicationLogFile extends LockContext {
         throw new ReplicationLogException("Invalid position (" + positionInFile + ") in replication log file of size " + getSize());
 
       final int chunkId = (int) (positionInFile / CHUNK_SIZE);
-      if (!openChunk(chunkId))
+      if (unableToOpenChunk(chunkId))
         throw new ReplicationLogException("Cannot find replication log file with chunk id " + chunkId);
 
       final long posInChunk = positionInFile % CHUNK_SIZE;
@@ -276,24 +267,32 @@ public class ReplicationLogFile extends LockContext {
     });
   }
 
-  public boolean checkMessageOrder(final ReplicationMessage message) {
+  /**
+   * Checks if the message is in the right order. If not, it will skip saving it.
+   *
+   * @param message the message to check
+   *
+   * @return true if the message is in the wrong order, false otherwise
+   */
+  public boolean isWrongMessageOrder(final ReplicationMessage message) {
     if (lastMessageNumber > -1) {
       if (message.messageNumber < lastMessageNumber) {
         LogManager.instance().log(this, Level.WARNING,
             "Wrong sequence in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
             lastMessageNumber, message.messageNumber, Thread.currentThread().threadId());
-        return false;
+        return true;
       }
 
       if (message.messageNumber != lastMessageNumber + 1) {
         LogManager.instance().log(this, Level.WARNING,
             "Found a jump (%d) in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
-            (message.messageNumber - lastMessageNumber), lastMessageNumber, message.messageNumber, Thread.currentThread().threadId());
+            (message.messageNumber - lastMessageNumber), lastMessageNumber, message.messageNumber,
+            Thread.currentThread().threadId());
 
-        return false;
+        return true;
       }
     }
-    return true;
+    return false;
   }
 
   public ReplicationMessage getLastMessage() {
@@ -457,7 +456,7 @@ public class ReplicationLogFile extends LockContext {
     ++chunkNumber;
   }
 
-  private boolean openChunk(final long chunkId) throws IOException {
+  private boolean unableToOpenChunk(final long chunkId) throws IOException {
     if (chunkId != searchChannelChunkId) {
       if (searchChannel != null)
         searchChannel.close();
@@ -468,13 +467,13 @@ public class ReplicationLogFile extends LockContext {
         searchChannel = null;
         searchChannelChunkId = -1L;
         LogManager.instance().log(this, Level.WARNING, "Replication log chunk file %d was not found", null, chunkId);
-        return false;
+        return true;
       }
 
       searchChannel = new RandomAccessFile(chunkFile, "rw").getChannel();
       searchChannelChunkId = chunkId;
     }
-    return true;
+    return false;
   }
 
   private void openLastFile() throws FileNotFoundException {

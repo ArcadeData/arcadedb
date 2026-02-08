@@ -205,11 +205,9 @@ public class RemoteHttpComponent extends RWLockContext {
     Pair<String, Integer> connectToServer =
         leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
-    String server = null;
-
+    String server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
+    String url = protocol + "://" + server + "/api/v" + apiVersion + "/" + operation;
     for (int retry = 0; retry < maxRetry && connectToServer != null; ++retry) {
-      server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
-      String url = protocol + "://" + server + "/api/v" + apiVersion + "/" + operation;
 
       if (extendedURL != null)
         url += "/" + extendedURL;
@@ -394,9 +392,9 @@ public class RemoteHttpComponent extends RWLockContext {
             final String sHost = serverParts[0];
             final int sPort = Integer.parseInt(serverParts[1]);
 
-            replicaServerList.add(new Pair(sHost, sPort));
+            replicaServerList.add(new Pair<>(sHost, sPort));
           } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", null, serverEntry);
+            LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", e, serverEntry);
           }
         }
       }

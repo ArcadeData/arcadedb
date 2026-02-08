@@ -27,6 +27,7 @@ import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
 import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
+import org.awaitility.Awaitility;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,7 +39,7 @@ import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
 import static com.arcadedb.test.support.ContainersTestTemplate.PASSWORD;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class DatabaseWrapper {
+public class DatabaseWrapper implements AutoCloseable {
   private static final Logger            logger = LoggerFactory.getLogger(DatabaseWrapper.class);
   private final        ServerWrapper     server;
   private final        RemoteDatabase    db;
@@ -95,19 +96,19 @@ public class DatabaseWrapper {
   }
 
   public void createDatabase() {
-    RemoteServer httpServer = new RemoteServer(
+    RemoteServer remoteServer = new RemoteServer(
         server.host(),
         server.httpPort(),
         "root",
         PASSWORD);
-    httpServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    remoteServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
-    if (httpServer.exists(DATABASE)) {
+    if (remoteServer.exists(DATABASE)) {
       logger.info("Dropping existing database {}", DATABASE);
-      httpServer.drop(DATABASE);
+      remoteServer.drop(DATABASE);
     }
     logger.info("Creating  database {}", DATABASE);
-    httpServer.create(DATABASE);
+    remoteServer.create(DATABASE);
   }
 
   /**
@@ -142,12 +143,19 @@ public class DatabaseWrapper {
    * It checks if the types User, Photo, HasUploaded, FriendOf, and Likes exist.
    */
   public void checkSchema() {
-    RemoteSchema schema = db.getSchema();
-    assertThat(schema.existsType("Photo")).isTrue();
-    assertThat(schema.existsType("User")).isTrue();
-    assertThat(schema.existsType("HasUploaded")).isTrue();
-    assertThat(schema.existsType("FriendOf")).isTrue();
-    assertThat(schema.existsType("Likes")).isTrue();
+
+    Awaitility.await()
+        .atMost(5, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.SECONDS)
+        .until(() -> {
+          RemoteSchema schema = db.getSchema();
+          return schema.existsType("Photo") &&
+              schema.existsType("User") &&
+              schema.existsType("HasUploaded") &&
+              schema.existsType("FriendOf") &&
+              schema.existsType("Likes");
+        });
+
   }
 
   /**
