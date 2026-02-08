@@ -153,8 +153,22 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   public CypherDuration multiply(final double factor) {
-    return new CypherDuration(Math.round(months * factor), Math.round(days * factor),
-        (long) (seconds * factor), (int) Math.round(nanosAdjustment * factor));
+    // Cascading remainder approach: fractional months carry to days, fractional days carry to seconds.
+    // This matches Neo4j behavior where 1 month = 365.2425/12 days and 1 day = 86400 seconds.
+    final double newMonths = months * factor;
+    final long wholeMonths = (long) newMonths;
+    final double monthRemainder = newMonths - wholeMonths;
+
+    final double newDays = days * factor + monthRemainder * (365.2425 / 12);
+    final long wholeDays = (long) newDays;
+    final double dayRemainder = newDays - wholeDays;
+
+    final double totalNanos = (seconds * 1_000_000_000.0 + nanosAdjustment) * factor + dayRemainder * 86400_000_000_000.0;
+    final long wholeNanos = (long) totalNanos; // Truncate sub-nanosecond remainder
+    final long newSeconds = wholeNanos / 1_000_000_000L;
+    final int newNanosAdj = (int) (wholeNanos % 1_000_000_000L);
+
+    return new CypherDuration(wholeMonths, wholeDays, newSeconds, newNanosAdj);
   }
 
   public CypherDuration divide(final double divisor) {

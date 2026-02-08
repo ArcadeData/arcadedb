@@ -187,13 +187,24 @@ class ExpressionTypeDetector {
    * Returns null if not a primary expression.
    */
   Expression tryParsePrimary(final Cypher25Parser.ExpressionContext ctx) {
+    // Check for top-level list literals BEFORE function invocations.
+    // Otherwise, [date({...})] would be parsed as date() because findFunctionInvocationRecursive
+    // finds the nested function call inside the list. For cases like tail([1,2,3]),
+    // the function is at the top level and will be caught below.
+    final Cypher25Parser.ListLiteralContext listCtx = builder.findListLiteralRecursive(ctx);
+    if (listCtx != null) {
+      final String listText = listCtx.getText();
+      final String exprText = ctx.getText();
+      if (listText.length() >= exprText.length() - 2) // Top-level list (allow for whitespace)
+        return builder.parseListLiteral(listCtx);
+    }
+
     // Function invocations
     final Cypher25Parser.FunctionInvocationContext funcCtx = builder.findFunctionInvocationRecursive(ctx);
     if (funcCtx != null)
       return builder.parseFunctionInvocation(funcCtx);
 
-    // List literals
-    final Cypher25Parser.ListLiteralContext listCtx = builder.findListLiteralRecursive(ctx);
+    // List literals (non-top-level, e.g., inside other expressions)
     if (listCtx != null)
       return builder.parseListLiteral(listCtx);
 

@@ -194,8 +194,11 @@ public class ArithmeticExpression implements Expression {
 
     // java.time.LocalDate (from ArcadeDB storage) ± Duration
     if (leftValue instanceof LocalDate ld && rightValue instanceof CypherDuration dur) {
+      // For dates, full days from the seconds component must be carried over
+      final long extraDays = dur.getSeconds() / 86400;
+      final long totalDays = dur.getDays() + extraDays;
       final LocalDate d = ld.plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays());
+          .plusDays(op == Operator.ADD ? totalDays : -totalDays);
       return new CypherDate(d);
     }
 
@@ -211,8 +214,11 @@ public class ArithmeticExpression implements Expression {
 
     // Date ± Duration
     if (leftValue instanceof CypherDate cd && rightValue instanceof CypherDuration dur) {
+      // For dates, full days from the seconds component must be carried over
+      final long extraDays = dur.getSeconds() / 86400;
+      final long totalDays = dur.getDays() + extraDays;
       final LocalDate d = cd.getValue().plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays());
+          .plusDays(op == Operator.ADD ? totalDays : -totalDays);
       return new CypherDate(d);
     }
 
