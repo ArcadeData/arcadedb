@@ -228,9 +228,11 @@ class OpenCypherTraversalRegressionTest extends TestHelper {
       }
 
       // From vertex 0, depth 2 paths: 0->1->2, 0->1->3, 0->2->3, 0->2->4
-      // Should find vertices {2, 3, 4} but each should appear only once
-      assertThat(count <= 10).as("Should not have excessive results from highly connected graph").isTrue();
-      assertThat(uniqueResults.size()).as("REGRESSION: All results should be unique (found duplicates)").isEqualTo(count);
+      // There are 4 distinct paths reaching 3 unique vertices: {2, 3, 4}
+      // Vertex 3 is reached via two paths (0->1->3 and 0->2->3), which is correct Cypher behavior
+      // (Cypher uses relationship/edge uniqueness per path, not vertex uniqueness)
+      assertThat(count).as("Expected exactly 4 results (one per distinct path at depth 2)").isEqualTo(4);
+      assertThat(uniqueResults).as("Should reach exactly 3 unique vertices: {2, 3, 4}").hasSize(3);
     } finally {
       database.commit();
     }
