@@ -26,6 +26,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
@@ -618,6 +619,8 @@ public class CypherFunctionFactory {
         throw new CommandExecutionException("nodes() requires exactly one argument");
       if (args[0] == null)
         return null;
+      if (args[0] instanceof TraversalPath)
+        return new ArrayList<>(((TraversalPath) args[0]).getVertices());
       if (args[0] instanceof List) {
         final List<?> path = (List<?>) args[0];
         final List<Vertex> nodes = new ArrayList<>();
@@ -645,6 +648,8 @@ public class CypherFunctionFactory {
         throw new CommandExecutionException("relationships() requires exactly one argument");
       if (args[0] == null)
         return null;
+      if (args[0] instanceof TraversalPath)
+        return new ArrayList<>(((TraversalPath) args[0]).getEdges());
       if (args[0] instanceof List) {
         final List<?> path = (List<?>) args[0];
         final List<Edge> edges = new ArrayList<>();
@@ -671,6 +676,8 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("length() requires exactly one argument");
       }
+      if (args[0] instanceof TraversalPath)
+        return (long) ((TraversalPath) args[0]).length();
       if (args[0] instanceof List) {
         // Path is represented as a list of alternating vertices and edges
         // Length = number of edges

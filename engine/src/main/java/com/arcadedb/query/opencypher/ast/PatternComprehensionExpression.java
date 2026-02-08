@@ -59,7 +59,8 @@ public class PatternComprehensionExpression implements Expression {
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
     final List<Object> resultList = new ArrayList<>();
-    traversePattern(result, context, 0, result, resultList);
+    final List<Object> pathElements = new ArrayList<>();
+    traversePattern(result, context, 0, result, resultList, pathElements);
     return resultList;
   }
 
@@ -67,7 +68,8 @@ public class PatternComprehensionExpression implements Expression {
    * Recursively traverse pattern hops, collecting results at each complete match.
    */
   private void traversePattern(final Result baseResult, final CommandContext context,
-      final int hopIndex, final Result currentResult, final List<Object> resultList) {
+      final int hopIndex, final Result currentResult, final List<Object> resultList,
+      final List<Object> pathElements) {
     if (hopIndex >= pathPattern.getRelationshipCount()) {
       // All hops matched - apply WHERE filter and map expression
       if (whereExpression != null) {
@@ -75,7 +77,16 @@ public class PatternComprehensionExpression implements Expression {
         if (filterValue == null || (filterValue instanceof Boolean && !((Boolean) filterValue)))
           return;
       }
-      resultList.add(OpenCypherQueryEngine.getExpressionEvaluator().evaluate(mapExpression, currentResult, context));
+      // Bind path variable if present (e.g., [p = (n)-->() | p])
+      Result evalResult = currentResult;
+      if (pathVariable != null && !pathVariable.isEmpty()) {
+        final ResultInternal pathResult = new ResultInternal();
+        for (final String prop : currentResult.getPropertyNames())
+          pathResult.setProperty(prop, currentResult.getProperty(prop));
+        pathResult.setProperty(pathVariable, new ArrayList<>(pathElements));
+        evalResult = pathResult;
+      }
+      resultList.add(OpenCypherQueryEngine.getExpressionEvaluator().evaluate(mapExpression, evalResult, context));
       return;
     }
 
@@ -83,6 +94,10 @@ public class PatternComprehensionExpression implements Expression {
     final Vertex startVertex = resolveVertex(startNodePattern, currentResult);
     if (startVertex == null)
       return;
+
+    // Add start vertex to path at first hop
+    if (hopIndex == 0 && pathVariable != null)
+      pathElements.add(startVertex);
 
     final RelationshipPattern relPattern = pathPattern.getRelationship(hopIndex);
     final NodePattern endNodePattern = pathPattern.getNode(hopIndex + 1);
@@ -95,16 +110,21 @@ public class PatternComprehensionExpression implements Expression {
     final boolean checkIn = direction == Direction.IN || direction == Direction.BOTH;
 
     if (checkOut)
-      traverseEdges(baseResult, context, hopIndex, currentResult, resultList,
+      traverseEdges(baseResult, context, hopIndex, currentResult, resultList, pathElements,
           startVertex, Vertex.DIRECTION.OUT, relTypeArray, endNodePattern, relPattern);
 
     if (checkIn)
-      traverseEdges(baseResult, context, hopIndex, currentResult, resultList,
+      traverseEdges(baseResult, context, hopIndex, currentResult, resultList, pathElements,
           startVertex, Vertex.DIRECTION.IN, relTypeArray, endNodePattern, relPattern);
+
+    // Remove start vertex from path when backtracking
+    if (hopIndex == 0 && pathVariable != null && !pathElements.isEmpty())
+      pathElements.removeLast();
   }
 
   private void traverseEdges(final Result baseResult, final CommandContext context,
       final int hopIndex, final Result currentResult, final List<Object> resultList,
+      final List<Object> pathElements,
       final Vertex startVertex, final Vertex.DIRECTION edgeDirection,
       final String[] relTypeArray, final NodePattern endNodePattern,
       final RelationshipPattern relPattern) {
@@ -160,8 +180,20 @@ public class PatternComprehensionExpression implements Expression {
       if (relPattern.getVariable() != null)
         hopResult.setProperty(relPattern.getVariable(), edge);
 
+      // Add edge and target to path elements for path variable
+      if (pathVariable != null) {
+        pathElements.add(edge);
+        pathElements.add(targetVertex);
+      }
+
       // Continue to next hop or collect result
-      traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList);
+      traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements);
+
+      // Remove edge and target from path when backtracking
+      if (pathVariable != null) {
+        pathElements.removeLast();
+        pathElements.removeLast();
+      }
     }
   }
 

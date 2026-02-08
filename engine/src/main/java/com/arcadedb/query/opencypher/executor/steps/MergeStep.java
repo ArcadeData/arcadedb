@@ -176,6 +176,29 @@ public class MergeStep extends AbstractExecutionStep {
         wasCreated = mergePath(pathPattern, result);
       }
 
+      // Bind path variable if present: MERGE p = (a)-[:T]->(b)
+      if (pathPattern.hasPathVariable()) {
+        final String pathVar = pathPattern.getPathVariable();
+        final List<Object> pathElements = new ArrayList<>();
+        for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
+          final NodePattern np = pathPattern.getNode(i);
+          if (np.getVariable() != null) {
+            final Object v = result.getProperty(np.getVariable());
+            if (v != null)
+              pathElements.add(v);
+          }
+          if (i < pathPattern.getRelationshipCount()) {
+            final RelationshipPattern rp = pathPattern.getRelationship(i);
+            if (rp.getVariable() != null) {
+              final Object e = result.getProperty(rp.getVariable());
+              if (e != null)
+                pathElements.add(e);
+            }
+          }
+        }
+        result.setProperty(pathVar, pathElements);
+      }
+
       // Apply ON CREATE SET or ON MATCH SET based on what happened
       if (wasCreated && mergeClause.hasOnCreateSet()) {
         applySetClause(mergeClause.getOnCreateSet(), result);
@@ -315,34 +338,70 @@ public class MergeStep extends AbstractExecutionStep {
    * @return matching vertex or null
    */
   private Vertex findNode(final NodePattern nodePattern, final Result result) {
-    if (!nodePattern.hasLabels()) {
-      // Can't match without a label
-      return null;
-    }
-
-    final String label = nodePattern.getFirstLabel();
-
-    // Check if the type exists in the schema before iterating
-    if (!context.getDatabase().getSchema().existsType(label)) {
-      return null;
-    }
-
-    @SuppressWarnings("unchecked")
-    final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-
     // Evaluate property expressions against current result context (may be empty)
     final Map<String, Object> evaluatedProperties = nodePattern.hasProperties()
         ? evaluateProperties(nodePattern.getProperties(), result)
         : null;
 
+    if (!nodePattern.hasLabels()) {
+      // No labels specified: MERGE (a) or MERGE (a {prop: val})
+      // Match any vertex (optionally with matching properties)
+      for (final com.arcadedb.schema.DocumentType type : context.getDatabase().getSchema().getTypes()) {
+        if (type instanceof com.arcadedb.schema.VertexType) {
+          @SuppressWarnings("unchecked")
+          final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
+          while (iter.hasNext()) {
+            final Identifiable id = iter.next();
+            if (id instanceof Vertex vertex) {
+              if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
+                return vertex;
+            }
+          }
+        }
+      }
+      return null;
+    }
+
+    final List<String> labels = nodePattern.getLabels();
+
+    // For multi-label MERGE, use composite type if available, otherwise check all labels
+    if (labels.size() > 1) {
+      // Try to find a vertex that has ALL specified labels
+      final String firstLabel = labels.get(0);
+      if (!context.getDatabase().getSchema().existsType(firstLabel))
+        return null;
+
+      @SuppressWarnings("unchecked")
+      final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(firstLabel, true);
+      while (iterator.hasNext()) {
+        final Identifiable identifiable = iterator.next();
+        if (identifiable instanceof Vertex vertex) {
+          // Check that the vertex has ALL required labels
+          final List<String> vertexLabels = com.arcadedb.query.opencypher.Labels.getLabels(vertex);
+          if (vertexLabels.containsAll(labels)) {
+            if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
+              return vertex;
+          }
+        }
+      }
+      return null;
+    }
+
+    final String label = labels.get(0);
+
+    // Check if the type exists in the schema before iterating
+    if (!context.getDatabase().getSchema().existsType(label))
+      return null;
+
+    @SuppressWarnings("unchecked")
+    final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
+
     // Find first vertex matching all properties (or any vertex if no properties specified)
     while (iterator.hasNext()) {
       final Identifiable identifiable = iterator.next();
-      if (identifiable instanceof Vertex) {
-        final Vertex vertex = (Vertex) identifiable;
-        if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties)) {
+      if (identifiable instanceof Vertex vertex) {
+        if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
           return vertex;
-        }
       }
     }
 
@@ -403,19 +462,32 @@ public class MergeStep extends AbstractExecutionStep {
       // Handle string literals: remove quotes
       if (expectedValue instanceof String) {
         final String strValue = (String) expectedValue;
-        if (strValue.startsWith("'") && strValue.endsWith("'")) {
+        if (strValue.startsWith("'") && strValue.endsWith("'"))
           expectedValue = strValue.substring(1, strValue.length() - 1);
-        } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
+        else if (strValue.startsWith("\"") && strValue.endsWith("\""))
           expectedValue = strValue.substring(1, strValue.length() - 1);
-        }
       }
 
       final Object actualValue = doc.get(key);
-      if (actualValue == null || !actualValue.equals(expectedValue)) {
+      if (actualValue == null)
         return false;
-      }
+      // Use numeric-safe comparison (Integer vs Long, etc.)
+      if (!valuesEqual(actualValue, expectedValue))
+        return false;
     }
     return true;
+  }
+
+  private static boolean valuesEqual(final Object a, final Object b) {
+    if (a == null)
+      return b == null;
+    if (a.equals(b))
+      return true;
+    // Numeric type-safe comparison: Integer(1) should equal Long(1)
+    if (a instanceof Number && b instanceof Number)
+      return ((Number) a).longValue() == ((Number) b).longValue()
+          && Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue()) == 0;
+    return false;
   }
 
   /**
@@ -426,12 +498,15 @@ public class MergeStep extends AbstractExecutionStep {
    * @return created vertex
    */
   private Vertex createVertex(final NodePattern nodePattern, final Result result) {
-    final String label = nodePattern.hasLabels() ? nodePattern.getFirstLabel() : "Vertex";
+    final List<String> labels = nodePattern.hasLabels()
+        ? nodePattern.getLabels()
+        : List.of("Vertex");
 
-    // Ensure vertex type exists (Cypher auto-creates types)
-    context.getDatabase().getSchema().getOrCreateVertexType(label);
+    // Get or create the appropriate type (composite if multiple labels)
+    final String typeName = com.arcadedb.query.opencypher.Labels.ensureCompositeType(
+        context.getDatabase().getSchema(), labels);
 
-    final MutableVertex vertex = context.getDatabase().newVertex(label);
+    final MutableVertex vertex = context.getDatabase().newVertex(typeName);
 
     if (nodePattern.hasProperties()) {
       // Evaluate property expressions against current result context
@@ -586,9 +661,13 @@ public class MergeStep extends AbstractExecutionStep {
           if (!(obj instanceof Document doc))
             break;
           final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
-          if (!(mapValue instanceof java.util.Map))
+          final java.util.Map<String, Object> map;
+          if (mapValue instanceof java.util.Map)
+            map = (java.util.Map<String, Object>) mapValue;
+          else if (mapValue instanceof Document srcDoc)
+            map = srcDoc.propertiesAsMap();
+          else
             break;
-          final java.util.Map<String, Object> map = (java.util.Map<String, Object>) mapValue;
           final MutableDocument mutableDoc = doc.modify();
           for (final String prop : new java.util.HashSet<>(mutableDoc.getPropertyNames()))
             if (!prop.startsWith("@"))
@@ -604,9 +683,13 @@ public class MergeStep extends AbstractExecutionStep {
           if (!(obj instanceof Document doc))
             break;
           final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
-          if (!(mapValue instanceof java.util.Map))
+          final java.util.Map<String, Object> map;
+          if (mapValue instanceof java.util.Map)
+            map = (java.util.Map<String, Object>) mapValue;
+          else if (mapValue instanceof Document srcDoc)
+            map = srcDoc.propertiesAsMap();
+          else
             break;
-          final java.util.Map<String, Object> map = (java.util.Map<String, Object>) mapValue;
           final MutableDocument mutableDoc = doc.modify();
           for (final java.util.Map.Entry<String, Object> entry : map.entrySet())
             if (entry.getValue() == null)
