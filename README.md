@@ -69,30 +69,30 @@ joins but links between records), full-text indexing, geospatial querying, and a
 
 ArcadeDB supports the following models:
 
-- [Graph Database](https://docs.arcadedb.com#Graph-Model) (compatible with Neo4j Cypher, Apache Tinkerpop Gremlin and OrientDB SQL)
-- [Document Database](https://docs.arcadedb.com#Document-Model) (compatible with the MongoDB driver + MongoDB queries and OrientDB
+- [Graph Database](https://docs.arcadedb.com#graph-model) (compatible with Neo4j Cypher, Apache Tinkerpop Gremlin and OrientDB SQL)
+- [Document Database](https://docs.arcadedb.com#document-model) (compatible with the MongoDB driver + MongoDB queries and OrientDB
   SQL)
-- [Key/Value](https://docs.arcadedb.com#KeyValue-Model) (compatible with the Redis driver)
-- [Search Engine](https://docs.arcadedb.com/#SearchEngine-Model)
-- [Time Series](https://docs.arcadedb.com#TimeSeries-Model)
-- [Vector Embedding](https://docs.arcadedb.com/#VectorEmbedding-Model)
+- [Key/Value](https://docs.arcadedb.com#keyvalue-model) (compatible with the Redis driver)
+- [Search Engine](https://docs.arcadedb.com/#searchengine-model)
+- [Time Series](https://docs.arcadedb.com#timeseries-model)
+- [Vector Embedding](https://docs.arcadedb.com/#vector-model)
 
 ArcadeDB understands multiple languages:
 
-- [SQL](https://docs.arcadedb.com#SQL) (from OrientDB SQL)
-- Neo4j [Cypher (Open Cypher)](https://docs.arcadedb.com#Cypher)
-- [Apache Gremlin (Apache Tinkerpop v3.7.x)](https://docs.arcadedb.com#Gremlin-API)
-- [GraphQL Language](https://docs.arcadedb.com#GraphQL)
-- [MongoDB Query Language](https://docs.arcadedb.com#MongoDB-API)
+- [SQL](https://docs.arcadedb.com#sql) (from OrientDB SQL)
+- Neo4j [Cypher (Open Cypher)](https://docs.arcadedb.com#cypher)
+- [Apache Gremlin (Apache Tinkerpop v3.7.x)](https://docs.arcadedb.com#gremlin-api)
+- [GraphQL Language](https://docs.arcadedb.com#graphql)
+- [MongoDB Query Language](https://docs.arcadedb.com#mongodb-query-language)
 
 ArcadeDB can be used as:
 
 - Embedded from any language on top of the Java Virtual Machine
 - Embedded from Python via bindings: [arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python)
-- Remotely by using [HTTP/JSON](https://docs.arcadedb.com#HTTP-API)
-- Remotely by using a [Postgres driver](https://docs.arcadedb.com#Postgres-Driver) (ArcadeDB implements Postgres Wire protocol)
-- Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)
-- Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
+- Remotely by using [HTTP/JSON](https://docs.arcadedb.com#http-json-api)
+- Remotely by using a [Postgres driver](https://docs.arcadedb.com#postgres-driver) (ArcadeDB implements Postgres Wire protocol)
+- Remotely by using a [Redis driver](https://docs.arcadedb.com#redis-query-language) (only a subset of the operations are implemented)
+- Remotely by using a [MongoDB driver](https://docs.arcadedb.com#mongodb-query-language) (only a subset of the operations are implemented)
 
 For more information, see the [documentation](https://docs.arcadedb.com).
 
@@ -106,12 +106,12 @@ docker run --rm -p 2480:2480 -p 2424:2424 \
            arcadedata/arcadedb:latest
 ```
 
-Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](https://docs.arcadedb.com/#_studio) and the
+Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](https://docs.arcadedb.com/#studio) and the
 imported `OpenBeer` database to find your favorite beer.
 
 ![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
 
-ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#Docker) and [Kubernetes](https://docs.arcadedb.com/#Kubernetes) support.
+ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#docker) and [Kubernetes](https://docs.arcadedb.com/#kubernetes) support.
 
 You can also [download the latest release](https://github.com/ArcadeData/arcadedb/releases), unpack it on your local hard drive and start the server with `bin/server.sh` or `bin/server.bat` for Windows.
 
