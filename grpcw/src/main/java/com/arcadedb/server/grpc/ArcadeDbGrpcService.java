@@ -538,9 +538,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       resp.onNext(LookupByRidResponse.newBuilder().setFound(true).setRecord(convertToGrpcRecord(el.getRecord(), db)).build());
       resp.onCompleted();
-    } catch (RecordNotFoundException e) {
-      resp.onNext(LookupByRidResponse.newBuilder().setFound(false).build());
-      resp.onCompleted();
+// CURRENT IMPL EXPECTS AN EXCEPTION INSTEAD
+//    } catch (RecordNotFoundException e) {
+//      resp.onNext(LookupByRidResponse.newBuilder().setFound(false).build());
+//      resp.onCompleted();
     } catch (Exception e) {
       resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + e.getMessage()).asException());
     }
@@ -704,15 +705,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build());
       resp.onCompleted();
 
-    } catch (RecordNotFoundException e) {
-      // Soft "not found"
-      resp.onNext(
-          DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(false).setMessage("Record not found: " + ridStr).build());
-      resp.onCompleted();
-      // If we began here and no explicit rollback flag, default to commit (or
-      // rollback—your policy)
-      if (beganHere && req.hasTransaction() && !req.getTransaction().getRollback())
-        db.commit();
+// CURRENT IMPL EXPECTS AN EXCEPTION INSTEAD
+//    } catch (RecordNotFoundException e) {
+//      // Soft "not found"
+//      resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(false).setMessage("Record not found: "
+//          + ridStr).build());
+//      resp.onCompleted();
+//      // If we began here and no explicit rollback flag, default to commit (or
+//      // rollback—your policy)
+//      if (beganHere && req.hasTransaction() && !req.getTransaction().getRollback())
+//        db.commit();
     } catch (Exception e) {
       // Best-effort rollback if we started the tx
       try {
@@ -729,9 +731,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void executeQuery(ExecuteQueryRequest request, StreamObserver<ExecuteQueryResponse> responseObserver) {
-
     try {
-
       ProjectionConfig projectionConfig = getProjectionConfig(request);
 
       LogManager.instance().log(this, Level.FINE, "executeQuery(): projectionConfig.include = %s projectionConfig" +
@@ -1019,7 +1019,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void streamQuery(StreamQueryRequest request, StreamObserver<QueryResult> responseObserver) {
-
     ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
 
     final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
