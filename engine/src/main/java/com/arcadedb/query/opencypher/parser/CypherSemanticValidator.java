@@ -40,7 +40,7 @@ import java.util.*;
 public class CypherSemanticValidator {
 
   private enum VarType {
-    NODE, RELATIONSHIP, PATH
+    NODE, RELATIONSHIP, PATH, SCALAR
   }
 
   public static void validate(final CypherStatement statement) {
@@ -125,6 +125,43 @@ public class CypherSemanticValidator {
             if (mergeClause != null)
               registerPathPatternVarTypes(mergeClause.getPathPattern(), varTypes);
             break;
+          case WITH:
+            // WITH resets scope. Variables projected through WITH may keep their type
+            // if they directly reference a pattern variable. For literal values (numbers,
+            // strings, booleans, maps), mark as SCALAR to detect type conflicts.
+            // For complex expressions, don't track type to avoid false positives.
+            final WithClause withClauseTypes = entry.getTypedClause();
+            final Map<String, VarType> newVarTypes = new HashMap<>();
+            for (final ReturnClause.ReturnItem item : withClauseTypes.getItems()) {
+              final String outputName = item.getOutputName();
+              if (outputName == null || "*".equals(outputName))
+                continue;
+              // Check if the expression is a simple variable reference that preserves type
+              if (item.getExpression() instanceof VariableExpression) {
+                final String srcVar = ((VariableExpression) item.getExpression()).getVariableName();
+                final VarType srcType = varTypes.get(srcVar);
+                if (srcType != null) {
+                  newVarTypes.put(outputName, srcType);
+                  continue;
+                }
+              }
+              // Only mark as SCALAR for clear non-null literal values
+              if (item.getExpression() instanceof LiteralExpression) {
+                final Object litVal = ((LiteralExpression) item.getExpression()).getValue();
+                if (litVal != null)
+                  newVarTypes.put(outputName, VarType.SCALAR);
+              } else if (item.getExpression() instanceof MapExpression
+                  || isLiteralListExpression(item.getExpression()))
+                newVarTypes.put(outputName, VarType.SCALAR);
+              // For complex expressions (list indexing, function calls, etc.)
+              // don't track type to avoid false positives
+            }
+            varTypes.clear();
+            varTypes.putAll(newVarTypes);
+            break;
+          case UNWIND:
+            // UNWIND variable type depends on the list content, can't determine at parse time
+            break;
           default:
             break;
         }
@@ -182,6 +219,7 @@ public class CypherSemanticValidator {
               for (final PathPattern path : matchClause.getPathPatterns())
                 addBoundVarsFromPattern(path, boundVars);
             break;
+
           case CREATE:
             final CreateClause createClause = entry.getTypedClause();
             if (createClause != null && !createClause.isEmpty())
@@ -253,6 +291,13 @@ public class CypherSemanticValidator {
   }
 
   private void checkMergeBinding(final PathPattern path, final Set<String> boundVars) {
+    // Check if MERGE rebinds node variables with new labels/properties
+    for (final NodePattern node : path.getNodes()) {
+      final String var = node.getVariable();
+      if (var != null && boundVars.contains(var) && (node.hasLabels() || node.hasProperties()))
+        throw new CommandParsingException(
+            "VariableAlreadyBound: Variable '" + var + "' already defined, cannot rebind in MERGE");
+    }
     // MERGE binds variables similarly to CREATE — add them
     addBoundVarsFromPattern(path, boundVars);
   }
@@ -518,6 +563,15 @@ public class CypherSemanticValidator {
       if (var != null && !var.isEmpty() && isValidVariableName(var) && !scope.contains(var))
         throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
     }
+  }
+
+  private static boolean isLiteralListExpression(final Expression expr) {
+    if (!(expr instanceof ListExpression))
+      return false;
+    for (final Expression elem : ((ListExpression) expr).getElements())
+      if (!(elem instanceof LiteralExpression))
+        return false;
+    return true;
   }
 
   private void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
