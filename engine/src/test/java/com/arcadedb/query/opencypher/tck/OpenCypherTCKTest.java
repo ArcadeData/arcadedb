@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.tck;
 
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.platform.suite.api.ConfigurationParameter;
 import org.junit.platform.suite.api.IncludeEngines;
 import org.junit.platform.suite.api.SelectClasspathResource;
@@ -31,5 +33,6 @@ import static io.cucumber.junit.platform.engine.Constants.PLUGIN_PROPERTY_NAME;
 @SelectClasspathResource("opencypher/tck/features")
 @ConfigurationParameter(key = GLUE_PROPERTY_NAME, value = "com.arcadedb.query.opencypher.tck")
 @ConfigurationParameter(key = PLUGIN_PROPERTY_NAME, value = "pretty, html:target/tck-report.html, com.arcadedb.query.opencypher.tck.TCKReportPlugin")
+@Tag("slow")
 public class OpenCypherTCKTest {
 }
