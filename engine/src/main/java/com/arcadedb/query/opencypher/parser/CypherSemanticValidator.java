@@ -156,6 +156,9 @@ public class CypherSemanticValidator {
               } else if (item.getExpression() instanceof MapExpression
                   || isLiteralListExpression(item.getExpression()))
                 newVarTypes.put(outputName, VarType.SCALAR);
+              // A list containing node variables (e.g., [n]) cannot be used as a node
+              else if (item.getExpression() instanceof ListExpression && containsNodeVariable(item.getExpression()))
+                newVarTypes.put(outputName, VarType.SCALAR);
               // For complex expressions (list indexing, function calls, etc.)
               // don't track type to avoid false positives
             }
@@ -332,8 +335,16 @@ public class CypherSemanticValidator {
         case CREATE:
           final CreateClause createClause = entry.getTypedClause();
           if (createClause != null && !createClause.isEmpty())
-            for (final PathPattern path : createClause.getPathPatterns())
+            for (final PathPattern path : createClause.getPathPatterns()) {
+              // Check property value expressions for undefined variables
+              for (final NodePattern node : path.getNodes())
+                if (node.hasProperties())
+                  checkPropertyValuesScope(node.getProperties(), scope);
+              for (final RelationshipPattern rel : path.getRelationships())
+                if (rel.hasProperties())
+                  checkPropertyValuesScope(rel.getProperties(), scope);
               addBoundVarsFromPattern(path, scope);
+            }
           break;
         case MERGE:
           final MergeClause mergeClause = entry.getTypedClause();
@@ -370,19 +381,37 @@ public class CypherSemanticValidator {
           // First validate that all referenced variables in WITH are in scope
           for (final ReturnClause.ReturnItem item : withClause.getItems())
             checkExpressionScope(item.getExpression(), scope);
-          // Build the combined scope for ORDER BY: pre-WITH scope + projected aliases
-          // ORDER BY in WITH can reference both original variables and new aliases
+          // Build the scope for ORDER BY
           if (withClause.getOrderByClause() != null) {
-            final Set<String> orderByScope = new HashSet<>(scope);
-            for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-              if (item.getAlias() != null)
-                orderByScope.add(item.getAlias());
-              else if (item.getExpression() instanceof VariableExpression)
-                orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+            final Set<String> orderByScope;
+            if (withClause.hasAggregations()) {
+              // After aggregation, restrict to output aliases + grouping key variables
+              orderByScope = new HashSet<>();
+              for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+                if (item.getAlias() != null)
+                  orderByScope.add(item.getAlias());
+                else if (item.getExpression() instanceof VariableExpression)
+                  orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+                if (!item.getExpression().containsAggregation())
+                  collectVariableNamesFromExpression(item.getExpression(), orderByScope);
+              }
+            } else {
+              // Non-aggregating WITH: ORDER BY can reference both original scope + aliases
+              orderByScope = new HashSet<>(scope);
+              for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+                if (item.getAlias() != null)
+                  orderByScope.add(item.getAlias());
+                else if (item.getExpression() instanceof VariableExpression)
+                  orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+              }
             }
             for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems())
-              if (item.getExpressionAST() != null)
-                checkExpressionScope(item.getExpressionAST(), orderByScope);
+              if (item.getExpressionAST() != null) {
+                if (withClause.hasAggregations())
+                  checkExpressionScopeSkipAggArgs(item.getExpressionAST(), orderByScope);
+                else
+                  checkExpressionScope(item.getExpressionAST(), orderByScope);
+              }
           }
           // Reset scope to only projected aliases
           scope.clear();
@@ -418,9 +447,53 @@ public class CypherSemanticValidator {
           // Validate RETURN references — only check top-level variable references
           // to avoid false positives from complex expression types that the AST builder
           // creates as VariableExpression with raw text
-          if (statement.getReturnClause() != null)
+          if (statement.getReturnClause() != null) {
             for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
               checkExpressionScope(item.getExpression(), scope);
+            // Validate ORDER BY scope
+            if (statement.getOrderByClause() != null) {
+              if (statement.getReturnClause().isDistinct()) {
+                // After DISTINCT, ORDER BY can only reference returned columns
+                final Set<String> returnedNames = new HashSet<>();
+                for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems()) {
+                  returnedNames.add(item.getOutputName());
+                  if (item.getAlias() != null)
+                    returnedNames.add(item.getAlias());
+                  if (item.getExpression() instanceof VariableExpression)
+                    returnedNames.add(((VariableExpression) item.getExpression()).getVariableName());
+                }
+                for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
+                  final String orderExprText = item.getExpression();
+                  if (orderExprText != null && !returnedNames.contains(orderExprText)) {
+                    if (item.getExpressionAST() != null) {
+                      final Set<String> distinctScope = new HashSet<>();
+                      for (final ReturnClause.ReturnItem rItem : statement.getReturnClause().getReturnItems()) {
+                        if (rItem.getAlias() != null)
+                          distinctScope.add(rItem.getAlias());
+                        else if (rItem.getExpression() instanceof VariableExpression)
+                          distinctScope.add(((VariableExpression) rItem.getExpression()).getVariableName());
+                      }
+                      checkExpressionScope(item.getExpressionAST(), distinctScope);
+                    }
+                  }
+                }
+              } else if (statement.getReturnClause().hasAggregations()) {
+                // After aggregation, ORDER BY scope restricted to aliases + grouping key variables
+                final Set<String> orderByScope = new HashSet<>();
+                for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems()) {
+                  if (item.getAlias() != null)
+                    orderByScope.add(item.getAlias());
+                  else if (item.getExpression() instanceof VariableExpression)
+                    orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+                  if (!item.getExpression().containsAggregation())
+                    collectVariableNamesFromExpression(item.getExpression(), orderByScope);
+                }
+                for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
+                  if (item.getExpressionAST() != null)
+                    checkExpressionScopeSkipAggArgs(item.getExpressionAST(), orderByScope);
+              }
+            }
+          }
           break;
         case CALL:
           // Procedure CALL with YIELD — exported yield variables enter scope
@@ -548,8 +621,12 @@ public class CypherSemanticValidator {
     } else if (boolExpr instanceof PatternPredicateExpression) {
       // Pattern predicates in WHERE must not introduce new variables
       final PathPattern path = ((PatternPredicateExpression) boolExpr).getPathPattern();
-      if (path != null)
+      if (path != null) {
+        // A single-node pattern in WHERE is invalid: WHERE (n) is not a valid predicate
+        if (path.isSingleNode())
+          throw new CommandParsingException("InvalidArgumentType: Single node pattern is not a valid predicate in WHERE");
         checkPatternPredicateVariables(path, scope);
+      }
     } else if (boolExpr instanceof IsNullExpression) {
       checkExpressionScope(((IsNullExpression) boolExpr).getExpression(), scope);
     } else if (boolExpr instanceof LabelCheckExpression) {
@@ -577,6 +654,46 @@ public class CypherSemanticValidator {
       if (!(elem instanceof LiteralExpression))
         return false;
     return true;
+  }
+
+  private boolean containsNodeVariable(final Expression expr) {
+    if (expr instanceof ListExpression)
+      for (final Expression elem : ((ListExpression) expr).getElements()) {
+        if (elem instanceof VariableExpression) {
+          final VarType type = varTypes.get(((VariableExpression) elem).getVariableName());
+          if (type == VarType.NODE)
+            return true;
+        }
+      }
+    return false;
+  }
+
+  /**
+   * Check expression scope but skip recursion into aggregation function arguments.
+   * Used for ORDER BY after aggregating RETURN/WITH where aggregation arguments
+   * reference pre-aggregation variables that are always valid.
+   */
+  private void checkExpressionScopeSkipAggArgs(final Expression expr, final Set<String> scope) {
+    if (expr == null)
+      return;
+    if (expr instanceof FunctionCallExpression) {
+      final FunctionCallExpression func = (FunctionCallExpression) expr;
+      if (func.isAggregation())
+        return; // Don't check arguments of aggregation against restricted scope
+      for (final Expression arg : func.getArguments())
+        checkExpressionScopeSkipAggArgs(arg, scope);
+    } else if (expr instanceof ArithmeticExpression) {
+      checkExpressionScopeSkipAggArgs(((ArithmeticExpression) expr).getLeft(), scope);
+      checkExpressionScopeSkipAggArgs(((ArithmeticExpression) expr).getRight(), scope);
+    } else {
+      checkExpressionScope(expr, scope);
+    }
+  }
+
+  private void checkPropertyValuesScope(final Map<String, Object> properties, final Set<String> scope) {
+    for (final Object value : properties.values())
+      if (value instanceof Expression)
+        checkExpressionScope((Expression) value, scope);
   }
 
   private void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
@@ -763,6 +880,58 @@ public class CypherSemanticValidator {
       if (withClause.getOrderByClause() != null && !withClause.hasAggregations())
         for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems())
           checkAggregationInOrderBy(item.getExpressionAST());
+
+    // Check for ambiguous aggregation expressions in RETURN items
+    if (statement.getReturnClause() != null)
+      checkAmbiguousAggregation(statement.getReturnClause().getReturnItems());
+
+    // Check for ambiguous aggregation in WITH items
+    for (final WithClause withClause : statement.getWithClauses())
+      checkAmbiguousAggregation(withClause.getItems());
+
+    // Check for ambiguous aggregation in ORDER BY for aggregating RETURN
+    if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()
+        && statement.getOrderByClause() != null) {
+      final Set<String> groupingVars = collectGroupingVariables(statement.getReturnClause().getReturnItems());
+      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
+        final Expression expr = item.getExpressionAST();
+        if (expr != null && expr.containsAggregation())
+          checkMixedAggregation(expr, groupingVars);
+      }
+    }
+
+    // Check for ambiguous aggregation in ORDER BY for aggregating WITH
+    for (final WithClause withClause : statement.getWithClauses()) {
+      if (withClause.hasAggregations() && withClause.getOrderByClause() != null) {
+        final Set<String> groupingVars = collectGroupingVariables(withClause.getItems());
+        // Collect projected names and expression texts for non-projected aggregation check
+        final Set<String> projectedNames = new HashSet<>();
+        for (final ReturnClause.ReturnItem projItem : withClause.getItems()) {
+          projectedNames.add(projItem.getOutputName());
+          if (projItem.getAlias() != null)
+            projectedNames.add(projItem.getAlias());
+          // Also add the expression text so ORDER BY sum(x) matches WITH sum(x) AS s
+          if (projItem.getExpression() != null) {
+            final String exprText = projItem.getExpression().getText();
+            if (exprText != null)
+              projectedNames.add(exprText);
+          }
+        }
+        for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems()) {
+          final Expression expr = item.getExpressionAST();
+          if (expr == null)
+            continue;
+          // Check for non-projected aggregation function in ORDER BY
+          if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation()) {
+            final String exprText = expr.getText();
+            if (exprText != null && !projectedNames.contains(exprText))
+              throw new CommandParsingException("UndefinedVariable: Aggregation in ORDER BY is not projected");
+          }
+          if (expr.containsAggregation())
+            checkMixedAggregation(expr, groupingVars);
+        }
+      }
+    }
   }
 
   private void checkNestedAggregation(final Expression expr, final boolean insideAggregation) {
@@ -888,6 +1057,190 @@ public class CypherSemanticValidator {
     }
   }
 
+  /**
+   * Check for ambiguous aggregation: expressions that mix aggregation calls with
+   * non-aggregated sub-expressions. The rules are:
+   * - Simple variable/property references matching grouping keys are OK
+   * - Literals and parameters are OK
+   * - Complex expressions (arithmetic, etc.) containing variables are AMBIGUOUS
+   * - Variable/property references NOT matching grouping keys are AMBIGUOUS
+   */
+  private void checkAmbiguousAggregation(final List<ReturnClause.ReturnItem> items) {
+    final Set<String> groupingVars = collectGroupingVariables(items);
+    for (final ReturnClause.ReturnItem item : items) {
+      final Expression expr = item.getExpression();
+      if (!expr.containsAggregation())
+        continue;
+      // Pure aggregation call is fine
+      if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
+        continue;
+      // Mixed expression — check non-aggregated parts
+      checkMixedAggregation(expr, groupingVars);
+    }
+  }
+
+  /**
+   * Recursively checks a mixed aggregation expression for ambiguous non-aggregated parts.
+   */
+  private void checkMixedAggregation(final Expression expr, final Set<String> groupingVars) {
+    if (expr == null)
+      return;
+    if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
+      return; // Stop at aggregation boundary
+
+    if (expr instanceof ArithmeticExpression) {
+      final Expression left = ((ArithmeticExpression) expr).getLeft();
+      final Expression right = ((ArithmeticExpression) expr).getRight();
+      final boolean leftAgg = left != null && left.containsAggregation();
+      final boolean rightAgg = right != null && right.containsAggregation();
+
+      if (leftAgg && !rightAgg) {
+        validateNonAggPart(right, groupingVars);
+        checkMixedAggregation(left, groupingVars);
+      } else if (!leftAgg && rightAgg) {
+        validateNonAggPart(left, groupingVars);
+        checkMixedAggregation(right, groupingVars);
+      } else {
+        checkMixedAggregation(left, groupingVars);
+        checkMixedAggregation(right, groupingVars);
+      }
+    } else if (expr instanceof FunctionCallExpression) {
+      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+        checkMixedAggregation(arg, groupingVars);
+    } else if (expr instanceof BooleanWrapperExpression) {
+      checkMixedAggregationInBoolean(((BooleanWrapperExpression) expr).getBooleanExpression(), groupingVars);
+    } else if (expr instanceof ComparisonExpressionWrapper) {
+      final ComparisonExpression comp = ((ComparisonExpressionWrapper) expr).getComparison();
+      checkMixedAggregation(comp.getLeft(), groupingVars);
+      checkMixedAggregation(comp.getRight(), groupingVars);
+    }
+  }
+
+  private void checkMixedAggregationInBoolean(final BooleanExpression boolExpr, final Set<String> groupingVars) {
+    if (boolExpr instanceof ComparisonExpression) {
+      checkMixedAggregation(((ComparisonExpression) boolExpr).getLeft(), groupingVars);
+      checkMixedAggregation(((ComparisonExpression) boolExpr).getRight(), groupingVars);
+    } else if (boolExpr instanceof LogicalExpression) {
+      checkMixedAggregationInBoolean(((LogicalExpression) boolExpr).getLeft(), groupingVars);
+      if (((LogicalExpression) boolExpr).getRight() != null)
+        checkMixedAggregationInBoolean(((LogicalExpression) boolExpr).getRight(), groupingVars);
+    }
+  }
+
+  /**
+   * Validates that a non-aggregated part in a mixed expression is not ambiguous.
+   */
+  private void validateNonAggPart(final Expression expr, final Set<String> groupingVars) {
+    if (expr == null)
+      return;
+    // Simple variable reference — OK if it's a grouping key
+    if (expr instanceof VariableExpression) {
+      if (!groupingVars.contains(((VariableExpression) expr).getVariableName()))
+        throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
+      return;
+    }
+    // Simple property access — OK if the variable is a grouping key
+    if (expr instanceof PropertyAccessExpression) {
+      if (!groupingVars.contains(((PropertyAccessExpression) expr).getVariableName()))
+        throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
+      return;
+    }
+    // Literals and stars are always OK
+    if (expr instanceof LiteralExpression || expr instanceof StarExpression)
+      return;
+    // Complex expressions containing variables are ambiguous
+    if (hasVariableRefOutsideAggregation(expr))
+      throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
+  }
+
+  private static boolean hasVariableRefOutsideAggregation(final Expression expr) {
+    if (expr == null)
+      return false;
+    if (expr instanceof VariableExpression || expr instanceof PropertyAccessExpression)
+      return true;
+    if (expr instanceof LiteralExpression || expr instanceof StarExpression)
+      return false;
+    if (expr instanceof FunctionCallExpression) {
+      final FunctionCallExpression func = (FunctionCallExpression) expr;
+      if (func.isAggregation())
+        return false; // Variables inside aggregation arguments are OK
+      for (final Expression arg : func.getArguments())
+        if (hasVariableRefOutsideAggregation(arg))
+          return true;
+      return false;
+    }
+    if (expr instanceof ArithmeticExpression)
+      return hasVariableRefOutsideAggregation(((ArithmeticExpression) expr).getLeft())
+          || hasVariableRefOutsideAggregation(((ArithmeticExpression) expr).getRight());
+    if (expr instanceof BooleanWrapperExpression)
+      return hasBooleanVarRefOutsideAgg(((BooleanWrapperExpression) expr).getBooleanExpression());
+    if (expr instanceof ComparisonExpressionWrapper) {
+      final ComparisonExpression comp = ((ComparisonExpressionWrapper) expr).getComparison();
+      return hasVariableRefOutsideAggregation(comp.getLeft())
+          || hasVariableRefOutsideAggregation(comp.getRight());
+    }
+    return false;
+  }
+
+  private static boolean hasBooleanVarRefOutsideAgg(final BooleanExpression boolExpr) {
+    if (boolExpr == null)
+      return false;
+    if (boolExpr instanceof ComparisonExpression)
+      return hasVariableRefOutsideAggregation(((ComparisonExpression) boolExpr).getLeft())
+          || hasVariableRefOutsideAggregation(((ComparisonExpression) boolExpr).getRight());
+    if (boolExpr instanceof LogicalExpression) {
+      if (hasBooleanVarRefOutsideAgg(((LogicalExpression) boolExpr).getLeft()))
+        return true;
+      return ((LogicalExpression) boolExpr).getRight() != null
+          && hasBooleanVarRefOutsideAgg(((LogicalExpression) boolExpr).getRight());
+    }
+    return false;
+  }
+
+  private Set<String> collectGroupingVariables(final List<ReturnClause.ReturnItem> items) {
+    final Set<String> vars = new HashSet<>();
+    for (final ReturnClause.ReturnItem item : items)
+      if (!item.getExpression().containsAggregation()) {
+        collectVariableNamesFromExpression(item.getExpression(), vars);
+        // Also include the alias as a valid grouping reference
+        if (item.getAlias() != null)
+          vars.add(item.getAlias());
+      }
+    return vars;
+  }
+
+  private static void collectVariableNamesFromExpression(final Expression expr, final Set<String> vars) {
+    if (expr instanceof VariableExpression)
+      vars.add(((VariableExpression) expr).getVariableName());
+    else if (expr instanceof PropertyAccessExpression)
+      vars.add(((PropertyAccessExpression) expr).getVariableName());
+    else if (expr instanceof ArithmeticExpression) {
+      collectVariableNamesFromExpression(((ArithmeticExpression) expr).getLeft(), vars);
+      collectVariableNamesFromExpression(((ArithmeticExpression) expr).getRight(), vars);
+    } else if (expr instanceof FunctionCallExpression) {
+      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+        collectVariableNamesFromExpression(arg, vars);
+    }
+  }
+
+  private static void collectVariableRefsOutsideAggregation(final Expression expr, final Set<String> vars) {
+    if (expr == null)
+      return;
+    if (expr instanceof VariableExpression)
+      vars.add(((VariableExpression) expr).getVariableName());
+    else if (expr instanceof PropertyAccessExpression)
+      vars.add(((PropertyAccessExpression) expr).getVariableName());
+    else if (expr instanceof FunctionCallExpression) {
+      if (((FunctionCallExpression) expr).isAggregation())
+        return; // Stop at aggregation boundary
+      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+        collectVariableRefsOutsideAggregation(arg, vars);
+    } else if (expr instanceof ArithmeticExpression) {
+      collectVariableRefsOutsideAggregation(((ArithmeticExpression) expr).getLeft(), vars);
+      collectVariableRefsOutsideAggregation(((ArithmeticExpression) expr).getRight(), vars);
+    }
+  }
+
   private void checkAggregationInExpression(final Expression expr) {
     if (expr == null)
       return;
@@ -969,6 +1322,26 @@ public class CypherSemanticValidator {
       if (rel.isVariableLength())
         throw new CommandParsingException("CreatingVarLength: Variable-length relationships are not allowed in MERGE");
     }
+    // MERGE cannot have null property values
+    checkMergeNullProperties(path);
+  }
+
+  private void checkMergeNullProperties(final PathPattern path) {
+    for (final NodePattern node : path.getNodes())
+      if (node.hasProperties())
+        for (final Object value : node.getProperties().values())
+          checkMergePropertyNotNull(value);
+    for (final RelationshipPattern rel : path.getRelationships())
+      if (rel.hasProperties())
+        for (final Object value : rel.getProperties().values())
+          checkMergePropertyNotNull(value);
+  }
+
+  private void checkMergePropertyNotNull(final Object value) {
+    if (value == null)
+      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
+    if (value instanceof LiteralExpression && ((LiteralExpression) value).getValue() == null)
+      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
   }
 
   private void validateDeleteTargets(final DeleteClause deleteClause) {
@@ -1170,6 +1543,20 @@ public class CypherSemanticValidator {
     for (final WithClause withClause : statement.getWithClauses())
       for (final ReturnClause.ReturnItem item : withClause.getItems())
         checkFunctionArgTypes(item.getExpression());
+    // Check WHERE clauses for property access on path variables
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses != null)
+      for (final ClauseEntry entry : clauses) {
+        if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
+          final MatchClause matchClause = entry.getTypedClause();
+          if (matchClause.hasWhereClause())
+            checkPropertyAccessOnPathInBoolean(matchClause.getWhereClause().getConditionExpression());
+        } else if (entry.getType() == ClauseEntry.ClauseType.WITH) {
+          final WithClause withClause = entry.getTypedClause();
+          if (withClause.getWhereClause() != null)
+            checkPropertyAccessOnPathInBoolean(withClause.getWhereClause().getConditionExpression());
+        }
+      }
   }
 
   private void checkFunctionArgTypes(final Expression expr) {
@@ -1231,6 +1618,40 @@ public class CypherSemanticValidator {
       }
       if (caseExpr.getElseExpression() != null)
         checkFunctionArgTypes(caseExpr.getElseExpression());
+    }
+  }
+
+  private void checkPropertyAccessOnPath(final Expression expr) {
+    if (expr == null)
+      return;
+    if (expr instanceof PropertyAccessExpression) {
+      final String varName = ((PropertyAccessExpression) expr).getVariableName();
+      final VarType type = varTypes.get(varName);
+      if (type == VarType.PATH)
+        throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
+    } else if (expr instanceof FunctionCallExpression) {
+      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+        checkPropertyAccessOnPath(arg);
+    } else if (expr instanceof ArithmeticExpression) {
+      checkPropertyAccessOnPath(((ArithmeticExpression) expr).getLeft());
+      checkPropertyAccessOnPath(((ArithmeticExpression) expr).getRight());
+    }
+  }
+
+  private void checkPropertyAccessOnPathInBoolean(final BooleanExpression boolExpr) {
+    if (boolExpr == null)
+      return;
+    if (boolExpr instanceof ComparisonExpression) {
+      checkPropertyAccessOnPath(((ComparisonExpression) boolExpr).getLeft());
+      checkPropertyAccessOnPath(((ComparisonExpression) boolExpr).getRight());
+    } else if (boolExpr instanceof LogicalExpression) {
+      checkPropertyAccessOnPathInBoolean(((LogicalExpression) boolExpr).getLeft());
+      if (((LogicalExpression) boolExpr).getRight() != null)
+        checkPropertyAccessOnPathInBoolean(((LogicalExpression) boolExpr).getRight());
+    } else if (boolExpr instanceof InExpression) {
+      checkPropertyAccessOnPath(((InExpression) boolExpr).getExpression());
+    } else if (boolExpr instanceof IsNullExpression) {
+      checkPropertyAccessOnPath(((IsNullExpression) boolExpr).getExpression());
     }
   }
 

@@ -26,6 +26,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -281,6 +282,12 @@ public class DeleteStep extends AbstractExecutionStep {
       } catch (final RecordNotFoundException e) {
         // Already deleted - skip
       }
+    } else if (obj instanceof TraversalPath path) {
+      // Delete all vertices and edges in a path
+      for (final Vertex v : path.getVertices())
+        deleteObject(v, deleted);
+      for (final Edge e : path.getEdges())
+        deleteObject(e, deleted);
     } else if (obj instanceof List) {
       // Delete each element in the list (e.g., path elements or collected nodes)
       for (final Object elem : (List<?>) obj)

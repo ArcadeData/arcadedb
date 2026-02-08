@@ -47,67 +47,86 @@ public class ExistsExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    // Execute the subquery with access to variables from the outer query
-    // Variables from the outer query need to be bound to specific nodes/edges in the EXISTS pattern
-
     try {
-      // Build parameter map and modify subquery to bind variables
       final Map<String, Object> params = new HashMap<>();
       String modifiedSubquery = subquery;
 
       if (result != null) {
         final List<String> whereConditions = new ArrayList<>();
 
-        // Extract variables from the result
         for (final String propertyName : result.getPropertyNames()) {
           final Object value = result.getProperty(propertyName);
           params.put(propertyName, value);
 
-          // If it's a vertex or edge, add a WHERE condition to bind it using id()
           if (value instanceof Identifiable) {
-            // Use id() function to compare by RID: id(varName) = 'rid'
             final String rid = ((Identifiable) value).getIdentity().toString();
-            whereConditions.add("id(" + propertyName + ") = '" + rid + "'");
+            final String paramName = "__exists_" + propertyName;
+            params.put(paramName, rid);
+            whereConditions.add("id(" + propertyName + ") = $" + paramName);
           }
         }
 
-        // Inject WHERE conditions into the subquery
         if (!whereConditions.isEmpty()) {
           final String conditionsStr = String.join(" AND ", whereConditions);
-
-          // Normalize the subquery by adding spaces around WHERE keyword if missing
-          // This handles cases like "WHEREc.name" -> "WHERE c.name"
-          modifiedSubquery = modifiedSubquery.replaceAll("(?i)WHERE(?=[A-Za-z])", "WHERE ");
-
-          final String whereClause = " WHERE " + conditionsStr;
-
-          // Find where to inject the WHERE clause
-          // If subquery already has WHERE, append with AND
-          // Otherwise, add before RETURN
-          if (modifiedSubquery.matches("(?i).*\\bWHERE\\b.*")) {
-            // WHERE clause exists, add conditions with AND
-            // Insert right after the WHERE keyword
-            modifiedSubquery = modifiedSubquery.replaceFirst("(?i)\\bWHERE\\s+",
-                Matcher.quoteReplacement("WHERE " + conditionsStr + " AND "));
-          } else if (modifiedSubquery.matches("(?i).*\\bRETURN\\b.*")) {
-            modifiedSubquery = modifiedSubquery.replaceFirst("(?i)\\bRETURN\\b",
-                Matcher.quoteReplacement(whereClause + " RETURN"));
-          } else {
-            // No RETURN clause, append WHERE at the end
-            modifiedSubquery = modifiedSubquery + whereClause;
-          }
+          modifiedSubquery = injectWhereConditions(modifiedSubquery, conditionsStr);
         }
       }
 
-      // Execute the modified subquery with parameters
       final var resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params);
       final boolean exists = resultSet.hasNext();
       resultSet.close();
       return exists;
     } catch (final Exception e) {
-      // If the subquery fails to parse/execute, return false
       return false;
     }
+  }
+
+  /**
+   * Inject WHERE conditions after the first MATCH clause's pattern, before any subsequent clause.
+   * Handles subqueries like:
+   * - MATCH (n)-->() RETURN true
+   * - MATCH (n)-->(m) WITH n, count(*) AS c WHERE c = 3 RETURN true
+   * - MATCH (n) WHERE n.prop > 5 RETURN true
+   */
+  private static String injectWhereConditions(final String query, final String conditions) {
+    // Find the first clause keyword after the initial MATCH pattern
+    final java.util.regex.Pattern clausePattern = java.util.regex.Pattern.compile(
+        "\\b(WITH|RETURN|ORDER\\s+BY|SKIP|LIMIT|UNION)\\b",
+        java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    // Skip past the initial "MATCH " keyword
+    final String upper = query.toUpperCase().trim();
+    final int matchKeywordEnd = upper.startsWith("MATCH") ? 5 : 0;
+
+    final java.util.regex.Matcher clauseMatcher = clausePattern.matcher(query);
+    if (clauseMatcher.find(matchKeywordEnd)) {
+      final int clauseStart = clauseMatcher.start();
+      final String beforeClause = query.substring(0, clauseStart);
+
+      // Check if there's a WHERE in the MATCH clause (before the first WITH/RETURN)
+      final int wherePos = beforeClause.toUpperCase().lastIndexOf("WHERE");
+      if (wherePos >= 0) {
+        // Append to existing MATCH WHERE: insert conditions after "WHERE "
+        int insertPos = wherePos + 5;
+        while (insertPos < beforeClause.length() && Character.isWhitespace(beforeClause.charAt(insertPos)))
+          insertPos++;
+        return query.substring(0, insertPos) + conditions + " AND " + query.substring(insertPos);
+      }
+      // Insert new WHERE clause before the next clause keyword
+      return query.substring(0, clauseStart) + "WHERE " + conditions + " " + query.substring(clauseStart);
+    }
+
+    // No subsequent clause found — check for existing WHERE
+    final int wherePos = query.toUpperCase().indexOf("WHERE");
+    if (wherePos >= 0) {
+      int insertPos = wherePos + 5;
+      while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
+        insertPos++;
+      return query.substring(0, insertPos) + conditions + " AND " + query.substring(insertPos);
+    }
+
+    // Append WHERE at end
+    return query + " WHERE " + conditions;
   }
 
   @Override

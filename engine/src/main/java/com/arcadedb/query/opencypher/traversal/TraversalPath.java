@@ -123,6 +123,46 @@ public class TraversalPath {
     vertices.add(vertex);
   }
 
+  /**
+   * Returns the path as a flat list of alternating vertices and edges: [v0, e0, v1, e1, v2, ...].
+   */
+  public List<Object> toAlternatingList() {
+    final List<Object> list = new ArrayList<>(vertices.size() + edges.size());
+    for (int i = 0; i < vertices.size(); i++) {
+      list.add(vertices.get(i));
+      if (i < edges.size())
+        list.add(edges.get(i));
+    }
+    return list;
+  }
+
+  @Override
+  public boolean equals(final Object obj) {
+    if (this == obj)
+      return true;
+    if (!(obj instanceof TraversalPath other))
+      return false;
+    if (edges.size() != other.edges.size() || vertices.size() != other.vertices.size())
+      return false;
+    for (int i = 0; i < vertices.size(); i++)
+      if (!vertices.get(i).getIdentity().equals(other.vertices.get(i).getIdentity()))
+        return false;
+    for (int i = 0; i < edges.size(); i++)
+      if (!edges.get(i).getIdentity().equals(other.edges.get(i).getIdentity()))
+        return false;
+    return true;
+  }
+
+  @Override
+  public int hashCode() {
+    int hash = 1;
+    for (final Vertex v : vertices)
+      hash = 31 * hash + v.getIdentity().hashCode();
+    for (final Edge e : edges)
+      hash = 31 * hash + e.getIdentity().hashCode();
+    return hash;
+  }
+
   @Override
   public String toString() {
     final StringBuilder sb = new StringBuilder();

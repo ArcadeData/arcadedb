@@ -187,21 +187,26 @@ class CypherExpressionBuilder {
       return parseFunctionInvocation(funcCtx);
     }
 
-    // Check for list literals (fallback for other cases)
-    if (listCtx != null) {
-      return parseListLiteral(listCtx);
-    }
-
-    // Check for map projections
+    // Check for map projections (before list fallback to avoid nested list taking priority over maps)
     final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
     if (mapProjCtx != null) {
       return parseMapProjection(mapProjCtx);
     }
 
-    // Check for map literals
+    // Check for map literals (before list fallback)
     final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
     if (mapCtx != null) {
       return parseMapLiteralExpression(mapCtx);
+    }
+
+    // Check for list literals (fallback for other cases, after map check)
+    if (listCtx != null) {
+      // Guard: only use if list covers most of the expression (avoids inner list taking over)
+      final String listText2 = listCtx.getText();
+      if (text.contains("donut"))
+        System.out.println("DEBUG LIST FALLBACK: listLen=" + listText2.length() + " textLen=" + text.length() + " mapFound=" + (mapCtx != null) + " text=" + text.substring(0, Math.min(80, text.length())));
+      if (listText2.length() >= text.length() - 2)
+        return parseListLiteral(listCtx);
     }
 
     // Fallback: recursive arithmetic expression checks
@@ -1556,19 +1561,35 @@ class CypherExpressionBuilder {
    * Examples: EXISTS { MATCH (n)-[:KNOWS]->(m) }, EXISTS { (n)-[:KNOWS]->() WHERE n.age > 18 }
    */
   ExistsExpression parseExistsExpression(final Cypher25Parser.ExistsExpressionContext ctx) {
-    // Extract the subquery text between { and }
-    // For now, we'll extract it as text and execute it as a separate query
-    final String fullText = ctx.getText();
-    final String text = fullText;
+    // Use original text (with whitespace preserved) to avoid mangled subqueries
+    final String originalText = CypherASTBuilder.getOriginalText(ctx);
+    final String text = originalText;
 
-    // Remove "EXISTS{" prefix and "}" suffix
-    String subquery = fullText.substring(7, fullText.length() - 1); // Remove "EXISTS{" and "}"
+    // Find the opening { and closing } to extract the subquery body
+    final int openBrace = originalText.indexOf('{');
+    final int closeBrace = originalText.lastIndexOf('}');
+    String subquery;
+    if (openBrace >= 0 && closeBrace > openBrace)
+      subquery = originalText.substring(openBrace + 1, closeBrace).trim();
+    else
+      subquery = originalText.substring(7, originalText.length() - 1).trim(); // fallback
+
+    // Check for update clauses inside EXISTS (not allowed)
+    final String upper = subquery.toUpperCase();
+    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ") ||
+        upper.contains("MERGE ") || upper.contains("REMOVE "))
+      throw new com.arcadedb.exception.CommandParsingException(
+          "InvalidClauseComposition: Existential subquery cannot contain update clauses");
 
     // If it's a pattern without MATCH, add MATCH prefix
-    if (!subquery.trim().toUpperCase().startsWith("MATCH")
-        && !subquery.trim().toUpperCase().startsWith("WITH")
-        && !subquery.trim().toUpperCase().startsWith("RETURN")) {
+    final String upperTrimmed = subquery.toUpperCase();
+    if (!upperTrimmed.startsWith("MATCH")
+        && !upperTrimmed.startsWith("WITH")
+        && !upperTrimmed.startsWith("RETURN")) {
       subquery = "MATCH " + subquery + " RETURN true";
+    } else if (!upperTrimmed.contains("RETURN ")) {
+      // Full subquery without RETURN — add RETURN true
+      subquery = subquery + " RETURN true";
     }
 
     return new ExistsExpression(subquery, text);

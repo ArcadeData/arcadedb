@@ -657,13 +657,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Cypher25Parser.Expression7Context expr7 = ctx.expression7(0);
 
     // Check for comparison operators in expression8
-    if (ctx.expression7().size() > 1) {
-      // Found a comparison, get the operator
-      for (int i = 1; i < ctx.getChildCount(); i++) {
+    final int expr7Count = ctx.expression7().size();
+    if (expr7Count > 1) {
+      // Collect all operators and operands for chained comparisons (e.g., 1 < n.num < 3)
+      final List<ComparisonExpression.Operator> operators = new ArrayList<>();
+      for (int i = 0; i < ctx.getChildCount(); i++) {
         if (ctx.getChild(i) instanceof TerminalNode) {
           final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
           final int type = terminal.getSymbol().getType();
-
           ComparisonExpression.Operator op = null;
           if (type == Cypher25Parser.EQ) op = ComparisonExpression.Operator.EQUALS;
           else if (type == Cypher25Parser.NEQ || type == Cypher25Parser.INVALID_NEQ)
@@ -672,13 +673,30 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           else if (type == Cypher25Parser.GT) op = ComparisonExpression.Operator.GREATER_THAN;
           else if (type == Cypher25Parser.LE) op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
           else if (type == Cypher25Parser.GE) op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-
-          if (op != null) {
-            final Expression left = expressionBuilder.parseExpressionFromText(ctx.expression7(0));
-            final Expression right = expressionBuilder.parseExpressionFromText(ctx.expression7(1));
-            return new ComparisonExpression(left, op, right);
-          }
+          if (op != null)
+            operators.add(op);
         }
+      }
+
+      if (!operators.isEmpty()) {
+        if (operators.size() == 1) {
+          // Simple two-operand comparison
+          final Expression left = expressionBuilder.parseExpressionFromText(ctx.expression7(0));
+          final Expression right = expressionBuilder.parseExpressionFromText(ctx.expression7(1));
+          return new ComparisonExpression(left, operators.get(0), right);
+        }
+        // Chained comparison: a < b < c becomes (a < b) AND (b < c)
+        BooleanExpression result = null;
+        for (int i = 0; i < operators.size(); i++) {
+          final Expression left = expressionBuilder.parseExpressionFromText(ctx.expression7(i));
+          final Expression right = expressionBuilder.parseExpressionFromText(ctx.expression7(i + 1));
+          final ComparisonExpression comp = new ComparisonExpression(left, operators.get(i), right);
+          if (result == null)
+            result = comp;
+          else
+            result = new LogicalExpression(LogicalExpression.Operator.AND, result, comp);
+        }
+        return result;
       }
     }
 
