@@ -138,8 +138,13 @@ public class WithStep extends AbstractExecutionStep {
           }
         }
 
-        // Check if LIMIT has been reached (only when not deferred to downstream)
-        final Integer limit = skipLimitDeferred ? null : withClause.getLimit();
+        // Evaluate SKIP/LIMIT expressions (only when not deferred to downstream)
+        final Integer limit = (!skipLimitDeferred && withClause.getLimit() != null)
+            ? evaluator.evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context) : null;
+        final Integer skipVal = (!skipLimitDeferred && withClause.getSkip() != null)
+            ? evaluator.evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context) : null;
+
+        // Check if LIMIT has been reached
         if (limit != null && returned >= limit) {
           finished = true;
           return;
@@ -178,12 +183,9 @@ public class WithStep extends AbstractExecutionStep {
           }
 
           // Apply SKIP (only when not deferred to downstream)
-          if (!skipLimitDeferred) {
-            final Integer skip = withClause.getSkip();
-            if (skip != null && skipped < skip) {
-              skipped++;
-              continue;
-            }
+          if (skipVal != null && skipped < skipVal) {
+            skipped++;
+            continue;
           }
 
           // Add to buffer
@@ -277,12 +279,12 @@ public class WithStep extends AbstractExecutionStep {
 
     // Show SKIP
     if (withClause.getSkip() != null) {
-      builder.append(" SKIP ").append(withClause.getSkip());
+      builder.append(" SKIP ").append(withClause.getSkip().getText());
     }
 
     // Show LIMIT
     if (withClause.getLimit() != null) {
-      builder.append(" LIMIT ").append(withClause.getLimit());
+      builder.append(" LIMIT ").append(withClause.getLimit().getText());
     }
 
     if (context.isProfiling()) {

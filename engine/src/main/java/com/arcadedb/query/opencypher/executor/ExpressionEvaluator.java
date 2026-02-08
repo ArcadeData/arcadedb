@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -188,5 +189,28 @@ public class ExpressionEvaluator {
    */
   public CypherFunctionFactory getFunctionFactory() {
     return functionFactory;
+  }
+
+  /**
+   * Evaluates a SKIP or LIMIT expression to an integer value.
+   * Supports integer literals, parameters, and function calls like toInteger(ceil(1.7)).
+   */
+  public int evaluateSkipLimit(final Expression expr, final Result result, final CommandContext context) {
+    final Object value = evaluate(expr, result, context);
+    if (value instanceof Number) {
+      final Number num = (Number) value;
+      if (num instanceof Float || num instanceof Double) {
+        final double d = num.doubleValue();
+        if (d != Math.floor(d) || Double.isInfinite(d))
+          throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Float(" + d + ")");
+      }
+      final int intVal = num.intValue();
+      if (intVal < 0)
+        throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + intVal);
+      return intVal;
+    }
+    if (value instanceof String)
+      return Integer.parseInt((String) value);
+    throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: " + (value != null ? value.getClass().getSimpleName() : "null"));
   }
 }

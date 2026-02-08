@@ -116,14 +116,14 @@ class StatementBuilderTest {
     final OrderByClause orderBy = new OrderByClause(Collections.emptyList());
 
     builder.setOrderBy(orderBy);
-    builder.setSkip(10);
-    builder.setLimit(100);
+    builder.setSkip(new LiteralExpression(10, "10"));
+    builder.setLimit(new LiteralExpression(100, "100"));
 
     final SimpleCypherStatement stmt = builder.build();
 
     assertThat(stmt.getOrderByClause()).isEqualTo(orderBy);
-    assertThat(stmt.getSkip()).isEqualTo(10);
-    assertThat(stmt.getLimit()).isEqualTo(100);
+    assertThat(stmt.getSkip().getText()).isEqualTo("10");
+    assertThat(stmt.getLimit().getText()).isEqualTo("100");
   }
 
   @Test

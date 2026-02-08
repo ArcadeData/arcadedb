@@ -199,13 +199,13 @@ public class CypherFunctionFactory {
       // Path functions
       case "nodes", "relationships", "length" -> true;
       // Math functions
-      case "rand", "sign" -> true;
+      case "rand", "sign", "ceil", "floor", "abs", "sqrt", "round" -> true;
       // General functions
       case "coalesce" -> true;
       // List functions
       case "size", "head", "tail", "last", "range" -> true;
       // String functions
-      case "left", "right", "reverse", "split", "substring" -> true;
+      case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "ltrim", "rtrim" -> true;
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean" -> true;
       // Aggregation functions
@@ -239,6 +239,11 @@ public class CypherFunctionFactory {
       // Math functions
       case "rand" -> new RandFunction();
       case "sign" -> new SignFunction();
+      case "ceil" -> new MathUnaryFunction("ceil", Math::ceil);
+      case "floor" -> new MathUnaryFunction("floor", Math::floor);
+      case "abs" -> new MathUnaryFunction("abs", Math::abs);
+      case "sqrt" -> new MathUnaryFunction("sqrt", Math::sqrt);
+      case "round" -> new MathUnaryFunction("round", v -> (double) Math.round(v));
       // General functions
       case "coalesce" -> new CoalesceFunction();
       // Graph functions
@@ -265,6 +270,10 @@ public class CypherFunctionFactory {
       case "reverse" -> new ReverseFunction();
       case "split" -> new SplitFunction();
       case "substring" -> new SubstringFunction();
+      case "tolower" -> new ToLowerFunction();
+      case "toupper" -> new ToUpperFunction();
+      case "ltrim" -> new LTrimFunction();
+      case "rtrim" -> new RTrimFunction();
       // Type conversion functions
       case "tostring" -> new ToStringFunction();
       case "tointeger" -> new ToIntegerFunction();
@@ -347,6 +356,40 @@ public class CypherFunctionFactory {
           return 0L;
       }
       throw new CommandExecutionException("sign() requires a numeric argument");
+    }
+  }
+
+  /**
+   * Generic math unary function (ceil, floor, abs, sqrt, round).
+   */
+  private static class MathUnaryFunction implements StatelessFunction {
+    private final String name;
+    private final java.util.function.DoubleUnaryOperator op;
+
+    MathUnaryFunction(final String name, final java.util.function.DoubleUnaryOperator op) {
+      this.name = name;
+      this.op = op;
+    }
+
+    @Override
+    public String getName() {
+      return name;
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException(name + "() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      if (args[0] instanceof Number) {
+        final double result = op.applyAsDouble(((Number) args[0]).doubleValue());
+        // Return integer type if the result is a whole number
+        if (result == Math.floor(result) && !Double.isInfinite(result))
+          return (long) result;
+        return result;
+      }
+      throw new CommandExecutionException(name + "() requires a numeric argument");
     }
   }
 
@@ -897,6 +940,62 @@ public class CypherFunctionFactory {
       final String str = args[0].toString();
       final String delimiter = args[1].toString();
       return List.of(str.split(Pattern.quote(delimiter)));
+    }
+  }
+
+  private static class ToLowerFunction implements StatelessFunction {
+    @Override
+    public String getName() { return "toLower"; }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("toLower() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      return args[0].toString().toLowerCase();
+    }
+  }
+
+  private static class ToUpperFunction implements StatelessFunction {
+    @Override
+    public String getName() { return "toUpper"; }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("toUpper() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      return args[0].toString().toUpperCase();
+    }
+  }
+
+  private static class LTrimFunction implements StatelessFunction {
+    @Override
+    public String getName() { return "lTrim"; }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("lTrim() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      return args[0].toString().stripLeading();
+    }
+  }
+
+  private static class RTrimFunction implements StatelessFunction {
+    @Override
+    public String getName() { return "rTrim"; }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("rTrim() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      return args[0].toString().stripTrailing();
     }
   }
 

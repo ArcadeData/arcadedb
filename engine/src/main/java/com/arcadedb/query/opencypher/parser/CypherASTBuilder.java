@@ -388,12 +388,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       orderByClause = visitOrderBy(body.orderBy());
     }
 
-    Integer skip = null;
+    Expression skip = null;
     if (body.skip() != null) {
       skip = visitSkip(body.skip());
     }
 
-    Integer limit = null;
+    Expression limit = null;
     if (body.limit() != null) {
       limit = visitLimit(body.limit());
     }
@@ -482,13 +482,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   @Override
-  public Integer visitSkip(final Cypher25Parser.SkipContext ctx) {
-    return Integer.parseInt(ctx.expression().getText());
+  public Expression visitSkip(final Cypher25Parser.SkipContext ctx) {
+    return expressionBuilder.parseExpression(ctx.expression());
   }
 
   @Override
-  public Integer visitLimit(final Cypher25Parser.LimitContext ctx) {
-    return Integer.parseInt(ctx.expression().getText());
+  public Expression visitLimit(final Cypher25Parser.LimitContext ctx) {
+    return expressionBuilder.parseExpression(ctx.expression());
   }
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
@@ -1060,8 +1060,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (ctx.map() != null) {
       return visitMap(ctx.map());
     }
-    // TODO: Handle parameter case
-    return null;
+    // Parameter used as node/relationship predicate (e.g., MATCH (n $param)) is invalid
+    throw new CommandParsingException("InvalidParameterUse: Parameters cannot be used as predicates in patterns");
   }
 
   public Map<String, Object> visitMap(final Cypher25Parser.MapContext ctx) {

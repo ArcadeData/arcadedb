@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 
 import java.util.HashMap;
@@ -122,10 +123,10 @@ class ClauseDispatcher {
       builder.setOrderBy(astBuilder.visitOrderBy(body.orderBy()));
 
     if (body.skip() != null)
-      builder.setSkip(astBuilder.visitSkip(body.skip()));
+      builder.setSkip((Expression) astBuilder.visitSkip(body.skip()));
 
     if (body.limit() != null)
-      builder.setLimit(astBuilder.visitLimit(body.limit()));
+      builder.setLimit((Expression) astBuilder.visitLimit(body.limit()));
   }
 
   private void handleOrderBySkipLimit(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
@@ -136,10 +137,10 @@ class ClauseDispatcher {
       builder.setOrderBy(astBuilder.visitOrderBy(orderBySkipLimit.orderBy()));
 
     if (orderBySkipLimit.skip() != null)
-      builder.setSkip(astBuilder.visitSkip(orderBySkipLimit.skip()));
+      builder.setSkip((Expression) astBuilder.visitSkip(orderBySkipLimit.skip()));
 
     if (orderBySkipLimit.limit() != null)
-      builder.setLimit(astBuilder.visitLimit(orderBySkipLimit.limit()));
+      builder.setLimit((Expression) astBuilder.visitLimit(orderBySkipLimit.limit()));
   }
 
   private void handleCall(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,

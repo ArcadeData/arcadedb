@@ -86,14 +86,14 @@ public interface CypherStatement {
    *
    * @return SKIP value or null
    */
-  Integer getSkip();
+  Expression getSkip();
 
   /**
    * Returns the LIMIT value if present.
    *
    * @return LIMIT value or null
    */
-  Integer getLimit();
+  Expression getLimit();
 
   /**
    * Returns the CREATE clause if present.

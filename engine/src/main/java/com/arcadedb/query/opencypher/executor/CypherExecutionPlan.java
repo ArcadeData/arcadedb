@@ -573,12 +573,14 @@ public class CypherExecutionPlan {
 
           // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
           if (withClause.getSkip() != null) {
-            final SkipStep skipStep = new SkipStep(withClause.getSkip(), context);
+            final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context);
+            final SkipStep skipStep = new SkipStep(_skipVal, context);
             skipStep.setPrevious(currentStep);
             currentStep = skipStep;
           }
           if (withClause.getLimit() != null) {
-            final LimitStep limitStep = new LimitStep(withClause.getLimit(), context);
+            final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context);
+            final LimitStep limitStep = new LimitStep(_limitVal, context);
             limitStep.setPrevious(currentStep);
             currentStep = limitStep;
           }
@@ -623,7 +625,7 @@ public class CypherExecutionPlan {
     // Step 9: SKIP (if any)
     if (statement.getSkip() != null) {
       final SkipStep skipStep =
-          new SkipStep(statement.getSkip(), context);
+          new SkipStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
@@ -631,7 +633,7 @@ public class CypherExecutionPlan {
     // Step 10: LIMIT (if any)
     if (statement.getLimit() != null) {
       final LimitStep limitStep =
-          new LimitStep(statement.getLimit(), context);
+          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -962,7 +964,7 @@ public class CypherExecutionPlan {
     // SKIP
     if (statement.getSkip() != null && currentStep != null) {
       final SkipStep skipStep =
-          new SkipStep(statement.getSkip(), context);
+          new SkipStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
@@ -970,7 +972,7 @@ public class CypherExecutionPlan {
     // LIMIT
     if (statement.getLimit() != null && currentStep != null) {
       final LimitStep limitStep =
-          new LimitStep(statement.getLimit(), context);
+          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -1037,12 +1039,14 @@ public class CypherExecutionPlan {
 
       // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
       if (withClause.getSkip() != null) {
-        final SkipStep skipStep = new SkipStep(withClause.getSkip(), context);
+        final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context);
+            final SkipStep skipStep = new SkipStep(_skipVal, context);
         skipStep.setPrevious(currentStep);
         currentStep = skipStep;
       }
       if (withClause.getLimit() != null) {
-        final LimitStep limitStep = new LimitStep(withClause.getLimit(), context);
+        final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context);
+            final LimitStep limitStep = new LimitStep(_limitVal, context);
         limitStep.setPrevious(currentStep);
         currentStep = limitStep;
       }
@@ -1709,12 +1713,14 @@ public class CypherExecutionPlan {
 
         // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
         if (withClause.getSkip() != null) {
-          final SkipStep skipStep = new SkipStep(withClause.getSkip(), context);
+          final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context);
+            final SkipStep skipStep = new SkipStep(_skipVal, context);
           skipStep.setPrevious(currentStep);
           currentStep = skipStep;
         }
         if (withClause.getLimit() != null) {
-          final LimitStep limitStep = new LimitStep(withClause.getLimit(), context);
+          final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context);
+            final LimitStep limitStep = new LimitStep(_limitVal, context);
           limitStep.setPrevious(currentStep);
           currentStep = limitStep;
         }
@@ -1805,7 +1811,7 @@ public class CypherExecutionPlan {
     // Step 9: SKIP clause - skip first N results
     if (statement.getSkip() != null && currentStep != null) {
       final SkipStep skipStep = new SkipStep(
-          statement.getSkip(), context);
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
@@ -1813,7 +1819,7 @@ public class CypherExecutionPlan {
     // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
       final LimitStep limitStep = new LimitStep(
-          statement.getLimit(), context);
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
