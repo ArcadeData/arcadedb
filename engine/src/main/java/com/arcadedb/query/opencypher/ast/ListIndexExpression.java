@@ -122,24 +122,9 @@ public class ListIndexExpression implements Expression {
       return array[actualIndex];
     }
 
-    // Handle string indexing (get character at position)
-    if (listValue instanceof String) {
-      final String str = (String) listValue;
-      if (str.isEmpty()) {
-        return null;
-      }
-
-      // Support negative indices
-      final int actualIndex = index < 0 ? str.length() + index : index;
-
-      if (actualIndex < 0 || actualIndex >= str.length()) {
-        return null;
-      }
-
-      return String.valueOf(str.charAt(actualIndex));
-    }
-
-    throw new IllegalArgumentException("Cannot index into type: " + listValue.getClass().getSimpleName());
+    // In Cypher, numeric indexing is only valid for lists, not for strings or other types
+    throw new IllegalArgumentException(
+        "TypeError: InvalidArgumentType - Cannot index into type: " + listValue.getClass().getSimpleName());
   }
 
   @Override

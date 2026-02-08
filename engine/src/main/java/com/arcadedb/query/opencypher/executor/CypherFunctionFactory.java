@@ -1041,7 +1041,7 @@ public class CypherFunctionFactory {
       // Unsupported types: List, Map, Node, Relationship, Path
       if (args[0] instanceof List || args[0] instanceof Map
           || args[0] instanceof Vertex || args[0] instanceof Edge
-          || args[0] instanceof Document)
+          || args[0] instanceof Document || args[0] instanceof TraversalPath)
         throw new CommandExecutionException("TypeError: InvalidArgumentValue - toString() cannot convert " + args[0].getClass().getSimpleName());
       return args[0].toString();
     }

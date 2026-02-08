@@ -62,7 +62,6 @@ class CypherExpressionBuilder {
    */
   Expression parseExpression(final Cypher25Parser.ExpressionContext ctx) {
     final String text = ctx.getText();
-
     // === LOGICAL OPERATORS (Lowest precedence) ===
     // Grammar: expression = expression11 (OR expression11)*
     final List<Cypher25Parser.Expression11Context> expr11List = ctx.expression11();
@@ -203,8 +202,6 @@ class CypherExpressionBuilder {
     if (listCtx != null) {
       // Guard: only use if list covers most of the expression (avoids inner list taking over)
       final String listText2 = listCtx.getText();
-      if (text.contains("donut"))
-        System.out.println("DEBUG LIST FALLBACK: listLen=" + listText2.length() + " textLen=" + text.length() + " mapFound=" + (mapCtx != null) + " text=" + text.substring(0, Math.min(80, text.length())));
       if (listText2.length() >= text.length() - 2)
         return parseListLiteral(listCtx);
     }
