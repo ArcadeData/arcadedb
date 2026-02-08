@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 
 import java.util.ArrayList;
@@ -204,10 +205,10 @@ public class ParserUtils {
                 result.appendCodePoint(codePoint);
                 i += hexLen;
               } catch (final NumberFormatException e) {
-                result.append(c);
+                throw new CommandParsingException("InvalidUnicodeLiteral: Invalid unicode escape sequence: \\" + c + hex);
               }
             } else {
-              result.append(c);
+              throw new CommandParsingException("InvalidUnicodeLiteral: Incomplete unicode escape sequence at end of string");
             }
             break;
           default:

@@ -122,13 +122,16 @@ public class OrderByStep extends AbstractExecutionStep {
       }
 
       private Object extractValue(final Result result, final OrderByClause.OrderByItem item) {
+        // First check if the expression text matches a property name in the result
+        // This handles ORDER BY on aliased/computed columns (e.g., count(*), n.division)
+        final String expression = item.getExpression();
+        if (expression != null && result.getPropertyNames().contains(expression))
+          return convertFromStorage(result.getProperty(expression));
+
         // If we have a parsed Expression AST, use ExpressionEvaluator for full expression support
         final Expression exprAST = item.getExpressionAST();
         if (exprAST != null && evaluator != null)
           return evaluator.evaluate(exprAST, result, context);
-
-        // Fallback to string-based extraction
-        final String expression = item.getExpression();
         if (expression.contains(".")) {
           final String[] parts = expression.split("\\.", 2);
           final Object obj = result.getProperty(parts[0]);
@@ -296,10 +299,12 @@ public class OrderByStep extends AbstractExecutionStep {
         if (v instanceof Vertex) return 1;
         if (v instanceof Edge) return 2;
         if (v instanceof List) return 3;
+        if (v instanceof com.arcadedb.query.opencypher.traversal.TraversalPath) return 4;
         if (v instanceof String) return 5;
         if (v instanceof Boolean) return 6;
         if (v instanceof Number) return 7;
-        return 8; // temporal and other types
+        if (v instanceof CypherTemporalValue) return 8;
+        return 9; // other types
       }
 
       @Override

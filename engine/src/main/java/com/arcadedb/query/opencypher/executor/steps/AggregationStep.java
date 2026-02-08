@@ -20,8 +20,18 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
+import com.arcadedb.query.opencypher.ast.CaseExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
@@ -65,8 +75,9 @@ public class AggregationStep extends AbstractExecutionStep {
     final Map<String, StatelessFunction> aggregators = new HashMap<>();
     final Map<String, Expression> aggregationExpressions = new HashMap<>();
 
-    // Wrapped aggregations: non-aggregation functions that wrap aggregations, e.g., HEAD(COLLECT(...))
-    final Map<String, WrappedAggregationInfo> wrappedAggregators = new HashMap<>();
+    // Complex aggregation expressions: arithmetic/other expressions containing aggregations
+    // e.g., count(a) * 10 + count(b) * 5 AS x
+    final Map<String, ComplexAggregationInfo> complexAggregations = new HashMap<>();
 
     final List<String> nonAggregationItems = new ArrayList<>();
 
@@ -80,16 +91,14 @@ public class AggregationStep extends AbstractExecutionStep {
             funcExpr.getFunctionName(), funcExpr.isDistinct());
         aggregators.put(item.getOutputName(), function);
         aggregationExpressions.put(item.getOutputName(), expr);
-      } else if (expr instanceof FunctionCallExpression) {
-        // Check if this is a wrapper around an aggregation, e.g., HEAD(COLLECT(...))
-        final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
-        final FunctionCallExpression innerAgg = findInnerAggregation(funcExpr);
-        if (innerAgg != null) {
-          // Create aggregator for the inner aggregation
-          final StatelessFunction innerFunction = functionFactory.getFunctionExecutor(
-              innerAgg.getFunctionName(), innerAgg.isDistinct());
-          wrappedAggregators.put(item.getOutputName(),
-              new WrappedAggregationInfo(funcExpr, innerAgg, innerFunction));
+      } else if (expr.containsAggregation()) {
+        // Complex expression containing aggregations (arithmetic, function wrapping, etc.)
+        final Map<String, FunctionCallExpression> innerAggs = new HashMap<>();
+        final Map<String, StatelessFunction> innerFunctions = new HashMap<>();
+        collectAggregations(expr, innerAggs, innerFunctions);
+        if (!innerAggs.isEmpty()) {
+          complexAggregations.put(item.getOutputName(),
+              new ComplexAggregationInfo(expr, innerAggs, innerFunctions));
         } else {
           nonAggregationItems.add(item.getOutputName());
         }
@@ -121,13 +130,16 @@ public class AggregationStep extends AbstractExecutionStep {
         }
       }
 
-      // Process wrapped aggregations - feed data to inner aggregation
-      for (final WrappedAggregationInfo wrappedInfo : wrappedAggregators.values()) {
-        final Object[] args = new Object[wrappedInfo.innerAggregation.getArguments().size()];
-        for (int i = 0; i < args.length; i++) {
-          args[i] = evaluator.evaluate(wrappedInfo.innerAggregation.getArguments().get(i), inputRow, context);
+      // Process complex aggregation expressions - feed data to all inner aggregation functions
+      for (final ComplexAggregationInfo complexInfo : complexAggregations.values()) {
+        for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexInfo.innerAggregations.entrySet()) {
+          final FunctionCallExpression innerAgg = innerEntry.getValue();
+          final StatelessFunction function = complexInfo.innerFunctions.get(innerEntry.getKey());
+          final Object[] args = new Object[innerAgg.getArguments().size()];
+          for (int i = 0; i < args.length; i++)
+            args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
+          function.execute(args, context);
         }
-        wrappedInfo.innerFunction.execute(args, context);
       }
     }
 
@@ -142,20 +154,24 @@ public class AggregationStep extends AbstractExecutionStep {
       aggregatedResult.setProperty(outputName, aggregatedValue);
     }
 
-    // Get wrapped aggregated values (apply wrapper function to aggregated result)
-    for (final Map.Entry<String, WrappedAggregationInfo> entry : wrappedAggregators.entrySet()) {
+    // Evaluate complex aggregation expressions using pre-computed aggregation values
+    for (final Map.Entry<String, ComplexAggregationInfo> entry : complexAggregations.entrySet()) {
       final String outputName = entry.getKey();
-      final WrappedAggregationInfo wrappedInfo = entry.getValue();
+      final ComplexAggregationInfo complexInfo = entry.getValue();
 
-      // Get the aggregated result from the inner function
-      final Object innerAggregatedValue = wrappedInfo.innerFunction.getAggregatedResult();
+      // Build overrides map: aggregation text -> aggregated result
+      final Map<String, Object> overrides = new HashMap<>();
+      for (final Map.Entry<String, StatelessFunction> funcEntry : complexInfo.innerFunctions.entrySet())
+        overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
 
-      // Apply the wrapper function to the aggregated result
-      final StatelessFunction wrapperFunction = functionFactory.getFunctionExecutor(
-          wrappedInfo.wrapperFunction.getFunctionName());
-      final Object wrappedValue = wrapperFunction.execute(new Object[]{innerAggregatedValue}, context);
-
-      aggregatedResult.setProperty(outputName, wrappedValue);
+      // Evaluate the full expression with overrides
+      evaluator.setAggregationOverrides(overrides);
+      try {
+        final Object value = evaluator.evaluate(complexInfo.expression, aggregatedResult, context);
+        aggregatedResult.setProperty(outputName, value);
+      } finally {
+        evaluator.clearAggregationOverrides();
+      }
     }
 
     // Return single aggregated row
@@ -183,42 +199,79 @@ public class AggregationStep extends AbstractExecutionStep {
   }
 
   /**
-   * Find an inner aggregation function in a function call expression.
-   * Returns the first aggregation function found in the arguments, or null if none.
-   * This is used to detect patterns like HEAD(COLLECT(...)) where the outer function
-   * is not an aggregation but wraps one.
+   * Recursively collects all aggregation FunctionCallExpressions from an expression tree.
+   * Uses the expression text as key for deduplication.
    */
-  private static FunctionCallExpression findInnerAggregation(final FunctionCallExpression funcExpr) {
-    for (final Expression arg : funcExpr.getArguments()) {
-      if (arg instanceof FunctionCallExpression) {
-        final FunctionCallExpression argFunc = (FunctionCallExpression) arg;
-        if (argFunc.isAggregation()) {
-          return argFunc;
+  private void collectAggregations(final Expression expr,
+      final Map<String, FunctionCallExpression> innerAggs,
+      final Map<String, StatelessFunction> innerFunctions) {
+    if (expr == null)
+      return;
+    if (expr instanceof FunctionCallExpression funcExpr) {
+      if (funcExpr.isAggregation()) {
+        final String key = funcExpr.getText();
+        if (!innerAggs.containsKey(key)) {
+          innerAggs.put(key, funcExpr);
+          innerFunctions.put(key, functionFactory.getFunctionExecutor(
+              funcExpr.getFunctionName(), funcExpr.isDistinct()));
         }
-        // Recursively check for nested function calls
-        final FunctionCallExpression nested = findInnerAggregation(argFunc);
-        if (nested != null) {
-          return nested;
-        }
+        return; // Don't recurse into aggregation arguments
       }
+      for (final Expression arg : funcExpr.getArguments())
+        collectAggregations(arg, innerAggs, innerFunctions);
+    } else if (expr instanceof ArithmeticExpression arith) {
+      collectAggregations(arith.getLeft(), innerAggs, innerFunctions);
+      collectAggregations(arith.getRight(), innerAggs, innerFunctions);
+    } else if (expr instanceof ListComprehensionExpression lce) {
+      collectAggregations(lce.getListExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof ListPredicateExpression lpe) {
+      collectAggregations(lpe.getListExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof ListExpression le) {
+      for (final Expression elem : le.getElements())
+        collectAggregations(elem, innerAggs, innerFunctions);
+    } else if (expr instanceof ComparisonExpressionWrapper cew) {
+      collectAggregations(cew.getComparison().getLeft(), innerAggs, innerFunctions);
+      collectAggregations(cew.getComparison().getRight(), innerAggs, innerFunctions);
+    } else if (expr instanceof CaseExpression ce) {
+      collectAggregations(ce.getCaseExpression(), innerAggs, innerFunctions);
+      for (final com.arcadedb.query.opencypher.ast.CaseAlternative alt : ce.getAlternatives()) {
+        collectAggregations(alt.getWhenExpression(), innerAggs, innerFunctions);
+        collectAggregations(alt.getThenExpression(), innerAggs, innerFunctions);
+      }
+      collectAggregations(ce.getElseExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof BooleanWrapperExpression bwe) {
+      collectBooleanAggregations(bwe.getBooleanExpression(), innerAggs, innerFunctions);
     }
-    return null;
+  }
+
+  private void collectBooleanAggregations(final BooleanExpression boolExpr,
+      final Map<String, FunctionCallExpression> innerAggs,
+      final Map<String, StatelessFunction> innerFunctions) {
+    if (boolExpr instanceof ComparisonExpression comp) {
+      collectAggregations(comp.getLeft(), innerAggs, innerFunctions);
+      collectAggregations(comp.getRight(), innerAggs, innerFunctions);
+    } else if (boolExpr instanceof LogicalExpression logical) {
+      collectBooleanAggregations(logical.getLeft(), innerAggs, innerFunctions);
+      if (logical.getRight() != null)
+        collectBooleanAggregations(logical.getRight(), innerAggs, innerFunctions);
+    }
   }
 
   /**
-   * Holds information about a wrapped aggregation.
+   * Holds information about a complex aggregation expression that contains
+   * one or more aggregation sub-expressions within a larger expression.
    */
-  private static class WrappedAggregationInfo {
-    final FunctionCallExpression wrapperFunction;
-    final FunctionCallExpression innerAggregation;
-    final StatelessFunction innerFunction;
+  private static class ComplexAggregationInfo {
+    final Expression expression;
+    final Map<String, FunctionCallExpression> innerAggregations;
+    final Map<String, StatelessFunction> innerFunctions;
 
-    WrappedAggregationInfo(final FunctionCallExpression wrapperFunction,
-                           final FunctionCallExpression innerAggregation,
-                           final StatelessFunction innerFunction) {
-      this.wrapperFunction = wrapperFunction;
-      this.innerAggregation = innerAggregation;
-      this.innerFunction = innerFunction;
+    ComplexAggregationInfo(final Expression expression,
+                           final Map<String, FunctionCallExpression> innerAggregations,
+                           final Map<String, StatelessFunction> innerFunctions) {
+      this.expression = expression;
+      this.innerAggregations = innerAggregations;
+      this.innerFunctions = innerFunctions;
     }
   }
 

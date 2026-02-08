@@ -44,6 +44,22 @@ public class BooleanWrapperExpression implements Expression {
   }
 
   @Override
+  public boolean containsAggregation() {
+    return booleanContainsAggregation(booleanExpression);
+  }
+
+  static boolean booleanContainsAggregation(final BooleanExpression expr) {
+    if (expr instanceof ComparisonExpression comp)
+      return comp.getLeft().containsAggregation() || comp.getRight().containsAggregation();
+    if (expr instanceof LogicalExpression logical) {
+      if (booleanContainsAggregation(logical.getLeft()))
+        return true;
+      return logical.getRight() != null && booleanContainsAggregation(logical.getRight());
+    }
+    return false;
+  }
+
+  @Override
   public String getText() {
     return booleanExpression.getText();
   }

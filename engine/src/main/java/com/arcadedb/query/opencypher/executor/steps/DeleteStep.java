@@ -25,6 +25,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -105,8 +106,27 @@ public class DeleteStep extends AbstractExecutionStep {
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
 
+          // Capture type info for relationships before deletion
+          final Map<String, String> relTypes = new java.util.HashMap<>();
+          for (final String variable : deleteClause.getVariables()) {
+            if (!variable.contains(".") && !variable.contains("[")) {
+              final Object obj = inputResult.getProperty(variable);
+              if (obj instanceof Edge)
+                relTypes.put(variable, ((Edge) obj).getTypeName());
+            }
+          }
+
           // Apply DELETE operations to this result
-          applyDeleteOperations(inputResult);
+          final Set<String> deletedVars = new HashSet<>();
+          applyDeleteOperations(inputResult, deletedVars);
+
+          // Mark deleted variables in the result so subsequent access throws DeletedEntityAccess
+          if (!deletedVars.isEmpty() && inputResult instanceof ResultInternal mutableResult) {
+            for (final String var : deletedVars) {
+              final String relType = relTypes.get(var);
+              mutableResult.setProperty(var, relType != null ? new DeletedEntityMarker(relType) : DeletedEntityMarker.INSTANCE);
+            }
+          }
 
           // Pass through the result (elements are now deleted)
           buffer.add(inputResult);
@@ -129,7 +149,7 @@ public class DeleteStep extends AbstractExecutionStep {
    *
    * @param result the result containing variables to delete
    */
-  private void applyDeleteOperations(final Result result) {
+  private void applyDeleteOperations(final Result result, final Set<String> deletedVars) {
     if (deleteClause == null || deleteClause.isEmpty())
       return;
 
@@ -144,6 +164,9 @@ public class DeleteStep extends AbstractExecutionStep {
         if (obj == null)
           continue;
         deleteObject(obj, new HashSet<>());
+        // Track simple variable names (not chained access) as deleted
+        if (!variable.contains(".") && !variable.contains("["))
+          deletedVars.add(variable);
       }
 
       if (!wasInTransaction)

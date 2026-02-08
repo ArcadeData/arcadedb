@@ -21,17 +21,25 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
+import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
+import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Evaluates Cypher expressions in the context of query results.
@@ -39,9 +47,18 @@ import java.util.List;
  */
 public class ExpressionEvaluator {
   private final CypherFunctionFactory functionFactory;
+  private Map<String, Object> aggregationOverrides;
 
   public ExpressionEvaluator(final CypherFunctionFactory functionFactory) {
     this.functionFactory = functionFactory;
+  }
+
+  public void setAggregationOverrides(final Map<String, Object> overrides) {
+    this.aggregationOverrides = overrides;
+  }
+
+  public void clearAggregationOverrides() {
+    this.aggregationOverrides = null;
   }
 
   /**
@@ -60,6 +77,14 @@ public class ExpressionEvaluator {
       return evaluateArithmetic((ArithmeticExpression) expression, result, context);
     } else if (expression instanceof ListExpression) {
       return evaluateList((ListExpression) expression, result, context);
+    } else if (expression instanceof ComparisonExpressionWrapper) {
+      return evaluateComparison((ComparisonExpressionWrapper) expression, result, context);
+    } else if (expression instanceof BooleanWrapperExpression bwe) {
+      return evaluateBooleanWrapper(bwe, result, context);
+    } else if (aggregationOverrides != null && expression instanceof ListComprehensionExpression) {
+      return evaluateListComprehension((ListComprehensionExpression) expression, result, context);
+    } else if (aggregationOverrides != null && expression instanceof ListPredicateExpression) {
+      return evaluateListPredicate((ListPredicateExpression) expression, result, context);
     }
 
     // Fallback
@@ -81,6 +106,13 @@ public class ExpressionEvaluator {
 
   private Object evaluateFunction(final FunctionCallExpression expression, final Result result,
       final CommandContext context) {
+    // Check for pre-computed aggregation override
+    if (aggregationOverrides != null && expression.isAggregation()) {
+      final String key = expression.getText();
+      if (aggregationOverrides.containsKey(key))
+        return aggregationOverrides.get(key);
+    }
+
     // Get function
     final StatelessFunction function = functionFactory.getFunctionExecutor(expression.getFunctionName());
 
@@ -179,6 +211,107 @@ public class ExpressionEvaluator {
     for (final Expression element : expression.getElements())
       values.add(evaluate(element, result, context));
     return values;
+  }
+
+  /**
+   * Evaluates a comparison expression using this evaluator (preserving aggregation overrides).
+   */
+  private Object evaluateComparison(final ComparisonExpressionWrapper expression,
+      final Result result, final CommandContext context) {
+    final ComparisonExpression comp = expression.getComparison();
+    final Object leftValue = evaluate(comp.getLeft(), result, context);
+    final Object rightValue = evaluate(comp.getRight(), result, context);
+    return comp.evaluateWithValues(leftValue, rightValue);
+  }
+
+  private Object evaluateBooleanWrapper(final BooleanWrapperExpression expression,
+      final Result result, final CommandContext context) {
+    final BooleanExpression boolExpr = expression.getBooleanExpression();
+    if (boolExpr instanceof ComparisonExpression comp) {
+      final Object leftValue = evaluate(comp.getLeft(), result, context);
+      final Object rightValue = evaluate(comp.getRight(), result, context);
+      return comp.evaluateWithValues(leftValue, rightValue);
+    }
+    return expression.evaluate(result, context);
+  }
+
+  /**
+   * Evaluates a list comprehension expression using this evaluator (preserving aggregation overrides).
+   */
+  private Object evaluateListComprehension(final ListComprehensionExpression expression,
+      final Result result, final CommandContext context) {
+    final Object listValue = evaluate(expression.getListExpression(), result, context);
+    if (listValue == null)
+      return null;
+
+    final Iterable<?> iterable;
+    if (listValue instanceof Iterable)
+      iterable = (Iterable<?>) listValue;
+    else
+      return expression.evaluate(result, context); // fallback for arrays
+
+    final List<Object> resultList = new ArrayList<>();
+    for (final Object item : iterable) {
+      final ResultInternal iterResult = new ResultInternal();
+      if (result != null)
+        for (final String prop : result.getPropertyNames())
+          iterResult.setProperty(prop, result.getProperty(prop));
+      iterResult.setProperty(expression.getVariable(), item);
+
+      if (expression.getWhereExpression() != null) {
+        final Object filterValue = evaluate(expression.getWhereExpression(), iterResult, context);
+        if (filterValue == null || (filterValue instanceof Boolean && !((Boolean) filterValue)))
+          continue;
+      }
+
+      if (expression.getMapExpression() != null)
+        resultList.add(evaluate(expression.getMapExpression(), iterResult, context));
+      else
+        resultList.add(item);
+    }
+    return resultList;
+  }
+
+  /**
+   * Evaluates a list predicate expression (ALL/ANY/NONE/SINGLE) using this evaluator.
+   */
+  private Object evaluateListPredicate(final ListPredicateExpression expression,
+      final Result result, final CommandContext context) {
+    final Object listValue = evaluate(expression.getListExpression(), result, context);
+    if (listValue == null)
+      return null;
+
+    final Iterable<?> iterable;
+    if (listValue instanceof Iterable)
+      iterable = (Iterable<?>) listValue;
+    else
+      return expression.evaluate(result, context); // fallback
+
+    int matchCount = 0;
+    int totalCount = 0;
+    for (final Object item : iterable) {
+      totalCount++;
+      final ResultInternal iterResult = new ResultInternal();
+      if (result != null)
+        for (final String prop : result.getPropertyNames())
+          iterResult.setProperty(prop, result.getProperty(prop));
+      iterResult.setProperty(expression.getVariable(), item);
+
+      if (expression.getWhereExpression() != null) {
+        final Object filterValue = evaluate(expression.getWhereExpression(), iterResult, context);
+        if (filterValue instanceof Boolean && (Boolean) filterValue)
+          matchCount++;
+      } else {
+        matchCount++;
+      }
+    }
+
+    return switch (expression.getPredicateType()) {
+      case ALL -> matchCount == totalCount;
+      case ANY -> matchCount > 0;
+      case NONE -> matchCount == 0;
+      case SINGLE -> matchCount == 1;
+    };
   }
 
   /**

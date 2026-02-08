@@ -224,6 +224,10 @@ public class ListPredicateExpression implements Expression {
     return whereExpression;
   }
 
+  public PredicateType getPredicateType() {
+    return predicateType;
+  }
+
   @Override
   public String getText() {
     return text;

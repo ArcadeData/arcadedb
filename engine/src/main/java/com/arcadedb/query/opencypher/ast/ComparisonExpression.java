@@ -94,6 +94,10 @@ public class ComparisonExpression implements BooleanExpression {
     return compareValuesTernary(leftValue, rightValue);
   }
 
+  public Object evaluateWithValues(final Object leftValue, final Object rightValue) {
+    return compareValuesTernary(leftValue, rightValue);
+  }
+
   private Object compareValuesTernary(final Object left, final Object right) {
     // In OpenCypher, any comparison involving null returns null
     if (left == null || right == null)

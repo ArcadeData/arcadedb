@@ -682,12 +682,10 @@ class CypherExpressionBuilder {
       return (Cypher25Parser.CountStarContext) node;
     }
 
-    // Recursively search all children
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.CountStarContext found = findCountStarRecursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
+    // Only traverse into single-child wrapper nodes (expression precedence layers)
+    // Stop at any node that is NOT a simple wrapper (multiple children means it's a compound expression)
+    if (node.getChildCount() == 1) {
+      return findCountStarRecursive(node.getChild(0));
     }
 
     return null;
@@ -2287,9 +2285,9 @@ class CypherExpressionBuilder {
     try {
       // Handle floats without integer part (.1, .5e-3, etc.)
       if (text.startsWith(".") && text.length() > 1 && Character.isDigit(text.charAt(1)))
-        return Double.parseDouble(text);
+        return parseDoubleChecked(text);
       if (text.startsWith("-.") && text.length() > 2 && Character.isDigit(text.charAt(2)))
-        return Double.parseDouble(text);
+        return parseDoubleChecked(text);
 
       // Handle negative numbers
       if (text.startsWith("-") || text.startsWith("+") || Character.isDigit(text.charAt(0))) {
@@ -2303,7 +2301,7 @@ class CypherExpressionBuilder {
           final String octPart = text.startsWith("-") ? text.substring(3) : text.substring(2);
           return parseSignedHexOrOctal(octPart, 8, text.startsWith("-"), text);
         } else if (text.contains(".") || text.contains("e") || text.contains("E")) {
-          return Double.parseDouble(text);
+          return parseDoubleChecked(text);
         } else {
           return Long.parseLong(text);
         }
@@ -2314,11 +2312,21 @@ class CypherExpressionBuilder {
       if (numText.startsWith("0x") || numText.startsWith("0X") ||
           numText.startsWith("0o") || numText.startsWith("0O"))
         throw new CommandParsingException("InvalidNumberLiteral: Invalid number literal: " + text);
-      if (!numText.isEmpty() && Character.isDigit(numText.charAt(0)) && numText.chars().allMatch(c -> Character.isDigit(c)))
-        throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + text);
+      if (!numText.isEmpty() && Character.isDigit(numText.charAt(0))) {
+        if (numText.chars().allMatch(c -> Character.isDigit(c)))
+          throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + text);
+        throw new CommandParsingException("InvalidNumberLiteral: Invalid number literal: " + text);
+      }
     }
 
     return null; // Not a literal
+  }
+
+  private static double parseDoubleChecked(final String text) {
+    final double d = Double.parseDouble(text);
+    if (Double.isInfinite(d))
+      throw new CommandParsingException("FloatingPointOverflow: Floating point number is too large: " + text);
+    return d;
   }
 
   private static long parseSignedHexOrOctal(final String digits, final int radix,

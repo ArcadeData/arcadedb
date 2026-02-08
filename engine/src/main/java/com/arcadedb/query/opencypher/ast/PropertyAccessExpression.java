@@ -43,6 +43,7 @@ public class PropertyAccessExpression implements Expression {
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
     final Object variable = result.getProperty(variableName);
+    com.arcadedb.query.opencypher.executor.DeletedEntityMarker.checkNotDeleted(variable);
     if (variable instanceof Document) {
       final Object rawValue = ((Document) variable).get(propertyName);
       return convertFromStorage(rawValue);
