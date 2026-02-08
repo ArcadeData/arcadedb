@@ -28,6 +28,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
@@ -475,10 +476,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (outStr == null || inStr == null)
           throw new IllegalArgumentException("Edge requires 'out' and 'in' RIDs");
 
-        var outEl = db.lookupByRID(new RID(outStr), true);
-        var inEl = db.lookupByRID(new RID(inStr), true);
+        var outEl = db.lookupByRID(new RID(outStr), false);
+        var inEl = db.lookupByRID(new RID(inStr), false);
 
-        final Vertex outV = outEl.asVertex(true);
+        final Vertex outV = outEl.asVertex(false);
 
         if (!db.isTransactionActive())
           db.begin();
@@ -534,13 +535,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         throw new IllegalArgumentException("rid is required");
 
       var el = db.lookupByRID(new RID(ridStr), true);
-      if (el == null) {
-        resp.onNext(LookupByRidResponse.newBuilder().setFound(false).build());
-        resp.onCompleted();
-        return;
-      }
 
       resp.onNext(LookupByRidResponse.newBuilder().setFound(true).setRecord(convertToGrpcRecord(el.getRecord(), db)).build());
+      resp.onCompleted();
+    } catch (RecordNotFoundException e) {
+      resp.onNext(LookupByRidResponse.newBuilder().setFound(false).build());
       resp.onCompleted();
     } catch (Exception e) {
       resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + e.getMessage()).asException());
@@ -548,16 +547,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   @Override
-  public void updateRecord(UpdateRecordRequest req, StreamObserver<UpdateRecordResponse> resp) {
-
+  public void updateRecord(final UpdateRecordRequest req, final StreamObserver<UpdateRecordResponse> resp) {
     Database db = null;
     boolean beganHere = false;
 
+    String ridStr = null;
     try {
-
       db = getDatabase(req.getDatabase(), req.getCredentials());
 
-      final String ridStr = req.getRid();
+      ridStr = req.getRid();
 
       if (ridStr == null || ridStr.isEmpty())
         throw new IllegalArgumentException("rid is required");
@@ -574,11 +572,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Lookup the record by RID
       var el = db.lookupByRID(new RID(ridStr), true);
-
-      if (el == null) {
-        resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + ridStr).asException());
-        return;
-      }
 
       final var dbRef = db;
 
@@ -656,8 +649,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onNext(UpdateRecordResponse.newBuilder().setUpdated(true).setSuccess(true).build());
 
       resp.onCompleted();
+    } catch (RecordNotFoundException e) {
+      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + ridStr).asException());
     } catch (Exception e) {
-
       LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
 
       try {
@@ -676,10 +670,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     Database db = null;
     boolean beganHere = false;
 
+    String ridStr = null;
     try {
       db = getDatabase(req.getDatabase(), req.getCredentials());
 
-      final String ridStr = req.getRid();
+      ridStr = req.getRid();
       if (ridStr == null || ridStr.isBlank())
         throw new IllegalArgumentException("rid is required");
 
@@ -689,18 +684,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         beganHere = true;
       }
 
-      var el = db.lookupByRID(new RID(ridStr), true);
-      if (el == null) {
-        // Soft "not found"
-        resp.onNext(
-            DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(false).setMessage("Record not found: " + ridStr).build());
-        resp.onCompleted();
-        // If we began here and no explicit rollback flag, default to commit (or
-        // rollback—your policy)
-        if (beganHere && req.hasTransaction() && !req.getTransaction().getRollback())
-          db.commit();
-        return;
-      }
+      var el = db.lookupByRID(new RID(ridStr), false);
 
       el.delete(); // deletes document/vertex/edge
 
@@ -720,6 +704,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onNext(DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build());
       resp.onCompleted();
 
+    } catch (RecordNotFoundException e) {
+      // Soft "not found"
+      resp.onNext(
+          DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(false).setMessage("Record not found: " + ridStr).build());
+      resp.onCompleted();
+      // If we began here and no explicit rollback flag, default to commit (or
+      // rollback—your policy)
+      if (beganHere && req.hasTransaction() && !req.getTransaction().getRollback())
+        db.commit();
     } catch (Exception e) {
       // Best-effort rollback if we started the tx
       try {
@@ -1873,7 +1866,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
                 .setMessage("Edge requires 'out' and 'in'").build());
           } else {
-            var outV = ctx.db.lookupByRID(new RID(outRid), true).asVertex(false);
+            var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
 
             // Create edge from the OUT vertex
             MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), new RID(inRid));
