@@ -150,12 +150,12 @@ public class UnionStatement implements CypherStatement {
   }
 
   @Override
-  public Integer getSkip() {
+  public Expression getSkip() {
     return null;
   }
 
   @Override
-  public Integer getLimit() {
+  public Expression getLimit() {
     return null;
   }
 

@@ -32,8 +32,8 @@ public class SimpleCypherStatement implements CypherStatement {
   private final WhereClause        whereClause;
   private final ReturnClause       returnClause;
   private final OrderByClause      orderByClause;
-  private final Integer            skip;
-  private final Integer            limit;
+  private final Expression          skip;
+  private final Expression          limit;
   private final CreateClause       createClause;
   private final SetClause          setClause;
   private final DeleteClause       deleteClause;
@@ -60,7 +60,7 @@ public class SimpleCypherStatement implements CypherStatement {
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
                                final OrderByClause orderByClause,
-                               final Integer skip, final Integer limit, final boolean hasCreate,
+                               final Expression skip, final Expression limit, final boolean hasCreate,
                                final boolean hasMerge, final boolean hasDelete) {
     this(originalQuery, matchClauses, whereClause, returnClause, orderByClause, skip, limit, null, null, null, null,
         null, null, null,
@@ -70,7 +70,7 @@ public class SimpleCypherStatement implements CypherStatement {
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
                                final OrderByClause orderByClause,
-                               final Integer skip, final Integer limit, final CreateClause createClause,
+                               final Expression skip, final Expression limit, final CreateClause createClause,
                                final SetClause setClause,
                                final DeleteClause deleteClause, final MergeClause mergeClause,
                                final List<UnwindClause> unwindClauses,
@@ -83,7 +83,7 @@ public class SimpleCypherStatement implements CypherStatement {
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
                                final OrderByClause orderByClause,
-                               final Integer skip, final Integer limit, final CreateClause createClause,
+                               final Expression skip, final Expression limit, final CreateClause createClause,
                                final SetClause setClause,
                                final DeleteClause deleteClause, final MergeClause mergeClause,
                                final List<UnwindClause> unwindClauses,
@@ -96,7 +96,7 @@ public class SimpleCypherStatement implements CypherStatement {
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
                                final OrderByClause orderByClause,
-                               final Integer skip, final Integer limit, final CreateClause createClause,
+                               final Expression skip, final Expression limit, final CreateClause createClause,
                                final SetClause setClause,
                                final DeleteClause deleteClause, final MergeClause mergeClause,
                                final List<UnwindClause> unwindClauses,
@@ -111,7 +111,7 @@ public class SimpleCypherStatement implements CypherStatement {
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
                                final OrderByClause orderByClause,
-                               final Integer skip, final Integer limit, final CreateClause createClause,
+                               final Expression skip, final Expression limit, final CreateClause createClause,
                                final SetClause setClause,
                                final DeleteClause deleteClause, final MergeClause mergeClause,
                                final List<UnwindClause> unwindClauses,
@@ -183,12 +183,12 @@ public class SimpleCypherStatement implements CypherStatement {
   }
 
   @Override
-  public Integer getSkip() {
+  public Expression getSkip() {
     return skip;
   }
 
   @Override
-  public Integer getLimit() {
+  public Expression getLimit() {
     return limit;
   }
 

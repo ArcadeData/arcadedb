@@ -43,6 +43,8 @@ public class CypherSemanticValidator {
     NODE, RELATIONSHIP, PATH, SCALAR
   }
 
+  private final Map<String, VarType> varTypes = new HashMap<>();
+
   public static void validate(final CypherStatement statement) {
     // For UNION statements, validate union-specific constraints then each subquery
     if (statement instanceof UnionStatement) {
@@ -55,11 +57,14 @@ public class CypherSemanticValidator {
     v.validateVariableBinding(statement);
     v.validateVariableScope(statement);
     v.validateCreateConstraints(statement);
+    v.validateRelationshipUniqueness(statement);
     v.validateAggregations(statement);
     v.validateBooleanOperandTypes(statement);
     v.validateSkipLimit(statement);
     v.validateColumnNames(statement);
     v.validateExpressionAliases(statement);
+    v.validateReturnStar(statement);
+    v.validateFunctionArgumentTypes(statement);
   }
 
   // ========================
@@ -101,8 +106,6 @@ public class CypherSemanticValidator {
   // ========================
 
   private void validateVariableTypes(final CypherStatement statement) {
-    final Map<String, VarType> varTypes = new HashMap<>();
-
     // Walk clauses in order if available, otherwise walk MATCH + CREATE + MERGE
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     if (clausesInOrder != null && !clausesInOrder.isEmpty()) {
@@ -279,9 +282,11 @@ public class CypherSemanticValidator {
     for (final NodePattern node : path.getNodes()) {
       final String var = node.getVariable();
       if (var != null && boundVars.contains(var)) {
-        // It's a rebinding error if CREATE defines a new entity for an already-bound var
-        // (i.e., it has labels or properties that would make it a new entity definition)
-        if (node.hasLabels() || node.hasProperties())
+        // It's a rebinding error if CREATE defines a new entity for an already-bound var:
+        // 1. Node has labels or properties (redefining the entity)
+        // 2. Node has explicit properties even if empty (e.g., n {})
+        // 3. Node is standalone (single node in path, no relationships) - tries to create new node
+        if (node.hasLabels() || node.hasProperties() || node.hasExplicitProperties() || path.isSingleNode())
           throw new CommandParsingException("VariableAlreadyBound: Variable '" + var + "' already defined, cannot " +
               "rebind in CREATE");
       }
@@ -294,7 +299,7 @@ public class CypherSemanticValidator {
     // Check if MERGE rebinds node variables with new labels/properties
     for (final NodePattern node : path.getNodes()) {
       final String var = node.getVariable();
-      if (var != null && boundVars.contains(var) && (node.hasLabels() || node.hasProperties()))
+      if (var != null && boundVars.contains(var) && (node.hasLabels() || node.hasProperties() || path.isSingleNode()))
         throw new CommandParsingException(
             "VariableAlreadyBound: Variable '" + var + "' already defined, cannot rebind in MERGE");
     }
@@ -897,6 +902,9 @@ public class CypherSemanticValidator {
       // CREATE relationships must specify exactly one type
       if (!rel.hasTypes())
         throw new CommandParsingException("NoSingleRelationshipType: Relationships must have a type in CREATE");
+      // CREATE relationships must not have multiple types
+      if (rel.getTypes().size() > 1)
+        throw new CommandParsingException("NoSingleRelationshipType: Relationships must have exactly one type in CREATE, got: " + rel.getTypes());
       // CREATE relationships must be directed
       if (rel.getDirection() == Direction.BOTH)
         throw new CommandParsingException("RequiresDirectedRelationship: Relationships must be directed in CREATE");
@@ -911,6 +919,9 @@ public class CypherSemanticValidator {
       // MERGE relationships must specify exactly one type
       if (!rel.hasTypes())
         throw new CommandParsingException("NoSingleRelationshipType: Relationships must have a type in MERGE");
+      // MERGE relationships must not have multiple types
+      if (rel.getTypes().size() > 1)
+        throw new CommandParsingException("NoSingleRelationshipType: Relationships must have exactly one type in MERGE, got: " + rel.getTypes());
       // MERGE cannot use variable-length patterns
       if (rel.isVariableLength())
         throw new CommandParsingException("CreatingVarLength: Variable-length relationships are not allowed in MERGE");
@@ -918,10 +929,88 @@ public class CypherSemanticValidator {
   }
 
   private void validateDeleteTargets(final DeleteClause deleteClause) {
-    // DELETE targets from the parser are variable names (possibly with map access).
-    // The TCK's InvalidDelete tests involve deleting labels (DELETE n:Person)
-    // which would need AST-level detection, not simple string checks.
-    // For now, skip this validation to avoid false positives on map access patterns.
+    for (final String target : deleteClause.getVariables()) {
+      if (target == null)
+        continue;
+      // DELETE n:Label or DELETE r:TYPE is invalid (InvalidDelete)
+      if (target.contains(":"))
+        throw new CommandParsingException("InvalidDelete: Cannot delete a label or relationship type: " + target);
+      // DELETE <arithmetic expression> like DELETE 1+1 is invalid (InvalidArgumentType)
+      if (!isValidVariableName(target) && !target.contains(".") && !target.contains("["))
+        throw new CommandParsingException("InvalidArgumentType: DELETE requires a node, relationship, or path variable, got: " + target);
+    }
+  }
+
+  // ============================================
+  // Phase 5b: Relationship Uniqueness Validation
+  // ============================================
+
+  private void validateRelationshipUniqueness(final CypherStatement statement) {
+    for (final MatchClause matchClause : statement.getMatchClauses()) {
+      if (!matchClause.hasPathPatterns())
+        continue;
+      for (final PathPattern path : matchClause.getPathPatterns()) {
+        final Set<String> relVars = new HashSet<>();
+        for (final RelationshipPattern rel : path.getRelationships()) {
+          final String var = rel.getVariable();
+          if (var != null && !var.isEmpty() && !relVars.add(var))
+            throw new CommandParsingException("RelationshipUniquenessViolation: Relationship variable '" + var + "' is used more than once in the same pattern");
+        }
+      }
+    }
+  }
+
+  // ============================================
+  // Phase 9: RETURN * Validation
+  // ============================================
+
+  private void validateReturnStar(final CypherStatement statement) {
+    if (statement.getReturnClause() == null)
+      return;
+    for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems()) {
+      if (item.getExpression() instanceof StarExpression ||
+          (item.getExpression() instanceof VariableExpression &&
+              "*".equals(((VariableExpression) item.getExpression()).getVariableName()))) {
+        // RETURN * requires at least one named variable in scope
+        boolean hasNamedVars = false;
+        for (final MatchClause matchClause : statement.getMatchClauses()) {
+          if (matchClause.hasPathPatterns())
+            for (final PathPattern path : matchClause.getPathPatterns()) {
+              for (final NodePattern node : path.getNodes())
+                if (node.getVariable() != null && !node.getVariable().isEmpty()) {
+                  hasNamedVars = true;
+                  break;
+                }
+              if (hasNamedVars)
+                break;
+              for (final RelationshipPattern rel : path.getRelationships())
+                if (rel.getVariable() != null && !rel.getVariable().isEmpty()) {
+                  hasNamedVars = true;
+                  break;
+                }
+              if (hasNamedVars)
+                break;
+              if (path.hasPathVariable()) {
+                hasNamedVars = true;
+                break;
+              }
+            }
+          if (hasNamedVars)
+            break;
+        }
+        // Also check UNWIND and WITH for variables
+        if (!hasNamedVars) {
+          for (final UnwindClause unwind : statement.getUnwindClauses()) {
+            if (unwind.getVariable() != null) {
+              hasNamedVars = true;
+              break;
+            }
+          }
+        }
+        if (!hasNamedVars)
+          throw new CommandParsingException("NoVariablesInScope: RETURN * is not allowed when there are no variables in scope");
+      }
+    }
   }
 
   // ==============================
@@ -929,20 +1018,52 @@ public class CypherSemanticValidator {
   // ==============================
 
   private void validateSkipLimit(final CypherStatement statement) {
-    final Integer skip = statement.getSkip();
-    if (skip != null && skip < 0)
-      throw new CommandParsingException("NegativeIntegerArgument: SKIP value cannot be negative: " + skip);
-    final Integer limit = statement.getLimit();
-    if (limit != null && limit < 0)
-      throw new CommandParsingException("NegativeIntegerArgument: LIMIT value cannot be negative: " + limit);
+    validateSkipLimitExpr(statement.getSkip(), "SKIP");
+    validateSkipLimitExpr(statement.getLimit(), "LIMIT");
 
     // Check WITH clauses
     for (final WithClause withClause : statement.getWithClauses()) {
-      if (withClause.getSkip() != null && withClause.getSkip() < 0)
-        throw new CommandParsingException("NegativeIntegerArgument: SKIP value cannot be negative: " + withClause.getSkip());
-      if (withClause.getLimit() != null && withClause.getLimit() < 0)
-        throw new CommandParsingException("NegativeIntegerArgument: LIMIT value cannot be negative: " + withClause.getLimit());
+      validateSkipLimitExpr(withClause.getSkip(), "SKIP");
+      validateSkipLimitExpr(withClause.getLimit(), "LIMIT");
     }
+  }
+
+  private void validateSkipLimitExpr(final Expression expr, final String clauseName) {
+    if (expr == null)
+      return;
+    // Check for negative and floating-point literal values
+    if (expr instanceof LiteralExpression) {
+      final Object val = ((LiteralExpression) expr).getValue();
+      if (val instanceof Number) {
+        if (val instanceof Float || val instanceof Double) {
+          final double d = ((Number) val).doubleValue();
+          if (d != Math.floor(d) || Double.isInfinite(d))
+            throw new CommandParsingException("InvalidArgumentType: " + clauseName + " value must be an integer, got: Float(" + d + ")");
+        }
+        if (((Number) val).intValue() < 0)
+          throw new CommandParsingException("NegativeIntegerArgument: " + clauseName + " value cannot be negative: " + val);
+      }
+    }
+    // Check that SKIP/LIMIT expressions don't reference query variables (NonConstantExpression)
+    if (containsVariableReference(expr))
+      throw new CommandParsingException("NonConstantExpression: " + clauseName + " expression must not reference variables");
+  }
+
+  private static boolean containsVariableReference(final Expression expr) {
+    if (expr instanceof VariableExpression)
+      return !"*".equals(((VariableExpression) expr).getVariableName());
+    if (expr instanceof PropertyAccessExpression)
+      return true;
+    if (expr instanceof ArithmeticExpression) {
+      return containsVariableReference(((ArithmeticExpression) expr).getLeft())
+          || containsVariableReference(((ArithmeticExpression) expr).getRight());
+    }
+    if (expr instanceof FunctionCallExpression) {
+      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+        if (containsVariableReference(arg))
+          return true;
+    }
+    return false;
   }
 
   // ==========================================
@@ -991,6 +1112,88 @@ public class CypherSemanticValidator {
         }
       }
     }
+  }
+
+  // ============================================
+  // Phase 10: Function Argument Type Validation
+  // ============================================
+
+  private void validateFunctionArgumentTypes(final CypherStatement statement) {
+    // Check RETURN clause
+    if (statement.getReturnClause() != null)
+      for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
+        checkFunctionArgTypes(item.getExpression());
+    // Check WITH clauses
+    for (final WithClause withClause : statement.getWithClauses())
+      for (final ReturnClause.ReturnItem item : withClause.getItems())
+        checkFunctionArgTypes(item.getExpression());
+  }
+
+  private void checkFunctionArgTypes(final Expression expr) {
+    if (expr == null)
+      return;
+    if (expr instanceof FunctionCallExpression) {
+      final FunctionCallExpression func = (FunctionCallExpression) expr;
+      final String name = func.getFunctionName().toLowerCase();
+      final List<Expression> args = func.getArguments();
+      if (args.size() == 1) {
+        final Expression arg = args.get(0);
+        final VarType argType = getExpressionType(arg);
+        if (argType != null) {
+          switch (name) {
+            case "length":
+              // length() only works on paths and strings, not nodes or relationships
+              if (argType == VarType.NODE)
+                throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a node");
+              if (argType == VarType.RELATIONSHIP)
+                throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
+              break;
+            case "type":
+              // type() only works on relationships
+              if (argType == VarType.NODE)
+                throw new CommandParsingException("InvalidArgumentType: type() requires a relationship argument, got node");
+              break;
+            case "labels":
+              // labels() only works on nodes
+              if (argType == VarType.PATH)
+                throw new CommandParsingException("InvalidArgumentType: labels() requires a node argument, got path");
+              break;
+            case "size":
+              // size() works on strings and lists, not paths
+              if (argType == VarType.PATH)
+                throw new CommandParsingException("InvalidArgumentType: size() cannot be applied to a path");
+              break;
+          }
+        }
+      }
+      // Recurse into arguments
+      for (final Expression arg : args)
+        checkFunctionArgTypes(arg);
+    } else if (expr instanceof ArithmeticExpression) {
+      checkFunctionArgTypes(((ArithmeticExpression) expr).getLeft());
+      checkFunctionArgTypes(((ArithmeticExpression) expr).getRight());
+    } else if (expr instanceof ListExpression) {
+      for (final Expression elem : ((ListExpression) expr).getElements())
+        checkFunctionArgTypes(elem);
+    } else if (expr instanceof CaseExpression) {
+      final CaseExpression caseExpr = (CaseExpression) expr;
+      if (caseExpr.getCaseExpression() != null)
+        checkFunctionArgTypes(caseExpr.getCaseExpression());
+      for (final CaseAlternative alt : caseExpr.getAlternatives()) {
+        checkFunctionArgTypes(alt.getWhenExpression());
+        checkFunctionArgTypes(alt.getThenExpression());
+      }
+      if (caseExpr.getElseExpression() != null)
+        checkFunctionArgTypes(caseExpr.getElseExpression());
+    }
+  }
+
+  private VarType getExpressionType(final Expression expr) {
+    if (expr instanceof VariableExpression) {
+      final String varName = ((VariableExpression) expr).getVariableName();
+      return varTypes.get(varName);
+    }
+    return null;
   }
 
   /**

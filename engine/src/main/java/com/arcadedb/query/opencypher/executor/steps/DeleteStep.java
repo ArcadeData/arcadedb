@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -30,9 +32,12 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Execution step for DELETE clause.
@@ -125,47 +130,142 @@ public class DeleteStep extends AbstractExecutionStep {
    * @param result the result containing variables to delete
    */
   private void applyDeleteOperations(final Result result) {
-    if (deleteClause == null || deleteClause.isEmpty()) {
+    if (deleteClause == null || deleteClause.isEmpty())
       return;
-    }
 
-    // Check if we're already in a transaction
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
 
     try {
-      // Begin transaction if not already active
-      if (!wasInTransaction) {
+      if (!wasInTransaction)
         context.getDatabase().begin();
-      }
 
       for (final String variable : deleteClause.getVariables()) {
-        // Get the object from the result
-        final Object obj = result.getProperty(variable);
-        if (obj == null) {
-          // Variable not found in result - skip
+        final Object obj = resolveDeleteTarget(variable, result);
+        if (obj == null)
           continue;
-        }
-
-        if (obj instanceof Vertex) {
-          deleteVertex((Vertex) obj);
-        } else if (obj instanceof Edge) {
-          deleteEdge((Edge) obj);
-        } else if (obj instanceof Document) {
-          // Generic document - try to delete
-          ((Document) obj).delete();
-        }
+        deleteObject(obj, new HashSet<>());
       }
 
-      // Commit transaction if we started it
-      if (!wasInTransaction) {
+      if (!wasInTransaction)
         context.getDatabase().commit();
-      }
     } catch (final Exception e) {
-      // Rollback if we started the transaction
-      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
+      if (!wasInTransaction && context.getDatabase().isTransactionActive())
         context.getDatabase().rollback();
-      }
       throw e;
+    }
+  }
+
+  private Object resolveDeleteTarget(final String variable, final Result result) {
+    // Try direct property lookup first
+    Object obj = result.getProperty(variable);
+    if (obj != null)
+      return obj;
+
+    // Parse the expression into segments for chained access (e.g., "map.key.key2[0]")
+    return resolveChainedAccess(variable, result);
+  }
+
+  private Object resolveChainedAccess(final String expr, final Result result) {
+    // Split into base variable and access chain
+    // Parse: varName(.propName)*([index])*
+    Object current = null;
+    int pos = 0;
+
+    // Find the base variable name (up to first . or [)
+    int endOfBase = expr.length();
+    for (int i = 0; i < expr.length(); i++) {
+      if (expr.charAt(i) == '.' || expr.charAt(i) == '[') {
+        endOfBase = i;
+        break;
+      }
+    }
+    final String baseName = expr.substring(0, endOfBase);
+    current = result.getProperty(baseName);
+    if (current == null)
+      return null;
+    pos = endOfBase;
+
+    // Process access chain
+    while (pos < expr.length()) {
+      final char ch = expr.charAt(pos);
+      if (ch == '.') {
+        // Property access
+        pos++;
+        int propEnd = pos;
+        while (propEnd < expr.length() && expr.charAt(propEnd) != '.' && expr.charAt(propEnd) != '[')
+          propEnd++;
+        final String prop = expr.substring(pos, propEnd);
+        pos = propEnd;
+        if (current instanceof Map)
+          current = ((Map<?, ?>) current).get(prop);
+        else if (current instanceof Result)
+          current = ((Result) current).getProperty(prop);
+        else
+          return null;
+      } else if (ch == '[') {
+        // Index access
+        pos++;
+        final int closeBracket = expr.indexOf(']', pos);
+        if (closeBracket < 0)
+          return null;
+        String indexStr = expr.substring(pos, closeBracket).trim();
+        pos = closeBracket + 1;
+        if (current instanceof List) {
+          int index;
+          if (indexStr.startsWith("$")) {
+            final Object paramVal = context.getInputParameters().get(indexStr.substring(1));
+            index = paramVal instanceof Number ? ((Number) paramVal).intValue() : Integer.parseInt(paramVal.toString());
+          } else {
+            index = Integer.parseInt(indexStr);
+          }
+          final List<?> list = (List<?>) current;
+          if (index >= 0 && index < list.size())
+            current = list.get(index);
+          else
+            return null;
+        } else {
+          return null;
+        }
+      } else {
+        return null;
+      }
+    }
+    return current;
+  }
+
+  private void deleteObject(final Object obj, final Set<Object> deleted) {
+    if (obj == null || deleted.contains(obj))
+      return;
+
+    if (obj instanceof Vertex) {
+      deleted.add(obj);
+      try {
+        deleteVertex((Vertex) obj);
+      } catch (final RecordNotFoundException e) {
+        // Already deleted - skip
+      }
+    } else if (obj instanceof Edge) {
+      deleted.add(obj);
+      try {
+        deleteEdge((Edge) obj);
+      } catch (final RecordNotFoundException e) {
+        // Already deleted - skip
+      }
+    } else if (obj instanceof Document) {
+      deleted.add(obj);
+      try {
+        ((Document) obj).delete();
+      } catch (final RecordNotFoundException e) {
+        // Already deleted - skip
+      }
+    } else if (obj instanceof List) {
+      // Delete each element in the list (e.g., path elements or collected nodes)
+      for (final Object elem : (List<?>) obj)
+        deleteObject(elem, deleted);
+    } else if (obj instanceof Map) {
+      // Delete each value in the map
+      for (final Object value : ((Map<?, ?>) obj).values())
+        deleteObject(value, deleted);
     }
   }
 
@@ -179,9 +279,14 @@ public class DeleteStep extends AbstractExecutionStep {
     if (deleteClause.isDetach()) {
       // DETACH DELETE: Remove all connected relationships first
       deleteAllEdges(vertex);
+    } else {
+      // Non-DETACH DELETE: check for connected edges
+      if (vertex.getEdges(Vertex.DIRECTION.OUT).iterator().hasNext() ||
+          vertex.getEdges(Vertex.DIRECTION.IN).iterator().hasNext())
+        throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
+            " because it still has relationships. To delete this node, you must first delete its relationships, or use DETACH DELETE");
     }
 
-    // Delete the vertex
     vertex.delete();
   }
 

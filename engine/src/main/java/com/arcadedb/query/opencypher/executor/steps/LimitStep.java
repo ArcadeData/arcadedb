@@ -50,6 +50,22 @@ public class LimitStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("LimitStep requires a previous step");
 
+    // When LIMIT is 0, still drain the previous step to ensure side effects
+    // (CREATE, DELETE, SET, REMOVE) are executed, but return no results
+    if (limitCount == 0) {
+      final ResultSet prevResults = prev.syncPull(context, nRecords);
+      while (prevResults.hasNext())
+        prevResults.next();
+      return new ResultSet() {
+        @Override
+        public boolean hasNext() { return false; }
+        @Override
+        public Result next() { throw new NoSuchElementException(); }
+        @Override
+        public void close() { LimitStep.this.close(); }
+      };
+    }
+
     return new ResultSet() {
       private ResultSet prevResults = null;
       private int returned = 0;

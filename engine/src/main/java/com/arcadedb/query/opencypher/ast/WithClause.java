@@ -42,15 +42,15 @@ public class WithClause {
   private final boolean distinct;
   private final WhereClause whereClause;
   private final OrderByClause orderByClause;
-  private final Integer skip;
-  private final Integer limit;
+  private final Expression skip;
+  private final Expression limit;
 
   public WithClause(final List<ReturnClause.ReturnItem> items,
                     final boolean distinct,
                     final WhereClause whereClause,
                     final OrderByClause orderByClause,
-                    final Integer skip,
-                    final Integer limit) {
+                    final Expression skip,
+                    final Expression limit) {
     this.items = items;
     this.distinct = distinct;
     this.whereClause = whereClause;
@@ -75,11 +75,11 @@ public class WithClause {
     return orderByClause;
   }
 
-  public Integer getSkip() {
+  public Expression getSkip() {
     return skip;
   }
 
-  public Integer getLimit() {
+  public Expression getLimit() {
     return limit;
   }
 

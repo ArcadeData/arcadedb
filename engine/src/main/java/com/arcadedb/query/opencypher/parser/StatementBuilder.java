@@ -44,8 +44,8 @@ class StatementBuilder {
   private WhereClause whereClause;
   private ReturnClause returnClause;
   private OrderByClause orderByClause;
-  private Integer skip;
-  private Integer limit;
+  private Expression skip;
+  private Expression limit;
 
   private int clauseOrder = 0;
 
@@ -111,11 +111,11 @@ class StatementBuilder {
     this.orderByClause = orderBy;
   }
 
-  void setSkip(final Integer skip) {
+  void setSkip(final Expression skip) {
     this.skip = skip;
   }
 
-  void setLimit(final Integer limit) {
+  void setLimit(final Expression limit) {
     this.limit = limit;
   }
 

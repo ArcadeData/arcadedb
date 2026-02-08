@@ -34,11 +34,13 @@ public class NodePattern implements PatternElement {
   private final String variable;
   private final List<String> labels;
   private final Map<String, Object> properties;
+  private final boolean explicitProperties;
 
   public NodePattern(final String variable, final List<String> labels, final Map<String, Object> properties) {
     this.variable = variable;
     this.labels = labels != null ? labels : Collections.emptyList();
     this.properties = properties != null ? properties : Collections.emptyMap();
+    this.explicitProperties = properties != null;
   }
 
   @Override
@@ -80,6 +82,13 @@ public class NodePattern implements PatternElement {
    */
   public boolean hasProperties() {
     return !properties.isEmpty();
+  }
+
+  /**
+   * Returns true if properties were explicitly specified (even if empty, e.g., n {}).
+   */
+  public boolean hasExplicitProperties() {
+    return explicitProperties;
   }
 
   /**
