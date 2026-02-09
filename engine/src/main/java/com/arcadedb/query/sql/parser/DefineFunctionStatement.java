@@ -6,6 +6,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
+import com.arcadedb.function.cypher.CypherFunctionDefinition;
+import com.arcadedb.function.cypher.CypherFunctionLibraryDefinition;
 import com.arcadedb.function.polyglot.JavascriptFunctionDefinition;
 import com.arcadedb.function.polyglot.JavascriptFunctionLibraryDefinition;
 import com.arcadedb.function.sql.SQLFunctionDefinition;
@@ -45,6 +47,11 @@ public class DefineFunctionStatement extends SimpleExecStatement {
         fLib = new SQLFunctionLibraryDefinition(database, libraryName.getStringValue());
         break;
 
+      case "opencypher":
+      case "cypher":
+        fLib = new CypherFunctionLibraryDefinition(database, libraryName.getStringValue());
+        break;
+
       default:
         throw new CommandSQLParsingException(
             "Error on function creation: language '" + language.getStringValue() + "' not supported");
@@ -71,6 +78,11 @@ public class DefineFunctionStatement extends SimpleExecStatement {
 
     case "sql":
       f = new SQLFunctionDefinition(database, functionName.getStringValue(), code, parameterArray);
+      break;
+
+    case "opencypher":
+    case "cypher":
+      f = new CypherFunctionDefinition(database, functionName.getStringValue(), code, parameterArray);
       break;
 
     default:

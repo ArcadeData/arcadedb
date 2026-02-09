@@ -18,9 +18,11 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -54,6 +56,7 @@ public class CypherFunctionFactory {
 
   private final DefaultSQLFunctionFactory sqlFunctionFactory;
   private final Map<String, String> cypherToSqlMapping;
+  private final Map<String, CustomFunctionAdapter> customFunctionCache = new java.util.concurrent.ConcurrentHashMap<>();
 
   public CypherFunctionFactory(final DefaultSQLFunctionFactory sqlFunctionFactory) {
     this.sqlFunctionFactory = sqlFunctionFactory;
@@ -129,6 +132,13 @@ public class CypherFunctionFactory {
       return true;
     }
 
+    // Check custom functions (library.function pattern)
+    if (functionName.contains(".")) {
+      // Can't check schema here (no Database access), so check cache
+      if (customFunctionCache.containsKey(functionName))
+        return true;
+    }
+
     // Check if we have a mapping to SQL
     if (cypherToSqlMapping.containsKey(functionName)) {
       final String sqlFunctionName = cypherToSqlMapping.get(functionName);
@@ -176,6 +186,13 @@ public class CypherFunctionFactory {
       return createCypherSpecificExecutor(functionName, distinct);
     }
 
+    // Check for custom functions (library.function pattern)
+    if (functionName.contains(".")) {
+      final StatelessFunction customFunction = getOrCreateCustomFunctionAdapter(functionName);
+      if (customFunction != null)
+        return customFunction;
+    }
+
     // Get SQL function (either mapped or direct)
     final String sqlFunctionName = cypherToSqlMapping.getOrDefault(functionName, functionName);
     if (sqlFunctionFactory.hasFunction(sqlFunctionName)) {
@@ -187,6 +204,27 @@ public class CypherFunctionFactory {
     }
 
     throw new CommandExecutionException("Unknown function: " + cypherFunctionName);
+  }
+
+  private StatelessFunction getOrCreateCustomFunctionAdapter(final String functionName) {
+    // Check cache first
+    CustomFunctionAdapter cached = customFunctionCache.get(functionName);
+    if (cached != null)
+      return cached;
+
+    // Parse library.function
+    final int dotIndex = functionName.lastIndexOf('.');
+    if (dotIndex <= 0 || dotIndex >= functionName.length() - 1)
+      return null;
+
+    final String libraryName = functionName.substring(0, dotIndex);
+    final String simpleName = functionName.substring(dotIndex + 1);
+
+    // Create adapter (it will do lazy schema lookup on execute)
+    final CustomFunctionAdapter adapter = new CustomFunctionAdapter(libraryName, simpleName);
+    customFunctionCache.put(functionName, adapter);
+
+    return adapter;
   }
 
   /**
@@ -1999,6 +2037,58 @@ public class CypherFunctionFactory {
     @Override
     public Object getAggregatedResult() {
       return sqlFunction.getResult();
+    }
+  }
+
+  /**
+   * Adapter for custom user-defined functions (SQL, JavaScript, Cypher).
+   * Bridges FunctionDefinition interface to StatelessFunction interface.
+   * Performs case-insensitive function lookup to match SQL behavior.
+   */
+  private static class CustomFunctionAdapter implements StatelessFunction {
+    private final String libraryName;
+    private final String functionName;
+    private final String fullName;  // "library.function"
+
+    CustomFunctionAdapter(final String libraryName, final String functionName) {
+      this.libraryName = libraryName;
+      this.functionName = functionName;
+      this.fullName = libraryName + "." + functionName;
+    }
+
+    @Override
+    public String getName() {
+      return fullName;
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      // Lazy lookup from schema each time (handles function redefinition)
+      final Database database = context.getDatabase();
+
+      if (!database.getSchema().hasFunctionLibrary(libraryName))
+        throw new CommandExecutionException("Function library not found: " + libraryName);
+
+      // Try exact match first
+      try {
+        final FunctionDefinition function = database.getSchema().getFunction(libraryName, functionName);
+        if (function != null)
+          return function.execute(args);
+      } catch (final IllegalArgumentException e) {
+        // Fall through to case-insensitive search
+      }
+
+      // Case-insensitive search - iterate through all functions in library
+      final var library = database.getSchema().getFunctionLibrary(libraryName);
+      for (final Object funcObj : library.getFunctions()) {
+        if (funcObj instanceof FunctionDefinition) {
+          final FunctionDefinition func = (FunctionDefinition) funcObj;
+          if (func.getName().equalsIgnoreCase(functionName))
+            return func.execute(args);
+        }
+      }
+
+      throw new CommandExecutionException("Function not found: " + fullName);
     }
   }
 
