@@ -125,15 +125,8 @@
                         <version>${jacoco-maven-plugin.version}</version>
                         <executions>
                             <execution>
-                                <id>report-aggregate</id>
-                                <phase>verify</phase>
-                                <goals>
-                                    <goal>report-aggregate</goal>
-                                </goals>
-                            </execution>
-                            <execution>
                                 <id>merge-results</id>
-                                <phase>verify</phase>
+                                <phase>prepare-package</phase>
                                 <goals>
                                     <goal>merge</goal>
                                 </goals>
@@ -149,6 +142,13 @@
                                     </fileSets>
                                     <destFile>${code.coverage.overall.data.folder}/aggregate.exec</destFile>
                                 </configuration>
+                            </execution>
+                            <execution>
+                                <id>report-aggregate</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>report-aggregate</goal>
+                                </goals>
                             </execution>
                         </executions>
                     </plugin>
