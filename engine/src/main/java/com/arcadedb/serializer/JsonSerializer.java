@@ -128,6 +128,14 @@ public class JsonSerializer {
       setMetadata(document, object);
 
       type = document.getType();
+    
+
+      if (result.getMetadata("_projectionName") != null) {
+        for (final Map.Entry<String, Object> entry : document.toMap().entrySet()) {
+          object.put(entry.getKey(), serializeObject(database, entry.getValue()));
+        }
+        return object;
+      }
     }
 
     final StringBuilder propertyTypes = new StringBuilder();
