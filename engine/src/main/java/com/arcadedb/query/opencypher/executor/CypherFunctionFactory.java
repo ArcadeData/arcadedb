@@ -480,6 +480,8 @@ public class CypherFunctionFactory {
       if (args.length != 1) {
         throw new CommandExecutionException("type() requires exactly one argument");
       }
+      if (args[0] == null)
+        return null;
       if (args[0] instanceof Edge)
         return ((Edge) args[0]).getTypeName();
       if (args[0] instanceof DeletedEntityMarker) {
@@ -488,7 +490,9 @@ public class CypherFunctionFactory {
           return relType;
         DeletedEntityMarker.checkNotDeleted(args[0]);
       }
-      return null;
+      // Type validation: type() only works on relationships
+      throw new CommandExecutionException(
+          "TypeError: type() requires a relationship argument, got " + args[0].getClass().getSimpleName());
     }
   }
 

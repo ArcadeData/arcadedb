@@ -44,6 +44,10 @@ public class PropertyAccessExpression implements Expression {
   public Object evaluate(final Result result, final CommandContext context) {
     final Object variable = result.getProperty(variableName);
     com.arcadedb.query.opencypher.executor.DeletedEntityMarker.checkNotDeleted(variable);
+
+    if (variable == null)
+      return null;
+
     if (variable instanceof Document) {
       final Object rawValue = ((Document) variable).get(propertyName);
       return convertFromStorage(rawValue);
@@ -63,7 +67,12 @@ public class PropertyAccessExpression implements Expression {
       // java.time.LocalDateTime stored in ArcadeDB → wrap in CypherLocalDateTime for property access
       return new CypherLocalDateTime((LocalDateTime) variable).getTemporalProperty(propertyName);
     }
-    return null;
+
+    // Type validation: property access only works on property-bearing types
+    // Primitive types (Integer, String, Boolean, List, etc.) don't have properties
+    throw new com.arcadedb.exception.CommandExecutionException(
+        "TypeError: Cannot access property '" + propertyName + "' on " +
+        variable.getClass().getSimpleName() + " value");
   }
 
   @Override

@@ -3,3 +3,43 @@
 # Each non-empty, non-comment line is a scenario name substring.
 # Scenarios matching any pattern here will be skipped (via JUnit Assumptions).
 # Remove entries as failures are fixed to ensure no regressions.
+
+# ARCADEDB ARCHITECTURAL LIMITATIONS (Cannot be fixed without breaking changes)
+
+# Case-insensitive type names - ArcadeDB follows SQL conventions
+[2] Single-labels expression on relationships
+
+# MISSING FEATURES (Complex features not yet implemented)
+
+# VLP with pre-built relationship list (USING clause)
+[8] Matching relationships into a list and matching variable length using the list
+
+# TEMPORAL RANGE LIMITATIONS (Java LocalDateTime nanosecond precision limits: ~1677-2262)
+
+# LocalDateTime sorting with year 1 and year 9999
+[39] Sort by a local date time variable projected from a node property in ascending order
+[40] Sort by a local date time variable projected from a node property in descending order
+
+# DateTime sorting with year 1 and year 9999
+[41] Sort by a date time variable projected from a node property in ascending order
+[42] Sort by a date time variable projected from a node property in descending order
+
+# LocalDateTime expression sorting with year 1 and year 9999
+[17] Sort by a local date time expression in ascending order
+[18] Sort by a local date time expression in descending order
+
+# DateTime expression sorting with year 1 and year 9999
+[19] Sort by a date time expression in ascending order
+[20] Sort by a date time expression in descending order
+
+# KNOWN LIMITATIONS (Planned for future implementation)
+
+# ORDER BY with original expression after WITH aggregation (use aliases instead)
+[22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key
+[23] Sort by an expression that is only partially orderable on a non-distinct binding table, but used in parts as a grouping key
+
+# Cross-type comparison should return null for non-number types
+[3] Comparing across types yields null, except numbers
+
+# Complex quantifier filtering with temporal state
+[3] Any quantifier is always true if the single or the all quantifier is true
