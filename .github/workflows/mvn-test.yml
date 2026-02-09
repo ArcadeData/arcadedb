@@ -485,9 +485,15 @@ jobs:
           name: integration-coverage-data
           path: coverage-data/integration
 
+      - name: Compile all modules (needed for JaCoCo aggregation)
+        run: ./mvnw clean compile test-compile -DskipTests --batch-mode --errors -pl !e2e,!e2e-perf
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Restore coverage exec files to correct locations
         run: |
           # Merge all coverage data from different test runs to their original module locations
+          # NOTE: This must run AFTER compile, because 'clean' deletes all target/ directories
           echo "Restoring coverage data from all test runs..."
           for source_dir in coverage-data/unit coverage-data/slow-unit coverage-data/integration; do
             if [ -d "$source_dir" ]; then
@@ -498,11 +504,6 @@ jobs:
           done
           echo "Coverage exec files restored:"
           find . -name "jacoco*.exec" -type f | sort
-
-      - name: Compile all modules (needed for JaCoCo aggregation)
-        run: ./mvnw clean compile test-compile -DskipTests --batch-mode --errors -pl !e2e,!e2e-perf
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate aggregated coverage report
         run: ./mvnw verify -Pcoverage -pl coverage --batch-mode --errors -DskipTests
