@@ -82,8 +82,18 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
         current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
 
-      if (requiresTransaction() && activeSession == null)
-        atomicTransaction = true;
+      // Warn if autoCommit parameter conflicts with session
+      if (activeSession != null && payload != null && payload.has("autoCommit")) {
+        final boolean explicitAutoCommit = payload.getBoolean("autoCommit");
+        if (explicitAutoCommit) {
+          LogManager.instance().log(this, Level.WARNING,
+            "autoCommit parameter 'true' ignored: session transaction is already active (session ID: %s)",
+            activeSession.id);
+        }
+      }
+
+      final Boolean explicitAutoCommit = extractAutoCommitParameter(payload);
+      atomicTransaction = determineAtomicTransaction(explicitAutoCommit, activeSession);
 
     } else
       database = null;
@@ -168,6 +178,43 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
   protected boolean requiresTransaction() {
     return true;
+  }
+
+  /**
+   * Extracts the autoCommit parameter from the request payload.
+   *
+   * @param payload The request payload (may be null)
+   * @return null if not specified, true to force atomic transaction, false to disable transaction
+   */
+  protected Boolean extractAutoCommitParameter(final JSONObject payload) {
+    if (payload == null)
+      return null;
+
+    if (payload.has("autoCommit"))
+      return payload.getBoolean("autoCommit");
+
+    return null;
+  }
+
+  /**
+   * Determines whether to use an atomic transaction based on the explicit parameter,
+   * session state, and handler's default transaction requirement.
+   *
+   * @param explicitAutoCommit null (auto), true (force), or false (disable)
+   * @param activeSession The active session if any
+   * @return true if atomic transaction should be used
+   */
+  protected boolean determineAtomicTransaction(final Boolean explicitAutoCommit, final HttpSession activeSession) {
+    // If there's an active session, never use atomic transaction (session manages the transaction)
+    if (activeSession != null)
+      return false;
+
+    // Explicit parameter takes precedence
+    if (explicitAutoCommit != null)
+      return explicitAutoCommit;
+
+    // Fall back to handler's default behavior
+    return requiresTransaction();
   }
 
   protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database,
