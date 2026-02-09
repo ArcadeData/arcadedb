@@ -56,7 +56,6 @@ public class CypherFunctionFactory {
 
   private final DefaultSQLFunctionFactory sqlFunctionFactory;
   private final Map<String, String> cypherToSqlMapping;
-  private final Map<String, CustomFunctionAdapter> customFunctionCache = new java.util.concurrent.ConcurrentHashMap<>();
 
   public CypherFunctionFactory(final DefaultSQLFunctionFactory sqlFunctionFactory) {
     this.sqlFunctionFactory = sqlFunctionFactory;
@@ -132,12 +131,8 @@ public class CypherFunctionFactory {
       return true;
     }
 
-    // Check custom functions (library.function pattern)
-    if (functionName.contains(".")) {
-      // Can't check schema here (no Database access), so check cache
-      if (customFunctionCache.containsKey(functionName))
-        return true;
-    }
+    // Note: Custom functions (library.function pattern) cannot be checked here
+    // because we don't have database access. They will be validated during getFunctionExecutor().
 
     // Check if we have a mapping to SQL
     if (cypherToSqlMapping.containsKey(functionName)) {
@@ -207,11 +202,6 @@ public class CypherFunctionFactory {
   }
 
   private StatelessFunction getOrCreateCustomFunctionAdapter(final String functionName) {
-    // Check cache first
-    CustomFunctionAdapter cached = customFunctionCache.get(functionName);
-    if (cached != null)
-      return cached;
-
     // Parse library.function
     final int dotIndex = functionName.lastIndexOf('.');
     if (dotIndex <= 0 || dotIndex >= functionName.length() - 1)
@@ -220,11 +210,9 @@ public class CypherFunctionFactory {
     final String libraryName = functionName.substring(0, dotIndex);
     final String simpleName = functionName.substring(dotIndex + 1);
 
-    // Create adapter (it will do lazy schema lookup on execute)
-    final CustomFunctionAdapter adapter = new CustomFunctionAdapter(libraryName, simpleName);
-    customFunctionCache.put(functionName, adapter);
-
-    return adapter;
+    // Create adapter (it will do lazy schema lookup on execute each time)
+    // Not cached to avoid stale references when databases are dropped/recreated
+    return new CustomFunctionAdapter(libraryName, simpleName);
   }
 
   /**
@@ -2067,7 +2055,7 @@ public class CypherFunctionFactory {
       final Database database = context.getDatabase();
 
       if (!database.getSchema().hasFunctionLibrary(libraryName))
-        throw new CommandExecutionException("Function library not found: " + libraryName);
+        throw new CommandExecutionException("Unknown function: " + fullName);
 
       // Try exact match first
       try {
@@ -2088,7 +2076,7 @@ public class CypherFunctionFactory {
         }
       }
 
-      throw new CommandExecutionException("Function not found: " + fullName);
+      throw new CommandExecutionException("Unknown function: " + fullName);
     }
   }
 
