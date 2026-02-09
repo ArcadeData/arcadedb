@@ -94,12 +94,12 @@ public class JsonSerializer {
       Object value = documentEntry.getValue();
 
       switch (value) {
-      case null -> value = JSONObject.NULL;
-      case Document document1 -> value = serializeDocument(document1);
-      case Collection<?> collection -> serializeCollection(database, collection, null);
-      case Map map -> value = serializeMap(database, (Map<Object, Object>) map);
-      default -> {
-      }
+        case null -> value = JSONObject.NULL;
+        case Document document1 -> value = serializeDocument(document1);
+        case Collection<?> collection -> serializeCollection(database, collection, null);
+        case Map map -> value = serializeMap(database, (Map<Object, Object>) map);
+        default -> {
+        }
       }
 
       value = convertNonNumbers(value);
@@ -126,7 +126,6 @@ public class JsonSerializer {
       setMetadata(document, object);
 
       type = document.getType();
-    
 
       if (result.getMetadata("_projectionName") != null) {
         for (final Map.Entry<String, Object> entry : document.toMap().entrySet()) {
@@ -168,7 +167,7 @@ public class JsonSerializer {
    * This method was moved from the deprecated JSONSerializer class.
    */
   public JSONObject map2json(final Map<String, Object> map, final DocumentType type, final boolean includeMetadata,
-      final String... includeProperties) {
+                             final String... includeProperties) {
     final JSONObject json = new JSONObject();
 
     final Set<String> includePropertiesSet;
@@ -205,7 +204,8 @@ public class JsonSerializer {
 
       if (value instanceof Number number && !Float.isFinite(number.floatValue())) {
         LogManager.instance()
-            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion",
+            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the " +
+                    "conversion",
                 propertyName);
         continue;
       }
@@ -233,7 +233,8 @@ public class JsonSerializer {
     return map;
   }
 
-  private Object serializeCollection(final Database database, final Collection<?> value, Class<? extends Document> entryType) {
+  private Object serializeCollection(final Database database, final Collection<?> value,
+                                     Class<? extends Document> entryType) {
     Object result = value;
     if (useCollectionSize) {
       result = value.size();
@@ -253,7 +254,8 @@ public class JsonSerializer {
     return result;
   }
 
-  private Object serializeIterator(final Database database, final Iterator<?> value, final Class<? extends Document> entryType) {
+  private Object serializeIterator(final Database database, final Iterator<?> value,
+                                   final Class<? extends Document> entryType) {
     final List<Object> list = new ArrayList<>();
     while (value.hasNext())
       list.add(value.next());
@@ -324,41 +326,41 @@ public class JsonSerializer {
 
   private void setMetadata(final Document document, final JSONObject object) {
     switch (document) {
-    case DetachedDocument doc -> {
-      final DocumentType docType = doc.getType();
-      if (docType instanceof VertexType)
+      case DetachedDocument doc -> {
+        final DocumentType docType = doc.getType();
+        if (docType instanceof VertexType)
+          object.put(CAT_PROPERTY, "v");
+        else if (docType instanceof EdgeType)
+          object.put(CAT_PROPERTY, "e");
+        else
+          object.put(CAT_PROPERTY, "d");
+      }
+      case Vertex vertex -> {
         object.put(CAT_PROPERTY, "v");
-      else if (docType instanceof EdgeType)
-        object.put(CAT_PROPERTY, "e");
-      else
-        object.put(CAT_PROPERTY, "d");
-    }
-    case Vertex vertex -> {
-      object.put(CAT_PROPERTY, "v");
-      if (includeVertexEdges) {
-        if (useVertexEdgeSize) {
-          object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT, null));
-          object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN, null));
+        if (includeVertexEdges) {
+          if (useVertexEdgeSize) {
+            object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT, null));
+            object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN, null));
 
-        } else {
-          final JSONArray outEdges = new JSONArray();
-          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
-            outEdges.put(e.getIdentity().toString());
-          object.put(OUT_PROPERTY, outEdges);
+          } else {
+            final JSONArray outEdges = new JSONArray();
+            for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+              outEdges.put(e.getIdentity().toString());
+            object.put(OUT_PROPERTY, outEdges);
 
-          final JSONArray inEdges = new JSONArray();
-          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
-            inEdges.put(e.getIdentity().toString());
-          object.put(IN_PROPERTY, inEdges);
+            final JSONArray inEdges = new JSONArray();
+            for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+              inEdges.put(e.getIdentity().toString());
+            object.put(IN_PROPERTY, inEdges);
+          }
         }
       }
-    }
-    case Edge edge -> {
-      object.put(CAT_PROPERTY, "e");
-      object.put(IN_PROPERTY, edge.getIn());
-      object.put(OUT_PROPERTY, edge.getOut());
-    }
-    case null, default -> object.put(CAT_PROPERTY, "d");
+      case Edge edge -> {
+        object.put(CAT_PROPERTY, "e");
+        object.put(IN_PROPERTY, edge.getIn());
+        object.put(OUT_PROPERTY, edge.getOut());
+      }
+      case null, default -> object.put(CAT_PROPERTY, "d");
     }
 
   }
@@ -378,7 +380,8 @@ public class JsonSerializer {
     } else if (value instanceof Date date)
       value = date.getTime();
     else if (value instanceof Temporal)
-      value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) : ChronoUnit.MILLIS);
+      value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) :
+          ChronoUnit.MILLIS);
     else if (value instanceof Map) {
       final Map<String, Object> m = (Map<String, Object>) value;
       final JSONObject map = new JSONObject();
