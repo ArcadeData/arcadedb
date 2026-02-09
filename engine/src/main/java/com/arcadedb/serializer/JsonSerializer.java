@@ -128,7 +128,6 @@ public class JsonSerializer {
       setMetadata(document, object);
 
       type = document.getType();
-    
 
       if (result.getMetadata("_projectionName") != null) {
         for (final Map.Entry<String, Object> entry : document.toMap().entrySet()) {
@@ -170,7 +169,7 @@ public class JsonSerializer {
    * This method was moved from the deprecated JSONSerializer class.
    */
   public JSONObject map2json(final Map<String, Object> map, final DocumentType type, final boolean includeMetadata,
-      final String... includeProperties) {
+                             final String... includeProperties) {
     final JSONObject json = new JSONObject();
 
     final Set<String> includePropertiesSet;
@@ -207,7 +206,8 @@ public class JsonSerializer {
 
       if (value instanceof Number number && !Float.isFinite(number.floatValue())) {
         LogManager.instance()
-            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion",
+            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the " +
+                    "conversion",
                 propertyName);
         continue;
       }
@@ -235,7 +235,8 @@ public class JsonSerializer {
     return map;
   }
 
-  private Object serializeCollection(final Database database, final Collection<?> value, Class<? extends Document> entryType) {
+  private Object serializeCollection(final Database database, final Collection<?> value,
+                                     Class<? extends Document> entryType) {
     Object result = value;
     if (useCollectionSize) {
       result = value.size();
@@ -255,7 +256,8 @@ public class JsonSerializer {
     return result;
   }
 
-  private Object serializeIterator(final Database database, final Iterator<?> value, final Class<? extends Document> entryType) {
+  private Object serializeIterator(final Database database, final Iterator<?> value,
+                                   final Class<? extends Document> entryType) {
     final List<Object> list = new ArrayList<>();
     while (value.hasNext())
       list.add(value.next());
@@ -377,7 +379,8 @@ public class JsonSerializer {
     } else if (value instanceof Date date)
       value = date.getTime();
     else if (value instanceof Temporal)
-      value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) : ChronoUnit.MILLIS);
+      value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) :
+          ChronoUnit.MILLIS);
     else if (value instanceof Map) {
       final Map<String, Object> m = (Map<String, Object>) value;
       final JSONObject map = new JSONObject();
