@@ -107,13 +107,14 @@ jobs:
           list-tests: "failed"
           reporter: java-junit
 
-      - name: Upload unit test coverage reports
+      - name: Upload unit test coverage data
         if: success() || failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: unit-coverage-reports
+          name: unit-coverage-data
           path: |
-            **/jacoco*.xml
+            **/target/jacoco.exec
+            **/target/jacoco-it.exec
           retention-days: 1
 
   slow-unit-tests:
@@ -150,13 +151,14 @@ jobs:
           list-tests: "failed"
           reporter: java-junit
 
-      - name: Upload unit test coverage reports
+      - name: Upload slow unit test coverage data
         if: success() || failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: slow-unit-coverage-reports
+          name: slow-unit-coverage-data
           path: |
-            **/jacoco*.xml
+            **/target/jacoco.exec
+            **/target/jacoco-it.exec
           retention-days: 1
 
   integration-tests:
@@ -193,13 +195,14 @@ jobs:
           list-tests: "failed"
           reporter: java-junit
 
-      - name: Upload integration test coverage reports
+      - name: Upload integration test coverage data
         if: success() || failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: integration-coverage-reports
+          name: integration-coverage-data
           path: |
-            **/jacoco*.xml
+            **/target/jacoco.exec
+            **/target/jacoco-it.exec
           retention-days: 1
 
   builder-tests:
@@ -451,28 +454,69 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Download unit test coverage reports
+      - name: Set up JDK 21
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      - name: Restore Maven artifacts
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.m2/repository
+          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Download unit test coverage data
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: unit-coverage-reports
-          path: unit-coverage
+          name: unit-coverage-data
+          path: coverage-data/unit
 
-      - name: Download unit test coverage reports
+      - name: Download slow unit test coverage data
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: slow-unit-coverage-reports
-          path: slow-unit-coverage
+          name: slow-unit-coverage-data
+          path: coverage-data/slow-unit
 
-      - name: Download integration test coverage reports
+      - name: Download integration test coverage data
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: integration-coverage-reports
-          path: integration-coverage
+          name: integration-coverage-data
+          path: coverage-data/integration
 
-      - name: Get coverage files
-        id: coverage-files-generator
+      - name: Restore coverage exec files to correct locations
+        run: |
+          # Merge all coverage data from different test runs to their original module locations
+          echo "Restoring coverage data from all test runs..."
+          for source_dir in coverage-data/unit coverage-data/slow-unit coverage-data/integration; do
+            if [ -d "$source_dir" ]; then
+              echo "Processing: $source_dir"
+              # Use rsync to merge, preserving directory structure
+              rsync -av "$source_dir/" ./ --include="*/" --include="jacoco*.exec" --exclude="*"
+            fi
+          done
+          echo "Coverage exec files restored:"
+          find . -name "jacoco*.exec" -type f | sort
+
+      - name: Generate aggregated coverage report
+        run: ./mvnw verify -Pcoverage -pl coverage --batch-mode --errors -DskipTests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload aggregated coverage report artifact
         if: success() || failure()
-        run: echo "COVERAGE_FILES=$(find . -path **/jacoco*.xml -printf '%p,')" >> "$GITHUB_OUTPUT"
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: aggregated-coverage-report
+          path: |
+            coverage/target/site/jacoco-aggregate/
+          retention-days: 7
+
+      - name: Get aggregated coverage file
+        id: coverage-file
+        if: success() || failure()
+        run: echo "COVERAGE_FILE=coverage/target/site/jacoco-aggregate/jacoco.xml" >> "$GITHUB_OUTPUT"
 
       - name: Codacy coverage reporter
         uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
@@ -480,7 +524,7 @@ jobs:
         with:
           language: java
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
+          coverage-reports: ${{ steps.coverage-file.outputs.COVERAGE_FILE }}
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
@@ -488,7 +532,7 @@ jobs:
         with:
           fail_ci_if_error: false
           disable_search: true
-          files:  ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
+          files: ${{ steps.coverage-file.outputs.COVERAGE_FILE }}
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: ArcadeData/arcadedb
           verbose: true
