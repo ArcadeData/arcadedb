@@ -46,11 +46,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ConcurrentMultiPageRecordReadTest extends TestHelper {
 
-  private static final int NUM_RECORDS = 50;
+  private static final int NUM_RECORDS = 5000;
   private static final int EMBEDDING_DIM = 3072; // Forces multi-page records
-  private static final int WRITER_THREADS = 4;
-  private static final int READER_THREADS = 8;
-  private static final int OPERATIONS_PER_THREAD = 20;
+  private static final int WRITER_THREADS = 40;
+  private static final int READER_THREADS = 80;
+  private static final int OPERATIONS_PER_THREAD = 2000;
 
   private final Random random = new Random(42);
   private final AtomicInteger readErrors = new AtomicInteger(0);
