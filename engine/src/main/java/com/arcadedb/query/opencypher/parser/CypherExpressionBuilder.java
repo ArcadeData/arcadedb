@@ -613,6 +613,11 @@ class CypherExpressionBuilder {
     final Expression logicalExpr = tryParseLogicalExpression(ctx);
     if (logicalExpr != null)
       return logicalExpr;
+    // No logical operators — delegate to inner expression10 to walk down the grammar
+    // hierarchy properly (avoids recursive search that finds arithmetic before list predicates)
+    final List<Cypher25Parser.Expression10Context> expr10List = ctx.expression10();
+    if (expr10List.size() == 1)
+      return parseExpressionFromExpression10(expr10List.get(0));
     // Fallback: parse as text
     return parseExpressionFromText(ctx);
   }

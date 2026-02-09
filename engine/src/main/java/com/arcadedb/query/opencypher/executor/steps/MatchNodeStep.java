@@ -25,8 +25,12 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
+import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -146,7 +150,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 final Object boundValue = currentInputResult.getProperty(variable);
                 if (boundValue instanceof Vertex) {
                   final Vertex boundVertex = (Vertex) boundValue;
-                  if (matchesAllLabels(boundVertex) && matchesProperties(boundVertex))
+                  if (matchesAllLabelsBound(boundVertex) && matchesProperties(boundVertex, currentInputResult))
                     iterator = Collections.singletonList((Identifiable) boundVertex).iterator();
                   else
                     iterator = Collections.<Identifiable>emptyList().iterator();
@@ -167,7 +171,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 final Vertex vertex = (Vertex) record;
 
                 // Apply label and property filters
-                if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
+                if (!matchesAllLabels(vertex) || !matchesProperties(vertex, currentInputResult))
                   continue;
 
                 // Copy input result and add our vertex
@@ -448,7 +452,25 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return true;
   }
 
+  /**
+   * Checks all labels including single labels for bound variables.
+   * Unlike matchesAllLabels, this doesn't skip the check for single-label patterns
+   * because bound variables bypass the type-filtered iterator.
+   */
+  private boolean matchesAllLabelsBound(final Vertex vertex) {
+    if (!pattern.hasLabels())
+      return true;
+    for (final String label : pattern.getLabels())
+      if (!Labels.hasLabel(vertex, label))
+        return false;
+    return true;
+  }
+
   private boolean matchesProperties(final Vertex vertex) {
+    return matchesProperties(vertex, null);
+  }
+
+  private boolean matchesProperties(final Vertex vertex, final Result currentResult) {
     if (!pattern.hasProperties()) {
       return true; // No property filters
     }
@@ -457,6 +479,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
     for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
       final String key = entry.getKey();
       Object expectedValue = entry.getValue();
+
+      // Evaluate Expression-based property values (e.g., event.year)
+      if (expectedValue instanceof Expression && currentResult != null) {
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
+        expectedValue = evaluator.evaluate((Expression) expectedValue, currentResult, context);
+      }
 
       // Resolve parameter references (e.g., $id -> actual value from context)
       if (expectedValue instanceof String) {
@@ -482,9 +511,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       final Object actualValue = vertex.get(key);
 
-      // Compare values
-      if (actualValue == null || !actualValue.equals(expectedValue)) {
+      // Compare values with numeric coercion
+      if (actualValue == null)
         return false;
+      if (!actualValue.equals(expectedValue)) {
+        // Numeric type-safe comparison (Integer vs Long)
+        if (actualValue instanceof Number && expectedValue instanceof Number) {
+          if (((Number) actualValue).longValue() != ((Number) expectedValue).longValue())
+            return false;
+        } else
+          return false;
       }
     }
 

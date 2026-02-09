@@ -188,8 +188,20 @@ public class WithStep extends AbstractExecutionStep {
             continue;
           }
 
-          // Add to buffer
-          buffer.add(projectedResult);
+          // When ORDER BY is present, output a merged scope so ORDER BY can reference
+          // variables from the incoming scope that aren't in the projection.
+          // E.g., WITH a, expr AS mod ORDER BY sum — 'sum' is from the incoming scope.
+          // A downstream step will strip back to just the projected variables.
+          if (skipLimitDeferred) {
+            final ResultInternal merged = new ResultInternal();
+            for (final String prop : inputResult.getPropertyNames())
+              merged.setProperty(prop, inputResult.getProperty(prop));
+            for (final String prop : projectedResult.getPropertyNames())
+              merged.setProperty(prop, projectedResult.getProperty(prop));
+            buffer.add(merged);
+          } else {
+            buffer.add(projectedResult);
+          }
           returned++;
         }
 

@@ -172,6 +172,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     for (final Cypher25Parser.SetItemContext itemCtx : ctx.setItem()) {
       if (itemCtx instanceof Cypher25Parser.SetPropContext propCtx) {
+        // Pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values
+        if (findPatternExpressionRecursive(propCtx.expression()) != null)
+          throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final String propExpr = propCtx.propertyExpression().getText();
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
         if (propExpr.contains(".")) {
@@ -364,6 +367,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
     } else {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
+        // Pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections
+        if (findPatternExpressionRecursive(itemCtx.expression()) != null)
+          throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in WITH projections");
         final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
         final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
         final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
@@ -452,6 +458,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
     } else {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
+        // Pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections
+        if (findPatternExpressionRecursive(itemCtx.expression()) != null)
+          throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in RETURN projections");
         final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
         final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
         final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
@@ -745,6 +754,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // This handles cases like: (p.age < 26 OR p.age > 35)
     final Cypher25Parser.ParenthesizedExpressionContext parenExpr = findParenthesizedExpressionRecursive(expr6);
     if (parenExpr != null && compCtx == null) {
+      // Check if the parenthesized expression contains just a bare variable (e.g., WHERE (n)).
+      // A single-node pattern without relationships is invalid as a boolean predicate.
+      final String innerText = parenExpr.expression().getText().trim();
+      if (innerText.matches("^[a-zA-Z_`][a-zA-Z0-9_`]*$")) {
+        final NodePattern nodePattern = new NodePattern(innerText, null, null);
+        final PathPattern singleNodePath = new PathPattern(List.of(nodePattern), List.of(), null);
+        return new PatternPredicateExpression(singleNodePath, false);
+      }
       // Recursively parse the inner expression
       return parseBooleanExpression(parenExpr.expression());
     }

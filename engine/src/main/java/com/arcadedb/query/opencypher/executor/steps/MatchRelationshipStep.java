@@ -58,6 +58,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private final String pathVariable;
   private final NodePattern targetNodePattern;
   private final Set<String> boundVariableNames;
+  private final Set<String> previousStepVariables; // Snapshot for uniqueness scoping
 
   /**
    * Creates a match relationship step.
@@ -103,6 +104,26 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
       final Set<String> boundVariableNames, final CommandContext context) {
+    this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, targetNodePattern,
+        boundVariableNames, null, context);
+  }
+
+  /**
+   * Creates a match relationship step with separate uniqueness scoping.
+   *
+   * @param sourceVariable       variable name for source vertex
+   * @param relationshipVariable variable name for relationship (can be null)
+   * @param targetVariable       variable name for target vertex
+   * @param pattern              relationship pattern to match
+   * @param pathVariable         path variable name, can be null
+   * @param targetNodePattern    target node pattern for label filtering, can be null
+   * @param boundVariableNames   set of variable names already bound (used for identity checking)
+   * @param previousStepVariables snapshot of variables from previous steps only (used for uniqueness scoping)
+   * @param context              command context
+   */
+  public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
+      final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
+      final Set<String> boundVariableNames, final Set<String> previousStepVariables, final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
@@ -111,6 +132,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     this.pathVariable = pathVariable;
     this.targetNodePattern = targetNodePattern;
     this.boundVariableNames = boundVariableNames;
+    this.previousStepVariables = previousStepVariables;
   }
 
   @Override
@@ -182,6 +204,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             if (targetNodePattern != null && targetNodePattern.hasLabels()) {
               if (!matchesTargetLabel(targetVertex)) {
                 continue;
+              }
+            }
+
+            // If the relationship variable is already bound from a previous step,
+            // verify the traversed edge matches the bound value (identity check)
+            if (relationshipVariable != null && boundVariableNames != null
+                && boundVariableNames.contains(relationshipVariable)) {
+              final Object boundRel = lastResult.getProperty(relationshipVariable);
+              if (boundRel instanceof Edge) {
+                if (!((Edge) boundRel).getIdentity().equals(edge.getIdentity()))
+                  continue;
               }
             }
 
@@ -326,6 +359,14 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private boolean isEdgeAlreadyUsed(final Result result, final Edge edge) {
     final RID edgeRid = edge.getIdentity();
     for (final String prop : result.getPropertyNames()) {
+      // Skip the current relationship variable: it holds a bound value from a previous
+      // step that we're about to overwrite, not a different relationship in the pattern
+      if (prop.equals(relationshipVariable))
+        continue;
+      // Skip variables from previous MATCH clauses (via WITH/previous MATCHes): Cypher's
+      // relationship uniqueness only applies within a single MATCH clause
+      if (previousStepVariables != null && previousStepVariables.contains(prop))
+        continue;
       final Object val = result.getProperty(prop);
       if (val instanceof Edge && ((Edge) val).getIdentity().equals(edgeRid))
         return true;

@@ -132,10 +132,23 @@ public class PropertyAccessExpression implements Expression {
         }
       }
 
-      // Time strings: HH:MM:SS[.nanos][+/-offset] or HH:MM:SS[.nanos]Z
-      if (str.length() >= 8 && str.charAt(2) == ':' && str.charAt(5) == ':') {
-        // Check if it has a timezone offset
-        final boolean hasOffset = str.contains("+") || str.contains("-") || str.endsWith("Z");
+      // Time strings: HH:MM:SS[.nanos][+/-offset] or HH:MM[+/-offset] or HH:MM:SS[.nanos]Z
+      // Handles both full (10:35:00-08:00) and short (10:35-08:00) time formats
+      if (str.length() >= 5 && str.charAt(2) == ':' && Character.isDigit(str.charAt(0))
+          && Character.isDigit(str.charAt(3))) {
+        final boolean hasSeconds = str.length() >= 8 && str.charAt(5) == ':';
+        // Check if it has a timezone offset (+ or - after the time part, or trailing Z)
+        final int searchFrom = hasSeconds ? 8 : 5;
+        boolean hasOffset = str.endsWith("Z");
+        if (!hasOffset) {
+          for (int i = searchFrom; i < str.length(); i++) {
+            final char c = str.charAt(i);
+            if (c == '+' || c == '-') {
+              hasOffset = true;
+              break;
+            }
+          }
+        }
         if (hasOffset) {
           try {
             return CypherTime.parse(str);

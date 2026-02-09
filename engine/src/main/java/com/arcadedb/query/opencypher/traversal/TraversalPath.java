@@ -58,6 +58,24 @@ public class TraversalPath {
   }
 
   /**
+   * Creates a path by extending an existing path with another path's edges and vertices.
+   * The extension path's start vertex is assumed to be the same as this path's end vertex,
+   * so it is not duplicated.
+   *
+   * @param base      base path to extend
+   * @param extension path to append (its first vertex is skipped since it equals base's last vertex)
+   */
+  public TraversalPath(final TraversalPath base, final TraversalPath extension) {
+    this.vertices = new ArrayList<>(base.vertices);
+    this.edges = new ArrayList<>(base.edges);
+    // Append all edges from the extension
+    this.edges.addAll(extension.edges);
+    // Append vertices from the extension, skipping the first (it's the same as our last)
+    for (int i = 1; i < extension.vertices.size(); i++)
+      this.vertices.add(extension.vertices.get(i));
+  }
+
+  /**
    * Returns the list of vertices in this path.
    *
    * @return unmodifiable list of vertices
