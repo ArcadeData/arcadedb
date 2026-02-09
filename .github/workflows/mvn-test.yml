@@ -499,6 +499,11 @@ jobs:
           echo "Coverage exec files restored:"
           find . -name "jacoco*.exec" -type f | sort
 
+      - name: Compile all modules (needed for JaCoCo aggregation)
+        run: ./mvnw clean compile test-compile -DskipTests --batch-mode --errors -pl !e2e,!e2e-perf
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Generate aggregated coverage report
         run: ./mvnw verify -Pcoverage -pl coverage --batch-mode --errors -DskipTests
         env:
