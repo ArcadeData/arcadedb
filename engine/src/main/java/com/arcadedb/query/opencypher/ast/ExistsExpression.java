@@ -53,8 +53,12 @@ public class ExistsExpression implements Expression {
 
       if (result != null) {
         final List<String> whereConditions = new ArrayList<>();
+        final List<String> matchPatterns = new ArrayList<>();
 
         for (final String propertyName : result.getPropertyNames()) {
+          // Skip internal variables (space-prefixed)
+          if (propertyName.startsWith(" "))
+            continue;
           final Object value = result.getProperty(propertyName);
           params.put(propertyName, value);
 
@@ -62,10 +66,18 @@ public class ExistsExpression implements Expression {
             final String rid = ((Identifiable) value).getIdentity().toString();
             final String paramName = "__exists_" + propertyName;
             params.put(paramName, rid);
-            whereConditions.add("id(" + propertyName + ") = $" + paramName);
+
+            // Check if this variable appears in the subquery
+            if (variableUsedInSubquery(modifiedSubquery, propertyName)) {
+              whereConditions.add("id(" + propertyName + ") = $" + paramName);
+              // Add as extra MATCH pattern so the variable is in scope
+              matchPatterns.add("(" + propertyName + ")");
+            }
           }
         }
 
+        if (!matchPatterns.isEmpty())
+          modifiedSubquery = injectMatchPatterns(modifiedSubquery, matchPatterns);
         if (!whereConditions.isEmpty()) {
           final String conditionsStr = String.join(" AND ", whereConditions);
           modifiedSubquery = injectWhereConditions(modifiedSubquery, conditionsStr);
@@ -82,44 +94,100 @@ public class ExistsExpression implements Expression {
   }
 
   /**
+   * Checks if a variable name is used anywhere in the subquery text.
+   */
+  private static boolean variableUsedInSubquery(final String subquery, final String varName) {
+    final int idx = subquery.indexOf(varName);
+    if (idx < 0)
+      return false;
+    // Verify it's a word boundary (not part of a longer identifier)
+    if (idx > 0 && Character.isLetterOrDigit(subquery.charAt(idx - 1)))
+      return false;
+    final int end = idx + varName.length();
+    if (end < subquery.length() && Character.isLetterOrDigit(subquery.charAt(end)))
+      return false;
+    return true;
+  }
+
+  /**
+   * Injects additional MATCH patterns into the subquery.
+   * If the subquery starts with MATCH, adds patterns as comma-separated items.
+   * If it's a simple pattern (no MATCH keyword), wraps it with MATCH.
+   */
+  private static String injectMatchPatterns(final String subquery, final List<String> patterns) {
+    final String trimmed = subquery.trim();
+    final String upper = trimmed.toUpperCase();
+
+    if (upper.startsWith("MATCH")) {
+      // Find the end of "MATCH " and insert patterns with commas
+      int pos = 5;
+      while (pos < trimmed.length() && Character.isWhitespace(trimmed.charAt(pos)))
+        pos++;
+      return trimmed.substring(0, pos) + String.join(", ", patterns) + ", " + trimmed.substring(pos);
+    }
+
+    // Simple pattern subquery (no MATCH keyword) — add patterns after wrapping
+    return "MATCH " + String.join(", ", patterns) + " WHERE " + trimmed;
+  }
+
+  /**
    * Inject WHERE conditions after the first MATCH clause's pattern, before any subsequent clause.
    * Handles subqueries like:
    * - MATCH (n)-->() RETURN true
    * - MATCH (n)-->(m) WITH n, count(*) AS c WHERE c = 3 RETURN true
    * - MATCH (n) WHERE n.prop > 5 RETURN true
+   * Respects brace nesting (e.g., nested exists { ... } blocks).
    */
   private static String injectWhereConditions(final String query, final String conditions) {
-    // Find the first clause keyword after the initial MATCH pattern
-    final java.util.regex.Pattern clausePattern = java.util.regex.Pattern.compile(
-        "\\b(WITH|RETURN|ORDER\\s+BY|SKIP|LIMIT|UNION)\\b",
-        java.util.regex.Pattern.CASE_INSENSITIVE);
-
-    // Skip past the initial "MATCH " keyword
     final String upper = query.toUpperCase().trim();
     final int matchKeywordEnd = upper.startsWith("MATCH") ? 5 : 0;
 
-    final java.util.regex.Matcher clauseMatcher = clausePattern.matcher(query);
-    if (clauseMatcher.find(matchKeywordEnd)) {
-      final int clauseStart = clauseMatcher.start();
-      final String beforeClause = query.substring(0, clauseStart);
+    // Find the first top-level clause keyword (WHERE, WITH, RETURN, etc.) at brace depth 0
+    int clauseStart = -1;
+    int topWherePos = -1;
+    int braceDepth = 0;
 
-      // Check if there's a WHERE in the MATCH clause (before the first WITH/RETURN)
-      final int wherePos = beforeClause.toUpperCase().lastIndexOf("WHERE");
-      if (wherePos >= 0) {
-        // Append to existing MATCH WHERE: insert conditions after "WHERE "
-        int insertPos = wherePos + 5;
-        while (insertPos < beforeClause.length() && Character.isWhitespace(beforeClause.charAt(insertPos)))
+    for (int i = matchKeywordEnd; i < query.length(); i++) {
+      final char c = query.charAt(i);
+      if (c == '{') {
+        braceDepth++;
+        continue;
+      }
+      if (c == '}') {
+        braceDepth--;
+        continue;
+      }
+      if (braceDepth > 0)
+        continue;
+
+      // Only check keywords at the top level (braceDepth == 0)
+      if (matchesKeywordAt(upper, i, "WHERE") && topWherePos < 0)
+        topWherePos = i;
+      else if (clauseStart < 0 && (matchesKeywordAt(upper, i, "WITH") || matchesKeywordAt(upper, i, "RETURN")
+          || matchesKeywordAt(upper, i, "ORDER") || matchesKeywordAt(upper, i, "SKIP")
+          || matchesKeywordAt(upper, i, "LIMIT") || matchesKeywordAt(upper, i, "UNION")))
+        clauseStart = i;
+
+      // Stop once we find a non-WHERE clause keyword
+      if (clauseStart >= 0)
+        break;
+    }
+
+    if (clauseStart >= 0) {
+      if (topWherePos >= 0 && topWherePos < clauseStart) {
+        // Existing WHERE before the clause — append to it
+        int insertPos = topWherePos + 5;
+        while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
           insertPos++;
         return query.substring(0, insertPos) + conditions + " AND " + query.substring(insertPos);
       }
-      // Insert new WHERE clause before the next clause keyword
+      // Insert new WHERE before the clause keyword
       return query.substring(0, clauseStart) + "WHERE " + conditions + " " + query.substring(clauseStart);
     }
 
-    // No subsequent clause found — check for existing WHERE
-    final int wherePos = query.toUpperCase().indexOf("WHERE");
-    if (wherePos >= 0) {
-      int insertPos = wherePos + 5;
+    // No subsequent clause — check for top-level WHERE
+    if (topWherePos >= 0) {
+      int insertPos = topWherePos + 5;
       while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
         insertPos++;
       return query.substring(0, insertPos) + conditions + " AND " + query.substring(insertPos);
@@ -127,6 +195,25 @@ public class ExistsExpression implements Expression {
 
     // Append WHERE at end
     return query + " WHERE " + conditions;
+  }
+
+  /**
+   * Checks if the uppercase query string has a keyword at the given position,
+   * ensuring it's a word boundary (not part of a longer identifier).
+   */
+  private static boolean matchesKeywordAt(final String upper, final int pos, final String keyword) {
+    if (pos + keyword.length() > upper.length())
+      return false;
+    if (!upper.startsWith(keyword, pos))
+      return false;
+    // Check word boundary before
+    if (pos > 0 && Character.isLetterOrDigit(upper.charAt(pos - 1)))
+      return false;
+    // Check word boundary after
+    final int end = pos + keyword.length();
+    if (end < upper.length() && Character.isLetterOrDigit(upper.charAt(end)))
+      return false;
+    return true;
   }
 
   @Override

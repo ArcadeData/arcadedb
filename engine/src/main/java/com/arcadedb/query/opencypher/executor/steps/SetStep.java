@@ -149,8 +149,10 @@ public class SetStep extends AbstractExecutionStep {
     final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
     if (value == null)
       mutableDoc.remove(item.getProperty());
-    else
+    else {
+      validatePropertyValue(value);
       mutableDoc.set(item.getProperty(), value);
+    }
     mutableDoc.save();
     ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
   }
@@ -246,6 +248,18 @@ public class SetStep extends AbstractExecutionStep {
     vertex.delete();
 
     ((ResultInternal) result).setProperty(item.getVariable(), newVertex);
+  }
+
+  private void validatePropertyValue(final Object value) {
+    if (value instanceof List) {
+      for (final Object element : (List<?>) value) {
+        if (element instanceof Map)
+          throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
+        if (element instanceof List)
+          validatePropertyValue(element);
+      }
+    } else if (value instanceof Map)
+      throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
   }
 
   @Override

@@ -160,15 +160,26 @@ public class DeleteStep extends AbstractExecutionStep {
       if (!wasInTransaction)
         context.getDatabase().begin();
 
+      // Collect all delete targets first, then delete edges before vertices
+      // to avoid "DeleteConnectedNode" errors when multiple targets share nodes
+      final List<Object> allEdges = new ArrayList<>();
+      final List<Object> allOther = new ArrayList<>();
+
       for (final String variable : deleteClause.getVariables()) {
         final Object obj = resolveDeleteTarget(variable, result);
         if (obj == null)
           continue;
-        deleteObject(obj, new HashSet<>());
-        // Track simple variable names (not chained access) as deleted
+        collectDeleteTargets(obj, allEdges, allOther);
         if (!variable.contains(".") && !variable.contains("["))
           deletedVars.add(variable);
       }
+
+      // Delete all edges first, then all other objects (vertices, documents)
+      final Set<Object> deleted = new HashSet<>();
+      for (final Object edge : allEdges)
+        deleteObject(edge, deleted);
+      for (final Object other : allOther)
+        deleteObject(other, deleted);
 
       if (!wasInTransaction)
         context.getDatabase().commit();
@@ -177,6 +188,26 @@ public class DeleteStep extends AbstractExecutionStep {
         context.getDatabase().rollback();
       throw e;
     }
+  }
+
+  private void collectDeleteTargets(final Object obj, final List<Object> edges, final List<Object> other) {
+    if (obj == null)
+      return;
+    if (obj instanceof Edge)
+      edges.add(obj);
+    else if (obj instanceof TraversalPath path) {
+      for (final Edge e : path.getEdges())
+        edges.add(e);
+      for (final Vertex v : path.getVertices())
+        other.add(v);
+    } else if (obj instanceof List) {
+      for (final Object elem : (List<?>) obj)
+        collectDeleteTargets(elem, edges, other);
+    } else if (obj instanceof Map) {
+      for (final Object value : ((Map<?, ?>) obj).values())
+        collectDeleteTargets(value, edges, other);
+    } else
+      other.add(obj);
   }
 
   private Object resolveDeleteTarget(final String variable, final Result result) {
@@ -283,15 +314,20 @@ public class DeleteStep extends AbstractExecutionStep {
         // Already deleted - skip
       }
     } else if (obj instanceof TraversalPath path) {
-      // Delete all vertices and edges in a path
-      for (final Vertex v : path.getVertices())
-        deleteObject(v, deleted);
+      // Delete edges first, then vertices (edges must be removed before non-DETACH vertex delete)
       for (final Edge e : path.getEdges())
         deleteObject(e, deleted);
+      for (final Vertex v : path.getVertices())
+        deleteObject(v, deleted);
     } else if (obj instanceof List) {
-      // Delete each element in the list (e.g., path elements or collected nodes)
-      for (final Object elem : (List<?>) obj)
-        deleteObject(elem, deleted);
+      // Delete edges first, then vertices/documents (edges must be removed before non-DETACH vertex delete)
+      final List<?> list = (List<?>) obj;
+      for (final Object elem : list)
+        if (elem instanceof Edge)
+          deleteObject(elem, deleted);
+      for (final Object elem : list)
+        if (!(elem instanceof Edge))
+          deleteObject(elem, deleted);
     } else if (obj instanceof Map) {
       // Delete each value in the map
       for (final Object value : ((Map<?, ?>) obj).values())

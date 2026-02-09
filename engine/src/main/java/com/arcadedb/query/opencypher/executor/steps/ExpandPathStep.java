@@ -30,6 +30,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import com.arcadedb.graph.Edge;
+
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -107,6 +109,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
       private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<TraversalPath> currentPaths = null;
+      private Vertex boundTarget = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -150,6 +153,24 @@ public class ExpandPathStep extends AbstractExecutionStep {
                 continue;
             }
 
+            // Filter by target node properties if specified
+            if (targetNodePattern != null && targetNodePattern.hasProperties()) {
+              if (!matchesTargetProperties(targetVertex))
+                continue;
+            }
+
+            // If the target variable is already bound from a previous step,
+            // only accept paths that end at the bound vertex
+            if (boundTarget != null) {
+              if (!targetVertex.getIdentity().equals(boundTarget.getIdentity()))
+                continue;
+            }
+
+            // Relationship uniqueness: check if any edge in this path is
+            // already used by a relationship variable in the current result
+            if (hasEdgeConflict(lastResult, path))
+              continue;
+
             final ResultInternal result = new ResultInternal();
 
             // Copy all properties from previous result
@@ -157,9 +178,14 @@ public class ExpandPathStep extends AbstractExecutionStep {
               result.setProperty(prop, lastResult.getProperty(prop));
             }
 
-            // Add path binding
-            if (hasPathVar)
-              result.setProperty(pathVariable, path);
+            // Add path binding - extend existing path if present (multi-segment VLP)
+            if (hasPathVar) {
+              final Object existingPath = lastResult.getProperty(pathVariable);
+              if (existingPath instanceof TraversalPath)
+                result.setProperty(pathVariable, new TraversalPath((TraversalPath) existingPath, path));
+              else
+                result.setProperty(pathVariable, path);
+            }
 
             // Add relationship variable as list of edges
             if (hasRelVar)
@@ -182,6 +208,10 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
             lastResult = prevResults.next();
             final Object sourceObj = lastResult.getProperty(sourceVariable);
+
+            // Check if target variable is already bound (e.g., from a previous MATCH)
+            final Object targetObj = lastResult.getProperty(targetVariable);
+            boundTarget = (targetObj instanceof Vertex) ? (Vertex) targetObj : null;
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;
@@ -221,10 +251,56 @@ public class ExpandPathStep extends AbstractExecutionStep {
     );
   }
 
+  /**
+   * Checks if any edge in the traversal path conflicts with edges already
+   * bound in the result (relationship uniqueness within a MATCH clause).
+   */
+  @SuppressWarnings("unchecked")
+  private boolean hasEdgeConflict(final Result result, final TraversalPath path) {
+    if (path.getEdges().isEmpty())
+      return false;
+    for (final String prop : result.getPropertyNames()) {
+      // Skip our own variables
+      if (prop.equals(relationshipVariable) || prop.equals(pathVariable) || prop.equals(targetVariable))
+        continue;
+      final Object val = result.getProperty(prop);
+      if (val instanceof Edge) {
+        for (final Edge pathEdge : path.getEdges())
+          if (pathEdge.getIdentity().equals(((Edge) val).getIdentity()))
+            return true;
+      }
+      if (val instanceof List) {
+        for (final Object item : (List<Object>) val)
+          if (item instanceof Edge) {
+            for (final Edge pathEdge : path.getEdges())
+              if (pathEdge.getIdentity().equals(((Edge) item).getIdentity()))
+                return true;
+          }
+      }
+    }
+    return false;
+  }
+
   private boolean matchesTargetLabel(final Vertex vertex) {
     for (final String label : targetNodePattern.getLabels())
       if (!vertex.getType().instanceOf(label))
         return false;
+    return true;
+  }
+
+  private boolean matchesTargetProperties(final Vertex vertex) {
+    for (final Map.Entry<String, Object> entry : targetNodePattern.getProperties().entrySet()) {
+      final Object actual = vertex.get(entry.getKey());
+      Object expected = entry.getValue();
+      // Handle string literals: remove quotes
+      if (expected instanceof String) {
+        final String s = (String) expected;
+        if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\"")))
+          expected = s.substring(1, s.length() - 1);
+      }
+      if (actual == null || !actual.equals(expected))
+        return false;
+    }
     return true;
   }
 

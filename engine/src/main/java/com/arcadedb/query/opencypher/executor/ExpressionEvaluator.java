@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
+import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -81,6 +82,8 @@ public class ExpressionEvaluator {
       return evaluateComparison((ComparisonExpressionWrapper) expression, result, context);
     } else if (expression instanceof BooleanWrapperExpression bwe) {
       return evaluateBooleanWrapper(bwe, result, context);
+    } else if (aggregationOverrides != null && expression instanceof MapExpression me) {
+      return evaluateMap(me, result, context);
     } else if (aggregationOverrides != null && expression instanceof ListComprehensionExpression) {
       return evaluateListComprehension((ListComprehensionExpression) expression, result, context);
     } else if (aggregationOverrides != null && expression instanceof ListPredicateExpression) {
@@ -211,6 +214,14 @@ public class ExpressionEvaluator {
     for (final Expression element : expression.getElements())
       values.add(evaluate(element, result, context));
     return values;
+  }
+
+  private Object evaluateMap(final MapExpression expression, final Result result,
+      final CommandContext context) {
+    final java.util.LinkedHashMap<String, Object> map = new java.util.LinkedHashMap<>();
+    for (final Map.Entry<String, Expression> entry : expression.getEntries().entrySet())
+      map.put(entry.getKey(), evaluate(entry.getValue(), result, context));
+    return map;
   }
 
   /**
