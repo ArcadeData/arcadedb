@@ -127,6 +127,11 @@ class ConcurrentMultiPageRecordReadTest extends TestHelper {
             } catch (final Exception e) {
               if (e.getMessage() != null && e.getMessage().contains("was modified during read"))
                 readErrors.incrementAndGet();
+            } catch (final Exception e) {
+              if (e.getMessage() != null && e.getMessage().contains("was modified during read"))
+                readErrors.incrementAndGet();
+              else
+                throw new RuntimeException("Unexpected exception in reader thread", e);
             }
           }
         } catch (final InterruptedException e) {
