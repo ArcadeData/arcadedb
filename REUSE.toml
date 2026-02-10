@@ -21,21 +21,31 @@ SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcade
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
-path = ["studio/src/main/resources/static/components/DataTables/**/*"]
-SPDX-FileCopyrightText = "Copyright (C) 2008-2022, SpryMedia Ltd."
-SPDX-License-Identifier = "MIT"
+path = ["bindings/python/**/*.py","bindings/python/**/*.sh","bindings/python/Dockerfile.build","bindings/python/jar_exclusions.txt","bindings/python/pyproject.toml","bindings/python/setup.py"]
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
-path = ["studio/src/main/resources/static/components/fontawesome/css/*"]
-SPDX-FileCopyrightText = "Font Awesome by Dave Gandy - http://fontawesome.io"
-SPDX-License-Identifier = "MIT"
+path = ["e2e-studio/**/*.ts","e2e-studio/**/*.json"]
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
-path = ["studio/src/main/resources/static/components/fontawesome/js/*"]
-SPDX-FileCopyrightText = "Font Awesome by Dave Gandy - http://fontawesome.io"
-SPDX-License-Identifier = "MIT"
+path = ["package/*.sh","package/*.txt","package/homebrew/*.rb"]
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
-path = ["studio/src/main/resources/static/components/fontawesome/webfonts/*"]
-SPDX-FileCopyrightText = "Font Awesome by Dave Gandy - http://fontawesome.io"
-SPDX-License-Identifier = "OFL-1.1"
+path = ["studio/*.json","studio/.npmrc","studio/.nvmrc","studio/scripts/*.js","studio/scripts/*.sh"]
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["grpc/gRPC-Readme.txt","grpc/gRPC-vs-HTTP-PerformanceTest.txt"]
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["grpc-client/docs/*.txt"]
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-License-Identifier = "Apache-2.0"
