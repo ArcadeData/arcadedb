@@ -58,7 +58,7 @@ class OpenCypherCustomFunctionTest {
 
     final ResultSet rs = database.query("opencypher", "RETURN math.sum(3, 5) as result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("result")).isEqualTo(8L);
+    assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(8L);
   }
 
   @Test
@@ -69,7 +69,7 @@ class OpenCypherCustomFunctionTest {
 
     final ResultSet rs = database.query("opencypher", "MATCH (n:Number) WHERE n.value > math.threshold() RETURN n.value ORDER BY n.value");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("value")).isEqualTo(10);
+    assertThat(rs.next().<Number>getProperty("n.value").longValue()).isEqualTo(10L);
     assertThat(rs.hasNext()).isFalse();
   }
 
@@ -79,7 +79,7 @@ class OpenCypherCustomFunctionTest {
 
     final ResultSet rs = database.query("opencypher", "RETURN math.add3(1, 2, 3) as result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("result")).isEqualTo(6L);
+    assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(6L);
   }
 
   @Test
@@ -93,7 +93,10 @@ class OpenCypherCustomFunctionTest {
 
   @Test
   void testUndefinedFunctionThrowsError() {
-    assertThatThrownBy(() -> database.query("opencypher", "RETURN nonexistent.func() as result"))
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("opencypher", "RETURN nonexistent.func() as result");
+      rs.hasNext(); // Force query evaluation (queries are lazy)
+    })
         .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("Unknown function");
   }
@@ -114,7 +117,7 @@ class OpenCypherCustomFunctionTest {
 
     final ResultSet rs = database.query("opencypher", "CALL math.multiply(4, 2) YIELD result RETURN result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("result")).isEqualTo(8L);
+    assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(8L);
   }
 
   @Test
@@ -124,7 +127,7 @@ class OpenCypherCustomFunctionTest {
 
     ResultSet rs = database.query("opencypher", "RETURN test.value() as result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("result")).isEqualTo(10L);
+    assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(10L);
 
     // Redefine function
     database.getSchema().getFunctionLibrary("test").unregisterFunction("value");
@@ -132,7 +135,7 @@ class OpenCypherCustomFunctionTest {
 
     rs = database.query("opencypher", "RETURN test.value() as result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("result")).isEqualTo(20L);
+    assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(20L);
   }
 
   // Phase 2: JavaScript Function Tests
@@ -182,14 +185,74 @@ class OpenCypherCustomFunctionTest {
         "\"MATCH (n) WHERE id(n) = $nodeId MATCH (n)-[]->() RETURN count(*) as cnt\" " +
         "PARAMETERS [nodeId] LANGUAGE cypher");
 
-    // Create test graph
-    final ResultSet createResult = database.command("opencypher", "CREATE (a:Person)-[:KNOWS]->(b:Person) RETURN id(a) as aid");
-    assertThat(createResult.hasNext()).isTrue();
-    final String nodeId = createResult.next().getProperty("aid");
+    // Create test graph in an explicit transaction
+    System.out.println("Creating graph data...");
+    final String nodeId;
+    database.begin();
+    try {
+      final ResultSet createResult = database.command("opencypher", "CREATE (a:Person)-[:KNOWS]->(b:Person) RETURN id(a) as aid");
+      assertThat(createResult.hasNext()).isTrue();
+      nodeId = createResult.next().getProperty("aid");
+      System.out.println("Created node with ID: " + nodeId);
+      database.commit();
+      System.out.println("Transaction committed");
+    } catch (Exception e) {
+      database.rollback();
+      throw e;
+    }
 
+    // Verify the data exists before calling the function
+    System.out.println("Verifying data exists...");
+
+    // Check if the node exists
+    final ResultSet checkNode = database.query("opencypher", "MATCH (a:Person) WHERE id(a) = $nodeId RETURN a", "nodeId", nodeId);
+    System.out.println("  Node exists (by ID match): " + checkNode.hasNext());
+
+    // Try finding ANY Person nodes
+    final ResultSet allPersons = database.query("opencypher", "MATCH (a:Person) RETURN id(a) as id");
+    System.out.println("  All Person node IDs:");
+    while (allPersons.hasNext()) {
+      final Object id = allPersons.next().getProperty("id");
+      System.out.println("    - " + id + " (type: " + (id != null ? id.getClass().getSimpleName() : "null") + ")");
+      System.out.println("      Equals nodeId? " + (id != null && id.equals(nodeId)));
+    }
+
+    // Check all edges in the database
+    final ResultSet allEdges = database.query("opencypher", "MATCH ()-[r]->() RETURN count(r) as cnt");
+    if (allEdges.hasNext()) {
+      System.out.println("  Total edges in DB: " + allEdges.next().getProperty("cnt"));
+    }
+
+    // Check edges from our node using MATCH pattern
+    final ResultSet verifyResult = database.query("opencypher", "MATCH (a:Person) WHERE id(a) = $nodeId MATCH (a)-[r]->() RETURN count(r) as cnt", "nodeId", nodeId);
+    if (verifyResult.hasNext()) {
+      System.out.println("  Direct query (MATCH with WHERE id): " + verifyResult.next().getProperty("cnt") + " neighbors");
+    } else {
+      System.out.println("  Direct query (WHERE id) found no results!");
+    }
+
+    // Try without WHERE clause - filter all nodes
+    System.out.println("  Trying alternative query pattern...");
+    final ResultSet altQuery = database.query("opencypher", "MATCH (a:Person)-[r]->() WHERE id(a) = $nodeId RETURN count(r) as cnt", "nodeId", nodeId);
+    if (altQuery.hasNext()) {
+      System.out.println("  Alternative pattern: " + altQuery.next().getProperty("cnt") + " neighbors");
+    }
+
+    // Try matching by getting all and filtering in memory
+    System.out.println("  Manual filtering:");
+    final ResultSet allWithEdges = database.query("opencypher", "MATCH (a:Person)-[r]->() RETURN id(a) as aid, count(r) as cnt");
+    while (allWithEdges.hasNext()) {
+      final var row = allWithEdges.next();
+      System.out.println("    Node " + row.getProperty("aid") + " has " + row.getProperty("cnt") + " edges");
+    }
+
+    // Now call via function
+    System.out.println("Calling function...");
     final ResultSet rs = database.query("opencypher", "RETURN graph.countNeighbors($nodeId) as neighbors", "nodeId", nodeId);
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("neighbors")).isEqualTo(1L);
+    final Long count = rs.next().<Long>getProperty("neighbors");
+    System.out.println("Function returned: " + count);
+    assertThat(count).isEqualTo(1L);
   }
 
   // Phase 4: Cross-Language Tests
@@ -206,12 +269,14 @@ class OpenCypherCustomFunctionTest {
 
   @Test
   void testSQLFunctionCallableFromCypher() {
-    database.command("sql", "DEFINE FUNCTION sql.concat \"SELECT :a || :b\" PARAMETERS [a,b] LANGUAGE sql");
+    // Use a custom library name to avoid conflicts with built-in SQL functions
+    // Test that SQL function can be called from Cypher
+    database.command("sql", "DEFINE FUNCTION custom.addTen \"SELECT :value + 10\" PARAMETERS [value] LANGUAGE sql");
 
     // Call SQL function from Cypher
-    final ResultSet rs = database.query("opencypher", "RETURN sql.concat('Hello', ' World') as result");
+    final ResultSet rs = database.query("opencypher", "RETURN custom.addTen(5) as result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<String>getProperty("result")).isEqualTo("Hello World");
+    assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(15L);
   }
 
   @Test
