@@ -43,6 +43,8 @@ import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.TemporalAccessor;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -245,8 +247,14 @@ public class CypherFunctionFactory {
       case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" -> true;
       // Temporal epoch functions
       case "datetime.fromepoch", "datetime.fromepochmillis" -> true;
+      // Temporal format function
+      case "format" -> true;
       // Duration calculation functions
       case "duration.between", "duration.inmonths", "duration.indays", "duration.inseconds" -> true;
+      // Vector similarity functions
+      case "vector.similarity.cosine", "vector.similarity.euclidean" -> true;
+      // Geo-spatial functions
+      case "point.withinbbox" -> true;
       // Temporal clock functions (realtime/statement/transaction are aliases for current instant)
       case "date.realtime", "date.statement", "date.transaction" -> true;
       case "localtime.realtime", "localtime.statement", "localtime.transaction" -> true;
@@ -324,6 +332,13 @@ public class CypherFunctionFactory {
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
       case "percentiledisc" -> new PercentileDiscFunction();
       case "percentilecont" -> new PercentileContFunction();
+      // Temporal format function
+      case "format" -> new FormatFunction();
+      // Vector similarity functions
+      case "vector.similarity.cosine" -> new VectorSimilarityCosineFunction();
+      case "vector.similarity.euclidean" -> new VectorSimilarityEuclideanFunction();
+      // Geo-spatial functions
+      case "point.withinbbox" -> new PointWithinBBoxFunction();
       // Temporal constructor functions
       case "date" -> new DateConstructorFunction();
       case "localtime" -> new LocalTimeConstructorFunction();
@@ -2195,6 +2210,190 @@ public class CypherFunctionFactory {
     @Override
     public Object getAggregatedResult() {
       return delegate.getAggregatedResult();
+    }
+  }
+
+  // ======================== Format Function ========================
+
+  /**
+   * format() function - formats a temporal value as a string.
+   * format(value) returns ISO-formatted string (same as toString()).
+   * format(value, pattern) formats using the provided DateTimeFormatter pattern.
+   */
+  private static class FormatFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "format";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length < 1 || args.length > 2)
+        throw new CommandExecutionException("format() requires 1 or 2 arguments: format(temporal[, pattern])");
+      if (args[0] == null)
+        return null;
+
+      // Without pattern → ISO string
+      if (args.length == 1 || args[1] == null)
+        return args[0].toString();
+
+      final String pattern = args[1].toString();
+      final DateTimeFormatter formatter = DateTimeFormatter.ofPattern(pattern);
+
+      // CypherDuration is not a TemporalAccessor, handle separately
+      if (args[0] instanceof CypherDuration)
+        throw new CommandExecutionException("format() with a pattern is not supported for Duration values");
+
+      // Extract the TemporalAccessor from Cypher temporal types
+      final TemporalAccessor temporal;
+      if (args[0] instanceof CypherDate)
+        temporal = ((CypherDate) args[0]).getValue();
+      else if (args[0] instanceof CypherLocalTime)
+        temporal = ((CypherLocalTime) args[0]).getValue();
+      else if (args[0] instanceof CypherTime)
+        temporal = ((CypherTime) args[0]).getValue();
+      else if (args[0] instanceof CypherLocalDateTime)
+        temporal = ((CypherLocalDateTime) args[0]).getValue();
+      else if (args[0] instanceof CypherDateTime)
+        temporal = ((CypherDateTime) args[0]).getValue();
+      else if (args[0] instanceof TemporalAccessor)
+        temporal = (TemporalAccessor) args[0];
+      else
+        throw new CommandExecutionException("format() requires a temporal value as first argument");
+
+      return formatter.format(temporal);
+    }
+  }
+
+  // ======================== Vector Similarity Functions ========================
+
+  /**
+   * vector.similarity.cosine(a, b) - computes cosine similarity between two vectors.
+   * Delegates to the existing SQL vectorCosineSimilarity function.
+   */
+  private static class VectorSimilarityCosineFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "vector.similarity.cosine";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("vector.similarity.cosine() requires exactly 2 arguments");
+      if (args[0] == null || args[1] == null)
+        return null;
+      final float[] v1 = toFloatArray(args[0]);
+      final float[] v2 = toFloatArray(args[1]);
+      if (v1.length != v2.length)
+        throw new CommandExecutionException("vector.similarity.cosine() requires vectors of the same dimension");
+      double dotProduct = 0.0;
+      double normA = 0.0;
+      double normB = 0.0;
+      for (int i = 0; i < v1.length; i++) {
+        dotProduct += v1[i] * v2[i];
+        normA += v1[i] * v1[i];
+        normB += v2[i] * v2[i];
+      }
+      final double magnitude = Math.sqrt(normA) * Math.sqrt(normB);
+      if (magnitude == 0.0)
+        return 0.0;
+      return dotProduct / magnitude;
+    }
+  }
+
+  /**
+   * vector.similarity.euclidean(a, b) - computes euclidean similarity between two vectors.
+   * Returns 1 / (1 + euclidean_distance) per Neo4j semantics.
+   */
+  private static class VectorSimilarityEuclideanFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "vector.similarity.euclidean";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 2)
+        throw new CommandExecutionException("vector.similarity.euclidean() requires exactly 2 arguments");
+      if (args[0] == null || args[1] == null)
+        return null;
+      final float[] v1 = toFloatArray(args[0]);
+      final float[] v2 = toFloatArray(args[1]);
+      if (v1.length != v2.length)
+        throw new CommandExecutionException("vector.similarity.euclidean() requires vectors of the same dimension");
+      double sumSquares = 0.0;
+      for (int i = 0; i < v1.length; i++) {
+        final double diff = v1[i] - v2[i];
+        sumSquares += diff * diff;
+      }
+      final double distance = Math.sqrt(sumSquares);
+      return 1.0 / (1.0 + distance);
+    }
+  }
+
+  /**
+   * Convert a List or array argument to a float array for vector operations.
+   */
+  private static float[] toFloatArray(final Object value) {
+    if (value instanceof List<?> list) {
+      final float[] result = new float[list.size()];
+      for (int i = 0; i < list.size(); i++) {
+        if (list.get(i) instanceof Number)
+          result[i] = ((Number) list.get(i)).floatValue();
+        else
+          throw new CommandExecutionException("Vector elements must be numeric");
+      }
+      return result;
+    }
+    if (value instanceof float[])
+      return (float[]) value;
+    if (value instanceof double[]) {
+      final double[] d = (double[]) value;
+      final float[] result = new float[d.length];
+      for (int i = 0; i < d.length; i++)
+        result[i] = (float) d[i];
+      return result;
+    }
+    throw new CommandExecutionException("Vector argument must be a list of numbers");
+  }
+
+  // ======================== Geo-Spatial Functions ========================
+
+  /**
+   * point.withinBBox(point, lowerLeft, upperRight) - checks if a point is within a bounding box.
+   * All 3 arguments are maps with x/y or longitude/latitude.
+   */
+  private static class PointWithinBBoxFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "point.withinBBox";
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 3)
+        throw new CommandExecutionException("point.withinBBox() requires exactly 3 arguments: point, lowerLeft, upperRight");
+      if (args[0] == null || args[1] == null || args[2] == null)
+        return null;
+      final double[] point = extractCoordinates(args[0]);
+      final double[] lowerLeft = extractCoordinates(args[1]);
+      final double[] upperRight = extractCoordinates(args[2]);
+      return lowerLeft[0] <= point[0] && point[0] <= upperRight[0]
+          && lowerLeft[1] <= point[1] && point[1] <= upperRight[1];
+    }
+
+    private double[] extractCoordinates(final Object value) {
+      if (value instanceof Map<?, ?> map) {
+        // Try x/y first, then longitude/latitude
+        if (map.containsKey("x") && map.containsKey("y"))
+          return new double[] { ((Number) map.get("x")).doubleValue(), ((Number) map.get("y")).doubleValue() };
+        if (map.containsKey("longitude") && map.containsKey("latitude"))
+          return new double[] { ((Number) map.get("longitude")).doubleValue(), ((Number) map.get("latitude")).doubleValue() };
+        throw new CommandExecutionException("Point must have x/y or longitude/latitude properties");
+      }
+      throw new CommandExecutionException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
     }
   }
 }
