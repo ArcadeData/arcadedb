@@ -42,7 +42,9 @@ When adding new third-party dependencies to ArcadeDB:
 
 3. **Maintain SPDX Compliance** - All new source files must include:
    - `SPDX-FileCopyrightText:` with copyright holder and years
+   <!-- REUSE-IgnoreStart -->
    - `SPDX-License-Identifier:` with the SPDX license identifier (e.g., Apache-2.0)
+   <!-- REUSE-IgnoreEnd -->
 
 For questions about licensing, please ask in the [discussion forum](https://github.com/ArcadeData/arcadedb/discussions) before adding the dependency.
 
