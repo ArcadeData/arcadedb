@@ -212,9 +212,23 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private Map<String, Object> convertPositionalParameters(final Object... parameters) {
     final Map<String, Object> namedParams = new HashMap<>();
-    if (parameters != null) {
-      for (int i = 0; i < parameters.length; i++)
-        namedParams.put(String.valueOf(i), parameters[i]);
+    if (parameters != null && parameters.length > 0) {
+      // Cypher uses named parameters, so treat varargs as alternating key-value pairs
+      // e.g., database.query("cypher", "RETURN $x", "x", 10) → {"x": 10}
+      if (parameters.length % 2 != 0) {
+        throw new IllegalArgumentException(
+            "Parameters must be provided as key-value pairs (e.g., \"paramName\", paramValue). Found " +
+                parameters.length + " arguments.");
+      }
+      for (int i = 0; i < parameters.length; i += 2) {
+        final Object key = parameters[i];
+        if (!(key instanceof String)) {
+          throw new IllegalArgumentException(
+              "Parameter name at index " + i + " must be a String, but got: " +
+                  (key != null ? key.getClass().getName() : "null"));
+        }
+        namedParams.put((String) key, parameters[i + 1]);
+      }
     }
     return namedParams;
   }
