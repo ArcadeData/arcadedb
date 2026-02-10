@@ -302,7 +302,23 @@ public class CallStep extends AbstractExecutionStep {
         return null;
 
       // Execute the function with arguments
-      return function.execute(args.toArray());
+      final Object result = function.execute(args.toArray());
+
+      // If the function returns a scalar and YIELD is specified, wrap it with the expected field name
+      if (result != null && callClause.hasYield() && !callClause.isYieldAll()) {
+        // Check if result is already structured (Map, Document, Result)
+        if (!(result instanceof Map) && !(result instanceof Document) &&
+            !(result instanceof Result) && !(result instanceof Collection) &&
+            !(result instanceof Iterator)) {
+          // Scalar result - wrap it using the first YIELD field name
+          if (!callClause.getYieldItems().isEmpty()) {
+            final String fieldName = callClause.getYieldItems().get(0).getFieldName();
+            return Map.of(fieldName, result);
+          }
+        }
+      }
+
+      return result;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
