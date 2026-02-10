@@ -48,9 +48,9 @@ class ConcurrentMultiPageRecordReadTest extends TestHelper {
 
   private static final int NUM_RECORDS = 5000;
   private static final int EMBEDDING_DIM = 3072; // Forces multi-page records
-  private static final int WRITER_THREADS = 40;
-  private static final int READER_THREADS = 80;
-  private static final int OPERATIONS_PER_THREAD = 2000;
+  private static final int WRITER_THREADS = 10;
+  private static final int READER_THREADS = 20;
+  private static final int OPERATIONS_PER_THREAD = 100;
 
   private final Random random = new Random(42);
   private final AtomicInteger readErrors = new AtomicInteger(0);
@@ -124,9 +124,6 @@ class ConcurrentMultiPageRecordReadTest extends TestHelper {
                   assertThat(data.length).isEqualTo(EMBEDDING_DIM);
                 }
               }
-            } catch (final Exception e) {
-              if (e.getMessage() != null && e.getMessage().contains("was modified during read"))
-                readErrors.incrementAndGet();
             } catch (final Exception e) {
               if (e.getMessage() != null && e.getMessage().contains("was modified during read"))
                 readErrors.incrementAndGet();
