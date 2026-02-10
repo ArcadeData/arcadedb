@@ -46,11 +46,11 @@ class IndexIteratorIsolationTest extends TestHelper {
 
   @Test
   void indexIteratorIsolation() {
-    LogManager.instance().log(this, Level.SEVERE, "Creating schema and populating database...");
+//    LogManager.instance().log(this, Level.SEVERE, "Creating schema and populating database...");
     createSchema();
     populateDatabase();
 
-    LogManager.instance().log(this, Level.SEVERE, "Starting concurrent test with %d workers...", WORKERS);
+//    LogManager.instance().log(this, Level.SEVERE, "Starting concurrent test with %d workers...", WORKERS);
 
     final Thread[] threads = new Thread[WORKERS];
     final AtomicLong totalQueries = new AtomicLong();
@@ -92,7 +92,7 @@ class IndexIteratorIsolationTest extends TestHelper {
               database.commit();
             } catch (final Exception e) {
               database.rollback();
-              LogManager.instance().log(this, Level.SEVERE, "Error in thread " + threadId, e);
+//              LogManager.instance().log(this, Level.SEVERE, "Error in thread " + threadId, e);
             }
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "Unexpected error in thread " + threadId, e);
@@ -111,8 +111,8 @@ class IndexIteratorIsolationTest extends TestHelper {
       }
     }
 
-    LogManager.instance()
-        .log(this, Level.SEVERE, "Test completed: totalQueries=%d errors=%d", totalQueries.get(), errors.get());
+//    LogManager.instance()
+//        .log(this, Level.SEVERE, "Test completed: totalQueries=%d errors=%d", totalQueries.get(), errors.get());
     assertThat(errors.get()).isEqualTo(0);
   }
 
