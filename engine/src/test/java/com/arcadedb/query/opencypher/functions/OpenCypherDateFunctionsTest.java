@@ -214,9 +214,13 @@ class OpenCypherDateFunctionsTest {
     final long timestamp = 1704067200000L; // 2024-01-01 00:00:00 UTC
     final String result = (String) fn.execute(new Object[]{timestamp}, null);
 
-    // Should contain ISO8601 format elements
-    assertThat(result).contains("2024");
+    // Should be a valid ISO8601 string with date and time parts
     assertThat(result).contains("T");
+
+    // Round-trip: converting back should return the same timestamp
+    final DateFromISO8601 fromFn = new DateFromISO8601();
+    final long roundTrip = (Long) fromFn.execute(new Object[]{result}, null);
+    assertThat(roundTrip).isEqualTo(timestamp);
   }
 
   @Test
