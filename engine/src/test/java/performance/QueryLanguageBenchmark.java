@@ -38,7 +38,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
 import java.io.File;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -72,20 +80,21 @@ class QueryLanguageBenchmark {
   private static final String DB_PATH = "target/test-databases/QueryLanguageBenchmark";
 
   // Benchmark parameters
-  private static final int NUM_VERTICES = 500_000;  // 1M vertices
-  private static final int NUM_EDGES = 1_000_000;     // 5M edges (~5 per vertex avg)
-  private static final int NUM_ITERATIONS = 20;       // Number of times to repeat each query
+  private static final int NUM_VERTICES      = 500_000;  // 1M vertices
+  private static final int NUM_EDGES         = 1_000_000;     // 5M edges (~5 per vertex avg)
+  private static final int NUM_ITERATIONS    = 20;       // Number of times to repeat each query
   private static final int WARMUP_ITERATIONS = 5;     // Warmup runs (not measured)
 
   // Sample IDs for lookup queries (randomly selected)
-  private static final int NUM_SAMPLE_IDS = 100;
-  private final long[] sampleIds = new long[NUM_SAMPLE_IDS];
+  private static final int    NUM_SAMPLE_IDS = 100;
+  private final        long[] sampleIds      = new long[NUM_SAMPLE_IDS];
 
   // Store benchmark results for final comparison table
   private final Map<String, Map<String, BenchmarkResult>> benchmarkResults = new LinkedHashMap<>();
 
   // Countries for data generation
-  private static final String[] COUNTRIES = {"USA", "UK", "Germany", "France", "Italy", "Spain", "Canada", "Australia", "Japan", "China"};
+  private static final String[] COUNTRIES = { "USA", "UK", "Germany", "France", "Italy", "Spain", "Canada", "Australia", "Japan",
+      "China" };
 
   private Database database;
 
@@ -826,7 +835,8 @@ class QueryLanguageBenchmark {
     for (final String queryType : queryTypes) {
       System.out.println("╔" + "═".repeat(138) + "╗");
       System.out.println("║" + centerText(queryType.toUpperCase(), 138) + "║");
-      System.out.println("╠" + "═".repeat(30) + "╤" + ("═".repeat(26) + "╤").repeat(benchmarkResults.size() - 1) + "═".repeat(26) + "╣");
+      System.out.println(
+          "╠" + "═".repeat(30) + "╤" + ("═".repeat(26) + "╤").repeat(benchmarkResults.size() - 1) + "═".repeat(26) + "╣");
 
       // Header row
       final StringBuilder headerRow = new StringBuilder("║ " + padRight("Metric", 28) + " │");
@@ -836,7 +846,8 @@ class QueryLanguageBenchmark {
       headerRow.append("║");
       System.out.println(headerRow);
 
-      System.out.println("╟" + "─".repeat(30) + "┼" + ("─".repeat(26) + "┼").repeat(benchmarkResults.size() - 1) + "─".repeat(26) + "╢");
+      System.out.println(
+          "╟" + "─".repeat(30) + "┼" + ("─".repeat(26) + "┼").repeat(benchmarkResults.size() - 1) + "─".repeat(26) + "╢");
 
       // Data rows
       printMetricRow("Min (μs)", queryType, r -> formatMicros(r.min));
@@ -846,7 +857,8 @@ class QueryLanguageBenchmark {
       printMetricRow("P99 (μs)", queryType, r -> formatMicros(r.p99));
       printMetricRow("Max (μs)", queryType, r -> formatMicros(r.max));
 
-      System.out.println("╚" + "═".repeat(30) + "╧" + ("═".repeat(26) + "╧").repeat(benchmarkResults.size() - 1) + "═".repeat(26) + "╝");
+      System.out.println(
+          "╚" + "═".repeat(30) + "╧" + ("═".repeat(26) + "╧").repeat(benchmarkResults.size() - 1) + "═".repeat(26) + "╝");
       System.out.println();
     }
 
@@ -901,12 +913,12 @@ class QueryLanguageBenchmark {
   }
 
   private static class BenchmarkResult {
-    final long min;
-    final long max;
+    final long   min;
+    final long   max;
     final double avg;
-    final long p50;
-    final long p95;
-    final long p99;
+    final long   p50;
+    final long   p95;
+    final long   p99;
 
     BenchmarkResult(final long min, final long max, final double avg, final long p50, final long p95, final long p99) {
       this.min = min;
