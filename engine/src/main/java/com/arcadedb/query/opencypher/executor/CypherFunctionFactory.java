@@ -225,9 +225,12 @@ public class CypherFunctionFactory {
       // Path functions
       case "nodes", "relationships", "length" -> true;
       // Math functions
-      case "rand", "sign", "ceil", "floor", "abs", "sqrt", "round" -> true;
+      case "rand", "sign", "ceil", "floor", "abs", "sqrt", "round", "isnan",
+          "cosh", "sinh", "tanh", "cot", "coth", "pi", "e" -> true;
       // General functions
       case "coalesce" -> true;
+      // Predicate functions
+      case "isempty" -> true;
       // List functions
       case "size", "head", "tail", "last", "range" -> true;
       // String functions
@@ -270,6 +273,14 @@ public class CypherFunctionFactory {
       case "abs" -> new MathUnaryFunction("abs", Math::abs);
       case "sqrt" -> new MathUnaryFunction("sqrt", Math::sqrt);
       case "round" -> new MathUnaryFunction("round", v -> (double) Math.round(v));
+      case "isnan" -> new IsNaNFunction();
+      case "cosh" -> new MathUnaryFunction("cosh", Math::cosh);
+      case "sinh" -> new MathUnaryFunction("sinh", Math::sinh);
+      case "tanh" -> new MathUnaryFunction("tanh", Math::tanh);
+      case "cot" -> new MathUnaryFunction("cot", v -> Math.cos(v) / Math.sin(v));
+      case "coth" -> new MathUnaryFunction("coth", v -> Math.cosh(v) / Math.sinh(v));
+      case "pi" -> new ConstantFunction("pi", Math.PI);
+      case "e" -> new ConstantFunction("e", Math.E);
       // General functions
       case "coalesce" -> new CoalesceFunction();
       // Graph functions
@@ -290,6 +301,8 @@ public class CypherFunctionFactory {
       case "tail" -> new TailFunction();
       case "last" -> new LastFunction();
       case "range" -> new RangeFunction();
+      // Predicate functions
+      case "isempty" -> new IsEmptyFunction();
       // String functions
       case "left" -> new LeftFunction();
       case "right" -> new RightFunction();
@@ -418,6 +431,76 @@ public class CypherFunctionFactory {
         return result;
       }
       throw new CommandExecutionException(name + "() requires a numeric argument");
+    }
+  }
+
+  /**
+   * Constant function (pi, e) - returns a mathematical constant.
+   */
+  private static class ConstantFunction implements StatelessFunction {
+    private final String name;
+    private final double value;
+
+    ConstantFunction(final String name, final double value) {
+      this.name = name;
+      this.value = value;
+    }
+
+    @Override
+    public String getName() {
+      return name;
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      return value;
+    }
+  }
+
+  /**
+   * isNaN() function - returns true if the floating point number is NaN.
+   */
+  private static class IsNaNFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "isNaN";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("isNaN() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      if (args[0] instanceof Number)
+        return Double.isNaN(((Number) args[0]).doubleValue());
+      throw new CommandExecutionException("isNaN() requires a numeric argument");
+    }
+  }
+
+  /**
+   * isEmpty() function - checks whether a LIST, MAP, or STRING is empty.
+   */
+  private static class IsEmptyFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "isEmpty";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      if (args.length != 1)
+        throw new CommandExecutionException("isEmpty() requires exactly one argument");
+      if (args[0] == null)
+        return null;
+      if (args[0] instanceof List)
+        return ((List<?>) args[0]).isEmpty();
+      if (args[0] instanceof String)
+        return ((String) args[0]).isEmpty();
+      if (args[0] instanceof Map)
+        return ((Map<?, ?>) args[0]).isEmpty();
+      throw new CommandExecutionException("isEmpty() requires a LIST, MAP, or STRING argument, got " +
+          args[0].getClass().getSimpleName());
     }
   }
 

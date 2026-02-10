@@ -156,6 +156,8 @@ public class FunctionValidator {
     // Predicate functions
     registerFunction("exists", 1, 1, "Check if property exists", false);
     registerFunction("coalesce", 1, -1, "First non-null value", false);
+    registerFunction("isempty", 1, 1, "Check if list/map/string is empty", false);
+    registerFunction("isnan", 1, 1, "Check if value is NaN", false);
 
     // Temporal functions
     registerFunction("timestamp", 0, 0, "Current timestamp", false);
@@ -187,6 +189,11 @@ public class FunctionValidator {
     registerFunction("degrees", 1, 1, "Radians to degrees", false);
     registerFunction("radians", 1, 1, "Degrees to radians", false);
     registerFunction("haversin", 1, 1, "Haversine", false);
+    registerFunction("cosh", 1, 1, "Hyperbolic cosine", false);
+    registerFunction("sinh", 1, 1, "Hyperbolic sine", false);
+    registerFunction("tanh", 1, 1, "Hyperbolic tangent", false);
+    registerFunction("cot", 1, 1, "Cotangent", false);
+    registerFunction("coth", 1, 1, "Hyperbolic cotangent", false);
     registerFunction("charlength", 1, 1, "Character length", false);
     registerFunction("charat", 2, 2, "Character at position", false);
     registerFunction("normalize", 1, 2, "Normalize string", false);
