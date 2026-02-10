@@ -26,6 +26,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
@@ -53,6 +54,7 @@ import java.util.List;
  * but we use ANTLR 4.13.2 for native OpenCypher. ANTLR 4.13.2 is backward compatible.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("benchmark")
 class CypherEngineComparisonBenchmark {
   private static Database database;
 
