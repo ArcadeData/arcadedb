@@ -99,7 +99,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <excludes>
-                        <exclude>**/tck/OpenCypherTCKRunner.java</exclude>
+                        <exclude>**/tck/OpenCypherTCKTest.java</exclude>
                     </excludes>
                     <!-- Exclude Cucumber engine from normal test runs to prevent
                          auto-discovery of TCK feature files. Run TCK explicitly with:

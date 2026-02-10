@@ -242,6 +242,9 @@
                     </excludes>
                     <skipTests>${skipITs}</skipTests>
                     <skipITs>${skipITs}</skipITs>
+                    <excludeJUnit5Engines>
+                        <excludeJUnit5Engine>cucumber</excludeJUnit5Engine>
+                    </excludeJUnit5Engines>
                     <argLine>${itCoverageAgent}</argLine>
                     <reuseForks>true</reuseForks>
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
