@@ -24,9 +24,15 @@ import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.function.procedure.ProcedureRegistry;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -1080,6 +1086,135 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(proc.getMinArgs()).isEqualTo(0);
     assertThat(proc.getMaxArgs()).isEqualTo(0);
     assertThat(proc.getYieldFields()).contains("relType", "propertyName", "propertyTypes", "mandatory");
+  }
+
+  // ===================== FORMAT FUNCTION TESTS =====================
+
+  @Test
+  void formatTemporalWithoutPattern() {
+    // format(temporal) without pattern should return ISO string (same as toString())
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("format");
+    final var date = CypherDate.parse("2024-01-15");
+    assertThat(fn.execute(new Object[] { date }, null)).isEqualTo("2024-01-15");
+  }
+
+  @Test
+  void formatTemporalWithPattern() {
+    // format(temporal, pattern) should format using the pattern
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("format");
+    final var date = CypherDate.parse("2024-01-15");
+    assertThat(fn.execute(new Object[] { date, "dd/MM/yyyy" }, null)).isEqualTo("15/01/2024");
+  }
+
+  @Test
+  void formatLocalDateTimeWithPattern() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("format");
+    final var ldt = CypherLocalDateTime.parse("2024-01-15T10:30:00");
+    assertThat(fn.execute(new Object[] { ldt, "yyyy-MM-dd HH:mm" }, null)).isEqualTo("2024-01-15 10:30");
+  }
+
+  @Test
+  void formatLocalTimeWithPattern() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("format");
+    final var lt = CypherLocalTime.parse("10:30:45");
+    assertThat(fn.execute(new Object[] { lt, "HH:mm" }, null)).isEqualTo("10:30");
+  }
+
+  @Test
+  void formatDurationWithoutPattern() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("format");
+    final var dur = CypherDuration.parse("P1Y2M3DT4H5M6S");
+    assertThat(fn.execute(new Object[] { dur }, null)).isEqualTo("P1Y2M3DT4H5M6S");
+  }
+
+  @Test
+  void formatNullReturnsNull() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("format");
+    assertThat(fn.execute(new Object[] { null }, null)).isNull();
+  }
+
+  // ===================== VECTOR SIMILARITY FUNCTION TESTS =====================
+
+  @Test
+  void vectorSimilarityCosineIdenticalVectors() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("vector.similarity.cosine");
+    final double sim = (Double) fn.execute(new Object[] { List.of(1.0, 2.0, 3.0), List.of(1.0, 2.0, 3.0) }, null);
+    assertThat(sim).isCloseTo(1.0, within(0.001));
+  }
+
+  @Test
+  void vectorSimilarityCosineOrthogonalVectors() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("vector.similarity.cosine");
+    final double sim = (Double) fn.execute(new Object[] { List.of(1.0, 0.0), List.of(0.0, 1.0) }, null);
+    assertThat(sim).isCloseTo(0.0, within(0.001));
+  }
+
+  @Test
+  void vectorSimilarityEuclideanIdenticalVectors() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("vector.similarity.euclidean");
+    final double sim = (Double) fn.execute(new Object[] { List.of(1.0, 2.0, 3.0), List.of(1.0, 2.0, 3.0) }, null);
+    // Identical vectors → distance=0, similarity = 1/(1+0) = 1.0
+    assertThat(sim).isCloseTo(1.0, within(0.001));
+  }
+
+  @Test
+  void vectorSimilarityEuclideanDifferentVectors() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("vector.similarity.euclidean");
+    final double sim = (Double) fn.execute(new Object[] { List.of(0.0, 0.0), List.of(3.0, 4.0) }, null);
+    // Distance = 5.0, similarity = 1/(1+5) = 1/6 ≈ 0.1667
+    assertThat(sim).isCloseTo(1.0 / 6.0, within(0.001));
+  }
+
+  // ===================== POINT.WITHINBBOX FUNCTION TESTS =====================
+
+  @Test
+  void pointWithinBBoxInside() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var point = Map.of("x", 5.0, "y", 5.0);
+    final var lowerLeft = Map.of("x", 0.0, "y", 0.0);
+    final var upperRight = Map.of("x", 10.0, "y", 10.0);
+    assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isTrue();
+  }
+
+  @Test
+  void pointWithinBBoxOutside() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var point = Map.of("x", 15.0, "y", 5.0);
+    final var lowerLeft = Map.of("x", 0.0, "y", 0.0);
+    final var upperRight = Map.of("x", 10.0, "y", 10.0);
+    assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isFalse();
+  }
+
+  @Test
+  void pointWithinBBoxOnEdge() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var point = Map.of("x", 10.0, "y", 10.0);
+    final var lowerLeft = Map.of("x", 0.0, "y", 0.0);
+    final var upperRight = Map.of("x", 10.0, "y", 10.0);
+    assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isTrue();
+  }
+
+  @Test
+  void pointWithinBBoxWithLonLat() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var point = Map.of("longitude", 5.0, "latitude", 5.0);
+    final var lowerLeft = Map.of("longitude", 0.0, "latitude", 0.0);
+    final var upperRight = Map.of("longitude", 10.0, "latitude", 10.0);
+    assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isTrue();
   }
 
   // Note: Integration tests for Cypher queries with built-in functions

@@ -168,6 +168,16 @@ public class FunctionValidator {
     registerFunction("localdatetime", 0, 1, "Current or parsed local datetime", false);
     registerFunction("duration", 1, 1, "Duration value", false);
 
+    // Temporal format function
+    registerFunction("format", 1, 2, "Format temporal value as string", false);
+
+    // Vector similarity functions
+    registerFunction("vector.similarity.cosine", 2, 2, "Cosine similarity between vectors", false);
+    registerFunction("vector.similarity.euclidean", 2, 2, "Euclidean similarity between vectors", false);
+
+    // Geo-spatial functions
+    registerFunction("point.withinbbox", 3, 3, "Check if point is within bounding box", false);
+
     // Path/Graph functions
     registerFunction("nodes", 1, 1, "Nodes in path", false);
     registerFunction("relationships", 1, 1, "Relationships in path", false);
