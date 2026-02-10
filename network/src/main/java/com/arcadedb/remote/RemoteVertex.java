@@ -49,10 +49,15 @@ public class RemoteVertex {
     this.remoteDatabase = remoteDatabase;
   }
 
-  public long countEdges(final Vertex.DIRECTION direction, final String edgeType) {
+  public long countEdges(final Vertex.DIRECTION direction, final String... edgeTypes) {
     StringBuilder query = new StringBuilder("select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(");
-    if (edgeType != null)
-      query.append("'").append(edgeType).append("'");
+    if (edgeTypes != null && edgeTypes.length > 0) {
+      for (int i = 0; i < edgeTypes.length; i++) {
+        if (i > 0)
+          query.append(", ");
+        query.append("'").append(edgeTypes[i]).append("'");
+      }
+    }
 
     query.append(").size() as count from ").append(vertex.getIdentity());
     final ResultSet resultSet = remoteDatabase.query("sql", query.toString());

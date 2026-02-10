@@ -163,8 +163,8 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public long countEdges(final DIRECTION direction, final String edgeType) {
-    return database.getGraphEngine().countEdges(this, direction, edgeType);
+  public long countEdges(final DIRECTION direction, final String... edgeTypes) {
+    return database.getGraphEngine().countEdges(this, direction, edgeTypes);
   }
 
   @Override

@@ -92,8 +92,8 @@ public class SynchronizedVertex implements Vertex {
   }
 
   @Override
-  public synchronized long countEdges(final DIRECTION direction, final String edgeType) {
-    return delegate.countEdges(direction, edgeType);
+  public synchronized long countEdges(final DIRECTION direction, final String... edgeTypes) {
+    return delegate.countEdges(direction, edgeTypes);
   }
 
   @Override

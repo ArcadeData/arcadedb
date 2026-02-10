@@ -57,8 +57,8 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   }
 
   @Override
-  public long countEdges(final DIRECTION direction, final String edgeType) {
-    return internal.countEdges(direction, edgeType);
+  public long countEdges(final DIRECTION direction, final String... edgeTypes) {
+    return internal.countEdges(direction, edgeTypes);
   }
 
   @Override
