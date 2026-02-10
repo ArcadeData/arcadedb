@@ -40,6 +40,7 @@ import org.apache.tinkerpop.gremlin.structure.T;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
@@ -72,6 +73,7 @@ import java.util.function.Function;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("benchmark")
 class QueryLanguageWithGremlinAndCypherBenchmark {
   private static final String DB_PATH = "target/test-databases/QueryLanguageWithGremlinAndCypherBenchmark";
 
