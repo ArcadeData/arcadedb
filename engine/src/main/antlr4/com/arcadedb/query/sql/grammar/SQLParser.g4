@@ -278,7 +278,6 @@ matchFilterItemKey
     | WHILE       // while: (condition)
     | MAXDEPTH    // maxdepth: 3
     | OPTIONAL    // optional: true
-    | CLASS       // class: Person (legacy)
     | RID         // rid: #1:1
     | PATH_ALIAS  // pathAlias: varName
     | DEPTH_ALIAS // depthAlias: varName
@@ -1243,7 +1242,6 @@ identifier
     | LIMIT
     | LINK
     | IN
-    | OUT
     | ERROR_KW
     | PROFILE
     | HIDDEN_KW

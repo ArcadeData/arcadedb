@@ -910,8 +910,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       keywordText = "maxdepth";
     } else if (ctx.OPTIONAL() != null) {
       keywordText = "optional";
-    } else if (ctx.CLASS() != null) {
-      keywordText = "class";
     } else if (ctx.RID() != null) {
       keywordText = "rid";
     } else if (ctx.PATH_ALIAS() != null) {
