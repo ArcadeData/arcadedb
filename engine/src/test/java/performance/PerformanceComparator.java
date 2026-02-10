@@ -20,9 +20,12 @@ package performance;
 
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
+import org.junit.jupiter.api.Tag;
 
-import java.util.*;
+import java.util.Comparator;
+import java.util.UUID;
 
+@Tag("benchmark")
 public class PerformanceComparator {
   private static final int REPEAT_TEST  = 3;
   private static final int ARRAY_LENGTH = 10000;

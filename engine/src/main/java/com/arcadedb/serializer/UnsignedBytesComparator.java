@@ -18,15 +18,16 @@
  */
 package com.arcadedb.serializer;
 
-import com.arcadedb.exception.ArcadeDBException;
-import sun.misc.Unsafe;
-
-import java.lang.reflect.*;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.*;
-import java.security.*;
 
 /**
  * This class was inspired by Guava's UnsignedBytes, under Apache 2 license.
+ * <p>
+ * As of Java 21+, this implementation uses VarHandle API for safe and efficient byte array comparisons,
+ * replacing the deprecated sun.misc.Unsafe API (JEP 471). The VarHandle approach provides equivalent
+ * performance through JVM intrinsics while being officially supported and future-proof.
  *
  * @author Louis Wasserman
  * @author Brian Milch
@@ -35,29 +36,35 @@ import java.security.*;
  */
 public final class UnsignedBytesComparator {
   private static final int                 UNSIGNED_MASK        = 0xFF;
-  private static final Unsafe              theUnsafe;
-  private static final int                 BYTE_ARRAY_BASE_OFFSET;
   public static final  PureJavaComparator  PURE_JAVA_COMPARATOR = new PureJavaComparator();
   public static final  ByteArrayComparator BEST_COMPARATOR;
 
   static {
-    theUnsafe = getUnsafe();
-    BYTE_ARRAY_BASE_OFFSET = theUnsafe.arrayBaseOffset(byte[].class);
-    // fall back to the safer pure java implementation unless we're in
-    // a 64-bit JVM with an 8-byte aligned field offset.
-    if (!("64".equals(System.getProperty("sun.arch.data.model")) && (BYTE_ARRAY_BASE_OFFSET % 8) == 0
-        // sanity check - this should never fail
-        && theUnsafe.arrayIndexScale(byte[].class) == 1)) {
-      BEST_COMPARATOR = PURE_JAVA_COMPARATOR;  // force fallback to PureJavaComparator
-    } else {
-      BEST_COMPARATOR = new UnsafeComparator();
+    // Prefer VarHandle (Java 9+) as it's officially supported and not deprecated.
+    // Falls back to PureJava implementation if VarHandle fails for any reason.
+    ByteArrayComparator bestComparator;
+    try {
+      bestComparator = new VarHandleComparator();
+      // Test it works with a simple comparison
+      bestComparator.compare(new byte[]{1, 2, 3}, new byte[]{1, 2, 3});
+    } catch (final Throwable t) {
+      // Fall back to pure Java implementation if VarHandle is not available
+      bestComparator = PURE_JAVA_COMPARATOR;
     }
+    BEST_COMPARATOR = bestComparator;
   }
 
   private UnsignedBytesComparator() {
   }
 
-  public static class UnsafeComparator implements ByteArrayComparator {
+  /**
+   * VarHandle-based comparator that replaces sun.misc.Unsafe for Java 21+.
+   * Uses MethodHandles.byteArrayViewVarHandle to read 8 bytes at a time,
+   * providing equivalent performance to Unsafe through JVM intrinsics.
+   */
+  public static class VarHandleComparator implements ByteArrayComparator {
+    private static final VarHandle LONG_ARRAY_VIEW_HANDLE =
+        MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.nativeOrder());
     static final boolean BIG_ENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
 
     @Override
@@ -72,8 +79,8 @@ public final class UnsignedBytesComparator {
        * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
        */
       for (i = 0; i < strideLimit; i += stride) {
-        final long lw = theUnsafe.getLong(left, BYTE_ARRAY_BASE_OFFSET + (long) i);
-        final long rw = theUnsafe.getLong(right, BYTE_ARRAY_BASE_OFFSET + (long) i);
+        final long lw = (long) LONG_ARRAY_VIEW_HANDLE.get(left, i);
+        final long rw = (long) LONG_ARRAY_VIEW_HANDLE.get(right, i);
         if (lw != rw) {
           if (BIG_ENDIAN) {
             return unsignedLongsCompare(lw, rw);
@@ -104,8 +111,8 @@ public final class UnsignedBytesComparator {
        * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
        */
       for (i = 0; i < strideLimit; i += stride) {
-        final long lw = theUnsafe.getLong(left, BYTE_ARRAY_BASE_OFFSET + (long) i);
-        final long rw = theUnsafe.getLong(right, BYTE_ARRAY_BASE_OFFSET + (long) i);
+        final long lw = (long) LONG_ARRAY_VIEW_HANDLE.get(left, i);
+        final long rw = (long) LONG_ARRAY_VIEW_HANDLE.get(right, i);
         if (lw != rw)
           return false;
       }
@@ -122,7 +129,7 @@ public final class UnsignedBytesComparator {
 
     @Override
     public String toString() {
-      return "UnsignedBytes.lexicographicalComparator() (sun.misc.Unsafe version)";
+      return "UnsignedBytes.lexicographicalComparator() (VarHandle version)";
     }
   }
 
@@ -169,34 +176,4 @@ public final class UnsignedBytesComparator {
     final long b2 = b ^ Long.MIN_VALUE;
     return Long.compare(a2, b2);
   }
-
-  /**
-   * Returns a sun.misc.Unsafe. Suitable for use in a 3rd party package. Replace with a simple
-   * call to Unsafe.getUnsafe when integrating into a jdk.
-   *
-   * @return a sun.misc.Unsafe
-   */
-  private static Unsafe getUnsafe() {
-    try {
-      return Unsafe.getUnsafe();
-    } catch (final SecurityException e) {
-      // that's okay; try reflection instead
-    }
-    try {
-      return AccessController.doPrivileged((PrivilegedExceptionAction<Unsafe>) () -> {
-        final Class<Unsafe> k = Unsafe.class;
-        for (final Field f : k.getDeclaredFields()) {
-          f.setAccessible(true);
-          final Object x = f.get(null);
-          if (k.isInstance(x)) {
-            return k.cast(x);
-          }
-        }
-        throw new NoSuchFieldError("the Unsafe");
-      });
-    } catch (final PrivilegedActionException e) {
-      throw new ArcadeDBException("Could not initialize intrinsics", e.getCause());
-    }
-  }
-
 }
