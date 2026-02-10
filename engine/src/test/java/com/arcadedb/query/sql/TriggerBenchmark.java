@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -34,11 +35,12 @@ import java.util.Map;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("benchmark")
 class TriggerBenchmark {
 
-  private static Database database;
-  private static final int WARMUP_ITERATIONS = 10000;
-  private static final int BENCHMARK_ITERATIONS = 100000;
+  private static       Database database;
+  private static final int      WARMUP_ITERATIONS    = 10000;
+  private static final int      BENCHMARK_ITERATIONS = 100000;
 
   @BeforeAll
   static void setup() {

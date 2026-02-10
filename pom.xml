@@ -50,6 +50,12 @@
         <exclude.tests></exclude.tests>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
+        <skipITs>true</skipITs>
+        <skipTests>false</skipTests>
+
+        <itCoverageAgent></itCoverageAgent>
+        <argLine></argLine>
+
         <docker.plugin.version>1.2.2</docker.plugin.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
@@ -66,8 +72,10 @@
         <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
-        <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
         <maven-central-publishing-plugin.version>0.10.0</maven-central-publishing-plugin.version>
+        <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
+        <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
+        <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.3</testcontainers.version>
         <logback-classic.version>1.5.31</logback-classic.version>
@@ -80,22 +88,10 @@
         <json-path.version>2.10.0</json-path.version>
         <slf4j.version>2.0.17</slf4j.version>
         <undertow-core.version>2.3.23.Final</undertow-core.version>
+        <mockito-core.version>5.21.0</mockito-core.version>
         <neo4j-driver.version>5.28.10</neo4j-driver.version>
 
-
-        <skipITs>true</skipITs>
-        <skipTests>false</skipTests>
-
-        <itCoverageAgent></itCoverageAgent>
-        <argLine></argLine>
-        <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
-        <mockito-core.version>5.21.0</mockito-core.version>
-        <byte-buddy.version>1.17.7</byte-buddy.version>
-        <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
-
-        <!-- Oleg Cohen - gRPC support -->
-
-        <protobuf-maven-plugin.version>5.0.0</protobuf-maven-plugin.version>
+        <protobuf-maven-plugin.version>4.1.3</protobuf-maven-plugin.version>
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.33.5</protobuf-java.version>
@@ -128,7 +124,7 @@
     <modules>
         <module>engine</module>
         <module>network</module>
-    	<module>grpc</module>
+        <module>grpc</module>
         <module>server</module>
         <module>test-utils</module>
         <module>metrics</module>
@@ -140,8 +136,8 @@
         <module>redisw</module>
         <module>postgresw</module>
         <module>bolt</module>
-    	<module>grpcw</module>
-    	<module>grpc-client</module>
+        <module>grpcw</module>
+        <module>grpc-client</module>
         <module>coverage</module>
         <module>studio</module>
         <module>package</module>

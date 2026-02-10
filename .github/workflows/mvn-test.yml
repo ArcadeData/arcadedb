@@ -93,7 +93,7 @@ jobs:
 
       - name: Run Unit Tests with Coverage
         # verify because it runs the tests and generates the coverage report, ITs are skipped
-        run: ./mvnw test -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf -DexcludedGroups=slow,benchmark -Dtest=!OpenCypherTCKTest
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf -DexcludedGroups=slow,benchmark -Dtest=!OpenCypherTCKTest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -179,7 +179,7 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Benchmark Unit Tests with Coverage
-        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine  -Dgroups=benchmark
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine  -Dgroups=benchmark -Dtest=!OpenCypherTCKTest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -193,7 +193,7 @@ jobs:
           list-suites: "failed"
           reporter: java-junit
 
-      - name: Upload unit test coverage reports
+      - name: Upload Benchmark unit test coverage reports
         if: success() || failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
