@@ -13,26 +13,33 @@
   &nbsp;
   <a href="https://api.reuse.software/info/github.com/ArcadeData/arcadedb"><img src="https://api.reuse.software/badge/github.com/ArcadeData/arcadedb"></a>
   &nbsp;
-  <a href="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent"><img src="https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent/badge.svg"></a>
-  &nbsp;
   <a href="https://hub.docker.com/repository/docker/arcadedata/arcadedb/general"><img src="https://img.shields.io/docker/pulls/arcadedata/arcadedb"></a>
+  &nbsp;
   <a href="https://deepwiki.com/ArcadeData/arcadedb"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg"></a>
   &nbsp;
-  <a href="https://codecov.io/github/ArcadeData/arcadedb" >
-   <img src="https://codecov.io/github/ArcadeData/arcadedb/graph/badge.svg?token=0690JAJHIO"/></a>
-
-[//]: # (  <a href="https://www.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Coverage"><img src="https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668"></a>)
-
-[//]: # (  &nbsp;)
-  <a href="https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings"><img src="https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b"></a>
+  <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml">
+    <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg">
+  </a>
   &nbsp;
-  <a href="https://www.meterian.io/report/gh/ArcadeData/arcadedb"><img src="https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main"></a>
+  <a href="https://codecov.io/github/ArcadeData/arcadedb">
+   <img src="https://codecov.io/github/ArcadeData/arcadedb/graph/badge.svg?token=0690JAJHIO"/>
+  </a>
   &nbsp;
-  <a href="https://www.meterian.io/report/gh/ArcadeData/arcadedb"><img src="https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main"></a>
+  <a href="https://www.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Coverage">
+    <img src="https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668">
+  </a>
+  &nbsp;
+  <a href="https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings">
+    <img src="https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b">
+  </a>
+  &nbsp;
+  <a href="https://www.meterian.io/report/gh/ArcadeData/arcadedb">
+    <img src="https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main">
+  </a>
+  &nbsp;
+  <a href="https://www.meterian.io/report/gh/ArcadeData/arcadedb">
+    <img src="https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main">
+  </a>
 </p>
 
 <p align="center">
