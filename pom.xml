@@ -122,11 +122,11 @@
     </scm>
 
     <modules>
+        <module>test-utils</module>
         <module>engine</module>
         <module>network</module>
         <module>grpc</module>
         <module>server</module>
-        <module>test-utils</module>
         <module>metrics</module>
         <module>integration</module>
         <module>console</module>
