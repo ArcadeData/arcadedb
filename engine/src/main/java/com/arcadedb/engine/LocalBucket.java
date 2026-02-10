@@ -1231,73 +1231,108 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * so different pages of a multi-page record can be read from different commit points.
    * This can cause silent data corruption when another transaction modifies the record
    * between page reads. To detect this, we validate that the first page version hasn't
-   * changed after reading all chunks. If it has, a ConcurrentModificationException is thrown
-   * to trigger a retry by the caller.
+   * changed after reading all chunks. If it has, the read is automatically retried (up to
+   * {@link GlobalConfiguration#TX_RETRIES} times) to handle transient conflicts transparently.
+   * This ensures read-only queries do not fail with ConcurrentModificationException.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  private Binary loadMultiPageRecord(final RID originalRID, final BasePage firstPage, int recordPositionInPage,
+  private Binary loadMultiPageRecord(final RID originalRID, BasePage firstPage, int recordPositionInPage,
                                      long[] recordSize) throws IOException {
-    // Capture the first page version at start for consistency validation
+    final int maxRetries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
     final PageId firstPageId = firstPage.pageId;
-    final long initialFirstPageVersion = firstPage.getVersion();
 
-    // READ ALL THE CHUNKS TILL THE END
-    final Binary record = new Binary();
-    BasePage page = firstPage;
+    for (int retry = 0; retry <= maxRetries; retry++) {
+      // Capture the first page version at start for consistency validation
+      final long initialFirstPageVersion = firstPage.getVersion();
 
-    while (true) {
-      final int chunkSize = page.readInt((int) (recordPositionInPage + recordSize[1]));
-      final long nextChunkPointer = page.readLong((int) (recordPositionInPage + recordSize[1] + INT_SERIALIZED_SIZE));
-      final Binary chunk = page.getImmutableView(
-              (int) (recordPositionInPage + recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE), chunkSize);
-      record.append(chunk);
+      // READ ALL THE CHUNKS TILL THE END
+      final Binary record = new Binary();
+      BasePage page = firstPage;
+      int currentRecordPositionInPage = recordPositionInPage;
+      long[] currentRecordSize = recordSize;
 
-      if (nextChunkPointer == 0)
-        // LAST CHUNK
-        break;
+      while (true) {
+        final int chunkSize = page.readInt((int) (currentRecordPositionInPage + currentRecordSize[1]));
+        final long nextChunkPointer = page.readLong(
+                (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE));
+        final Binary chunk = page.getImmutableView(
+                (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
+                chunkSize);
+        record.append(chunk);
 
-      final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
-      final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
+        if (nextChunkPointer == 0)
+          // LAST CHUNK
+          break;
 
-      if (chunkPageId >= getTotalPages())
-        throw new DatabaseOperationException("Invalid pointer to a chunk for record " + originalRID);
+        final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
+        final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
-      final BasePage nextPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
+        if (chunkPageId >= getTotalPages())
+          throw new DatabaseOperationException("Invalid pointer to a chunk for record " + originalRID);
 
-      final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
-      if (nextRecordPositionInPage == 0)
-        throw new DatabaseOperationException("Chunk of record " + originalRID + " was deleted");
+        final BasePage nextPage = database.getTransaction()
+                .getPage(new PageId(database, file.getFileId(), chunkPageId), pageSize);
 
-      if (nextPage.equals(page) && recordPositionInPage == nextRecordPositionInPage) {
-        // AVOID INFINITE LOOP?
-        LogManager.instance().log(this, Level.SEVERE,
-                "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/" + chunkPositionInPage);
-        throw new DatabaseOperationException(
-                "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/" + chunkPositionInPage);
+        final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
+        if (nextRecordPositionInPage == 0)
+          throw new DatabaseOperationException("Chunk of record " + originalRID + " was deleted");
+
+        if (nextPage.equals(page) && currentRecordPositionInPage == nextRecordPositionInPage) {
+          // AVOID INFINITE LOOP?
+          LogManager.instance().log(this, Level.SEVERE,
+                  "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/"
+                          + chunkPositionInPage);
+          throw new DatabaseOperationException(
+                  "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/"
+                          + chunkPositionInPage);
+        }
+
+        page = nextPage;
+        currentRecordPositionInPage = nextRecordPositionInPage;
+
+        currentRecordSize = page.readNumberAndSize(currentRecordPositionInPage);
+
+        if (currentRecordSize[0] != NEXT_CHUNK)
+          throw new DatabaseOperationException("Error on fetching multi page record " + originalRID);
       }
 
-      page = nextPage;
-      recordPositionInPage = nextRecordPositionInPage;
+      // VALIDATE: Check if the first page was modified during our read.
+      // If another transaction updated this record, the first page version would have changed,
+      // which means we may have read inconsistent data from different commit points.
+      final BasePage currentFirstPage = database.getPageManager()
+              .getImmutablePage(firstPageId, pageSize, false, true);
+      if (currentFirstPage == null || currentFirstPage.getVersion() == initialFirstPageVersion) {
+        // Version unchanged or page evicted - data is consistent
+        record.position(0);
+        return record;
+      }
 
-      recordSize = page.readNumberAndSize(recordPositionInPage);
-
-      if (recordSize[0] != NEXT_CHUNK)
-        throw new DatabaseOperationException("Error on fetching multi page record " + originalRID);
+      // Version changed - retry by re-fetching the first page with fresh data
+      if (retry < maxRetries) {
+        LogManager.instance().log(this, Level.FINE,
+                "Multi-page record %s was modified during read (attempt %d/%d), retrying...", originalRID,
+                retry + 1, maxRetries);
+        firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
+        recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
+        firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
+        if (firstPage == null)
+          throw new ConcurrentModificationException(
+                  "First page of multi-page record " + originalRID + " was removed during read. Please retry the operation");
+        recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
+        if (recordPositionInPage == 0)
+          throw new ConcurrentModificationException(
+                  "Multi-page record " + originalRID + " was deleted during read. Please retry the operation");
+        recordSize = firstPage.readNumberAndSize(recordPositionInPage);
+      } else
+        throw new ConcurrentModificationException(
+                "Multi-page record " + originalRID + " was modified during read after " + maxRetries
+                        + " retries (page " + firstPageId + " version changed from " + initialFirstPageVersion
+                        + " to " + currentFirstPage.getVersion() + "). Please retry the operation");
     }
 
-    // VALIDATE: Check if the first page was modified during our read.
-    // If another transaction updated this record, the first page version would have changed,
-    // which means we may have read inconsistent data from different commit points.
-    final BasePage currentFirstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
-    if (currentFirstPage != null && currentFirstPage.getVersion() != initialFirstPageVersion)
-      throw new ConcurrentModificationException(
-              "Multi-page record " + originalRID + " was modified during read (page " + firstPageId +
-                      " version changed from " + initialFirstPageVersion + " to " + currentFirstPage.getVersion() +
-                      "). Please retry the operation");
-
-    record.position(0);
-    return record;
+    // Should not reach here, but just in case
+    throw new DatabaseOperationException("Failed to load multi-page record " + originalRID);
   }
 
   private int getRecordPositionInPage(final BasePage page, final int positionInPage) throws IOException {
