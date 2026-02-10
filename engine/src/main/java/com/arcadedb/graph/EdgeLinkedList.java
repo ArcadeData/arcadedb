@@ -139,15 +139,17 @@ public class EdgeLinkedList {
   /**
    * Counts the items in the linked list.
    *
-   * @param edgeType Type of edge to filter for the counting. If it is null, any type is counted.
+   * @param edgeTypes Types of edges to filter for the counting. If null or empty, any type is counted.
    */
-  public long count(final String edgeType) {
+  public long count(final String... edgeTypes) {
     long total = 0;
 
     final Set<Integer> fileIdToFilter;
-    if (edgeType != null)
-      fileIdToFilter = new HashSet<>(vertex.getDatabase().getSchema().getType(edgeType).getBucketIds(true));
-    else
+    if (edgeTypes != null && edgeTypes.length > 0) {
+      fileIdToFilter = new HashSet<>();
+      for (final String edgeType : edgeTypes)
+        fileIdToFilter.addAll(vertex.getDatabase().getSchema().getType(edgeType).getBucketIds(true));
+    } else
       fileIdToFilter = null;
 
     EdgeSegment current = lastSegment;

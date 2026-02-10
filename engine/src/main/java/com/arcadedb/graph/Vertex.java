@@ -55,7 +55,7 @@ public interface Vertex extends Document {
   @Deprecated
   ImmutableLightEdge newLightEdge(String edgeType, Identifiable toVertex, boolean bidirectional);
 
-  long countEdges(DIRECTION direction, String edgeType);
+  long countEdges(DIRECTION direction, String... edgeTypes);
 
   IterableGraph<Edge> getEdges();
 

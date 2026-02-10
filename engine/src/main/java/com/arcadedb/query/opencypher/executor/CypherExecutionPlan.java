@@ -20,9 +20,11 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
+import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
@@ -816,8 +818,9 @@ public class CypherExecutionPlan {
       };
     }
 
-    // Process clauses in order
-    for (final ClauseEntry entry : clausesInOrder) {
+    // Process clauses in order (indexed loop to support look-ahead for optimizations)
+    for (int entryIndex = 0; entryIndex < clausesInOrder.size(); entryIndex++) {
+      final ClauseEntry entry = clausesInOrder.get(entryIndex);
       switch (entry.getType()) {
         case UNWIND:
           final UnwindClause unwindClause = entry.getTypedClause();
@@ -831,6 +834,23 @@ public class CypherExecutionPlan {
 
         case MATCH:
           final MatchClause matchClause = entry.getTypedClause();
+          if (matchClause.isOptional()) {
+            // Try count optimization: peek at next clause
+            final AbstractExecutionStep optimized = tryOptimizeOptionalMatchCount(
+                matchClause, clausesInOrder, entryIndex, currentStep, context, boundVariables);
+            if (optimized != null) {
+              currentStep = optimized;
+              entryIndex++; // skip the WITH clause (already handled)
+              // Update boundVariables from the WITH clause
+              final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
+              boundVariables.clear();
+              for (final ReturnClause.ReturnItem item : nextWith.getItems()) {
+                final String alias = item.getAlias();
+                boundVariables.add(alias != null ? alias : item.getExpression().getText());
+              }
+              break;
+            }
+          }
           currentStep = buildMatchStep(matchClause, currentStep, context, boundVariables);
           break;
 
@@ -1860,6 +1880,193 @@ public class CypherExecutionPlan {
    */
   public PhysicalPlan getPhysicalPlan() {
     return physicalPlan;
+  }
+
+  /**
+   * Attempts to optimize OPTIONAL MATCH + count() pattern into a direct countEdges() call.
+   * <p>
+   * Detects pattern: OPTIONAL MATCH (x)-[r:TYPE]->(y) ... WITH y, count(x) AS cnt
+   * where the OPTIONAL MATCH variables are only used for counting.
+   *
+   * @return optimized CountEdgesStep if pattern matches, null otherwise
+   */
+  private AbstractExecutionStep tryOptimizeOptionalMatchCount(final MatchClause matchClause,
+      final List<ClauseEntry> clausesInOrder, final int currentIndex,
+      final AbstractExecutionStep currentStep, final CommandContext context,
+      final Set<String> boundVariables) {
+
+    // 1. Must be OPTIONAL MATCH with exactly one path pattern
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+
+    // 2. Must have exactly one relationship (single hop, not variable-length)
+    if (pathPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern relPattern = pathPattern.getRelationship(0);
+    if (relPattern.isVariableLength())
+      return null;
+
+    // 3. No property constraints on the relationship
+    if (relPattern.getProperties() != null && !relPattern.getProperties().isEmpty())
+      return null;
+
+    // 4. No WHERE clause on the OPTIONAL MATCH
+    if (matchClause.hasWhereClause())
+      return null;
+
+    // 5. Next clause must be a WITH
+    if (currentIndex + 1 >= clausesInOrder.size())
+      return null;
+
+    final ClauseEntry nextEntry = clausesInOrder.get(currentIndex + 1);
+    if (nextEntry.getType() != ClauseEntry.ClauseType.WITH)
+      return null;
+
+    final WithClause withClause = nextEntry.getTypedClause();
+
+    // WITH must have aggregations + non-aggregations (group by)
+    if (!withClause.hasAggregations() || !withClause.hasNonAggregations())
+      return null;
+
+    // WITH must not have ORDER BY, SKIP, LIMIT, WHERE (keep optimization simple)
+    if (withClause.getOrderByClause() != null || withClause.getSkip() != null
+        || withClause.getLimit() != null || withClause.getWhereClause() != null)
+      return null;
+
+    // Classify WITH items into grouping keys and aggregations
+    final List<ReturnClause.ReturnItem> groupingKeys = new ArrayList<>();
+    FunctionCallExpression countExpr = null;
+    String countAlias = null;
+    int aggregationCount = 0;
+
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      if (item.getExpression().containsAggregation()) {
+        aggregationCount++;
+        // Must be exactly count(variable) — a direct FunctionCallExpression
+        if (!(item.getExpression() instanceof FunctionCallExpression))
+          return null;
+        final FunctionCallExpression funcExpr = (FunctionCallExpression) item.getExpression();
+        if (!"count".equals(funcExpr.getFunctionName()))
+          return null;
+        // 9. count must not be DISTINCT
+        if (funcExpr.isDistinct())
+          return null;
+        // count argument must be a simple variable
+        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().get(0) instanceof VariableExpression))
+          return null;
+        countExpr = funcExpr;
+        countAlias = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
+      } else
+        groupingKeys.add(item);
+    }
+
+    // Must have exactly one aggregation
+    if (aggregationCount != 1 || countExpr == null)
+      return null;
+
+    // Get the count argument variable name
+    final String countArgVariable = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
+
+    // 6/7. Identify bound and unbound endpoints
+    final NodePattern firstNode = pathPattern.getFirstNode();
+    final NodePattern lastNode = pathPattern.getLastNode();
+    final String firstVar = firstNode.getVariable();
+    final String lastVar = lastNode.getVariable();
+
+    if (firstVar == null || lastVar == null)
+      return null;
+
+    // Check node patterns don't have property constraints (would need filtering)
+    if (firstNode.getProperties() != null && !firstNode.getProperties().isEmpty())
+      return null;
+    if (lastNode.getProperties() != null && !lastNode.getProperties().isEmpty())
+      return null;
+
+    // Determine which endpoint is bound and which is unbound
+    final String boundVar;
+    final String unboundVar;
+    final boolean firstIsBound = boundVariables.contains(firstVar);
+    final boolean lastIsBound = boundVariables.contains(lastVar);
+
+    if (firstIsBound && !lastIsBound) {
+      boundVar = firstVar;
+      unboundVar = lastVar;
+    } else if (lastIsBound && !firstIsBound) {
+      boundVar = lastVar;
+      unboundVar = firstVar;
+    } else
+      return null; // Both bound or neither bound — can't optimize
+
+    // The count argument must be the unbound variable
+    if (!countArgVariable.equals(unboundVar))
+      return null;
+
+    // 8. Relationship variable (if named) must NOT be referenced in grouping keys
+    final String relVar = relPattern.getVariable();
+    if (relVar != null) {
+      for (final ReturnClause.ReturnItem key : groupingKeys) {
+        if (key.getExpression().getText().contains(relVar))
+          return null;
+      }
+    }
+
+    // All grouping keys must reference only already-bound variables
+    for (final ReturnClause.ReturnItem key : groupingKeys) {
+      final String keyExprText = key.getExpression() instanceof VariableExpression
+          ? ((VariableExpression) key.getExpression()).getVariableName()
+          : key.getExpression().getText();
+      if (!boundVariables.contains(keyExprText))
+        return null;
+    }
+
+    // Compute direction relative to bound vertex
+    // Pattern direction is from firstNode to lastNode
+    final Vertex.DIRECTION direction;
+    final Direction relDirection = relPattern.getDirection();
+
+    if (firstVar.equals(boundVar)) {
+      // bound is firstNode
+      if (relDirection == Direction.OUT)
+        direction = Vertex.DIRECTION.OUT;
+      else if (relDirection == Direction.IN)
+        direction = Vertex.DIRECTION.IN;
+      else
+        direction = Vertex.DIRECTION.BOTH;
+    } else {
+      // bound is lastNode — reverse the direction
+      if (relDirection == Direction.OUT)
+        direction = Vertex.DIRECTION.IN;
+      else if (relDirection == Direction.IN)
+        direction = Vertex.DIRECTION.OUT;
+      else
+        direction = Vertex.DIRECTION.BOTH;
+    }
+
+    // Edge types
+    final List<String> relTypes = relPattern.getTypes();
+    final String[] edgeTypes = (relTypes != null && !relTypes.isEmpty())
+        ? relTypes.toArray(new String[0]) : null;
+
+    // Build pass-through aliases map
+    final Map<String, String> passThroughAliases = new LinkedHashMap<>();
+    for (final ReturnClause.ReturnItem key : groupingKeys) {
+      final String alias = key.getAlias() != null ? key.getAlias() : key.getExpression().getText();
+      final String varName = key.getExpression() instanceof VariableExpression
+          ? ((VariableExpression) key.getExpression()).getVariableName()
+          : key.getExpression().getText();
+      passThroughAliases.put(alias, varName);
+    }
+
+    // Build the optimized step
+    final CountEdgesStep countEdgesStep = new CountEdgesStep(
+        boundVar, direction, edgeTypes, countAlias, passThroughAliases, context);
+    if (currentStep != null)
+      countEdgesStep.setPrevious(currentStep);
+
+    return countEdgesStep;
   }
 
   /**

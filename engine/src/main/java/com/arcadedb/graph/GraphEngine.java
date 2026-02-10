@@ -297,7 +297,7 @@ public class GraphEngine {
     return outChunk;
   }
 
-  public long countEdges(final VertexInternal vertex, final Vertex.DIRECTION direction, final String edgeType) {
+  public long countEdges(final VertexInternal vertex, final Vertex.DIRECTION direction, final String... edgeTypes) {
     if (direction == null)
       throw new IllegalArgumentException("Direction is null");
 
@@ -306,22 +306,22 @@ public class GraphEngine {
     switch (direction) {
       case BOTH: {
         final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-        total += (outEdges != null) ? outEdges.count(edgeType) : 0L;
+        total += (outEdges != null) ? outEdges.count(edgeTypes) : 0L;
 
         final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
-        total += (inEdges != null) ? inEdges.count(edgeType) : 0L;
+        total += (inEdges != null) ? inEdges.count(edgeTypes) : 0L;
         break;
       }
 
       case OUT: {
         final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-        total += (outEdges != null) ? outEdges.count(edgeType) : 0L;
+        total += (outEdges != null) ? outEdges.count(edgeTypes) : 0L;
         break;
       }
 
       case IN: {
         final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
-        total += (inEdges != null) ? inEdges.count(edgeType) : 0L;
+        total += (inEdges != null) ? inEdges.count(edgeTypes) : 0L;
         break;
       }
 
