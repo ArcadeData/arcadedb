@@ -1315,6 +1315,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 retry + 1, maxRetries);
         firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
         recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
+        firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
+        if (firstPage == null)
+          throw new ConcurrentModificationException(
+                  "First page of multi-page record " + originalRID + " was removed during read. Please retry the operation");
+        recordPositionInPage = getRecordPositionInPage(firstPage, (int) (originalRID.getPosition() % maxRecordsInPage));
+        if (recordPositionInPage == 0)
+          throw new ConcurrentModificationException(
+                  "Multi-page record " + originalRID + " was deleted during read. Please retry the operation");
         recordSize = firstPage.readNumberAndSize(recordPositionInPage);
       } else
         throw new ConcurrentModificationException(
