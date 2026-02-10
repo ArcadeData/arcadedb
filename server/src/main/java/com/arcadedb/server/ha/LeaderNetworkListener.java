@@ -18,7 +18,8 @@
  */
 package com.arcadedb.server.ha;
 
-import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.ErrorCode;
+import com.arcadedb.exception.ExceptionBuilder;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ConnectionException;
@@ -27,9 +28,15 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.net.*;
-import java.util.logging.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.BindException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.util.logging.Level;
 
 public class LeaderNetworkListener extends Thread {
   private final        HAServer            ha;
@@ -135,10 +142,22 @@ public class LeaderNetworkListener extends Thread {
         LogManager.instance().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
       } catch (final SocketException se) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
-        throw new ArcadeDBException(se);
+        throw ExceptionBuilder.network()
+            .code(ErrorCode.STORAGE_IO_ERROR)
+            .message("Unable to create socket")
+            .cause(se)
+            .context("hostName", hostName)
+            .context("port", tryPort)
+            .build();
       } catch (final IOException ioe) {
         LogManager.instance().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
-        throw new ArcadeDBException(ioe);
+        throw ExceptionBuilder.storage()
+            .code(ErrorCode.STORAGE_IO_ERROR)
+            .message("Unable to read data from an open socket")
+            .cause(ioe)
+            .context("hostName", hostName)
+            .context("port", tryPort)
+            .build();
       }
     }
 
@@ -216,7 +235,12 @@ public class LeaderNetworkListener extends Thread {
       try {
         ha.getServer().lifecycleEvent(ReplicationCallback.TYPE.LEADER_ELECTED, remoteServerName);
       } catch (final Exception e) {
-        throw new ArcadeDBException("Error on propagating election status", e);
+        throw ExceptionBuilder.database()
+            .code(ErrorCode.DB_OPERATION_ERROR)
+            .message("Error on propagating election status")
+            .cause(e)
+            .context("remoteServerName", remoteServerName)
+            .build();
       }
     } else
       // CANNOT CONTACT THE ELECTED LEADER, START ELECTION AGAIN

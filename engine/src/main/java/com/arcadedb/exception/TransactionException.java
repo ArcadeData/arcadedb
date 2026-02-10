@@ -26,4 +26,9 @@ public class TransactionException extends ArcadeDBException {
   public TransactionException(final String s, final Throwable e) {
     super(s, e);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.TX_ERROR;
+  }
 }

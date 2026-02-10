@@ -26,4 +26,9 @@ public class SchemaException extends ArcadeDBException {
   public SchemaException(final String s, final Exception e) {
     super(s, e);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.SCHEMA_ERROR;
+  }
 }

@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.InternalException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.CreateVertexExecutionPlanner;
@@ -123,7 +124,7 @@ public class CreateVertexStatement extends Statement {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (final Exception e) {
-      throw new ArcadeDBException(e);
+      throw new InternalException(e);
     }
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();

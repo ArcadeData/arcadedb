@@ -26,4 +26,9 @@ public class ConfigurationException extends ArcadeDBException {
   public ConfigurationException(final String s, final Exception e) {
     super(s, e);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.DB_CONFIG_ERROR;
+  }
 }

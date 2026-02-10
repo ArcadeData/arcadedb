@@ -43,4 +43,9 @@ public class DuplicatedKeyException extends ArcadeDBException {
   public RID getCurrentIndexedRID() {
     return currentIndexedRID;
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.INDEX_DUPLICATE_KEY;
+  }
 }

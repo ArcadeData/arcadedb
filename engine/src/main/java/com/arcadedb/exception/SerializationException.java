@@ -28,4 +28,9 @@ public class SerializationException extends ArcadeDBException {
   public SerializationException(final String s, final Exception e) {
     super(s, e);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.STORAGE_SERIALIZATION_ERROR;
+  }
 }

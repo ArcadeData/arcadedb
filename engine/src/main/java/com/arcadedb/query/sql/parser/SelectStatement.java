@@ -27,6 +27,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.InternalException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -245,7 +246,7 @@ public class SelectStatement extends Statement {
       result.timeout = timeout == null ? null : timeout.copy();
       return result;
     } catch (final Exception e) {
-      throw new ArcadeDBException(e);
+      throw new InternalException(e);
     }
   }
 

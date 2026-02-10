@@ -28,4 +28,9 @@ public class DatabaseIsReadOnlyException extends ArcadeDBException {
   public DatabaseIsReadOnlyException(final String s, final IOException e) {
     super(s, e);
   }
+
+  @Override
+  protected ErrorCode getDefaultErrorCode() {
+    return ErrorCode.DB_IS_READONLY;
+  }
 }
