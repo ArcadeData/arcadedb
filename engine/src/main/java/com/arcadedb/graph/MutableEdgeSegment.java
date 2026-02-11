@@ -127,21 +127,35 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     final int ridSerializedSize = ridSerialized.size();
     final int contentStartPos = getContentStartPosition();
 
-    if (used + ridSerializedSize <= bufferSize) {
-      // APPEND AT THE BEGINNING OF THE CURRENT CHUNK
-      buffer.move(contentStartPos, contentStartPos + ridSerializedSize, used - contentStartPos);
+    // Check if there's room in the segment
+    // Note: we use bufferSize (the allocated size) not buffer.capacity() (the ByteBuffer size)
+    // because when loading from disk, buffer.capacity() may only reflect the used portion
+    final int requiredSize = used + ridSerializedSize;
+    if (requiredSize <= bufferSize) {
+      // Temporarily make buffer resizable to allow move operation up to bufferSize
+      buffer.setAutoResizable(true);
+      try {
+        // Ensure the buffer can accommodate the move operation
+        buffer.size(requiredSize);
 
-      buffer.putByteArray(contentStartPos, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(),
-          ridSerializedSize);
+        // APPEND AT THE BEGINNING OF THE CURRENT CHUNK
+        buffer.move(contentStartPos, contentStartPos + ridSerializedSize, used - contentStartPos);
 
-      // UPDATE USED BYTES
-      setUsed(used + ridSerializedSize);
+        buffer.putByteArray(contentStartPos, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(),
+            ridSerializedSize);
 
-      // INCREMENT COUNT
-      totalCount++;
-      updateCachedCount();
+        // UPDATE USED BYTES
+        setUsed(used + ridSerializedSize);
 
-      return true;
+        // INCREMENT COUNT
+        totalCount++;
+        updateCachedCount();
+
+        return true;
+      } finally {
+        // Restore non-resizable state
+        buffer.setAutoResizable(false);
+      }
     }
 
     // NO ROOM
