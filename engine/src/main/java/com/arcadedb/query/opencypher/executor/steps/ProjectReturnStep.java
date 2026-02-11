@@ -116,6 +116,9 @@ public class ProjectReturnStep extends AbstractExecutionStep {
           final Result inputResult = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
+            if (context.isProfiling())
+              rowCount++;
+
             final ResultInternal projectedResult = projectResult(inputResult);
 
             // Apply DISTINCT deduplication based on projected output columns only
@@ -218,7 +221,10 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       builder.append(String.join(", ", returnClause.getItems()));
     }
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

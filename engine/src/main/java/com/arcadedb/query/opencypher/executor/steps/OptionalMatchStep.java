@@ -108,6 +108,9 @@ public class OptionalMatchStep extends AbstractExecutionStep {
             final Result inputRow = prevResults.next();
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               // Feed this single input row into the match chain
               // Create a single-row input provider for the match chain
               final SingleRowInputStep singleRowInput = new SingleRowInputStep(inputRow, context);
@@ -221,6 +224,9 @@ public class OptionalMatchStep extends AbstractExecutionStep {
     builder.append("+ OPTIONAL MATCH (variables: ").append(String.join(", ", variableNames)).append(")");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     builder.append("\n");
     builder.append(matchChainStart.prettyPrint(depth + 1, indent));

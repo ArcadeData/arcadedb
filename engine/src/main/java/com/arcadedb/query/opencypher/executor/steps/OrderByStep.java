@@ -93,6 +93,9 @@ public class OrderByStep extends AbstractExecutionStep {
 
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
+          if (context.isProfiling())
+            rowCount++;
+
           // Fetch all results from previous step
           final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
           while (prevResults.hasNext()) {

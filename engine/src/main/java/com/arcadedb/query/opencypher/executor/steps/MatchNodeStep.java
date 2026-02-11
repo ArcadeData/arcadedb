@@ -59,6 +59,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final String      variable;
   private final NodePattern pattern;
   private final String      idFilter; // Optional ID filter to apply (e.g., "#1:0")
+  private       String      usedIndexName; // Track which index was used (if any)
 
   /**
    * Creates a match node step.
@@ -166,6 +167,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
             if (iterator.hasNext()) {
               final long begin = context.isProfiling() ? System.nanoTime() : 0;
               try {
+                if (context.isProfiling())
+                  rowCount++;
+
                 final Identifiable identifiable = iterator.next();
                 // Load the record if it's not already loaded
                 final Document record = identifiable.asDocument();
@@ -203,6 +207,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
           while (buffer.size() < n && iterator.hasNext()) {
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final Identifiable identifiable = iterator.next();
 
               // Load the record if it's not already loaded
@@ -435,6 +442,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
         propertyValues[i] = properties.get(propertyNames[i]);
       }
 
+      // Track which index was used for profiling output
+      usedIndexName = label + "[" + String.join(", ", propertyNames) + "]";
+
       // Use the index for lookup
       @SuppressWarnings("unchecked") final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
           context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
@@ -550,8 +560,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
       builder.append(":").append(String.join("|", pattern.getLabels()));
     }
     builder.append(")");
+    if (usedIndexName != null) {
+      builder.append(" [index: ").append(usedIndexName).append("]");
+    }
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

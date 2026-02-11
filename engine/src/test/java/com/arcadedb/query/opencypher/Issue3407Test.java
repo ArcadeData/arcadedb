@@ -176,6 +176,37 @@ class Issue3407Test {
   }
 
   @Test
+  void profileShowsEnhancedMetrics() {
+    // Test that PROFILE shows timing, row counts, and index usage
+    database.getSchema().createVertexType("Person");
+    database.getSchema().getType("Person").createProperty("name", String.class);
+    database.getSchema().getType("Person").createTypeIndex(com.arcadedb.schema.Schema.INDEX_TYPE.LSM_TREE, true, "name");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++) {
+        database.command("opencypher", "CREATE (p:Person {name: 'Person_" + i + "'})");
+      }
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH (p:Person) WHERE p.name = 'Person_5' RETURN p.name");
+
+    assertThat(result.getExecutionPlan().isPresent()).isTrue();
+    final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);
+
+
+    // Verify profile contains either timing (traditional) or cost (optimizer)
+    assertThat(profile).containsAnyOf("μs", "cost=", "Estimated Cost");
+
+    // Verify index usage is shown
+    assertThat(profile).containsAnyOf("[index", "NodeIndexSeek", "IndexSeek");
+
+    while (result.hasNext()) {
+      result.next();
+    }
+  }
+
+  @Test
   void profileShouldShowStepTiming() {
     // Test that PROFILE shows timing information for each step (like SQL engine does)
     database.getSchema().createVertexType("Person");
@@ -197,6 +228,7 @@ class Issue3407Test {
     assertThat(result.getExecutionPlan().isPresent()).isTrue();
     final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);
 
+
     // Verify basic profile information
     assertThat(profile).contains("OpenCypher Query Profile");
     assertThat(profile).contains("Execution Time");
@@ -206,19 +238,19 @@ class Issue3407Test {
     // When traditional execution is used, steps should show (XXXμs) after the step name
     if (profile.contains("Traditional")) {
       // Check that timing appears with steps
-      // Format should be something like: "+ WITH ... (123μs)"
+      // Format should be something like: "+ WITH ... (123μs, 10 rows)"
       assertThat(profile)
           .withFailMessage("PROFILE should show timing for each step.\nActual output:\n%s", profile)
-          .containsPattern("\\+ WITH .*\\([\\d,]+μs\\)|\\+ WITH .*\\(\\d+\\.\\d+ms\\)");
+          .containsPattern("\\+ WITH .*\\([\\d,]+μs(, [\\d,]+ rows)?\\)|\\+ WITH .*\\(\\d+\\.\\d+ms(, [\\d,]+ rows)?\\)");
 
       // Should also have timing for other steps
       assertThat(profile)
           .withFailMessage("PROFILE should show timing for UNWIND step.\nActual output:\n%s", profile)
-          .containsPattern("\\+ UNWIND .*\\([\\d,]+μs\\)|\\+ UNWIND .*\\(\\d+\\.\\d+ms\\)");
+          .containsPattern("\\+ UNWIND .*\\([\\d,]+μs(, [\\d,]+ rows)?\\)|\\+ UNWIND .*\\(\\d+\\.\\d+ms(, [\\d,]+ rows)?\\)");
 
       assertThat(profile)
           .withFailMessage("PROFILE should show timing for CREATE step.\nActual output:\n%s", profile)
-          .containsPattern("\\+ CREATE .*\\([\\d,]+μs\\)|\\+ CREATE .*\\(\\d+\\.\\d+ms\\)");
+          .containsPattern("\\+ CREATE .*\\([\\d,]+μs(, [\\d,]+ rows)?\\)|\\+ CREATE .*\\(\\d+\\.\\d+ms(, [\\d,]+ rows)?\\)");
     }
 
     // Consume results

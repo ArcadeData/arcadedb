@@ -92,6 +92,9 @@ public class SetStep extends AbstractExecutionStep {
           final Result inputResult = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
+            if (context.isProfiling())
+              rowCount++;
+
             applySetOperations(inputResult);
             buffer.add(inputResult);
           } finally {

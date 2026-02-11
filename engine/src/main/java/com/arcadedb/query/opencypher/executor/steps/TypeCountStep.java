@@ -54,6 +54,9 @@ public final class TypeCountStep extends AbstractExecutionStep {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     final long count;
     try {
+      if (context.isProfiling())
+        rowCount++;
+
       // Use O(1) count operation instead of iterating through all records
       count = context.getDatabase().countType(typeName, true);
     } finally {
@@ -94,8 +97,12 @@ public final class TypeCountStep extends AbstractExecutionStep {
     final StringBuilder builder = new StringBuilder();
     builder.append(ind);
     builder.append("+ TYPE COUNT OPTIMIZATION (").append(typeName).append(")");
-    if (context.isProfiling())
-      builder.append(" (").append(getCostFormatted()).append(")");
+    if (context.isProfiling()) {
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
+    }
     return builder.toString();
   }
 }

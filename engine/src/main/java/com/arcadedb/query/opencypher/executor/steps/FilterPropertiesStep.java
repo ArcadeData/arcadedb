@@ -97,6 +97,9 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
           final Result result = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
+            if (context.isProfiling())
+              rowCount++;
+
             // Evaluate filter condition
             if (evaluateCondition(result)) {
               buffer.add(result);
@@ -227,6 +230,9 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
     }
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

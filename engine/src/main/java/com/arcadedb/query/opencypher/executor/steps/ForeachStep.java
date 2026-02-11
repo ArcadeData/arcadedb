@@ -105,6 +105,9 @@ public class ForeachStep extends AbstractExecutionStep {
           final Result inputRow = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
+            if (context.isProfiling())
+              rowCount++;
+
             executeForeach(inputRow, context);
             // Pass through the input row unchanged
             buffer.add(inputRow);

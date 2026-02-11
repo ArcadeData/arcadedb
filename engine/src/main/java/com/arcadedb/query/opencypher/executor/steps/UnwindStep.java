@@ -138,6 +138,9 @@ public class UnwindStep extends AbstractExecutionStep {
           if (currentListIterator != null && currentListIterator.hasNext()) {
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final Object element = currentListIterator.next();
               final ResultInternal unwoundResult = createUnwoundResult(currentInputRow, element);
               buffer.add(unwoundResult);
@@ -250,7 +253,10 @@ public class UnwindStep extends AbstractExecutionStep {
     builder.append(unwindClause.getVariable());
 
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
 
     return builder.toString();

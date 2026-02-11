@@ -111,6 +111,9 @@ public class CallStep extends AbstractExecutionStep {
       final Result inputRow = prevResults.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
+        if (context.isProfiling())
+          rowCount++;
+
         // Execute the call with this row's context
         final Object callResult = executeCall(context, inputRow);
 

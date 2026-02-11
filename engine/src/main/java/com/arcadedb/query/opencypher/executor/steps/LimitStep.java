@@ -106,4 +106,10 @@ public class LimitStep extends AbstractExecutionStep {
       }
     };
   }
+
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
+    final String ind = "  ".repeat(Math.max(0, depth * indent));
+    return ind + "+ LIMIT " + limitCount;
+  }
 }

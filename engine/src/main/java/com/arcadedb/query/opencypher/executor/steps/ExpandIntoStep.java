@@ -177,6 +177,9 @@ public class ExpandIntoStep extends AbstractExecutionStep {
         while (buffer.size() < n && operatorResults.hasNext()) {
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
+            if (context.isProfiling())
+              rowCount++;
+
             buffer.add(operatorResults.next());
           } finally {
             if (context.isProfiling())
@@ -221,6 +224,9 @@ public class ExpandIntoStep extends AbstractExecutionStep {
     builder.append("] ⭐ SEMI-JOIN");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

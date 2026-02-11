@@ -79,6 +79,9 @@ public final class CountEdgesStep extends AbstractExecutionStep {
       final Result inputRow = prevResult.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
+        if (context.isProfiling())
+          rowCount++;
+
         final ResultInternal result = new ResultInternal();
 
         // Copy pass-through properties with their WITH aliases
@@ -122,8 +125,12 @@ public final class CountEdgesStep extends AbstractExecutionStep {
       builder.append("]");
     }
     builder.append(" -> ").append(countOutputAlias).append(")");
-    if (context.isProfiling())
-      builder.append(" (").append(getCostFormatted()).append(")");
+    if (context.isProfiling()) {
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
+    }
     return builder.toString();
   }
 }

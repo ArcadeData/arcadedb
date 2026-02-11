@@ -29,6 +29,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   protected           ExecutionStepInternal prev                           = null;
   protected           boolean               timedOut                       = false;
   protected           long                  cost                           = -1;
+  protected           long                  rowCount                       = 0;
 
   public AbstractExecutionStep(final CommandContext context) {
     this.context = context;
@@ -72,6 +73,14 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   protected String getCostFormatted() {
     final long computedCost = getCost();
     return computedCost > -1 ? new DecimalFormat().format(computedCost / 1000) + "μs" : "";
+  }
+
+  public long getRowCount() {
+    return rowCount;
+  }
+
+  protected String getRowCountFormatted() {
+    return rowCount > 0 ? new DecimalFormat().format(rowCount) + " rows" : "";
   }
 
   protected ExecutionStepInternal checkForPrevious() {

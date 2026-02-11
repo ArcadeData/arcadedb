@@ -132,6 +132,9 @@ public class SubqueryStep extends AbstractExecutionStep {
           if (currentInnerResults != null && currentInnerResults.hasNext()) {
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final Result innerRow = currentInnerResults.next();
               buffer.add(mergeResults(currentOuterRow, innerRow));
             } finally {
@@ -150,6 +153,9 @@ public class SubqueryStep extends AbstractExecutionStep {
           currentOuterRow = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
+            if (context.isProfiling())
+              rowCount++;
+
             // Execute the inner query seeded with the outer row
             final List<Result> innerResults = executeInnerQuery(currentOuterRow, context);
 

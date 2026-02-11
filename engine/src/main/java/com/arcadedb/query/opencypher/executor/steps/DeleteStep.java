@@ -108,6 +108,9 @@ public class DeleteStep extends AbstractExecutionStep {
           final Result inputResult = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
+            if (context.isProfiling())
+              rowCount++;
+
             // Capture type info for relationships before deletion
             final Map<String, String> relTypes = new java.util.HashMap<>();
             for (final String variable : deleteClause.getVariables()) {
@@ -413,6 +416,9 @@ public class DeleteStep extends AbstractExecutionStep {
     }
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }
