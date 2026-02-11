@@ -741,17 +741,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       };
     }
 
-    // Check if expression6 contains a pattern expression (pattern predicate)
-    // This handles cases like: WHERE (n)-[:KNOWS]->()
-    final Cypher25Parser.PatternExpressionContext patternExpr = findPatternExpressionRecursive(expr6);
-    if (patternExpr != null && compCtx == null) {
-      // Parse the pattern and create a pattern predicate expression
-      final PathPattern pathPattern = visitPatternExpression(patternExpr);
-      return new PatternPredicateExpression(pathPattern, false);
-    }
-
     // Check if expression6 contains a parenthesized expression
     // This handles cases like: (p.age < 26 OR p.age > 35)
+    // IMPORTANT: Check parentheses BEFORE patterns to handle cases like (NOT (pattern))
+    // where the NOT operator should be preserved during recursive parsing
     final Cypher25Parser.ParenthesizedExpressionContext parenExpr = findParenthesizedExpressionRecursive(expr6);
     if (parenExpr != null && compCtx == null) {
       // Check if the parenthesized expression contains just a bare variable (e.g., WHERE (n)).
@@ -764,6 +757,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       }
       // Recursively parse the inner expression
       return parseBooleanExpression(parenExpr.expression());
+    }
+
+    // Check if expression6 contains a pattern expression (pattern predicate)
+    // This handles cases like: WHERE (n)-[:KNOWS]->()
+    final Cypher25Parser.PatternExpressionContext patternExpr = findPatternExpressionRecursive(expr6);
+    if (patternExpr != null && compCtx == null) {
+      // Parse the pattern and create a pattern predicate expression
+      final PathPattern pathPattern = visitPatternExpression(patternExpr);
+      return new PatternPredicateExpression(pathPattern, false);
     }
 
     if (compCtx != null) {
