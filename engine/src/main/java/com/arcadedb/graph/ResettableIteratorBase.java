@@ -27,7 +27,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   protected final DatabaseInternal database;
   private final   EdgeSegment      initialContainer;
   protected       EdgeSegment      currentContainer;
-  protected final AtomicInteger    currentPosition = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+  protected final AtomicInteger    currentPosition;
   protected       int              browsed         = 0;
 
   protected ResettableIteratorBase(final DatabaseInternal database, final EdgeSegment current) {
@@ -36,12 +36,13 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     this.database = database;
     this.initialContainer = current;
     this.currentContainer = current;
+    this.currentPosition = new AtomicInteger(current.getContentStartOffset());
   }
 
   @Override
   public void reset() {
     this.currentContainer = initialContainer;
-    currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
+    currentPosition.set(initialContainer.getContentStartOffset());
     browsed = 0;
   }
 

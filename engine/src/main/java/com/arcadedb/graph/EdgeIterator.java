@@ -53,7 +53,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
       if (currentContainer == null)
         break;
 
-      currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
+      currentPosition.set(currentContainer.getContentStartOffset());
     }
 
     return false;

@@ -21,6 +21,8 @@ package com.arcadedb.graph;
 import com.arcadedb.database.RID;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+import java.util.Set;
+
 /**
  * Not intended to be used by the end-user. Internal only.
  *
@@ -29,6 +31,7 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
  */
 @ExcludeFromJacocoGeneratedReport
 public interface VertexInternal extends Vertex {
+  // v0 format methods
   RID getOutEdgesHeadChunk();
 
   RID getInEdgesHeadChunk();
@@ -36,4 +39,12 @@ public interface VertexInternal extends Vertex {
   void setOutEdgesHeadChunk(RID newChunk);
 
   void setInEdgesHeadChunk(RID newChunk);
+
+  Set<Integer> getOutEdgeBuckets();
+
+  Set<Integer> getInEdgeBuckets();
+
+  RID getOutEdgesHeadChunk(int bucketId);
+
+  RID getInEdgesHeadChunk(int bucketId);
 }

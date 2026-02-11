@@ -114,33 +114,37 @@ public class BinarySerializer {
 
     final boolean serializeProperties;
     if (header == null || (vertex instanceof MutableVertex mutableVertex && mutableVertex.isDirty())) {
+      // Always re-serialize if dirty or no buffer
       header = context.getTemporaryBuffer1();
       header.putByte(vertex.getRecordType()); // RECORD TYPE
+
+      // v1 format: edge maps with varlong encoding (saves space - 1 byte for typical cases)
+      // Serialize outgoing edges map
+      final java.util.Set<Integer> outBuckets = vertex.getOutEdgeBuckets();
+      header.putNumber(outBuckets.size()); // varlong: 1 byte for small counts
+      for (final Integer bucketId : outBuckets) {
+        final RID headRID = vertex.getOutEdgesHeadChunk(bucketId);
+        header.putNumber(bucketId);                    // varlong: 1 byte for small bucket IDs
+        header.putNumber(headRID.getBucketId());       // varlong: 1 byte for small bucket IDs
+        header.putNumber(headRID.getPosition());       // varlong: varies by position
+      }
+
+      // Serialize incoming edges map
+      final java.util.Set<Integer> inBuckets = vertex.getInEdgeBuckets();
+      header.putNumber(inBuckets.size()); // varlong: 1 byte for small counts
+      for (final Integer bucketId : inBuckets) {
+        final RID headRID = vertex.getInEdgesHeadChunk(bucketId);
+        header.putNumber(bucketId);                    // varlong: 1 byte for small bucket IDs
+        header.putNumber(headRID.getBucketId());       // varlong: 1 byte for small bucket IDs
+        header.putNumber(headRID.getPosition());       // varlong: varies by position
+      }
+
       serializeProperties = true;
     } else {
       // COPY THE CONTENT (THE BUFFER IS IMMUTABLE)
       header = header.copyOfContent();
       header.position(Binary.BYTE_SERIALIZED_SIZE);
       serializeProperties = false;
-    }
-
-    // WRITE OUT AND IN EDGES POINTER FIRST, THEN SERIALIZE THE VERTEX PROPERTIES (AS A DOCUMENT)
-    final RID outEdges = vertex.getOutEdgesHeadChunk();
-    if (outEdges != null) {
-      header.putInt(outEdges.getBucketId());
-      header.putLong(outEdges.getPosition());
-    } else {
-      header.putInt(-1);
-      header.putLong(-1);
-    }
-
-    final RID inEdges = vertex.getInEdgesHeadChunk();
-    if (inEdges != null) {
-      header.putInt(inEdges.getBucketId());
-      header.putLong(inEdges.getPosition());
-    } else {
-      header.putInt(-1);
-      header.putLong(-1);
     }
 
     if (serializeProperties)

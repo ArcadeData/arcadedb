@@ -33,6 +33,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -44,19 +45,44 @@ import java.util.Map;
  * @see MutableVertex
  */
 public class ImmutableVertex extends ImmutableDocument implements VertexInternal {
-  private RID outEdges;
-  private RID inEdges;
+  // v1 format fields - after migration, everything is v1
+  private Map<Integer, RID> outEdgesMap;
+  private Map<Integer, RID> inEdgesMap;
 
   public ImmutableVertex(final Database database, final DocumentType type, final RID rid, final Binary buffer) {
     super(database, type, rid, buffer);
     if (buffer != null) {
       buffer.position(1); // SKIP RECORD TYPE
-      outEdges = new RID(database, buffer.getInt(), buffer.getLong());
-      if (outEdges.getBucketId() == -1)
-        outEdges = null;
-      inEdges = new RID(database, buffer.getInt(), buffer.getLong());
-      if (inEdges.getBucketId() == -1)
-        inEdges = null;
+
+      // v1 format: edge maps with varlong encoding
+      // [TYPE][OUT_MAP_SIZE: varlong][OUT_MAP_ENTRIES][IN_MAP_SIZE: varlong][IN_MAP_ENTRIES][PROPERTIES]
+
+      // Read outgoing edges map
+      final int outMapSize = (int) buffer.getNumber();
+      if (outMapSize > 0) {
+        outEdgesMap = new HashMap<>(outMapSize);
+        for (int i = 0; i < outMapSize; i++) {
+          final int bucketId = (int) buffer.getNumber();
+          final int ridBucketId = (int) buffer.getNumber();
+          final long ridPosition = buffer.getNumber();
+          final RID headRID = new RID(database, ridBucketId, ridPosition);
+          outEdgesMap.put(bucketId, headRID);
+        }
+      }
+
+      // Read incoming edges map
+      final int inMapSize = (int) buffer.getNumber();
+      if (inMapSize > 0) {
+        inEdgesMap = new HashMap<>(inMapSize);
+        for (int i = 0; i < inMapSize; i++) {
+          final int bucketId = (int) buffer.getNumber();
+          final int ridBucketId = (int) buffer.getNumber();
+          final long ridPosition = buffer.getNumber();
+          final RID headRID = new RID(database, ridBucketId, ridPosition);
+          inEdgesMap.put(bucketId, headRID);
+        }
+      }
+
       propertiesStartingPosition = buffer.position();
     }
   }
@@ -100,13 +126,19 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   @Override
   public RID getOutEdgesHeadChunk() {
     checkForLazyLoading();
-    return outEdges;
+    // v1: return first edge list (for backward compatibility)
+    if (outEdgesMap != null && !outEdgesMap.isEmpty())
+      return outEdgesMap.values().iterator().next();
+    return null;
   }
 
   @Override
   public RID getInEdgesHeadChunk() {
     checkForLazyLoading();
-    return inEdges;
+    // v1: return first edge list (for backward compatibility)
+    if (inEdgesMap != null && !inEdgesMap.isEmpty())
+      return inEdgesMap.values().iterator().next();
+    return null;
   }
 
   @Override
@@ -229,12 +261,36 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   protected boolean checkForLazyLoading() {
     if (super.checkForLazyLoading() || buffer != null && buffer.position() == 1) {
       buffer.position(1); // SKIP RECORD TYPE
-      outEdges = new RID(database, buffer.getInt(), buffer.getLong());
-      if (outEdges.getBucketId() == -1)
-        outEdges = null;
-      inEdges = new RID(database, buffer.getInt(), buffer.getLong());
-      if (inEdges.getBucketId() == -1)
-        inEdges = null;
+
+      // v1 format: edge maps with varlong encoding
+      // [TYPE][OUT_MAP_SIZE: varlong][OUT_MAP_ENTRIES][IN_MAP_SIZE: varlong][IN_MAP_ENTRIES][PROPERTIES]
+
+      // Read outgoing edges map
+      final int outMapSize = (int) buffer.getNumber();
+      if (outMapSize > 0) {
+        outEdgesMap = new HashMap<>(outMapSize);
+        for (int i = 0; i < outMapSize; i++) {
+          final int bucketId = (int) buffer.getNumber();
+          final int ridBucketId = (int) buffer.getNumber();
+          final long ridPosition = buffer.getNumber();
+          final RID headRID = new RID(database, ridBucketId, ridPosition);
+          outEdgesMap.put(bucketId, headRID);
+        }
+      }
+
+      // Read incoming edges map
+      final int inMapSize = (int) buffer.getNumber();
+      if (inMapSize > 0) {
+        inEdgesMap = new HashMap<>(inMapSize);
+        for (int i = 0; i < inMapSize; i++) {
+          final int bucketId = (int) buffer.getNumber();
+          final int ridBucketId = (int) buffer.getNumber();
+          final long ridPosition = buffer.getNumber();
+          final RID headRID = new RID(database, ridBucketId, ridPosition);
+          inEdgesMap.put(bucketId, headRID);
+        }
+      }
+
       propertiesStartingPosition = buffer.position();
       return true;
     }
@@ -249,5 +305,37 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     if (mostUpdated == null)
       mostUpdated = vertex;
     return mostUpdated;
+  }
+
+  @Override
+  public java.util.Set<Integer> getOutEdgeBuckets() {
+    checkForLazyLoading();
+    if (outEdgesMap != null)
+      return outEdgesMap.keySet();
+    return java.util.Collections.emptySet();
+  }
+
+  @Override
+  public java.util.Set<Integer> getInEdgeBuckets() {
+    checkForLazyLoading();
+    if (inEdgesMap != null)
+      return inEdgesMap.keySet();
+    return java.util.Collections.emptySet();
+  }
+
+  @Override
+  public RID getOutEdgesHeadChunk(final int bucketId) {
+    checkForLazyLoading();
+    if (outEdgesMap != null)
+      return outEdgesMap.get(bucketId);
+    return null;
+  }
+
+  @Override
+  public RID getInEdgesHeadChunk(final int bucketId) {
+    checkForLazyLoading();
+    if (inEdgesMap != null)
+      return inEdgesMap.get(bucketId);
+    return null;
   }
 }

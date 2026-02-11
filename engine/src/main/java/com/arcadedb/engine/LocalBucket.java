@@ -451,6 +451,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 recordSize[0] = MINIMUM_RECORD_SIZE;
               } else if (recordSize[0] == FIRST_CHUNK) {
                 pageActiveRecords++;
+                totalActiveRecords++;
                 pageMultiPageRecords++;
                 totalMultiPageRecords++;
                 recordSize[0] = page.readInt((int) (recordPositionInPage + recordSize[1]));

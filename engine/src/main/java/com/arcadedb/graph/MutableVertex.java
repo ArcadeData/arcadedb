@@ -39,8 +39,9 @@ import java.util.*;
  * @see ImmutableVertex
  */
 public class MutableVertex extends MutableDocument implements VertexInternal {
-  private RID outEdges;
-  private RID inEdges;
+  // v1 format fields - after migration, everything is v1 (Map key = edge bucket ID)
+  private Map<Integer, RID> outEdgesMap;
+  private Map<Integer, RID> inEdgesMap;
 
   /**
    * Creation constructor.
@@ -59,11 +60,13 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   @Override
   public MutableVertex save() {
+    // Serialization of v1 edge maps is now handled by BinarySerializer.serializeVertex()
     return (MutableVertex) super.save();
   }
 
   @Override
   public MutableVertex save(final String bucketName) {
+    // Serialization of v1 edge maps is now handled by BinarySerializer.serializeVertex()
     return (MutableVertex) super.save(bucketName);
   }
 
@@ -110,23 +113,87 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   public RID getOutEdgesHeadChunk() {
-    return outEdges;
+    // Return first edge list if map is not empty (for backward compatibility)
+    return outEdgesMap != null && !outEdgesMap.isEmpty() ? outEdgesMap.values().iterator().next() : null;
   }
 
   public RID getInEdgesHeadChunk() {
-    return inEdges;
+    // Return first edge list if map is not empty (for backward compatibility)
+    return inEdgesMap != null && !inEdgesMap.isEmpty() ? inEdgesMap.values().iterator().next() : null;
+  }
+
+  /**
+   * Get outgoing edges head chunk for a specific edge bucket.
+   */
+  public RID getOutEdgesHeadChunk(final int bucketId) {
+    return outEdgesMap != null ? outEdgesMap.get(bucketId) : null;
+  }
+
+  /**
+   * Get incoming edges head chunk for a specific edge bucket.
+   */
+  public RID getInEdgesHeadChunk(final int bucketId) {
+    return inEdgesMap != null ? inEdgesMap.get(bucketId) : null;
+  }
+
+  /**
+   * Get all outgoing edge bucket IDs.
+   */
+  public Set<Integer> getOutEdgeBuckets() {
+    return outEdgesMap != null ? outEdgesMap.keySet() : Collections.emptySet();
+  }
+
+  /**
+   * Get all incoming edge bucket IDs.
+   */
+  public Set<Integer> getInEdgeBuckets() {
+    return inEdgesMap != null ? inEdgesMap.keySet() : Collections.emptySet();
   }
 
   @Override
   public void setOutEdgesHeadChunk(final RID outEdges) {
     dirty = true;
-    this.outEdges = outEdges;
+    // For backward compatibility, store in map with bucket ID 0
+    if (outEdgesMap == null)
+      outEdgesMap = new HashMap<>();
+    if (outEdges != null)
+      outEdgesMap.put(0, outEdges);
+  }
+
+  /**
+   * Set outgoing edges head chunk for a specific edge bucket.
+   */
+  public void setOutEdgesHeadChunk(final int bucketId, final RID headRID) {
+    dirty = true;
+    if (outEdgesMap == null)
+      outEdgesMap = new HashMap<>();
+    if (headRID != null)
+      outEdgesMap.put(bucketId, headRID);
+    else
+      outEdgesMap.remove(bucketId);
   }
 
   @Override
   public void setInEdgesHeadChunk(final RID inEdges) {
     dirty = true;
-    this.inEdges = inEdges;
+    // For backward compatibility, store in map with bucket ID 0
+    if (inEdgesMap == null)
+      inEdgesMap = new HashMap<>();
+    if (inEdges != null)
+      inEdgesMap.put(0, inEdges);
+  }
+
+  /**
+   * Set incoming edges head chunk for a specific edge bucket.
+   */
+  public void setInEdgesHeadChunk(final int bucketId, final RID headRID) {
+    dirty = true;
+    if (inEdgesMap == null)
+      inEdgesMap = new HashMap<>();
+    if (headRID != null)
+      inEdgesMap.put(bucketId, headRID);
+    else
+      inEdgesMap.remove(bucketId);
   }
 
   @Override
@@ -240,13 +307,40 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   private void init() {
     if (buffer != null) {
-      buffer.position(1);
-      this.outEdges = new RID(database, buffer.getInt(), buffer.getLong());
-      if (this.outEdges.getBucketId() == -1)
-        this.outEdges = null;
-      this.inEdges = new RID(database, buffer.getInt(), buffer.getLong());
-      if (this.inEdges.getBucketId() == -1)
-        this.inEdges = null;
+      buffer.position(1); // SKIP RECORD TYPE
+
+      // v1 format: edge maps with varlong encoding
+      // [TYPE][OUT_MAP_SIZE: varlong][OUT_MAP_ENTRIES][IN_MAP_SIZE: varlong][IN_MAP_ENTRIES][PROPERTIES]
+
+      // Read outgoing edges map
+      final int outMapSize = (int) buffer.getNumber();
+      if (outMapSize > 0) {
+        outEdgesMap = new HashMap<>(outMapSize);
+        for (int i = 0; i < outMapSize; i++) {
+          final int bucketId = (int) buffer.getNumber();
+          final int ridBucketId = (int) buffer.getNumber();
+          final long ridPosition = buffer.getNumber();
+          final RID headRID = new RID(database, ridBucketId, ridPosition);
+          outEdgesMap.put(bucketId, headRID);
+        }
+      } else {
+        outEdgesMap = new HashMap<>();
+      }
+
+      // Read incoming edges map
+      final int inMapSize = (int) buffer.getNumber();
+      if (inMapSize > 0) {
+        inEdgesMap = new HashMap<>(inMapSize);
+        for (int i = 0; i < inMapSize; i++) {
+          final int bucketId = (int) buffer.getNumber();
+          final int ridBucketId = (int) buffer.getNumber();
+          final long ridPosition = buffer.getNumber();
+          final RID headRID = new RID(database, ridBucketId, ridPosition);
+          inEdgesMap.put(bucketId, headRID);
+        }
+      } else {
+        inEdgesMap = new HashMap<>();
+      }
 
       this.propertiesStartingPosition = buffer.position();
     }

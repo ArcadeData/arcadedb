@@ -51,7 +51,7 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
 
     currentContainer = currentContainer.getPrevious();
     if (currentContainer != null) {
-      currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
+      currentPosition.set(currentContainer.getContentStartOffset());
       return currentPosition.get() < currentContainer.getUsed();
     }
     return false;

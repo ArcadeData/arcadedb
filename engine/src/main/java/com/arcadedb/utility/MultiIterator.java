@@ -168,7 +168,9 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
 
   @Override
   public void remove() {
-    throw new UnsupportedOperationException("MultiIterator.remove()");
+    if (partialIterator == null)
+      throw new IllegalStateException("No current iterator");
+    partialIterator.remove();
   }
 
   public long getLimit() {

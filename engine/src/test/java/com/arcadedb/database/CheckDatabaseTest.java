@@ -343,9 +343,17 @@ class CheckDatabaseTest extends TestHelper {
   }
 
   private int countEdgesSegmentList(final RID rootVertex) {
-    final EdgeLinkedList outEdges = ((DatabaseInternal) database).getGraphEngine()
-        .getEdgeHeadChunk((VertexInternal) rootVertex.asVertex(), Vertex.DIRECTION.OUT);
+    final VertexInternal vertex = (VertexInternal) rootVertex.asVertex();
+    int total = 0;
 
-    return (int) outEdges.count(null);
+    // v1: Iterate over all per-type edge lists
+    for (final Integer bucketId : vertex.getOutEdgeBuckets()) {
+      final EdgeLinkedList outEdges = ((DatabaseInternal) database).getGraphEngine()
+          .getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT, bucketId);
+      if (outEdges != null)
+        total += outEdges.count(null);
+    }
+
+    return total;
   }
 }

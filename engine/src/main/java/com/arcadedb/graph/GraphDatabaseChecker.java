@@ -180,25 +180,30 @@ public class GraphDatabaseChecker {
 
   private void checkIncomingEdges(boolean fix, Vertex vertex, List<String> warnings, RID vertexIdentity, AtomicLong invalidLinks,
       LinkedHashSet<RID> corruptedRecords, Set<RID> reconnectInEdges) {
-    if (((VertexInternal) vertex).getInEdgesHeadChunk() != null) {
-      EdgeLinkedList inEdges = null;
-      try {
-        inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.IN);
-      } catch (Exception e) {
-        // IGNORE IT
-      }
+    final VertexInternal vertexInternal = (VertexInternal) vertex;
 
-      if (inEdges == null) {
-        if (fix) {
-          vertex = vertex.modify();
-          ((VertexInternal) vertex).setInEdgesHeadChunk(null);
-          ((MutableVertex) vertex).save();
-          warnings.add("vertex " + vertexIdentity + " in edges record " + ((VertexInternal) vertex).getInEdgesHeadChunk()
-              + " is not valid, removing it");
+    // v1: Iterate over all per-type edge buckets
+    for (final Integer bucketId : vertexInternal.getInEdgeBuckets()) {
+      final RID inEdgesHeadChunk = vertexInternal.getInEdgesHeadChunk(bucketId);
+      if (inEdgesHeadChunk != null) {
+        EdgeLinkedList inEdges = null;
+        try {
+          inEdges = graphEngine.getEdgeHeadChunk(vertexInternal, Vertex.DIRECTION.IN, bucketId);
+        } catch (Exception e) {
+          // IGNORE IT
         }
-      } else {
-        final Iterator<Pair<RID, RID>> in = inEdges.entryIterator();
-        while (in.hasNext()) {
+
+        if (inEdges == null) {
+          if (fix) {
+            vertex = vertex.modify();
+            ((VertexInternal) vertex).setInEdgesHeadChunk(null);
+            ((MutableVertex) vertex).save();
+            warnings.add("vertex " + vertexIdentity + " in edges record " + inEdgesHeadChunk
+                + " is not valid, removing it");
+          }
+        } else {
+          final Iterator<Pair<RID, RID>> in = inEdges.entryIterator();
+          while (in.hasNext()) {
           try {
             final Pair<RID, RID> current = in.next();
             final RID edgeRID = current.getFirst();
@@ -356,31 +361,36 @@ public class GraphDatabaseChecker {
         }
       }
     }
+    } // end for each edge bucket
   }
 
   private Vertex checkOutgoingEdges(final boolean fix, Vertex vertex, final List<String> warnings, final RID vertexIdentity,
       final AtomicLong invalidLinks, final LinkedHashSet<RID> corruptedRecords, final Set<RID> reconnectOutEdges) {
-    // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
-    if (((VertexInternal) vertex).getOutEdgesHeadChunk() != null) {
-      EdgeLinkedList outEdges = null;
-      try {
-        outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
-      } catch (Exception e) {
-        // IGNORE IT
-      }
+    final VertexInternal vertexInternal = (VertexInternal) vertex;
 
-      if (outEdges == null) {
-        if (fix) {
-          vertex = vertex.modify();
-          ((VertexInternal) vertex).setOutEdgesHeadChunk(null);
-          ((MutableVertex) vertex).save();
-          warnings.add("vertex " + vertexIdentity + " out edges record " + ((VertexInternal) vertex).getOutEdgesHeadChunk()
-              + " is not valid, removing it");
+    // v1: Iterate over all per-type edge buckets
+    for (final Integer bucketId : vertexInternal.getOutEdgeBuckets()) {
+      final RID outEdgesHeadChunk = vertexInternal.getOutEdgesHeadChunk(bucketId);
+      if (outEdgesHeadChunk != null) {
+        EdgeLinkedList outEdges = null;
+        try {
+          outEdges = graphEngine.getEdgeHeadChunk(vertexInternal, Vertex.DIRECTION.OUT, bucketId);
+        } catch (Exception e) {
+          // IGNORE IT
         }
-      } else {
 
-        final Iterator<Pair<RID, RID>> out = outEdges.entryIterator();
-        while (out.hasNext()) {
+        if (outEdges == null) {
+          if (fix) {
+            vertex = vertex.modify();
+            ((VertexInternal) vertex).setOutEdgesHeadChunk(null);
+            ((MutableVertex) vertex).save();
+            warnings.add("vertex " + vertexIdentity + " out edges record " + outEdgesHeadChunk
+                + " is not valid, removing it");
+          }
+        } else {
+
+          final Iterator<Pair<RID, RID>> out = outEdges.entryIterator();
+          while (out.hasNext()) {
           try {
             final Pair<RID, RID> current = out.next();
             final RID edgeRID = current.getFirst();
@@ -541,6 +551,7 @@ public class GraphDatabaseChecker {
         }
       }
     }
+    } // end for each edge bucket
     return vertex;
   }
 

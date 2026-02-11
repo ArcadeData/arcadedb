@@ -59,4 +59,27 @@ public interface EdgeSegment extends Record {
   EdgeSegment copy();
 
   boolean isEmpty();
+
+  /**
+   * Returns the cached total count of edges in this linked list.
+   * Only valid for first segments; returns -1 for continuation segments.
+   *
+   * @return total edge count (0 to 4,294,967,295) or -1 if not first segment
+   */
+  long getTotalCount();
+
+  /**
+   * Returns true if this is the first segment in the linked list (has count cache).
+   *
+   * @return true if first segment, false if continuation segment
+   */
+  boolean isFirstSegment();
+
+  /**
+   * Returns the position where edge entries start in this segment's buffer.
+   * Different for v0 (offset 13) vs v1 (offset 18) formats.
+   *
+   * @return byte offset where entries begin
+   */
+  int getContentStartOffset();
 }

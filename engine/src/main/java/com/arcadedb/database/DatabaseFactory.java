@@ -22,12 +22,14 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.security.SecurityManager;
 
 import java.io.*;
 import java.nio.charset.*;
 import java.nio.file.Path;
+import java.util.logging.Level;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -75,6 +77,17 @@ public class DatabaseFactory implements AutoCloseable {
 
     if (ACTIVE_INSTANCES.isEmpty())
       PageManager.INSTANCE.configure();
+
+    // Check if database needs migration before opening
+    try {
+      if (DatabaseMigration.needsMigration(databasePath)) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Database at '%s' requires migration to current format version", databasePath);
+        DatabaseMigration.migrate(databasePath);
+      }
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error during database migration", e);
+    }
 
     final LocalDatabase database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);

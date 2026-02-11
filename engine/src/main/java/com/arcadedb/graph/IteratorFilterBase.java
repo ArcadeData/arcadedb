@@ -100,7 +100,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
         // FETCH NEXT CHUNK
         currentContainer = currentContainer.getPrevious();
         if (currentContainer != null) {
-          currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
+          currentPosition.set(currentContainer.getContentStartOffset());
           lastElementPosition = currentPosition.get();
         } else
           // END

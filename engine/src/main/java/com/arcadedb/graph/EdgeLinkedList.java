@@ -142,6 +142,16 @@ public class EdgeLinkedList {
    * @param edgeTypes Types of edges to filter for the counting. If null or empty, any type is counted.
    */
   public long count(final String... edgeTypes) {
+    // v1 optimization: use cached count from first segment if no filter
+    if (edgeTypes == null || edgeTypes.length == 0) {
+      final long cachedCount = lastSegment.getTotalCount();
+      if (cachedCount >= 0) {
+        // First segment has cached count - use it (O(1) instead of O(n))
+        return cachedCount;
+      }
+    }
+
+    // Fallback to scanning (for type-filtered counts or old format)
     long total = 0;
 
     final Set<Integer> fileIdToFilter;
@@ -177,10 +187,12 @@ public class EdgeLinkedList {
 
       final MutableVertex modifiableV = vertex.modify();
 
+      // v1: Update the correct edge bucket in the per-type map
+      final int edgeBucketId = edgeRID.getBucketId();
       if (direction == Vertex.DIRECTION.OUT)
-        modifiableV.setOutEdgesHeadChunk(newChunk.getIdentity());
+        modifiableV.setOutEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
       else
-        modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
+        modifiableV.setInEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
 
       lastSegment = newChunk;
 
@@ -215,10 +227,12 @@ public class EdgeLinkedList {
         final MutableVertex modifiableV = currentVertex.modify();
         currentVertex = modifiableV;
 
+        // v1: Update the correct edge bucket in the per-type map
+        final int edgeBucketId = edgeRID.getBucketId();
         if (direction == Vertex.DIRECTION.OUT)
-          modifiableV.setOutEdgesHeadChunk(newChunk.getIdentity());
+          modifiableV.setOutEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
         else
-          modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
+          modifiableV.setInEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
 
         lastSegment = newChunk;
 
