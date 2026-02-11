@@ -228,7 +228,7 @@ public class CypherFunctionFactory {
       case "nodes", "relationships", "length" -> true;
       // Math functions
       case "rand", "sign", "ceil", "floor", "abs", "sqrt", "round", "isnan",
-          "cosh", "sinh", "tanh", "cot", "coth", "pi", "e" -> true;
+          "cosh", "sinh", "tanh", "cot", "coth", "pi", "e", "randomuuid" -> true;
       // General functions
       case "coalesce" -> true;
       // Predicate functions
@@ -275,6 +275,7 @@ public class CypherFunctionFactory {
     return switch (functionName) {
       // Math functions
       case "rand" -> new RandFunction();
+      case "randomuuid" -> new RandomUuidFunction();
       case "sign" -> new SignFunction();
       case "ceil" -> new MathUnaryFunction("ceil", Math::ceil);
       case "floor" -> new MathUnaryFunction("floor", Math::floor);
@@ -384,6 +385,21 @@ public class CypherFunctionFactory {
     @Override
     public Object execute(final Object[] args, final CommandContext context) {
       return Math.random();
+    }
+  }
+
+  /**
+   * randomuuid() function - returns a random UUID as a string.
+   */
+  private static class RandomUuidFunction implements StatelessFunction {
+    @Override
+    public String getName() {
+      return "randomuuid";
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      return UUID.randomUUID().toString();
     }
   }
 
