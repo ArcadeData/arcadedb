@@ -76,6 +76,13 @@ public class BinarySerializer {
   }
 
   public Binary serialize(final DatabaseInternal database, final Record record) {
+    // If the record already has a complete buffer (e.g., during migration), use it directly
+    if (record instanceof RecordInternal recordInternal) {
+      final Binary buffer = recordInternal.getBuffer();
+      if (buffer != null && buffer.size() > 0 && !(record instanceof MutableDocument && ((MutableDocument) record).isDirty()))
+        return buffer;
+    }
+
     return switch (record.getRecordType()) {
       case Document.RECORD_TYPE, EmbeddedDocument.RECORD_TYPE -> serializeDocument(database, (MutableDocument) record);
       case Vertex.RECORD_TYPE -> serializeVertex(database, (MutableVertex) record);
