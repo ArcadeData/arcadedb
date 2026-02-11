@@ -83,8 +83,10 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   public TypeIndex create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+    // Wait for any running async tasks (e.g., compaction) to complete before creating new index
+    // This prevents NeedRetryException when creating multiple indexes sequentially on large datasets
     if (database.isAsyncProcessing())
-      throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
+      database.async().waitCompletion();
 
     final LocalSchema schema = database.getSchema().getEmbedded();
 
