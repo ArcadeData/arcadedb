@@ -283,25 +283,20 @@ class OpenCypherUnionCallProfileTest {
       database.command("opencypher", "CREATE (n:Person {name: 'Bob'})");
     });
 
-    // Test PROFILE
+    // Test PROFILE - profile info should be in the execution plan, not in records
     final ResultSet result = database.query("opencypher", "PROFILE MATCH (n:Person) RETURN n.name");
 
-    // First result should be profile info
-    assertThat(result.hasNext()).isTrue();
-    final Result profileResult = result.next();
-    final String profile = profileResult.getProperty("profile");
-    assertThat(profile).isNotNull();
+    assertThat(result.getExecutionPlan().isPresent()).isTrue();
+    final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);
     assertThat(profile).contains("OpenCypher Query Profile");
     assertThat(profile).contains("Execution Time");
     assertThat(profile).contains("Rows Returned");
 
-    // Following results are the actual query results
-    int count = 0;
-    while (result.hasNext()) {
-      result.next();
-      count++;
-    }
-    assertThat(count).isEqualTo(2);
+    // ExplainResultSet emits one record with executionPlanAsString, no actual query results
+    assertThat(result.hasNext()).isTrue();
+    final Result explainRecord = result.next();
+    assertThat(explainRecord.hasProperty("executionPlanAsString")).isTrue();
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
@@ -315,12 +310,11 @@ class OpenCypherUnionCallProfileTest {
       }
     });
 
-    // Test PROFILE shows correct row count
+    // Test PROFILE shows correct row count in the execution plan
     final ResultSet result = database.query("opencypher", "PROFILE MATCH (n:Item) RETURN n.value");
 
-    assertThat(result.hasNext()).isTrue();
-    final Result profileResult = result.next();
-    final String profile = profileResult.getProperty("profile");
+    assertThat(result.getExecutionPlan().isPresent()).isTrue();
+    final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);
     assertThat(profile).contains("Rows Returned: 5");
   }
 
@@ -333,16 +327,16 @@ class OpenCypherUnionCallProfileTest {
       database.command("opencypher", "CREATE (n:Counter {count: 0})");
     });
 
-    // EXPLAIN should not execute the query, just show plan
+    // EXPLAIN should not execute the query, just show plan via getExecutionPlan()
     final ResultSet result = database.query("opencypher", "EXPLAIN MATCH (n:Counter) RETURN n.count");
 
-    assertThat(result.hasNext()).isTrue();
-    final Result explainResult = result.next();
-    final String plan = explainResult.getProperty("plan");
-    assertThat(plan).isNotNull();
+    assertThat(result.getExecutionPlan().isPresent()).isTrue();
+    final String plan = result.getExecutionPlan().get().prettyPrint(0, 2);
     assertThat(plan).contains("OpenCypher Native Execution Plan");
 
-    // Should only have one result (the plan)
+    // ExplainResultSet emits one record with executionPlanAsString
+    assertThat(result.hasNext()).isTrue();
+    result.next();
     assertThat(result.hasNext()).isFalse();
   }
 }
