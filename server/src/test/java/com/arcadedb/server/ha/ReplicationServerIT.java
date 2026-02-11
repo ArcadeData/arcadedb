@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
@@ -33,18 +34,22 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.fail;
 
+@Tag("ha")
 public abstract class ReplicationServerIT extends BaseGraphServerTest {
   private static final int DEFAULT_MAX_RETRIES = 30;
 
@@ -61,6 +66,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   }
 
   @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
   public void replication() throws Exception {
     testReplication(0);
   }
@@ -102,8 +108,21 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           if (retry >= getMaxRetry() - 1)
             throw e;
           counter = lastGoodCounter;
+        } catch (final DatabaseIsClosedException e) {
+          // Server was stopped during test, this is expected in leader failover tests
+          LogManager.instance()
+              .log(this, Level.FINE, "TEST: - DATABASE CLOSED (server stopped during test): %s", null, e.toString());
+          throw e;
         } finally {
-          db.begin();
+          // Only call db.begin() if database is still open
+          // Use try-catch to handle race condition where database closes between isOpen() check and begin()
+          if (db != null && db.isOpen() && !db.isTransactionActive()) {
+            try {
+              db.begin();
+            } catch (final DatabaseIsClosedException ignored) {
+              // Database closed between isOpen() check and begin() - this is expected in failover tests
+            }
+          }
         }
       }
 
@@ -118,8 +137,20 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     testLog("Done");
 
-    for (int i = 0; i < getServerCount(); i++)
-      waitForReplicationIsCompleted(i);
+    // Wait for cluster to stabilize before verification
+    // Count only servers that are currently online (some may have been stopped during test)
+    int onlineServerCount = 0;
+    for (int i = 0; i < getServerCount(); i++) {
+      final ArcadeDBServer server = getServer(i);
+      if (server != null && server.getStatus() == ArcadeDBServer.Status.ONLINE) {
+        onlineServerCount++;
+      }
+    }
+
+    // Only wait for cluster stabilization if we have online servers
+    if (onlineServerCount > 0) {
+      waitForClusterStable(onlineServerCount);
+    }
 
     assertThat(db.countType(VERTEX1_TYPE_NAME, true))
         .as("Check for vertex count for server" + 0)

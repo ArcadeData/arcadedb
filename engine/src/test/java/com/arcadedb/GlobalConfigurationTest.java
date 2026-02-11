@@ -46,7 +46,8 @@ class GlobalConfigurationTest extends TestHelper {
   void typeConversion() {
     final int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
 
-    assertThatThrownBy(() -> GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue("notvalid")).isInstanceOf(NumberFormatException.class);
+    assertThatThrownBy(() -> GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue("notvalid")).isInstanceOf(
+        NumberFormatException.class);
 
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue(original);
   }
@@ -62,5 +63,29 @@ class GlobalConfigurationTest extends TestHelper {
     assertThat(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.isChanged()).isTrue();
 
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue(original);
+  }
+
+  @Test
+  void testHAEnhancedReconnectionConfig() {
+    // Test feature flag
+    assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION).isNotNull();
+    assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION.getDefValue()).isEqualTo(false);
+    assertThat(GlobalConfiguration.HA_ENHANCED_RECONNECTION.getType()).isEqualTo(Boolean.class);
+
+    assertThat(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED).isNotNull();
+    assertThat(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED.getDefValue()).isEqualTo(true);
+    assertThat(GlobalConfiguration.HA_CIRCUIT_BREAKER_ENABLED.getType()).isEqualTo(Boolean.class);
+
+    assertThat(GlobalConfiguration.HA_CONSISTENCY_CHECK_ENABLED).isNotNull();
+    assertThat(GlobalConfiguration.HA_CONSISTENCY_CHECK_ENABLED.getDefValue()).isEqualTo(false);
+    assertThat(GlobalConfiguration.HA_CONSISTENCY_CHECK_ENABLED.getType()).isEqualTo(Boolean.class);
+
+    // Test transient failure config
+    assertThat(GlobalConfiguration.HA_TRANSIENT_FAILURE_MAX_ATTEMPTS.getDefValue()).isEqualTo(3);
+    assertThat(GlobalConfiguration.HA_TRANSIENT_FAILURE_BASE_DELAY_MS.getDefValue()).isEqualTo(1000L);
+
+    // Test unknown error config
+    assertThat(GlobalConfiguration.HA_UNKNOWN_ERROR_MAX_ATTEMPTS.getDefValue()).isEqualTo(5);
+    assertThat(GlobalConfiguration.HA_UNKNOWN_ERROR_BASE_DELAY_MS.getDefValue()).isEqualTo(2000L);
   }
 }
