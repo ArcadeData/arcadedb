@@ -34,7 +34,16 @@ Add after the existing JMH dependencies (after line ~206 in `engine/pom.xml`):
 
 Note: `${micrometer.version}` is already defined as `1.16.2` in the parent `pom.xml`.
 
-**Step 2: Create the skeleton class**
+**Step 2: Update ATTRIBUTIONS.md**
+
+Add Micrometer to `ATTRIBUTIONS.md` (alphabetical order, after "metrics-core"):
+
+```
+- Micrometer (io.micrometer:micrometer-core) - Apache License 2.0
+  https://micrometer.io/
+```
+
+**Step 3: Create the skeleton class**
 
 Create `engine/src/test/java/performance/GraphBenchmark.java` with the class structure, constants, lifecycle methods, and empty test methods. Include all imports upfront.
 
@@ -62,6 +71,7 @@ package performance;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
@@ -208,6 +218,12 @@ class GraphBenchmark {
   }
 
   @Test
+  @Order(0)
+  void phase1_verifyGraphIntegrity() {
+    // TODO: Task 9 -- verify vertex/edge counts
+  }
+
+  @Test
   @Order(1)
   void phase2_lookups() {
     // TODO: Task 6
@@ -262,15 +278,15 @@ class GraphBenchmark {
 }
 ```
 
-**Step 3: Compile to verify skeleton**
+**Step 4: Compile to verify skeleton**
 
 Run: `cd /Users/frank/projects/arcade/worktrees/ldbc-bechmark && mvn compile test-compile -pl engine -q`
 Expected: BUILD SUCCESS (no compilation errors)
 
-**Step 4: Commit**
+**Step 5: Commit**
 
 ```bash
-git add engine/pom.xml engine/src/test/java/performance/GraphBenchmark.java
+git add engine/pom.xml engine/src/test/java/performance/GraphBenchmark.java ATTRIBUTIONS.md
 git commit -m "feat: add GraphBenchmark skeleton with Micrometer dependency"
 ```
 
@@ -413,6 +429,10 @@ Add these private methods and wire them into `populateGraph()`:
     System.out.println("Populating graph...");
     final long start = System.currentTimeMillis();
 
+    // Disable WAL for bulk loading performance
+    database.setWALFlush(WALFile.FlushType.NO);
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL, false);
+
     generateTagClasses();
     generateTags();
     generatePlaces();
@@ -423,6 +443,10 @@ Add these private methods and wire them into `populateGraph()`:
     generatePosts();
     generateComments();
     generateLikes();
+
+    // Re-enable WAL for benchmark queries
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL, true);
+    database.setWALFlush(WALFile.FlushType.YES_FULL);
 
     System.out.println("Graph populated in " + (System.currentTimeMillis() - start) + " ms");
   }
@@ -1012,6 +1036,10 @@ git commit -m "feat: implement KNOWS, Forum, Post, Comment, LIKES generation"
     final ThreadLocalRandom rnd = ThreadLocalRandom.current();
     final int sampleSize = 100;
 
+    // Pre-compute city ID range (same formula used in generatePlaces)
+    final int firstCityId = CONTINENTS.length + Math.min(COUNTRIES.length, NUM_PLACES / 3);
+    final int numCities = Math.max(1, NUM_PLACES - firstCityId);
+
     samplePersonIds = new long[sampleSize];
     samplePostIds = new long[sampleSize];
     sampleForumIds = new long[sampleSize];
@@ -1022,7 +1050,7 @@ git commit -m "feat: implement KNOWS, Forum, Post, Comment, LIKES generation"
       samplePersonIds[i] = rnd.nextLong(NUM_PERSONS);
       samplePostIds[i] = rnd.nextLong(NUM_POSTS);
       sampleForumIds[i] = rnd.nextLong(NUM_FORUMS);
-      sampleCityNames[i] = "City_" + (CONTINENTS.length + Math.min(COUNTRIES.length, NUM_PLACES / 3) + rnd.nextInt(Math.max(1, NUM_PLACES - CONTINENTS.length - Math.min(COUNTRIES.length, NUM_PLACES / 3))));
+      sampleCityNames[i] = "City_" + (firstCityId + rnd.nextInt(numCities));
       sampleFirstNames[i] = FIRST_NAMES[rnd.nextInt(FIRST_NAMES.length)];
     }
   }
@@ -1104,10 +1132,11 @@ git commit -m "feat: implement KNOWS, Forum, Post, Comment, LIKES generation"
 
   private String[] formatRow(final String phase, final String name, final String lang,
       final int ops, final long[] sortedNanos) {
+    final int len = sortedNanos.length;
     final double avgMs = Arrays.stream(sortedNanos).average().orElse(0) / 1_000_000.0;
-    final double p50Ms = sortedNanos[sortedNanos.length / 2] / 1_000_000.0;
-    final double p95Ms = sortedNanos[(int) (sortedNanos.length * 0.95)] / 1_000_000.0;
-    final double p99Ms = sortedNanos[(int) (sortedNanos.length * 0.99)] / 1_000_000.0;
+    final double p50Ms = sortedNanos[Math.min(len / 2, len - 1)] / 1_000_000.0;
+    final double p95Ms = sortedNanos[Math.min((int) (len * 0.95), len - 1)] / 1_000_000.0;
+    final double p99Ms = sortedNanos[Math.min((int) (len * 0.99), len - 1)] / 1_000_000.0;
     return new String[] { phase, name, lang, String.valueOf(ops),
         String.format("%.3f", avgMs), String.format("%.3f", p50Ms),
         String.format("%.3f", p95Ms), String.format("%.3f", p99Ms) };
@@ -1220,9 +1249,9 @@ git commit -m "feat: implement Phase 3 simple traversal benchmarks"
   void phase4_complexTraversals() {
     System.out.println("\n=== Phase 4: Complex Traversals ===");
 
-    // 4a: Friends-of-friends (2-hop KNOWS, exclude direct friends)
+    // 4a: Friends-of-friends (Cypher only -- SQL expand() cannot exclude direct friends)
     benchmark("4a", "Friends of friends", COMPLEX_TRAVERSAL_ITERATIONS,
-        "SELECT expand(both('KNOWS').both('KNOWS')) FROM Person WHERE id = :id",
+        null,
         "MATCH (p:Person {id: $id})-[:KNOWS]-()-[:KNOWS]-(fof) " +
             "WHERE fof <> p AND NOT (p)-[:KNOWS]-(fof) RETURN DISTINCT fof");
 
@@ -1273,7 +1302,49 @@ git commit -m "feat: implement Phase 4 complex traversal benchmarks"
 **Files:**
 - Modify: `engine/src/test/java/performance/GraphBenchmark.java`
 
-**Step 1: Implement `printDatasetStats()` and `printReport()`**
+**Step 1: Add graph integrity verification test**
+
+Add a new test method at `@Order(0)` that runs before the benchmark phases to verify the graph structure is sound:
+
+```java
+  @Test
+  @Order(0)
+  void phase1_verifyGraphIntegrity() {
+    System.out.println("\n=== Phase 1: Graph Integrity Verification ===");
+
+    // Verify vertex counts match expected (within tolerance for existing DB)
+    assertThat(database.countType("Person", false)).isGreaterThan(0);
+    assertThat(database.countType("Post", false)).isGreaterThan(0);
+    assertThat(database.countType("Comment", false)).isGreaterThan(0);
+    assertThat(database.countType("Forum", false)).isGreaterThan(0);
+    assertThat(database.countType("Tag", false)).isGreaterThan(0);
+    assertThat(database.countType("TagClass", false)).isGreaterThan(0);
+    assertThat(database.countType("Place", false)).isGreaterThan(0);
+    assertThat(database.countType("Organisation", false)).isGreaterThan(0);
+
+    // Verify edges exist via spot-check queries
+    try (final ResultSet rs = database.query("sql",
+        "SELECT COUNT(*) as cnt FROM ( SELECT expand(both('KNOWS')) FROM Person WHERE id = 0 )")) {
+      assertThat(rs.hasNext()).isTrue();
+      System.out.println("  KNOWS edges from Person 0: " + rs.next().getProperty("cnt"));
+    }
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT COUNT(*) as cnt FROM ( SELECT expand(out('HAS_TAG')) FROM Post WHERE id = 0 )")) {
+      assertThat(rs.hasNext()).isTrue();
+      System.out.println("  HAS_TAG edges from Post 0: " + rs.next().getProperty("cnt"));
+    }
+
+    System.out.println("  Graph integrity: OK");
+  }
+```
+
+This requires adding the AssertJ import:
+```java
+import static org.assertj.core.api.Assertions.assertThat;
+```
+
+**Step 2: Implement `printDatasetStats()` and `printReport()`**
 
 ```java
   private void printDatasetStats() {

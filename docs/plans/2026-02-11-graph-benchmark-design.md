@@ -190,7 +190,7 @@ Total generation time recorded. If database reused, prints vertex/edge counts on
 | 4d | Shortest path between two Persons via KNOWS (Cypher only) | 100 |
 | 4e | Forum recommendation (forums with most of Person's friends) | 200 |
 
-All queries run in both SQL and Cypher except 4d (Cypher only, uses shortestPath).
+Queries 4a–4e are Cypher-only (complex pattern matching, aggregation, `shortestPath`). Phases 2–3 run both SQL and Cypher side by side.
 
 ## Representative Queries
 
@@ -221,8 +221,7 @@ Cypher: MATCH (p:Person {id: $id})<-[:HAS_CREATOR]-(post:Post) RETURN post
 ### Phase 4 -- Complex Traversals
 
 ```sql
--- 4a: Friends-of-friends
-SQL:    SELECT expand(both('KNOWS').both('KNOWS')) FROM Person WHERE id = ?
+-- 4a: Friends-of-friends (Cypher only -- SQL expand() cannot exclude direct friends)
 Cypher: MATCH (p:Person {id: $id})-[:KNOWS]-()-[:KNOWS]-(fof)
         WHERE fof <> p AND NOT (p)-[:KNOWS]-(fof)
         RETURN DISTINCT fof
@@ -255,6 +254,10 @@ Metrics per query:
 - `Timer`: `benchmark.query.<phase>.<queryName>.<language>` -- with p50, p95, p99 percentile histograms
 - `Counter`: `benchmark.query.<phase>.<queryName>.<language>.results` -- total result rows (sanity check)
 - `Timer`: `benchmark.creation` -- total graph generation time
+
+## Dependencies
+
+Adding Micrometer requires updating `ATTRIBUTIONS.md` (Apache 2.0 license, compatible).
 
 ## Output Format
 
