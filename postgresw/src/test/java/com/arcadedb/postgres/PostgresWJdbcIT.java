@@ -42,6 +42,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Properties;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.IntStream;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -843,7 +844,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   /**
    * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/1630">...</a>
    * "Error on parsing bind message: null" when using node-postgres driver
-   *
+   * <p>
    * This test verifies that parameterized SELECT queries work correctly.
    */
   @Test
@@ -871,7 +872,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   /**
    * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/668">...</a>
    * Test multiple parameterized queries similar to what asyncpg does
-   *
+   * <p>
    * asyncpg sends paramFormatCount=0 in BIND messages, meaning "use text format
    * for all parameters". This test verifies the fix handles various parameter scenarios.
    */
@@ -922,7 +923,8 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         st.execute("create property TEXT_EMBEDDING_2.embedding if not exists ARRAY_OF_FLOATS;");
 
         // Test INSERT with RETURN - this matches the Python e2e test scenario
-        ResultSet resultSet = st.executeQuery("INSERT INTO `TEXT_EMBEDDING_2` SET str = \"meow\", embedding = [0.1,0.2,0.3] RETURN embedding");
+        ResultSet resultSet = st.executeQuery(
+            "INSERT INTO `TEXT_EMBEDDING_2` SET str = \"meow\", embedding = [0.1,0.2,0.3] RETURN embedding");
 
         assertThat(resultSet.next()).isTrue();
         Array embeddingArray = resultSet.getArray("embedding");
