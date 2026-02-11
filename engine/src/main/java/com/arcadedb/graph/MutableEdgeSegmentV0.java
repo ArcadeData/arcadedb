@@ -28,7 +28,6 @@ import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -304,7 +303,7 @@ public class MutableEdgeSegmentV0 extends BaseRecord implements EdgeSegment, Rec
   }
 
   @Override
-  public long count(final Set<Integer> fileIds) {
+  public long count() {
     long total = 0;
 
     final int used = getUsed();
@@ -318,11 +317,7 @@ public class MutableEdgeSegmentV0 extends BaseRecord implements EdgeSegment, Rec
         buffer.getNumber();
         buffer.getNumber();
 
-        if (fileIds != null) {
-          if (fileIds.contains(fileId))
-            ++total;
-        } else
-          ++total;
+        ++total;
       }
     }
 

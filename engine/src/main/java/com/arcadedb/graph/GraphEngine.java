@@ -318,34 +318,52 @@ public class GraphEngine {
     // Get the most updated vertex from transaction cache
     final VertexInternal mostUpdatedVertex = getMostUpdatedVertex(vertex);
 
+    // v1 optimization: if edgeTypes are specified, extract bucket IDs upfront
+    // and only query edge lists for those specific buckets (no filtering needed in EdgeLinkedList)
+    final Set<Integer> targetBucketIds;
+    if (edgeTypes != null && edgeTypes.length > 0) {
+      targetBucketIds = new HashSet<>();
+      for (final String edgeType : edgeTypes)
+        targetBucketIds.addAll(database.getSchema().getType(edgeType).getBucketIds(true));
+    } else
+      targetBucketIds = null;
+
     // v1: Iterate over per-type edge lists
     long total = 0;
 
     switch (direction) {
       case BOTH: {
         for (final Integer bucketId : mostUpdatedVertex.getOutEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList outEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.OUT, bucketId);
-          total += (outEdges != null) ? outEdges.count(edgeTypes) : 0L;
+          total += (outEdges != null) ? outEdges.count() : 0L;
         }
         for (final Integer bucketId : mostUpdatedVertex.getInEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList inEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.IN, bucketId);
-          total += (inEdges != null) ? inEdges.count(edgeTypes) : 0L;
+          total += (inEdges != null) ? inEdges.count() : 0L;
         }
         break;
       }
 
       case OUT: {
         for (final Integer bucketId : mostUpdatedVertex.getOutEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList outEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.OUT, bucketId);
-          total += (outEdges != null) ? outEdges.count(edgeTypes) : 0L;
+          total += (outEdges != null) ? outEdges.count() : 0L;
         }
         break;
       }
 
       case IN: {
         for (final Integer bucketId : mostUpdatedVertex.getInEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList inEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.IN, bucketId);
-          total += (inEdges != null) ? inEdges.count(edgeTypes) : 0L;
+          total += (inEdges != null) ? inEdges.count() : 0L;
         }
         break;
       }
@@ -522,20 +540,34 @@ public class GraphEngine {
     // Get the most updated vertex from transaction cache
     final VertexInternal mostUpdatedVertex = getMostUpdatedVertex(vertex);
 
+    // v1 optimization: if edgeTypes are specified, extract bucket IDs upfront
+    // and only query edge lists for those specific buckets (no filtering needed in EdgeLinkedList)
+    final Set<Integer> targetBucketIds;
+    if (edgeTypes != null && edgeTypes.length > 0) {
+      targetBucketIds = new HashSet<>();
+      for (final String edgeType : edgeTypes)
+        targetBucketIds.addAll(database.getSchema().getType(edgeType).getBucketIds(true));
+    } else
+      targetBucketIds = null;
+
     // v1: Combine iterators from all per-type edge lists
     switch (direction) {
       case BOTH: {
         final MultiIterator<Edge> result = new MultiIterator<>();
 
         for (final Integer bucketId : mostUpdatedVertex.getOutEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList outEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.OUT, bucketId);
           if (outEdges != null)
-            result.addIterator(outEdges.edgeIterator(edgeTypes));
+            result.addIterator(outEdges.edgeIterator());
         }
         for (final Integer bucketId : mostUpdatedVertex.getInEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList inEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.IN, bucketId);
           if (inEdges != null)
-            result.addIterator(inEdges.edgeIterator(edgeTypes));
+            result.addIterator(inEdges.edgeIterator());
         }
         return result;
       }
@@ -543,9 +575,11 @@ public class GraphEngine {
       case OUT: {
         final MultiIterator<Edge> result = new MultiIterator<>();
         for (final Integer bucketId : mostUpdatedVertex.getOutEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList outEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.OUT, bucketId);
           if (outEdges != null)
-            result.addIterator(outEdges.edgeIterator(edgeTypes));
+            result.addIterator(outEdges.edgeIterator());
         }
         return result;
       }
@@ -553,9 +587,11 @@ public class GraphEngine {
       case IN: {
         final MultiIterator<Edge> result = new MultiIterator<>();
         for (final Integer bucketId : mostUpdatedVertex.getInEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList inEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.IN, bucketId);
           if (inEdges != null)
-            result.addIterator(inEdges.edgeIterator(edgeTypes));
+            result.addIterator(inEdges.edgeIterator());
         }
         return result;
       }
@@ -605,20 +641,34 @@ public class GraphEngine {
     // Get the most updated vertex from transaction cache
     final VertexInternal mostUpdatedVertex = getMostUpdatedVertex(vertex);
 
+    // v1 optimization: if edgeTypes are specified, extract bucket IDs upfront
+    // and only query edge lists for those specific buckets (no filtering needed in EdgeLinkedList)
+    final Set<Integer> targetBucketIds;
+    if (edgeTypes != null && edgeTypes.length > 0) {
+      targetBucketIds = new HashSet<>();
+      for (final String edgeType : edgeTypes)
+        targetBucketIds.addAll(database.getSchema().getType(edgeType).getBucketIds(true));
+    } else
+      targetBucketIds = null;
+
     // v1: Combine iterators from all per-type edge lists
     switch (direction) {
       case BOTH: {
         final MultiIterator<Vertex> result = new MultiIterator<>();
 
         for (final Integer bucketId : mostUpdatedVertex.getOutEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList outEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.OUT, bucketId);
           if (outEdges != null)
-            result.addIterator(outEdges.vertexIterator(edgeTypes));
+            result.addIterator(outEdges.vertexIterator());
         }
         for (final Integer bucketId : mostUpdatedVertex.getInEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList inEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.IN, bucketId);
           if (inEdges != null)
-            result.addIterator(inEdges.vertexIterator(edgeTypes));
+            result.addIterator(inEdges.vertexIterator());
         }
         return result;
       }
@@ -626,9 +676,11 @@ public class GraphEngine {
       case OUT: {
         final MultiIterator<Vertex> result = new MultiIterator<>();
         for (final Integer bucketId : mostUpdatedVertex.getOutEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList outEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.OUT, bucketId);
           if (outEdges != null)
-            result.addIterator(outEdges.vertexIterator(edgeTypes));
+            result.addIterator(outEdges.vertexIterator());
         }
         return result;
       }
@@ -636,9 +688,11 @@ public class GraphEngine {
       case IN: {
         final MultiIterator<Vertex> result = new MultiIterator<>();
         for (final Integer bucketId : mostUpdatedVertex.getInEdgeBuckets()) {
+          if (targetBucketIds != null && !targetBucketIds.contains(bucketId))
+            continue; // Skip edge lists not matching the requested types
           final EdgeLinkedList inEdges = getEdgeHeadChunk(mostUpdatedVertex, Vertex.DIRECTION.IN, bucketId);
           if (inEdges != null)
-            result.addIterator(inEdges.vertexIterator(edgeTypes));
+            result.addIterator(inEdges.vertexIterator());
         }
         return result;
       }

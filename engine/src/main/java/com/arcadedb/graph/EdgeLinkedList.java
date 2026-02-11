@@ -32,14 +32,15 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Linked list uses to manage edges in vertex. The edges are stored in reverse order from insertion. The last item is the first in the list.
+ * Linked list uses to manage edges in vertex. The edges are stored in reverse order from insertion. The last item is
+ * the first in the list.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EdgeLinkedList {
-  private final Vertex vertex;
+  private final Vertex           vertex;
   private final Vertex.DIRECTION direction;
-  private EdgeSegment lastSegment;
+  private       EdgeSegment      lastSegment;
 
   public EdgeLinkedList(final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment lastSegment) {
     this.vertex = vertex;
@@ -47,29 +48,48 @@ public class EdgeLinkedList {
     this.lastSegment = lastSegment;
   }
 
+  /**
+   * Returns an iterator over edge/vertex RID pairs.
+   *
+   * @param edgeTypes Types of edges to filter. Deprecated - filtering should be done at GraphEngine level
+   *                  by selecting the correct edge lists based on bucket IDs. Each EdgeLinkedList is already
+   *                  specific to a single edge type (bucket). Kept for backward compatibility.
+   */
   public Iterator<Pair<RID, RID>> entryIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
       return new EdgeVertexIterator(lastSegment, vertex.getIdentity(), direction);
     return new EdgeVertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
   }
 
+  /**
+   * Returns an iterator over edges.
+   *
+   * @param edgeTypes Types of edges to filter. Deprecated - filtering should be done at GraphEngine level
+   *                  by selecting the correct edge lists based on bucket IDs. Each EdgeLinkedList is already
+   *                  specific to a single edge type (bucket). Kept for backward compatibility.
+   */
   public Iterator<Edge> edgeIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
       return new EdgeIterator(lastSegment, vertex.getIdentity(), direction);
     return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes);
   }
 
+  /**
+   * Returns an iterator over connected vertices.
+   *
+   * @param edgeTypes Types of edges to filter. Deprecated - filtering should be done at GraphEngine level
+   *                  by selecting the correct edge lists based on bucket IDs. Each EdgeLinkedList is already
+   *                  specific to a single edge type (bucket). Kept for backward compatibility.
+   */
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
-    if (edgeTypes == null || edgeTypes.length == 0)
-      return new VertexIterator(lastSegment);
+    if (edgeTypes == null || edgeTypes.length == 0) return new VertexIterator(lastSegment);
     return new VertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
   }
 
   public boolean containsEdge(final RID rid) {
     EdgeSegment current = lastSegment;
     while (current != null) {
-      if (current.containsEdge(rid))
-        return true;
+      if (current.containsEdge(rid)) return true;
 
       final EdgeSegment prev = current.getPrevious();
       if (prev != null && prev.getIdentity().equals(current.getIdentity()))
@@ -103,8 +123,7 @@ public class EdgeLinkedList {
     EdgeSegment current = lastSegment;
     while (current != null) {
       final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(ridVertex, edgeBucketFilter);
-      if (edgeConnectedToVertex != null)
-        return edgeConnectedToVertex;
+      if (edgeConnectedToVertex != null) return edgeConnectedToVertex;
 
       final EdgeSegment prev = current.getPrevious();
       if (prev != null && prev.getIdentity().equals(current.getIdentity()))
@@ -117,13 +136,11 @@ public class EdgeLinkedList {
     return null;
   }
 
-
   public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;
     while (current != null) {
       final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(rid, edgeBucketFilter);
-      if (edgeConnectedToVertex != null)
-        return true;
+      if (edgeConnectedToVertex != null) return true;
 
       final EdgeSegment prev = current.getPrevious();
       if (prev != null && prev.getIdentity().equals(current.getIdentity()))
@@ -138,33 +155,13 @@ public class EdgeLinkedList {
 
   /**
    * Counts the items in the linked list.
-   *
-   * @param edgeTypes Types of edges to filter for the counting. If null or empty, any type is counted.
    */
-  public long count(final String... edgeTypes) {
-    // v1 optimization: use cached count from first segment if no filter
-    if (edgeTypes == null || edgeTypes.length == 0) {
-      final long cachedCount = lastSegment.getTotalCount();
-      if (cachedCount >= 0) {
-        // First segment has cached count - use it (O(1) instead of O(n))
-        return cachedCount;
-      }
-    }
-
-    // Fallback to scanning (for type-filtered counts or old format)
+  public long count() {
     long total = 0;
-
-    final Set<Integer> fileIdToFilter;
-    if (edgeTypes != null && edgeTypes.length > 0) {
-      fileIdToFilter = new HashSet<>();
-      for (final String edgeType : edgeTypes)
-        fileIdToFilter.addAll(vertex.getDatabase().getSchema().getType(edgeType).getBucketIds(true));
-    } else
-      fileIdToFilter = null;
 
     EdgeSegment current = lastSegment;
     while (current != null) {
-      total += current.count(fileIdToFilter);
+      total += current.count();
       current = current.getPrevious();
     }
 
@@ -172,8 +169,7 @@ public class EdgeLinkedList {
   }
 
   public void add(final RID edgeRID, final RID vertexRID) {
-    if (lastSegment.add(edgeRID, vertexRID))
-      ((DatabaseInternal) vertex.getDatabase()).updateRecord(lastSegment);
+    if (lastSegment.add(edgeRID, vertexRID)) ((DatabaseInternal) vertex.getDatabase()).updateRecord(lastSegment);
     else {
       // CHUNK FULL, ALLOCATE A NEW ONE
       final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
@@ -183,16 +179,15 @@ public class EdgeLinkedList {
       newChunk.add(edgeRID, vertexRID);
       newChunk.setPrevious(lastSegment);
 
-      database.createRecord(newChunk, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
+      database.createRecord(newChunk,
+          database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
 
       final MutableVertex modifiableV = vertex.modify();
 
       // v1: Update the correct edge bucket in the per-type map
       final int edgeBucketId = edgeRID.getBucketId();
-      if (direction == Vertex.DIRECTION.OUT)
-        modifiableV.setOutEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
-      else
-        modifiableV.setInEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
+      if (direction == Vertex.DIRECTION.OUT) modifiableV.setOutEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
+      else modifiableV.setInEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
 
       lastSegment = newChunk;
 
@@ -213,8 +208,7 @@ public class EdgeLinkedList {
       final RID edgeRID = entry.getFirst() != null ? entry.getFirst().getIdentity() : null;
       final RID vertexRID = entry.getSecond().getIdentity();
 
-      if (lastSegment.add(edgeRID, vertexRID))
-        recordsToUpdate.add(lastSegment);
+      if (lastSegment.add(edgeRID, vertexRID)) recordsToUpdate.add(lastSegment);
       else {
         // CHUNK FULL, ALLOCATE A NEW ONE
         final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, computeBestSize());
@@ -222,17 +216,16 @@ public class EdgeLinkedList {
         newChunk.add(edgeRID, vertexRID);
         newChunk.setPrevious(lastSegment);
 
-        database.createRecord(newChunk, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
+        database.createRecord(newChunk,
+            database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
 
         final MutableVertex modifiableV = currentVertex.modify();
         currentVertex = modifiableV;
 
         // v1: Update the correct edge bucket in the per-type map
         final int edgeBucketId = edgeRID.getBucketId();
-        if (direction == Vertex.DIRECTION.OUT)
-          modifiableV.setOutEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
-        else
-          modifiableV.setInEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
+        if (direction == Vertex.DIRECTION.OUT) modifiableV.setOutEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
+        else modifiableV.setInEdgesHeadChunk(edgeBucketId, newChunk.getIdentity());
 
         lastSegment = newChunk;
 
@@ -305,8 +298,7 @@ public class EdgeLinkedList {
       prevBrowsed.setPrevious(current.getPrevious());
       ((DatabaseInternal) vertex.getDatabase()).updateRecord(prevBrowsed);
       current.delete();
-    } else
-      ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+    } else ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
   }
 
   public void deleteAll() {

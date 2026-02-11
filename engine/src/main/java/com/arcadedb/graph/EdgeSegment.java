@@ -52,7 +52,7 @@ public interface EdgeSegment extends Record {
 
   int getRecordSize();
 
-  long count(Set<Integer> fileIds);
+  long count();
 
   boolean removeEntry(int currentItemPosition, int nextItemPosition);
 
