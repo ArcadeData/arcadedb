@@ -165,8 +165,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final        CypherPlanCache                           cypherPlanCache;
   private final        File                                      configurationFile;
   private              DatabaseInternal                          wrappedDatabaseInstance              = this;
-  private              int                                       edgeListSize                         =
-      EDGE_LIST_INITIAL_CHUNK_SIZE;
   private final        SecurityManager                           security;
   private final        Map<String, Object>                       wrappers                             = new HashMap<>();
   private              File                                      lockFile;
@@ -227,6 +225,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     } catch (Exception e) {
       throw new DatabaseOperationException("Error on creating new database instance", e);
     }
+  }
+
+  public static int getNewEdgeListSize(final int previousSize) {
+    if (previousSize == 0)
+      return EDGE_LIST_INITIAL_CHUNK_SIZE;
+
+    int newSize = previousSize * 2;
+    if (newSize > MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE)
+      newSize = MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE;
+    return newSize;
   }
 
   protected void open() {
@@ -1677,28 +1685,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   public void registerReusableQueryEngine(final QueryEngine queryEngine) {
     reusableQueryEngines.put(queryEngine.getLanguage(), queryEngine);
-  }
-
-  @Override
-  public int getEdgeListSize() {
-    return this.edgeListSize;
-  }
-
-  @Override
-  public Database setEdgeListSize(final int size) {
-    this.edgeListSize = size;
-    return this;
-  }
-
-  @Override
-  public int getNewEdgeListSize(final int previousSize) {
-    if (previousSize == 0)
-      return edgeListSize;
-
-    int newSize = previousSize * 2;
-    if (newSize > MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE)
-      newSize = MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE;
-    return newSize;
   }
 
   public Map<String, Object> getWrappers() {

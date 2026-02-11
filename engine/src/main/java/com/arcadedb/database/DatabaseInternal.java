@@ -127,8 +127,6 @@ public interface DatabaseInternal extends Database {
 
   CypherPlanCache getCypherPlanCache();
 
-  int getNewEdgeListSize(int previousSize);
-
   <RET> RET recordFileChanges(final Callable<Object> callback);
 
   long getLastUpdatedOn();
