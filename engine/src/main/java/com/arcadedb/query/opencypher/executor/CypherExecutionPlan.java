@@ -369,6 +369,7 @@ public class CypherExecutionPlan {
 
     final InternalResultSet results = new InternalResultSet();
     String errorMessage = null;
+    AbstractExecutionStep rootStep = null;
 
     try {
       if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
@@ -378,7 +379,6 @@ public class CypherExecutionPlan {
         while (resultSet.hasNext())
           results.add(resultSet.next());
       } else {
-        AbstractExecutionStep rootStep;
         final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
         final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
 
@@ -418,7 +418,22 @@ public class CypherExecutionPlan {
       profileOutput.append(String.format("Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
     } else {
       profileOutput.append("\nExecution Plan (Traditional):\n");
-      profileOutput.append("Step-by-step interpretation\n");
+      if (rootStep != null) {
+        // Collect all steps in the chain from root to first
+        final List<AbstractExecutionStep> stepChain = new ArrayList<>();
+        AbstractExecutionStep current = rootStep;
+        while (current != null) {
+          stepChain.add(current);
+          current = (AbstractExecutionStep) current.getPrev();
+        }
+        // Print steps in reverse order (first step first)
+        Collections.reverse(stepChain);
+        for (final AbstractExecutionStep step : stepChain) {
+          profileOutput.append(step.prettyPrint(0, 2));
+          profileOutput.append("\n");
+        }
+      } else
+        profileOutput.append("No execution steps generated\n");
     }
 
     results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString()));
