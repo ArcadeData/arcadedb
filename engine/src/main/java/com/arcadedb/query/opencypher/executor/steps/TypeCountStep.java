@@ -51,8 +51,15 @@ public final class TypeCountStep extends AbstractExecutionStep {
 
     executed = true;
 
-    // Use O(1) count operation instead of iterating through all records
-    final long count = context.getDatabase().countType(typeName, true);
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    final long count;
+    try {
+      // Use O(1) count operation instead of iterating through all records
+      count = context.getDatabase().countType(typeName, true);
+    } finally {
+      if (context.isProfiling())
+        cost += (System.nanoTime() - begin);
+    }
 
     // Create result with the count
     final ResultInternal result = new ResultInternal();

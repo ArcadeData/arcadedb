@@ -136,22 +136,28 @@ public class IndexSeekStep extends AbstractExecutionStep {
 
             // Merge index results with input result
             if (operatorResults.hasNext()) {
-              final Result seekResult = operatorResults.next();
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                final Result seekResult = operatorResults.next();
 
-              // Copy input result and add index seek results
-              final ResultInternal result = new ResultInternal();
-              if (currentInputResult != null) {
-                for (final String prop : currentInputResult.getPropertyNames()) {
-                  result.setProperty(prop, currentInputResult.getProperty(prop));
+                // Copy input result and add index seek results
+                final ResultInternal result = new ResultInternal();
+                if (currentInputResult != null) {
+                  for (final String prop : currentInputResult.getPropertyNames()) {
+                    result.setProperty(prop, currentInputResult.getProperty(prop));
+                  }
                 }
-              }
 
-              // Add vertex from index seek
-              for (final String prop : seekResult.getPropertyNames()) {
-                result.setProperty(prop, seekResult.getProperty(prop));
-              }
+                // Add vertex from index seek
+                for (final String prop : seekResult.getPropertyNames()) {
+                  result.setProperty(prop, seekResult.getProperty(prop));
+                }
 
-              buffer.add(result);
+                buffer.add(result);
+              } finally {
+                if (context.isProfiling())
+                  cost += (System.nanoTime() - begin);
+              }
             }
           }
         } else {
@@ -166,7 +172,13 @@ public class IndexSeekStep extends AbstractExecutionStep {
 
           // Fetch up to n results
           while (buffer.size() < n && operatorResults.hasNext()) {
-            buffer.add(operatorResults.next());
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              buffer.add(operatorResults.next());
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
           }
 
           if (!operatorResults.hasNext()) {

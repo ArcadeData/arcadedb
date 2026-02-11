@@ -68,8 +68,14 @@ public class SkipStep extends AbstractExecutionStep {
 
         // Skip records if we haven't skipped enough yet
         while (skipped < skipCount && prevResults.hasNext()) {
-          prevResults.next();
-          skipped++;
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            prevResults.next();
+            skipped++;
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         // Check if there are more results after skipping

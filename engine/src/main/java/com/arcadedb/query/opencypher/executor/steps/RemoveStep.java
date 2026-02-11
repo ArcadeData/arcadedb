@@ -95,12 +95,17 @@ public class RemoveStep extends AbstractExecutionStep {
         // Process each input result
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            // Apply REMOVE operations to this result
+            applyRemoveOperations(inputResult);
 
-          // Apply REMOVE operations to this result
-          applyRemoveOperations(inputResult);
-
-          // Pass through the modified result
-          buffer.add(inputResult);
+            // Pass through the modified result
+            buffer.add(inputResult);
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         if (!prevResults.hasNext()) {

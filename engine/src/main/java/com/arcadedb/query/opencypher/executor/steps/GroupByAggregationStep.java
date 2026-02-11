@@ -107,20 +107,28 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // Map: GroupKey -> List of Result rows in that group
     final Map<GroupKeyValues, List<Result>> groups = new LinkedHashMap<>();
 
-    while (prevResults.hasNext()) {
-      final Result inputRow = prevResults.next();
+    final long beginGrouping = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      while (prevResults.hasNext()) {
+        final Result inputRow = prevResults.next();
 
-      // Evaluate grouping key for this row
-      final GroupKeyValues keyValues = evaluateGroupingKey(groupingKeys, inputRow, context);
+        // Evaluate grouping key for this row
+        final GroupKeyValues keyValues = evaluateGroupingKey(groupingKeys, inputRow, context);
 
-      // Add row to its group
-      groups.computeIfAbsent(keyValues, k -> new ArrayList<>()).add(inputRow);
+        // Add row to its group
+        groups.computeIfAbsent(keyValues, k -> new ArrayList<>()).add(inputRow);
+      }
+    } finally {
+      if (context.isProfiling())
+        cost += (System.nanoTime() - beginGrouping);
     }
 
     // Process each group and compute aggregations
     final List<Result> results = new ArrayList<>();
 
-    for (final Map.Entry<GroupKeyValues, List<Result>> groupEntry : groups.entrySet()) {
+    final long beginAggregation = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      for (final Map.Entry<GroupKeyValues, List<Result>> groupEntry : groups.entrySet()) {
       final GroupKeyValues keyValues = groupEntry.getKey();
       final List<Result> groupRows = groupEntry.getValue();
 
@@ -200,6 +208,10 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       }
 
       results.add(groupResult);
+      }
+    } finally {
+      if (context.isProfiling())
+        cost += (System.nanoTime() - beginAggregation);
     }
 
     return new ResultSet() {

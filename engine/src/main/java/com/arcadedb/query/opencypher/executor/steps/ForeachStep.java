@@ -103,9 +103,15 @@ public class ForeachStep extends AbstractExecutionStep {
 
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputRow = prevResults.next();
-          executeForeach(inputRow, context);
-          // Pass through the input row unchanged
-          buffer.add(inputRow);
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            executeForeach(inputRow, context);
+            // Pass through the input row unchanged
+            buffer.add(inputRow);
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         if (!prevResults.hasNext())
