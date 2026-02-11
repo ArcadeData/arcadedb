@@ -55,6 +55,7 @@ import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -366,7 +367,7 @@ public class CypherExecutionPlan {
     setupFunctionResolver(context);
     context.setProfiling(true);
 
-    long rowCount = 0;
+    final InternalResultSet results = new InternalResultSet();
     String errorMessage = null;
 
     try {
@@ -374,10 +375,8 @@ public class CypherExecutionPlan {
         final UnionStep unionStep =
             new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
         final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE);
-        while (resultSet.hasNext()) {
-          resultSet.next();
-          rowCount++;
-        }
+        while (resultSet.hasNext())
+          results.add(resultSet.next());
       } else {
         AbstractExecutionStep rootStep;
         final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
@@ -391,10 +390,8 @@ public class CypherExecutionPlan {
 
         if (rootStep != null) {
           final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE);
-          while (resultSet.hasNext()) {
-            resultSet.next();
-            rowCount++;
-          }
+          while (resultSet.hasNext())
+            results.add(resultSet.next());
         }
       }
     } catch (final Exception e) {
@@ -403,6 +400,7 @@ public class CypherExecutionPlan {
 
     final long endTime = System.nanoTime();
     final double executionTimeMs = (endTime - startTime) / 1_000_000.0;
+    final long rowCount = results.countEntries();
 
     final StringBuilder profileOutput = new StringBuilder();
     profileOutput.append("OpenCypher Query Profile\n");
@@ -423,7 +421,8 @@ public class CypherExecutionPlan {
       profileOutput.append("Step-by-step interpretation\n");
     }
 
-    return new ExplainResultSet(new OpenCypherExplainExecutionPlan(profileOutput.toString()));
+    results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString()));
+    return results;
   }
 
   /**

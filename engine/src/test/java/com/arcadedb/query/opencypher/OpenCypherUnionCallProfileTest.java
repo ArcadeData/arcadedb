@@ -283,20 +283,23 @@ class OpenCypherUnionCallProfileTest {
       database.command("opencypher", "CREATE (n:Person {name: 'Bob'})");
     });
 
-    // Test PROFILE - profile info should be in the execution plan, not in records
+    // Test PROFILE - profile info should be in the execution plan, actual results in records
     final ResultSet result = database.query("opencypher", "PROFILE MATCH (n:Person) RETURN n.name");
 
     assertThat(result.getExecutionPlan().isPresent()).isTrue();
     final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);
     assertThat(profile).contains("OpenCypher Query Profile");
     assertThat(profile).contains("Execution Time");
-    assertThat(profile).contains("Rows Returned");
+    assertThat(profile).contains("Rows Returned: 2");
 
-    // ExplainResultSet emits one record with executionPlanAsString, no actual query results
-    assertThat(result.hasNext()).isTrue();
-    final Result explainRecord = result.next();
-    assertThat(explainRecord.hasProperty("executionPlanAsString")).isTrue();
-    assertThat(result.hasNext()).isFalse();
+    // PROFILE returns actual query results (not ExplainResultSet records)
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext()) {
+      final Result row = result.next();
+      names.add(row.getProperty("n.name"));
+    }
+    assertThat(names).hasSize(2);
+    assertThat(names).contains("Alice", "Bob");
   }
 
   @Test
@@ -310,12 +313,19 @@ class OpenCypherUnionCallProfileTest {
       }
     });
 
-    // Test PROFILE shows correct row count in the execution plan
+    // Test PROFILE shows correct row count and returns actual results
     final ResultSet result = database.query("opencypher", "PROFILE MATCH (n:Item) RETURN n.value");
 
     assertThat(result.getExecutionPlan().isPresent()).isTrue();
     final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);
     assertThat(profile).contains("Rows Returned: 5");
+
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(5);
   }
 
   @Test
