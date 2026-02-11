@@ -323,11 +323,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public int getNewEdgeListSize(final int previousSize) {
-    return proxied.getNewEdgeListSize(previousSize);
-  }
-
-  @Override
   public String getName() {
     return proxied.getName();
   }
@@ -700,17 +695,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
     return proxied.getTransactionIsolationLevel();
-  }
-
-  @Override
-  public int getEdgeListSize() {
-    return proxied.getEdgeListSize();
-  }
-
-  @Override
-  public Database setEdgeListSize(final int size) {
-    proxied.setEdgeListSize(size);
-    return this;
   }
 
   @Override

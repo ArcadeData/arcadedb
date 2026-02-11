@@ -19,19 +19,18 @@
 package com.arcadedb.query.opencypher.tck;
 
 import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
+import org.junit.platform.suite.api.ConfigurationParameter;
+import org.junit.platform.suite.api.IncludeEngines;
+import org.junit.platform.suite.api.SelectClasspathResource;
+import org.junit.platform.suite.api.Suite;
 
-/**
- * Executes OpenCypher TCK Suite. This class serves as the entry point for running the TCK tests using JUnit. The
- * actual test scenarios are defined in the OpenCypherTCKSuite class, which is annotated to include Cucumber tests
- * from the specified classpath resource.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
- */
-@Tag("slow")
-class OpenCypherTCKTest {
-  @Test
-  void runTCK() {
-    new OpenCypherTCKSuite();
-  }
+import static io.cucumber.junit.platform.engine.Constants.GLUE_PROPERTY_NAME;
+import static io.cucumber.junit.platform.engine.Constants.PLUGIN_PROPERTY_NAME;
+
+@Suite
+@IncludeEngines("cucumber")
+@SelectClasspathResource("opencypher/tck/features")
+@ConfigurationParameter(key = GLUE_PROPERTY_NAME, value = "com.arcadedb.query.opencypher.tck")
+@ConfigurationParameter(key = PLUGIN_PROPERTY_NAME, value = "pretty, html:target/tck-report.html, com.arcadedb.query.opencypher.tck.TCKReportPlugin")
+public class OpenCypherTCKSuite {
 }
