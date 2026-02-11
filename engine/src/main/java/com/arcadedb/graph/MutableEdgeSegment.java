@@ -414,7 +414,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public int getRecordSize() {
-    return buffer.size();
+    return bufferSize;
   }
 
   @Override

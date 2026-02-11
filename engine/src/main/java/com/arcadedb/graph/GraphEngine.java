@@ -38,9 +38,11 @@ import com.arcadedb.utility.Pair;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -508,30 +510,33 @@ public class GraphEngine {
       }
 
 
-    if (outEdges != null) {
-      // RELOAD LINKED LISTS
-      outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-      if (outEdges != null)
-        try {
-          outEdges.deleteAll();
-        } catch (Exception e) {
-          LogManager.instance()
-              .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s",
-                  vertex.getIdentity());
-        }
-    }
+    // RELOAD AND DELETE OUTGOING EDGE LINKED LISTS
+    if (!outEdgeLists.isEmpty())
+      for (final Integer bucketId : vertex.getOutEdgeBuckets()) {
+        final EdgeLinkedList reloaded = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT, bucketId);
+        if (reloaded != null)
+          try {
+            reloaded.deleteAll();
+          } catch (Exception e) {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Error on deleting outgoing edges (bucket %d) connected to vertex %s",
+                    bucketId, vertex.getIdentity());
+          }
+      }
 
-    if (inEdges != null) {
-      inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
-      if (inEdges != null)
-        try {
-          inEdges.deleteAll();
-        } catch (Exception e) {
-          LogManager.instance()
-              .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s",
-                  vertex.getIdentity());
-        }
-    }
+    // RELOAD AND DELETE INCOMING EDGE LINKED LISTS
+    if (!inEdgeLists.isEmpty())
+      for (final Integer bucketId : vertex.getInEdgeBuckets()) {
+        final EdgeLinkedList reloaded = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN, bucketId);
+        if (reloaded != null)
+          try {
+            reloaded.deleteAll();
+          } catch (Exception e) {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Error on deleting incoming edges (bucket %d) connected to vertex %s",
+                    bucketId, vertex.getIdentity());
+          }
+      }
 
     // DELETE VERTEX RECORD
     vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
