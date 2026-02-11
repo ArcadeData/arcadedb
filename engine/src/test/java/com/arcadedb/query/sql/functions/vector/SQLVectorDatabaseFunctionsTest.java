@@ -745,7 +745,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
           lsmIndex.findNeighborsFromVector(queryComposite, 10);
 
       assertThat(results).isNotEmpty();
-      final Document doc = results.getFirst().getFirst().asDocument();
+      final Document doc = results.get(0).getFirst().asDocument();
       assertThat(doc.<String>get("title")).isEqualTo("Multi-modal Doc");
     });
   }
@@ -833,7 +833,7 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
           lsmIndex.findNeighborsFromVector(queryEmbedding, 10);
 
       assertThat(results).isNotEmpty();
-      final Document topDoc = results.getFirst().getFirst().asDocument();
+      final Document topDoc = results.get(0).getFirst().asDocument();
       assertThat(topDoc.<String>get("title")).isEqualTo("Introduction to RAG");
 
       // Step 5: Use vector functions (from document data)

@@ -649,7 +649,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Rebuild ordinalToVectorId from vectorIndex
           // IMPORTANT: Must match the validation logic used during graph building
           final String vectorProp =
-                  metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+                  metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) : "vector";
 
           this.ordinalToVectorId = vectorIndex.getAllVectorIds().filter(id -> {
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
@@ -2096,7 +2096,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Create lazy-loading RandomAccessVectorValues
         // Vector property name is the first property in the index
         final String vectorProp =
-                metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+                metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) : "vector";
 
         final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
                 vectorIndex, ordinalToVectorId, this  // Pass LSM index reference for quantization support
@@ -3356,7 +3356,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Create vector values accessor for graph serialization
       final String vectorProp =
-              metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+              metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) : "vector";
       final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
               vectorIndex, ordinalToVectorId, this);
 

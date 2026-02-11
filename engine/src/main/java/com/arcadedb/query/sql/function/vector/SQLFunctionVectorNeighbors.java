@@ -137,7 +137,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   private Object executeWithLSMVectorIndexes(final List<LSMVectorIndex> vectorIndexes, final Object key, final int limit,
       final CommandContext context) {
     // Get the query vector
-    final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
+    final float[] queryVector = extractQueryVector(key, vectorIndexes.get(0), context);
 
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
@@ -184,7 +184,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       // Key is a vertex identifier - fetch the vertex and get its vector
       final String keyStr = key.toString();
       final String typeName = lsmIndex.getTypeName();
-      final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
+      final String vectorProperty = lsmIndex.getPropertyNames().get(0);
       final String idProperty = lsmIndex.getIdPropertyName();
 
       // Query for the vertex by the configured ID property

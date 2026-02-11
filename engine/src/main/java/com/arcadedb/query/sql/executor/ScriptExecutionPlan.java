@@ -261,7 +261,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   @Override
   public int getLimit() {
     if (statements.size() == 1) {
-      final Limit l = statements.getFirst().getLimit();
+      final Limit l = statements.get(0).getLimit();
       return l != null ? l.getValue(context) : 0;
     }
     return InternalExecutionPlan.super.getLimit();

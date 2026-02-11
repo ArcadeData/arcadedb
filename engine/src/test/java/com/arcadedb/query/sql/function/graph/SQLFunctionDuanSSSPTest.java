@@ -83,7 +83,7 @@ public class SQLFunctionDuanSSSPTest {
           new BasicCommandContext());
 
       assertThat(result).hasSize(4);
-      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(0)).isEqualTo(v1.getIdentity());
       assertThat(result.get(1)).isEqualTo(v2.getIdentity());
       assertThat(result.get(2)).isEqualTo(v3.getIdentity());
       assertThat(result.get(3)).isEqualTo(v4.getIdentity());
@@ -98,7 +98,7 @@ public class SQLFunctionDuanSSSPTest {
           new BasicCommandContext());
 
       assertThat(result).hasSize(1);
-      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(0)).isEqualTo(v1.getIdentity());
     });
   }
 
@@ -137,7 +137,7 @@ public class SQLFunctionDuanSSSPTest {
 
       final List<RID> path = row.getProperty("path");
       assertThat(path).hasSize(4);
-      assertThat(path.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(path.get(0)).isEqualTo(v1.getIdentity());
       assertThat(path.get(3)).isEqualTo(v4.getIdentity());
     });
   }
@@ -151,7 +151,7 @@ public class SQLFunctionDuanSSSPTest {
           new Object[] { v1, v4, "weight", "OUT" }, new BasicCommandContext());
 
       assertThat(result).hasSize(4);
-      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(0)).isEqualTo(v1.getIdentity());
       assertThat(result.get(3)).isEqualTo(v4.getIdentity());
     });
   }
@@ -190,8 +190,8 @@ public class SQLFunctionDuanSSSPTest {
             new Object[] { vertices[0], vertices[5], "weight" }, new BasicCommandContext());
 
         assertThat(result).isNotEmpty();
-        assertThat(result.getFirst()).isEqualTo(vertices[0].getIdentity());
-        assertThat(result.getLast()).isEqualTo(vertices[5].getIdentity());
+        assertThat(result.get(0)).isEqualTo(vertices[0].getIdentity());
+        assertThat(result.get(result.size()-1)).isEqualTo(vertices[5].getIdentity());
 
         // The shortest path should be: 0 -> 2 -> 1 -> 3 -> 4 -> 5 (cost: 2+1+5+2+3 = 13)
         // or 0 -> 1 -> 3 -> 4 -> 5 (cost: 4+5+2+3 = 14)

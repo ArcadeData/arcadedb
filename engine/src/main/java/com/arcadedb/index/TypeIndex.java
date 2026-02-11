@@ -101,7 +101,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     // Check if this is a full-text index to preserve scores
     final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+        indexesOnBuckets.get(0).getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
       // For full-text indexes, collect entries with scores
@@ -150,7 +150,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     // Check if this is a full-text index to preserve scores
     final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+        indexesOnBuckets.get(0).getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
       // For full-text indexes, collect entries with scores

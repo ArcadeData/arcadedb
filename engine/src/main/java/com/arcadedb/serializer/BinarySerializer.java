@@ -418,8 +418,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_LIST: {
-      switch (value) {
-      case Collection<?> list -> {
+      if (value instanceof Collection<?> list) {
         content.putUnsignedNumber(list.size());
         for (final Iterator<Object> it = (Iterator<Object>) list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
@@ -435,8 +434,7 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      }
-      case Object[] array -> {
+      } else if (value instanceof Object[] array) {
         content.putUnsignedNumber(array.length);
         for (final Object entryValue : array) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
@@ -450,8 +448,7 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      }
-      case Iterable<?> iter -> {
+      } else if (value instanceof Iterable<?> iter) {
         final List<Object> list = new ArrayList<>();
         for (Object o : iter)
           list.add(o);
@@ -469,9 +466,7 @@ public class BinarySerializer {
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
         }
-      }
-      default -> {
-        // ARRAY
+      } else {// ARRAY
         final int length = Array.getLength(value);
         content.putUnsignedNumber(length);
         for (int i = 0; i < length; ++i) {
@@ -494,7 +489,6 @@ public class BinarySerializer {
                 "Error on serializing array value for element " + i + " = '" + entryValue + "'");
           }
         }
-      }
       }
       break;
     }

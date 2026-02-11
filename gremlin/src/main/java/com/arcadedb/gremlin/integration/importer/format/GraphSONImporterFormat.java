@@ -83,7 +83,7 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
     }
 
     // Check if the file uses RID-format IDs by examining the first line
-    final JSONObject firstVertex = new JSONObject(lines.getFirst());
+    final JSONObject firstVertex = new JSONObject(lines.get(0));
     final Object firstId = firstVertex.opt("id");
     final boolean usesNonRidIds = firstId != null && !isRidFormat(firstId);
 

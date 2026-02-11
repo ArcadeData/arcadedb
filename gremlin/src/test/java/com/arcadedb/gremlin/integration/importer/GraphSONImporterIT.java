@@ -150,27 +150,27 @@ class GraphSONImporterIT {
         // Find vertex by original ID stored as property
         List<Vertex> datatype = g.V().has("@id", "http://www.w3.org/2000/01/rdf-schema#Datatype").toList();
         assertThat(datatype).hasSize(1);
-        assertThat(datatype.getFirst().property("name").value()).isEqualTo("Datatype");
+        assertThat(datatype.get(0).property("name").value()).isEqualTo("Datatype");
 
         List<Vertex> resource = g.V().has("@id", "http://www.w3.org/2000/01/rdf-schema#Resource").toList();
         assertThat(resource).hasSize(1);
-        assertThat(resource.getFirst().property("name").value()).isEqualTo("Resource");
+        assertThat(resource.get(0).property("name").value()).isEqualTo("Resource");
 
         // Verify edges were correctly connected
         List<Vertex> subclassTargets = g.V().has("@id", "http://www.w3.org/2000/01/rdf-schema#Datatype")
             .out("subClassOf").toList();
         assertThat(subclassTargets).hasSize(1);
-        assertThat(subclassTargets.getFirst().property("@id").value())
+        assertThat(subclassTargets.get(0).property("@id").value())
             .isEqualTo("http://www.w3.org/2000/01/rdf-schema#Resource");
 
         // Verify Person vertices and their edges
         List<Vertex> john = g.V().has("@id", "http://example.org/person/John").toList();
         assertThat(john).hasSize(1);
-        assertThat(john.getFirst().property("name").value()).isEqualTo("John");
+        assertThat(john.get(0).property("name").value()).isEqualTo("John");
 
         List<Vertex> janeFromJohn = g.V().has("@id", "http://example.org/person/John").out("knows").toList();
         assertThat(janeFromJohn).hasSize(1);
-        assertThat(janeFromJohn.getFirst().property("@id").value()).isEqualTo("http://example.org/person/Jane");
+        assertThat(janeFromJohn.get(0).property("@id").value()).isEqualTo("http://example.org/person/Jane");
       }
     }
   }

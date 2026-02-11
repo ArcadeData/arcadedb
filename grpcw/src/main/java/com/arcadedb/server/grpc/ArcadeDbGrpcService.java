@@ -2514,8 +2514,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.putProperties(Property.RID_PROPERTY, toGrpcValue(document.getIdentity()));
       }
 
-      if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document doc
-          && doc.getType() != null) {
+      if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document
+          && document.getType() != null) {
+        Document doc = document;
         builder.putProperties(Property.TYPE_PROPERTY, toGrpcValue(doc.getTypeName()));
       }
     }

@@ -568,7 +568,7 @@ public class SelectExecutionPlanner {
   private static void addUnwindProjections(final QueryPlanningInfo info) {
     if (info.unwind == null || info.unwind.getItems() == null || info.unwind.getItems().isEmpty()
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().getFirst().isAll())) {
+        && info.projection.getItems().get(0).isAll())) {
       return;
     }
 

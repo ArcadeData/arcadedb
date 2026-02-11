@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class PaginatedComponent extends Component {
-  protected static final String                 TEMP_EXT  = "temp_";
+  public static final String                 TEMP_EXT  = "temp_";
   protected final        PaginatedComponentFile file;
   protected final        int                    pageSize;
   protected final        AtomicInteger          pageCount = new AtomicInteger();

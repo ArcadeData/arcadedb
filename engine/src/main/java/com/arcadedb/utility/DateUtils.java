@@ -266,43 +266,57 @@ public class DateUtils {
   }
 
   public static byte getBestBinaryTypeForPrecision(final ChronoUnit precision) {
-    return switch (precision) {
-      case SECONDS -> BinaryTypes.TYPE_DATETIME_SECOND;
-      case MILLIS -> BinaryTypes.TYPE_DATETIME;
-      case MICROS -> BinaryTypes.TYPE_DATETIME_MICROS;
-      case NANOS -> BinaryTypes.TYPE_DATETIME_NANOS;
-      case null, default -> throw new IllegalArgumentException("Not supported precision '" + precision + "'");
-    };
+    if (precision == ChronoUnit.SECONDS)
+      return BinaryTypes.TYPE_DATETIME_SECOND;
+    else if (precision == ChronoUnit.MILLIS)
+      return BinaryTypes.TYPE_DATETIME;
+    else if (precision == ChronoUnit.MICROS)
+      return BinaryTypes.TYPE_DATETIME_MICROS;
+    else if (precision == ChronoUnit.NANOS)
+      return BinaryTypes.TYPE_DATETIME_NANOS;
+    throw new IllegalArgumentException("Not supported precision '" + precision + "'");
   }
 
   public static final ChronoUnit getPrecisionFromType(final Type type) {
-    return switch (type) {
-      case DATETIME_SECOND -> ChronoUnit.SECONDS;
-      case DATETIME -> ChronoUnit.MILLIS;
-      case DATETIME_MICROS -> ChronoUnit.MICROS;
-      case DATETIME_NANOS -> ChronoUnit.NANOS;
-      default -> throw new IllegalArgumentException("Illegal date type from type " + type);
-    };
+    switch (type) {
+    case DATETIME_SECOND:
+      return ChronoUnit.SECONDS;
+    case DATETIME:
+      return ChronoUnit.MILLIS;
+    case DATETIME_MICROS:
+      return ChronoUnit.MICROS;
+    case DATETIME_NANOS:
+      return ChronoUnit.NANOS;
+    default:
+      throw new IllegalArgumentException("Illegal date type from type " + type);
+    }
   }
 
   public static final ChronoUnit getPrecisionFromBinaryType(final byte type) {
-    return switch (type) {
-      case BinaryTypes.TYPE_DATETIME_SECOND -> ChronoUnit.SECONDS;
-      case BinaryTypes.TYPE_DATETIME -> ChronoUnit.MILLIS;
-      case BinaryTypes.TYPE_DATETIME_MICROS -> ChronoUnit.MICROS;
-      case BinaryTypes.TYPE_DATETIME_NANOS -> ChronoUnit.NANOS;
-      default -> throw new IllegalArgumentException("Illegal date type from binary type " + type);
-    };
+    switch (type) {
+    case BinaryTypes.TYPE_DATETIME_SECOND:
+      return ChronoUnit.SECONDS;
+    case BinaryTypes.TYPE_DATETIME:
+      return ChronoUnit.MILLIS;
+    case BinaryTypes.TYPE_DATETIME_MICROS:
+      return ChronoUnit.MICROS;
+    case BinaryTypes.TYPE_DATETIME_NANOS:
+      return ChronoUnit.NANOS;
+    default:
+      throw new IllegalArgumentException("Illegal date type from binary type " + type);
+    }
   }
 
   public static int getNanos(final Object obj) {
-    return switch (obj) {
-      case null -> throw new IllegalArgumentException("Object is null");
-      case LocalDateTime time -> time.getNano();
-      case ZonedDateTime time -> time.getNano();
-      case Instant instant -> instant.getNano();
-      default -> throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
-    };
+    if (obj == null)
+      throw new IllegalArgumentException("Object is null");
+    else if (obj instanceof LocalDateTime time)
+      return time.getNano();
+    else if (obj instanceof ZonedDateTime time)
+      return time.getNano();
+    else if (obj instanceof Instant instant)
+      return instant.getNano();
+    throw new IllegalArgumentException("Object of class '" + obj.getClass() + "' is not supported");
   }
 
   public static boolean isDate(final Object obj) {

@@ -178,7 +178,7 @@ public class SQLFunctionDuanSSSP extends SQLFunctionMathAbstract {
 
     RID current = dest;
     while (current != null) {
-      path.addFirst(current);
+      path.add(0,current);
       if (current.equals(source))
         break;
       current = predecessors.get(current);

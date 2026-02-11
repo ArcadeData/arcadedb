@@ -88,7 +88,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     if (steps.isEmpty()) {
       lastStep = null;
     } else {
-      lastStep = steps.getLast();
+      lastStep = steps.get(steps.size() - 1);
     }
   }
 
@@ -118,7 +118,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
       lastStep = newStep;
       copy.getSteps().add(newStep);
     }
-    copy.lastStep = copy.steps.isEmpty() ? null : copy.steps.getLast();
+    copy.lastStep = copy.steps.isEmpty() ? null : copy.steps.get(copy.steps.size() - 1);
     copy.statementAsString = this.statementAsString;
   }
 

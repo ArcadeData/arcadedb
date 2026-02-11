@@ -105,10 +105,10 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
               Map<String, Object> params = Map.of("rows", queryInputParams);
 
               if (attempt > 0) {
-                System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
+                System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().getId() +
                     ") Iteration " + iteration + " RETRY #" + attempt + " importing " + batchSize + " entries");
               } else {
-                System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
+                System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().getId() +
                     ") Iteration " + iteration + " importing " + batchSize + " entries");
               }
 

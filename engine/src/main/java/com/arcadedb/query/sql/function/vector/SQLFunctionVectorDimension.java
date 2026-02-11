@@ -44,14 +44,16 @@ public class SQLFunctionVectorDimension extends SQLFunctionVectorAbstract {
 
     final Object vector = params[0];
 
-    return switch (vector) {
-      case null -> throw new CommandSQLParsingException("Vector cannot be null");
-      case float[] floatArray -> floatArray.length;
-      case Object[] objArray -> objArray.length;
-      case List<?> list -> list.size();
-      default ->
-          throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
-    };
+    if (vector == null)
+      throw new CommandSQLParsingException("Vector cannot be null");
+    else if (vector instanceof float[])
+      return ((float[]) vector).length;
+    else if (vector instanceof Object[])
+      return ((Object[]) vector).length;
+    else if (vector instanceof List)
+      return ((List<?>) vector).size();
+    else
+      throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
   }
 
   public String getSyntax() {

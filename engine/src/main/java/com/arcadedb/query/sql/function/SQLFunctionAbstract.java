@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Abstract class to extend to build Custom SQL Functions.
@@ -71,11 +72,9 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
    * @throws CommandSQLParsingException if input type is invalid or contains non-numeric elements
    */
   protected float[] toFloatArray(final Object vector) {
-    switch (vector) {
-    case float[] floatArray -> {
+    if (Objects.requireNonNull(vector) instanceof float[] floatArray) {
       return floatArray;
-    }
-    case Object[] objArray -> {
+    } else if (vector instanceof Object[] objArray) {
       final float[] result = new float[objArray.length];
       for (int i = 0; i < objArray.length; i++) {
         if (objArray[i] instanceof Number num) {
@@ -85,8 +84,7 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
         }
       }
       return result;
-    }
-    case List<?> list -> {
+    } else if (vector instanceof List<?> list) {
       final float[] result = new float[list.size()];
       for (int i = 0; i < list.size(); i++) {
         final Object elem = list.get(i);
@@ -98,7 +96,6 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
       }
       return result;
     }
-    default -> throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
-    }
+    throw new CommandSQLParsingException("Vector must be an array or list, found: " + vector.getClass().getSimpleName());
   }
 }

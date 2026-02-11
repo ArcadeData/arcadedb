@@ -96,7 +96,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
             List<Map<String, Object>> queryInputParams = createQueryInputParams(batchSize, threadId, nOfProperties);
             Map<String, Object> params = Map.of("rows", queryInputParams);
 
-            System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
+            System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().getId() +
                 ") Importing " + batchSize + " entries");
 
             int nOfResults = client.submit(query, params).all().join().size();
