@@ -69,6 +69,7 @@ class CypherFunctionFactoryExtendedTest {
     // Most math functions are SQL functions, test Cypher-specific ones
     assertThat(factory.hasFunction("rand")).isTrue();
     assertThat(factory.hasFunction("sign")).isTrue();
+    assertThat(factory.hasFunction("randomuuid")).isTrue();
   }
 
   @Test
@@ -203,6 +204,15 @@ class CypherFunctionFactoryExtendedTest {
     assertThat(result.hasNext()).isTrue();
     final var value = result.next().<Number>getProperty("result");
     assertThat(value.doubleValue()).isBetween(0.0, 1.0);
+  }
+
+  @Test
+  void shouldExecuteRandomUuidFunction() {
+    final var result = database.query("opencypher", "RETURN randomuuid() AS result");
+    assertThat(result.hasNext()).isTrue();
+    final var value = result.next().<String>getProperty("result");
+    assertThat(value).isNotNull();
+    assertThat(value).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
   }
 
   @Test
