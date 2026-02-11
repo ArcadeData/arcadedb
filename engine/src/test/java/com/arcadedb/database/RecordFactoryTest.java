@@ -104,6 +104,10 @@ class RecordFactoryTest extends TestHelper {
 
     binary.clear();
     binary.putByte(EdgeSegment.RECORD_TYPE);
+    binary.putInt(0); // COUNT
+    binary.putInt(0); // USED_BYTES (will be set after PREVIOUS_RID)
+    // Serialize PREVIOUS_RID as null RID using TYPE_RID (not compressed)
+    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_RID, new RID(database, -1, -1));
     binary.flip();
 
     final Record edgeSegment = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, null, EMPTY_RID, binary, null);
@@ -161,6 +165,10 @@ class RecordFactoryTest extends TestHelper {
 
     binary.clear();
     binary.putByte(EdgeSegment.RECORD_TYPE);
+    binary.putInt(0); // COUNT
+    binary.putInt(0); // USED_BYTES (will be set after PREVIOUS_RID)
+    // Serialize PREVIOUS_RID as null RID using TYPE_RID (not compressed)
+    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_RID, new RID(database, -1, -1));
     binary.flip();
 
     final Record edgeSegment = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, null, EMPTY_RID, binary, null);

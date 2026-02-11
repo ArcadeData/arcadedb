@@ -48,6 +48,7 @@ public class MatchStatementExecutionTest extends TestHelper {
   public void beginTest() {
     database.command("sql", "CREATE VERTEX type Person");
     database.command("sql", "CREATE EDGE type Friend");
+    database.command("sql", "CREATE EDGE type NonExistingEdge"); // For optional test
     database.command("sql", "CREATE VERTEX Person set name = 'n1'");
     database.command("sql", "CREATE VERTEX Person set name = 'n2'");
     database.command("sql", "CREATE VERTEX Person set name = 'n3'");

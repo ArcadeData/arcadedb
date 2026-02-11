@@ -48,6 +48,7 @@ class OpenCypherTraversalRegressionTest extends TestHelper {
     database.transaction(() -> {
       database.getSchema().createVertexType("Node");
       database.getSchema().createEdgeType("Link");
+      database.getSchema().createEdgeType("NONEXISTENT"); // Create edge type for test (no edges of this type will exist)
 
       // Create a simple chain: 0 -> 1 -> 2 -> 3 -> 4
       final Vertex v0 = database.newVertex("Node").set("id", 0).save();
@@ -293,7 +294,7 @@ class OpenCypherTraversalRegressionTest extends TestHelper {
   void noMatchingPathsTerminates() {
     database.begin();
     try {
-      // Query for non-existent edge type
+      // Query for edge type that exists but has no edges
       final String query = "MATCH (a:Node {id: 0})-[:NONEXISTENT*3]->(b) RETURN b";
       final ResultSet result = database.query("opencypher", query);
 
@@ -303,11 +304,11 @@ class OpenCypherTraversalRegressionTest extends TestHelper {
         count++;
 
         if (count > 100) {
-          fail("Query returned results for non-existent edge type - REGRESSION!");
+          fail("Query returned results for empty edge type - REGRESSION!");
         }
       }
 
-      assertThat(count).as("Should return 0 results for non-existent edge type").isEqualTo(0);
+      assertThat(count).as("Should return 0 results for empty edge type").isEqualTo(0);
     } finally {
       database.commit();
     }

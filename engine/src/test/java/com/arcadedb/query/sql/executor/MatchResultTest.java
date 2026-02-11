@@ -41,6 +41,7 @@ class MatchResultTest extends TestHelper {
         CREATE PROPERTY Person.role IF NOT EXISTS STRING;
         CREATE VERTEX TYPE House IF NOT EXISTS;
         CREATE EDGE TYPE LivesIn IF NOT EXISTS;
+        CREATE EDGE TYPE DummyEdge IF NOT EXISTS;
         CREATE VERTEX House;
         CREATE VERTEX Person SET role='mom';
         CREATE VERTEX Person SET role='dad';
