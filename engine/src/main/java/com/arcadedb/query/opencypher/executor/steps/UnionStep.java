@@ -120,6 +120,9 @@ public class UnionStep extends AbstractExecutionStep {
           while (buffer.size() < n && currentResultSet.hasNext()) {
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final Result result = currentResultSet.next();
 
               // Apply deduplication for UNION (not UNION ALL)

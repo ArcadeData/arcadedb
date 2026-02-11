@@ -94,6 +94,9 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
         final Result inputRow = prevResults.next();
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
+          if (context.isProfiling())
+            rowCount++;
+
           // Create distinct collections for this input row
           final Map<String, Set<Object>> distinctSets = new HashMap<>();
           for (final String varName : collectDistinctVariables) {
@@ -218,6 +221,9 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
         .append(String.join(", ", collectDistinctVariables)).append(")");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     builder.append("\n");
     builder.append(matchChainStart.prettyPrint(depth + 1, indent));

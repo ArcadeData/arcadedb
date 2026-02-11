@@ -271,6 +271,9 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
 
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

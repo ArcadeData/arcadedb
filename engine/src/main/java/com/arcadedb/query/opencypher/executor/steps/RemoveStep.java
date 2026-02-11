@@ -97,6 +97,9 @@ public class RemoveStep extends AbstractExecutionStep {
           final Result inputResult = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
+            if (context.isProfiling())
+              rowCount++;
+
             // Apply REMOVE operations to this result
             applyRemoveOperations(inputResult);
 
@@ -264,6 +267,9 @@ public class RemoveStep extends AbstractExecutionStep {
     }
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

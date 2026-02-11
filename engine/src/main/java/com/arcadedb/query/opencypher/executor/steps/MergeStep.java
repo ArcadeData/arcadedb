@@ -118,6 +118,9 @@ public class MergeStep extends AbstractExecutionStep {
             final Result inputResult = prevResults.next();
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final List<Result> mergedResults = executeMerge(inputResult);
               buffer.addAll(mergedResults);
             } finally {
@@ -134,6 +137,9 @@ public class MergeStep extends AbstractExecutionStep {
           if (!mergedStandalone) {
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final List<Result> mergedResults = executeMerge(null);
               buffer.addAll(mergedResults);
               mergedStandalone = true;
@@ -888,6 +894,9 @@ public class MergeStep extends AbstractExecutionStep {
     builder.append("+ MERGE");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

@@ -146,6 +146,9 @@ public class ExpandPathStep extends AbstractExecutionStep {
           if (currentPaths != null && currentPaths.hasNext()) {
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final TraversalPath path = currentPaths.next();
               final Vertex targetVertex = path.getEndVertex();
 
@@ -322,6 +325,9 @@ public class ExpandPathStep extends AbstractExecutionStep {
     builder.append(" [").append(useBFS ? "BFS" : "DFS").append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

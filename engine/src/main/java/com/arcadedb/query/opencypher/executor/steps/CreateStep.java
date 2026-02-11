@@ -114,6 +114,9 @@ public class CreateStep extends AbstractExecutionStep {
             final Result inputResult = prevResults.next();
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final Result createdResult = createPatterns(inputResult);
               buffer.add(createdResult);
             } finally {
@@ -130,6 +133,9 @@ public class CreateStep extends AbstractExecutionStep {
           if (!createdStandalone) {
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
+              if (context.isProfiling())
+                rowCount++;
+
               final Result createdResult = createPatterns(null);
               buffer.add(createdResult);
               createdStandalone = true;
@@ -400,7 +406,10 @@ public class CreateStep extends AbstractExecutionStep {
     builder.append(ind);
     builder.append("+ CREATE");
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }
