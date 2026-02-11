@@ -96,6 +96,12 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
     currentContainer.removeEntry(lastElementPosition, currentPosition.get());
     ((DatabaseInternal) vertex.getDatabase()).updateRecord(currentContainer);
 
+    // v1 format: If removing from a continuation segment, also update the head segment's cached count
+    if (currentContainer != initialContainer && initialContainer instanceof MutableEdgeSegment) {
+      ((MutableEdgeSegment) initialContainer).decrementTotalCount();
+      ((DatabaseInternal) vertex.getDatabase()).updateRecord(initialContainer);
+    }
+
     currentPosition.set(lastElementPosition);
   }
 }

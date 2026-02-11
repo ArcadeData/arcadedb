@@ -38,16 +38,54 @@ import java.util.logging.Level;
  */
 public class RecordMigrationV0ToV1 {
   private final DatabaseInternal database;
+  private final java.util.Set<String> bucketsToMigrate;
 
-  public RecordMigrationV0ToV1(final DatabaseInternal database) {
+  /**
+   * Simple wrapper to hold migrated record data for low-level updates.
+   */
+  private static class MigrationRecord extends BaseRecord implements RecordInternal {
+    MigrationRecord(final DatabaseInternal database, final RID rid, final Binary buffer) {
+      super(database, rid, buffer);
+    }
+
+    @Override
+    public byte getRecordType() {
+      return buffer.getByte(0);
+    }
+
+    @Override
+    public void setIdentity(RID rid) {
+      this.rid = rid;
+    }
+
+    @Override
+    public void unsetDirty() {
+      // Not needed for migration
+    }
+
+    @Override
+    public com.arcadedb.serializer.json.JSONObject toJSON(boolean includeMetadata) {
+      throw new UnsupportedOperationException("MigrationRecord does not support JSON serialization");
+    }
+  }
+
+  public RecordMigrationV0ToV1(final DatabaseInternal database, final java.util.Set<String> bucketsToMigrate) {
     this.database = database;
+    this.bucketsToMigrate = bucketsToMigrate;
   }
 
   /**
-   * Migrate all records from v0 to v1 format.
+   * Migrate records from v0 to v1 format for the specified buckets only.
    */
   public void migrate() {
-    LogManager.instance().log(this, Level.INFO, "Starting record-level migration from v0 to v1...");
+
+    if (bucketsToMigrate == null || bucketsToMigrate.isEmpty()) {
+      LogManager.instance().log(this, Level.INFO, "No buckets to migrate (list is empty)");
+      return;
+    }
+
+    LogManager.instance().log(this, Level.INFO,
+        "Starting record-level migration from v0 to v1 for %d buckets...", bucketsToMigrate.size());
 
     final long startTime = System.currentTimeMillis();
     final AtomicInteger migratedVertices = new AtomicInteger(0);
@@ -55,20 +93,24 @@ public class RecordMigrationV0ToV1 {
 
     database.begin();
     try {
-      // Migrate vertex records
+      // Migrate vertex records (only for buckets in the migration list)
       for (final DocumentType type : database.getSchema().getTypes()) {
         if (type instanceof LocalVertexType) {
           for (final Bucket bucket : type.getBuckets(false)) {
-            migratedVertices.addAndGet(migrateVertexBucket(bucket));
+            if (bucketsToMigrate.contains(bucket.getName())) {
+              migratedVertices.addAndGet(migrateVertexBucket(bucket));
+            }
           }
         }
       }
 
-      // Migrate edge segment records
+      // Migrate edge segment records (only for buckets in the migration list)
       for (final DocumentType type : database.getSchema().getTypes()) {
         for (final Bucket bucket : type.getBuckets(false)) {
-          if (bucket.getName().contains("edge-segment")) {
-            migratedEdgeSegments.addAndGet(migrateEdgeSegmentBucket(bucket));
+          if (bucketsToMigrate.contains(bucket.getName())) {
+            if (bucket.getName().contains("edge-segment")) {
+              migratedEdgeSegments.addAndGet(migrateEdgeSegmentBucket(bucket));
+            }
           }
         }
       }
@@ -98,6 +140,8 @@ public class RecordMigrationV0ToV1 {
     final AtomicInteger count = new AtomicInteger(0);
 
     // Collect records to migrate (can't modify during scan)
+    final java.util.List<com.arcadedb.utility.Pair<RID, Binary>> recordsToUpdate = new java.util.ArrayList<>();
+
     bucket.scan((rid, view) -> {
       try {
         if (view.size() < 1)
@@ -146,10 +190,13 @@ public class RecordMigrationV0ToV1 {
         // Append properties
         v1Buffer.putByteArray(propertiesData);
 
-        // Create a temporary mutable document to update the record
-        final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
-        final MutableDocument doc = new MutableDocument(database, type, rid, v1Buffer);
-        doc.save();
+        // Prepare buffer for writing by positioning at end and getting content
+        final int finalSize = v1Buffer.position();
+        v1Buffer.position(finalSize);
+        final Binary content = v1Buffer.slice(0, finalSize);
+
+        // Store for batch update
+        recordsToUpdate.add(new com.arcadedb.utility.Pair<>(rid, content));
 
         count.incrementAndGet();
 
@@ -158,6 +205,18 @@ public class RecordMigrationV0ToV1 {
       }
       return true;
     }, null);
+
+    // Now update all records at low level (bypass validation)
+    for (final com.arcadedb.utility.Pair<RID, Binary> pair : recordsToUpdate) {
+      try {
+        final RID rid = pair.getFirst();
+        final Binary content = pair.getSecond();
+        final MigrationRecord record = new MigrationRecord(database, rid, content);
+        bucket.updateRecord(record, true);
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Failed to update vertex %s: %s", pair.getFirst(), e.getMessage());
+      }
+    }
 
     LogManager.instance().log(this, Level.INFO, "Migrated %d vertices in bucket %s", count.get(), bucket.getName());
     return count.get();
@@ -172,6 +231,9 @@ public class RecordMigrationV0ToV1 {
     LogManager.instance().log(this, Level.INFO, "Migrating edge segment bucket: %s", bucket.getName());
 
     final AtomicInteger count = new AtomicInteger(0);
+
+    // Collect records to migrate
+    final java.util.List<com.arcadedb.utility.Pair<RID, Binary>> recordsToUpdate = new java.util.ArrayList<>();
 
     bucket.scan((rid, view) -> {
       try {
@@ -228,10 +290,12 @@ public class RecordMigrationV0ToV1 {
         final int finalUsedBytes = v1Buffer.position();
         v1Buffer.putInt(usedBytesPosition, finalUsedBytes);
 
-        // Update record using MutableDocument
-        final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
-        final MutableDocument doc = new MutableDocument(database, type, rid, v1Buffer);
-        doc.save();
+        // Prepare buffer for writing
+        v1Buffer.position(finalUsedBytes);
+        final Binary content = v1Buffer.slice(0, finalUsedBytes);
+
+        // Store for batch update
+        recordsToUpdate.add(new com.arcadedb.utility.Pair<>(rid, content));
 
         count.incrementAndGet();
 
@@ -240,6 +304,18 @@ public class RecordMigrationV0ToV1 {
       }
       return true;
     }, null);
+
+    // Now update all records at low level (bypass validation)
+    for (final com.arcadedb.utility.Pair<RID, Binary> pair : recordsToUpdate) {
+      try {
+        final RID rid = pair.getFirst();
+        final Binary content = pair.getSecond();
+        final MigrationRecord record = new MigrationRecord(database, rid, content);
+        bucket.updateRecord(record, true);
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Failed to update edge segment %s: %s", pair.getFirst(), e.getMessage());
+      }
+    }
 
     LogManager.instance().log(this, Level.INFO, "Migrated %d edge segments in bucket %s", count.get(), bucket.getName());
     return count.get();

@@ -124,6 +124,13 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
     if (currentContainer != null) {
       currentContainer.removeEntry(lastElementPosition, currentPosition.get());
       database.updateRecord(currentContainer);
+
+      // v1 format: If removing from a continuation segment, also update the head segment's cached count
+      if (currentContainer != initialContainer && initialContainer instanceof MutableEdgeSegment) {
+        ((MutableEdgeSegment) initialContainer).decrementTotalCount();
+        database.updateRecord(initialContainer);
+      }
+
       currentPosition.set(lastElementPosition);
     }
   }

@@ -76,19 +76,22 @@ public class DatabaseMigration {
   }
 
   /**
-   * Migrate database from older versions to current version.
+   * Migrate database from older versions to current version (legacy method, deprecated).
+   * Use migrateOpenDatabase() instead for safer migration on an already-open database.
    *
    * @param databasePath Path to database directory
    */
+  @Deprecated
   public static void migrate(final String databasePath) throws IOException {
-    LogManager.instance().log(DatabaseMigration.class, Level.INFO,
-        "Starting database migration to v%d for: %s", CURRENT_VERSION, databasePath);
+    LogManager.instance().log(DatabaseMigration.class, Level.WARNING,
+        "Using deprecated migrate() method. Consider using migrateOpenDatabase() instead.");
 
     final File dbDir = new File(databasePath);
-    final File[] files = dbDir.listFiles((dir, name) -> name.endsWith(".bucket"));
+    final File[] files = dbDir.listFiles((dir, name) ->
+        name.endsWith(".bucket") || name.endsWith(".dict") || name.endsWith(".umtidx"));
 
     if (files == null) {
-      LogManager.instance().log(DatabaseMigration.class, Level.WARNING, "No bucket files found in: %s", databasePath);
+      LogManager.instance().log(DatabaseMigration.class, Level.WARNING, "No component files found in: %s", databasePath);
       return;
     }
 
@@ -105,36 +108,125 @@ public class DatabaseMigration {
       return;
     }
 
+    final File backupDir = new File(dbDir, "backup");
+    if (!backupDir.exists() && !backupDir.mkdir()) {
+      throw new IOException("Failed to create backup directory: " + backupDir);
+    }
+
+    final Set<String> renamedBucketNames = new HashSet<>();
+    for (final File file : filesToMigrate) {
+      final String bucketName = extractBucketNameFromFilename(file.getName());
+      renameFileToV1(file, backupDir);
+      renamedBucketNames.add(bucketName);
+    }
+
+    if (renamedBucketNames.isEmpty()) {
+      LogManager.instance().log(DatabaseMigration.class, Level.INFO, "No buckets to migrate");
+      return;
+    }
+
+    LogManager.instance().log(DatabaseMigration.class, Level.INFO,
+        "Starting record data migration for %d buckets...", renamedBucketNames.size());
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    final Database db = factory.open(ComponentFile.MODE.READ_WRITE, false);
+    try {
+      final RecordMigrationV0ToV1 recordMigration = new RecordMigrationV0ToV1((DatabaseInternal) db, renamedBucketNames);
+      recordMigration.migrate();
+    } finally {
+      db.close();
+    }
+
+    LogManager.instance().log(DatabaseMigration.class, Level.INFO,
+        "Migration completed. %d files migrated to v%d", renamedBucketNames.size(), CURRENT_VERSION);
+  }
+
+  /**
+   * Migrate a closed database from v0 to v1 format.
+   * Uses in-place migration: renames files to v1, opens database with backward-compatible reading,
+   * rewrites all records in v1 format.
+   *
+   * @param databasePath Path to the database directory
+   */
+  public static void migrateClosedDatabase(final String databasePath) throws IOException {
+    LogManager.instance().log(DatabaseMigration.class, Level.INFO,
+        "Starting database migration to v%d for: %s", CURRENT_VERSION, databasePath);
+
+    final File dbDir = new File(databasePath);
+    final File[] v0Files = dbDir.listFiles((dir, name) ->
+        (name.endsWith(".bucket") || name.endsWith(".dict") || name.endsWith(".umtidx")) &&
+            getVersionFromFilename(name) < CURRENT_VERSION);
+
+    if (v0Files == null || v0Files.length == 0) {
+      LogManager.instance().log(DatabaseMigration.class, Level.INFO, "No files need migration");
+      return;
+    }
+
+    LogManager.instance().log(DatabaseMigration.class, Level.INFO,
+        "Found %d v0 component files to migrate", v0Files.length);
+
     // Create backup directory
     final File backupDir = new File(dbDir, "backup");
     if (!backupDir.exists() && !backupDir.mkdir()) {
       throw new IOException("Failed to create backup directory: " + backupDir);
     }
 
-    // Phase 1: Rename files to mark as v1 (marks migration intent)
-    for (final File file : filesToMigrate) {
-      renameFileToV1(file, backupDir);
+    // Phase 1: Backup and rename files to v1
+    final Set<String> renamedBuckets = new HashSet<>();
+    for (final File v0File : v0Files) {
+      // Backup
+      final File backupFile = new File(backupDir, v0File.getName() + ".backup");
+      Files.copy(v0File.toPath(), backupFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+      LogManager.instance().log(DatabaseMigration.class, Level.INFO,
+          "Backed up: %s", v0File.getName());
+
+      // Rename to v1
+      final String v1FileName = updateVersionInFilename(v0File.getName(), CURRENT_VERSION);
+      final File v1File = new File(dbDir, v1FileName);
+      if (!v0File.renameTo(v1File)) {
+        throw new IOException("Failed to rename " + v0File.getName() + " to " + v1FileName);
+      }
+
+      LogManager.instance().log(DatabaseMigration.class, Level.INFO,
+          "Renamed: %s -> %s", v0File.getName(), v1FileName);
+
+      // Track bucket names for record migration
+      if (v0File.getName().endsWith(".bucket")) {
+        renamedBuckets.add(extractBucketNameFromFilename(v0File.getName()));
+      }
     }
 
-    // Phase 2: Record data migration - convert actual v0 records to v1 format
-    LogManager.instance().log(DatabaseMigration.class, Level.INFO, "Starting record data migration...");
+    if (renamedBuckets.isEmpty()) {
+      LogManager.instance().log(DatabaseMigration.class, Level.INFO,
+          "No bucket files to migrate (only non-bucket files renamed)");
+      return;
+    }
 
-    // Open database directly (files are already renamed to v1)
-    final LocalDatabase db = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE,
-        new com.arcadedb.ContextConfiguration(), null, new java.util.HashMap<>());
+    // Phase 2: Open database and migrate records in-place
+    // The code will read v0 data (backward-compatible) and write v1 data
+    LogManager.instance().log(DatabaseMigration.class, Level.INFO,
+        "Opening database to migrate %d buckets...", renamedBuckets.size());
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    Database db = null;
     try {
-      db.open();
+      // Open without migration check to avoid recursion
+      db = factory.open(ComponentFile.MODE.READ_WRITE, false);
 
-      // Run record-level migration (convert v0 data to v1 format)
-      final RecordMigrationV0ToV1 recordMigration = new RecordMigrationV0ToV1(db);
+      // Migrate records from v0 to v1 format in-place
+      final RecordMigrationV0ToV1 recordMigration = new RecordMigrationV0ToV1((DatabaseInternal) db, renamedBuckets);
       recordMigration.migrate();
 
     } finally {
-      db.close();
+      if (db != null) {
+        db.close();
+        // Remove from active instances
+        DatabaseFactory.removeActiveDatabaseInstance(databasePath);
+      }
     }
 
     LogManager.instance().log(DatabaseMigration.class, Level.INFO,
-        "Migration completed. %d files migrated to v%d", filesToMigrate.size(), CURRENT_VERSION);
+        "Migration completed. %d files migrated to v%d", v0Files.length, CURRENT_VERSION);
   }
 
   /**
@@ -195,5 +287,22 @@ public class DatabaseMigration {
       // Add version before .bucket extension
       return filename.replace(".bucket", ".v" + newVersion + ".bucket");
     }
+  }
+
+  /**
+   * Extract bucket name from component filename.
+   * Format: bucketName.id.size[.vVERSION].bucket
+   * Example: "Person.0.65536.bucket" → "Person"
+   * Example: "edge-segment.0.4096.v1.bucket" → "edge-segment"
+   *
+   * @param filename Component filename
+   * @return Bucket name (first part before first dot)
+   */
+  private static String extractBucketNameFromFilename(final String filename) {
+    final int firstDot = filename.indexOf('.');
+    if (firstDot > 0) {
+      return filename.substring(0, firstDot);
+    }
+    return filename; // Fallback
   }
 }

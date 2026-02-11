@@ -104,7 +104,8 @@ class CheckDatabaseTest extends TestHelper {
       assertThat((Long) row.getProperty("totalActiveVertices")).isEqualTo(TOTAL);
       assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(0);
       assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(0L);
-      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(13);
+      // v1 format: 12 edge segment records (v0 had 13 due to different segment allocation)
+      assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(12);
       assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(0);
       assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0L);
       assertThat((Long) row.getProperty("invalidLinks")).isEqualTo(0L);

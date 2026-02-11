@@ -258,6 +258,10 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
     buffer.position(currentPosition);
 
+    // DECREMENT CACHED COUNT (v1 format)
+    totalCount--;
+    updateCachedCount();
+
     return true;
   }
 
@@ -441,6 +445,13 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     return totalCount;
   }
 
+  /**
+   * Decrements the cached total count (for head segment updates from continuation segments).
+   */
+  public void decrementTotalCount() {
+    totalCount--;
+    updateCachedCount();
+  }
 
   @Override
   public boolean isFirstSegment() {

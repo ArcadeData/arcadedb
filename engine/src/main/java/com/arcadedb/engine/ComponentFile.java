@@ -69,6 +69,7 @@ public class ComponentFile {
       // STARTING FROM 21.10.2 COMPONENTS HAVE VERSION IN THE FILE NAME
       version = Integer.parseInt(filePrefix.substring(versionPos + 2));
       filePrefix = filePrefix.substring(0, versionPos);
+    } else {
     }
 
     final int fileIdPos = filePrefix.lastIndexOf(".");

@@ -262,32 +262,56 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     if (super.checkForLazyLoading() || buffer != null && buffer.position() == 1) {
       buffer.position(1); // SKIP RECORD TYPE
 
-      // v1 format: edge maps with varlong encoding
-      // [TYPE][OUT_MAP_SIZE: varlong][OUT_MAP_ENTRIES][IN_MAP_SIZE: varlong][IN_MAP_ENTRIES][PROPERTIES]
+      // Detect v0 vs v1 format by examining the data structure
+      // v0: [TYPE][OUT_BUCKET_ID: 4 bytes][OUT_POSITION: 8 bytes]...
+      // v1: [TYPE][OUT_MAP_SIZE: varlong 1-9 bytes][...]
+      final boolean isV0Format = detectV0Format();
 
-      // Read outgoing edges map
-      final int outMapSize = (int) buffer.getNumber();
-      if (outMapSize > 0) {
-        outEdgesMap = new HashMap<>(outMapSize);
-        for (int i = 0; i < outMapSize; i++) {
-          final int bucketId = (int) buffer.getNumber();
-          final int ridBucketId = (int) buffer.getNumber();
-          final long ridPosition = buffer.getNumber();
-          final RID headRID = new RID(database, ridBucketId, ridPosition);
-          outEdgesMap.put(bucketId, headRID);
+      if (isV0Format) {
+        // v0 format (backward compatibility): single edge lists with fixed RIDs
+        // [TYPE][OUT_RID: 4+8 bytes][IN_RID: 4+8 bytes][PROPERTIES]
+
+        final int outBucketId = buffer.getInt();
+        final long outPosition = buffer.getLong();
+        if (outBucketId >= 0 && outPosition >= 0) {
+          outEdgesMap = new HashMap<>(1);
+          outEdgesMap.put(0, new RID(database, outBucketId, outPosition));
         }
-      }
 
-      // Read incoming edges map
-      final int inMapSize = (int) buffer.getNumber();
-      if (inMapSize > 0) {
-        inEdgesMap = new HashMap<>(inMapSize);
-        for (int i = 0; i < inMapSize; i++) {
-          final int bucketId = (int) buffer.getNumber();
-          final int ridBucketId = (int) buffer.getNumber();
-          final long ridPosition = buffer.getNumber();
-          final RID headRID = new RID(database, ridBucketId, ridPosition);
-          inEdgesMap.put(bucketId, headRID);
+        final int inBucketId = buffer.getInt();
+        final long inPosition = buffer.getLong();
+        if (inBucketId >= 0 && inPosition >= 0) {
+          inEdgesMap = new HashMap<>(1);
+          inEdgesMap.put(0, new RID(database, inBucketId, inPosition));
+        }
+      } else {
+        // v1 format: edge maps with varlong encoding
+        // [TYPE][OUT_MAP_SIZE: varlong][OUT_MAP_ENTRIES][IN_MAP_SIZE: varlong][IN_MAP_ENTRIES][PROPERTIES]
+
+        // Read outgoing edges map
+        final int outMapSize = (int) buffer.getNumber();
+        if (outMapSize > 0) {
+          outEdgesMap = new HashMap<>(outMapSize);
+          for (int i = 0; i < outMapSize; i++) {
+            final int bucketId = (int) buffer.getNumber();
+            final int ridBucketId = (int) buffer.getNumber();
+            final long ridPosition = buffer.getNumber();
+            final RID headRID = new RID(database, ridBucketId, ridPosition);
+            outEdgesMap.put(bucketId, headRID);
+          }
+        }
+
+        // Read incoming edges map
+        final int inMapSize = (int) buffer.getNumber();
+        if (inMapSize > 0) {
+          inEdgesMap = new HashMap<>(inMapSize);
+          for (int i = 0; i < inMapSize; i++) {
+            final int bucketId = (int) buffer.getNumber();
+            final int ridBucketId = (int) buffer.getNumber();
+            final long ridPosition = buffer.getNumber();
+            final RID headRID = new RID(database, ridBucketId, ridPosition);
+            inEdgesMap.put(bucketId, headRID);
+          }
         }
       }
 
@@ -295,6 +319,53 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
       return true;
     }
     return false;
+  }
+
+  /**
+   * Detect if this vertex is in v0 format by examining the binary structure.
+   * v0 format has fixed-size fields: [TYPE][OUT_BUCKET_ID: 4][OUT_POS: 8][IN_BUCKET_ID: 4][IN_POS: 8][PROPERTIES]
+   * v1 format has variable-length encoding: [TYPE][OUT_MAP_SIZE: varlong][...][IN_MAP_SIZE: varlong][...]
+   *
+   * Detection heuristic: In v0, after the TYPE byte, the next 4 bytes are an int (bucket ID), typically 0-100.
+   * In v1, the next byte(s) encode a varlong for map size, typically 0-10 (single byte 0x00-0x0A).
+   *
+   * We can distinguish by checking if there are enough bytes for v0 format (25 bytes minimum)
+   * and if the first 4 bytes represent a reasonable bucket ID.
+   */
+  private boolean detectV0Format() {
+    final int savedPosition = buffer.position(); // Save position (should be at 1, after TYPE)
+    try {
+      // Need at least 25 bytes for v0 format: TYPE(1) + OUT(12) + IN(12) = 25
+      if (buffer.size() < 25) {
+        return false; // Too small for v0, must be v1 or corrupted
+      }
+
+      // Try reading as v0: peek at first 4 bytes as bucket ID
+      final int possibleBucketId = buffer.getInt(); // Read position 1-4
+      final long possiblePosition = buffer.getLong(); // Position 5-12
+
+
+      // v0 bucket IDs are typically 0-100 (could be up to 10000 in very large databases)
+      // v1's first varlong byte for map size 0-10 would be 0x00-0x0A (0-10)
+      // If we interpret 4 bytes as int and get a huge number, it's likely v1 varlong data
+
+      // v0 format: bucket ID can be -1 (no edges) or 0-10000 (valid bucket)
+      // position can be -1 (no edges) or >= 0 (valid position)
+      // If BOTH are -1, definitely v0 (no edges)
+      // If bucketId is -1 and position is -1, it's v0
+      if ((possibleBucketId == -1 && possiblePosition == -1) ||
+          (possibleBucketId >= 0 && possibleBucketId < 10000 &&
+           (possiblePosition == -1 || (possiblePosition >= 0 && possiblePosition < 1000000000L)))) {
+        return true; // Very likely v0
+      }
+
+      return false; // Likely v1
+    } catch (Exception e) {
+      // If we can't read the data, assume v1 (safer default for current code)
+      return false;
+    } finally {
+      buffer.position(savedPosition); // Restore position for actual reading
+    }
   }
 
   private VertexInternal getMostUpdatedVertex(final VertexInternal vertex) {

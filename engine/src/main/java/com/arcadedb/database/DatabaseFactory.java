@@ -69,26 +69,45 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public Database open() {
-    return open(ComponentFile.MODE.READ_WRITE);
+    return open(ComponentFile.MODE.READ_WRITE, true);
   }
 
   public synchronized Database open(final ComponentFile.MODE mode) {
+    return open(mode, true);
+  }
+
+  /**
+   * Opens the database with option to skip migration check.
+   *
+   * @param mode The file mode to use
+   * @param checkMigration If true, check for migration; if false, skip migration check (for internal use during migration)
+   * @return The opened database
+   */
+  synchronized Database open(final ComponentFile.MODE mode, final boolean checkMigration) {
     checkForActiveInstance(databasePath);
+
+    // Check if migration is needed BEFORE opening the database
+    if (checkMigration) {
+      try {
+        if (DatabaseMigration.needsMigration(databasePath)) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Database at '%s' requires migration to current format version", databasePath);
+
+          // Perform migration on closed database (file-level operations)
+          DatabaseMigration.migrateClosedDatabase(databasePath);
+
+          LogManager.instance()
+              .log(this, Level.INFO, "Migration completed successfully for '%s'", databasePath);
+        }
+      } catch (final Exception e) {
+        throw new DatabaseOperationException("Error during database migration", e);
+      }
+    }
 
     if (ACTIVE_INSTANCES.isEmpty())
       PageManager.INSTANCE.configure();
 
-    // Check if database needs migration before opening
-    try {
-      if (DatabaseMigration.needsMigration(databasePath)) {
-        LogManager.instance()
-            .log(this, Level.WARNING, "Database at '%s' requires migration to current format version", databasePath);
-        DatabaseMigration.migrate(databasePath);
-      }
-    } catch (final IOException e) {
-      throw new DatabaseOperationException("Error during database migration", e);
-    }
-
+    // Now open the database (with v1 files if migration happened)
     final LocalDatabase database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.open();
