@@ -76,15 +76,6 @@ public class BinarySerializer {
   }
 
   public Binary serialize(final DatabaseInternal database, final Record record) {
-    // Special case for migration: if the record is a RecordInternal with a pre-set buffer, just return it
-    if (record instanceof RecordInternal recordInternal) {
-      final Binary existingBuffer = recordInternal.getBuffer();
-      if (existingBuffer != null && existingBuffer.size() > 0) {
-        // For migration records that already have converted binary data, return as-is
-        return existingBuffer.copy();
-      }
-    }
-
     return switch (record.getRecordType()) {
       case Document.RECORD_TYPE, EmbeddedDocument.RECORD_TYPE -> serializeDocument(database, (MutableDocument) record);
       case Vertex.RECORD_TYPE -> serializeVertex(database, (MutableVertex) record);
