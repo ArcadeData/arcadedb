@@ -321,8 +321,8 @@ public class MatchStatementExecutionTest extends TestHelper {
   @Test
   void commonFriends() {
     // DIAGNOSTIC: Print all results to see what's being returned
-    System.out.println("\n=== DIAGNOSTIC commonFriends ===");
-    System.out.println("Parser: " + database.getConfiguration().getValueAsString(GlobalConfiguration.SQL_PARSER_IMPLEMENTATION));
+    // System.out.println("\n=== DIAGNOSTIC commonFriends ===");
+    // System.out.println("Parser: " + database.getConfiguration().getValueAsString(GlobalConfiguration.SQL_PARSER_IMPLEMENTATION));
 
     final ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend)");
@@ -334,10 +334,10 @@ public class MatchStatementExecutionTest extends TestHelper {
       count++;
       final String name = item.getProperty("name");
       if (count == 1) firstName = name;
-      System.out.println("  Result " + count + ": " + name);
+      // System.out.println("  Result " + count + ": " + name);
     }
-    System.out.println("Total results: " + count);
-    System.out.println("First result was: " + firstName);
+    // System.out.println("Total results: " + count);
+    // System.out.println("First result was: " + firstName);
     qResult.close();
 
     // Now run the actual test assertions

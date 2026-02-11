@@ -111,7 +111,7 @@ class Issue3403Test {
       count1 = rs.stream().count();
     }
 
-    System.out.println("Query without extra parentheses returned: " + count1 + " records");
+    // System.out.println("Query without extra parentheses returned: " + count1 + " records");
 
     // Verify we get the expected results (chunks not connected to any IMAGE)
     assertThat(count1).isGreaterThan(0);
@@ -129,7 +129,7 @@ class Issue3403Test {
       count2 = rs.stream().count();
     }
 
-    System.out.println("Query with extra parentheses returned: " + count2 + " records");
+    // System.out.println("Query with extra parentheses returned: " + count2 + " records");
 
     // Verify we get the expected results (chunks not connected to any IMAGE)
     assertThat(count2).isGreaterThan(0);
@@ -157,8 +157,8 @@ class Issue3403Test {
       count2 = rs.stream().count();
     }
 
-    System.out.println("Query 1 (without extra parentheses): " + count1 + " records");
-    System.out.println("Query 2 (with extra parentheses): " + count2 + " records");
+    // System.out.println("Query 1 (without extra parentheses): " + count1 + " records");
+    // System.out.println("Query 2 (with extra parentheses): " + count2 + " records");
 
     // Both queries should return the same number of results
     assertThat(count1).isEqualTo(count2)
@@ -182,8 +182,8 @@ class Issue3403Test {
       count2 = rs.stream().count();
     }
 
-    System.out.println("Simple NOT pattern - Query 1: " + count1 + " records");
-    System.out.println("Simple NOT pattern - Query 2: " + count2 + " records");
+    // System.out.println("Simple NOT pattern - Query 1: " + count1 + " records");
+    // System.out.println("Simple NOT pattern - Query 2: " + count2 + " records");
 
     // Both should return 8 chunks (those not connected to any IMAGE)
     assertThat(count1).isEqualTo(count2)
@@ -206,8 +206,8 @@ class Issue3403Test {
       count2 = rs.stream().count();
     }
 
-    System.out.println("Triple parentheses - Query 1: " + count1 + " records");
-    System.out.println("Triple parentheses - Query 2: " + count2 + " records");
+    // System.out.println("Triple parentheses - Query 1: " + count1 + " records");
+    // System.out.println("Triple parentheses - Query 2: " + count2 + " records");
 
     assertThat(count1).isEqualTo(count2)
         .withFailMessage("Triple parentheses: Expected both queries to return the same number of results");
@@ -229,8 +229,8 @@ class Issue3403Test {
       count2 = rs.stream().count();
     }
 
-    System.out.println("Multiple parentheses around pattern - Query 1: " + count1 + " records");
-    System.out.println("Multiple parentheses around pattern - Query 2: " + count2 + " records");
+    // System.out.println("Multiple parentheses around pattern - Query 1: " + count1 + " records");
+    // System.out.println("Multiple parentheses around pattern - Query 2: " + count2 + " records");
 
     assertThat(count1).isEqualTo(count2)
         .withFailMessage("Multiple parentheses around pattern: Expected both queries to return the same number of results");
@@ -257,8 +257,8 @@ class Issue3403Test {
       count2 = rs.stream().count();
     }
 
-    System.out.println("Complex query with triple parentheses - Query 1: " + count1 + " records");
-    System.out.println("Complex query with triple parentheses - Query 2: " + count2 + " records");
+    // System.out.println("Complex query with triple parentheses - Query 1: " + count1 + " records");
+    // System.out.println("Complex query with triple parentheses - Query 2: " + count2 + " records");
 
     assertThat(count1).isEqualTo(count2)
         .withFailMessage("Complex query with triple parentheses: Expected both queries to return the same number of results");
