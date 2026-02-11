@@ -65,7 +65,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     this.buffer = buffer;
     if (buffer != null) {
       this.buffer.setAutoResizable(false);
-      this.bufferSize = buffer.size();
+      this.bufferSize = buffer.capacity();
 
       // v1 format: [RECORD_TYPE][COUNT][USED_BYTES][PREVIOUS_RID][ENTRIES...]
       // COUNT is at fixed position right after RECORD_TYPE
@@ -96,6 +96,14 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     // Content starts here (after variable-length PREVIOUS_RID)
     final int contentStartPosition = buffer.position();
     buffer.putInt(USED_BYTES_POSITION, contentStartPosition); // USED_BYTES
+
+    // IMPORTANT: Set the buffer's size to bufferSize (not just contentStartPosition).
+    // This ensures the FULL allocated buffer is written to disk when serialized,
+    // so when loaded back, it has full capacity to accept new edges without
+    // immediately needing to allocate a new segment.
+    buffer.position(bufferSize);
+    buffer.flip();
+    buffer.position(contentStartPosition);
   }
 
   @Override
@@ -389,9 +397,20 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public Binary getContent() {
-    buffer.position(bufferSize);
-    buffer.flip();
+    // Return the buffer as-is. The buffer's size was set to bufferSize during
+    // initialization, ensuring the full allocated buffer is written to disk.
     return buffer;
+  }
+
+  @Override
+  public void setBuffer(final Binary newBuffer) {
+    super.setBuffer(newBuffer);
+    if (newBuffer != null) {
+      // When loading from disk, ensure bufferSize reflects the full capacity.
+      // Since we save the full allocated buffer (not trimmed), the capacity
+      // should match the original allocation size.
+      this.bufferSize = newBuffer.capacity();
+    }
   }
 
   @Override
