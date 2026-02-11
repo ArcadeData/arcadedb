@@ -251,6 +251,68 @@ class CountEdgesOptimizationTest {
     });
   }
 
+  @Test
+  void boundVertexNotInGroupingKeysShouldNotOptimize() {
+    // Regression test for issue #3399
+    // When the bound vertex is NOT in the grouping keys and there are multiple
+    // bound vertices per grouping key, the optimization must not apply because
+    // CountEdgesStep doesn't aggregate - it emits one row per input row.
+    //
+    // Simplified test: Multiple answers per question, count comments per question
+    // The bound vertex 'a' (answer) is NOT in the grouping keys
+
+    // Use a fresh database for this test
+    final Database testDb = new DatabaseFactory("./target/databases/testcountopt-issue3399").create();
+    try {
+      testDb.transaction(() -> {
+        testDb.getSchema().createVertexType("Question");
+        testDb.getSchema().createVertexType("Answer");
+        testDb.getSchema().createVertexType("Comment");
+        testDb.getSchema().createEdgeType("HAS_ANSWER");
+        testDb.getSchema().createEdgeType("HAS_COMMENT");
+
+        // Create 1 question
+        final MutableVertex q1 = testDb.newVertex("Question").set("id", 1).save();
+
+        // Create 2 answers for q1
+        final MutableVertex a1 = testDb.newVertex("Answer").set("id", 1).save();
+        final MutableVertex a2 = testDb.newVertex("Answer").set("id", 2).save();
+        q1.newEdge("HAS_ANSWER", a1);
+        q1.newEdge("HAS_ANSWER", a2);
+
+        // Create 2 comments on a1, 3 comments on a2
+        for (int i = 0; i < 2; i++) {
+          final MutableVertex c = testDb.newVertex("Comment").set("id", 100 + i).save();
+          a1.newEdge("HAS_COMMENT", c);
+        }
+        for (int i = 2; i < 5; i++) {
+          final MutableVertex c = testDb.newVertex("Comment").set("id", 100 + i).save();
+          a2.newEdge("HAS_COMMENT", c);
+        }
+      });
+
+      // Simpler pattern that matches the optimization trigger:
+      // MATCH produces 2 answers (a1, a2) for question q
+      // OPTIONAL MATCH counts comments per answer
+      // WITH groups by q (NOT by a!) and should aggregate counts
+      final ResultSet rs = testDb.query("opencypher",
+          "MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) " +
+          "OPTIONAL MATCH (a)-[:HAS_COMMENT]->(c:Comment) " +
+          "WITH q, count(c) AS comment_count " +
+          "RETURN q.id AS qid, comment_count");
+
+      assertThat(rs.hasNext()).isTrue();
+      final Result r = rs.next();
+      assertThat(r.<Integer>getProperty("qid")).isEqualTo(1);
+      // Must aggregate across all answers: 2 + 3 = 5 total
+      assertThat(r.<Long>getProperty("comment_count")).isEqualTo(5L);
+      assertThat(rs.hasNext()).isFalse();
+      rs.close();
+    } finally {
+      testDb.drop();
+    }
+  }
+
   private Map<String, Long> collectNameCount(final ResultSet rs) {
     final Map<String, Long> results = new HashMap<>();
     while (rs.hasNext()) {

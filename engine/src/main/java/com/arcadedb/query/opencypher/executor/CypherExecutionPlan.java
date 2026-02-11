@@ -2022,6 +2022,24 @@ public class CypherExecutionPlan {
         return null;
     }
 
+    // The bound vertex must be in the grouping keys to ensure correct aggregation.
+    // Without this, CountEdgesStep would emit one row per input row instead of aggregating.
+    // Example: MATCH (q)-[:HAS_ANSWER]->(a) ... WITH q, count(c) AS cnt
+    // If 'a' is the bound vertex but only 'q' is in grouping keys, and there are multiple
+    // answers per question, CountEdgesStep would produce multiple rows per question.
+    boolean boundVertexInGroupingKeys = false;
+    for (final ReturnClause.ReturnItem key : groupingKeys) {
+      final String keyExprText = key.getExpression() instanceof VariableExpression
+          ? ((VariableExpression) key.getExpression()).getVariableName()
+          : key.getExpression().getText();
+      if (keyExprText.equals(boundVar)) {
+        boundVertexInGroupingKeys = true;
+        break;
+      }
+    }
+    if (!boundVertexInGroupingKeys)
+      return null;
+
     // Compute direction relative to bound vertex
     // Pattern direction is from firstNode to lastNode
     final Vertex.DIRECTION direction;
