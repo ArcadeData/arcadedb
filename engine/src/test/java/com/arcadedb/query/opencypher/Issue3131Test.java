@@ -49,6 +49,7 @@ class Issue3131Test {
 
     // Create schema
     database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("in");
 
     // Create test nodes
     database.transaction(() -> {
