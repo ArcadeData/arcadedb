@@ -18,8 +18,6 @@
  */
 package com.arcadedb.serializer;
 
-import org.junit.jupiter.api.Test;
-
 import java.util.Random;
 import java.util.UUID;
 
@@ -28,13 +26,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Performance validation test for VarHandleComparator vs PureJavaComparator.
  */
-public class VarHandlePerformanceTest {
+public class VarHandlePerformanceBenchmark {
 
   private static final int ARRAY_LENGTH = 1000;
-  private static final int ITERATIONS = 3000;
+  private static final int ITERATIONS   = 3000;
 
-  @Test
-  void testVarHandlePerformance() {
+  public static void main(String[] args) {
     System.out.println("VarHandle Performance Test");
     System.out.println("==========================");
     System.out.println("Generating random byte arrays...");
