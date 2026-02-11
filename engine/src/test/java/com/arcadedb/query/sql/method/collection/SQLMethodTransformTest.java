@@ -66,9 +66,13 @@ import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -90,12 +94,12 @@ class SQLMethodTransformTest {
   void toLowerCase() {
     final BasicCommandContext context = getMockedContext();
 
-    final Object result = method.execute(Set.of("A", "B"), null, context, new String[] { "toLowerCase" });
+    final Object result = method.execute(Set.of("A", "B"), null, context, new String[]{"toLowerCase"});
     assertThat(result).isInstanceOf(Set.class);
     assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("a");
     assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("b");
 
-    final Object result2 = method.execute(List.of("A", "B"), null, context, new String[] { "toLowerCase" });
+    final Object result2 = method.execute(List.of("A", "B"), null, context, new String[]{"toLowerCase"});
     assertThat(result2).isInstanceOf(List.class);
     assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("a");
     assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("b");
@@ -105,12 +109,12 @@ class SQLMethodTransformTest {
   void toUpperCase() {
     final BasicCommandContext context = getMockedContext();
 
-    final Object result = method.execute(Set.of("A", "b"), null, context, new String[] { "toUpperCase" });
+    final Object result = method.execute(Set.of("A", "b"), null, context, new String[]{"toUpperCase"});
     assertThat(result).isInstanceOf(Set.class);
     assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("A");
     assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("B");
 
-    final Object result2 = method.execute(List.of("a", "B"), null, context, new String[] { "toUpperCase" });
+    final Object result2 = method.execute(List.of("a", "B"), null, context, new String[]{"toUpperCase"});
     assertThat(result2).isInstanceOf(List.class);
     assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("A");
     assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("B");
@@ -120,12 +124,12 @@ class SQLMethodTransformTest {
   void chain() {
     final BasicCommandContext context = getMockedContext();
 
-    final Object result = method.execute(Set.of(" AA ", " bb "), null, context, new String[] { "trim", "toUpperCase" });
+    final Object result = method.execute(Set.of(" AA ", " bb "), null, context, new String[]{"trim", "toUpperCase"});
     assertThat(result).isInstanceOf(Set.class);
     assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("AA");
     assertThat(result).asInstanceOf(InstanceOfAssertFactories.SET).contains("BB");
 
-    final Object result2 = method.execute(List.of(" aa ", " BB "), null, context, new String[] { "trim", "toLowerCase" });
+    final Object result2 = method.execute(List.of(" aa ", " BB "), null, context, new String[]{"trim", "toLowerCase"});
     assertThat(result2).isInstanceOf(List.class);
     assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("aa");
     assertThat(result2).asInstanceOf(InstanceOfAssertFactories.LIST).contains("bb");
@@ -317,11 +321,6 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public int getNewEdgeListSize(int previousSize) {
-        return 0;
-      }
-
-      @Override
       public <RET> RET recordFileChanges(Callable<Object> callback) {
         return null;
       }
@@ -397,7 +396,8 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public ResultSet command(String language, String query, ContextConfiguration configuration, Map<String, Object> args) {
+      public ResultSet command(String language, String query, ContextConfiguration configuration,
+                               Map<String, Object> args) {
         return null;
       }
 
@@ -433,7 +433,7 @@ class SQLMethodTransformTest {
 
       @Override
       public void scanType(String typeName, boolean polymorphic, DocumentCallback callback,
-          ErrorRecordCallback errorRecordCallback) {
+                           ErrorRecordCallback errorRecordCallback) {
 
       }
 
@@ -469,17 +469,19 @@ class SQLMethodTransformTest {
 
       @Override
       public Edge newEdgeByKeys(String sourceVertexType, String[] sourceVertexKeyNames, Object[] sourceVertexKeyValues,
-          String destinationVertexType,
-          String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues, boolean createVertexIfNotExist, String edgeType,
-          boolean bidirectional,
-          Object... properties) {
+                                String destinationVertexType,
+                                String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues,
+                                boolean createVertexIfNotExist, String edgeType,
+                                boolean bidirectional,
+                                Object... properties) {
         return null;
       }
 
       @Override
       public Edge newEdgeByKeys(Vertex sourceVertex, String destinationVertexType, String[] destinationVertexKeyNames,
-          Object[] destinationVertexKeyValues,
-          boolean createVertexIfNotExist, String edgeType, boolean bidirectional, Object... properties) {
+                                Object[] destinationVertexKeyValues,
+                                boolean createVertexIfNotExist, String edgeType, boolean bidirectional,
+                                Object... properties) {
         return null;
       }
 
@@ -529,16 +531,6 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public int getEdgeListSize() {
-        return 0;
-      }
-
-      @Override
-      public Database setEdgeListSize(int size) {
-        return null;
-      }
-
-      @Override
       public Database setUseWAL(boolean useWAL) {
         return null;
       }
@@ -565,12 +557,10 @@ class SQLMethodTransformTest {
 
       @Override
       public void close() {
-
       }
 
       @Override
       public void drop() {
-
       }
 
       @Override
@@ -615,7 +605,7 @@ class SQLMethodTransformTest {
 
       @Override
       public boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, OkCallback ok,
-          ErrorCallback error) {
+                                 ErrorCallback error) {
         return false;
       }
 

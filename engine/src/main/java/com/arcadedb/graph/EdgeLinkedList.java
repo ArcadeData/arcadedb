@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.serializer.json.JSONArray;
@@ -282,7 +283,7 @@ public class EdgeLinkedList {
   }
 
   private int computeBestSize() {
-    return ((DatabaseInternal) vertex.getDatabase()).getNewEdgeListSize(lastSegment.getRecordSize());
+    return LocalDatabase.getNewEdgeListSize(lastSegment.getRecordSize());
   }
 
   private void updateSegment(final EdgeSegment current, final EdgeSegment prevBrowsed) {

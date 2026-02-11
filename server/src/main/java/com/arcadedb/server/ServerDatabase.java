@@ -277,11 +277,6 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public int getEdgeListSize() {
-    return wrapped.getEdgeListSize();
-  }
-
-  @Override
   public Database setUseWAL(final boolean useWAL) {
     return wrapped.setUseWAL(useWAL);
   }
@@ -588,16 +583,6 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public String toString() {
     return wrapped.toString();
-  }
-
-  @Override
-  public Database setEdgeListSize(final int size) {
-    wrapped.setEdgeListSize(size);
-    return this;
-  }
-
-  public int getNewEdgeListSize(final int previousSize) {
-    return wrapped.getNewEdgeListSize(previousSize);
   }
 
   public Map<String, Object> getWrappers() {
