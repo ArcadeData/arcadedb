@@ -600,7 +600,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   private static final int    DEFAULT_SIZE = 64;
-  private static final Random RANDOM       = new Random();
+  private static final Random RANDOM       = ThreadLocalRandom.current();
 
   private static List<?> randomValues(Class<?> type) {
     if (type == Boolean.class) {

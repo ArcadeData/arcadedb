@@ -38,6 +38,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,7 +69,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
         if (!areAllReplicasAreConnected())
           return;
 
-        final int serverId = new Random().nextInt(getServerCount());
+        final int serverId = ThreadLocalRandom.current().nextInt(getServerCount());
 
         if (restarts >= getServerCount()) {
           delay = 0;

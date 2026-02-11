@@ -36,6 +36,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
@@ -72,7 +73,7 @@ class MVCCTest extends TestHelper {
       });
 
       try {
-        final Random rnd = new Random();
+        final Random rnd = ThreadLocalRandom.current();
 
         for (long txId = 0; txId < TOT_TX; ++txId) {
           database.async().transaction(() -> {

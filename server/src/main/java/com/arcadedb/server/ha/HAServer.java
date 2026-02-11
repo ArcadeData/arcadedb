@@ -66,6 +66,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1197,7 +1198,7 @@ public class HAServer implements ServerPlugin {
           break;
 
         try {
-          long timeout = 1000 + new Random().nextInt(1000);
+          long timeout = 1000 + ThreadLocalRandom.current().nextInt(1000);
           if (electionAborted)
             timeout *= 3;
 

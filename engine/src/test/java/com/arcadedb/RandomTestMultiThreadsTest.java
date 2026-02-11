@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
@@ -51,7 +52,6 @@ class RandomTestMultiThreadsTest extends TestHelper {
   private final AtomicLong                           total                   = new AtomicLong();
   private final AtomicLong                           totalTransactionRecords = new AtomicLong();
   private final AtomicLong                           mvccErrors              = new AtomicLong();
-  private final Random                               rnd                     = new Random();
   private final AtomicLong                           uuid                    = new AtomicLong();
   private final List<Pair<Integer, Exception>>       otherErrors             = Collections.synchronizedList(new ArrayList<>());
   private final Database.TRANSACTION_ISOLATION_LEVEL txType                  = Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
@@ -359,7 +359,7 @@ class RandomTestMultiThreadsTest extends TestHelper {
   private int getRandom(int bound) {
     if (bound < 1)
       bound = 1;
-    return rnd.nextInt(bound);
+    return ThreadLocalRandom.current().nextInt(bound);
   }
 
   private void populateDatabase() {
