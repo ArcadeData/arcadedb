@@ -62,8 +62,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final JsonGraphSerializer serializerImpl = JsonGraphSerializer
           .createJsonGraphSerializer()
           .setExpandVertexEdges(false);
+      // Don't use collection size for edges - we want COLLECT(rel) to return edge objects, not counts
       serializerImpl.setUseCollectionSize(false)
-          .setUseCollectionSizeForEdges(true);
+          .setUseCollectionSizeForEdges(false);
 
       final Set<RID> includedVertices = new HashSet<>();
       final Set<RID> includedEdges = new HashSet<>();
@@ -97,7 +98,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       // USE BY STUDIO TO RENDER GRAPH AND TABLE AT THE SAME TIME
       final JsonGraphSerializer serializerImpl = JsonGraphSerializer.createJsonGraphSerializer()
           .setExpandVertexEdges(false);
-      serializerImpl.setUseCollectionSize(false).setUseCollectionSizeForEdges(true);
+      // Don't use collection size for edges - we want COLLECT(rel) to return edge objects, not counts (issue #3404)
+      serializerImpl.setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
 
       final Set<RID> includedVertices = new HashSet<>();
       final Set<RID> includedEdges = new HashSet<>();
