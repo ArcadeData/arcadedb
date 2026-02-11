@@ -92,70 +92,78 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
 
       while (prevResults.hasNext()) {
         final Result inputRow = prevResults.next();
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
+        try {
+          if (context.isProfiling())
+            rowCount++;
 
-        // Create distinct collections for this input row
-        final Map<String, Set<Object>> distinctSets = new HashMap<>();
-        for (final String varName : collectDistinctVariables) {
-          distinctSets.put(varName, new LinkedHashSet<>());
-        }
-
-        // Feed this single input row into the match chain
-        final SingleRowInputStep singleRowInput = new SingleRowInputStep(inputRow, context);
-        matchChainStart.setPrevious(singleRowInput);
-
-        // Execute the match chain and collect distinct values
-        final ResultSet matchResults = matchChainStart.syncPull(context, Integer.MAX_VALUE);
-        while (matchResults.hasNext()) {
-          final Result matchResult = matchResults.next();
-
-          // Add each variable's value to its distinct set
+          // Create distinct collections for this input row
+          final Map<String, Set<Object>> distinctSets = new HashMap<>();
           for (final String varName : collectDistinctVariables) {
-            final Object value = matchResult.getProperty(varName);
-            if (value != null) {
-              if (value instanceof Identifiable) {
-                // Use RID for identity to handle same record loaded multiple times
-                distinctSets.get(varName).add(new IdentifiableWrapper((Identifiable) value));
-              } else {
-                distinctSets.get(varName).add(value);
+            distinctSets.put(varName, new LinkedHashSet<>());
+          }
+
+          // Feed this single input row into the match chain
+          final SingleRowInputStep singleRowInput = new SingleRowInputStep(inputRow, context);
+          matchChainStart.setPrevious(singleRowInput);
+
+          // Execute the match chain and collect distinct values
+          final ResultSet matchResults = matchChainStart.syncPull(context, Integer.MAX_VALUE);
+          while (matchResults.hasNext()) {
+            final Result matchResult = matchResults.next();
+
+            // Add each variable's value to its distinct set
+            for (final String varName : collectDistinctVariables) {
+              final Object value = matchResult.getProperty(varName);
+              if (value != null) {
+                if (value instanceof Identifiable) {
+                  // Use RID for identity to handle same record loaded multiple times
+                  distinctSets.get(varName).add(new IdentifiableWrapper((Identifiable) value));
+                } else {
+                  distinctSets.get(varName).add(value);
+                }
               }
             }
           }
-        }
-        matchResults.close();
+          matchResults.close();
 
-        // Build result row with collected distinct values
-        final ResultInternal resultRow = new ResultInternal();
+          // Build result row with collected distinct values
+          final ResultInternal resultRow = new ResultInternal();
 
-        // Copy input properties (not OPTIONAL MATCH variables)
-        for (final String prop : inputRow.getPropertyNames()) {
-          if (!allVariables.contains(prop)) {
-            resultRow.setProperty(prop, inputRow.getProperty(prop));
-          }
-        }
-
-        // Add collected distinct sets as lists
-        for (final String varName : collectDistinctVariables) {
-          final Set<Object> distinctSet = distinctSets.get(varName);
-          final List<Object> list = new ArrayList<>(distinctSet.size());
-          for (final Object value : distinctSet) {
-            if (value instanceof IdentifiableWrapper) {
-              list.add(((IdentifiableWrapper) value).getIdentifiable());
-            } else {
-              list.add(value);
+          // Copy input properties (not OPTIONAL MATCH variables)
+          for (final String prop : inputRow.getPropertyNames()) {
+            if (!allVariables.contains(prop)) {
+              resultRow.setProperty(prop, inputRow.getProperty(prop));
             }
           }
-          // Store with prefix to indicate it's a pre-collected list
-          resultRow.setProperty("__collected_distinct__" + varName, list);
-        }
 
-        // For non-collect-distinct variables, set to null (they shouldn't be accessed directly)
-        for (final String varName : allVariables) {
-          if (!collectDistinctVariables.contains(varName)) {
-            resultRow.setProperty(varName, null);
+          // Add collected distinct sets as lists
+          for (final String varName : collectDistinctVariables) {
+            final Set<Object> distinctSet = distinctSets.get(varName);
+            final List<Object> list = new ArrayList<>(distinctSet.size());
+            for (final Object value : distinctSet) {
+              if (value instanceof IdentifiableWrapper) {
+                list.add(((IdentifiableWrapper) value).getIdentifiable());
+              } else {
+                list.add(value);
+              }
+            }
+            // Store with prefix to indicate it's a pre-collected list
+            resultRow.setProperty("__collected_distinct__" + varName, list);
           }
-        }
 
-        results.add(resultRow);
+          // For non-collect-distinct variables, set to null (they shouldn't be accessed directly)
+          for (final String varName : allVariables) {
+            if (!collectDistinctVariables.contains(varName)) {
+              resultRow.setProperty(varName, null);
+            }
+          }
+
+          results.add(resultRow);
+        } finally {
+          if (context.isProfiling())
+            cost += (System.nanoTime() - begin);
+        }
       }
     } else {
       // No input: standalone OPTIONAL MATCH
@@ -213,6 +221,9 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
         .append(String.join(", ", collectDistinctVariables)).append(")");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     builder.append("\n");
     builder.append(matchChainStart.prettyPrint(depth + 1, indent));

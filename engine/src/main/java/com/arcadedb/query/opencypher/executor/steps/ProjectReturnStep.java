@@ -114,22 +114,31 @@ public class ProjectReturnStep extends AbstractExecutionStep {
         // Fetch up to n results from previous step
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
-          final ResultInternal projectedResult = projectResult(inputResult);
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
 
-          // Apply DISTINCT deduplication based on projected output columns only
-          if (distinct) {
-            final StringBuilder keyBuilder = new StringBuilder();
-            for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
-              final String outputName = item.getOutputName();
-              keyBuilder.append(outputName).append('=');
-              final Object val = projectedResult.getProperty(outputName);
-              keyBuilder.append(val).append('|');
+            final ResultInternal projectedResult = projectResult(inputResult);
+
+            // Apply DISTINCT deduplication based on projected output columns only
+            if (distinct) {
+              final StringBuilder keyBuilder = new StringBuilder();
+              for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+                final String outputName = item.getOutputName();
+                keyBuilder.append(outputName).append('=');
+                final Object val = projectedResult.getProperty(outputName);
+                keyBuilder.append(val).append('|');
+              }
+              if (!seenResults.add(keyBuilder.toString()))
+                continue;
             }
-            if (!seenResults.add(keyBuilder.toString()))
-              continue;
-          }
 
-          buffer.add(projectedResult);
+            buffer.add(projectedResult);
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         if (!prevResults.hasNext()) {
@@ -212,7 +221,10 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       builder.append(String.join(", ", returnClause.getItems()));
     }
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

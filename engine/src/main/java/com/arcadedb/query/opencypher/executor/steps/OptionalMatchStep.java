@@ -106,38 +106,46 @@ public class OptionalMatchStep extends AbstractExecutionStep {
 
           while (buffer.size() < n && prevResults.hasNext()) {
             final Result inputRow = prevResults.next();
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
 
-            // Feed this single input row into the match chain
-            // Create a single-row input provider for the match chain
-            final SingleRowInputStep singleRowInput = new SingleRowInputStep(inputRow, context);
-            matchChainStart.setPrevious(singleRowInput);
+              // Feed this single input row into the match chain
+              // Create a single-row input provider for the match chain
+              final SingleRowInputStep singleRowInput = new SingleRowInputStep(inputRow, context);
+              matchChainStart.setPrevious(singleRowInput);
 
-            // Execute the match chain by pulling from the END of the chain
-            // (which pulls through any intermediate filter steps)
-            final ResultSet matchResults = matchChainEnd.syncPull(context, 100);
+              // Execute the match chain by pulling from the END of the chain
+              // (which pulls through any intermediate filter steps)
+              final ResultSet matchResults = matchChainEnd.syncPull(context, 100);
 
-            // Collect all matches for this input
-            boolean foundMatch = false;
-            while (matchResults.hasNext()) {
-              buffer.add(matchResults.next());
-              foundMatch = true;
-            }
-            matchResults.close();
-
-            // If no matches found, emit input row with NULL values for match variables
-            if (!foundMatch) {
-              final ResultInternal nullResult = new ResultInternal();
-              // Copy all properties from input row
-              final Set<String> inputProps = inputRow.getPropertyNames();
-              for (final String prop : inputProps) {
-                nullResult.setProperty(prop, inputRow.getProperty(prop));
+              // Collect all matches for this input
+              boolean foundMatch = false;
+              while (matchResults.hasNext()) {
+                buffer.add(matchResults.next());
+                foundMatch = true;
               }
-              // Add NULL values only for NEW optional match variables (not already bound)
-              for (final String varName : variableNames) {
-                if (!inputProps.contains(varName))
-                  nullResult.setProperty(varName, null);
+              matchResults.close();
+
+              // If no matches found, emit input row with NULL values for match variables
+              if (!foundMatch) {
+                final ResultInternal nullResult = new ResultInternal();
+                // Copy all properties from input row
+                final Set<String> inputProps = inputRow.getPropertyNames();
+                for (final String prop : inputProps) {
+                  nullResult.setProperty(prop, inputRow.getProperty(prop));
+                }
+                // Add NULL values only for NEW optional match variables (not already bound)
+                for (final String varName : variableNames) {
+                  if (!inputProps.contains(varName))
+                    nullResult.setProperty(varName, null);
+                }
+                buffer.add(nullResult);
               }
-              buffer.add(nullResult);
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
             }
           }
 
@@ -216,6 +224,9 @@ public class OptionalMatchStep extends AbstractExecutionStep {
     builder.append("+ OPTIONAL MATCH (variables: ").append(String.join(", ", variableNames)).append(")");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     builder.append("\n");
     builder.append(matchChainStart.prettyPrint(depth + 1, indent));

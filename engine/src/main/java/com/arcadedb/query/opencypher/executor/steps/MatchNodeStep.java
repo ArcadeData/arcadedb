@@ -59,6 +59,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final String      variable;
   private final NodePattern pattern;
   private final String      idFilter; // Optional ID filter to apply (e.g., "#1:0")
+  private       String      usedIndexName; // Track which index was used (if any)
 
   /**
    * Creates a match node step.
@@ -164,25 +165,34 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
             // Match nodes and add to input result
             if (iterator.hasNext()) {
-              final Identifiable identifiable = iterator.next();
-              // Load the record if it's not already loaded
-              final Document record = identifiable.asDocument();
-              if (record instanceof Vertex) {
-                final Vertex vertex = (Vertex) record;
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                if (context.isProfiling())
+                  rowCount++;
 
-                // Apply label and property filters
-                if (!matchesAllLabels(vertex) || !matchesProperties(vertex, currentInputResult))
-                  continue;
+                final Identifiable identifiable = iterator.next();
+                // Load the record if it's not already loaded
+                final Document record = identifiable.asDocument();
+                if (record instanceof Vertex) {
+                  final Vertex vertex = (Vertex) record;
 
-                // Copy input result and add our vertex
-                final ResultInternal result = new ResultInternal();
-                if (currentInputResult != null) {
-                  for (final String prop : currentInputResult.getPropertyNames()) {
-                    result.setProperty(prop, currentInputResult.getProperty(prop));
+                  // Apply label and property filters
+                  if (!matchesAllLabels(vertex) || !matchesProperties(vertex, currentInputResult))
+                    continue;
+
+                  // Copy input result and add our vertex
+                  final ResultInternal result = new ResultInternal();
+                  if (currentInputResult != null) {
+                    for (final String prop : currentInputResult.getPropertyNames()) {
+                      result.setProperty(prop, currentInputResult.getProperty(prop));
+                    }
                   }
+                  result.setProperty(variable, vertex);
+                  buffer.add(result);
                 }
-                result.setProperty(variable, vertex);
-                buffer.add(result);
+              } finally {
+                if (context.isProfiling())
+                  cost += (System.nanoTime() - begin);
               }
             }
           }
@@ -195,21 +205,30 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
           // Fetch up to n vertices
           while (buffer.size() < n && iterator.hasNext()) {
-            final Identifiable identifiable = iterator.next();
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
 
-            // Load the record if it's not already loaded
-            final Document record = identifiable.asDocument();
-            if (record instanceof Vertex) {
-              final Vertex vertex = (Vertex) record;
+              final Identifiable identifiable = iterator.next();
 
-              // Apply label and property filters
-              if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
-                continue;
+              // Load the record if it's not already loaded
+              final Document record = identifiable.asDocument();
+              if (record instanceof Vertex) {
+                final Vertex vertex = (Vertex) record;
 
-              // Create result with vertex bound to variable
-              final ResultInternal result = new ResultInternal();
-              result.setProperty(variable, vertex);
-              buffer.add(result);
+                // Apply label and property filters
+                if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
+                  continue;
+
+                // Create result with vertex bound to variable
+                final ResultInternal result = new ResultInternal();
+                result.setProperty(variable, vertex);
+                buffer.add(result);
+              }
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
             }
           }
 
@@ -423,6 +442,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
         propertyValues[i] = properties.get(propertyNames[i]);
       }
 
+      // Track which index was used for profiling output
+      usedIndexName = label + "[" + String.join(", ", propertyNames) + "]";
+
       // Use the index for lookup
       @SuppressWarnings("unchecked") final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
           context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
@@ -538,8 +560,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
       builder.append(":").append(String.join("|", pattern.getLabels()));
     }
     builder.append(")");
+    if (usedIndexName != null) {
+      builder.append(" [index: ").append(usedIndexName).append("]");
+    }
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

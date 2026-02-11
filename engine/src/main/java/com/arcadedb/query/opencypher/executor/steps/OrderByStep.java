@@ -91,15 +91,24 @@ public class OrderByStep extends AbstractExecutionStep {
       private void materializeAndSort() {
         sortedResults = new ArrayList<>();
 
-        // Fetch all results from previous step
-        final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
-        while (prevResults.hasNext()) {
-          sortedResults.add(prevResults.next());
-        }
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
+        try {
+          if (context.isProfiling())
+            rowCount++;
 
-        // Sort results according to ORDER BY clause
-        if (!orderByClause.isEmpty()) {
-          sortedResults.sort(createComparator());
+          // Fetch all results from previous step
+          final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
+          while (prevResults.hasNext()) {
+            sortedResults.add(prevResults.next());
+          }
+
+          // Sort results according to ORDER BY clause
+          if (!orderByClause.isEmpty()) {
+            sortedResults.sort(createComparator());
+          }
+        } finally {
+          if (context.isProfiling())
+            cost += (System.nanoTime() - begin);
         }
       }
 

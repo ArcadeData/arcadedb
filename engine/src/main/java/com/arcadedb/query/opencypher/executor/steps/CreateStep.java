@@ -112,8 +112,17 @@ public class CreateStep extends AbstractExecutionStep {
 
           while (buffer.size() < n && prevResults.hasNext()) {
             final Result inputResult = prevResults.next();
-            final Result createdResult = createPatterns(inputResult);
-            buffer.add(createdResult);
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
+
+              final Result createdResult = createPatterns(inputResult);
+              buffer.add(createdResult);
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
           }
 
           if (!prevResults.hasNext()) {
@@ -122,9 +131,18 @@ public class CreateStep extends AbstractExecutionStep {
         } else {
           // Standalone CREATE: create once
           if (!createdStandalone) {
-            final Result createdResult = createPatterns(null);
-            buffer.add(createdResult);
-            createdStandalone = true;
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
+
+              final Result createdResult = createPatterns(null);
+              buffer.add(createdResult);
+              createdStandalone = true;
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
           }
           finished = true;
         }
@@ -388,7 +406,10 @@ public class CreateStep extends AbstractExecutionStep {
     builder.append(ind);
     builder.append("+ CREATE");
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

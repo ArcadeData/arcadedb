@@ -36,6 +36,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -73,7 +74,7 @@ public class SimpleGloVeTest {
   }
 
   private void querySQL(Database database) {
-    final Random random = new Random();
+    final Random random = ThreadLocalRandom.current();
     int k = 128;
 
     final List<Identifiable> words = new ArrayList<>();

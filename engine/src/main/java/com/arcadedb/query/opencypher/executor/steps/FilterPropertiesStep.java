@@ -95,10 +95,18 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
         // Fetch and filter up to n results from previous step
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result result = prevResults.next();
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
 
-          // Evaluate filter condition
-          if (evaluateCondition(result)) {
-            buffer.add(result);
+            // Evaluate filter condition
+            if (evaluateCondition(result)) {
+              buffer.add(result);
+            }
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
           }
         }
 
@@ -222,6 +230,9 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
     }
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

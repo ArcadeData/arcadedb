@@ -111,68 +111,81 @@ public class AggregationStep extends AbstractExecutionStep {
     // Process all rows, feeding data to aggregators
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+      try {
+        if (context.isProfiling())
+          rowCount++;
 
-      // Process regular aggregations
-      for (final Map.Entry<String, Expression> entry : aggregationExpressions.entrySet()) {
-        final String outputName = entry.getKey();
-        final Expression expr = entry.getValue();
-        final StatelessFunction function = aggregators.get(outputName);
+        // Process regular aggregations
+        for (final Map.Entry<String, Expression> entry : aggregationExpressions.entrySet()) {
+          final String outputName = entry.getKey();
+          final Expression expr = entry.getValue();
+          final StatelessFunction function = aggregators.get(outputName);
 
-        // Evaluate the function arguments for this row
-        if (expr instanceof FunctionCallExpression) {
-          final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
-          final Object[] args = new Object[funcExpr.getArguments().size()];
-          for (int i = 0; i < args.length; i++) {
-            args[i] = evaluator.evaluate(funcExpr.getArguments().get(i), inputRow, context);
+          // Evaluate the function arguments for this row
+          if (expr instanceof FunctionCallExpression) {
+            final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
+            final Object[] args = new Object[funcExpr.getArguments().size()];
+            for (int i = 0; i < args.length; i++) {
+              args[i] = evaluator.evaluate(funcExpr.getArguments().get(i), inputRow, context);
+            }
+
+            // Feed this row's data to the aggregator
+            function.execute(args, context);
           }
-
-          // Feed this row's data to the aggregator
-          function.execute(args, context);
         }
-      }
 
-      // Process complex aggregation expressions - feed data to all inner aggregation functions
-      for (final ComplexAggregationInfo complexInfo : complexAggregations.values()) {
-        for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexInfo.innerAggregations.entrySet()) {
-          final FunctionCallExpression innerAgg = innerEntry.getValue();
-          final StatelessFunction function = complexInfo.innerFunctions.get(innerEntry.getKey());
-          final Object[] args = new Object[innerAgg.getArguments().size()];
-          for (int i = 0; i < args.length; i++)
-            args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
-          function.execute(args, context);
+        // Process complex aggregation expressions - feed data to all inner aggregation functions
+        for (final ComplexAggregationInfo complexInfo : complexAggregations.values()) {
+          for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexInfo.innerAggregations.entrySet()) {
+            final FunctionCallExpression innerAgg = innerEntry.getValue();
+            final StatelessFunction function = complexInfo.innerFunctions.get(innerEntry.getKey());
+            final Object[] args = new Object[innerAgg.getArguments().size()];
+            for (int i = 0; i < args.length; i++)
+              args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
+            function.execute(args, context);
+          }
         }
+      } finally {
+        if (context.isProfiling())
+          cost += (System.nanoTime() - begin);
       }
     }
 
     // Build final aggregated result
+    final long beginFinal = context.isProfiling() ? System.nanoTime() : 0;
     final ResultInternal aggregatedResult = new ResultInternal();
-
-    // Get aggregated values
-    for (final Map.Entry<String, StatelessFunction> entry : aggregators.entrySet()) {
-      final String outputName = entry.getKey();
-      final StatelessFunction function = entry.getValue();
-      final Object aggregatedValue = function.getAggregatedResult();
-      aggregatedResult.setProperty(outputName, aggregatedValue);
-    }
-
-    // Evaluate complex aggregation expressions using pre-computed aggregation values
-    for (final Map.Entry<String, ComplexAggregationInfo> entry : complexAggregations.entrySet()) {
-      final String outputName = entry.getKey();
-      final ComplexAggregationInfo complexInfo = entry.getValue();
-
-      // Build overrides map: aggregation text -> aggregated result
-      final Map<String, Object> overrides = new HashMap<>();
-      for (final Map.Entry<String, StatelessFunction> funcEntry : complexInfo.innerFunctions.entrySet())
-        overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
-
-      // Evaluate the full expression with overrides
-      evaluator.setAggregationOverrides(overrides);
-      try {
-        final Object value = evaluator.evaluate(complexInfo.expression, aggregatedResult, context);
-        aggregatedResult.setProperty(outputName, value);
-      } finally {
-        evaluator.clearAggregationOverrides();
+    try {
+      // Get aggregated values
+      for (final Map.Entry<String, StatelessFunction> entry : aggregators.entrySet()) {
+        final String outputName = entry.getKey();
+        final StatelessFunction function = entry.getValue();
+        final Object aggregatedValue = function.getAggregatedResult();
+        aggregatedResult.setProperty(outputName, aggregatedValue);
       }
+
+      // Evaluate complex aggregation expressions using pre-computed aggregation values
+      for (final Map.Entry<String, ComplexAggregationInfo> entry : complexAggregations.entrySet()) {
+        final String outputName = entry.getKey();
+        final ComplexAggregationInfo complexInfo = entry.getValue();
+
+        // Build overrides map: aggregation text -> aggregated result
+        final Map<String, Object> overrides = new HashMap<>();
+        for (final Map.Entry<String, StatelessFunction> funcEntry : complexInfo.innerFunctions.entrySet())
+          overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
+
+        // Evaluate the full expression with overrides
+        evaluator.setAggregationOverrides(overrides);
+        try {
+          final Object value = evaluator.evaluate(complexInfo.expression, aggregatedResult, context);
+          aggregatedResult.setProperty(outputName, value);
+        } finally {
+          evaluator.clearAggregationOverrides();
+        }
+      }
+    } finally {
+      if (context.isProfiling())
+        cost += (System.nanoTime() - beginFinal);
     }
 
     // Return single aggregated row
@@ -296,7 +309,10 @@ public class AggregationStep extends AbstractExecutionStep {
     builder.append(String.join(", ", aggFuncs));
 
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

@@ -121,7 +121,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Verify optimization with EXPLAIN
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     // Assertions
@@ -149,7 +149,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Verify uses scan (not index)
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
@@ -174,7 +174,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Verify optimization
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
@@ -199,7 +199,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Verify optimization
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
@@ -227,7 +227,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Verify optimization
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
@@ -254,7 +254,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Verify optimization - should start from Company, not Person
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
@@ -272,7 +272,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Check EXPLAIN output (parameters don't work yet in execution, but optimizer should detect index)
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
@@ -300,7 +300,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Verify current behavior: uses NodeByLabelScan with Filter for AND expressions
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
@@ -326,7 +326,7 @@ public class OpenCypherOptimizerVerificationTest {
 
     // Verify uses index for simple equality predicate
     final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    final String plan = (String) explainResult.next().getProperty("plan");
+    final String plan = explainResult.getExecutionPlan().get().prettyPrint(0, 2);
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");

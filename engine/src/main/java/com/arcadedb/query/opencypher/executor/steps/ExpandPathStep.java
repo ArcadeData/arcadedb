@@ -144,57 +144,66 @@ public class ExpandPathStep extends AbstractExecutionStep {
         while (buffer.size() < n) {
           // Always use path traversal for correct Cypher edge-based relationship uniqueness
           if (currentPaths != null && currentPaths.hasNext()) {
-            final TraversalPath path = currentPaths.next();
-            final Vertex targetVertex = path.getEndVertex();
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
 
-            // Filter by target node label if specified
-            if (targetNodePattern != null && targetNodePattern.hasLabels()) {
-              if (!matchesTargetLabel(targetVertex))
+              final TraversalPath path = currentPaths.next();
+              final Vertex targetVertex = path.getEndVertex();
+
+              // Filter by target node label if specified
+              if (targetNodePattern != null && targetNodePattern.hasLabels()) {
+                if (!matchesTargetLabel(targetVertex))
+                  continue;
+              }
+
+              // Filter by target node properties if specified
+              if (targetNodePattern != null && targetNodePattern.hasProperties()) {
+                if (!matchesTargetProperties(targetVertex))
+                  continue;
+              }
+
+              // If the target variable is already bound from a previous step,
+              // only accept paths that end at the bound vertex
+              if (boundTarget != null) {
+                if (!targetVertex.getIdentity().equals(boundTarget.getIdentity()))
+                  continue;
+              }
+
+              // Relationship uniqueness: check if any edge in this path is
+              // already used by a relationship variable in the current result
+              if (hasEdgeConflict(lastResult, path))
                 continue;
+
+              final ResultInternal result = new ResultInternal();
+
+              // Copy all properties from previous result
+              for (final String prop : lastResult.getPropertyNames()) {
+                result.setProperty(prop, lastResult.getProperty(prop));
+              }
+
+              // Add path binding - extend existing path if present (multi-segment VLP)
+              if (hasPathVar) {
+                final Object existingPath = lastResult.getProperty(pathVariable);
+                if (existingPath instanceof TraversalPath)
+                  result.setProperty(pathVariable, new TraversalPath((TraversalPath) existingPath, path));
+                else
+                  result.setProperty(pathVariable, path);
+              }
+
+              // Add relationship variable as list of edges
+              if (hasRelVar)
+                result.setProperty(relationshipVariable, new ArrayList<>(path.getEdges()));
+
+              // Add target vertex binding
+              result.setProperty(targetVariable, targetVertex);
+
+              buffer.add(result);
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
             }
-
-            // Filter by target node properties if specified
-            if (targetNodePattern != null && targetNodePattern.hasProperties()) {
-              if (!matchesTargetProperties(targetVertex))
-                continue;
-            }
-
-            // If the target variable is already bound from a previous step,
-            // only accept paths that end at the bound vertex
-            if (boundTarget != null) {
-              if (!targetVertex.getIdentity().equals(boundTarget.getIdentity()))
-                continue;
-            }
-
-            // Relationship uniqueness: check if any edge in this path is
-            // already used by a relationship variable in the current result
-            if (hasEdgeConflict(lastResult, path))
-              continue;
-
-            final ResultInternal result = new ResultInternal();
-
-            // Copy all properties from previous result
-            for (final String prop : lastResult.getPropertyNames()) {
-              result.setProperty(prop, lastResult.getProperty(prop));
-            }
-
-            // Add path binding - extend existing path if present (multi-segment VLP)
-            if (hasPathVar) {
-              final Object existingPath = lastResult.getProperty(pathVariable);
-              if (existingPath instanceof TraversalPath)
-                result.setProperty(pathVariable, new TraversalPath((TraversalPath) existingPath, path));
-              else
-                result.setProperty(pathVariable, path);
-            }
-
-            // Add relationship variable as list of edges
-            if (hasRelVar)
-              result.setProperty(relationshipVariable, new ArrayList<>(path.getEdges()));
-
-            // Add target vertex binding
-            result.setProperty(targetVariable, targetVertex);
-
-            buffer.add(result);
           } else {
             // Get next source vertex from previous step
             if (prevResults == null) {
@@ -316,6 +325,9 @@ public class ExpandPathStep extends AbstractExecutionStep {
     builder.append(" [").append(useBFS ? "BFS" : "DFS").append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

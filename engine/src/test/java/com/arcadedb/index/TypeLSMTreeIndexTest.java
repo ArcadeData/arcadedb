@@ -608,7 +608,7 @@ class TypeLSMTreeIndexTest extends TestHelper {
               for (int retry = 0; retry < maxRetries && !keyPresent; ++retry) {
 
                 try {
-                  TimeUnit.MILLISECONDS.sleep(new Random().nextInt(10));
+                  TimeUnit.MILLISECONDS.sleep(ThreadLocalRandom.current().nextInt(10));
                 } catch (final InterruptedException e) {
                   Thread.currentThread().interrupt();
                   return;

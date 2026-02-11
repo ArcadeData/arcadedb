@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,7 +65,7 @@ class RandomDeleteTest {
             checkRecords(db, rids);
 
             for (int deleted = 0; deleted < TOT_RECORDS; ) {
-              final int i = new Random().nextInt(TOT_RECORDS);
+              final int i = ThreadLocalRandom.current().nextInt(TOT_RECORDS);
               final RID rid = rids.get(i);
               if (rid != null) {
                 db.deleteRecord(rid.asVertex());

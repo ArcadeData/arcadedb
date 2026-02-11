@@ -77,24 +77,32 @@ public final class CountEdgesStep extends AbstractExecutionStep {
     final List<Result> results = new ArrayList<>();
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+      try {
+        if (context.isProfiling())
+          rowCount++;
 
-      final ResultInternal result = new ResultInternal();
+        final ResultInternal result = new ResultInternal();
 
-      // Copy pass-through properties with their WITH aliases
-      for (final Map.Entry<String, String> entry : passThroughAliases.entrySet())
-        result.setProperty(entry.getKey(), inputRow.getProperty(entry.getValue()));
+        // Copy pass-through properties with their WITH aliases
+        for (final Map.Entry<String, String> entry : passThroughAliases.entrySet())
+          result.setProperty(entry.getKey(), inputRow.getProperty(entry.getValue()));
 
-      // Get the vertex and count edges
-      final Object vertexObj = inputRow.getProperty(boundVertexVariable);
-      final long count;
-      if (vertexObj instanceof Vertex) {
-        final Vertex vertex = (Vertex) vertexObj;
-        count = vertex.countEdges(direction, edgeTypes);
-      } else
-        count = 0L; // NULL vertex = LEFT OUTER JOIN semantics
+        // Get the vertex and count edges
+        final Object vertexObj = inputRow.getProperty(boundVertexVariable);
+        final long count;
+        if (vertexObj instanceof Vertex) {
+          final Vertex vertex = (Vertex) vertexObj;
+          count = vertex.countEdges(direction, edgeTypes);
+        } else
+          count = 0L; // NULL vertex = LEFT OUTER JOIN semantics
 
-      result.setProperty(countOutputAlias, count);
-      results.add(result);
+        result.setProperty(countOutputAlias, count);
+        results.add(result);
+      } finally {
+        if (context.isProfiling())
+          cost += (System.nanoTime() - begin);
+      }
     }
 
     return new IteratorResultSet(results.iterator());
@@ -117,8 +125,12 @@ public final class CountEdgesStep extends AbstractExecutionStep {
       builder.append("]");
     }
     builder.append(" -> ").append(countOutputAlias).append(")");
-    if (context.isProfiling())
-      builder.append(" (").append(getCostFormatted()).append(")");
+    if (context.isProfiling()) {
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
+    }
     return builder.toString();
   }
 }

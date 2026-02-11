@@ -64,6 +64,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -154,7 +155,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       // BackendKeyData
       final long pid = processIdSequence++;
-      final long secret = Math.abs(new Random().nextInt(10000000));
+      final long secret = Math.abs(ThreadLocalRandom.current().nextInt(10000000));
       writeMessage("backend key data", () -> {
         channel.writeUnsignedInt((int) pid);
         channel.writeUnsignedInt((int) secret);

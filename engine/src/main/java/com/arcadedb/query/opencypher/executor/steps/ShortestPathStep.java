@@ -119,39 +119,47 @@ public class ShortestPathStep extends AbstractExecutionStep {
           }
 
           final Result inputResult = prevResults.next();
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
 
-          // Get source and target vertices from bound variables
-          final Object sourceObj = inputResult.getProperty(sourceVariable);
-          final Object targetObj = inputResult.getProperty(targetVariable);
+            // Get source and target vertices from bound variables
+            final Object sourceObj = inputResult.getProperty(sourceVariable);
+            final Object targetObj = inputResult.getProperty(targetVariable);
 
-          if (!(sourceObj instanceof Vertex) || !(targetObj instanceof Vertex)) {
-            // If source or target is not a vertex, skip this result
-            continue;
-          }
-
-          final Vertex sourceVertex = (Vertex) sourceObj;
-          final Vertex targetVertex = (Vertex) targetObj;
-
-          // Compute the shortest path and resolve RIDs to actual Vertex/Edge objects
-          final List<Object> path = computeShortestPath(sourceVertex, targetVertex, context);
-
-          if (path != null && !path.isEmpty()) {
-            // Create result with the path
-            final ResultInternal result = new ResultInternal();
-
-            // Copy all properties from previous result
-            for (final String prop : inputResult.getPropertyNames()) {
-              result.setProperty(prop, inputResult.getProperty(prop));
+            if (!(sourceObj instanceof Vertex) || !(targetObj instanceof Vertex)) {
+              // If source or target is not a vertex, skip this result
+              continue;
             }
 
-            // Add path binding if path variable is specified
-            if (pathVariable != null && !pathVariable.isEmpty()) {
-              result.setProperty(pathVariable, path);
-            }
+            final Vertex sourceVertex = (Vertex) sourceObj;
+            final Vertex targetVertex = (Vertex) targetObj;
 
-            buffer.add(result);
+            // Compute the shortest path and resolve RIDs to actual Vertex/Edge objects
+            final List<Object> path = computeShortestPath(sourceVertex, targetVertex, context);
+
+            if (path != null && !path.isEmpty()) {
+              // Create result with the path
+              final ResultInternal result = new ResultInternal();
+
+              // Copy all properties from previous result
+              for (final String prop : inputResult.getPropertyNames()) {
+                result.setProperty(prop, inputResult.getProperty(prop));
+              }
+
+              // Add path binding if path variable is specified
+              if (pathVariable != null && !pathVariable.isEmpty()) {
+                result.setProperty(pathVariable, path);
+              }
+
+              buffer.add(result);
+            }
+            // If no path found, skip this result (similar to a failed MATCH)
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
           }
-          // If no path found, skip this result (similar to a failed MATCH)
         }
       }
 
@@ -274,6 +282,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

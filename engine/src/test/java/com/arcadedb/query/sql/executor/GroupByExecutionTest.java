@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,7 +44,7 @@ public class GroupByExecutionTest extends TestHelper {
       database.command("sql", "insert into InputTx set address = '" + hash + "'");
 
       // CREATE RANDOM NUMBER OF COPIES
-      final int random = new Random().nextInt(10);
+      final int random = ThreadLocalRandom.current().nextInt(10);
       for (int j = 0; j < random; j++) {
         database.command("sql", "insert into InputTx set address = '" + hash + "'");
       }

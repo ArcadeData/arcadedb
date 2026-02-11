@@ -68,8 +68,14 @@ public class SkipStep extends AbstractExecutionStep {
 
         // Skip records if we haven't skipped enough yet
         while (skipped < skipCount && prevResults.hasNext()) {
-          prevResults.next();
-          skipped++;
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            prevResults.next();
+            skipped++;
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         // Check if there are more results after skipping
@@ -94,5 +100,11 @@ public class SkipStep extends AbstractExecutionStep {
         SkipStep.this.close();
       }
     };
+  }
+
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
+    final String ind = "  ".repeat(Math.max(0, depth * indent));
+    return ind + "+ SKIP " + skipCount;
   }
 }

@@ -27,6 +27,7 @@ import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -54,7 +55,7 @@ class ConvertToUpdatableResultStepTest {
               final ResultInternal item = new ResultInternal();
               final MutableDocument document = database.newDocument(type);
               document.set(STRING_PROPERTY, UUID.randomUUID().toString());
-              document.set(INTEGER_PROPERTY, new Random().nextInt());
+              document.set(INTEGER_PROPERTY, ThreadLocalRandom.current().nextInt());
               documents.add(document);
               item.setElement(document);
               result.add(item);

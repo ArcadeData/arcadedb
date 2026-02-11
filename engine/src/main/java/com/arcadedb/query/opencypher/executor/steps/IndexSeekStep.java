@@ -136,22 +136,31 @@ public class IndexSeekStep extends AbstractExecutionStep {
 
             // Merge index results with input result
             if (operatorResults.hasNext()) {
-              final Result seekResult = operatorResults.next();
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                if (context.isProfiling())
+                  rowCount++;
 
-              // Copy input result and add index seek results
-              final ResultInternal result = new ResultInternal();
-              if (currentInputResult != null) {
-                for (final String prop : currentInputResult.getPropertyNames()) {
-                  result.setProperty(prop, currentInputResult.getProperty(prop));
+                final Result seekResult = operatorResults.next();
+
+                // Copy input result and add index seek results
+                final ResultInternal result = new ResultInternal();
+                if (currentInputResult != null) {
+                  for (final String prop : currentInputResult.getPropertyNames()) {
+                    result.setProperty(prop, currentInputResult.getProperty(prop));
+                  }
                 }
-              }
 
-              // Add vertex from index seek
-              for (final String prop : seekResult.getPropertyNames()) {
-                result.setProperty(prop, seekResult.getProperty(prop));
-              }
+                // Add vertex from index seek
+                for (final String prop : seekResult.getPropertyNames()) {
+                  result.setProperty(prop, seekResult.getProperty(prop));
+                }
 
-              buffer.add(result);
+                buffer.add(result);
+              } finally {
+                if (context.isProfiling())
+                  cost += (System.nanoTime() - begin);
+              }
             }
           }
         } else {
@@ -166,7 +175,15 @@ public class IndexSeekStep extends AbstractExecutionStep {
 
           // Fetch up to n results
           while (buffer.size() < n && operatorResults.hasNext()) {
-            buffer.add(operatorResults.next());
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
+              buffer.add(operatorResults.next());
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
           }
 
           if (!operatorResults.hasNext()) {
@@ -193,12 +210,12 @@ public class IndexSeekStep extends AbstractExecutionStep {
     builder.append("+ INDEX SEEK ");
     builder.append("(").append(variable).append(":").append(label).append(")");
     builder.append(" [").append(propertyName).append("=").append(propertyValue).append("]");
-    builder.append(" [index=").append(indexName);
-    builder.append(", cost=").append(String.format("%.2f", estimatedCost));
-    builder.append(", rows=").append(estimatedCardinality);
-    builder.append("]");
+    builder.append(" [index: ").append(indexName).append("]");
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

@@ -99,8 +99,17 @@ public class FinalProjectionStep extends AbstractExecutionStep {
 
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
-          final ResultInternal filteredResult = filterResult(inputResult);
-          buffer.add(filteredResult);
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
+
+            final ResultInternal filteredResult = filterResult(inputResult);
+            buffer.add(filteredResult);
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         if (!prevResults.hasNext()) {
@@ -181,7 +190,10 @@ public class FinalProjectionStep extends AbstractExecutionStep {
     builder.append(String.join(", ", requestedProperties));
     builder.append("]");
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

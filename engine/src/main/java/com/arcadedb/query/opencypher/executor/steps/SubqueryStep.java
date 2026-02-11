@@ -130,8 +130,17 @@ public class SubqueryStep extends AbstractExecutionStep {
         while (buffer.size() < n) {
           // If we have inner results from a previous outer row, continue consuming them
           if (currentInnerResults != null && currentInnerResults.hasNext()) {
-            final Result innerRow = currentInnerResults.next();
-            buffer.add(mergeResults(currentOuterRow, innerRow));
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
+
+              final Result innerRow = currentInnerResults.next();
+              buffer.add(mergeResults(currentOuterRow, innerRow));
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
             continue;
           }
 
@@ -142,19 +151,27 @@ public class SubqueryStep extends AbstractExecutionStep {
           }
 
           currentOuterRow = prevResults.next();
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
 
-          // Execute the inner query seeded with the outer row
-          final List<Result> innerResults = executeInnerQuery(currentOuterRow, context);
+            // Execute the inner query seeded with the outer row
+            final List<Result> innerResults = executeInnerQuery(currentOuterRow, context);
 
-          if (innerResults.isEmpty()) {
-            if (subqueryClause.isOptional()) {
-              // OPTIONAL CALL - produce the outer row with nulls for inner columns
-              buffer.add(currentOuterRow);
+            if (innerResults.isEmpty()) {
+              if (subqueryClause.isOptional()) {
+                // OPTIONAL CALL - produce the outer row with nulls for inner columns
+                buffer.add(currentOuterRow);
+              }
+              // Non-optional: no output rows for this outer row
+              currentInnerResults = null;
+            } else {
+              currentInnerResults = innerResults.iterator();
             }
-            // Non-optional: no output rows for this outer row
-            currentInnerResults = null;
-          } else {
-            currentInnerResults = innerResults.iterator();
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
           }
         }
       }

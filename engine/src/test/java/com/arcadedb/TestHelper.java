@@ -36,6 +36,7 @@ import java.io.File;
 import java.util.Collection;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,7 +83,7 @@ public abstract class TestHelper {
     Exception lastException = null;
     for (int i = 0; i < 3; i++) {
       try {
-        return database.getSchema().createDocumentType("RandomType" + new Random().nextInt(100_000));
+        return database.getSchema().createDocumentType("RandomType" + ThreadLocalRandom.current().nextInt(100_000));
       } catch (Exception e) {
         // RETRY
         lastException = e;

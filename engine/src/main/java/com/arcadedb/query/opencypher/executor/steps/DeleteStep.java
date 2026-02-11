@@ -106,31 +106,39 @@ public class DeleteStep extends AbstractExecutionStep {
         // Process each input result
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
 
-          // Capture type info for relationships before deletion
-          final Map<String, String> relTypes = new java.util.HashMap<>();
-          for (final String variable : deleteClause.getVariables()) {
-            if (!variable.contains(".") && !variable.contains("[")) {
-              final Object obj = inputResult.getProperty(variable);
-              if (obj instanceof Edge)
-                relTypes.put(variable, ((Edge) obj).getTypeName());
+            // Capture type info for relationships before deletion
+            final Map<String, String> relTypes = new java.util.HashMap<>();
+            for (final String variable : deleteClause.getVariables()) {
+              if (!variable.contains(".") && !variable.contains("[")) {
+                final Object obj = inputResult.getProperty(variable);
+                if (obj instanceof Edge)
+                  relTypes.put(variable, ((Edge) obj).getTypeName());
+              }
             }
-          }
 
-          // Apply DELETE operations to this result
-          final Set<String> deletedVars = new HashSet<>();
-          applyDeleteOperations(inputResult, deletedVars);
+            // Apply DELETE operations to this result
+            final Set<String> deletedVars = new HashSet<>();
+            applyDeleteOperations(inputResult, deletedVars);
 
-          // Mark deleted variables in the result so subsequent access throws DeletedEntityAccess
-          if (!deletedVars.isEmpty() && inputResult instanceof ResultInternal mutableResult) {
-            for (final String var : deletedVars) {
-              final String relType = relTypes.get(var);
-              mutableResult.setProperty(var, relType != null ? new DeletedEntityMarker(relType) : DeletedEntityMarker.INSTANCE);
+            // Mark deleted variables in the result so subsequent access throws DeletedEntityAccess
+            if (!deletedVars.isEmpty() && inputResult instanceof ResultInternal mutableResult) {
+              for (final String var : deletedVars) {
+                final String relType = relTypes.get(var);
+                mutableResult.setProperty(var, relType != null ? new DeletedEntityMarker(relType) : DeletedEntityMarker.INSTANCE);
+              }
             }
-          }
 
-          // Pass through the result (elements are now deleted)
-          buffer.add(inputResult);
+            // Pass through the result (elements are now deleted)
+            buffer.add(inputResult);
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         if (!prevResults.hasNext()) {
@@ -408,6 +416,9 @@ public class DeleteStep extends AbstractExecutionStep {
     }
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted()).append(")");
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
     }
     return builder.toString();
   }

@@ -90,8 +90,17 @@ public class SetStep extends AbstractExecutionStep {
           prevResults = prev.syncPull(context, nRecords);
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
-          applySetOperations(inputResult);
-          buffer.add(inputResult);
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
+
+            applySetOperations(inputResult);
+            buffer.add(inputResult);
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
         if (!prevResults.hasNext())
           finished = true;
