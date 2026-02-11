@@ -108,6 +108,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
@@ -2038,7 +2039,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               Thread.currentThread().threadId());
 
       try {
-        Thread.sleep(1 + new Random().nextInt(retryDelay));
+        Thread.sleep(1 + ThreadLocalRandom.current().nextInt(retryDelay));
       } catch (InterruptedException ex) {
         Thread.currentThread().interrupt();
       }

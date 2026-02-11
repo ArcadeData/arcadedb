@@ -21,6 +21,7 @@ package com.arcadedb.server.security.credential;
 import com.arcadedb.server.security.ServerSecurityException;
 
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Default implementation for validating users. The requirements are quite minimalistic: user name must be between 4 and 256 character and the password between 8 and 256.
@@ -56,7 +57,7 @@ public class DefaultCredentialsValidator implements CredentialsValidator {
     for (int i = 0; i < password.length() - 1; i++) {
       final char c = password.charAt(i);
       if (Character.isLetter(c)) {
-        if (new Random().nextInt(2) == 0)
+        if (ThreadLocalRandom.current().nextInt(2) == 0)
           password = password.substring(0, i) + Character.toUpperCase(c) + password.substring(i + 1);
       }
     }

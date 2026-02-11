@@ -39,22 +39,29 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final DatabaseInternal     database;
-  private final Random               random                        = new Random();
   private final ContextConfiguration configuration;
   private       AsyncThread[]        executorThreads;
   private       int                  parallelLevel                 = 1;
   private       int                  commitEvery;
   private       int                  backPressurePercentage        = 0;
-  private boolean           transactionUseWAL             = true;
-  private WALFile.FlushType transactionSync               = WALFile.FlushType.NO;
-  private long              checkForStalledQueuesMaxDelay = 5_000;
+  private       boolean              transactionUseWAL             = true;
+  private       WALFile.FlushType    transactionSync               = WALFile.FlushType.NO;
+  private       long                 checkForStalledQueuesMaxDelay = 5_000;
   private final AtomicLong           transactionCounter            = new AtomicLong();
   private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
 
@@ -92,7 +99,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       if (queueSize < 1)
         queueSize = 1;
 
-      final String cfgQueueImpl = database.getConfiguration().getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL);
+      final String cfgQueueImpl =
+          database.getConfiguration().getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL);
       if ("fast".equalsIgnoreCase(cfgQueueImpl))
         this.queue = new PushPullBlockingQueue<>(queueSize);
       else if ("standard".equalsIgnoreCase(cfgQueueImpl))
@@ -100,7 +108,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       else {
         // WARNING AND THEN USE THE DEFAULT
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on async operation queue implementation setting: %s is not supported", cfgQueueImpl);
+            .log(this, Level.WARNING, "Error on async operation queue implementation setting: %s is not supported",
+                cfgQueueImpl);
         this.queue = new ArrayBlockingQueue<>(queueSize);
       }
 
@@ -118,7 +127,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).asyncMode = true;
       database.getTransaction().setUseWAL(transactionUseWAL);
       database.setWALFlush(transactionSync);
-      database.getTransaction().begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL OF ISOLATION
+      database.getTransaction().begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL
+      // OF ISOLATION
 
       while (!forceShutdown) {
         try {
@@ -127,7 +137,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             executingTask.set(true);
             try {
               LogManager.instance()
-                  .log(this, Level.FINE, "Received async message %s (threadId=%d)", message, Thread.currentThread().getId());
+                  .log(this, Level.FINE, "Received async message %s (threadId=%d)", message,
+                      Thread.currentThread().threadId());
 
               if (message == FORCE_EXIT) {
                 break;
@@ -166,7 +177,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           queue.clear();
           break;
         } catch (final Throwable e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on executing asynchronous operation (asyncThread=%s)", e, getName());
+          LogManager.instance().log(this, Level.SEVERE, "Error on executing asynchronous operation (asyncThread=%s)",
+              e, getName());
         }
       }
 
@@ -283,7 +295,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * Returns a random slot.
    */
   private int getRandomSlot() {
-    return random.nextInt(executorThreads.length);
+    return ThreadLocalRandom.current().nextInt(executorThreads.length);
   }
 
   @Override
@@ -296,7 +308,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (executorThreads == null)
       return true;
 
-    final DatabaseAsyncAbstractCallbackTask[] semaphores = new DatabaseAsyncAbstractCallbackTask[executorThreads.length];
+    final DatabaseAsyncAbstractCallbackTask[] semaphores =
+        new DatabaseAsyncAbstractCallbackTask[executorThreads.length];
 
     for (int i = 0; i < executorThreads.length; ++i)
       try {
@@ -332,7 +345,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   @Override
-  public void query(final String language, final String query, final AsyncResultsetCallback callback, final Object... args) {
+  public void query(final String language, final String query, final AsyncResultsetCallback callback,
+                    final Object... args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
     scheduleTask(slot, new DatabaseAsyncCommand(configuration, true, language, query, args, callback), true,
         backPressurePercentage);
@@ -340,14 +354,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void query(final String language, final String query, final AsyncResultsetCallback callback,
-      final Map<String, Object> args) {
+                    final Map<String, Object> args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
     scheduleTask(slot, new DatabaseAsyncCommand(configuration, true, language, query, args, callback), true,
         backPressurePercentage);
   }
 
   @Override
-  public void command(final String language, final String query, final AsyncResultsetCallback callback, final Object... args) {
+  public void command(final String language, final String query, final AsyncResultsetCallback callback,
+                      final Object... args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
     scheduleTask(slot, new DatabaseAsyncCommand(configuration, false, language, query, args, callback), true,
         backPressurePercentage);
@@ -355,7 +370,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void command(final String language, final String query, final AsyncResultsetCallback callback,
-      final Map<String, Object> args) {
+                      final Map<String, Object> args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
     scheduleTask(slot, new DatabaseAsyncCommand(configuration, false, language, query, args, callback), true,
         backPressurePercentage);
@@ -368,7 +383,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback,
-      final ErrorRecordCallback errorRecordCallback) {
+                       final ErrorRecordCallback errorRecordCallback) {
     try {
       final DocumentType type = database.getSchema().getType(typeName);
 
@@ -377,7 +392,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       for (final Bucket b : buckets) {
         final int slot = getSlot(b.getFileId());
-        scheduleTask(slot, new DatabaseAsyncScanBucket(semaphore, callback, errorRecordCallback, b), true, backPressurePercentage);
+        scheduleTask(slot, new DatabaseAsyncScanBucket(semaphore, callback, errorRecordCallback, b), true,
+            backPressurePercentage);
       }
 
       semaphore.await();
@@ -400,13 +416,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok,
-      final ErrorCallback error) {
+                          final ErrorCallback error) {
     transaction(txBlock, retries, ok, error, getSlot((int) transactionCounter.getAndIncrement()));
   }
 
   @Override
   public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok,
-      final ErrorCallback error, final int slot) {
+                          final ErrorCallback error, final int slot) {
     scheduleTask(slot, new DatabaseAsyncTransaction(txBlock, retries, ok, error), true, backPressurePercentage);
   }
 
@@ -417,7 +433,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void createRecord(final MutableDocument record, final NewRecordCallback newRecordCallback,
-      final ErrorCallback errorCallback) {
+                           final ErrorCallback errorCallback) {
     final DocumentType type = record.getType();
 
     if (record.getIdentity() == null) {
@@ -439,7 +455,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void createRecord(final Record record, final String bucketName, final NewRecordCallback newRecordCallback,
-      final ErrorCallback errorCallback) {
+                           final ErrorCallback errorCallback) {
     final Bucket bucket = database.getSchema().getBucketByName(bucketName);
     final int slot = getSlot(bucket.getFileId());
 
@@ -458,11 +474,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void updateRecord(final MutableDocument record, final UpdatedRecordCallback updateRecordCallback,
-      final ErrorCallback errorCallback) {
+                           final ErrorCallback errorCallback) {
     if (record.getIdentity() != null) {
       // UPDATE
       final int slot = getSlot(record.getIdentity().getBucketId());
-      scheduleTask(slot, new DatabaseAsyncUpdateRecord(record, updateRecordCallback, errorCallback), true, backPressurePercentage);
+      scheduleTask(slot, new DatabaseAsyncUpdateRecord(record, updateRecordCallback, errorCallback), true,
+          backPressurePercentage);
 
     } else
       throw new IllegalArgumentException("Cannot updated a not persistent record");
@@ -475,11 +492,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void deleteRecord(final Record record, final DeletedRecordCallback deleteRecordCallback,
-      final ErrorCallback errorCallback) {
+                           final ErrorCallback errorCallback) {
     if (record.getIdentity() != null) {
       // DELETE
       final int slot = getSlot(record.getIdentity().getBucketId());
-      scheduleTask(slot, new DatabaseAsyncDeleteRecord(record, deleteRecordCallback, errorCallback), true, backPressurePercentage);
+      scheduleTask(slot, new DatabaseAsyncDeleteRecord(record, deleteRecordCallback, errorCallback), true,
+          backPressurePercentage);
 
     } else
       throw new IllegalArgumentException("Cannot delete a not persistent record");
@@ -487,8 +505,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   @Deprecated
-  public void newEdge(final Vertex sourceVertex, final String edgeType, final RID destinationVertexRID, final boolean bidirectional,
-      final boolean light, final NewEdgeCallback callback, final Object... properties) {
+  public void newEdge(final Vertex sourceVertex, final String edgeType, final RID destinationVertexRID,
+                      final boolean bidirectional,
+                      final boolean light, final NewEdgeCallback callback, final Object... properties) {
     if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 
@@ -496,8 +515,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   @Override
-  public void newEdge(final Vertex sourceVertex, final String edgeType, final RID destinationVertexRID, final boolean light,
-      final NewEdgeCallback callback, final Object... properties) {
+  public void newEdge(final Vertex sourceVertex, final String edgeType, final RID destinationVertexRID,
+                      final boolean light,
+                      final NewEdgeCallback callback, final Object... properties) {
     if (sourceVertex == null)
       throw new IllegalArgumentException("Source vertex is null");
 
@@ -515,7 +535,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, light, callback), true,
           backPressurePercentage);
     else {
-      // CREATE THE EDGE IN THE SOURCE VERTEX'S SLOT AND A CASCADE TASK TO ADD THE INCOMING EDGE FROM DESTINATION VERTEX (THIS IS THE MOST EXPENSIVE CASE WHERE 2 TASKS ARE EXECUTED)
+      // CREATE THE EDGE IN THE SOURCE VERTEX'S SLOT AND A CASCADE TASK TO ADD THE INCOMING EDGE FROM DESTINATION
+      // VERTEX (THIS IS THE MOST EXPENSIVE CASE WHERE 2 TASKS ARE EXECUTED)
       scheduleTask(sourceSlot, new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, light,
           (newEdge, createdSourceVertex, createdDestinationVertex) -> {
             if (bidirectional) {
@@ -533,20 +554,26 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   @Override
-  public void newEdgeByKeys(final String sourceVertexType, final String sourceVertexKeyName, final Object sourceVertexKeyValue,
-      final String destinationVertexType, final String destinationVertexKeyName, final Object destinationVertexKeyValue,
-      final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional, final boolean lightWeight,
-      final NewEdgeCallback callback, final Object... properties) {
-    newEdgeByKeys(sourceVertexType, new String[] { sourceVertexKeyName }, new Object[] { sourceVertexKeyValue },
-        destinationVertexType, new String[] { destinationVertexKeyName }, new Object[] { destinationVertexKeyValue },
+  public void newEdgeByKeys(final String sourceVertexType, final String sourceVertexKeyName,
+                            final Object sourceVertexKeyValue,
+                            final String destinationVertexType, final String destinationVertexKeyName,
+                            final Object destinationVertexKeyValue,
+                            final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional,
+                            final boolean lightWeight,
+                            final NewEdgeCallback callback, final Object... properties) {
+    newEdgeByKeys(sourceVertexType, new String[]{sourceVertexKeyName}, new Object[]{sourceVertexKeyValue},
+        destinationVertexType, new String[]{destinationVertexKeyName}, new Object[]{destinationVertexKeyValue},
         createVertexIfNotExist, edgeType, bidirectional, lightWeight, callback, properties);
   }
 
   @Override
   public void newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames,
-      final Object[] sourceVertexKeyValues, final String destinationVertexType, final String[] destinationVertexKeyNames,
-      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
-      final boolean bidirectional, final boolean lightWeight, final NewEdgeCallback callback, final Object... properties) {
+                            final Object[] sourceVertexKeyValues, final String destinationVertexType,
+                            final String[] destinationVertexKeyNames,
+                            final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
+                            final String edgeType,
+                            final boolean bidirectional, final boolean lightWeight, final NewEdgeCallback callback,
+                            final Object... properties) {
 
     if (sourceVertexKeyNames == null)
       throw new IllegalArgumentException("Source vertex key is null");
@@ -560,8 +587,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (destinationVertexKeyNames.length != destinationVertexKeyValues.length)
       throw new IllegalArgumentException("Destination vertex key and value arrays have different sizes");
 
-    final Iterator<Identifiable> sourceResult = database.lookupByKey(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues);
-    final Iterator<Identifiable> destinationResult = database.lookupByKey(destinationVertexType, destinationVertexKeyNames,
+    final Iterator<Identifiable> sourceResult = database.lookupByKey(sourceVertexType, sourceVertexKeyNames,
+        sourceVertexKeyValues);
+    final Iterator<Identifiable> destinationResult = database.lookupByKey(destinationVertexType,
+        destinationVertexKeyNames,
         destinationVertexKeyValues);
 
     final RID sourceRID = sourceResult.hasNext() ? sourceResult.next().getIdentity() : null;
@@ -575,10 +604,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                 + Arrays.toString(sourceVertexKeyValues) + " and " + Arrays.toString(destinationVertexKeyNames) + "="
                 + Arrays.toString(destinationVertexKeyValues));
 
-      // SOURCE AND DESTINATION VERTICES BOTH DON'T EXIST: CREATE 2 VERTICES + EDGE IN THE SAME TASK PICKING THE BEST SLOT
+      // SOURCE AND DESTINATION VERTICES BOTH DON'T EXIST: CREATE 2 VERTICES + EDGE IN THE SAME TASK PICKING THE BEST
+      // SLOT
       scheduleTask(getRandomSlot(),
           new CreateBothVerticesAndEdgeAsyncTask(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues,
-              destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues, edgeType, properties, lightWeight,
+              destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues, edgeType, properties,
+              lightWeight,
               callback), true, backPressurePercentage);
 
     } else if (sourceRID != null && destinationRID == null) {
@@ -603,7 +634,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       // ONLY DESTINATION VERTEX EXISTS
       scheduleTask(getSlot(destinationRID.getBucketId()),
-          new CreateSourceVertexAndEdgeAsyncTask(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationRID,
+          new CreateSourceVertexAndEdgeAsyncTask(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues,
+              destinationRID,
               edgeType, properties, lightWeight, callback), true, backPressurePercentage);
 
     } else
@@ -711,7 +743,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       try {
         onOkCallback.call();
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on invoking onOk() callback for asynchronous operation %s", e, this);
+        LogManager.instance().log(this, Level.SEVERE, "Error on invoking onOk() callback for asynchronous operation " +
+            "%s", e, this);
       }
     }
   }
@@ -734,11 +767,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * @param slot              slot id
    * @param task              task to schedule
    * @param waitIfQueueIsFull true to wait in case the queue is full, otherwise false
-   *
    * @return true if the task has been scheduled, otherwise false
    */
   public boolean scheduleTask(int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
-      final int applyBackPressureOnPercentage) {
+                              final int applyBackPressureOnPercentage) {
     try {
       if (slot == -1)
         slot = getBestSlot();
@@ -768,7 +800,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             }
 
             if (applyBackPressureOnPercentage > 0) {
-              final int queueFullAt = 100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
+              final int queueFullAt =
+                  100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
               Thread.sleep(100 + (4L * queueFullAt));
             }
           }

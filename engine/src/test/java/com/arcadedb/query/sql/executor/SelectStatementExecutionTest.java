@@ -47,6 +47,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
@@ -78,8 +79,8 @@ public class SelectStatementExecutionTest extends TestHelper {
       final String hash = UUID.randomUUID().toString();
       database.command("sql", "insert into InputTx set address = '" + hash + "'");
 
-      // CREATE RANDOM NUMBER OF COPIES final int random = new Random().nextInt(10);
-      final int random = new Random().nextInt(10);
+      // CREATE RANDOM NUMBER OF COPIES final int random = ThreadLocalRandom.current().nextInt(10);
+      final int random = ThreadLocalRandom.current().nextInt(10);
       for (int j = 0; j < random; j++) {
         database.command("sql", "insert into InputTx set address = '" + hash + "'");
       }

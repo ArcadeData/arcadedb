@@ -43,6 +43,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -106,7 +107,7 @@ public class FastTextDatabase {
       int k = 10;
       final LSMVectorIndex persistentIndex = (LSMVectorIndex) database.getSchema().getIndexByName("Word[vector]");
 
-      final Random random = new Random();
+      final Random random = ThreadLocalRandom.current();
 
       final List<Bucket> buckets = database.getSchema().getType("Word").getBuckets(false);
 

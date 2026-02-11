@@ -49,6 +49,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1076,7 +1077,7 @@ class LSMTreeIndexTest extends TestHelper {
 
                 // Small random delay using awaitility
                 try {
-                  TimeUnit.MILLISECONDS.sleep(new Random().nextInt(10));
+                  TimeUnit.MILLISECONDS.sleep(ThreadLocalRandom.current().nextInt(10));
                 } catch (final InterruptedException e) {
                   e.printStackTrace();
                   Thread.currentThread().interrupt();

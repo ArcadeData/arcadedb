@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.*;
 
 public class RetryStep extends AbstractExecutionStep {
@@ -112,7 +113,7 @@ public class RetryStep extends AbstractExecutionStep {
               Thread.currentThread().getId());
 
       try {
-        Thread.sleep(1 + new Random().nextInt(retryDelay));
+        Thread.sleep(1 + ThreadLocalRandom.current().nextInt(retryDelay));
       } catch (InterruptedException ex) {
         Thread.currentThread().interrupt();
       }

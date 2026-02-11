@@ -117,7 +117,7 @@ public class PerformanceInsertMTStressTest {
         Thread currentThread = new Thread(() -> {
           int retryCount = 0;
           boolean success = false;
-          Random random = new Random();
+          Random random = ThreadLocalRandom.current();
 
           while (retryCount < config.getRetries() && !success) {
             try {

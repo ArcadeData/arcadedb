@@ -30,10 +30,13 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 import performance.PerformanceTest;
 
-import java.math.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.math.BigDecimal;
+import java.util.Date;
+import java.util.Iterator;
+import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 class RandomTestSingleThread extends TestHelper {
   private static final int CYCLES           = 1500;
@@ -42,7 +45,6 @@ class RandomTestSingleThread extends TestHelper {
 
   private final AtomicLong otherErrors = new AtomicLong();
   private final AtomicLong mvccErrors  = new AtomicLong();
-  private final Random     rnd         = new Random();
 
   @Test
   void random() {
@@ -59,30 +61,30 @@ class RandomTestSingleThread extends TestHelper {
 
       for (int i = 0; i < CYCLES; ++i) {
         try {
-          final int op = rnd.nextInt(6);
+          final int op = ThreadLocalRandom.current().nextInt(6);
 
           LogManager.instance().log(this, Level.INFO, "Operation %d %d/%d", op, i, CYCLES);
 
           switch (op) {
-          case 0:
-          case 1:
-          case 2:
-            createTransactions(database);
-            break;
-          case 3:
-            deleteRecords(database);
-            break;
-          case 4:
-            // RANDOM PAUSE
-            Thread.sleep(rnd.nextInt(100));
-            break;
-          case 5:
-            LogManager.instance().log(this, Level.INFO, "Committing...");
-            database.commit();
-            database.begin();
-            break;
-          default:
-            LogManager.instance().log(this, Level.INFO, "Operation " + op + " not supported");
+            case 0:
+            case 1:
+            case 2:
+              createTransactions(database);
+              break;
+            case 3:
+              deleteRecords(database);
+              break;
+            case 4:
+              // RANDOM PAUSE
+              Thread.sleep(ThreadLocalRandom.current().nextInt(100));
+              break;
+            case 5:
+              LogManager.instance().log(this, Level.INFO, "Committing...");
+              database.commit();
+              database.begin();
+              break;
+            default:
+              LogManager.instance().log(this, Level.INFO, "Operation " + op + " not supported");
           }
 
         } catch (final Exception e) {
@@ -101,7 +103,8 @@ class RandomTestSingleThread extends TestHelper {
       new DatabaseChecker(database).setVerboseLevel(0).check();
 
       //System.out.println(
-      //    "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.get());
+      //    "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + "
+      //    otherExceptions=" + otherErrors.get());
     }
 
     //LogManager.instance().flush();
@@ -110,7 +113,7 @@ class RandomTestSingleThread extends TestHelper {
   }
 
   private void createTransactions(final Database database) {
-    final int txOps = rnd.nextInt(100);
+    final int txOps = ThreadLocalRandom.current().nextInt(100);
 
     //LogManager.instance().log(this, Level.INFO, "Creating %d transactions...", txOps);
 
@@ -118,7 +121,7 @@ class RandomTestSingleThread extends TestHelper {
       final MutableDocument tx = database.newVertex("Transaction");
       tx.set("uuid", UUID.randomUUID().toString());
       tx.set("date", new Date());
-      tx.set("amount", rnd.nextInt(STARTING_ACCOUNT));
+      tx.set("amount", ThreadLocalRandom.current().nextInt(STARTING_ACCOUNT));
       tx.save();
     }
   }
@@ -128,10 +131,10 @@ class RandomTestSingleThread extends TestHelper {
 
     final Iterator<Record> iter = database.iterateType("Account", true);
 
-    while (iter.hasNext() && rnd.nextInt(10) != 0) {
+    while (iter.hasNext() && ThreadLocalRandom.current().nextInt(10) != 0) {
       final Record next = iter.next();
 
-      if (rnd.nextInt(2) == 0) {
+      if (ThreadLocalRandom.current().nextInt(2) == 0) {
         database.deleteRecord(next);
         LogManager.instance().log(this, Level.INFO, "Deleted record %s", next.getIdentity());
       }
@@ -157,7 +160,8 @@ class RandomTestSingleThread extends TestHelper {
       database.commit();
 
     } finally {
-      LogManager.instance().log(this, Level.INFO, "Database populate finished in " + (System.currentTimeMillis() - begin) + "ms");
+      LogManager.instance().log(this, Level.INFO,
+          "Database populate finished in " + (System.currentTimeMillis() - begin) + "ms");
     }
   }
 
@@ -166,7 +170,8 @@ class RandomTestSingleThread extends TestHelper {
     if (!database.getSchema().existsType("Account")) {
       database.begin();
 
-      final VertexType accountType = database.getSchema().buildVertexType().withName("Account").withTotalBuckets(PARALLEL).create();
+      final VertexType accountType =
+          database.getSchema().buildVertexType().withName("Account").withTotalBuckets(PARALLEL).create();
       accountType.createProperty("id", Long.class);
       accountType.createProperty("name", String.class);
       accountType.createProperty("surname", String.class);
@@ -174,14 +179,16 @@ class RandomTestSingleThread extends TestHelper {
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Account", "id");
 
-      final VertexType txType = database.getSchema().buildVertexType().withName("Transaction").withTotalBuckets(PARALLEL).create();
+      final VertexType txType =
+          database.getSchema().buildVertexType().withName("Transaction").withTotalBuckets(PARALLEL).create();
       txType.createProperty("uuid", String.class);
       txType.createProperty("date", Date.class);
       txType.createProperty("amount", BigDecimal.class);
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Transaction", "uuid");
 
-      final EdgeType edgeType = database.getSchema().buildEdgeType().withName("PurchasedBy").withTotalBuckets(PARALLEL).create();
+      final EdgeType edgeType =
+          database.getSchema().buildEdgeType().withName("PurchasedBy").withTotalBuckets(PARALLEL).create();
       edgeType.createProperty("date", Date.class);
 
       database.commit();

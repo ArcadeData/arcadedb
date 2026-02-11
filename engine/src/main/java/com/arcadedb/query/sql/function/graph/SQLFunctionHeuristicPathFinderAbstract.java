@@ -23,7 +23,12 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.math.SQLFunctionMathAbstract;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Abstract class to find paths between nodes using heuristic .
@@ -31,17 +36,16 @@ import java.util.*;
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
  */
 public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunctionMathAbstract {
-  public static final    String PARAM_DIRECTION                = "direction";
-  public static final    String PARAM_EDGE_TYPE_NAMES          = "edgeTypeNames";
-  public static final    String PARAM_VERTEX_AXIS_NAMES        = "vertexAxisNames";
-  public static final    String PARAM_PARALLEL                 = "parallel";
-  public static final    String PARAM_MAX_DEPTH                = "maxDepth";
-  public static final    String PARAM_HEURISTIC_FORMULA        = "heuristicFormula";
-  public static final    String PARAM_CUSTOM_HEURISTIC_FORMULA = "customHeuristicFormula";
-  public static final    String PARAM_D_FACTOR                 = "dFactor";
-  public static final    String PARAM_TIE_BREAKER              = "tieBreaker";
-  public static final    String PARAM_EMPTY_IF_MAX_DEPTH       = "emptyIfMaxDepth";
-  protected static final Random rnd                            = new Random();
+  public static final String PARAM_DIRECTION                = "direction";
+  public static final String PARAM_EDGE_TYPE_NAMES          = "edgeTypeNames";
+  public static final String PARAM_VERTEX_AXIS_NAMES        = "vertexAxisNames";
+  public static final String PARAM_PARALLEL                 = "parallel";
+  public static final String PARAM_MAX_DEPTH                = "maxDepth";
+  public static final String PARAM_HEURISTIC_FORMULA        = "heuristicFormula";
+  public static final String PARAM_CUSTOM_HEURISTIC_FORMULA = "customHeuristicFormula";
+  public static final String PARAM_D_FACTOR                 = "dFactor";
+  public static final String PARAM_TIE_BREAKER              = "tieBreaker";
+  public static final String PARAM_EMPTY_IF_MAX_DEPTH       = "emptyIfMaxDepth";
 
   protected Boolean             paramParallel               = false;
   protected Boolean             paramTieBreaker             = true;
@@ -173,7 +177,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     final double dy1 = y - gy;
     final double dx2 = sx - gx;
     final double dy2 = sy - gy;
-    final double cross = Math.abs(dx1 * dy2 - dx2 * dy1) + rnd.nextFloat();
+    final double cross = Math.abs(dx1 * dy2 - dx2 * dy1) + ThreadLocalRandom.current().nextFloat();
     heuristic += (cross * heuristic);
     return heuristic;
   }
