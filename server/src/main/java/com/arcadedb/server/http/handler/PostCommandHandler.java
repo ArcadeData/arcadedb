@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -114,10 +115,23 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final JSONObject response = new JSONObject();
       response.put("user", user != null ? user.getName() : null);
 
-      serializeResultSet(database, serializer, limit, response, qResult);
+      if (qResult instanceof ExplainResultSet) {
+        // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
+        // so serializeResultSet produces an empty result structure
+        final String explainText = qResult.getExecutionPlan().get().prettyPrint(0, 2);
+        while (qResult.hasNext()) {
+          qResult.next();
+        }
+        serializeResultSet(database, serializer, limit, response, qResult);
+        response.put("explain", explainText);
+      } else {
+        serializeResultSet(database, serializer, limit, response, qResult);
 
-      if (qResult != null && profileExecution != null && qResult.getExecutionPlan().isPresent())
-        qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
+        if (qResult != null && qResult.getExecutionPlan().isPresent() &&
+            (profileExecution != null ||
+                command.toUpperCase(Locale.ENGLISH).startsWith("PROFILE ")))
+          response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2));
+      }
 
       Metrics.counter("http.command").increment();
 

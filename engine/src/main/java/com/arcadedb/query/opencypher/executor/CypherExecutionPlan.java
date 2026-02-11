@@ -55,11 +55,13 @@ import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
+import com.arcadedb.query.sql.parser.ExplainResultSet;
 
 import java.util.*;
 import java.util.function.Function;
@@ -321,19 +323,17 @@ public class CypherExecutionPlan {
   /**
    * Returns EXPLAIN output showing the query execution plan.
    * Displays physical operators with cost and cardinality estimates.
+   * Returns an {@link ExplainResultSet} so the server handler populates the
+   * dedicated {@code explain} field in the JSON response.
    *
-   * @return result set containing explain output
+   * @return result set containing explain output via {@code getExecutionPlan()}
    */
   public ResultSet explain() {
-    final List<ResultInternal> results = new ArrayList<>();
-
-    // Generate explain output
     final StringBuilder explainOutput = new StringBuilder();
     explainOutput.append("OpenCypher Native Execution Plan\n");
     explainOutput.append("=================================\n\n");
 
     if (physicalPlan != null && physicalPlan.getRootOperator() != null) {
-      // Show optimized physical plan
       explainOutput.append("Using Cost-Based Query Optimizer\n\n");
       explainOutput.append("Physical Plan:\n");
       explainOutput.append(physicalPlan.getRootOperator().explain(0));
@@ -341,89 +341,75 @@ public class CypherExecutionPlan {
       explainOutput.append(String.format("Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       explainOutput.append(String.format("Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
     } else {
-      // Show traditional execution path
       explainOutput.append("Using Traditional Execution (Non-Optimized)\n\n");
       explainOutput.append("Reason: Query pattern not yet supported by optimizer\n");
       explainOutput.append("Execution will use step-by-step interpretation\n");
     }
 
-    // Create result row
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("plan", explainOutput.toString());
-    results.add(result);
-
-    return new IteratorResultSet(results.iterator());
+    return new ExplainResultSet(new OpenCypherExplainExecutionPlan(explainOutput.toString()));
   }
 
   /**
    * Executes the query with profiling enabled.
-   * Returns the query results along with execution metrics.
+   * The query is executed to collect real metrics, but only the profiling
+   * information is returned (actual query results are discarded).
+   * Returns an {@link ExplainResultSet} so the server handler populates the
+   * dedicated {@code explain} field in the JSON response.
    *
-   * @return result set containing results and profiling metrics
+   * @return result set containing profiling metrics via {@code getExecutionPlan()}
    */
   public ResultSet profile() {
-    // Record start time
     final long startTime = System.nanoTime();
 
-    // Build execution context with profiling enabled
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
-    context.setProfiling(true); // Enable profiling
+    context.setProfiling(true);
 
-    // Execute the query and collect results
-    final List<ResultInternal> allResults = new ArrayList<>();
-    long rowCount = 0;
+    final InternalResultSet results = new InternalResultSet();
+    String errorMessage = null;
 
     try {
-      // Handle UNION queries specially
       if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
         final UnionStep unionStep =
             new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
         final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE);
-        while (resultSet.hasNext()) {
-          allResults.add((ResultInternal) resultSet.next());
-          rowCount++;
-        }
+        while (resultSet.hasNext())
+          results.add(resultSet.next());
       } else {
-        // Build execution steps
         AbstractExecutionStep rootStep;
         final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
         final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
 
         final boolean hasVLP2 = hasVariableLengthPath();
-        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2 && !hasVLP2) {
+        if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2 && !hasVLP2)
           rootStep = buildExecutionStepsWithOptimizer(context);
-        } else {
+        else
           rootStep = buildExecutionSteps(context);
-        }
 
         if (rootStep != null) {
           final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE);
-          while (resultSet.hasNext()) {
-            allResults.add((ResultInternal) resultSet.next());
-            rowCount++;
-          }
+          while (resultSet.hasNext())
+            results.add(resultSet.next());
         }
       }
     } catch (final Exception e) {
-      // Include error in profile output
-      final ResultInternal errorResult = new ResultInternal();
-      errorResult.setProperty("error", e.getMessage());
-      allResults.add(errorResult);
+      errorMessage = e.getMessage();
     }
 
-    // Calculate execution time
     final long endTime = System.nanoTime();
     final double executionTimeMs = (endTime - startTime) / 1_000_000.0;
+    final long rowCount = results.countEntries();
 
-    // Generate profile output
     final StringBuilder profileOutput = new StringBuilder();
     profileOutput.append("OpenCypher Query Profile\n");
     profileOutput.append("========================\n\n");
     profileOutput.append(String.format("Execution Time: %.3f ms\n", executionTimeMs));
     profileOutput.append(String.format("Rows Returned: %d\n", rowCount));
+
+    if (errorMessage != null)
+      profileOutput.append(String.format("\nError: %s\n", errorMessage));
 
     if (physicalPlan != null && physicalPlan.getRootOperator() != null) {
       profileOutput.append("\nExecution Plan (Cost-Based Optimizer):\n");
@@ -435,12 +421,8 @@ public class CypherExecutionPlan {
       profileOutput.append("Step-by-step interpretation\n");
     }
 
-    // Add profile as first result
-    final ResultInternal profileResult = new ResultInternal();
-    profileResult.setProperty("profile", profileOutput.toString());
-    allResults.add(0, profileResult);
-
-    return new IteratorResultSet(allResults.iterator());
+    results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString()));
+    return results;
   }
 
   /**
