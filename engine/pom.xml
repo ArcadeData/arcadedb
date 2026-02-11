@@ -226,6 +226,7 @@
             <artifactId>cucumber-junit-platform-engine</artifactId>
             <version>${cucumber.version}</version>
             <scope>test</scope>
+
             <exclusions>
                 <exclusion>
                     <groupId>org.junit.platform</groupId>
