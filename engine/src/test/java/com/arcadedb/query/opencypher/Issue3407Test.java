@@ -174,4 +174,56 @@ class Issue3407Test {
       result.next();
     }
   }
+
+  @Test
+  void profileShouldShowStepTiming() {
+    // Test that PROFILE shows timing information for each step (like SQL engine does)
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createVertexType("Device");
+    database.getSchema().createVertexType("Ping");
+    database.getSchema().createEdgeType("OWNS");
+    database.getSchema().createEdgeType("GENERATED");
+
+    // Execute a query with PROFILE that exercises multiple steps
+    final ResultSet result = database.command("opencypher",
+        "PROFILE WITH 10 AS nb_persons " +
+        "UNWIND range(1, nb_persons) AS i " +
+        "CREATE (p:Person {name: 'Person_' + tostring(i)}) " +
+        "WITH p " +
+        "CREATE (d:Device {imei: 'IMEI_' + p.name}) " +
+        "CREATE (p)-[:OWNS]->(d) " +
+        "RETURN count(p) AS created");
+
+    assertThat(result.getExecutionPlan().isPresent()).isTrue();
+    final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);
+
+    // Verify basic profile information
+    assertThat(profile).contains("OpenCypher Query Profile");
+    assertThat(profile).contains("Execution Time");
+    assertThat(profile).contains("Rows Returned");
+
+    // The key check: each step should show timing information in μs (microseconds)
+    // When traditional execution is used, steps should show (XXXμs) after the step name
+    if (profile.contains("Traditional")) {
+      // Check that timing appears with steps
+      // Format should be something like: "+ WITH ... (123μs)"
+      assertThat(profile)
+          .withFailMessage("PROFILE should show timing for each step.\nActual output:\n%s", profile)
+          .containsPattern("\\+ WITH .*\\([\\d,]+μs\\)|\\+ WITH .*\\(\\d+\\.\\d+ms\\)");
+
+      // Should also have timing for other steps
+      assertThat(profile)
+          .withFailMessage("PROFILE should show timing for UNWIND step.\nActual output:\n%s", profile)
+          .containsPattern("\\+ UNWIND .*\\([\\d,]+μs\\)|\\+ UNWIND .*\\(\\d+\\.\\d+ms\\)");
+
+      assertThat(profile)
+          .withFailMessage("PROFILE should show timing for CREATE step.\nActual output:\n%s", profile)
+          .containsPattern("\\+ CREATE .*\\([\\d,]+μs\\)|\\+ CREATE .*\\(\\d+\\.\\d+ms\\)");
+    }
+
+    // Consume results
+    while (result.hasNext()) {
+      result.next();
+    }
+  }
 }

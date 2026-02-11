@@ -175,7 +175,13 @@ public class ExpandIntoStep extends AbstractExecutionStep {
 
         // Fetch results from operator
         while (buffer.size() < n && operatorResults.hasNext()) {
-          buffer.add(operatorResults.next());
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            buffer.add(operatorResults.next());
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         if (!operatorResults.hasNext()) {

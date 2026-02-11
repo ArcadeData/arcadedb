@@ -164,25 +164,31 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
             // Match nodes and add to input result
             if (iterator.hasNext()) {
-              final Identifiable identifiable = iterator.next();
-              // Load the record if it's not already loaded
-              final Document record = identifiable.asDocument();
-              if (record instanceof Vertex) {
-                final Vertex vertex = (Vertex) record;
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                final Identifiable identifiable = iterator.next();
+                // Load the record if it's not already loaded
+                final Document record = identifiable.asDocument();
+                if (record instanceof Vertex) {
+                  final Vertex vertex = (Vertex) record;
 
-                // Apply label and property filters
-                if (!matchesAllLabels(vertex) || !matchesProperties(vertex, currentInputResult))
-                  continue;
+                  // Apply label and property filters
+                  if (!matchesAllLabels(vertex) || !matchesProperties(vertex, currentInputResult))
+                    continue;
 
-                // Copy input result and add our vertex
-                final ResultInternal result = new ResultInternal();
-                if (currentInputResult != null) {
-                  for (final String prop : currentInputResult.getPropertyNames()) {
-                    result.setProperty(prop, currentInputResult.getProperty(prop));
+                  // Copy input result and add our vertex
+                  final ResultInternal result = new ResultInternal();
+                  if (currentInputResult != null) {
+                    for (final String prop : currentInputResult.getPropertyNames()) {
+                      result.setProperty(prop, currentInputResult.getProperty(prop));
+                    }
                   }
+                  result.setProperty(variable, vertex);
+                  buffer.add(result);
                 }
-                result.setProperty(variable, vertex);
-                buffer.add(result);
+              } finally {
+                if (context.isProfiling())
+                  cost += (System.nanoTime() - begin);
               }
             }
           }
@@ -195,21 +201,27 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
           // Fetch up to n vertices
           while (buffer.size() < n && iterator.hasNext()) {
-            final Identifiable identifiable = iterator.next();
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              final Identifiable identifiable = iterator.next();
 
-            // Load the record if it's not already loaded
-            final Document record = identifiable.asDocument();
-            if (record instanceof Vertex) {
-              final Vertex vertex = (Vertex) record;
+              // Load the record if it's not already loaded
+              final Document record = identifiable.asDocument();
+              if (record instanceof Vertex) {
+                final Vertex vertex = (Vertex) record;
 
-              // Apply label and property filters
-              if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
-                continue;
+                // Apply label and property filters
+                if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
+                  continue;
 
-              // Create result with vertex bound to variable
-              final ResultInternal result = new ResultInternal();
-              result.setProperty(variable, vertex);
-              buffer.add(result);
+                // Create result with vertex bound to variable
+                final ResultInternal result = new ResultInternal();
+                result.setProperty(variable, vertex);
+                buffer.add(result);
+              }
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
             }
           }
 

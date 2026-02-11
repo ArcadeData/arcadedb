@@ -95,10 +95,15 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
         // Fetch and filter up to n results from previous step
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result result = prevResults.next();
-
-          // Evaluate filter condition
-          if (evaluateCondition(result)) {
-            buffer.add(result);
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            // Evaluate filter condition
+            if (evaluateCondition(result)) {
+              buffer.add(result);
+            }
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
           }
         }
 

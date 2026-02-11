@@ -118,17 +118,23 @@ public class UnionStep extends AbstractExecutionStep {
 
           // Fetch results from current query
           while (buffer.size() < n && currentResultSet.hasNext()) {
-            final Result result = currentResultSet.next();
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              final Result result = currentResultSet.next();
 
-            // Apply deduplication for UNION (not UNION ALL)
-            if (removeDuplicates) {
-              final String resultKey = buildResultKey(result);
-              if (seenResults.contains(resultKey))
-                continue; // Skip duplicate
-              seenResults.add(resultKey);
+              // Apply deduplication for UNION (not UNION ALL)
+              if (removeDuplicates) {
+                final String resultKey = buildResultKey(result);
+                if (seenResults.contains(resultKey))
+                  continue; // Skip duplicate
+                seenResults.add(resultKey);
+              }
+
+              buffer.add(result);
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
             }
-
-            buffer.add(result);
           }
         }
       }

@@ -99,8 +99,14 @@ public class FinalProjectionStep extends AbstractExecutionStep {
 
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
-          final ResultInternal filteredResult = filterResult(inputResult);
-          buffer.add(filteredResult);
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            final ResultInternal filteredResult = filterResult(inputResult);
+            buffer.add(filteredResult);
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
         }
 
         if (!prevResults.hasNext()) {

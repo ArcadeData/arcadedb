@@ -156,53 +156,58 @@ public class WithStep extends AbstractExecutionStep {
             break;
 
           final Result inputResult = prevResults.next();
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            // Project the result
+            final ResultInternal projectedResult = projectResult(inputResult);
 
-          // Project the result
-          final ResultInternal projectedResult = projectResult(inputResult);
+            // Apply WHERE clause filtering using a merged scope that contains
+            // both the pre-projection variables AND the projected aliases.
+            // In Cypher, WITH c WHERE r IS NULL can reference 'r' (pre-projection)
+            // and WITH a.name2 AS name WHERE name = 'B' can reference 'name' (projected).
+            if (withClause.getWhereClause() != null) {
+              final ResultInternal mergedScope = new ResultInternal();
+              for (final String prop : inputResult.getPropertyNames())
+                mergedScope.setProperty(prop, inputResult.getProperty(prop));
+              for (final String prop : projectedResult.getPropertyNames())
+                mergedScope.setProperty(prop, projectedResult.getProperty(prop));
+              if (!evaluateWhereClause(mergedScope))
+                continue;
+            }
 
-          // Apply WHERE clause filtering using a merged scope that contains
-          // both the pre-projection variables AND the projected aliases.
-          // In Cypher, WITH c WHERE r IS NULL can reference 'r' (pre-projection)
-          // and WITH a.name2 AS name WHERE name = 'B' can reference 'name' (projected).
-          if (withClause.getWhereClause() != null) {
-            final ResultInternal mergedScope = new ResultInternal();
-            for (final String prop : inputResult.getPropertyNames())
-              mergedScope.setProperty(prop, inputResult.getProperty(prop));
-            for (final String prop : projectedResult.getPropertyNames())
-              mergedScope.setProperty(prop, projectedResult.getProperty(prop));
-            if (!evaluateWhereClause(mergedScope))
+            // Apply DISTINCT
+            if (withClause.isDistinct()) {
+              final String resultKey = projectedResult.toString();
+              if (seenResults.contains(resultKey))
+                continue;
+              seenResults.add(resultKey);
+            }
+
+            // Apply SKIP (only when not deferred to downstream)
+            if (skipVal != null && skipped < skipVal) {
+              skipped++;
               continue;
-          }
+            }
 
-          // Apply DISTINCT
-          if (withClause.isDistinct()) {
-            final String resultKey = projectedResult.toString();
-            if (seenResults.contains(resultKey))
-              continue;
-            seenResults.add(resultKey);
+            // When ORDER BY is present, output a merged scope so ORDER BY can reference
+            // variables from the incoming scope that aren't in the projection.
+            // E.g., WITH a, expr AS mod ORDER BY sum — 'sum' is from the incoming scope.
+            // A downstream step will strip back to just the projected variables.
+            if (skipLimitDeferred) {
+              final ResultInternal merged = new ResultInternal();
+              for (final String prop : inputResult.getPropertyNames())
+                merged.setProperty(prop, inputResult.getProperty(prop));
+              for (final String prop : projectedResult.getPropertyNames())
+                merged.setProperty(prop, projectedResult.getProperty(prop));
+              buffer.add(merged);
+            } else {
+              buffer.add(projectedResult);
+            }
+            returned++;
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
           }
-
-          // Apply SKIP (only when not deferred to downstream)
-          if (skipVal != null && skipped < skipVal) {
-            skipped++;
-            continue;
-          }
-
-          // When ORDER BY is present, output a merged scope so ORDER BY can reference
-          // variables from the incoming scope that aren't in the projection.
-          // E.g., WITH a, expr AS mod ORDER BY sum — 'sum' is from the incoming scope.
-          // A downstream step will strip back to just the projected variables.
-          if (skipLimitDeferred) {
-            final ResultInternal merged = new ResultInternal();
-            for (final String prop : inputResult.getPropertyNames())
-              merged.setProperty(prop, inputResult.getProperty(prop));
-            for (final String prop : projectedResult.getPropertyNames())
-              merged.setProperty(prop, projectedResult.getProperty(prop));
-            buffer.add(merged);
-          } else {
-            buffer.add(projectedResult);
-          }
-          returned++;
         }
 
         if (!prevResults.hasNext() || (limit != null && returned >= limit)) {

@@ -136,9 +136,15 @@ public class UnwindStep extends AbstractExecutionStep {
         while (buffer.size() < n) {
           // If we're iterating through a list, continue unwinding it
           if (currentListIterator != null && currentListIterator.hasNext()) {
-            final Object element = currentListIterator.next();
-            final ResultInternal unwoundResult = createUnwoundResult(currentInputRow, element);
-            buffer.add(unwoundResult);
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              final Object element = currentListIterator.next();
+              final ResultInternal unwoundResult = createUnwoundResult(currentInputRow, element);
+              buffer.add(unwoundResult);
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
             continue;
           }
 
@@ -149,57 +155,62 @@ public class UnwindStep extends AbstractExecutionStep {
           }
 
           currentInputRow = prevResults.next();
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            // Evaluate the list expression
+            final Expression listExpr = unwindClause.getListExpression();
+            final Object listValue = evaluator.evaluate(listExpr, currentInputRow, context);
 
-          // Evaluate the list expression
-          final Expression listExpr = unwindClause.getListExpression();
-          final Object listValue = evaluator.evaluate(listExpr, currentInputRow, context);
-
-          // Convert to iterable
-          if (listValue == null) {
-            // Null list - produces no output rows for this input
-            currentListIterator = null;
-            continue;
-          }
-
-          if (listValue instanceof Collection) {
-            currentListIterator = ((Collection<?>) listValue).iterator();
-          } else if (listValue instanceof Iterable) {
-            currentListIterator = ((Iterable<?>) listValue).iterator();
-          } else if (listValue.getClass().isArray()) {
-            // Convert array to list
-            final List<Object> list = new ArrayList<>();
-            if (listValue instanceof Object[]) {
-              for (final Object obj : (Object[]) listValue) {
-                list.add(obj);
-              }
-            } else if (listValue instanceof int[]) {
-              for (final int i : (int[]) listValue) {
-                list.add(i);
-              }
-            } else if (listValue instanceof long[]) {
-              for (final long i : (long[]) listValue) {
-                list.add(i);
-              }
-            } else if (listValue instanceof double[]) {
-              for (final double i : (double[]) listValue) {
-                list.add(i);
-              }
-            } else if (listValue instanceof boolean[]) {
-              for (final boolean i : (boolean[]) listValue) {
-                list.add(i);
-              }
+            // Convert to iterable
+            if (listValue == null) {
+              // Null list - produces no output rows for this input
+              currentListIterator = null;
+              continue;
             }
-            currentListIterator = list.iterator();
-          } else {
-            // Not a list - treat as single element
-            final List<Object> singleElementList = new ArrayList<>();
-            singleElementList.add(listValue);
-            currentListIterator = singleElementList.iterator();
-          }
 
-          // If the list is empty, continue to next input row
-          if (!currentListIterator.hasNext()) {
-            currentListIterator = null;
+            if (listValue instanceof Collection) {
+              currentListIterator = ((Collection<?>) listValue).iterator();
+            } else if (listValue instanceof Iterable) {
+              currentListIterator = ((Iterable<?>) listValue).iterator();
+            } else if (listValue.getClass().isArray()) {
+              // Convert array to list
+              final List<Object> list = new ArrayList<>();
+              if (listValue instanceof Object[]) {
+                for (final Object obj : (Object[]) listValue) {
+                  list.add(obj);
+                }
+              } else if (listValue instanceof int[]) {
+                for (final int i : (int[]) listValue) {
+                  list.add(i);
+                }
+              } else if (listValue instanceof long[]) {
+                for (final long i : (long[]) listValue) {
+                  list.add(i);
+                }
+              } else if (listValue instanceof double[]) {
+                for (final double i : (double[]) listValue) {
+                  list.add(i);
+                }
+              } else if (listValue instanceof boolean[]) {
+                for (final boolean i : (boolean[]) listValue) {
+                  list.add(i);
+                }
+              }
+              currentListIterator = list.iterator();
+            } else {
+              // Not a list - treat as single element
+              final List<Object> singleElementList = new ArrayList<>();
+              singleElementList.add(listValue);
+              currentListIterator = singleElementList.iterator();
+            }
+
+            // If the list is empty, continue to next input row
+            if (!currentListIterator.hasNext()) {
+              currentListIterator = null;
+            }
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
           }
         }
       }

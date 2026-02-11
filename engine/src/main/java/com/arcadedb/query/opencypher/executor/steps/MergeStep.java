@@ -116,8 +116,14 @@ public class MergeStep extends AbstractExecutionStep {
 
           while (buffer.size() < n && prevResults.hasNext()) {
             final Result inputResult = prevResults.next();
-            final List<Result> mergedResults = executeMerge(inputResult);
-            buffer.addAll(mergedResults);
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              final List<Result> mergedResults = executeMerge(inputResult);
+              buffer.addAll(mergedResults);
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
           }
 
           if (!prevResults.hasNext()) {
@@ -126,9 +132,15 @@ public class MergeStep extends AbstractExecutionStep {
         } else {
           // Standalone MERGE: merge once
           if (!mergedStandalone) {
-            final List<Result> mergedResults = executeMerge(null);
-            buffer.addAll(mergedResults);
-            mergedStandalone = true;
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              final List<Result> mergedResults = executeMerge(null);
+              buffer.addAll(mergedResults);
+              mergedStandalone = true;
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
           }
           finished = true;
         }

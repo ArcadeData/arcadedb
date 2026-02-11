@@ -109,30 +109,35 @@ public class CallStep extends AbstractExecutionStep {
 
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+      try {
+        // Execute the call with this row's context
+        final Object callResult = executeCall(context, inputRow);
 
-      // Execute the call with this row's context
-      final Object callResult = executeCall(context, inputRow);
+        // Convert and add results, merging with input row properties
+        if (callResult == null) {
+          // OPTIONAL CALL returned null - pass through input row
+          if (callClause.isOptional()) {
+            results.add(mergeWithInputRow(inputRow, null));
+          }
+          continue;
+        }
 
-      // Convert and add results, merging with input row properties
-      if (callResult == null) {
-        // OPTIONAL CALL returned null - pass through input row
-        if (callClause.isOptional()) {
-          results.add(mergeWithInputRow(inputRow, null));
+        if (callResult instanceof Collection) {
+          for (final Object item : (Collection<?>) callResult) {
+            results.add(mergeWithInputRow(inputRow, convertItemToResult(item)));
+          }
+        } else if (callResult instanceof Iterator) {
+          final Iterator<?> iter = (Iterator<?>) callResult;
+          while (iter.hasNext()) {
+            results.add(mergeWithInputRow(inputRow, convertItemToResult(iter.next())));
+          }
+        } else {
+          results.add(mergeWithInputRow(inputRow, convertItemToResult(callResult)));
         }
-        continue;
-      }
-
-      if (callResult instanceof Collection) {
-        for (final Object item : (Collection<?>) callResult) {
-          results.add(mergeWithInputRow(inputRow, convertItemToResult(item)));
-        }
-      } else if (callResult instanceof Iterator) {
-        final Iterator<?> iter = (Iterator<?>) callResult;
-        while (iter.hasNext()) {
-          results.add(mergeWithInputRow(inputRow, convertItemToResult(iter.next())));
-        }
-      } else {
-        results.add(mergeWithInputRow(inputRow, convertItemToResult(callResult)));
+      } finally {
+        if (context.isProfiling())
+          cost += (System.nanoTime() - begin);
       }
     }
 
