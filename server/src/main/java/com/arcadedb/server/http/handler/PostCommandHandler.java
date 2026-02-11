@@ -119,8 +119,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
         // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
         // so serializeResultSet produces an empty result structure
         final String explainText = qResult.getExecutionPlan().get().prettyPrint(0, 2);
-        while (qResult.hasNext())
+        while (qResult.hasNext()) {
           qResult.next();
+        }
         serializeResultSet(database, serializer, limit, response, qResult);
         response.put("explain", explainText);
       } else {
