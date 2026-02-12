@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.schema.Type;
+import org.locationtech.spatial4j.shape.Point;
 
 /**
  * Haversine formula to compute the distance between 2 gro points.
@@ -110,18 +111,11 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
     if (param == null)
       throw new IllegalArgumentException("Point parameter cannot be null");
 
-    // Check if it's a Spatial4j Point object
-    try {
-      final Class<?> pointClass = Class.forName("org.locationtech.spatial4j.shape.Point");
-      if (pointClass.isInstance(param)) {
-        final java.lang.reflect.Method getXMethod = pointClass.getMethod("getX");
-        final java.lang.reflect.Method getYMethod = pointClass.getMethod("getY");
-        values[offset] = (Double) getXMethod.invoke(param);
-        values[offset + 1] = (Double) getYMethod.invoke(param);
-        return;
-      }
-    } catch (Exception e) {
-      // Spatial4j not available or not a Point, continue to string parsing
+    // Check if it's a Spatial4j Point object (direct instanceof - no reflection!)
+    if (param instanceof Point point) {
+      values[offset] = point.getX();
+      values[offset + 1] = point.getY();
+      return;
     }
 
     // Try to parse as WKT string: "POINT (x y)" or "Pt(x=...,y=...)"
