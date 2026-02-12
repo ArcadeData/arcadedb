@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import org.locationtech.spatial4j.shape.Shape;
 
 import java.lang.reflect.*;
 import java.math.*;
@@ -220,16 +221,9 @@ public class BinaryTypes {
 
   /**
    * Checks if the value is a geospatial Shape from spatial4j library.
-   * This uses reflection to avoid hard dependency on spatial4j.
+   * Direct instanceof check (no reflection) - spatial4j is Apache 2.0 licensed.
    */
   public static boolean isGeoSpatialShape(final Object value) {
-    if (value == null)
-      return false;
-    try {
-      final Class<?> shapeClass = Class.forName("org.locationtech.spatial4j.shape.Shape");
-      return shapeClass.isInstance(value);
-    } catch (ClassNotFoundException e) {
-      return false;
-    }
+    return value instanceof Shape;
   }
 }

@@ -49,6 +49,11 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
+import org.locationtech.spatial4j.context.SpatialContext;
+import org.locationtech.spatial4j.io.ShapeWriter;
+import org.locationtech.spatial4j.io.SupportedFormats;
+import org.locationtech.spatial4j.shape.Shape;
+
 import java.lang.reflect.*;
 import java.math.*;
 import java.time.*;
@@ -69,15 +74,8 @@ public class BinarySerializer {
   private       Class<?>         dateTimeImplementation;
   private       DataEncryption   dataEncryption;
 
-  // Cached reflection objects for fast Point serialization (avoid 12 reflection calls per Point)
-  private static volatile Class<?> cachedShapeClass;
-  private static volatile Method cachedGetContextMethod;
-  private static volatile Class<?> cachedSpatialContextClass;
-  private static volatile Method cachedGetFormatsMethod;
-  private static volatile Class<?> cachedFormatsClass;
-  private static volatile Method cachedGetWktWriterMethod;
-  private static volatile Class<?> cachedShapeWriterClass;
-  private static volatile Method cachedToStringMethod;
+  // Cached WKT writer for fast Point serialization (avoid recreating writer for each Point)
+  private static volatile ShapeWriter cachedWktWriter;
 
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
@@ -883,32 +881,27 @@ public class BinarySerializer {
 
   /**
    * Converts a spatial4j Shape object to WKT (Well-Known Text) format.
-   * This method uses cached reflection to avoid hard dependency on spatial4j and for performance.
-   * Optimized to cache reflection objects and avoid 12 reflection calls per Point (3.45M calls for 287K points).
+   * Optimized with cached WKT writer to avoid creating a new writer for each Point.
+   * This eliminates all reflection overhead from the previous implementation.
    */
   private String convertShapeToWKT(final Object shape) {
     try {
-      // Initialize cached reflection objects on first use (thread-safe via volatile)
-      if (cachedShapeClass == null) {
+      // Cast to Shape interface (direct - no reflection!)
+      final Shape spatialShape = (Shape) shape;
+
+      // Initialize cached WKT writer on first use (thread-safe via volatile)
+      if (cachedWktWriter == null) {
         synchronized (BinarySerializer.class) {
-          if (cachedShapeClass == null) {
-            cachedShapeClass = Class.forName("org.locationtech.spatial4j.shape.Shape");
-            cachedGetContextMethod = cachedShapeClass.getMethod("getContext");
-            cachedSpatialContextClass = Class.forName("org.locationtech.spatial4j.context.SpatialContext");
-            cachedGetFormatsMethod = cachedSpatialContextClass.getMethod("getFormats");
-            cachedFormatsClass = Class.forName("org.locationtech.spatial4j.io.SupportedFormats");
-            cachedGetWktWriterMethod = cachedFormatsClass.getMethod("getWktWriter");
-            cachedShapeWriterClass = Class.forName("org.locationtech.spatial4j.io.ShapeWriter");
-            cachedToStringMethod = cachedShapeWriterClass.getMethod("toString", cachedShapeClass);
+          if (cachedWktWriter == null) {
+            final SpatialContext spatialContext = spatialShape.getContext();
+            final SupportedFormats formats = spatialContext.getFormats();
+            cachedWktWriter = formats.getWktWriter();
           }
         }
       }
 
-      // Use cached reflection objects (fast path - no reflection lookups)
-      final Object spatialContext = cachedGetContextMethod.invoke(shape);
-      final Object formats = cachedGetFormatsMethod.invoke(spatialContext);
-      final Object wktWriter = cachedGetWktWriterMethod.invoke(formats);
-      return (String) cachedToStringMethod.invoke(wktWriter, shape);
+      // Convert shape to WKT using cached writer (fast - no reflection, no object creation!)
+      return cachedWktWriter.toString(spatialShape);
 
     } catch (Exception e) {
       // Fallback to toString() if WKT conversion fails
