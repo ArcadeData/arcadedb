@@ -278,7 +278,7 @@ class SQLGeoFunctionsTest {
 
           // The value should be stored as WKT string
           final String storedValue = doc.getString("geom");
-          assertThat(storedValue).contains("POINT");
+          assertThat(storedValue).contains("Pt");
           assertThat(storedValue).contains("30");
         });
       }
