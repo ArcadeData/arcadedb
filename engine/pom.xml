@@ -46,7 +46,6 @@
         <antlr4.version>4.9.1</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
         <cucumber.version>7.34.2</cucumber.version>
-        <junit-platform-suite.version>6.0.2</junit-platform-suite.version>
         <jmh.version>1.37</jmh.version>
     </properties>
 
@@ -123,6 +122,17 @@
         </plugins>
     </build>
 
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.cucumber</groupId>
+                <artifactId>cucumber-bom</artifactId>
+                <version>${cucumber.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
     <dependencies>
         <dependency>
             <groupId>com.conversantmedia</groupId>
@@ -218,27 +228,20 @@
         <dependency>
             <groupId>io.cucumber</groupId>
             <artifactId>cucumber-java</artifactId>
-            <version>${cucumber.version}</version>
             <scope>test</scope>
         </dependency>
+
         <dependency>
             <groupId>io.cucumber</groupId>
             <artifactId>cucumber-junit-platform-engine</artifactId>
-            <version>${cucumber.version}</version>
             <scope>test</scope>
-
-            <exclusions>
-                <exclusion>
-                    <groupId>org.junit.platform</groupId>
-                    <artifactId>junit-platform-engine</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
+
         <dependency>
             <groupId>org.junit.platform</groupId>
             <artifactId>junit-platform-suite</artifactId>
-            <version>${junit-platform-suite.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
+
 </project>
