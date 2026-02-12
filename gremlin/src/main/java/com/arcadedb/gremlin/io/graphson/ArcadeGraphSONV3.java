@@ -21,6 +21,7 @@ package com.arcadedb.gremlin.io.graphson;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
+import com.arcadedb.utility.CollectionUtils;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.io.graphson.AbstractObjectDeserializer;
@@ -35,11 +36,7 @@ import java.util.*;
  */
 public class ArcadeGraphSONV3 extends ArcadeGraphSON {
 
-  protected static final Map<Class, String> TYPES = Collections.unmodifiableMap(new LinkedHashMap<>() {
-    {
-      put(RID.class, "RID");
-    }
-  });
+  protected static final Map<Class, String> TYPES = CollectionUtils.singletonMap(RID.class, "RID");
 
   private final Database database;
 

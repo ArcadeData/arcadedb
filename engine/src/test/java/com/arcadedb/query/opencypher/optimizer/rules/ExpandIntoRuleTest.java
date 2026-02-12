@@ -22,6 +22,7 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalRelationship;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -54,9 +55,9 @@ class ExpandIntoRuleTest {
   void isApplicableWithBoundedRelationship() {
     // Create plan with two bounded nodes and relationship between them
     final LogicalNode nodeA = new LogicalNode("a", Arrays.asList("Person"),
-        Collections.singletonMap("id", 1));
+        CollectionUtils.singletonMap("id", 1));
     final LogicalNode nodeB = new LogicalNode("b", Arrays.asList("Person"),
-        Collections.singletonMap("id", 2));
+        CollectionUtils.singletonMap("id", 2));
 
     final Map<String, LogicalNode> nodes = new HashMap<>();
     nodes.put("a", nodeA);
@@ -75,7 +76,7 @@ class ExpandIntoRuleTest {
   void determineBoundVariablesWithAnchor() {
     // Create plan with one node having properties (bound) and one without (unbound)
     final LogicalNode boundNode = new LogicalNode("a", Arrays.asList("Person"),
-        Collections.singletonMap("id", 1));
+        CollectionUtils.singletonMap("id", 1));
     final LogicalNode unboundNode = new LogicalNode("b", Arrays.asList("Person"),
         Collections.emptyMap());
 
@@ -98,9 +99,9 @@ class ExpandIntoRuleTest {
   void determineBoundVariablesWithMultipleBoundNodes() {
     // Create plan with multiple nodes having properties
     final LogicalNode nodeA = new LogicalNode("a", Arrays.asList("Person"),
-        Collections.singletonMap("id", 1));
+        CollectionUtils.singletonMap("id", 1));
     final LogicalNode nodeB = new LogicalNode("b", Arrays.asList("Person"),
-        Collections.singletonMap("id", 2));
+        CollectionUtils.singletonMap("id", 2));
     final LogicalNode nodeC = new LogicalNode("c", Arrays.asList("Company"),
         Collections.emptyMap());
 
@@ -204,7 +205,7 @@ class ExpandIntoRuleTest {
   void determineBoundVariablesWithNullProperties() {
     // Create node with null properties
     final LogicalNode node = new LogicalNode("a", Arrays.asList("Person"), null);
-    final LogicalPlan plan = LogicalPlan.forTesting(Collections.singletonMap("a", node));
+    final LogicalPlan plan = LogicalPlan.forTesting(CollectionUtils.singletonMap("a", node));
 
     // When: Determine bound variables
     final Set<String> boundVars = rule.determineBoundVariables(plan, "a");

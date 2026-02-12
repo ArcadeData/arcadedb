@@ -98,4 +98,28 @@ public class SingletonMap<K, V> extends AbstractMap<K, V> {
     }
     return entrySet;
   }
+
+  @Override
+  public int hashCode() {
+    return key.hashCode() ^ value.hashCode();
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+    if (this == o)
+      return true;
+    if (!(o instanceof Map))
+      return false;
+    final Map<?, ?> other = (Map<?, ?>) o;
+    if (other.size() != 1)
+      return false;
+    final Map.Entry<?, ?> entry = other.entrySet().iterator().next();
+    return (key == null ? entry.getKey() == null : key.equals(entry.getKey())) &&
+        (value == null ? entry.getValue() == null : value.equals(entry.getValue()));
+  }
+
+  @Override
+  public String toString() {
+    return "{" + key + "=" + value + "}";
+  }
 }

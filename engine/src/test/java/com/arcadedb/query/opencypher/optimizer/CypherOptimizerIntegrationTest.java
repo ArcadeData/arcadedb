@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.optimizer.rules.*;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -114,8 +115,8 @@ class CypherOptimizerIntegrationTest {
   void anchorSelectorWithIndexedProperty() {
     // Given: Plan with indexed property
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.singletonMap("id", 123));
-    final LogicalPlan plan = LogicalPlan.forTesting(Collections.singletonMap("p", node));
+        CollectionUtils.singletonMap("id", 123));
+    final LogicalPlan plan = LogicalPlan.forTesting(CollectionUtils.singletonMap("p", node));
 
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
     stats.collectStatistics(Collections.singletonList("Person"));
@@ -136,8 +137,8 @@ class CypherOptimizerIntegrationTest {
   void anchorSelectorWithoutIndex() {
     // Given: Plan without index
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.singletonMap("name", "Alice"));
-    final LogicalPlan plan = LogicalPlan.forTesting(Collections.singletonMap("p", node));
+        CollectionUtils.singletonMap("name", "Alice"));
+    final LogicalPlan plan = LogicalPlan.forTesting(CollectionUtils.singletonMap("p", node));
 
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
     stats.collectStatistics(Collections.singletonList("Person"));

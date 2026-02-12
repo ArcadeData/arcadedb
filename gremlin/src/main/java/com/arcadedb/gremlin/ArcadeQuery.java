@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -43,7 +44,7 @@ public abstract class ArcadeQuery {
   public abstract ResultSet execute();
 
   public Map<String, Object> getParameters() {
-    return Collections.unmodifiableMap(parameters);
+    return CollectionUtils.immutableMap(parameters);
   }
 
   public ArcadeQuery setParameters(final Map<String, Object> parameters) {
