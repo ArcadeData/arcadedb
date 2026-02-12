@@ -403,7 +403,7 @@ public class ConsoleAsyncInsertTest {
       long begin) {
     assertThat(database.async().waitCompletion(30_000)).isTrue();
 
-    System.out.println("Total async insertion of " + N + " elements in " + (System.currentTimeMillis() - begin));
+//    System.out.println("Total async insertion of " + N + " elements in " + (System.currentTimeMillis() - begin));
 
     assertThat(N).isEqualTo(okCount.get());
     assertThat(errCount.get()).isEqualTo(0);
@@ -492,7 +492,7 @@ public class ConsoleAsyncInsertTest {
       indexCursor = database.lookupByKey("Order", new String[] { "processor", "vstart", "vstop" },
           new Object[] { order.getProcessor(), order.getStart(), order.getStop() });
       if (indexCursor.hasNext()) {
-        System.out.println("found existing record");
+//        System.out.println("found existing record");
         record = indexCursor.next().getRecord().asDocument(true).modify();
         record.set("processor", order.getProcessor());
         record.set("trigger", order.getTriggerRid());

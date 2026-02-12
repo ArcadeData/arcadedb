@@ -104,13 +104,13 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
               List<Map<String, Object>> queryInputParams = createQueryInputParams(batchSize, threadId, iteration, nOfProperties);
               Map<String, Object> params = Map.of("rows", queryInputParams);
 
-              if (attempt > 0) {
-                System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
-                    ") Iteration " + iteration + " RETRY #" + attempt + " importing " + batchSize + " entries");
-              } else {
-                System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
-                    ") Iteration " + iteration + " importing " + batchSize + " entries");
-              }
+//              if (attempt > 0) {
+//                System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
+//                    ") Iteration " + iteration + " RETRY #" + attempt + " importing " + batchSize + " entries");
+//              } else {
+//                System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
+//                    ") Iteration " + iteration + " importing " + batchSize + " entries");
+//              }
 
               int nOfResults = client.submit(query, params).all().join().size();
               totalInserted.addAndGet(nOfResults);
@@ -126,7 +126,7 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
               if (errorMsg != null && (errorMsg.contains("Concurrent modification") ||
                   errorMsg.contains("ConcurrentModificationException"))) {
                 attempt++;
-                System.out.println(Thread.currentThread().getName() + " iteration " + iteration +
+                System.err.println(Thread.currentThread().getName() + " iteration " + iteration +
                     " - Concurrent modification detected, retry " + attempt + "/" + maxRetries);
 
                 // Brief pause before retry
@@ -186,7 +186,7 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
 
       // Run multiple iterations with high concurrency
       for (int iteration = 0; iteration < iterations; iteration++) {
-        System.out.println("\n=== Starting iteration " + iteration + " with " + nOfThreads + " threads ===");
+//        System.out.println("\n=== Starting iteration " + iteration + " with " + nOfThreads + " threads ===");
 
         ExecutorService executorService = Executors.newFixedThreadPool(nOfThreads);
         ExecutorCompletionService<String> completionService = new ExecutorCompletionService<>(executorService);
@@ -200,7 +200,7 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
           try {
             Future<String> future = completionService.take();
             String result = future.get();
-            System.out.println("Results from " + result);
+//            System.out.println("Results from " + result);
             receivedResults++;
           } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -231,8 +231,8 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
             .next().getProperty("count");
 
         long expectedCount = (long) nOfThreads * batchSize * iterations;
-        System.out.println("\nTotal vertices created: " + count + ", expected: " + expectedCount);
-        System.out.println("Total inserted reported by threads: " + totalInserted.get());
+//        System.out.println("\nTotal vertices created: " + count + ", expected: " + expectedCount);
+//        System.out.println("Total inserted reported by threads: " + totalInserted.get());
 
         assertThat(count.longValue()).isEqualTo(expectedCount);
         assertThat(totalInserted.get()).isEqualTo(expectedCount);

@@ -58,7 +58,7 @@ public class RedisWTest extends BaseGraphServerTest {
     long beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       jedis.set("foo" + i, String.valueOf(i));
-    System.out.println("SET " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("SET " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // EXISTS
     assertThat(jedis.exists("fooNotFound")).isFalse();
@@ -66,7 +66,7 @@ public class RedisWTest extends BaseGraphServerTest {
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.exists("foo" + i)).isTrue();
-    System.out.println("EXISTS " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("EXISTS " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     assertThat(jedis.exists("fooNotFound", "eitherThis")).isEqualTo(0);
 
@@ -78,50 +78,50 @@ public class RedisWTest extends BaseGraphServerTest {
       final Long result = jedis.exists(keyChunk);
       assertThat(result).isEqualTo(10);
     }
-    System.out.println(
+    // System.out.println(
         "MULTI EXISTS (chunk of 10 keys) " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // GET
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.get("foo" + i)).isEqualTo(String.valueOf(i));
-    System.out.println("GET " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("GET " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // INCR
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.incr("foo" + i)).isEqualTo(i + 1L);
-    System.out.println("INCR " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("INCR " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // DECR
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.decr("foo" + i)).isEqualTo(i);
-    System.out.println("DECR " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("DECR " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // INCRBY
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.incrBy("foo" + i, 3)).isEqualTo(i + 3L);
-    System.out.println("INCRBY " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("INCRBY " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // DECRBY
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.decrBy("foo" + i, 3)).isEqualTo(i);
-    System.out.println("DECRBY " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("DECRBY " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // INCRBYFLOAT
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.incrByFloat("foo" + i, 3.3)).isEqualTo(i + 3.3D);
-    System.out.println("INCRBYFLOAT " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("INCRBYFLOAT " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // GETDEL
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.getDel("foo" + i)).isEqualTo(String.valueOf(i + 3.3D));
-    System.out.println("GETDEL " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("GETDEL " + TOTAL_RAM + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     for (int i = 0; i < TOTAL_RAM; ++i)
       assertThat(jedis.get("foo" + i)).isNull();
@@ -143,7 +143,7 @@ public class RedisWTest extends BaseGraphServerTest {
     long beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_PERSISTENT; ++i)
       jedis.hset(getDatabaseName(), "Account", "{'id':" + i + ",'email':'jay.miner" + i + "@commodore.com','firstName':'Jay','lastName':'Miner'}");
-    System.out.println("HSET " + TOTAL_PERSISTENT + " items to the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("HSET " + TOTAL_PERSISTENT + " items to the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HEXISTS
     beginTime = System.currentTimeMillis();
@@ -152,7 +152,7 @@ public class RedisWTest extends BaseGraphServerTest {
       assertThat(jedis.hexists(getDatabaseName() + ".Account[id]", String.valueOf(i))).isTrue();
       assertThat(jedis.hexists(getDatabaseName() + ".Account[email]", "jay.miner" + i + "@commodore.com")).isTrue();
     }
-    System.out.println("HEXISTS " + TOTAL_PERSISTENT + " items to the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // // System.out.println("HEXISTS " + TOTAL_PERSISTENT + " items to the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HGET
     beginTime = System.currentTimeMillis();
@@ -211,7 +211,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
     }
-    System.out.println("HGET " + TOTAL_PERSISTENT + " items by 2 keys + rid from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("HGET " + TOTAL_PERSISTENT + " items by 2 keys + rid from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     assertThat(rids.size()).isEqualTo(TOTAL_PERSISTENT);
 
@@ -232,7 +232,7 @@ public class RedisWTest extends BaseGraphServerTest {
       }
     }
 
-    System.out.println(
+    // System.out.println(
         "HMGET " + TOTAL_PERSISTENT + " items by chunks of 10 rids from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HDEL
@@ -241,7 +241,7 @@ public class RedisWTest extends BaseGraphServerTest {
       // DELETE BY ID (LONG)
       assertThat(jedis.hdel(getDatabaseName() + ".Account[id]", String.valueOf(i), String.valueOf(i + 1))).isEqualTo(2);
     }
-    System.out.println("HDEL " + TOTAL_PERSISTENT + " items from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("HDEL " + TOTAL_PERSISTENT + " items from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
   }
 
   @Test
@@ -254,14 +254,14 @@ public class RedisWTest extends BaseGraphServerTest {
       jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(),
           "{\"id\":\"user" + i + "\",\"email\":\"jay.miner" + i + "@commodore.com\",\"firstName\":\"Jay\",\"lastName\":\"Miner\"}");
     }
-    System.out.println("HSET transient " + TOTAL_PERSISTENT + " items to globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("HSET transient " + TOTAL_PERSISTENT + " items to globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HEXISTS transient
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_PERSISTENT; ++i) {
       assertThat(jedis.hexists(getDatabaseName(), "user" + i)).isTrue();
     }
-    System.out.println("HEXISTS transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("HEXISTS transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HGET transient
     beginTime = System.currentTimeMillis();
@@ -276,7 +276,7 @@ public class RedisWTest extends BaseGraphServerTest {
       final JSONObject doc = new JSONObject(jsonStr);
       assertThat(doc.toMap()).isEqualTo(expectedJson.toMap());
     }
-    System.out.println("HGET transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("HGET transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HMGET transient (chunks of 10)
     beginTime = System.currentTimeMillis();
@@ -293,14 +293,14 @@ public class RedisWTest extends BaseGraphServerTest {
         assertThat(doc.getString("firstName")).isEqualTo("Jay");
       }
     }
-    System.out.println("HMGET transient " + TOTAL_PERSISTENT + " items by chunks of 10 from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("HMGET transient " + TOTAL_PERSISTENT + " items by chunks of 10 from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HDEL transient
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_PERSISTENT; i += 2) {
       assertThat(jedis.hdel(getDatabaseName(), "user" + i, "user" + (i + 1))).isEqualTo(2);
     }
-    System.out.println("HDEL transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    // System.out.println("HDEL transient " + TOTAL_PERSISTENT + " items from globalVariables. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // Verify all deleted
     for (int i = 0; i < TOTAL_PERSISTENT; ++i) {

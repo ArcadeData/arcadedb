@@ -224,10 +224,10 @@ class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     });
 
     LocalDateTime end = LocalDateTime.now();
-    System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
+    // System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
 
     ResultSet resultSet = database.query("sql", "SELECT count() as count FROM `TEXT_EMBEDDING`");
-    System.out.println("Count: " + resultSet.stream().findFirst().get().getProperty("count"));
+    // System.out.println("Count: " + resultSet.stream().findFirst().get().getProperty("count"));
 
   }
 
@@ -260,10 +260,10 @@ class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
     });
     LocalDateTime end = LocalDateTime.now();
-    System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
+    // System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
 
     ResultSet resultSet = database.query("sql", "SELECT count() as count FROM `TEXT_EMBEDDING`");
-    System.out.println("Count: " + resultSet.stream().findFirst().get().getProperty("count"));
+    // System.out.println("Count: " + resultSet.stream().findFirst().get().getProperty("count"));
   }
 
   @Test
@@ -288,10 +288,10 @@ class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
     });
     LocalDateTime end = LocalDateTime.now();
-    System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
+    // System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
 
     ResultSet resultSet = database.query("sql", "SELECT count() as count FROM `TEXT_EMBEDDING`");
-    System.out.println("Count: " + resultSet.stream().findFirst().get().getProperty("count"));
+    // System.out.println("Count: " + resultSet.stream().findFirst().get().getProperty("count"));
 
   }
 

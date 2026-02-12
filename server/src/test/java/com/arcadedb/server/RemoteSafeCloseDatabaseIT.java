@@ -73,7 +73,6 @@ class RemoteSafeCloseDatabaseIT {
     ContextConfiguration configuration = new ContextConfiguration();
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    System.out.println();
     arcadeDBServer.stop();
   }
 

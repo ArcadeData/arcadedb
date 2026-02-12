@@ -149,7 +149,7 @@ public class TestLinkedPropertiesSchemaReloadIT {
       server = new ArcadeDBServer(config);
       server.start();
     } catch (Exception e) {
-      System.out.println("Error at start server/create db " + e.getMessage());
+      // System.out.println("Error at start server/create db " + e.getMessage());
       //e.printStackTrace();
     }
     try {
@@ -161,7 +161,7 @@ public class TestLinkedPropertiesSchemaReloadIT {
       if (AUTO_TRANS)
         sdb.setAutoTransaction(true);
     } catch (Exception e) {
-      System.out.println("Error at getDatabase " + e.getMessage());
+      // System.out.println("Error at getDatabase " + e.getMessage());
       //e.printStackTrace();
     }
 
@@ -171,21 +171,21 @@ public class TestLinkedPropertiesSchemaReloadIT {
         DocumentType dt2 = sdb.getSchema().getType("identity");
         DocumentType dt3 = sdb.getSchema().getType("userProfile");
       } catch (Exception e) {
-        System.out.println("\nCould not find menuItem or identity: " + e.getMessage());
-        System.out.println("\n\nRunning update script");
+        // System.out.println("\nCould not find menuItem or identity: " + e.getMessage());
+        // System.out.println("\n\nRunning update script");
         try {
           if (!AUTO_TRANS)
             sdb.begin();
-          System.out.println(
+          // System.out.println(
               "Transactions=" + DatabaseContext.INSTANCE.getContextIfExists(sdb.getDatabasePath()).transactions.size());
           sdb.command("sqlscript", schemaScript);
           if (!AUTO_TRANS)
             sdb.commit();
-          System.out.println("Update script complete");
-          System.out.println(
+          // System.out.println("Update script complete");
+          // System.out.println(
               "Transactions=" + DatabaseContext.INSTANCE.getContextIfExists(sdb.getDatabasePath()).transactions.size());
         } catch (Exception e2) {
-          System.out.println("\n\nException running update script: " + e.getMessage());
+          // System.out.println("\n\nException running update script: " + e.getMessage());
         }
       }
       //sdb.close();  // unsupported operation

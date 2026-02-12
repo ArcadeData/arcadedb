@@ -28,7 +28,7 @@ class TestIssue2453 extends TestHelper {
         result.next();
         count++;
       }
-      System.out.println("Records found with IS NULL: " + count);
+      // System.out.println("Records found with IS NULL: " + count);
       assertThat(count).isEqualTo(3);
     });
   }

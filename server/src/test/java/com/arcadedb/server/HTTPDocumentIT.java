@@ -63,7 +63,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
         connection.connect();
         final String response = readResponse(connection);
 
-        System.out.println("response = " + response);
+        // System.out.println("response = " + response);
         LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         assertThat(connection.getResponseCode()).isEqualTo(200);
         assertThat(connection.getResponseMessage()).isEqualTo("OK");

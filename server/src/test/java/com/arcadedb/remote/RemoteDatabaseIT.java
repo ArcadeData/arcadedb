@@ -399,7 +399,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
       database.command("sql", statement, params);
 
-      System.out.println("Done ... ");
+      // System.out.println("Done ... ");
     });
   }
 
@@ -560,7 +560,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
           mvSVt1.save();
 
           RID rid = mvSVt1.getIdentity();
-          System.out.println("RID: " + rid);
+          // System.out.println("RID: " + rid);
           t1.commit();
 //        t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
           Vertex vSVt1 = t1.lookupByRID(rid).asVertex();
@@ -570,16 +570,16 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
           t1.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
           mvSVt1 = vSVt1.modify();
-          System.out.println("mvSVt1: " + vSVt1);
+          // System.out.println("mvSVt1: " + vSVt1);
           mvSVt1.set("s", "concurrent t1");
           mvSVt1.save();
           t1.commit();
 
           vSVt1 = t1.lookupByRID(rid).asVertex();
-          System.out.println("vt1: " + vSVt1.propertiesAsMap());
+          // System.out.println("vt1: " + vSVt1.propertiesAsMap());
 
-          System.out.println("s from t1: " + vSVt1.getString("s"));
-          System.out.println("s from t2: " + vSVt2.getString("s"));
+          // System.out.println("s from t1: " + vSVt1.getString("s"));
+          // System.out.println("s from t2: " + vSVt2.getString("s"));
 
           MutableVertex mvSVt2 = vSVt2.modify();
           mvSVt2.set("s", "concurrent t2");

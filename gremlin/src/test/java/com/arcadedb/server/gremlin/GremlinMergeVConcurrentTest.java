@@ -96,8 +96,8 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
             List<Map<String, Object>> queryInputParams = createQueryInputParams(batchSize, threadId, nOfProperties);
             Map<String, Object> params = Map.of("rows", queryInputParams);
 
-            System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
-                ") Importing " + batchSize + " entries");
+//            System.out.println(Thread.currentThread().getName() + " (id=" + Thread.currentThread().threadId() +
+//                ") Importing " + batchSize + " entries");
 
             int nOfResults = client.submit(query, params).all().join().size();
 
@@ -150,7 +150,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
         try {
           Future<String> future = completionService.take();
           String result = future.get();
-          System.out.println("Results from " + result);
+//          System.out.println("Results from " + result);
           receivedResults++;
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
@@ -180,7 +180,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
         Number count = (Number) database.query("sql", "SELECT count(*) as count FROM Imported")
             .next().getProperty("count");
 
-        System.out.println("Total vertices created: " + count);
+//        System.out.println("Total vertices created: " + count);
         assertThat(count.longValue()).isEqualTo(nOfThreads * batchSize);
       }
 

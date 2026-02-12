@@ -42,7 +42,7 @@ class GloVeReopenVerificationTest {
 
     // Skip test if database doesn't exist
     if (!factory.exists()) {
-      System.out.println("Skipping test - glovedb database does not exist");
+      System.err.println("Skipping test - glovedb database does not exist");
       return;
     }
 
@@ -59,7 +59,7 @@ class GloVeReopenVerificationTest {
 
       // Verify index has entries
       long entries = idx.countEntries();
-      System.out.println("Index has " + entries + " entries");
+//      System.out.println("Index has " + entries + " entries");
       assertThat(entries > 0).as("Index should have entries (vectors not zero!)").isTrue();
 
       // Verify vector search works
@@ -75,12 +75,12 @@ class GloVeReopenVerificationTest {
         assertThat(vector).as("Vector should not be null").isNotNull();
         assertThat(vector.length > 0).as("Vector should have dimensions").isTrue();
 
-        System.out.println("Testing search with vector from word: " + name + " (dimensions: " + vector.length + ")");
+//        System.out.println("Testing search with vector from word: " + name + " (dimensions: " + vector.length + ")");
 
         // Perform vector search
         List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(vector, 5);
 
-        System.out.println("Found " + results.size() + " neighbors");
+//        System.out.println("Found " + results.size() + " neighbors");
         assertThat(results.isEmpty()).as("Vector search should return results").isFalse();
 
         // Verify first result is the same word (distance should be ~0)
@@ -89,13 +89,13 @@ class GloVeReopenVerificationTest {
         String firstName = firstWord.getString("name");
         float firstDistance = firstResult.getSecond();
 
-        System.out.println("Top result: " + firstName + " (distance: " + firstDistance + ")");
+//        System.out.println("Top result: " + firstName + " (distance: " + firstDistance + ")");
         assertThat(firstName).as("First result should be the query word itself").isEqualTo(name);
         assertThat(firstDistance < 0.01f).as("Distance to self should be near zero").isTrue();
 
         db.rollback();
 
-        System.out.println("✓ SUCCESS: Vector index works correctly after database restart!");
+//        System.out.println("✓ SUCCESS: Vector index works correctly after database restart!");
       }
 
     } finally {

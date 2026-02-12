@@ -75,8 +75,8 @@ class RemoteBulk {
             }
             , true, 10);
 
-        if (userIndex % 1000 == 0)
-          System.out.println("userId = " + userId);
+//        if (userIndex % 1000 == 0)
+//          System.out.println("userId = " + userId);
       } catch (Exception e) {
         System.out.printf("Error creating user %s: %s", userId, e.getMessage());
         e.printStackTrace();

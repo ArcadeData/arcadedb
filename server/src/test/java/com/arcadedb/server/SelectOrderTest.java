@@ -203,7 +203,6 @@ class SelectOrderTest {
           LocalDateTime start;
           LocalDateTime stop;
           DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
-          System.out.println();
           Result result;
           String sqlString = "INSERT INTO Product SET name = ?, type = ?, start = ?, stop = ?";
 
