@@ -69,7 +69,7 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
  */
 public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    String                    BUCKET_EXT                       = "bucket";
-  public static final    int                       CURRENT_VERSION                  = 0;
+  public static final    int                       CURRENT_VERSION                  = 1;
   public static final    long                      RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
   public static final    long                      FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
   public static final    long                      NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
