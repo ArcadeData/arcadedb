@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.utility.CollectionUtils;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
@@ -122,7 +123,7 @@ public class ArcadeGremlin extends ArcadeQuery {
 
             return new ResultInternal(stringMap);
           }
-          return new ResultInternal(Map.of("result", next));
+          return new ResultInternal(CollectionUtils.singletonMap("result", next));
         }
       }) {
         @Override

@@ -45,10 +45,19 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.function.geo.GeoUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+
+import org.locationtech.spatial4j.context.SpatialContext;
+import org.locationtech.spatial4j.io.ShapeWriter;
+import org.locationtech.spatial4j.io.SupportedFormats;
+import org.locationtech.spatial4j.shape.Circle;
+import org.locationtech.spatial4j.shape.Point;
+import org.locationtech.spatial4j.shape.Rectangle;
+import org.locationtech.spatial4j.shape.Shape;
 
 import java.lang.reflect.*;
 import java.math.*;
@@ -69,6 +78,9 @@ public class BinarySerializer {
   private       Class<?>         dateImplementation;
   private       Class<?>         dateTimeImplementation;
   private       DataEncryption   dataEncryption;
+
+  // Cached WKT writer for fast Point serialization (avoid recreating writer for each Point)
+  private static volatile ShapeWriter cachedWktWriter;
 
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
@@ -364,6 +376,9 @@ public class BinarySerializer {
       else if (value instanceof Binary binary)
         content.putBytes(binary.getContent());
       break;
+    case BinaryTypes.TYPE_COMPRESSED_GEOMETRY:
+      serializeGeometryBinary(content, (Shape) value);
+      break;
     case BinaryTypes.TYPE_STRING:
       if (value instanceof byte[] bytes)
         content.putBytes(bytes);
@@ -650,13 +665,30 @@ public class BinarySerializer {
       value = null;
       break;
     case BinaryTypes.TYPE_STRING:
-      value = content.getString();
+      final String str = content.getString();
+      // Backward compatibility: parse WKT geometry strings from old databases
+      Object parsedValue = str;
+      if (str != null && (str.startsWith("POINT") || str.startsWith("CIRCLE") ||
+          str.startsWith("LINESTRING") || str.startsWith("POLYGON") ||
+          str.startsWith("ENVELOPE") || str.startsWith("BUFFER"))) {
+        try {
+          final SpatialContext ctx = GeoUtils.getSpatialContext();
+          parsedValue = ctx.getFormats().getWktReader().read(str);
+        } catch (Exception e) {
+          // If WKT parsing fails, return as string
+          parsedValue = str;
+        }
+      }
+      value = parsedValue;
       break;
     case BinaryTypes.TYPE_COMPRESSED_STRING:
       value = database.getSchema().getDictionary().getNameById((int) content.getUnsignedNumber());
       break;
     case BinaryTypes.TYPE_BINARY:
       value = content.getBytes();
+      break;
+    case BinaryTypes.TYPE_COMPRESSED_GEOMETRY:
+      value = deserializeGeometryBinary(content);
       break;
     case BinaryTypes.TYPE_BYTE:
       value = content.getByte();
@@ -891,33 +923,114 @@ public class BinarySerializer {
 
   /**
    * Converts a spatial4j Shape object to WKT (Well-Known Text) format.
-   * This method uses reflection to avoid hard dependency on spatial4j in this class.
+   * Optimized with cached WKT writer to avoid creating a new writer for each Point.
+   * This eliminates all reflection overhead from the previous implementation.
    */
   private String convertShapeToWKT(final Object shape) {
     try {
-      // Get the spatial context from the shape
-      final Class<?> shapeClass = Class.forName("org.locationtech.spatial4j.shape.Shape");
-      final java.lang.reflect.Method getContextMethod = shapeClass.getMethod("getContext");
-      final Object spatialContext = getContextMethod.invoke(shape);
+      // Cast to Shape interface (direct - no reflection!)
+      final Shape spatialShape = (Shape) shape;
 
-      // Get the WKT writer from the spatial context
-      final Class<?> spatialContextClass = Class.forName("org.locationtech.spatial4j.context.SpatialContext");
-      final java.lang.reflect.Method getFormatsMethod = spatialContextClass.getMethod("getFormats");
-      final Object formats = getFormatsMethod.invoke(spatialContext);
+      // Initialize cached WKT writer on first use (thread-safe via volatile)
+      if (cachedWktWriter == null) {
+        synchronized (BinarySerializer.class) {
+          if (cachedWktWriter == null) {
+            final SpatialContext spatialContext = spatialShape.getContext();
+            final SupportedFormats formats = spatialContext.getFormats();
+            cachedWktWriter = formats.getWktWriter();
+          }
+        }
+      }
 
-      // Get the WKT writer and convert the shape
-      final Class<?> formatsClass = Class.forName("org.locationtech.spatial4j.io.SupportedFormats");
-      final java.lang.reflect.Method getWktWriterMethod = formatsClass.getMethod("getWktWriter");
-      final Object wktWriter = getWktWriterMethod.invoke(formats);
+      // Convert shape to WKT using cached writer (fast - no reflection, no object creation!)
+      return cachedWktWriter.toString(spatialShape);
 
-      final Class<?> shapeWriterClass = Class.forName("org.locationtech.spatial4j.io.ShapeWriter");
-      final java.lang.reflect.Method toStringMethod = shapeWriterClass.getMethod("toString", shapeClass);
-      return (String) toStringMethod.invoke(wktWriter, shape);
     } catch (Exception e) {
       // Fallback to toString() if WKT conversion fails
       LogManager.instance().log(this, Level.WARNING, "Failed to convert shape to WKT, using toString(): %s", e, e.getMessage());
       return shape.toString();
     }
+  }
+
+  /**
+   * Serializes a spatial4j Shape to binary format.
+   * Format: subtype(1 byte) + shape-specific data
+   * - Point: x(double) + y(double) = 17 bytes total
+   * - Circle: x(double) + y(double) + radius(double) = 25 bytes total
+   * - Rectangle: minX + minY + maxX + maxY = 33 bytes total
+   * This is much more efficient than WKT strings (e.g., "POINT(48.856 2.352)" = 20+ chars).
+   */
+  private void serializeGeometryBinary(final Binary content, final Shape shape) {
+    if (shape instanceof Point point) {
+      // Point: 1 byte subtype + 16 bytes (2 doubles)
+      content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_POINT);
+      content.putNumber(Double.doubleToLongBits(point.getX()));
+      content.putNumber(Double.doubleToLongBits(point.getY()));
+
+    } else if (shape instanceof Circle circle) {
+      // Circle: 1 byte subtype + 24 bytes (3 doubles)
+      content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_CIRCLE);
+      content.putNumber(Double.doubleToLongBits(circle.getCenter().getX()));
+      content.putNumber(Double.doubleToLongBits(circle.getCenter().getY()));
+      content.putNumber(Double.doubleToLongBits(circle.getRadius()));
+
+    } else if (shape instanceof Rectangle rect) {
+      // Rectangle: 1 byte subtype + 32 bytes (4 doubles)
+      content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_RECTANGLE);
+      content.putNumber(Double.doubleToLongBits(rect.getMinX()));
+      content.putNumber(Double.doubleToLongBits(rect.getMinY()));
+      content.putNumber(Double.doubleToLongBits(rect.getMaxX()));
+      content.putNumber(Double.doubleToLongBits(rect.getMaxY()));
+
+    } else {
+      // Unknown shape type - fall back to WKT string for compatibility
+      LogManager.instance().log(this, Level.WARNING,
+          "Unknown shape type %s, falling back to WKT string serialization", shape.getClass().getName());
+      // Write a special subtype 0 to indicate WKT fallback
+      content.putByte((byte) 0);
+      content.putString(convertShapeToWKT(shape));
+    }
+  }
+
+  /**
+   * Deserializes a binary geometry back to a spatial4j Shape object.
+   * Reads subtype byte and reconstructs the appropriate shape.
+   */
+  private Shape deserializeGeometryBinary(final Binary content) {
+    final byte subtype = content.getByte();
+    final SpatialContext ctx = GeoUtils.getSpatialContext();
+
+    return switch (subtype) {
+      case BinaryTypes.GEOMETRY_SUBTYPE_POINT -> {
+        final double x = Double.longBitsToDouble(content.getNumber());
+        final double y = Double.longBitsToDouble(content.getNumber());
+        yield ctx.getShapeFactory().pointXY(x, y);
+      }
+      case BinaryTypes.GEOMETRY_SUBTYPE_CIRCLE -> {
+        final double x = Double.longBitsToDouble(content.getNumber());
+        final double y = Double.longBitsToDouble(content.getNumber());
+        final double radius = Double.longBitsToDouble(content.getNumber());
+        final Point center = ctx.getShapeFactory().pointXY(x, y);
+        yield ctx.getShapeFactory().circle(center, radius);
+      }
+      case BinaryTypes.GEOMETRY_SUBTYPE_RECTANGLE -> {
+        final double minX = Double.longBitsToDouble(content.getNumber());
+        final double minY = Double.longBitsToDouble(content.getNumber());
+        final double maxX = Double.longBitsToDouble(content.getNumber());
+        final double maxY = Double.longBitsToDouble(content.getNumber());
+        yield ctx.getShapeFactory().rect(minX, maxX, minY, maxY);
+      }
+      case 0 -> {
+        // WKT fallback format
+        final String wkt = content.getString();
+        try {
+          yield ctx.getFormats().getWktReader().read(wkt);
+        } catch (Exception e) {
+          throw new SerializationException("Failed to parse WKT geometry: " + wkt, e);
+        }
+      }
+      default -> throw new SerializationException("Unknown geometry subtype: " + subtype);
+    };
   }
 
 }

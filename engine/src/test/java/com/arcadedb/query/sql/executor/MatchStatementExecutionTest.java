@@ -109,7 +109,7 @@ public class MatchStatementExecutionTest extends TestHelper {
       database.command("sql", cmd);
     }
 
-//    database.query("sql", "select expand(out()) from IndexedVertex where uid = 0").stream().forEach(x -> System.out.println("x = " + x));
+//    database.query("sql", "select expand(out()) from IndexedVertex where uid = 0").stream().forEach(x -> // System.out.println("x = " + x));
   }
 
   private static void initOrgChart(final Database database) {

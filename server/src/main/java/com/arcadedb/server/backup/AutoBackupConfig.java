@@ -19,6 +19,7 @@
 package com.arcadedb.server.backup;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -145,7 +146,7 @@ public class AutoBackupConfig {
   }
 
   public Map<String, DatabaseBackupConfig> getDatabases() {
-    return Collections.unmodifiableMap(databases);
+    return CollectionUtils.immutableMap(databases);
   }
 
   public void addDatabaseConfig(final String databaseName, final DatabaseBackupConfig config) {

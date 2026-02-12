@@ -43,6 +43,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -760,7 +761,7 @@ public class BoltNetworkExecutor extends Thread {
 
     rt.put("servers", servers);
 
-    sendSuccess(Map.of("rt", rt));
+    sendSuccess(CollectionUtils.singletonMap("rt", rt));
   }
 
   /**

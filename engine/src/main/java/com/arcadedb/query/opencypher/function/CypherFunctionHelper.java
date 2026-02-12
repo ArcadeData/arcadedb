@@ -154,14 +154,19 @@ public final class CypherFunctionHelper {
   public static LocalDate applyDateMap(LocalDate date, final Map<String, Object> map) {
     if (map == null || map.isEmpty())
       return date;
-    if (map.containsKey("year"))
-      date = date.withYear(((Number) map.get("year")).intValue());
-    if (map.containsKey("month"))
-      date = date.withMonth(((Number) map.get("month")).intValue());
-    if (map.containsKey("day"))
-      date = date.withDayOfMonth(((Number) map.get("day")).intValue());
-    if (map.containsKey("dayOfWeek"))
-      date = date.with(java.time.temporal.WeekFields.ISO.dayOfWeek(), ((Number) map.get("dayOfWeek")).longValue());
+    // Optimized: single map lookup instead of containsKey() + get()
+    Object value = map.get("year");
+    if (value != null)
+      date = date.withYear(((Number) value).intValue());
+    value = map.get("month");
+    if (value != null)
+      date = date.withMonth(((Number) value).intValue());
+    value = map.get("day");
+    if (value != null)
+      date = date.withDayOfMonth(((Number) value).intValue());
+    value = map.get("dayOfWeek");
+    if (value != null)
+      date = date.with(java.time.temporal.WeekFields.ISO.dayOfWeek(), ((Number) value).longValue());
     return date;
   }
 
@@ -171,12 +176,16 @@ public final class CypherFunctionHelper {
   public static LocalTime applyTimeMap(LocalTime time, final Map<String, Object> map) {
     if (map == null || map.isEmpty())
       return time;
-    if (map.containsKey("hour"))
-      time = time.withHour(((Number) map.get("hour")).intValue());
-    if (map.containsKey("minute"))
-      time = time.withMinute(((Number) map.get("minute")).intValue());
-    if (map.containsKey("second"))
-      time = time.withSecond(((Number) map.get("second")).intValue());
+    // Optimized: single map lookup instead of containsKey() + get()
+    Object value = map.get("hour");
+    if (value != null)
+      time = time.withHour(((Number) value).intValue());
+    value = map.get("minute");
+    if (value != null)
+      time = time.withMinute(((Number) value).intValue());
+    value = map.get("second");
+    if (value != null)
+      time = time.withSecond(((Number) value).intValue());
     time = time.withNano(TemporalUtil.computeNanos(map, time.getNano()));
     return time;
   }

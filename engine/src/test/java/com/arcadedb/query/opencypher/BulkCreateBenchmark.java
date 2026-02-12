@@ -59,7 +59,7 @@ class BulkCreateBenchmark {
 
   @BeforeEach
   void setUp() {
-    GlobalConfiguration.OPENCYPHER_BULK_CREATE_BATCH_SIZE.setValue(20_000);
+    GlobalConfiguration.OPENCYPHER_BULK_CREATE_BATCH_SIZE.setValue(50_000);
 
     FileUtils.deleteRecursively(new File(DB_PATH));
     database = new DatabaseFactory(DB_PATH).create();
@@ -125,6 +125,8 @@ class BulkCreateBenchmark {
     final double elapsedMs = elapsedTime / 1_000_000.0;
     final double elapsedSec = elapsedMs / 1_000.0;
 
+    System.out.println(result);
+
     // Count created entities
     final long personCount =
         database.query("opencypher", "MATCH (p:Person) RETURN count(p) AS cnt").next().getProperty("cnt");
@@ -182,18 +184,6 @@ class BulkCreateBenchmark {
     System.out.println(String.format("║ μs per Ping creation:  %,10.2f (vertex + edge)               ║",
         elapsedMs * 1000 / pingCount));
     System.out.println("╚═══════════════════════════════════════════════════════════════════╝");
-    System.out.println();
-
-    // Performance expectations
-    System.out.println("Performance Analysis:");
-    if (elapsedSec > 1.0) {
-      System.out.println("  ⚠ SLOW: Bulk CREATE taking > 1 second");
-      System.out.println("  → Likely cause: per-record transaction overhead");
-      System.out.println("  → Expected improvement with batching: 3-5x faster");
-    } else {
-      System.out.println("  ⚡ GOOD: Bulk CREATE performance is acceptable");
-    }
-    System.out.println();
   }
 
   /**
@@ -201,7 +191,7 @@ class BulkCreateBenchmark {
    */
   private String buildBulkCreateQuery(final int nbPersons, final int minPings, final int maxPings) {
     return """
-        WITH
+        PROFILE WITH
             %d AS nb_persons,
             %d AS min_pings,
             %d AS max_pings,
@@ -238,16 +228,21 @@ class BulkCreateBenchmark {
              toInteger(rand() * (max_pings - min_pings) + min_pings) AS nb_pings_target
 
         UNWIND range(1, nb_pings_target) AS p_idx
-        WITH d, start_date, time_window_sec, lat_min, lat_max, lon_min, lon_max,
-             rand() AS r_lat, rand() AS r_lon, rand() AS r_time
+
+        WITH d, start_date, time_window_sec,
+               lat_min, lat_max, lon_min, lon_max,
+               rand() AS r_lat, rand() AS r_lon, rand() AS r_time
+
+        WITH d, start_date, time_window_sec,
+               (r_lat * (lat_max - lat_min) + lat_min) AS x,
+               (r_lon * (lon_max - lon_min) + lon_min) AS y,
+               r_time
 
         CREATE (ping:Ping {
-            location: point(
-                r_lat * (lat_max - lat_min) + lat_min,
-                r_lon * (lon_max - lon_min) + lon_min
-            ),
+            location: point(x, y),
             time: start_date + duration({seconds: toInteger(r_time * time_window_sec)})
         })
+
         CREATE (d)-[:GENERATED]->(ping)
         """.formatted(nbPersons, minPings, maxPings);
   }

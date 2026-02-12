@@ -465,6 +465,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public ResultSet command(final String language, final String query) {
+    return wrapped.command(language, query);
+  }
+
+  @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
     return wrapped.command(language, query, parameters);
   }
@@ -490,6 +495,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
     return wrapped.execute(language, script, args);
+  }
+
+  @Override
+  public ResultSet query(final String language, final String query) {
+    return wrapped.query(language, query);
   }
 
   @Override

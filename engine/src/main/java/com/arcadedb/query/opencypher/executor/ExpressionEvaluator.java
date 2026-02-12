@@ -116,8 +116,12 @@ public class ExpressionEvaluator {
         return aggregationOverrides.get(key);
     }
 
-    // Get function
-    final StatelessFunction function = functionFactory.getFunctionExecutor(expression.getFunctionName());
+    // Get function - use cache if available to avoid repeated lookups
+    StatelessFunction function = expression.getCachedFunction();
+    if (function == null) {
+      function = functionFactory.getFunctionExecutor(expression.getFunctionName());
+      expression.setCachedFunction(function);
+    }
 
     // Evaluate arguments
     final Object[] args = new Object[expression.getArguments().size()];

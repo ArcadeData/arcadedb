@@ -33,9 +33,11 @@ public class SelectParameterValue implements SelectRuntimeValue {
   public Object eval(final Document record) {
     if (select.parameters == null)
       throw new IllegalArgumentException("Missing parameter '" + parameterName + "'");
-    if (!select.parameters.containsKey(parameterName))
+    // Optimized: single map lookup instead of containsKey() + get()
+    final Object value = select.parameters.get(parameterName);
+    if (value == null && !select.parameters.containsKey(parameterName))
       throw new IllegalArgumentException("Missing parameter '" + parameterName + "'");
-    return select.parameters.get(parameterName);
+    return value;
   }
 
   @Override

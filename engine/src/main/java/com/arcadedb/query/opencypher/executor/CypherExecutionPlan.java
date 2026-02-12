@@ -21,7 +21,35 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.CreateClause;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.DeleteClause;
+import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.ForeachClause;
+import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
+import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.MergeClause;
+import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.ParameterExpression;
+import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.RemoveClause;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnwindClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
@@ -29,8 +57,8 @@ import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
-import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
+import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
 import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
@@ -38,20 +66,19 @@ import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
 import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
-import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
-import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
 import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
+import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
+import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
-import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -60,38 +87,43 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
  * Execution plan for a Cypher query.
  * Contains the chain of execution steps and executes them.
- *
+ * <p>
  * Phase 4: Enhanced with Cost-Based Query Optimizer support.
  */
 public class CypherExecutionPlan {
-  private final DatabaseInternal database;
-  private final CypherStatement statement;
-  private final Map<String, Object> parameters;
+  private final DatabaseInternal     database;
+  private final CypherStatement      statement;
+  private final Map<String, Object>  parameters;
   private final ContextConfiguration configuration;
-  private final PhysicalPlan physicalPlan;
-  private final ExpressionEvaluator expressionEvaluator;
+  private final PhysicalPlan         physicalPlan;
+  private final ExpressionEvaluator  expressionEvaluator;
 
   // Query-level counter for unique anonymous variable names across MATCH clauses
   private int anonymousVarCounter = 0;
 
   // UNION support
   private final List<CypherExecutionPlan> unionSubqueryPlans;
-  private final boolean unionRemoveDuplicates;
+  private final boolean                   unionRemoveDuplicates;
 
   /**
    * Constructor for backward compatibility (without optimizer, without evaluator).
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
-      final Map<String, Object> parameters, final ContextConfiguration configuration) {
+                             final Map<String, Object> parameters, final ContextConfiguration configuration) {
     this(database, statement, parameters, configuration, null, null);
   }
 
@@ -106,8 +138,8 @@ public class CypherExecutionPlan {
    * @param physicalPlan  optional optimized physical plan (null for non-optimized)
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
-      final Map<String, Object> parameters, final ContextConfiguration configuration,
-      final PhysicalPlan physicalPlan) {
+                             final Map<String, Object> parameters, final ContextConfiguration configuration,
+                             final PhysicalPlan physicalPlan) {
     this(database, statement, parameters, configuration, physicalPlan, null);
   }
 
@@ -122,8 +154,8 @@ public class CypherExecutionPlan {
    * @param expressionEvaluator shared expression evaluator (stateless and thread-safe)
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
-      final Map<String, Object> parameters, final ContextConfiguration configuration,
-      final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator) {
+                             final Map<String, Object> parameters, final ContextConfiguration configuration,
+                             final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator) {
     this(database, statement, parameters, configuration, physicalPlan, expressionEvaluator, null, false);
   }
 
@@ -140,9 +172,9 @@ public class CypherExecutionPlan {
    * @param unionRemoveDuplicates true for UNION (dedup), false for UNION ALL
    */
   public CypherExecutionPlan(final DatabaseInternal database, final CypherStatement statement,
-      final Map<String, Object> parameters, final ContextConfiguration configuration,
-      final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator,
-      final List<CypherExecutionPlan> unionSubqueryPlans, final boolean unionRemoveDuplicates) {
+                             final Map<String, Object> parameters, final ContextConfiguration configuration,
+                             final PhysicalPlan physicalPlan, final ExpressionEvaluator expressionEvaluator,
+                             final List<CypherExecutionPlan> unionSubqueryPlans, final boolean unionRemoveDuplicates) {
     this.database = database;
     this.statement = statement;
     this.parameters = parameters;
@@ -208,14 +240,14 @@ public class CypherExecutionPlan {
     // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE/REMOVE
     // operations to actually execute, even when there's a RETURN clause.
     final boolean hasForeach = statement.getClausesInOrder() != null &&
-                                statement.getClausesInOrder().stream()
-                                    .anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
+        statement.getClausesInOrder().stream()
+            .anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
     final boolean hasWriteOps = statement.getCreateClause() != null ||
-                                 (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) ||
-                                 (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) ||
-                                 !statement.getRemoveClauses().isEmpty() ||
-                                 statement.getMergeClause() != null ||
-                                 hasForeach;
+        (statement.getSetClause() != null && !statement.getSetClause().isEmpty()) ||
+        (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty()) ||
+        !statement.getRemoveClauses().isEmpty() ||
+        statement.getMergeClause() != null ||
+        hasForeach;
 
     if (hasWriteOps) {
       // Materialize the ResultSet to force write operation execution
@@ -443,7 +475,7 @@ public class CypherExecutionPlan {
   /**
    * Builds execution steps using the optimized physical plan.
    * Phase 4: Integrates physical operators with execution steps.
-   *
+   * <p>
    * Strategy:
    * - Physical operators handle MATCH pattern execution (optimized)
    * - Execution steps handle RETURN, ORDER BY, SKIP, LIMIT (unchanged)
@@ -453,7 +485,8 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep buildExecutionStepsWithOptimizer(final CommandContext context) {
     // Get function factory from evaluator for steps that need it
-    final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
+    final CypherFunctionFactory functionFactory = expressionEvaluator != null ?
+        expressionEvaluator.getFunctionFactory() : null;
 
     // Create a wrapper step that executes the physical operators
     AbstractExecutionStep currentStep = new AbstractExecutionStep(context) {
@@ -471,7 +504,7 @@ public class CypherExecutionPlan {
       @Override
       public String prettyPrint(final int depth, final int indent) {
         return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
-               physicalPlan.explain();
+            physicalPlan.explain();
       }
     };
 
@@ -576,13 +609,15 @@ public class CypherExecutionPlan {
 
           // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
           if (withClause.getSkip() != null) {
-            final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context);
+            final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+                new ResultInternal(), context);
             final SkipStep skipStep = new SkipStep(_skipVal, context);
             skipStep.setPrevious(currentStep);
             currentStep = skipStep;
           }
           if (withClause.getLimit() != null) {
-            final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context);
+            final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+                new ResultInternal(), context);
             final LimitStep limitStep = new LimitStep(_limitVal, context);
             limitStep.setPrevious(currentStep);
             currentStep = limitStep;
@@ -614,7 +649,8 @@ public class CypherExecutionPlan {
         }
       } else {
         // Use regular projection for non-aggregation expressions
-        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);
+        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context,
+            functionFactory);
         returnStep.setPrevious(currentStep);
         currentStep = returnStep;
       }
@@ -631,7 +667,8 @@ public class CypherExecutionPlan {
     // Step 9: SKIP (if any)
     if (statement.getSkip() != null) {
       final SkipStep skipStep =
-          new SkipStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context), context);
+          new SkipStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
+              new ResultInternal(), context), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
@@ -639,7 +676,8 @@ public class CypherExecutionPlan {
     // Step 10: LIMIT (if any)
     if (statement.getLimit() != null) {
       final LimitStep limitStep =
-          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
+          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+              new ResultInternal(), context), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -759,7 +797,7 @@ public class CypherExecutionPlan {
    * This is essential for queries like UNWIND...MATCH where UNWIND must run first.
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
-      final List<ClauseEntry> clausesInOrder) {
+                                                             final List<ClauseEntry> clausesInOrder) {
     return buildExecutionStepsWithOrder(context, clausesInOrder, null);
   }
 
@@ -769,11 +807,13 @@ public class CypherExecutionPlan {
    * of the step chain, providing input rows to the first clause.
    */
   private AbstractExecutionStep buildExecutionStepsWithOrder(final CommandContext context,
-      final List<ClauseEntry> clausesInOrder, final AbstractExecutionStep initialStep) {
+                                                             final List<ClauseEntry> clausesInOrder,
+                                                             final AbstractExecutionStep initialStep) {
     AbstractExecutionStep currentStep = initialStep;
 
     // Get function factory from evaluator for steps that need it
-    final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
+    final CypherFunctionFactory functionFactory = expressionEvaluator != null ?
+        expressionEvaluator.getFunctionFactory() : null;
 
     // Track variables bound across MATCH clauses so subsequent MATCHes
     // can detect already-bound variables and avoid Cartesian products
@@ -971,7 +1011,8 @@ public class CypherExecutionPlan {
           currentStep = aggStep;
         }
       } else {
-        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);
+        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context,
+            functionFactory);
         returnStep.setPrevious(currentStep);
         currentStep = returnStep;
       }
@@ -988,7 +1029,8 @@ public class CypherExecutionPlan {
     // SKIP
     if (statement.getSkip() != null && currentStep != null) {
       final SkipStep skipStep =
-          new SkipStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context), context);
+          new SkipStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
+              new ResultInternal(), context), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
@@ -996,7 +1038,8 @@ public class CypherExecutionPlan {
     // LIMIT
     if (statement.getLimit() != null && currentStep != null) {
       final LimitStep limitStep =
-          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
+          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+              new ResultInternal(), context), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -1015,7 +1058,8 @@ public class CypherExecutionPlan {
    * Builds execution step for a WITH clause.
    */
   private AbstractExecutionStep buildWithStep(final WithClause withClause,
-      AbstractExecutionStep currentStep, final CommandContext context, final CypherFunctionFactory functionFactory) {
+                                              AbstractExecutionStep currentStep, final CommandContext context,
+                                              final CypherFunctionFactory functionFactory) {
     if (withClause.hasAggregations()) {
       if (withClause.hasNonAggregations()) {
         final GroupByAggregationStep groupByStep =
@@ -1063,13 +1107,15 @@ public class CypherExecutionPlan {
 
       // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
       if (withClause.getSkip() != null) {
-        final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context);
+        final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+            new ResultInternal(), context);
         final SkipStep skipStep = new SkipStep(_skipVal, context);
         skipStep.setPrevious(currentStep);
         currentStep = skipStep;
       }
       if (withClause.getLimit() != null) {
-        final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context);
+        final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+            new ResultInternal(), context);
         final LimitStep limitStep = new LimitStep(_limitVal, context);
         limitStep.setPrevious(currentStep);
         currentStep = limitStep;
@@ -1087,20 +1133,20 @@ public class CypherExecutionPlan {
    * Backward-compatible overload without bound variable tracking.
    */
   private AbstractExecutionStep buildMatchStep(final MatchClause matchClause, AbstractExecutionStep currentStep,
-      final CommandContext context) {
+                                               final CommandContext context) {
     return buildMatchStep(matchClause, currentStep, context, new HashSet<>());
   }
 
   /**
    * Builds execution step for a MATCH clause with bound variable tracking.
    *
-   * @param matchClause     the MATCH clause to build
-   * @param currentStep     current step in the execution chain
-   * @param context         command context
-   * @param boundVariables  set of variable names already bound in previous steps (updated in-place)
+   * @param matchClause    the MATCH clause to build
+   * @param currentStep    current step in the execution chain
+   * @param context        command context
+   * @param boundVariables set of variable names already bound in previous steps (updated in-place)
    */
   private AbstractExecutionStep buildMatchStep(final MatchClause matchClause, AbstractExecutionStep currentStep,
-      final CommandContext context, final Set<String> boundVariables) {
+                                               final CommandContext context, final Set<String> boundVariables) {
     if (!matchClause.hasPathPatterns()) {
       return currentStep;
     }
@@ -1111,7 +1157,8 @@ public class CypherExecutionPlan {
     final boolean isOptional = matchClause.isOptional();
 
     // Extract ID filters from WHERE clause (if present) for pushdown optimization
-    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
+        statement.getWhereClause();
 
     AbstractExecutionStep matchChainStart = null;
 
@@ -1120,7 +1167,8 @@ public class CypherExecutionPlan {
 
       if (pathPattern.isSingleNode()) {
         final NodePattern nodePattern = pathPattern.getFirstNode();
-        final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("  nd" + anonymousVarCounter++);
+        final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() :
+            ("  nd" + anonymousVarCounter++);
         matchVariables.add(variable);
 
         // Check if this variable was already bound in a previous MATCH clause
@@ -1283,7 +1331,8 @@ public class CypherExecutionPlan {
           // relationship uniqueness checking works (edges must be stored in results)
           final String relVar = (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty())
               ? relPattern.getVariable() : ("  rel" + anonymousVarCounter++);
-          final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("  tgt" + anonymousVarCounter++);
+          final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
+              ("  tgt" + anonymousVarCounter++);
 
           // Always track relationship variables (including anonymous generated ones)
           // so cross-MATCH uniqueness scoping works correctly
@@ -1358,7 +1407,8 @@ public class CypherExecutionPlan {
     AbstractExecutionStep currentStep = null;
 
     // Get function factory from evaluator for steps that need it
-    final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
+    final CypherFunctionFactory functionFactory = expressionEvaluator != null ?
+        expressionEvaluator.getFunctionFactory() : null;
 
     // OPTIMIZATION: Check for simple COUNT(*) pattern that can use Type.count() O(1) operation
     // Pattern: MATCH (a:TypeName) RETURN COUNT(a) as alias
@@ -1418,208 +1468,218 @@ public class CypherExecutionPlan {
           for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
             final PathPattern pathPattern = pathPatterns.get(patternIndex);
 
-          if (pathPattern instanceof ShortestPathPattern) {
-            // Handle shortestPath or allShortestPaths patterns in legacy path
-            final ShortestPathPattern shortestPathPattern = (ShortestPathPattern) pathPattern;
-            final NodePattern sourceNode = pathPattern.getFirstNode();
-            final NodePattern targetNode = pathPattern.getLastNode();
-            final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : ("  src" + anonymousVarCounter++);
-            final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("  tgt" + anonymousVarCounter++);
-            final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
+            if (pathPattern instanceof ShortestPathPattern) {
+              // Handle shortestPath or allShortestPaths patterns in legacy path
+              final ShortestPathPattern shortestPathPattern = (ShortestPathPattern) pathPattern;
+              final NodePattern sourceNode = pathPattern.getFirstNode();
+              final NodePattern targetNode = pathPattern.getLastNode();
+              final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
+                  ("  src" + anonymousVarCounter++);
+              final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
+                  ("  tgt" + anonymousVarCounter++);
+              final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
 
-            // Track path variable
-            if (pathVariable != null) {
-              matchVariables.add(pathVariable);
-            }
-
-            // Check both legacyBoundVariables (from previous MATCH clauses) and matchVariables (from earlier
-            // patterns in this same MATCH clause) to avoid re-matching already-bound variables
-
-            // Source node matching (if not already bound)
-            if (!legacyBoundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
-              final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
-              final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
-              final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
-              if (currentStep != null) {
-                sourceStep.setPrevious(currentStep);
+              // Track path variable
+              if (pathVariable != null) {
+                matchVariables.add(pathVariable);
               }
-              currentStep = sourceStep;
-              matchVariables.add(sourceVar);
-            }
 
-            // Target node matching (if not already bound)
-            if (!legacyBoundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
-              final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
-              final String targetIdFilter = extractIdFilter(matchWhere, targetVar);
-              final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter);
-              if (currentStep != null) {
-                targetStep.setPrevious(currentStep);
-              }
-              currentStep = targetStep;
-              matchVariables.add(targetVar);
-            }
+              // Check both legacyBoundVariables (from previous MATCH clauses) and matchVariables (from earlier
+              // patterns in this same MATCH clause) to avoid re-matching already-bound variables
 
-            // Now add the ShortestPathStep to compute the path
-            final ShortestPathStep shortestStep = new ShortestPathStep(sourceVar, targetVar, pathVariable,
-                shortestPathPattern, context);
-            if (currentStep != null) {
-              shortestStep.setPrevious(currentStep);
-            }
-            currentStep = shortestStep;
-
-            if (isOptional && matchChainStart == null) {
-              matchChainStart = shortestStep;
-            }
-          } else if (pathPattern.isSingleNode()) {
-            // Simple node pattern: MATCH (n:Person) or MATCH (a), (b)
-            final NodePattern nodePattern = pathPattern.getFirstNode();
-            final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() : ("  nd" + anonymousVarCounter++);
-            matchVariables.add(variable); // Track variable for OPTIONAL MATCH
-
-            // Check if this variable was already bound in a previous MATCH clause
-            if (legacyBoundVariables.contains(variable)) {
-              // Variable already bound - skip creating a new MatchNodeStep
-              continue;
-            }
-
-            // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
-            final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
-            final String idFilter = extractIdFilter(matchWhere, variable);
-            final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter);
-
-            if (isOptional) {
-              // For optional match, chain within the match steps only
-              if (matchChainStart == null) {
-                matchChainStart = matchStep;
-                currentStep = matchStep;
-              } else {
-                matchStep.setPrevious(currentStep);
-                currentStep = matchStep;
-              }
-            } else {
-              // For regular match, chain to previous step
-              if (currentStep != null) {
-                matchStep.setPrevious(currentStep);
-              }
-              currentStep = matchStep;
-            }
-          } else {
-            // Relationship pattern: MATCH (a)-[r]->(b)
-            final NodePattern sourceNode = pathPattern.getFirstNode();
-            final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() : ("  src" + anonymousVarCounter++);
-
-            // Check if source node is already bound (for multiple MATCH clauses or OPTIONAL MATCH)
-            final boolean sourceAlreadyBound = stepBeforeMatch != null &&
-                (legacyBoundVariables.contains(sourceVar) || matchVariables.contains(sourceVar));
-
-            if (!sourceAlreadyBound) {
-              // Only track the source variable if we're creating a new binding for it
-              matchVariables.add(sourceVar);
-
-              // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
-              final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
-              final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
-
-              // Start with source node (or chain if we have previous patterns)
-              final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
-
-              if (isOptional) {
-                // For optional match, chain within the match steps only
-                if (matchChainStart == null) {
-                  matchChainStart = sourceStep;
-                  currentStep = sourceStep;
-                } else {
-                  sourceStep.setPrevious(currentStep);
-                  currentStep = sourceStep;
-                }
-              } else {
-                // For regular match, chain to previous step
+              // Source node matching (if not already bound)
+              if (!legacyBoundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
+                final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
+                    statement.getWhereClause();
+                final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
+                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
                 if (currentStep != null) {
                   sourceStep.setPrevious(currentStep);
                 }
                 currentStep = sourceStep;
+                matchVariables.add(sourceVar);
+              }
+
+              // Target node matching (if not already bound)
+              if (!legacyBoundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
+                final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
+                    statement.getWhereClause();
+                final String targetIdFilter = extractIdFilter(matchWhere, targetVar);
+                final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter);
+                if (currentStep != null) {
+                  targetStep.setPrevious(currentStep);
+                }
+                currentStep = targetStep;
+                matchVariables.add(targetVar);
+              }
+
+              // Now add the ShortestPathStep to compute the path
+              final ShortestPathStep shortestStep = new ShortestPathStep(sourceVar, targetVar, pathVariable,
+                  shortestPathPattern, context);
+              if (currentStep != null) {
+                shortestStep.setPrevious(currentStep);
+              }
+              currentStep = shortestStep;
+
+              if (isOptional && matchChainStart == null) {
+                matchChainStart = shortestStep;
+              }
+            } else if (pathPattern.isSingleNode()) {
+              // Simple node pattern: MATCH (n:Person) or MATCH (a), (b)
+              final NodePattern nodePattern = pathPattern.getFirstNode();
+              final String variable = nodePattern.getVariable() != null ? nodePattern.getVariable() :
+                  ("  nd" + anonymousVarCounter++);
+              matchVariables.add(variable); // Track variable for OPTIONAL MATCH
+
+              // Check if this variable was already bound in a previous MATCH clause
+              if (legacyBoundVariables.contains(variable)) {
+                // Variable already bound - skip creating a new MatchNodeStep
+                continue;
+              }
+
+              // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
+              final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
+                  statement.getWhereClause();
+              final String idFilter = extractIdFilter(matchWhere, variable);
+              final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter);
+
+              if (isOptional) {
+                // For optional match, chain within the match steps only
+                if (matchChainStart == null) {
+                  matchChainStart = matchStep;
+                  currentStep = matchStep;
+                } else {
+                  matchStep.setPrevious(currentStep);
+                  currentStep = matchStep;
+                }
+              } else {
+                // For regular match, chain to previous step
+                if (currentStep != null) {
+                  matchStep.setPrevious(currentStep);
+                }
+                currentStep = matchStep;
               }
             } else {
-              // Source is already bound - for optional match, start the chain with
-              // a dummy step or set currentStep to null to indicate we'll start
-              // directly with the relationship step
-              // The relationship step will look for sourceVar in the input
-              if (isOptional && matchChainStart == null) {
-                // We'll start the optional chain with the relationship step
-                currentStep = null;
+              // Relationship pattern: MATCH (a)-[r]->(b)
+              final NodePattern sourceNode = pathPattern.getFirstNode();
+              final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
+                  ("  src" + anonymousVarCounter++);
+
+              // Check if source node is already bound (for multiple MATCH clauses or OPTIONAL MATCH)
+              final boolean sourceAlreadyBound = stepBeforeMatch != null &&
+                  (legacyBoundVariables.contains(sourceVar) || matchVariables.contains(sourceVar));
+
+              if (!sourceAlreadyBound) {
+                // Only track the source variable if we're creating a new binding for it
+                matchVariables.add(sourceVar);
+
+                // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
+                final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
+                    statement.getWhereClause();
+                final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
+
+                // Start with source node (or chain if we have previous patterns)
+                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter);
+
+                if (isOptional) {
+                  // For optional match, chain within the match steps only
+                  if (matchChainStart == null) {
+                    matchChainStart = sourceStep;
+                    currentStep = sourceStep;
+                  } else {
+                    sourceStep.setPrevious(currentStep);
+                    currentStep = sourceStep;
+                  }
+                } else {
+                  // For regular match, chain to previous step
+                  if (currentStep != null) {
+                    sourceStep.setPrevious(currentStep);
+                  }
+                  currentStep = sourceStep;
+                }
+              } else {
+                // Source is already bound - for optional match, start the chain with
+                // a dummy step or set currentStep to null to indicate we'll start
+                // directly with the relationship step
+                // The relationship step will look for sourceVar in the input
+                if (isOptional && matchChainStart == null) {
+                  // We'll start the optional chain with the relationship step
+                  currentStep = null;
+                }
               }
-            }
 
-            // Add relationship traversal for each relationship in the path
-            // Check if this path has a named variable (e.g., p = (a)-[r]->(b))
-            final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
-            if (pathVariable != null) {
-              matchVariables.add(pathVariable); // Track path variable
-            }
+              // Add relationship traversal for each relationship in the path
+              // Check if this path has a named variable (e.g., p = (a)-[r]->(b))
+              final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
+              if (pathVariable != null) {
+                matchVariables.add(pathVariable); // Track path variable
+              }
 
-            // Handle zero-length named paths: p = (n) with no relationships
-            if (pathVariable != null && pathPattern.getRelationshipCount() == 0) {
-              final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(sourceVar, pathVariable, context);
-              if (isOptional) {
-                if (matchChainStart == null) {
-                  zeroPathStep.setPrevious(currentStep);
-                  matchChainStart = zeroPathStep;
+              // Handle zero-length named paths: p = (n) with no relationships
+              if (pathVariable != null && pathPattern.getRelationshipCount() == 0) {
+                final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(sourceVar, pathVariable, context);
+                if (isOptional) {
+                  if (matchChainStart == null) {
+                    zeroPathStep.setPrevious(currentStep);
+                    matchChainStart = zeroPathStep;
+                  } else
+                    zeroPathStep.setPrevious(currentStep);
                 } else
                   zeroPathStep.setPrevious(currentStep);
-              } else
-                zeroPathStep.setPrevious(currentStep);
-              currentStep = zeroPathStep;
-            }
-
-            // Track current source variable through multi-hop patterns
-            // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
-            String currentSourceVar = sourceVar;
-
-            for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
-              final RelationshipPattern relPattern = pathPattern.getRelationship(i);
-              final NodePattern targetNode = pathPattern.getNode(i + 1);
-              // Generate internal variable name for anonymous relationships to ensure
-              // relationship uniqueness checking works (edges must be stored in results)
-              final String relVar = (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty())
-                  ? relPattern.getVariable() : ("  rel" + anonymousVarCounter++);
-              final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("  tgt" + anonymousVarCounter++);
-
-              // Always track relationship variables (including anonymous generated ones)
-              // so cross-MATCH uniqueness scoping works correctly
-              matchVariables.add(relVar);
-              matchVariables.add(targetVar);
-
-              AbstractExecutionStep nextStep;
-              if (relPattern.isVariableLength()) {
-                // Variable-length path - pass path variable, relationship variable, and target node for label filtering
-                nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
-                    targetNode, context);
-              } else {
-                // Fixed-length relationship - pass path variable, target node pattern, and bound variables
-                nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
-                    targetNode, legacyBoundVariables, context);
+                currentStep = zeroPathStep;
               }
 
-              // Update source for next hop in multi-hop patterns
-              currentSourceVar = targetVar;
+              // Track current source variable through multi-hop patterns
+              // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
+              String currentSourceVar = sourceVar;
 
-              // Chain the relationship step
-              if (isOptional && matchChainStart == null) {
-                // This is the first step in the optional match chain
-                matchChainStart = nextStep;
-                // Don't set previous yet - OptionalMatchStep will manage the input
-                currentStep = nextStep;
-              } else if (sourceAlreadyBound && currentStep == null) {
-                // For non-optional match where source is already bound and we didn't create a MatchNodeStep
-                // The relationship step becomes the first step, but it will pull from stepBeforeMatch
-                nextStep.setPrevious(stepBeforeMatch);
-                currentStep = nextStep;
-              } else {
-                nextStep.setPrevious(currentStep);
-                currentStep = nextStep;
+              for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+                final RelationshipPattern relPattern = pathPattern.getRelationship(i);
+                final NodePattern targetNode = pathPattern.getNode(i + 1);
+                // Generate internal variable name for anonymous relationships to ensure
+                // relationship uniqueness checking works (edges must be stored in results)
+                final String relVar = (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty())
+                    ? relPattern.getVariable() : ("  rel" + anonymousVarCounter++);
+                final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
+                    ("  tgt" + anonymousVarCounter++);
+
+                // Always track relationship variables (including anonymous generated ones)
+                // so cross-MATCH uniqueness scoping works correctly
+                matchVariables.add(relVar);
+                matchVariables.add(targetVar);
+
+                AbstractExecutionStep nextStep;
+                if (relPattern.isVariableLength()) {
+                  // Variable-length path - pass path variable, relationship variable, and target node for label
+                  // filtering
+                  nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
+                      targetNode, context);
+                } else {
+                  // Fixed-length relationship - pass path variable, target node pattern, and bound variables
+                  nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
+                      targetNode, legacyBoundVariables, context);
+                }
+
+                // Update source for next hop in multi-hop patterns
+                currentSourceVar = targetVar;
+
+                // Chain the relationship step
+                if (isOptional && matchChainStart == null) {
+                  // This is the first step in the optional match chain
+                  matchChainStart = nextStep;
+                  // Don't set previous yet - OptionalMatchStep will manage the input
+                  currentStep = nextStep;
+                } else if (sourceAlreadyBound && currentStep == null) {
+                  // For non-optional match where source is already bound and we didn't create a MatchNodeStep
+                  // The relationship step becomes the first step, but it will pull from stepBeforeMatch
+                  nextStep.setPrevious(stepBeforeMatch);
+                  currentStep = nextStep;
+                } else {
+                  nextStep.setPrevious(currentStep);
+                  currentStep = nextStep;
+                }
               }
             }
-          }
           }
 
           // Apply WHERE clause scoped to this MATCH (if present)
@@ -1744,13 +1804,15 @@ public class CypherExecutionPlan {
 
         // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
         if (withClause.getSkip() != null) {
-          final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context);
+          final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+              new ResultInternal(), context);
           final SkipStep skipStep = new SkipStep(_skipVal, context);
           skipStep.setPrevious(currentStep);
           currentStep = skipStep;
         }
         if (withClause.getLimit() != null) {
-          final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context);
+          final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+              new ResultInternal(), context);
           final LimitStep limitStep = new LimitStep(_limitVal, context);
           limitStep.setPrevious(currentStep);
           currentStep = limitStep;
@@ -1828,7 +1890,8 @@ public class CypherExecutionPlan {
         }
       } else {
         // Use regular projection for non-aggregation expressions
-        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context, functionFactory);
+        final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context,
+            functionFactory);
         returnStep.setPrevious(currentStep);
         currentStep = returnStep;
       }
@@ -1845,7 +1908,8 @@ public class CypherExecutionPlan {
     // Step 9: SKIP clause - skip first N results
     if (statement.getSkip() != null && currentStep != null) {
       final SkipStep skipStep = new SkipStep(
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context), context);
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(),
+              context), context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
@@ -1853,7 +1917,8 @@ public class CypherExecutionPlan {
     // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
       final LimitStep limitStep = new LimitStep(
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
+              context), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -1888,9 +1953,11 @@ public class CypherExecutionPlan {
    * @return optimized CountEdgesStep if pattern matches, null otherwise
    */
   private AbstractExecutionStep tryOptimizeOptionalMatchCount(final MatchClause matchClause,
-      final List<ClauseEntry> clausesInOrder, final int currentIndex,
-      final AbstractExecutionStep currentStep, final CommandContext context,
-      final Set<String> boundVariables) {
+                                                              final List<ClauseEntry> clausesInOrder,
+                                                              final int currentIndex,
+                                                              final AbstractExecutionStep currentStep,
+                                                              final CommandContext context,
+                                                              final Set<String> boundVariables) {
 
     // 1. Must be OPTIONAL MATCH with exactly one path pattern
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
@@ -2225,12 +2292,12 @@ public class CypherExecutionPlan {
    * This optimization is critical for performance when matching by ID.
    * Without it, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y would create
    * a Cartesian product of ALL vertices before filtering (extremely slow).
-   *
+   * <p>
    * Adds a VariableProjectionStep after ORDER BY + SKIP + LIMIT to strip non-projected
    * variables that were kept in the merged scope for ORDER BY evaluation.
    */
   private AbstractExecutionStep addWithProjection(final WithClause withClause,
-      AbstractExecutionStep currentStep, final CommandContext context) {
+                                                  AbstractExecutionStep currentStep, final CommandContext context) {
     // Collect projected variable names from WITH items
     final Set<String> projectedVars = new java.util.LinkedHashSet<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
@@ -2245,7 +2312,7 @@ public class CypherExecutionPlan {
 
   /**
    * @param whereClause the WHERE clause to analyze
-   * @param variable the variable to extract ID filter for
+   * @param variable    the variable to extract ID filter for
    * @return the ID value to filter by, or null if no ID filter found
    */
   private String extractIdFilter(final WhereClause whereClause, final String variable) {

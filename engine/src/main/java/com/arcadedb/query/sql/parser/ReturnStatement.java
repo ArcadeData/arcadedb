@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
 
@@ -55,7 +56,7 @@ public class ReturnStatement extends SimpleExecStatement {
         else if (o instanceof Map map)
           r = new ResultInternal(map);
         else
-          r = new ResultInternal(Map.of("value", o));
+          r = new ResultInternal(CollectionUtils.singletonMap("value", o));
         rs.add(r);
       }
     } else if (result instanceof ResultSet set) {

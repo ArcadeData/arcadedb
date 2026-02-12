@@ -615,6 +615,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public ResultSet command(final String language, final String query) {
+    return command(language, query, server.getConfiguration());
+  }
+
+  @Override
   public ResultSet command(final String language, final String query, final Object... args) {
     return command(language, query, server.getConfiguration(), args);
   }
@@ -637,6 +642,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
     }
 
     return proxied.command(language, query, configuration, args);
+  }
+
+  @Override
+  public ResultSet query(final String language, final String query) {
+    return proxied.query(language, query);
   }
 
   @Override

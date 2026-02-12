@@ -69,18 +69,18 @@ test.describe('ArcadeDB Studio Notification System', () => {
 
     // Wait for either notification or error state to appear
     await Promise.race([
-      page.waitForSelector('.notyf__toast', { timeout: 5000 }),
+      page.waitForSelector('.swal2-toast', { timeout: 5000 }),
       page.waitForFunction(() => document.querySelector('.btn-primary')?.classList.contains('loading'), { timeout: 5000 }),
       page.waitForTimeout(3000) // fallback timeout
     ]);
 
     // Check if notification system is working properly
-    const notificationExists = await page.locator('.notyf__toast').count() > 0;
+    const notificationExists = await page.locator('.swal2-toast').count() > 0;
 
     // Verify no critical JavaScript errors occurred
     const hasCriticalErrors = jsErrors.some(error =>
       error.includes('document.body is null') ||
-      error.includes("can't access lexical declaration 'notyf' before initialization") ||
+      error.includes("can't access lexical declaration 'Toast' before initialization") ||
       error.includes('$.notify is not a function')
     );
 
@@ -129,7 +129,7 @@ test.describe('ArcadeDB Studio Notification System', () => {
     await page.waitForTimeout(1000);
 
     // Check if notification system is working
-    const queuedNotificationExists = await page.locator('.notyf__toast').count() > 0;
+    const queuedNotificationExists = await page.locator('.swal2-toast').count() > 0;
 
     // The notification may have already disappeared, so we just ensure no errors occurred
     const errors = await page.evaluate(() => {

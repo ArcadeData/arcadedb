@@ -60,6 +60,16 @@ public class CreateStep extends AbstractExecutionStep {
   private final CreateClause createClause;
   private final ExpressionEvaluator evaluator;
 
+  // Detailed profiling metrics
+  private long vertexCreationTime = 0;
+  private long edgeCreationTime = 0;
+  private long propertyEvaluationTime = 0;
+  private long saveOperationTime = 0;
+  private long vertexCount = 0;
+  private long edgeCount = 0;
+  private long transactionCommits = 0;
+  private long batchCount = 0;
+
   public CreateStep(final CreateClause createClause, final CommandContext context,
                     final CypherFunctionFactory functionFactory) {
     super(context);
@@ -126,11 +136,18 @@ public class CreateStep extends AbstractExecutionStep {
               if (batchInputs.size() >= batchSize || !prevResults.hasNext()) {
                 final long begin = context.isProfiling() ? System.nanoTime() : 0;
                 try {
-                  if (context.isProfiling())
+                  if (context.isProfiling()) {
                     rowCount += batchInputs.size();
+                    batchCount++;
+                  }
 
                   final List<Result> createdResults = createPatternsBatch(batchInputs);
                   buffer.addAll(createdResults);
+
+                  if (context.isProfiling()) {
+                    // Track transaction commits by checking if a new transaction was created
+                    transactionCommits++;
+                  }
                 } finally {
                   if (context.isProfiling())
                     cost += (System.nanoTime() - begin);
@@ -148,8 +165,10 @@ public class CreateStep extends AbstractExecutionStep {
               final Result inputResult = prevResults.next();
               final long begin = context.isProfiling() ? System.nanoTime() : 0;
               try {
-                if (context.isProfiling())
+                if (context.isProfiling()) {
                   rowCount++;
+                  transactionCommits++; // Each unbatched create is its own transaction
+                }
 
                 final Result createdResult = createPatterns(inputResult);
                 buffer.add(createdResult);
@@ -327,6 +346,8 @@ public class CreateStep extends AbstractExecutionStep {
    * created that extends all label types.
    */
   private Vertex createVertex(final NodePattern nodePattern, final Result currentResult) {
+    final long startVertex = context.isProfiling() ? System.nanoTime() : 0;
+
     final List<String> labels = nodePattern.hasLabels()
         ? nodePattern.getLabels()
         : List.of("Vertex");
@@ -341,10 +362,20 @@ public class CreateStep extends AbstractExecutionStep {
 
     // Set properties from pattern
     if (nodePattern.hasProperties()) {
+      final long startProps = context.isProfiling() ? System.nanoTime() : 0;
       setProperties(vertex, nodePattern.getProperties(), currentResult);
+      if (context.isProfiling())
+        propertyEvaluationTime += (System.nanoTime() - startProps);
     }
 
+    final long startSave = context.isProfiling() ? System.nanoTime() : 0;
     vertex.save();
+    if (context.isProfiling()) {
+      saveOperationTime += (System.nanoTime() - startSave);
+      vertexCount++;
+      vertexCreationTime += (System.nanoTime() - startVertex);
+    }
+
     return vertex;
   }
 
@@ -352,6 +383,8 @@ public class CreateStep extends AbstractExecutionStep {
    * Creates an edge between two vertices.
    */
   private Edge createEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern, final Result currentResult) {
+    final long startEdge = context.isProfiling() ? System.nanoTime() : 0;
+
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
 
     // Ensure edge type exists (Cypher auto-creates types)
@@ -361,10 +394,20 @@ public class CreateStep extends AbstractExecutionStep {
 
     // Set properties from pattern
     if (relPattern.hasProperties()) {
+      final long startProps = context.isProfiling() ? System.nanoTime() : 0;
       setPropertiesOnEdge(edge, relPattern.getProperties(), currentResult);
+      if (context.isProfiling())
+        propertyEvaluationTime += (System.nanoTime() - startProps);
     }
 
+    final long startSave = context.isProfiling() ? System.nanoTime() : 0;
     edge.save();
+    if (context.isProfiling()) {
+      saveOperationTime += (System.nanoTime() - startSave);
+      edgeCount++;
+      edgeCreationTime += (System.nanoTime() - startEdge);
+    }
+
     return edge;
   }
 
@@ -377,7 +420,8 @@ public class CreateStep extends AbstractExecutionStep {
    */
   private void setProperties(final MutableDocument document, final Map<String, Object> properties, final Result currentResult) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      final String key = entry.getKey();
+      // Intern property names to reduce string allocations in bulk operations
+      final String key = entry.getKey().intern();
       Object value = entry.getValue();
 
       // Resolve parameter references
@@ -446,7 +490,8 @@ public class CreateStep extends AbstractExecutionStep {
    */
   private void setPropertiesOnEdge(final MutableEdge edge, final Map<String, Object> properties, final Result currentResult) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      final String key = entry.getKey();
+      // Intern property names to reduce string allocations in bulk operations
+      final String key = entry.getKey().intern();
       Object value = entry.getValue();
 
       // Resolve parameter references
@@ -480,8 +525,55 @@ public class CreateStep extends AbstractExecutionStep {
       if (rowCount > 0)
         builder.append(", ").append(getRowCountFormatted());
       builder.append(")");
+
+      // Add detailed breakdown if we have metrics
+      if (vertexCount > 0 || edgeCount > 0) {
+        builder.append("\n").append(ind).append("  ");
+        if (vertexCount > 0) {
+          builder.append("├─ Vertices: ").append(vertexCount);
+          builder.append(" (").append(formatTime(vertexCreationTime)).append(")");
+        }
+        if (edgeCount > 0) {
+          if (vertexCount > 0)
+            builder.append("\n").append(ind).append("  ");
+          builder.append("├─ Edges: ").append(edgeCount);
+          builder.append(" (").append(formatTime(edgeCreationTime)).append(")");
+        }
+        if (propertyEvaluationTime > 0) {
+          builder.append("\n").append(ind).append("  ");
+          builder.append("├─ Property eval: ").append(formatTime(propertyEvaluationTime));
+          final double propPercent = 100.0 * propertyEvaluationTime / cost;
+          builder.append(String.format(" (%.1f%%)", propPercent));
+        }
+        if (saveOperationTime > 0) {
+          builder.append("\n").append(ind).append("  ");
+          builder.append("├─ Save ops: ").append(formatTime(saveOperationTime));
+          final double savePercent = 100.0 * saveOperationTime / cost;
+          builder.append(String.format(" (%.1f%%)", savePercent));
+        }
+        if (batchCount > 0) {
+          builder.append("\n").append(ind).append("  ");
+          builder.append("└─ Batches: ").append(batchCount);
+          builder.append(" (tx commits: ~").append(transactionCommits).append(")");
+          if (vertexCount > 0 || edgeCount > 0) {
+            final long totalEntities = vertexCount + edgeCount;
+            final long avgPerBatch = totalEntities / batchCount;
+            builder.append(", avg ").append(avgPerBatch).append("/batch");
+          }
+        }
+      }
     }
     return builder.toString();
+  }
+
+  private String formatTime(final long nanos) {
+    if (nanos < 1000)
+      return nanos + "ns";
+    if (nanos < 1_000_000)
+      return String.format("%.1fμs", nanos / 1000.0);
+    if (nanos < 1_000_000_000)
+      return String.format("%.1fms", nanos / 1_000_000.0);
+    return String.format("%.2fs", nanos / 1_000_000_000.0);
   }
 
   private static String getIndent(final int depth, final int indent) {

@@ -28,10 +28,11 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.Map;
 
 /**
- * Mutable edge that supports updates. After any changes, call the method {@link #save()} to mark the record as dirty in the current transaction, so the
+ * Mutable edge that supports updates. After any changes, call the method {@link #save()} to mark the record as dirty
+ * in the current transaction, so the
  * changes will be persistent at {@link Transaction#commit()} time.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -131,6 +132,17 @@ public class MutableEdge extends MutableDocument implements Edge {
   public MutableEdge set(final String name, final Object value) {
     super.set(name, value);
     return this;
+  }
+
+  @Override
+  public MutableEdge set(final String name1, final Object value1, final String name2, final Object value2) {
+    return (MutableEdge) super.set(name1, value1, name2, value2);
+  }
+
+  @Override
+  public MutableEdge set(final String name1, final Object value1, final String name2, final Object value2,
+                         final String name3, final Object value3) {
+    return (MutableEdge) super.set(name1, value1, name2, value2, name3, value3);
   }
 
   @Override

@@ -20,7 +20,10 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.utility.ResettableIterator;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.Optional;
 
 /**
  * Created by luigidellaquila on 07/07/16.
@@ -105,5 +108,10 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
     final InternalResultSet copy = new InternalResultSet();
     copy.content = this.content;
     return copy;
+  }
+
+  @Override
+  public String toString() {
+    return getExecutionPlan().get().prettyPrint(0, 2);
   }
 }
