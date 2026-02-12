@@ -29,7 +29,10 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Mutable vertex that supports updates. After any changes, call the method {@link #save()} to mark the record as
