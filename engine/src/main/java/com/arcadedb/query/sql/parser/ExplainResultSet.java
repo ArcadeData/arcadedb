@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Optional;
 
 /**
  * Created by luigidellaquila on 08/07/16.
@@ -56,5 +56,10 @@ public class ExplainResultSet implements ResultSet {
   @Override
   public Optional<ExecutionPlan> getExecutionPlan() {
     return Optional.of(executionPlan);
+  }
+
+  @Override
+  public String toString() {
+    return getExecutionPlan().get().prettyPrint(0, 2);
   }
 }
