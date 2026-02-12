@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -42,6 +43,14 @@ public class MapExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    // Fast path for single-entry maps (common for duration({seconds: value}))
+    if (entries.size() == 1) {
+      final Map.Entry<String, Expression> entry = entries.entrySet().iterator().next();
+      final Object value = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(entry.getValue(), result, context);
+      return CollectionUtils.singletonMap(entry.getKey(), value);
+    }
+
+    // Standard path for multi-entry maps
     final Map<String, Object> map = new LinkedHashMap<>();
     for (final Map.Entry<String, Expression> entry : entries.entrySet())
       map.put(entry.getKey(), OpenCypherQueryEngine.getExpressionEvaluator().evaluate(entry.getValue(), result, context));
