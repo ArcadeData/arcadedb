@@ -427,8 +427,18 @@
       e.preventDefault();
     });
 
-    new ClipboardJS("#jsonToClipboard").on("success", function (e) {
-      globalNotify("Content", "successfully copied in the clipboard", "success");
+    // Native Clipboard API replacement for ClipboardJS
+    // Use .off() first to prevent multiple bindings if initQuery is called multiple times
+    $("#jsonToClipboard").off("click").on("click", async function(e) {
+      e.preventDefault();
+      const text = $("#resultJson").val() || $("#resultJson").text();
+      try {
+        await navigator.clipboard.writeText(text);
+        globalNotify("Content", "successfully copied in the clipboard", "success");
+      } catch (err) {
+        console.error("Failed to copy to clipboard:", err);
+        globalNotify("Error", "Failed to copy to clipboard", "danger");
+      }
     });
 
     renderCodeEditor();

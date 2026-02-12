@@ -146,14 +146,6 @@ module.exports = {
           to: 'css/sweetalert2.min.css',
         },
         {
-          from: 'node_modules/notyf/notyf.min.js',
-          to: 'js/notyf.min.js',
-        },
-        {
-          from: 'node_modules/notyf/notyf.min.css',
-          to: 'css/notyf.min.css',
-        },
-        {
           from: 'node_modules/cytoscape/dist/cytoscape.min.js',
           to: 'js/cytoscape.min.js',
         },
@@ -190,12 +182,21 @@ module.exports = {
           to: 'js/sql.js',
         },
         {
-          from: 'node_modules/cytoscape-cola/cytoscape-cola.js',
-          to: 'js/cytoscape-cola.js',
-        },
-        {
           from: 'node_modules/cytoscape-cxtmenu/cytoscape-cxtmenu.js',
           to: 'js/cytoscape-cxtmenu.js',
+        },
+        // fcose layout and its dependencies (must load in order: layout-base -> cose-base -> fcose)
+        {
+          from: 'node_modules/layout-base/layout-base.js',
+          to: 'js/layout-base.js',
+        },
+        {
+          from: 'node_modules/cose-base/cose-base.js',
+          to: 'js/cose-base.js',
+        },
+        {
+          from: 'node_modules/cytoscape-fcose/cytoscape-fcose.js',
+          to: 'js/cytoscape-fcose.js',
         },
         {
           from: 'node_modules/cytoscape-graphml/cytoscape-graphml.js',
@@ -204,14 +205,6 @@ module.exports = {
         {
           from: 'node_modules/cytoscape-node-html-label/dist/cytoscape-node-html-label.js',
           to: 'js/cytoscape-node-html-label.min.js',
-        },
-        {
-          from: 'node_modules/webcola/WebCola/cola.min.js',
-          to: 'js/cola.min.js',
-        },
-        {
-          from: 'node_modules/clipboard/dist/clipboard.min.js',
-          to: 'js/clipboard.min.js',
         },
         {
           from: 'node_modules/@fortawesome/fontawesome-free/css/all.min.css',
