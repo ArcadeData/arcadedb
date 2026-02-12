@@ -24,11 +24,10 @@
     "@popperjs/core": "^2.11.8",
     "apexcharts": "^5.3.6",
     "bootstrap": "^5.3.8",
-    "clipboard": "^2.0.11",
     "codemirror": "^5.65.21",
     "cytoscape": "^3.33.1",
-    "cytoscape-cola": "^2.5.1",
     "cytoscape-cxtmenu": "^3.5.0",
+    "cytoscape-fcose": "^2.2.0",
     "cytoscape-graphml": "^1.0.6",
     "cytoscape-node-html-label": "^1.2.2",
     "datatables.net": "^2.3.7",
@@ -41,11 +40,9 @@
     "datatables.net-select-bs5": "^3.1.3",
     "jquery": "^4.0.0",
     "jszip": "^3.10.1",
-    "notyf": "^3.10.0",
     "pdfmake": "^0.3.3",
     "swagger-ui-dist": "^5.31.0",
-    "sweetalert2": "^11.26.18",
-    "webcola": "^3.4.0"
+    "sweetalert2": "^11.26.18"
   },
   "devDependencies": {
     "copy-webpack-plugin": "^13.0.1",
