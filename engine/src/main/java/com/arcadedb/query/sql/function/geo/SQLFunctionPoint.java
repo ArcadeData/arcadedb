@@ -39,7 +39,8 @@ public class SQLFunctionPoint extends SQLFunctionAbstract {
     if (params.length != 2)
       throw new IllegalArgumentException("point() requires X and Y as parameters");
 
-    return GeoUtils.getSpatialContext().getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));
+    // Use lightweight Point for fast serialization (optimized for bulk inserts)
+    return new LightweightPoint(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));
   }
 
   public String getSyntax() {
