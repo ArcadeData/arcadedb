@@ -184,10 +184,7 @@ public class GraphImporter {
       sourceVertex.set(vertexProperties);
 
       database.async().createRecord(sourceVertex, newDocument -> {
-        // PRE-CREATE OUT/IN CHUNKS TO SPEEDUP EDGE CREATION
-        database.getGraphEngine().createOutEdgeChunk(sourceVertex);
-        database.getGraphEngine().createInEdgeChunk(sourceVertex);
-
+        // v1: Edge chunks will be created with correct bucket IDs when edges are added
         verticesIndex.put(transformedVertexId, newDocument.getIdentity());
       });
     }

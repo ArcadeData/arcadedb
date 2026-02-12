@@ -213,7 +213,7 @@ public class GraphEngine {
     final RID sourceVertexRID = sourceVertex.getIdentity();
 
     final List<Edge> edges = new ArrayList<>(connections.size());
-    final List<Pair<Identifiable, Identifiable>> outEdgePairs = new ArrayList<>();
+    final java.util.Map<Integer, List<Pair<Identifiable, Identifiable>>> edgesByBucket = new java.util.HashMap<>();
 
     for (final CreateEdgeOperation connection : connections) {
       final MutableEdge edge;
@@ -229,22 +229,29 @@ public class GraphEngine {
 
       edge.save();
 
-      outEdgePairs.add(new Pair<>(edge, destinationVertex));
+      // Group edges by their bucket ID for v1 edge list format
+      final int edgeBucketId = edge.getIdentity().getBucketId();
+      edgesByBucket.computeIfAbsent(edgeBucketId, k -> new ArrayList<>()).add(new Pair<>(edge, destinationVertex));
 
       edges.add(edge);
     }
 
     sourceVertex = sourceVertex.modify();
 
-    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) sourceVertex);
+    // Create edge chunks and link edges for each bucket
+    for (final java.util.Map.Entry<Integer, List<Pair<Identifiable, Identifiable>>> entry : edgesByBucket.entrySet()) {
+      final int edgeBucketId = entry.getKey();
+      final List<Pair<Identifiable, Identifiable>> outEdgePairs = entry.getValue();
 
-    final EdgeLinkedList outLinkedList = new EdgeLinkedList(sourceVertex, Vertex.DIRECTION.OUT, outChunk);
-    outLinkedList.addAll(outEdgePairs);
+      final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) sourceVertex, edgeBucketId);
+
+      final EdgeLinkedList outLinkedList = new EdgeLinkedList(sourceVertex, Vertex.DIRECTION.OUT, outChunk);
+      outLinkedList.addAll(outEdgePairs);
+    }
 
     if (bidirectional) {
-      for (int i = 0; i < outEdgePairs.size(); ++i) {
-        final Pair<Identifiable, Identifiable> edge = outEdgePairs.get(i);
-        connectIncomingEdge(edge.getSecond(), edge.getFirst().getIdentity(), sourceVertexRID);
+      for (final Edge edge : edges) {
+        connectIncomingEdge(edge.getIn(), edge.getIdentity(), sourceVertexRID);
       }
     }
 

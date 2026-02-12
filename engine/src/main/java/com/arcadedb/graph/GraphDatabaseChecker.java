@@ -158,7 +158,8 @@ public class GraphDatabaseChecker {
     if (!outEdgesToReconnect.isEmpty()) {
       for (Edge e : outEdgesToReconnect) {
         final MutableVertex vertex = e.getOutVertex().modify();
-        final EdgeSegment outChunk = graphEngine.createOutEdgeChunk(vertex);
+        final int edgeBucketId = e.getIdentity().getBucketId();
+        final EdgeSegment outChunk = graphEngine.createOutEdgeChunk(vertex, edgeBucketId);
         final EdgeLinkedList outLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, outChunk);
         outLinkedList.add(e.getIdentity(), e.getIn());
       }
@@ -169,7 +170,8 @@ public class GraphDatabaseChecker {
     if (!inEdgesToReconnect.isEmpty()) {
       for (Edge e : inEdgesToReconnect) {
         final MutableVertex vertex = e.getInVertex().modify();
-        final EdgeSegment inChunk = graphEngine.createInEdgeChunk(vertex);
+        final int edgeBucketId = e.getIdentity().getBucketId();
+        final EdgeSegment inChunk = graphEngine.createInEdgeChunk(vertex, edgeBucketId);
         final EdgeLinkedList inLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, inChunk);
         inLinkedList.add(e.getIdentity(), e.getOut());
       }
