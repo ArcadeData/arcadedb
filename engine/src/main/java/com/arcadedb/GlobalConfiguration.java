@@ -269,6 +269,11 @@ public enum GlobalConfiguration {
   OPENCYPHER_PLAN_CACHE("arcadedb.opencypher.planCache", SCOPE.DATABASE,
       "Maximum number of OpenCypher execution plans to keep in cache (frequency-based eviction)", Integer.class, 300),
 
+  OPENCYPHER_BULK_CREATE_BATCH_SIZE("arcadedb.opencypher.bulkCreateBatchSize", SCOPE.DATABASE,
+      "Batch size for bulk CREATE operations. When a CREATE follows an UNWIND producing multiple rows, records are accumulated and created in batches to reduce transaction overhead. " +
+      "Higher values improve performance but consume more memory. Default: 20000. Recommended range: 10000-100000. Set to 0 to disable batching.",
+      Integer.class, 20_000),
+
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
 
