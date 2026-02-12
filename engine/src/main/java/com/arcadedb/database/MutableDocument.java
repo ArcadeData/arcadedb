@@ -26,15 +26,22 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.lang.reflect.*;
-import java.util.*;
+import java.lang.reflect.Array;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 /**
- * Mutable document implementation. Nested objects are not tracked, so if you update any embedded objects, you need to call {@link #save()} to mark the record
+ * Mutable document implementation. Nested objects are not tracked, so if you update any embedded objects, you need
+ * to call {@link #save()} to mark the record
  * as dirty in the current transaction.
  *
  * @author Luca Garulli
@@ -151,7 +158,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
-   * Sets the property value in the document. If the property has been defined in the schema, the value is converted according to the property type.
+   * Sets the property value in the document. If the property has been defined in the schema, the value is converted
+   * according to the property type.
    */
   public MutableDocument set(final String name, Object value) {
     checkForLazyLoadingProperties();
@@ -162,7 +170,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
-   * Sets the property values in the document. If any properties has been defined in the schema, the value is converted according to the property type.
+   * Sets the property values in the document. If any properties has been defined in the schema, the value is
+   * converted according to the property type.
    *
    * @param properties Array containing pairs of name (String) and value (Object)
    */
@@ -186,12 +195,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
-   * Creates a new embedded document attached to the current document. If the property name already exists, and it is a collection, then the embedded document
+   * Creates a new embedded document attached to the current document. If the property name already exists, and it is
+   * a collection, then the embedded document
    * is added to the collection.
    *
    * @param embeddedTypeName Embedded type name
    * @param propertyName     Current document's property name where the embedded document is stored
-   *
    * @return MutableEmbeddedDocument instance
    */
   public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
@@ -209,17 +218,17 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
-   * Creates a new embedded document attached to the current document. If the property name already exists, and it is a map, then the embedded document
+   * Creates a new embedded document attached to the current document. If the property name already exists, and it is
+   * a map, then the embedded document
    * is added to the collection.
    *
    * @param embeddedTypeName Embedded type name
    * @param propertyName     Current document's property name where the embedded document is stored
    * @param mapKey           key for the map to assign the embedded document
-   *
    * @return MutableEmbeddedDocument instance
    */
   public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName,
-      final String mapKey) {
+                                                     final String mapKey) {
     final Object old = get(propertyName);
 
     final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
@@ -239,20 +248,21 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
-   * Creates a new embedded document attached to the current document inside a map that must be previously created and set.
+   * Creates a new embedded document attached to the current document inside a map that must be previously created
+   * and set.
    *
    * @param embeddedTypeName Embedded type name
    * @param propertyName     Current document's property name where the embedded document is stored
    * @param propertyMapKey   Key to use when storing the embedded document in the map
-   *
    * @return MutableEmbeddedDocument instance
    */
   public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName,
-      final Object propertyMapKey) {
+                                                     final Object propertyMapKey) {
     final Object old = get(propertyName);
 
     if (old == null)
-      throw new IllegalArgumentException("Cannot store an embedded document in a null map. Create and set the map first");
+      throw new IllegalArgumentException("Cannot store an embedded document in a null map. Create and set the map " +
+          "first");
 
     if (old instanceof Collection)
       throw new IllegalArgumentException("Cannot store an embedded document in a map because a collection was found");
@@ -269,11 +279,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
-   * Sets the property values in the document from a map. If any properties has been defined in the schema, the value is converted according to the property type.
+   * Sets the property values in the document from a map. If any properties has been defined in the schema, the value
+   * is converted according to the property type.
    *
    * @param properties {@literal Map<String,Object>} containing pairs of name (String) and value (Object)
    */
   public MutableDocument set(final Map<String, Object> properties) {
+    if (properties == null || properties.isEmpty())
+      return this;
+
     checkForLazyLoadingProperties();
     dirty = true;
 
@@ -390,7 +404,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return;
 
       buffer.position(propertiesStartingPosition);
-      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this), rid);
+      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer,
+          new EmbeddedModifierObject(this), rid);
     }
   }
 
@@ -425,7 +440,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
                   final DocumentType schemaType = database.getSchema().getType(embType);
                   if (!schemaType.instanceOf(ofType))
                     throw new ValidationException(
-                        "Embedded type '" + embType + "' is not compatible with the type defined in the schema constraint '"
+                        "Embedded type '" + embType + "' is not compatible with the type defined in the schema " +
+                            "constraint '"
                             + ofType + "'");
                 }
               }
@@ -438,7 +454,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return Type.convert(database, value, javaImplementation, property);
       } catch (final Exception e) {
         throw new IllegalArgumentException(
-            "Cannot convert type '" + value.getClass() + "' to '" + property.getType().name() + "' found in property '" + name
+            "Cannot convert type '" + value.getClass() + "' to '" + property.getType().name() + "' found in property " +
+                "'" + name
                 + "'", e);
       }
     }
@@ -449,7 +466,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   private Object setTransformValue(final Object value, final String propertyName) {
     if (value instanceof EmbeddedDocument document) {
       if (!document.getDatabase().getName().equals(database.getName())) {
-        // SET DIRTY TO FORCE RE-MARSHALL. IF THE RECORD COMES FROM ANOTHER DATABASE WITHOUT A FULL RE-MARSHALL, IT WILL HAVE THE DICTIONARY IDS OF THE OTHER DATABASE
+        // SET DIRTY TO FORCE RE-MARSHALL. IF THE RECORD COMES FROM ANOTHER DATABASE WITHOUT A FULL RE-MARSHALL, IT
+        // WILL HAVE THE DICTIONARY IDS OF THE OTHER DATABASE
         ((BaseDocument) value).buffer.rewind();
         final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
             .newMutableRecord(database, document.getType(), null, ((BaseDocument) value).buffer,

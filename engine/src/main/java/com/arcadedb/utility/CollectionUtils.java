@@ -166,6 +166,38 @@ public class CollectionUtils {
   }
 
   /**
+   * Returns an immutable map optimized for the given size.
+   * For single-entry maps, returns a lightweight SingletonMap.
+   * For empty maps, returns Collections.emptyMap().
+   * Otherwise, returns Collections.unmodifiableMap() of the input.
+   *
+   * @param map the source map
+   * @return an immutable map, optimized based on size
+   */
+  public static <K, V> Map<K, V> immutableMap(final Map<K, V> map) {
+    if (map == null || map.isEmpty())
+      return Collections.emptyMap();
+
+    if (map.size() == 1) {
+      final Map.Entry<K, V> entry = map.entrySet().iterator().next();
+      return new SingletonMap<>(entry.getKey(), entry.getValue());
+    }
+
+    return Collections.unmodifiableMap(map);
+  }
+
+  /**
+   * Creates an immutable single-entry map using lightweight SingletonMap.
+   *
+   * @param key the map key
+   * @param value the map value
+   * @return a lightweight immutable single-entry map
+   */
+  public static <K, V> Map<K, V> singletonMap(final K key, final V value) {
+    return new SingletonMap<>(key, value);
+  }
+
+  /**
    * Converts any array (including primitive arrays) to a List.
    * Handles the special case of primitive arrays which cannot be cast to Object[].
    */

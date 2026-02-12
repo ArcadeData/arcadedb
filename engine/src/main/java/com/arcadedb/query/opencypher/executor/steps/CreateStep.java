@@ -420,7 +420,8 @@ public class CreateStep extends AbstractExecutionStep {
    */
   private void setProperties(final MutableDocument document, final Map<String, Object> properties, final Result currentResult) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      final String key = entry.getKey();
+      // Intern property names to reduce string allocations in bulk operations
+      final String key = entry.getKey().intern();
       Object value = entry.getValue();
 
       // Resolve parameter references
@@ -489,7 +490,8 @@ public class CreateStep extends AbstractExecutionStep {
    */
   private void setPropertiesOnEdge(final MutableEdge edge, final Map<String, Object> properties, final Result currentResult) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      final String key = entry.getKey();
+      // Intern property names to reduce string allocations in bulk operations
+      final String key = entry.getKey().intern();
       Object value = entry.getValue();
 
       // Resolve parameter references
