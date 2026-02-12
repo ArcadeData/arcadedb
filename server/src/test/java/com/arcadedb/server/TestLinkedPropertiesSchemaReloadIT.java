@@ -177,13 +177,13 @@ public class TestLinkedPropertiesSchemaReloadIT {
           if (!AUTO_TRANS)
             sdb.begin();
           // System.out.println(
-              "Transactions=" + DatabaseContext.INSTANCE.getContextIfExists(sdb.getDatabasePath()).transactions.size());
+          //    "Transactions=" + DatabaseContext.INSTANCE.getContextIfExists(sdb.getDatabasePath()).transactions.size());
           sdb.command("sqlscript", schemaScript);
           if (!AUTO_TRANS)
             sdb.commit();
           // System.out.println("Update script complete");
           // System.out.println(
-              "Transactions=" + DatabaseContext.INSTANCE.getContextIfExists(sdb.getDatabasePath()).transactions.size());
+          //    "Transactions=" + DatabaseContext.INSTANCE.getContextIfExists(sdb.getDatabasePath()).transactions.size());
         } catch (Exception e2) {
           // System.out.println("\n\nException running update script: " + e.getMessage());
         }
