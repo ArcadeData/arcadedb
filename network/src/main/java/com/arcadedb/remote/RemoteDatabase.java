@@ -478,6 +478,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   @Override
+  public ResultSet command(final String language, final String command) {
+    return command(language, command, new HashMap<>());
+  }
+
+  @Override
   public ResultSet command(final String language, final String command, final Object... args) {
     checkDatabaseIsOpen();
     stats.commands.incrementAndGet();
@@ -485,6 +490,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, true,
         (connection, response) -> createResultSet(response));
+  }
+
+  @Override
+  public ResultSet query(final String language, final String query) {
+    return query(language, query, new HashMap<>());
   }
 
   @Override

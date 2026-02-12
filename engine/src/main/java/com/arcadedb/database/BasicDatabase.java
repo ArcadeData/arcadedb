@@ -244,6 +244,16 @@ public interface BasicDatabase extends AutoCloseable {
   ResultSet command(String language, String query, ContextConfiguration configuration, Map<String, Object> args);
 
   /**
+   * Executes a command with no parameters (optimized - avoids varargs array allocation).
+   *
+   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
+   * @param query    The command to be interpreted in the specified language as a string
+   *
+   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
+   */
+  ResultSet command(String language, String query);
+
+  /**
    * Executes a command by specifying the language and an optional variable array of arguments.
    *
    * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
@@ -253,6 +263,16 @@ public interface BasicDatabase extends AutoCloseable {
    * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
    */
   ResultSet command(String language, String query, Object... args);
+
+  /**
+   * Executes a query with no parameters (optimized - avoids varargs array allocation).
+   *
+   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
+   * @param query    The command to be interpreted in the specified language as a string
+   *
+   * @return The {@link ResultSet} object containing the result of the operation if succeeded, otherwise a runtime exception is thrown
+   */
+  ResultSet query(String language, String query);
 
   /**
    * Executes a query as an idempotent (read only) command by specifying the language and an optional variable array of arguments.

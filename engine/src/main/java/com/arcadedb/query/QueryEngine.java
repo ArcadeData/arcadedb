@@ -46,9 +46,23 @@ public interface QueryEngine {
 
   ResultSet query(String query, ContextConfiguration configuration, Map<String, Object> parameters);
 
+  /**
+   * Optimized overload for queries with no parameters - avoids varargs array allocation.
+   */
+  default ResultSet query(String query, ContextConfiguration configuration) {
+    return query(query, configuration, Collections.emptyMap());
+  }
+
   ResultSet query(String query, ContextConfiguration configuration, Object... parameters);
 
   ResultSet command(String query, ContextConfiguration configuration, Map<String, Object> parameters);
+
+  /**
+   * Optimized overload for commands with no parameters - avoids varargs array allocation.
+   */
+  default ResultSet command(String query, ContextConfiguration configuration) {
+    return command(query, configuration, Collections.emptyMap());
+  }
 
   ResultSet command(String query, ContextConfiguration configuration, Object... parameters);
 

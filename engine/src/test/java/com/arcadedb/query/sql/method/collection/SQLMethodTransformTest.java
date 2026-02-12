@@ -402,6 +402,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public ResultSet command(final String language, final String query) {
+        return null;
+      }
+
+      @Override
       public ResultSet query(String language, String query, Map<String, Object> args) {
         return null;
       }
@@ -651,6 +656,11 @@ class SQLMethodTransformTest {
 
       @Override
       public ResultSet command(String language, String query, Object... args) {
+        return null;
+      }
+
+      @Override
+      public ResultSet query(final String language, final String query) {
         return null;
       }
 

@@ -52,7 +52,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {
     super(database, type, rid, null);
-    this.map = new LinkedHashMap<>();
+    // Optimized: initial capacity 16 to handle typical documents (5-20 properties) without resize
+    this.map = new LinkedHashMap<>(16);
   }
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid, final Binary buffer) {
@@ -106,7 +107,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
-    final Map<String, Object> result = new HashMap<>(map);
+    // Optimized: add extra capacity for metadata fields (@rid, @type, @cat)
+    final Map<String, Object> result = new HashMap<>(map.size() + (includeMetadata ? 3 : 0));
+    result.putAll(map);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, type.getName());
@@ -166,6 +169,42 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     dirty = true;
     value = setTransformValue(value, name);
     map.put(name, convertValueToSchemaType(name, value, type));
+    return this;
+  }
+
+  /**
+   * Optimized overload for setting 2 properties - avoids varargs array allocation.
+   */
+  public MutableDocument set(final String name1, final Object value1, final String name2, final Object value2) {
+    checkForLazyLoadingProperties();
+    dirty = true;
+
+    Object v1 = setTransformValue(value1, name1);
+    map.put(name1, convertValueToSchemaType(name1, v1, type));
+
+    Object v2 = setTransformValue(value2, name2);
+    map.put(name2, convertValueToSchemaType(name2, v2, type));
+
+    return this;
+  }
+
+  /**
+   * Optimized overload for setting 3 properties - avoids varargs array allocation.
+   */
+  public MutableDocument set(final String name1, final Object value1, final String name2, final Object value2,
+                             final String name3, final Object value3) {
+    checkForLazyLoadingProperties();
+    dirty = true;
+
+    Object v1 = setTransformValue(value1, name1);
+    map.put(name1, convertValueToSchemaType(name1, v1, type));
+
+    Object v2 = setTransformValue(value2, name2);
+    map.put(name2, convertValueToSchemaType(name2, v2, type));
+
+    Object v3 = setTransformValue(value3, name3);
+    map.put(name3, convertValueToSchemaType(name3, v3, type));
+
     return this;
   }
 
