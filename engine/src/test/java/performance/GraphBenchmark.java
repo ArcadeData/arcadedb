@@ -52,16 +52,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * LDBC Social Network Benchmark-inspired graph benchmark for ArcadeDB.
- *
+ * <p>
  * Measures performance across 4 phases:
  * - Phase 1: Graph creation (8 vertex types, 14 edge types)
  * - Phase 2: Simple lookups (indexed and non-indexed)
  * - Phase 3: Simple traversals (1-hop)
  * - Phase 4: Complex traversals (multi-hop, pattern matching)
- *
+ * <p>
  * Queries run in both SQL and OpenCypher side by side.
  * Database is preserved between runs -- only the first execution pays generation cost.
- *
+ * <p>
  * Run with: mvn test -pl engine -Dtest=GraphBenchmark -Dgroups=benchmark
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -81,10 +81,10 @@ class GraphBenchmark {
 
   // Edge density
   private static final int AVG_KNOWS_PER_PERSON     = 40;
-  private static final int AVG_LIKES_PER_PERSON      = 30;
-  private static final int AVG_TAGS_PER_POST          = 3;
-  private static final int AVG_INTERESTS_PER_PERSON   = 5;
-  private static final int AVG_MEMBERS_PER_FORUM      = 20;
+  private static final int AVG_LIKES_PER_PERSON     = 30;
+  private static final int AVG_TAGS_PER_POST        = 3;
+  private static final int AVG_INTERESTS_PER_PERSON = 5;
+  private static final int AVG_MEMBERS_PER_FORUM    = 20;
 
   // Runtime config
   private static final int    PARALLEL     = 4;
@@ -92,27 +92,27 @@ class GraphBenchmark {
   private static final String DB_PATH      = "target/databases/graph-benchmark";
 
   // Benchmark iterations
-  private static final int WARMUP_ITERATIONS = 5;
-  private static final int LOOKUP_ITERATIONS = 1_000;
-  private static final int SIMPLE_TRAVERSAL_ITERATIONS = 500;
+  private static final int WARMUP_ITERATIONS            = 5;
+  private static final int LOOKUP_ITERATIONS            = 1_000;
+  private static final int SIMPLE_TRAVERSAL_ITERATIONS  = 500;
   private static final int COMPLEX_TRAVERSAL_ITERATIONS = 200;
-  private static final int SHORTEST_PATH_ITERATIONS = 100;
+  private static final int SHORTEST_PATH_ITERATIONS     = 100;
 
   // Synthetic data pools
-  private static final String[] FIRST_NAMES = {
+  private static final String[] FIRST_NAMES     = {
       "Alice", "Bob", "Carol", "David", "Eve", "Frank", "Grace", "Henry", "Irene", "Jack",
       "Karen", "Leo", "Maria", "Nick", "Olivia", "Peter", "Quinn", "Rachel", "Steve", "Tina",
       "Uma", "Victor", "Wendy", "Xavier", "Yuki", "Zara", "Ahmed", "Bianca", "Carlos", "Diana"
   };
-  private static final String[] LAST_NAMES = {
+  private static final String[] LAST_NAMES      = {
       "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez",
       "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin"
   };
-  private static final String[] GENDERS = { "male", "female" };
-  private static final String[] BROWSERS = { "Firefox", "Chrome", "Safari", "Edge", "Opera" };
-  private static final String[] LANGUAGES = { "en", "es", "fr", "de", "it", "pt", "ja", "zh", "ko", "ar" };
-  private static final String[] CONTINENTS = { "Africa", "Asia", "Europe", "NorthAmerica", "Oceania", "SouthAmerica" };
-  private static final String[] COUNTRIES = {
+  private static final String[] GENDERS         = { "male", "female" };
+  private static final String[] BROWSERS        = { "Firefox", "Chrome", "Safari", "Edge", "Opera" };
+  private static final String[] LANGUAGES       = { "en", "es", "fr", "de", "it", "pt", "ja", "zh", "ko", "ar" };
+  private static final String[] CONTINENTS      = { "Africa", "Asia", "Europe", "NorthAmerica", "Oceania", "SouthAmerica" };
+  private static final String[] COUNTRIES       = {
       "Germany", "France", "Italy", "Spain", "UK", "Poland", "Netherlands", "Belgium", "Sweden", "Austria",
       "USA", "Canada", "Mexico", "Brazil", "Argentina", "China", "Japan", "India", "Australia", "SouthKorea",
       "Egypt", "Nigeria", "SouthAfrica", "Kenya", "Morocco", "Turkey", "Iran", "Iraq", "Thailand", "Vietnam",
@@ -126,14 +126,14 @@ class GraphBenchmark {
   };
 
   // Instance state
-  private Database database;
+  private Database      database;
   private MeterRegistry registry;
-  private boolean freshlyCreated;
+  private boolean       freshlyCreated;
 
   // Cached sample IDs for benchmark queries (populated after generation or on open)
-  private long[] samplePersonIds;
-  private long[] samplePostIds;
-  private long[] sampleForumIds;
+  private long[]   samplePersonIds;
+  private long[]   samplePostIds;
+  private long[]   sampleForumIds;
   private String[] sampleCityNames;
   private String[] sampleFirstNames;
 
@@ -259,37 +259,55 @@ class GraphBenchmark {
   void phase4_complexTraversals() {
     System.out.println("\n=== Phase 4: Complex Traversals ===");
 
-    // 4a: Friends-of-friends (Cypher only -- SQL expand() cannot exclude direct friends)
+    System.out.println("4a: Friends-of-friends (2-hop KNOWS, excluding direct friends)");
     benchmark("4a", "Friends of friends", COMPLEX_TRAVERSAL_ITERATIONS,
-        null,
-        "MATCH (p:Person {id: $id})-[:KNOWS]-()-[:KNOWS]-(fof) " +
-            "WHERE fof <> p AND NOT (p)-[:KNOWS]-(fof) RETURN DISTINCT fof");
+        """
+            MATCH {type: Person, as: p, where: (id = :id)}.both('KNOWS'){as: mid}.both('KNOWS'){as: fof, where: ($matched.p != $currentMatch)},
+            NOT {as: p}.both('KNOWS'){as: fof}
+            RETURN DISTINCT fof""",
+        """
+            MATCH (p:Person {id: $id})-[:KNOWS]-()-[:KNOWS]-(fof)
+            WHERE fof <> p AND NOT (p)-[:KNOWS]-(fof) RETURN DISTINCT fof""");
 
-    // 4b: Posts by friends in a city (Cypher only -- complex multi-hop pattern)
+    System.out.println(
+        "4b: Posts by friends in a city (multi-hop: Person -> KNOWS -> friend -> IS_LOCATED_IN -> Place, friend <- HAS_CREATOR <- Post)");
     benchmark("4b", "Posts by friends in city", COMPLEX_TRAVERSAL_ITERATIONS,
-        null,
-        "MATCH (p:Person {id: $id})-[:KNOWS]-(friend)-[:IS_LOCATED_IN]->(c:Place {name: $city}), " +
-            "(friend)<-[:HAS_CREATOR]-(post:Post) RETURN post, friend.firstName");
+        """
+            MATCH {type: Person, as: p, where: (id = :id)}.both('KNOWS'){as: friend}.out('IS_LOCATED_IN'){type: Place, where: (name = :city)},
+            {as: friend}.in('HAS_CREATOR'){type: Post, as: post}
+            RETURN post, friend.firstName""",
+        """
+            MATCH (p:Person {id: $id})-[:KNOWS]-(friend)-[:IS_LOCATED_IN]->(c:Place {name: $city}),
+            (friend)<-[:HAS_CREATOR]-(post:Post) RETURN post, friend.firstName""");
 
-    // 4c: Common tags between two Persons' posts (Cypher only -- complex pattern match)
+    System.out.println("4c: Common tags between two Persons' posts");
     benchmark("4c", "Common tags", COMPLEX_TRAVERSAL_ITERATIONS,
-        null,
-        "MATCH (a:Person {id: $id1})<-[:HAS_CREATOR]-(p1)-[:HAS_TAG]->(t:Tag)<-[:HAS_TAG]-(p2)-[:HAS_CREATOR]->(b:Person {id: $id2}) " +
-            "RETURN t.name, count(*) AS freq ORDER BY freq DESC");
+//        """
+//            MATCH {type: Person, as: a, where: (id = :id1)}.in('HAS_CREATOR'){as: p1}.out('HAS_TAG'){type: Tag, as: t}.in('HAS_TAG'){as: p2}.out('HAS_CREATOR'){type: Person, as: b, where: (id = :id2)}
+//            RETURN t.name, count(*) AS freq ORDER BY freq DESC""",
+        null, """
+            MATCH (a:Person {id: $id1})<-[:HAS_CREATOR]-(p1)-[:HAS_TAG]->(t:Tag)<-[:HAS_TAG]-(p2)-[:HAS_CREATOR]->(b:Person {id: $id2})
+            RETURN t.name, count(*) AS freq ORDER BY freq DESC""");
 
-    // 4d: Shortest path via KNOWS (Cypher only -- shortestPath)
+    System.out.println("4d: Shortest path via KNOWS");
     benchmark("4d", "Shortest path", SHORTEST_PATH_ITERATIONS,
-        null,
-        "MATCH path = shortestPath((a:Person {id: $id1})-[:KNOWS*]-(b:Person {id: $id2})) " +
-            "RETURN length(path)");
+        "SELECT shortestPath((SELECT FROM Person WHERE id = :id1), (SELECT FROM Person WHERE id = :id2), 'BOTH', 'KNOWS') AS sp",
+        """
+            MATCH path = shortestPath((a:Person {id: $id1})-[:KNOWS*]-(b:Person {id: $id2}))
+            RETURN length(path)""");
 
-    // 4e: Forum recommendation (Cypher only -- aggregation pattern)
+    System.out.println("4e: Forum recommendation (forums with most of a Person's friends as members)");
     benchmark("4e", "Forum recommendation", COMPLEX_TRAVERSAL_ITERATIONS,
-        null,
-        "MATCH (p:Person {id: $id})-[:KNOWS]-(friend), " +
-            "(forum:Forum)-[:HAS_MEMBER]->(friend) " +
-            "RETURN forum.title, count(friend) AS friendCount " +
-            "ORDER BY friendCount DESC LIMIT 10");
+        """
+            MATCH {type: Person, as: p, where: (id = :id)}.both('KNOWS'){as: friend},
+            {type: Forum, as: forum}.out('HAS_MEMBER'){as: friend}
+            RETURN forum.title, count(friend) AS friendCount
+            ORDER BY friendCount DESC LIMIT 10""",
+        """
+            MATCH (p:Person {id: $id})-[:KNOWS]-(friend),
+            (forum:Forum)-[:HAS_MEMBER]->(friend)
+            RETURN forum.title, count(friend) AS friendCount
+            ORDER BY friendCount DESC LIMIT 10""");
   }
 
   // --- Schema creation (Task 2) ---
