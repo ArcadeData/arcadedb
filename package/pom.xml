@@ -352,6 +352,7 @@
                         </executions>
                         <configuration>
                             <verbose>true</verbose>
+                            <registry>ghcr.io</registry>
                             <images>
                                 <image>
                                     <name>arcadedata/arcadedb</name>
