@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -58,7 +59,7 @@ class AnchorSelectorTest {
 
     // Create logical plan with node having indexed property
     final LogicalPlan plan = createPlanWithNode("p", "Person",
-        Collections.singletonMap("id", 123));
+        CollectionUtils.singletonMap("id", 123));
 
     // When: Select anchor
     final AnchorSelection anchor = anchorSelector.selectAnchor(plan);
@@ -79,7 +80,7 @@ class AnchorSelectorTest {
 
     // Create logical plan with node having property but no index
     final LogicalPlan plan = createPlanWithNode("p", "Person",
-        Collections.singletonMap("name", "Alice"));
+        CollectionUtils.singletonMap("name", "Alice"));
 
     // When: Select anchor
     final AnchorSelection anchor = anchorSelector.selectAnchor(plan);
@@ -123,8 +124,8 @@ class AnchorSelectorTest {
 
     // Create plan with two nodes
     final LogicalPlan plan = createPlanWithTwoNodes(
-        "p", "Person", Collections.singletonMap("id", 123),
-        "c", "Company", Collections.singletonMap("name", "Acme")
+        "p", "Person", CollectionUtils.singletonMap("id", 123),
+        "c", "Company", CollectionUtils.singletonMap("name", "Acme")
     );
 
     // When: Select anchor
@@ -143,8 +144,8 @@ class AnchorSelectorTest {
 
     // Create plan with two nodes, both with properties but no indexes
     final LogicalPlan plan = createPlanWithTwoNodes(
-        "p", "Person", Collections.singletonMap("age", 30),
-        "c", "Company", Collections.singletonMap("name", "Acme")
+        "p", "Person", CollectionUtils.singletonMap("age", 30),
+        "c", "Company", CollectionUtils.singletonMap("name", "Acme")
     );
 
     // When: Select anchor
@@ -171,8 +172,8 @@ class AnchorSelectorTest {
 
     // Create plan with two nodes
     final LogicalPlan plan = createPlanWithTwoNodes(
-        "p", "Person", Collections.singletonMap("id", 123),
-        "c", "Company", Collections.singletonMap("country", "USA")
+        "p", "Person", CollectionUtils.singletonMap("id", 123),
+        "c", "Company", CollectionUtils.singletonMap("country", "USA")
     );
 
     // When: Select anchor
@@ -195,7 +196,7 @@ class AnchorSelectorTest {
 
     // Create plan with node matching first column of composite index
     final LogicalPlan plan = createPlanWithNode("p", "Person",
-        Collections.singletonMap("firstName", "John"));
+        CollectionUtils.singletonMap("firstName", "John"));
 
     // When: Select anchor
     final AnchorSelection anchor = anchorSelector.selectAnchor(plan);
@@ -226,7 +227,7 @@ class AnchorSelectorTest {
     statistics.addIndex(index);
 
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.singletonMap("email", "alice@example.com"));
+        CollectionUtils.singletonMap("email", "alice@example.com"));
 
     // When: Check if should use index
     final boolean shouldUse = anchorSelector.shouldUseIndex(node, "Person");
@@ -241,7 +242,7 @@ class AnchorSelectorTest {
     statistics.setCardinality("Person", 10000);
 
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.singletonMap("name", "Alice"));
+        CollectionUtils.singletonMap("name", "Alice"));
 
     // When: Check if should use index
     final boolean shouldUse = anchorSelector.shouldUseIndex(node, "Person");

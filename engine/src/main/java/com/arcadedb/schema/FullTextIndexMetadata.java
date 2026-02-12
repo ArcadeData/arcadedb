@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -157,7 +158,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @return map of field name to analyzer class name
    */
   public Map<String, String> getFieldAnalyzers() {
-    return Collections.unmodifiableMap(fieldAnalyzers);
+    return CollectionUtils.immutableMap(fieldAnalyzers);
   }
 
   /**

@@ -81,6 +81,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
@@ -1722,7 +1723,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public Map<String, Object> getGlobalVariables() {
-    return Collections.unmodifiableMap(globalVariables);
+    return CollectionUtils.immutableMap(globalVariables);
   }
 
   public QueryEngineManager getQueryEngineManager() {

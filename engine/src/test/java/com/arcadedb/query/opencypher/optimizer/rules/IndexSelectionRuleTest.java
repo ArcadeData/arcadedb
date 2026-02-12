@@ -27,6 +27,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -62,8 +63,8 @@ class IndexSelectionRuleTest {
   @Test
   void isApplicableWithNodes() {
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.singletonMap("id", 123));
-    final LogicalPlan plan = LogicalPlan.forTesting(Collections.singletonMap("p", node));
+        CollectionUtils.singletonMap("id", 123));
+    final LogicalPlan plan = LogicalPlan.forTesting(CollectionUtils.singletonMap("p", node));
 
     assertThat(rule.isApplicable(plan)).isTrue();
   }
@@ -84,7 +85,7 @@ class IndexSelectionRuleTest {
     statistics.addIndex(index);
 
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.singletonMap("id", 123));
+        CollectionUtils.singletonMap("id", 123));
     // Use new constructor that includes propertyValue
     final AnchorSelection anchor = new AnchorSelection("p", node, true, index, "id", 123, 5.1, 1);
 
@@ -106,7 +107,7 @@ class IndexSelectionRuleTest {
     statistics.setCardinality("Person", 10000);
 
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.singletonMap("name", "Alice"));
+        CollectionUtils.singletonMap("name", "Alice"));
     final AnchorSelection anchor = new AnchorSelection("p", node, false, null, "name", 1000.0, 1000);
 
     // When: Create operator

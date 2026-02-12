@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -321,7 +322,7 @@ public class CallStep extends AbstractExecutionStep {
           // Scalar result - wrap it using the first YIELD field name
           if (!callClause.getYieldItems().isEmpty()) {
             final String fieldName = callClause.getYieldItems().get(0).getFieldName();
-            return Map.of(fieldName, result);
+            return CollectionUtils.singletonMap(fieldName, result);
           }
         }
       }
@@ -341,7 +342,7 @@ public class CallStep extends AbstractExecutionStep {
     final List<Map<String, Object>> results = new ArrayList<>();
     for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
       if (type instanceof VertexType) {
-        results.add(Map.of("label", type.getName()));
+        results.add(CollectionUtils.singletonMap("label", type.getName()));
       }
     }
     return results;
@@ -354,7 +355,7 @@ public class CallStep extends AbstractExecutionStep {
     final List<Map<String, Object>> results = new ArrayList<>();
     for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
       if (type instanceof EdgeType) {
-        results.add(Map.of("relationshipType", type.getName()));
+        results.add(CollectionUtils.singletonMap("relationshipType", type.getName()));
       }
     }
     return results;
@@ -372,7 +373,7 @@ public class CallStep extends AbstractExecutionStep {
     }
     final List<Map<String, Object>> results = new ArrayList<>();
     for (final String key : propertyKeys) {
-      results.add(Map.of("propertyKey", key));
+      results.add(CollectionUtils.singletonMap("propertyKey", key));
     }
     return results;
   }

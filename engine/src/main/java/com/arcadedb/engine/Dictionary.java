@@ -25,6 +25,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.io.*;
 import java.util.*;
@@ -130,7 +131,7 @@ public class Dictionary extends PaginatedComponent {
   }
 
   public Map<String, Integer> getDictionaryMap() {
-    return Collections.unmodifiableMap(dictionaryMap);
+    return CollectionUtils.immutableMap(dictionaryMap);
   }
 
   /**

@@ -46,6 +46,7 @@ import com.arcadedb.server.ha.message.UpdateClusterConfiguration;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.CodeUtils;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RecordTableFormatter;
@@ -536,7 +537,7 @@ public class HAServer implements ServerPlugin {
               "No response received from the Leader for request " + opNumber + " because the thread was interrupted");
         }
       } else
-        forwardedMessage.result = new InternalResultSet(new ResultInternal(Map.of("operation", "forwarded to the leader")));
+        forwardedMessage.result = new InternalResultSet(new ResultInternal(CollectionUtils.singletonMap("operation", "forwarded to the leader")));
 
     } catch (final IOException | TimeoutException e) {
       LogManager.instance().log(this, Level.SEVERE, "Leader server '%s' does not respond, starting election...", leaderName);
