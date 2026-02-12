@@ -88,6 +88,36 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   public static CypherDuration fromMap(final Map<String, Object> map) {
+    // Fast path for single-field durations (common in bulk operations)
+    if (map.size() == 1) {
+      final Map.Entry<String, Object> entry = map.entrySet().iterator().next();
+      final String key = entry.getKey();
+      final Object value = entry.getValue();
+
+      // Common single-field cases
+      switch (key) {
+        case "seconds":
+          return new CypherDuration(0, 0, ((Number) value).longValue(), 0);
+        case "minutes":
+          return new CypherDuration(0, 0, ((Number) value).longValue() * 60, 0);
+        case "hours":
+          return new CypherDuration(0, 0, ((Number) value).longValue() * 3600, 0);
+        case "days":
+          return new CypherDuration(0, ((Number) value).longValue(), 0, 0);
+        case "weeks":
+          return new CypherDuration(0, ((Number) value).longValue() * 7, 0, 0);
+        case "months":
+          return new CypherDuration(((Number) value).longValue(), 0, 0, 0);
+        case "years":
+          return new CypherDuration(((Number) value).longValue() * 12, 0, 0, 0);
+        case "milliseconds":
+          return new CypherDuration(0, 0, ((Number) value).longValue() / 1000, (int) (((Number) value).longValue() % 1000 * 1_000_000));
+        case "nanoseconds":
+          return new CypherDuration(0, 0, 0, ((Number) value).intValue());
+      }
+    }
+
+    // General case: multiple fields or unrecognized field
     final double years = map.containsKey("years") ? toDouble(map.get("years")) : 0;
     final double quarters = map.containsKey("quarters") ? toDouble(map.get("quarters")) : 0;
     final double months = map.containsKey("months") ? toDouble(map.get("months")) : 0;

@@ -69,6 +69,16 @@ public class BinarySerializer {
   private       Class<?>         dateTimeImplementation;
   private       DataEncryption   dataEncryption;
 
+  // Cached reflection objects for fast Point serialization (avoid 12 reflection calls per Point)
+  private static volatile Class<?> cachedShapeClass;
+  private static volatile Method cachedGetContextMethod;
+  private static volatile Class<?> cachedSpatialContextClass;
+  private static volatile Method cachedGetFormatsMethod;
+  private static volatile Class<?> cachedFormatsClass;
+  private static volatile Method cachedGetWktWriterMethod;
+  private static volatile Class<?> cachedShapeWriterClass;
+  private static volatile Method cachedToStringMethod;
+
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
@@ -879,28 +889,33 @@ public class BinarySerializer {
 
   /**
    * Converts a spatial4j Shape object to WKT (Well-Known Text) format.
-   * This method uses reflection to avoid hard dependency on spatial4j in this class.
+   * This method uses cached reflection to avoid hard dependency on spatial4j and for performance.
+   * Optimized to cache reflection objects and avoid 12 reflection calls per Point (3.45M calls for 287K points).
    */
   private String convertShapeToWKT(final Object shape) {
     try {
-      // Get the spatial context from the shape
-      final Class<?> shapeClass = Class.forName("org.locationtech.spatial4j.shape.Shape");
-      final java.lang.reflect.Method getContextMethod = shapeClass.getMethod("getContext");
-      final Object spatialContext = getContextMethod.invoke(shape);
+      // Initialize cached reflection objects on first use (thread-safe via volatile)
+      if (cachedShapeClass == null) {
+        synchronized (BinarySerializer.class) {
+          if (cachedShapeClass == null) {
+            cachedShapeClass = Class.forName("org.locationtech.spatial4j.shape.Shape");
+            cachedGetContextMethod = cachedShapeClass.getMethod("getContext");
+            cachedSpatialContextClass = Class.forName("org.locationtech.spatial4j.context.SpatialContext");
+            cachedGetFormatsMethod = cachedSpatialContextClass.getMethod("getFormats");
+            cachedFormatsClass = Class.forName("org.locationtech.spatial4j.io.SupportedFormats");
+            cachedGetWktWriterMethod = cachedFormatsClass.getMethod("getWktWriter");
+            cachedShapeWriterClass = Class.forName("org.locationtech.spatial4j.io.ShapeWriter");
+            cachedToStringMethod = cachedShapeWriterClass.getMethod("toString", cachedShapeClass);
+          }
+        }
+      }
 
-      // Get the WKT writer from the spatial context
-      final Class<?> spatialContextClass = Class.forName("org.locationtech.spatial4j.context.SpatialContext");
-      final java.lang.reflect.Method getFormatsMethod = spatialContextClass.getMethod("getFormats");
-      final Object formats = getFormatsMethod.invoke(spatialContext);
+      // Use cached reflection objects (fast path - no reflection lookups)
+      final Object spatialContext = cachedGetContextMethod.invoke(shape);
+      final Object formats = cachedGetFormatsMethod.invoke(spatialContext);
+      final Object wktWriter = cachedGetWktWriterMethod.invoke(formats);
+      return (String) cachedToStringMethod.invoke(wktWriter, shape);
 
-      // Get the WKT writer and convert the shape
-      final Class<?> formatsClass = Class.forName("org.locationtech.spatial4j.io.SupportedFormats");
-      final java.lang.reflect.Method getWktWriterMethod = formatsClass.getMethod("getWktWriter");
-      final Object wktWriter = getWktWriterMethod.invoke(formats);
-
-      final Class<?> shapeWriterClass = Class.forName("org.locationtech.spatial4j.io.ShapeWriter");
-      final java.lang.reflect.Method toStringMethod = shapeWriterClass.getMethod("toString", shapeClass);
-      return (String) toStringMethod.invoke(wktWriter, shape);
     } catch (Exception e) {
       // Fallback to toString() if WKT conversion fails
       LogManager.instance().log(this, Level.WARNING, "Failed to convert shape to WKT, using toString(): %s", e, e.getMessage());

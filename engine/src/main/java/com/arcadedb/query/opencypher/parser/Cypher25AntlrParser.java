@@ -64,9 +64,22 @@ public class Cypher25AntlrParser {
       // Ensure all input was consumed (no trailing tokens)
       final Token nextToken = parser.getTokenStream().LT(1);
       if (nextToken.getType() != Token.EOF) {
-        throw new CommandParsingException(
-            String.format("Unexpected input '%s' at position %d", nextToken.getText(),
-                nextToken.getCharPositionInLine()));
+        // Build helpful error message with line number and context
+        final int line = nextToken.getLine();
+        final int column = nextToken.getCharPositionInLine();
+        final String[] lines = query.split("\n");
+        final String errorLine = line > 0 && line <= lines.length ? lines[line - 1] : "";
+
+        final StringBuilder errorMsg = new StringBuilder();
+        errorMsg.append(String.format("Unexpected input '%s' at line %d, column %d\n",
+            nextToken.getText(), line, column));
+
+        if (!errorLine.isEmpty()) {
+          errorMsg.append("  ").append(errorLine.trim()).append("\n");
+          errorMsg.append("  ").append(" ".repeat(Math.max(0, column))).append("^");
+        }
+
+        throw new CommandParsingException(errorMsg.toString());
       }
 
       // Build AST using visitor
