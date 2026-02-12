@@ -21,6 +21,7 @@ package com.arcadedb.graphql.schema;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graphql.parser.AbstractField;
@@ -136,16 +137,21 @@ public class GraphQLResultSet implements ResultSet {
                 }
               }
 
-              if (current.getElement().isPresent()) {
-                final Vertex vertex = current.getElement().get().asVertex();
-                final Iterable<Vertex> connected =
-                    type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
-                projectionValue = connected;
-              } else if (current.getIdentity().isPresent()) {
-                final Vertex vertex = current.getIdentity().get().asVertex();
-                final Iterable<Vertex> connected =
-                    type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
-                projectionValue = connected;
+              try {
+                if (current.getElement().isPresent()) {
+                  final Vertex vertex = current.getElement().get().asVertex();
+                  final Iterable<Vertex> connected =
+                      type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
+                  projectionValue = connected;
+                } else if (current.getIdentity().isPresent()) {
+                  final Vertex vertex = current.getIdentity().get().asVertex();
+                  final Iterable<Vertex> connected =
+                      type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
+                  projectionValue = connected;
+                }
+              } catch (final SchemaException e) {
+                // If the edge type doesn't exist, return an empty collection
+                projectionValue = Collections.emptyList();
               }
             }
           }
