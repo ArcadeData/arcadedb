@@ -1,33 +1,18 @@
 <div class="tab-pane fade show active" id="tab-query" role="tabpanel">
-  <div class="d-flex justify-content-between" id="queryPanel">
-    <div>
+  <div class="row mb-2" id="queryPanel">
+    <div class="col-6">
       <label>Connected as&nbsp;</label><label for="queryInputDatabase" id="queryUser"></label>@
       <select id="queryInputDatabase" class="inputDatabase form-select"></select>
     </div>
-    <div>
-      <label
-        >Auto Limit
-        <i
-          class="fa fa-question-circle"
-          data-toggle="tooltip"
-          data-html="true"
-          title="If the limit is not set in the query, then the following automatic limit is used."
-        ></i>
-        <select id="inputLimit">
-          <option value="25">25</option>
-          <option value="100">100</option>
-          <option value="500">500</option>
-          <option value="-1">No Limits</option>
-        </select>
-      </label>
-    </div>
-    <div>
-      <label>Returned <span id="result-num"></span>&nbsp;records in <span id="result-elapsed"></span>ms</label>
+    <div class="col-6">
+      <select id="inputHistory" class="form-select">
+        <option selected>History</option>
+      </select>
     </div>
   </div>
 
   <div class="row mb-2">
-    <div class="col-6">
+    <div class="col-4">
       <select id="inputLanguage" class="form-select" style="color: #00aeee">
         <option value="sql" selected>SQL</option>
         <option value="sqlScript">SQL Script</option>
@@ -39,10 +24,29 @@
         <option value="redis">Redis</option>
       </select>
     </div>
-    <div class="col-6">
-      <select id="inputHistory" class="form-select">
-        <option selected>History</option>
-      </select>
+    <div class="col-8">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <label
+            >Auto Limit
+            <i
+              class="fa fa-question-circle"
+              data-toggle="tooltip"
+              data-html="true"
+              title="If the limit is not set in the query, then the following automatic limit is used."
+            ></i>
+            <select id="inputLimit">
+              <option value="25">25</option>
+              <option value="100">100</option>
+              <option value="500">500</option>
+              <option value="-1">No Limits</option>
+            </select>
+          </label>
+        </div>
+        <div>
+          <label>Returned <span id="result-num"></span>&nbsp;records in <span id="result-elapsed"></span>ms</label>
+        </div>
+      </div>
     </div>
   </div>
 
