@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
@@ -110,18 +111,52 @@ public class CreateStep extends AbstractExecutionStep {
             prevResults = prev.syncPull(context, nRecords);
           }
 
-          while (buffer.size() < n && prevResults.hasNext()) {
-            final Result inputResult = prevResults.next();
-            final long begin = context.isProfiling() ? System.nanoTime() : 0;
-            try {
-              if (context.isProfiling())
-                rowCount++;
+          // Get batch size from configuration
+          final int batchSize = (Integer) GlobalConfiguration.OPENCYPHER_BULK_CREATE_BATCH_SIZE.getValue();
+          final boolean useBatching = batchSize > 0;
 
-              final Result createdResult = createPatterns(inputResult);
-              buffer.add(createdResult);
-            } finally {
-              if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+          if (useBatching) {
+            // BATCHED MODE: accumulate records and create in batches
+            final List<Result> batchInputs = new ArrayList<>(Math.min(batchSize, n));
+
+            while (buffer.size() < n && prevResults.hasNext()) {
+              batchInputs.add(prevResults.next());
+
+              // Flush batch when full or no more records
+              if (batchInputs.size() >= batchSize || !prevResults.hasNext()) {
+                final long begin = context.isProfiling() ? System.nanoTime() : 0;
+                try {
+                  if (context.isProfiling())
+                    rowCount += batchInputs.size();
+
+                  final List<Result> createdResults = createPatternsBatch(batchInputs);
+                  buffer.addAll(createdResults);
+                } finally {
+                  if (context.isProfiling())
+                    cost += (System.nanoTime() - begin);
+                }
+                batchInputs.clear();
+
+                // Stop if we've filled the requested buffer size
+                if (buffer.size() >= n)
+                  break;
+              }
+            }
+          } else {
+            // UNBATCHED MODE (legacy): create one record at a time
+            while (buffer.size() < n && prevResults.hasNext()) {
+              final Result inputResult = prevResults.next();
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                if (context.isProfiling())
+                  rowCount++;
+
+                final Result createdResult = createPatterns(inputResult);
+                buffer.add(createdResult);
+              } finally {
+                if (context.isProfiling())
+                  cost += (System.nanoTime() - begin);
+              }
             }
           }
 
@@ -187,6 +222,41 @@ public class CreateStep extends AbstractExecutionStep {
     }, true);
 
     return resultRef.get();
+  }
+
+  /**
+   * Creates vertices and edges for a batch of input results in a single transaction.
+   * This is significantly faster than creating one transaction per record.
+   *
+   * @param inputResults list of input results from previous step
+   * @return list of results containing all created elements
+   */
+  private List<Result> createPatternsBatch(final List<Result> inputResults) {
+    final Database database = context.getDatabase();
+    final List<Result> createdResults = new ArrayList<>(inputResults.size());
+
+    // Execute all creates in a SINGLE transaction
+    database.transaction(() -> {
+      for (final Result inputResult : inputResults) {
+        final ResultInternal result = new ResultInternal();
+
+        // Copy input properties if present
+        if (inputResult != null) {
+          for (final String prop : inputResult.getPropertyNames()) {
+            result.setProperty(prop, inputResult.getProperty(prop));
+          }
+        }
+
+        // Create each path pattern
+        for (final PathPattern pathPattern : createClause.getPathPatterns()) {
+          createPath(pathPattern, result);
+        }
+
+        createdResults.add(result);
+      }
+    }, true);
+
+    return createdResults;
   }
 
   /**
