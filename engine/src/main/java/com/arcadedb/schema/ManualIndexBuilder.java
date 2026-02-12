@@ -46,7 +46,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
 
     // Wait for any running async tasks (e.g., compaction) to complete before creating new index
     // This prevents NeedRetryException when creating multiple indexes sequentially on large datasets
-    if (database.isAsyncProcessing())
+    while (database.isAsyncProcessing())
       database.async().waitCompletion();
 
     final LocalSchema schema = database.getSchema().getEmbedded();
