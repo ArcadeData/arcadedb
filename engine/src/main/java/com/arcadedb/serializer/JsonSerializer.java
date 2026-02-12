@@ -226,7 +226,8 @@ public class JsonSerializer {
    * This method was moved from the deprecated JSONSerializer class.
    */
   public Map<String, Object> json2map(final JSONObject json) {
-    final Map<String, Object> map = new HashMap<>();
+    // Optimized: initial capacity from JSON size
+    final Map<String, Object> map = new HashMap<>(json.length());
     for (final String k : json.keySet()) {
       final Object value = convertFromJSONType(json.get(k));
       map.put(k, value);

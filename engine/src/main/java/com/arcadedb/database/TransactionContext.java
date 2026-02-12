@@ -110,11 +110,13 @@ public class TransactionContext implements Transaction {
 
     status = STATUS.BEGUN;
 
-    modifiedPages = new HashMap<>();
+    // Optimized: initial capacity 32 for typical transaction page count
+    modifiedPages = new HashMap<>(32);
 
     if (newPages == null)
       // KEEP ORDERING IN CASE MULTIPLE PAGES FOR THE SAME FILE ARE CREATED
-      newPages = new LinkedHashMap<>();
+      // Optimized: initial capacity 16 for typical new pages per transaction
+    newPages = new LinkedHashMap<>(16);
   }
 
   @Override

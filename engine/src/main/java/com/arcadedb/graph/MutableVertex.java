@@ -29,10 +29,11 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.Map;
 
 /**
- * Mutable vertex that supports updates. After any changes, call the method {@link #save()} to mark the record as dirty in the current transaction, so the
+ * Mutable vertex that supports updates. After any changes, call the method {@link #save()} to mark the record as
+ * dirty in the current transaction, so the
  * changes will be persistent at {@link Transaction#commit()} time.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -88,6 +89,17 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return (MutableVertex) super.set(name, value);
   }
 
+  @Override
+  public MutableVertex set(final String name1, final Object value1, final String name2, final Object value2) {
+    return (MutableVertex) super.set(name1, value1, name2, value2);
+  }
+
+  @Override
+  public MutableVertex set(final String name1, final Object value1, final String name2, final Object value2,
+                           final String name3, final Object value3) {
+    return (MutableVertex) super.set(name1, value1, name2, value2, name3, value3);
+  }
+
   public MutableVertex set(final Object... properties) {
     return (MutableVertex) super.set(properties);
   }
@@ -141,7 +153,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   @Deprecated
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
-      final Object... properties) {
+                             final Object... properties) {
     if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 
@@ -155,7 +167,8 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   @Deprecated
   @Override
-  public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
+  public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex,
+                                         final boolean bidirectional) {
     if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 

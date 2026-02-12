@@ -1441,6 +1441,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return engine;
   }
 
+  /**
+   * Optimized overload for commands with no parameters - avoids varargs array allocation.
+   */
+  @Override
+  public ResultSet command(final String language, final String query) {
+    checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
+    stats.commands.incrementAndGet();
+    return getQueryEngine(language).command(query, new ContextConfiguration());
+  }
+
   @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
@@ -1483,6 +1493,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (!language.equalsIgnoreCase("sqlscript") && !language.equalsIgnoreCase("sql"))
       throw new CommandExecutionException("Language '" + language + "' does not support script");
     return command("sqlscript", script, args);
+  }
+
+  /**
+   * Optimized overload for queries with no parameters - avoids varargs array allocation.
+   */
+  @Override
+  public ResultSet query(final String language, final String query) {
+    checkDatabaseIsOpen();
+    stats.queries.incrementAndGet();
+    return getQueryEngine(language).query(query, new ContextConfiguration());
   }
 
   @Override
