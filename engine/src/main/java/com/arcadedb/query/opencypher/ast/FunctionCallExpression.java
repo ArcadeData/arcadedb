@@ -35,6 +35,14 @@ public class FunctionCallExpression implements Expression {
   private final List<Expression> arguments;
   private final boolean distinct;
 
+  /**
+   * Cached function executor to avoid repeated lookups.
+   * This is lazily initialized on first use and significantly improves performance
+   * for bulk operations where the same function is called many times.
+   * Marked as transient to avoid serialization issues.
+   */
+  private transient volatile StatelessFunction cachedFunction;
+
   public FunctionCallExpression(final String functionName, final List<Expression> arguments, final boolean distinct) {
     this.originalFunctionName = functionName;
     this.functionName = functionName.toLowerCase(); // Cypher functions are case-insensitive
@@ -126,5 +134,25 @@ public class FunctionCallExpression implements Expression {
       case "count", "sum", "avg", "min", "max", "collect", "stdev", "stdevp", "percentilecont", "percentiledisc" -> true;
       default -> false;
     };
+  }
+
+  /**
+   * Get the cached function executor, or null if not yet cached.
+   * This is used by ExpressionEvaluator to optimize repeated function calls.
+   *
+   * @return the cached StatelessFunction, or null if not cached
+   */
+  public StatelessFunction getCachedFunction() {
+    return cachedFunction;
+  }
+
+  /**
+   * Set the cached function executor.
+   * This is used by ExpressionEvaluator to cache the function on first lookup.
+   *
+   * @param function the StatelessFunction to cache
+   */
+  public void setCachedFunction(final StatelessFunction function) {
+    this.cachedFunction = function;
   }
 }
