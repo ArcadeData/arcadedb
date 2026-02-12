@@ -205,6 +205,14 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Micrometer for benchmark metrics -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Cucumber for OpenCypher TCK -->
         <dependency>
             <groupId>io.cucumber</groupId>
