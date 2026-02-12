@@ -79,7 +79,7 @@ public class RedisWTest extends BaseGraphServerTest {
       assertThat(result).isEqualTo(10);
     }
     // System.out.println(
-        "MULTI EXISTS (chunk of 10 keys) " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    //    "MULTI EXISTS (chunk of 10 keys) " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // GET
     beginTime = System.currentTimeMillis();
@@ -233,7 +233,7 @@ public class RedisWTest extends BaseGraphServerTest {
     }
 
     // System.out.println(
-        "HMGET " + TOTAL_PERSISTENT + " items by chunks of 10 rids from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    //    "HMGET " + TOTAL_PERSISTENT + " items by chunks of 10 rids from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HDEL
     beginTime = System.currentTimeMillis();
