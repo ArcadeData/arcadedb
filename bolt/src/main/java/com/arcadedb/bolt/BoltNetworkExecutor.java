@@ -207,21 +207,20 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     // Select best matching version using Bolt version negotiation with range support.
-    // Each client version entry encodes: major = value & 0xFF, minor = (value >> 8) & 0xFF,
-    // range = (value >> 16) & 0xFF. The range means the client supports minor versions
-    // from (minor - range) up to minor (inclusive) for the given major version.
+    // The range means the client supports minor versions from (minor - range) up to minor
+    // (inclusive) for the given major version. Zero entries are trailing padding per the Bolt spec.
     protocolVersion = 0;
     for (final int clientVersion : clientVersions) {
       if (clientVersion == 0)
-        continue;
+        break;
 
-      final int clientMajor = clientVersion & 0xFF;
-      final int clientMinor = (clientVersion >> 8) & 0xFF;
-      final int clientRange = (clientVersion >> 16) & 0xFF;
+      final int clientMajor = getMajorVersion(clientVersion);
+      final int clientMinor = getMinorVersion(clientVersion);
+      final int clientRange = getVersionRange(clientVersion);
 
       for (final int supportedVersion : SUPPORTED_VERSIONS) {
-        final int serverMajor = supportedVersion & 0xFF;
-        final int serverMinor = (supportedVersion >> 8) & 0xFF;
+        final int serverMajor = getMajorVersion(supportedVersion);
+        final int serverMinor = getMinorVersion(supportedVersion);
 
         if (clientMajor == serverMajor && serverMinor <= clientMinor && serverMinor >= clientMinor - clientRange) {
           protocolVersion = supportedVersion;
@@ -1020,5 +1019,19 @@ public class BoltNetworkExecutor extends Thread {
     if (debug) {
       LogManager.instance().log(this, Level.INFO, "BOLT connection closed");
     }
+  }
+
+  // Bolt version encoding: [unused(8)][range(8)][minor(8)][major(8)]
+
+  static int getMajorVersion(final int version) {
+    return version & 0xFF;
+  }
+
+  static int getMinorVersion(final int version) {
+    return (version >> 8) & 0xFF;
+  }
+
+  static int getVersionRange(final int version) {
+    return (version >> 16) & 0xFF;
   }
 }
