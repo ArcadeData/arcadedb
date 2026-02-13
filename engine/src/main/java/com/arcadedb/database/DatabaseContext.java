@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.*;
  */
 public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.DatabaseContextTL>> {
   public static final  DatabaseContext                                           INSTANCE          = new DatabaseContext();
-  private static final ConcurrentHashMap<Thread, Map<String, DatabaseContextTL>> CONTEXTS          = new ConcurrentHashMap<>();
+  private static final ConcurrentHashMap<Long, Map<String, DatabaseContextTL>> CONTEXTS          = new ConcurrentHashMap<>();
   private static final AtomicInteger                                             INIT_CALL_COUNTER = new AtomicInteger();
   private static final int                                                       CLEANUP_INTERVAL  = 1000;
 
@@ -53,7 +53,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     if (map == null) {
       map = new HashMap<>();
       set(map);
-      CONTEXTS.put(Thread.currentThread(), map);
+      CONTEXTS.put(Thread.currentThread().threadId(), map);
       current = new DatabaseContextTL();
       map.put(key, current);
     } else {
@@ -102,7 +102,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       if (map.isEmpty()) {
         // REMOVE THE THREAD LOCAL WHEN THE MAP IS EMPTY
         super.remove();
-        CONTEXTS.remove(Thread.currentThread());
+        CONTEXTS.remove(Thread.currentThread().threadId());
       }
       return tl;
     }
@@ -114,14 +114,12 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    */
   public List<DatabaseContextTL> removeAllContexts(final String databaseName) {
     final List<DatabaseContextTL> result = new ArrayList<>();
-    for (Map<String, DatabaseContextTL> map : new ArrayList<>(CONTEXTS.values())) {
+    for (final Map.Entry<Long, Map<String, DatabaseContextTL>> entry : CONTEXTS.entrySet()) {
+      final Map<String, DatabaseContextTL> map = entry.getValue();
       if (map != null) {
         final DatabaseContextTL tl = map.remove(databaseName);
-        if (map.isEmpty()) {
-          // REMOVE THE THREAD LOCAL WHEN THE MAP IS EMPTY
-          super.remove();
-          CONTEXTS.remove(Thread.currentThread());
-        }
+        if (map.isEmpty())
+          CONTEXTS.remove(entry.getKey());
         if (tl != null)
           result.add(tl);
       }
@@ -151,14 +149,17 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    */
   public void removeCurrentThreadContexts() {
     super.remove();
-    CONTEXTS.remove(Thread.currentThread());
+    CONTEXTS.remove(Thread.currentThread().threadId());
   }
 
   /**
-   * Scans CONTEXTS and removes entries for threads that are no longer alive. Called periodically as a safety net.
+   * Scans CONTEXTS and removes entries for thread IDs that are no longer alive. Called periodically as a safety net.
    */
   private static void cleanupDeadThreads() {
-    CONTEXTS.keySet().removeIf(thread -> !thread.isAlive());
+    final Set<Long> liveThreadIds = new HashSet<>();
+    for (final Thread t : Thread.getAllStackTraces().keySet())
+      liveThreadIds.add(t.threadId());
+    CONTEXTS.keySet().removeIf(id -> !liveThreadIds.contains(id));
   }
 
   public static class DatabaseContextTL {
