@@ -80,8 +80,7 @@ public class CypherFunctionFactory {
     // String functions - need to check if SQL has these
     mapping.put("toupper", "upper");
     mapping.put("tolower", "lower");
-    mapping.put("trim", "trim");
-    mapping.put("replace", "replace");
+    // trim and replace are handled as Cypher-specific functions
 
     // Date/Time functions
     mapping.put("timestamp", "sysdate");
@@ -210,7 +209,9 @@ public class CypherFunctionFactory {
       case "nodes", "relationships", "length" -> true;
       // Math functions
       case "rand", "sign", "ceil", "floor", "abs", "sqrt", "round", "isnan",
-           "cosh", "sinh", "tanh", "cot", "coth", "pi", "e", "randomuuid" -> true;
+           "cosh", "sinh", "tanh", "cot", "coth", "pi", "e", "randomuuid",
+           "acos", "asin", "atan", "atan2", "cos", "sin", "tan",
+           "degrees", "radians", "haversin", "exp", "log", "log10" -> true;
       // General functions
       case "coalesce" -> true;
       // Predicate functions
@@ -219,8 +220,13 @@ public class CypherFunctionFactory {
       case "size", "head", "tail", "last", "range" -> true;
       // String functions
       case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "ltrim", "rtrim" -> true;
+      // String functions (additional)
+      case "trim", "replace", "char_length", "character_length" -> true;
       // Type conversion functions
-      case "tostring", "tointeger", "tofloat", "toboolean" -> true;
+      case "tostring", "tointeger", "tofloat", "toboolean",
+           "tostringornull", "tointegerornull", "tofloatornull", "tobooleanornull" -> true;
+      // Scalar functions
+      case "nullif", "valuetype" -> true;
       // Aggregation functions
       case "collect", "percentiledisc", "percentilecont", "min", "max" -> true;
       // Temporal constructor functions
@@ -273,6 +279,21 @@ public class CypherFunctionFactory {
       case "coth" -> new MathUnaryFunction("coth", v -> Math.cosh(v) / Math.sinh(v));
       case "pi" -> new ConstantFunction("pi", Math.PI);
       case "e" -> new ConstantFunction("e", Math.E);
+      // Trigonometric functions
+      case "acos" -> new MathUnaryFunction("acos", Math::acos);
+      case "asin" -> new MathUnaryFunction("asin", Math::asin);
+      case "atan" -> new MathUnaryFunction("atan", Math::atan);
+      case "atan2" -> new MathBinaryFunction("atan2", Math::atan2);
+      case "cos" -> new MathUnaryFunction("cos", Math::cos);
+      case "sin" -> new MathUnaryFunction("sin", Math::sin);
+      case "tan" -> new MathUnaryFunction("tan", Math::tan);
+      case "degrees" -> new MathUnaryFunction("degrees", Math::toDegrees);
+      case "radians" -> new MathUnaryFunction("radians", Math::toRadians);
+      case "haversin" -> new MathUnaryFunction("haversin", v -> (1.0 - Math.cos(v)) / 2.0);
+      // Logarithmic functions
+      case "exp" -> new MathUnaryFunction("exp", Math::exp);
+      case "log" -> new MathUnaryFunction("log", Math::log);
+      case "log10" -> new MathUnaryFunction("log10", Math::log10);
       // General functions
       case "coalesce" -> new CoalesceFunction();
       // Graph functions
@@ -305,11 +326,21 @@ public class CypherFunctionFactory {
       case "toupper" -> new ToUpperFunction();
       case "ltrim" -> new LTrimFunction();
       case "rtrim" -> new RTrimFunction();
+      case "trim" -> new TrimFunction();
+      case "replace" -> new ReplaceFunction();
+      case "char_length", "character_length" -> new CharLengthFunction();
       // Type conversion functions
       case "tostring" -> new ToStringFunction();
       case "tointeger" -> new ToIntegerFunction();
       case "tofloat" -> new ToFloatFunction();
       case "toboolean" -> new ToBooleanFunction();
+      case "tostringornull" -> new OrNullFunction("toStringOrNull", new ToStringFunction());
+      case "tointegerornull" -> new OrNullFunction("toIntegerOrNull", new ToIntegerFunction());
+      case "tofloatornull" -> new OrNullFunction("toFloatOrNull", new ToFloatFunction());
+      case "tobooleanornull" -> new OrNullFunction("toBooleanOrNull", new ToBooleanFunction());
+      // Scalar functions
+      case "nullif" -> new NullIfFunction();
+      case "valuetype" -> new ValueTypeFunction();
       // Aggregation functions
       case "collect" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
       case "min" -> distinct ? new DistinctAggregationWrapper(new CypherMinFunction()) : new CypherMinFunction();
