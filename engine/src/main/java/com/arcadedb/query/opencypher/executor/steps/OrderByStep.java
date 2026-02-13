@@ -169,32 +169,25 @@ public class OrderByStep extends AbstractExecutionStep {
         // Priority queue with reversed comparator: worst elements bubble to top
         final PriorityQueue<Result> topK = new PriorityQueue<>(Math.min(k + 1, 1000), reversedComparator);
 
-        // Pull results in batches (NOT Integer.MAX_VALUE!) to avoid forcing
-        // upstream steps to materialize everything at once
-        final int batchSize = Math.max(1000, k * 10);  // Pull 10x limit or 1000, whichever is larger
-        boolean hasMore = true;
+        // Pull all results and maintain a top-K heap
+        final int batchSize = Math.max(1000, k * 10);
+        final ResultSet prevResults = prev.syncPull(context, batchSize);
 
-        while (hasMore) {
-          final ResultSet prevResults = prev.syncPull(context, batchSize);
-          hasMore = false;
+        while (prevResults.hasNext()) {
+          final Result row = prevResults.next();
 
-          while (prevResults.hasNext()) {
-            final Result row = prevResults.next();
-            hasMore = true;  // We got at least one result in this batch
-
-            if (topK.size() < k) {
-              // Haven't reached K elements yet, add unconditionally
-              topK.offer(row);
-            } else {
-              // Heap is full, check if new element is better than worst element
-              final Result worst = topK.peek();
-              if (comparator.compare(row, worst) < 0) {
-                // New row is better than worst row, replace it
-                topK.poll();  // Remove worst
-                topK.offer(row);  // Add new
-              }
-              // Otherwise discard the row (it's worse than our current top K)
+          if (topK.size() < k) {
+            // Haven't reached K elements yet, add unconditionally
+            topK.offer(row);
+          } else {
+            // Heap is full, check if new element is better than worst element
+            final Result worst = topK.peek();
+            if (comparator.compare(row, worst) < 0) {
+              // New row is better than worst row, replace it
+              topK.poll();  // Remove worst
+              topK.offer(row);  // Add new
             }
+            // Otherwise discard the row (it's worse than our current top K)
           }
         }
 

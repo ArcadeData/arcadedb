@@ -110,55 +110,49 @@ public class AggregationStep extends AbstractExecutionStep {
       }
     }
 
-    // Process all rows in batches, feeding data to aggregators
-    // This prevents OOM when aggregating large result sets
-    boolean hasMore = true;
-    while (hasMore) {
-      final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
-      hasMore = false;
+    // Process all rows, feeding data to aggregators
+    final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
 
-      while (prevResults.hasNext()) {
-        final Result inputRow = prevResults.next();
-        hasMore = true;
-        final long begin = context.isProfiling() ? System.nanoTime() : 0;
-        try {
-          if (context.isProfiling())
-            rowCount++;
+    while (prevResults.hasNext()) {
+      final Result inputRow = prevResults.next();
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+      try {
+        if (context.isProfiling())
+          rowCount++;
 
-          // Process regular aggregations
-          for (final Map.Entry<String, Expression> entry : aggregationExpressions.entrySet()) {
-            final String outputName = entry.getKey();
-            final Expression expr = entry.getValue();
-            final StatelessFunction function = aggregators.get(outputName);
+        // Process regular aggregations
+        for (final Map.Entry<String, Expression> entry : aggregationExpressions.entrySet()) {
+          final String outputName = entry.getKey();
+          final Expression expr = entry.getValue();
+          final StatelessFunction function = aggregators.get(outputName);
 
-            // Evaluate the function arguments for this row
-            if (expr instanceof FunctionCallExpression) {
-              final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
-              final Object[] args = new Object[funcExpr.getArguments().size()];
-              for (int i = 0; i < args.length; i++) {
-                args[i] = evaluator.evaluate(funcExpr.getArguments().get(i), inputRow, context);
-              }
-
-              // Feed this row's data to the aggregator
-              function.execute(args, context);
+          // Evaluate the function arguments for this row
+          if (expr instanceof FunctionCallExpression) {
+            final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
+            final Object[] args = new Object[funcExpr.getArguments().size()];
+            for (int i = 0; i < args.length; i++) {
+              args[i] = evaluator.evaluate(funcExpr.getArguments().get(i), inputRow, context);
             }
-          }
 
-          // Process complex aggregation expressions - feed data to all inner aggregation functions
-          for (final ComplexAggregationInfo complexInfo : complexAggregations.values()) {
-            for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexInfo.innerAggregations.entrySet()) {
-              final FunctionCallExpression innerAgg = innerEntry.getValue();
-              final StatelessFunction function = complexInfo.innerFunctions.get(innerEntry.getKey());
-              final Object[] args = new Object[innerAgg.getArguments().size()];
-              for (int i = 0; i < args.length; i++)
-                args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
-              function.execute(args, context);
-            }
+            // Feed this row's data to the aggregator
+            function.execute(args, context);
           }
-        } finally {
-          if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
         }
+
+        // Process complex aggregation expressions - feed data to all inner aggregation functions
+        for (final ComplexAggregationInfo complexInfo : complexAggregations.values()) {
+          for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexInfo.innerAggregations.entrySet()) {
+            final FunctionCallExpression innerAgg = innerEntry.getValue();
+            final StatelessFunction function = complexInfo.innerFunctions.get(innerEntry.getKey());
+            final Object[] args = new Object[innerAgg.getArguments().size()];
+            for (int i = 0; i < args.length; i++)
+              args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
+            function.execute(args, context);
+          }
+        }
+      } finally {
+        if (context.isProfiling())
+          cost += (System.nanoTime() - begin);
       }
     }
 
