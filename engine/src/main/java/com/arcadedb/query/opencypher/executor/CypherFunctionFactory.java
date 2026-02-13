@@ -264,7 +264,7 @@ public class CypherFunctionFactory {
       case "floor" -> new MathUnaryFunction("floor", Math::floor);
       case "abs" -> new MathUnaryFunction("abs", Math::abs);
       case "sqrt" -> new MathUnaryFunction("sqrt", Math::sqrt);
-      case "round" -> new MathUnaryFunction("round", v -> (double) Math.round(v));
+      case "round" -> new RoundFunction();
       case "isnan" -> new IsNaNFunction();
       case "cosh" -> new MathUnaryFunction("cosh", Math::cosh);
       case "sinh" -> new MathUnaryFunction("sinh", Math::sinh);
