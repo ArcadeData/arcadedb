@@ -250,6 +250,28 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(0);
   }
 
+  @Test
+  void orderBySkipLimitWithManyNodes() {
+    // Reproduces the Bolt queryWithSkipAndLimit scenario: 10 nodes, SKIP 5, LIMIT 5
+    database.getSchema().createVertexType("SkipTest");
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++) {
+        database.newVertex("SkipTest").set("idx", i).save();
+      }
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "MATCH (n:SkipTest) RETURN n.idx AS idx ORDER BY n.idx SKIP 5 LIMIT 5");
+
+    assertThat((Object) result).isNotNull();
+    final List<Result> results = collectResults(result);
+
+    assertThat(results).hasSize(5);
+    for (int i = 0; i < 5; i++) {
+      assertThat(((Number) results.get(i).getProperty("idx")).longValue()).isEqualTo(i + 5);
+    }
+  }
+
   private List<Result> collectResults(final ResultSet resultSet) {
     final List<Result> results = new ArrayList<>();
     while (resultSet.hasNext()) {
