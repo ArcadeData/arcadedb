@@ -115,10 +115,10 @@ class Issue3404Test {
         final Object collectedChunks = row.getProperty("COLLECT(ID(chunk))");
         final Object collectedRels = row.getProperty("COLLECT(rel)");
 
-        System.out.println("Document: " + row.getProperty("ID(nodeDOc)"));
-        System.out.println("  Collected chunks: " + collectedChunks);
-        System.out.println("  Collected rels: " + collectedRels);
-        System.out.println("  Collected rels type: " + (collectedRels != null ? collectedRels.getClass().getName() : "null"));
+        // System.out.println("Document: " + row.getProperty("ID(nodeDOc)"));
+        // System.out.println("  Collected chunks: " + collectedChunks);
+        // System.out.println("  Collected rels: " + collectedRels);
+        // System.out.println("  Collected rels type: " + (collectedRels != null ? collectedRels.getClass().getName() : "null"));
 
         // COLLECT(rel) should return a List, not a Number
         assertThat(collectedRels)
@@ -236,7 +236,7 @@ class Issue3404Test {
         final Result row = rs.next();
         final JSONObject json = serializer.serializeResult(database, row);
 
-        System.out.println("JSON for document " + json.get("docId") + ": " + json);
+        // System.out.println("JSON for document " + json.get("docId") + ": " + json);
 
         // Check that "rels" is serialized as a JSONArray, not as a number
         final Object relsValue = json.get("rels");
