@@ -109,35 +109,29 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // Map: GroupKey -> GroupAggregators (holds aggregation functions for this group)
     final Map<GroupKeyValues, GroupAggregators> groups = new LinkedHashMap<>();
 
-    // Pull rows in batches and incrementally update group aggregators
-    // This prevents OOM when processing large result sets
+    // Pull all rows and incrementally update group aggregators
     final long beginGrouping = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      boolean hasMore = true;
-      while (hasMore) {
-        final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
-        hasMore = false;
+      final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
 
-        while (prevResults.hasNext()) {
-          final Result inputRow = prevResults.next();
-          hasMore = true;
+      while (prevResults.hasNext()) {
+        final Result inputRow = prevResults.next();
 
-          if (context.isProfiling())
-            rowCount++;
+        if (context.isProfiling())
+          rowCount++;
 
-          // Evaluate grouping key for this row
-          final GroupKeyValues keyValues = evaluateGroupingKey(groupingKeys, inputRow, context);
+        // Evaluate grouping key for this row
+        final GroupKeyValues keyValues = evaluateGroupingKey(groupingKeys, inputRow, context);
 
-          // Get or create aggregators for this group
-          GroupAggregators groupAgg = groups.get(keyValues);
-          if (groupAgg == null) {
-            groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
-            groups.put(keyValues, groupAgg);
-          }
-
-          // Feed this row to the group's aggregators
-          feedRowToAggregators(inputRow, groupAgg, aggregationItems, complexAggregationItems, context);
+        // Get or create aggregators for this group
+        GroupAggregators groupAgg = groups.get(keyValues);
+        if (groupAgg == null) {
+          groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
+          groups.put(keyValues, groupAgg);
         }
+
+        // Feed this row to the group's aggregators
+        feedRowToAggregators(inputRow, groupAgg, aggregationItems, complexAggregationItems, context);
       }
     } finally {
       if (context.isProfiling())
