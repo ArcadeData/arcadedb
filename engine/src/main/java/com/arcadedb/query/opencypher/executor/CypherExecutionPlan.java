@@ -602,8 +602,13 @@ public class CypherExecutionPlan {
 
         // Apply ORDER BY if present in WITH
         if (withClause.getOrderByClause() != null) {
+          // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+          final Integer limitVal = withClause.getLimit() != null ?
+              new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+                  new ResultInternal(), context) : null;
+
           final OrderByStep orderByStep =
-              new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
+              new OrderByStep(withClause.getOrderByClause(), context, functionFactory, limitVal);
           orderByStep.setPrevious(currentStep);
           currentStep = orderByStep;
 
@@ -616,9 +621,7 @@ public class CypherExecutionPlan {
             currentStep = skipStep;
           }
           if (withClause.getLimit() != null) {
-            final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-                new ResultInternal(), context);
-            final LimitStep limitStep = new LimitStep(_limitVal, context);
+            final LimitStep limitStep = new LimitStep(limitVal, context);
             limitStep.setPrevious(currentStep);
             currentStep = limitStep;
           }
@@ -658,8 +661,13 @@ public class CypherExecutionPlan {
 
     // Step 8: ORDER BY (if any)
     if (statement.getOrderByClause() != null) {
+      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+      final Integer limitVal = statement.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+              new ResultInternal(), context) : null;
+
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context, functionFactory);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory, limitVal);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -675,9 +683,9 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT (if any)
     if (statement.getLimit() != null) {
-      final LimitStep limitStep =
-          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
-              new ResultInternal(), context), context);
+      final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+          new ResultInternal(), context);
+      final LimitStep limitStep = new LimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -1020,8 +1028,13 @@ public class CypherExecutionPlan {
 
     // ORDER BY
     if (statement.getOrderByClause() != null && currentStep != null) {
+      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+      final Integer limitVal = statement.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+              new ResultInternal(), context) : null;
+
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context, functionFactory);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory, limitVal);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -1037,9 +1050,9 @@ public class CypherExecutionPlan {
 
     // LIMIT
     if (statement.getLimit() != null && currentStep != null) {
-      final LimitStep limitStep =
-          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
-              new ResultInternal(), context), context);
+      final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+          new ResultInternal(), context);
+      final LimitStep limitStep = new LimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -1099,8 +1112,13 @@ public class CypherExecutionPlan {
 
     // Apply ORDER BY if present in WITH
     if (withClause.getOrderByClause() != null) {
+      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+      final Integer limitVal = withClause.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+              new ResultInternal(), context) : null;
+
       final OrderByStep orderByStep =
-          new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
+          new OrderByStep(withClause.getOrderByClause(), context, functionFactory, limitVal);
       if (currentStep != null)
         orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
@@ -1114,9 +1132,7 @@ public class CypherExecutionPlan {
         currentStep = skipStep;
       }
       if (withClause.getLimit() != null) {
-        final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-            new ResultInternal(), context);
-        final LimitStep limitStep = new LimitStep(_limitVal, context);
+        final LimitStep limitStep = new LimitStep(limitVal, context);
         limitStep.setPrevious(currentStep);
         currentStep = limitStep;
       }
@@ -1796,8 +1812,13 @@ public class CypherExecutionPlan {
 
       // Apply ORDER BY if present in WITH
       if (withClause.getOrderByClause() != null) {
+        // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+        final Integer limitVal = withClause.getLimit() != null ?
+            new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+                new ResultInternal(), context) : null;
+
         final OrderByStep orderByStep =
-            new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
+            new OrderByStep(withClause.getOrderByClause(), context, functionFactory, limitVal);
         if (currentStep != null)
           orderByStep.setPrevious(currentStep);
         currentStep = orderByStep;
@@ -1811,9 +1832,7 @@ public class CypherExecutionPlan {
           currentStep = skipStep;
         }
         if (withClause.getLimit() != null) {
-          final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-              new ResultInternal(), context);
-          final LimitStep limitStep = new LimitStep(_limitVal, context);
+          final LimitStep limitStep = new LimitStep(limitVal, context);
           limitStep.setPrevious(currentStep);
           currentStep = limitStep;
         }
@@ -1899,8 +1918,13 @@ public class CypherExecutionPlan {
 
     // Step 8: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
+      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+      final Integer limitVal = statement.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
+              context) : null;
+
       final OrderByStep orderByStep = new OrderByStep(
-          statement.getOrderByClause(), context, functionFactory);
+          statement.getOrderByClause(), context, functionFactory, limitVal);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -1916,9 +1940,9 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
-      final LimitStep limitStep = new LimitStep(
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
-              context), context);
+      final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
+          context);
+      final LimitStep limitStep = new LimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
