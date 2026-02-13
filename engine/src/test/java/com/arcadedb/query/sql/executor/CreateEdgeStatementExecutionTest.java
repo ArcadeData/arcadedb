@@ -54,7 +54,8 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     }
     array += "]";
 
-    ResultSet result = database.command("sql", "create edge " + edgeClassName + " from ? to ? CONTENT " + array, v1, v2);
+    ResultSet result = database.command("sql", "create edge " + edgeClassName + " from ? to ? CONTENT " + array, v1,
+        v2);
 
     int count = 0;
     while (result.hasNext()) {
@@ -77,7 +78,7 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     final String vertexClassName = "testVertexContentArray";
     database.getSchema().createVertexType(vertexClassName, 1);
     final String edgeClassName = "testEdgeContentArray";
-    database.getSchema().createEdgeType(edgeClassName, 1);
+    database.getSchema().buildEdgeType().withName(edgeClassName).withTotalBuckets(1).create();
 
     MutableVertex v1 = database.newVertex(vertexClassName).save();
     MutableVertex v2 = database.newVertex(vertexClassName).save();
@@ -154,7 +155,8 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
   void createEdgeWithMandatoryDefaultProperty() {
     database.getSchema().createVertexType("testVertex");
     database.getSchema().createEdgeType("transmit");
-    database.command("sql", "CREATE PROPERTY transmit.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT SYSDATE().asLong())");
+    database.command("sql", "CREATE PROPERTY transmit.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT " +
+        "SYSDATE().asLong())");
 
     database.transaction(() -> {
       // Create two vertices using the API (like the passing test)
@@ -203,7 +205,8 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       // Create vertex type with mandatory property that has a default value
       database.command("sql", "CREATE VERTEX TYPE message IF NOT EXISTS");
-      database.command("sql", "CREATE PROPERTY message.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT SYSDATE().asLong())");
+      database.command("sql", "CREATE PROPERTY message.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT " +
+          "SYSDATE().asLong())");
     });
 
     // Create vertex with CONTENT but without the mandatory property

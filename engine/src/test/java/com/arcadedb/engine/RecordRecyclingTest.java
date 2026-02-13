@@ -79,12 +79,14 @@ class RecordRecyclingTest {
           });
 
           // CHECK RECORDS HAVE BEEN RECYCLED MORE THAN 80% OF THE SPACE
-          final RID maxVertex = db.query("sql", "select from " + VERTEX_TYPE + " order by @rid desc").next().getIdentity().get();
+          final RID maxVertex =
+              db.query("sql", "select from " + VERTEX_TYPE + " order by @rid desc").next().getIdentity().get();
           if (maxVertexRID != null)
             assertThat(maxVertex.getPosition()).isLessThan((long) (maxVertexRID.getPosition() * 1.2));
           maxVertexRID = maxVertex;
 
-          final RID maxEdge = db.query("sql", "select from " + EDGE_TYPE + " order by @rid desc").next().getIdentity().get();
+          final RID maxEdge =
+              db.query("sql", "select from " + EDGE_TYPE + " order by @rid desc").next().getIdentity().get();
           if (maxEdgeRID != null)
             assertThat(maxEdge.getPosition()).isLessThan((long) (maxEdgeRID.getPosition() * 1.2));
           maxEdgeRID = maxEdge;
@@ -140,8 +142,8 @@ class RecordRecyclingTest {
         databaseFactory.open().drop();
 
       try (Database db = databaseFactory.create()) {
-        db.getSchema().createVertexType(VERTEX_TYPE, 1);
-        db.getSchema().createEdgeType(EDGE_TYPE, 1);
+        db.getSchema().buildVertexType().withName(VERTEX_TYPE).withTotalBuckets(1).create();
+        db.getSchema().buildEdgeType().withName(EDGE_TYPE).withTotalBuckets(1).create();
 
         db.transaction(() -> {
           final MutableVertex root = db.newVertex(VERTEX_TYPE)//

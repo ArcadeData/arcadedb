@@ -23,9 +23,9 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.ZoneId;
 import java.util.List;
 import java.util.TimeZone;
-import java.time.ZoneId;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -34,7 +34,7 @@ import static org.mockito.Mockito.mock;
 class RemoteSchemaTest {
 
   private RemoteDatabase mockDatabase;
-  private RemoteSchema schema;
+  private RemoteSchema   schema;
 
   @BeforeEach
   void setUp() {
@@ -137,7 +137,8 @@ class RemoteSchemaTest {
 
   @Test
   void getOrCreateVertexTypeWithPageSizeThrowsUnsupported() {
-    assertThatThrownBy(() -> schema.getOrCreateVertexType("Type", 1, 100))
+    assertThatThrownBy(() ->
+        schema.buildVertexType().withName("Type").withTotalBuckets(1).withIgnoreIfExists(true).withPageSize(100).create())
         .isInstanceOf(UnsupportedOperationException.class);
   }
 
