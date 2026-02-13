@@ -32,9 +32,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-;
 
 /**
  * Tests for advanced Cypher functions: Path, List, String, and Type Conversion functions.
@@ -44,7 +41,10 @@ class OpenCypherAdvancedFunctionTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./databases/test-advanced-functions").create();
+    final DatabaseFactory factory = new DatabaseFactory("./databases/test-advanced-functions");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -234,9 +234,12 @@ class OpenCypherAdvancedFunctionTest {
 
   @Test
   void toBooleanFunctionWithNumber() {
-    // Per Cypher spec, toBoolean() does not accept numbers — throws TypeError
-    assertThatThrownBy(() -> database.command("opencypher", "RETURN toBoolean(1) AS result").nextIfAvailable())
-        .isInstanceOf(Exception.class);
+    // toBoolean() supports integers: 0 → false, non-zero → true (issue #3418)
+    final ResultSet result = database.command("opencypher",
+        "RETURN toBoolean(1) AS result");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat((Boolean) result.next().getProperty("result")).isTrue();
   }
 
   // ==================== Path Functions ====================
