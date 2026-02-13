@@ -579,13 +579,11 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         }
 
         // Query with SKIP and LIMIT
-        Result result = session.run("MATCH (n:SkipTest) RETURN n.idx AS idx ORDER BY n.idx SKIP 5 LIMIT 5");
-        System.out.println("result = " + result);
+        List<Record> records = session.run("MATCH (n:SkipTest) RETURN n.idx AS idx ORDER BY n.idx SKIP 5 LIMIT 5").list();
+        assertThat(records).hasSize(5);
         List<Long> indices = new ArrayList<>();
-        while (result.hasNext()) {
-          indices.add(result.next().get("idx").asLong());
-        }
-        assertThat(indices).hasSize(5);
+        for (final Record r : records)
+          indices.add(r.get("idx").asLong());
         assertThat(indices).containsExactly(5L, 6L, 7L, 8L, 9L);
       }
     }
