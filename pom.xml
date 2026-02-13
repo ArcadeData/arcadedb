@@ -209,6 +209,9 @@
                         --add-modules jdk.incubator.vector
                     </argLine>
                     <skipTests>${skipTests}</skipTests>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
                     <!--                    <skipTests>${skipUnit}</skipTests>-->
                 </configuration>
             </plugin>
