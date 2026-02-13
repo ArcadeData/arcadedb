@@ -53,7 +53,7 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
       if (scriptEngine == null) {
         scriptEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
             .setLanguage("js")
-            .setAllowedPackages(Arrays.asList("java.lang.*", "java.util.*", "java.math.*"))
+            .setAllowedPackages(Arrays.asList("java.lang.*", "java.util.*", "java.time.*", "java.math.*"))
             .build();
       }
 
