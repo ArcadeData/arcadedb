@@ -83,7 +83,7 @@ public class CypherFunctionFactory {
     // trim and replace are handled as Cypher-specific functions
 
     // Date/Time functions
-    mapping.put("timestamp", "sysdate");
+    // Note: timestamp() is handled as Cypher-specific (returns millis since epoch, not a date object)
 
     // Cypher-specific functions (no SQL equivalent, handled specially)
     // id(), labels(), type(), keys(), properties(), startNode(), endNode()
@@ -229,6 +229,8 @@ public class CypherFunctionFactory {
       case "nullif", "valuetype" -> true;
       // Aggregation functions
       case "collect", "percentiledisc", "percentilecont", "min", "max" -> true;
+      // Temporal functions
+      case "timestamp" -> true;
       // Temporal constructor functions
       case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
       // Temporal truncation functions
@@ -347,6 +349,8 @@ public class CypherFunctionFactory {
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
       case "percentiledisc" -> new PercentileDiscFunction();
       case "percentilecont" -> new PercentileContFunction();
+      // Temporal functions
+      case "timestamp" -> new TimestampFunction();
       // Temporal format function
       case "format" -> new FormatFunction();
       // Vector similarity functions
