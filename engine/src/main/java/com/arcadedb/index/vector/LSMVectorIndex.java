@@ -1089,6 +1089,7 @@ vectorBuilder.pqTrainingLimit);
       // CRITICAL FIX: Validate vectors before building graph to filter out deleted documents
       // When a document is deleted, getVector() returns null which breaks JVector index building
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>();
+      final Map<Integer, VectorFloat<?>> preloadedVectors = new HashMap<>();
       final List<Integer> validVectorIds = new ArrayList<>();
       int skippedDeletedDocs = 0;
 
@@ -1132,6 +1133,7 @@ vectorBuilder.pqTrainingLimit);
                 if (hasNonZero) {
                   vectorLocationSnapshot.put(vectorId, loc);
                   validVectorIds.add(vectorId);
+                  preloadedVectors.put(vectorId, vts.createFloatVector(vector));
                   validationSuccesses++;
                 } else {
                   validationAllZeros++;
@@ -1172,6 +1174,7 @@ vectorBuilder.pqTrainingLimit);
                 if (hasNonZero) {
                   vectorLocationSnapshot.put(vectorId, loc);
                   validVectorIds.add(vectorId);
+                  preloadedVectors.put(vectorId, vts.createFloatVector(vector));
                 }
               }
 
@@ -1222,11 +1225,20 @@ vectorBuilder.pqTrainingLimit);
           filteredVectorIds.length, vectorProp, graphBuildCacheSize);
 
       // Create lazy-loading vector values that reads vectors from documents or index pages (if quantized)
-      vectors = new ArcadePageVectorValues(database, metadata.dimensions, vectorProp,
+      final ArcadePageVectorValues pageVectors = new ArcadePageVectorValues(database, metadata.dimensions, vectorProp,
           vectorLocationSnapshot,  // Use immutable snapshot
           finalActiveVectorIds, this,  // Pass LSM index reference for quantization support
           graphBuildCacheSize  // Pass configurable cache size
       );
+
+      // Pre-populate cache with vectors validated during the validation phase above.
+      // This ensures JVector's parallel ForkJoinPool threads can access vectors
+      // from cache without needing a DatabaseContext for lookupByRID.
+      for (final Map.Entry<Integer, VectorFloat<?>> entry : preloadedVectors.entrySet())
+        pageVectors.putInCache(entry.getKey(), entry.getValue());
+      preloadedVectors.clear(); // Free memory
+
+      vectors = pageVectors;
 
       // Mark that graph building is in progress to prevent new inserts
       this.graphState = GraphState.MUTABLE;

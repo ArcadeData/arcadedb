@@ -270,6 +270,20 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     }
   }
 
+  /**
+   * Pre-populates the cache with a vector for a given vectorId.
+   * Must be called from a thread that has a database context (e.g., the main thread during validation).
+   * This allows JVector's parallel ForkJoinPool threads to find vectors in the cache
+   * without needing their own database context for lookupByRID.
+   */
+  public void putInCache(final int vectorId, final VectorFloat<?> vector) {
+    if (vectorCache != null && vector != null) {
+      synchronized (vectorCache) {
+        vectorCache.put(vectorId, vector);
+      }
+    }
+  }
+
   @Override
   public boolean isValueShared() {
     // Each call to getVector() creates a new float array
