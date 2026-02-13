@@ -93,7 +93,7 @@ jobs:
 
       - name: Run Unit Tests with Coverage
         # package phase runs surefire (test) and JaCoCo report (prepare-package) without reaching integration-test phase
-        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf -DexcludedGroups=slow,benchmark -Dtest=!OpenCypherTCKTest
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf -DexcludedGroups=slow,benchmark
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -136,7 +136,7 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Slow Unit Tests with Coverage
-        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine  -Dgroups=slow -Dtest=!OpenCypherTCKTest
+        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -pl engine  -Dgroups=slow
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -179,7 +179,7 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Benchmark Unit Tests with Coverage
-        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -Dgroups=benchmark -Dtest=!OpenCypherTCKTest
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dgroups=benchmark
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

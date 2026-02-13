@@ -199,6 +199,7 @@
                              examples and scenarios. -->
                         <configurationParameters>
                             cucumber.junit-platform.naming-strategy=long
+                            cucumber.filter.name="not .*IT.*"
                         </configurationParameters>
                     </properties>
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
