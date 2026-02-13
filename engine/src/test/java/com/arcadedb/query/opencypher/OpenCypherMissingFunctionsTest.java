@@ -273,8 +273,18 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToBooleanOrNullInvalid() {
+  void testToBooleanOrNullFromInteger() {
+    // toBoolean() supports integers: 0 → false, non-zero → true (issue #3418)
     try (final ResultSet rs = database.command("opencypher", "RETURN toBooleanOrNull(42) AS val")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Boolean>getProperty("val")).isTrue();
+    }
+  }
+
+  @Test
+  void testToBooleanOrNullInvalid() {
+    // A list is not convertible to boolean, so toBooleanOrNull should return null
+    try (final ResultSet rs = database.command("opencypher", "RETURN toBooleanOrNull([1,2,3]) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("val")).isNull();
     }
