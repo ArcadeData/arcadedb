@@ -34,10 +34,6 @@
     <name>ArcadeDB BOLT Protocol</name>
     <description>Neo4j BOLT wire protocol implementation for ArcadeDB</description>
 
-    <properties>
-        <neo4j-driver.version>5.27.0</neo4j-driver.version>
-    </properties>
-
     <dependencies>
         <dependency>
             <groupId>com.arcadedb</groupId>
