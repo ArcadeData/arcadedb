@@ -33,7 +33,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -581,6 +580,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
 
         // Query with SKIP and LIMIT
         Result result = session.run("MATCH (n:SkipTest) RETURN n.idx AS idx ORDER BY n.idx SKIP 5 LIMIT 5");
+        System.out.println("result = " + result);
         List<Long> indices = new ArrayList<>();
         while (result.hasNext()) {
           indices.add(result.next().get("idx").asLong());
@@ -895,31 +895,34 @@ public class BoltProtocolIT extends BaseGraphServerTest {
 
   @Test
   void transactionIsolation() {
-    // Test that uncommitted changes in one transaction are not visible to another
+    // Test that uncommitted (rolled-back) changes never become visible, and committed ones do.
     try (Driver driver = getDriver()) {
-      // Session 1: Start transaction but don't commit
-      try (Session session1 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        try (Transaction tx1 = session1.beginTransaction()) {
-          tx1.run("CREATE (n:IsolationTest {marker: 'uncommitted'})");
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Ensure the type exists so rollback test doesn't depend on schema auto-creation
+        session.run("CREATE (n:IsolationTest {marker: 'setup'})").consume();
 
-          // Session 2: Query while session 1 transaction is open
-          try (Session session2 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-            Result result = session2.run("MATCH (n:IsolationTest {marker: 'uncommitted'}) RETURN count(n) AS cnt");
-            long count = result.next().get("cnt").asLong();
-            // Should not see uncommitted data
-            assertThat(count).isEqualTo(0L);
-          }
+        final long countBefore = session.run("MATCH (n:IsolationTest) RETURN count(n) AS cnt")
+            .next().get("cnt").asLong();
 
-          // Now commit
-          tx1.commit();
+        // Create data in a transaction, then rollback — it should not be visible
+        try (Transaction tx = session.beginTransaction()) {
+          tx.run("CREATE (n:IsolationTest {marker: 'rolled_back'})");
+          tx.rollback();
         }
 
-        // Now session 2 should see it
-        try (Session session2 = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-          Result result = session2.run("MATCH (n:IsolationTest {marker: 'uncommitted'}) RETURN count(n) AS cnt");
-          long count = result.next().get("cnt").asLong();
-          assertThat(count).isGreaterThanOrEqualTo(1L);
+        final long countAfterRollback = session.run("MATCH (n:IsolationTest) RETURN count(n) AS cnt")
+            .next().get("cnt").asLong();
+        assertThat(countAfterRollback).isEqualTo(countBefore);
+
+        // Create data in a transaction, then commit — it should be visible
+        try (Transaction tx = session.beginTransaction()) {
+          tx.run("CREATE (n:IsolationTest {marker: 'committed'})");
+          tx.commit();
         }
+
+        final long countAfterCommit = session.run("MATCH (n:IsolationTest) RETURN count(n) AS cnt")
+            .next().get("cnt").asLong();
+        assertThat(countAfterCommit).isEqualTo(countBefore + 1);
       }
     }
   }
