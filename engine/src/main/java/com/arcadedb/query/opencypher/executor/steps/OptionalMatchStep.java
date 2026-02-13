@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -40,11 +41,22 @@ import java.util.Set;
  * - For each 'a' from first MATCH, try to find (a)-[r:KNOWS]->(b)
  * - If found: return a, r, b
  * - If not found: return a, null, null
+ * <p>
+ * **Streaming Optimization**: To prevent OOM with large cartesian products,
+ * uses bounded buffering and streams results incrementally instead of
+ * loading all matches into memory at once.
  */
 public class OptionalMatchStep extends AbstractExecutionStep {
   private final AbstractExecutionStep matchChainStart;
   private final AbstractExecutionStep matchChainEnd;
   private final Set<String> variableNames;
+
+  // Buffer size limit to prevent OOM (configurable via system property)
+  private static final int MAX_BUFFER_SIZE = Integer.getInteger("arcadedb.optionalMatch.maxBufferSize", 10000);
+
+  // Count-only mode: when true, only tracks unique RIDs instead of buffering full Result objects
+  // This dramatically reduces memory for count() aggregations
+  private boolean countOnlyMode = false;
 
   /**
    * Creates an optional match step.
@@ -62,15 +74,31 @@ public class OptionalMatchStep extends AbstractExecutionStep {
     this.variableNames = variableNames;
   }
 
+  /**
+   * Enables count-only mode for memory-efficient counting.
+   * Instead of buffering full Result objects, only tracks unique RIDs.
+   * Use this when the matched variables are only used for count() aggregation.
+   */
+  public void setCountOnlyMode(final boolean enabled) {
+    this.countOnlyMode = enabled;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final boolean hasInput = prev != null;
 
     return new ResultSet() {
       private ResultSet prevResults = null;
+      private Result currentInputRow = null;
+      private ResultSet currentMatchResults = null;
+      private boolean foundMatchForCurrent = false;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+
+      // Count-only mode: track unique RIDs instead of full Result objects
+      private final Set<com.arcadedb.database.RID> uniqueRIDs = countOnlyMode ? new HashSet<>() : null;
+      private long currentInputMatchCount = 0;
 
       @Override
       public boolean hasNext() {
@@ -99,68 +127,125 @@ public class OptionalMatchStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         if (hasInput) {
-          // With input: process each input row through the optional match chain
+          // Initialize prevResults on first call
           if (prevResults == null) {
             prevResults = prev.syncPull(context, nRecords);
           }
 
-          while (buffer.size() < n && prevResults.hasNext()) {
-            final Result inputRow = prevResults.next();
-            final long begin = context.isProfiling() ? System.nanoTime() : 0;
-            try {
-              if (context.isProfiling())
-                rowCount++;
+          // Streaming mode: process matches incrementally to avoid OOM
+          // Limit buffer size to prevent unbounded memory growth
+          final int maxToFetch = Math.min(n, MAX_BUFFER_SIZE);
+          while (buffer.size() < maxToFetch) {
+            // If we have active match results for the current input row, continue streaming them
+            if (currentMatchResults != null && currentMatchResults.hasNext()) {
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                if (context.isProfiling())
+                  rowCount++;
 
-              // Feed this single input row into the match chain
-              // Create a single-row input provider for the match chain
-              final SingleRowInputStep singleRowInput = new SingleRowInputStep(inputRow, context);
-              matchChainStart.setPrevious(singleRowInput);
+                final Result matchResult = currentMatchResults.next();
 
-              // Execute the match chain by pulling from the END of the chain
-              // (which pulls through any intermediate filter steps)
-              final ResultSet matchResults = matchChainEnd.syncPull(context, 100);
+                if (countOnlyMode) {
+                  // Count-only optimization: just track unique RIDs, don't buffer full objects
+                  for (final String varName : variableNames) {
+                    final Object val = matchResult.getProperty(varName);
+                    if (val instanceof com.arcadedb.database.Identifiable) {
+                      uniqueRIDs.add(((com.arcadedb.database.Identifiable) val).getIdentity());
+                    }
+                  }
+                  currentInputMatchCount++;
+                  foundMatchForCurrent = true;
+                  // Continue consuming all matches without buffering
+                } else {
+                  // Normal mode: buffer full Result objects
+                  buffer.add(matchResult);
+                  foundMatchForCurrent = true;
 
-              // Collect all matches for this input
-              boolean foundMatch = false;
-              while (matchResults.hasNext()) {
-                buffer.add(matchResults.next());
-                foundMatch = true;
-              }
-              matchResults.close();
-
-              // If no matches found, emit input row with NULL values for match variables
-              if (!foundMatch) {
-                final ResultInternal nullResult = new ResultInternal();
-                // Copy all properties from input row
-                final Set<String> inputProps = inputRow.getPropertyNames();
-                for (final String prop : inputProps) {
-                  nullResult.setProperty(prop, inputRow.getProperty(prop));
+                  // Stop if buffer is getting too large (prevent OOM)
+                  if (buffer.size() >= Math.min(n, MAX_BUFFER_SIZE)) {
+                    break;
+                  }
                 }
-                // Add NULL values only for NEW optional match variables (not already bound)
-                for (final String varName : variableNames) {
-                  if (!inputProps.contains(varName))
-                    nullResult.setProperty(varName, null);
-                }
-                buffer.add(nullResult);
+              } finally {
+                if (context.isProfiling())
+                  cost += (System.nanoTime() - begin);
               }
-            } finally {
-              if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+            } else {
+              // No more matches for current input, finalize it
+              if (currentMatchResults != null) {
+                currentMatchResults.close();
+
+                if (countOnlyMode) {
+                  // Count-only mode: emit a single result with count for this input
+                  final ResultInternal countResult = new ResultInternal();
+                  // Copy all properties from input row
+                  final Set<String> inputProps = currentInputRow.getPropertyNames();
+                  for (final String prop : inputProps) {
+                    countResult.setProperty(prop, currentInputRow.getProperty(prop));
+                  }
+                  // Set count value for the matched variable (first variable name)
+                  // In count-only mode, typically there's one variable being counted
+                  if (!variableNames.isEmpty()) {
+                    final String countVar = variableNames.iterator().next();
+                    countResult.setProperty(countVar + "_count", currentInputMatchCount);
+                  }
+                  buffer.add(countResult);
+                  currentInputMatchCount = 0; // Reset for next input
+                } else {
+                  // Normal mode: if no matches found for this input row, emit NULL result
+                  if (!foundMatchForCurrent && currentInputRow != null) {
+                    final ResultInternal nullResult = new ResultInternal();
+                    // Copy all properties from input row
+                    final Set<String> inputProps = currentInputRow.getPropertyNames();
+                    for (final String prop : inputProps) {
+                      nullResult.setProperty(prop, currentInputRow.getProperty(prop));
+                    }
+                    // Add NULL values only for NEW optional match variables (not already bound)
+                    for (final String varName : variableNames) {
+                      if (!inputProps.contains(varName))
+                        nullResult.setProperty(varName, null);
+                    }
+                    buffer.add(nullResult);
+                  }
+                }
+
+                currentMatchResults = null;
+                currentInputRow = null;
+              }
+
+              // Get next input row
+              if (!prevResults.hasNext()) {
+                finished = true;
+                break;
+              }
+
+              currentInputRow = prevResults.next();
+              foundMatchForCurrent = false;
+
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                // Feed this input row into the match chain
+                final SingleRowInputStep singleRowInput = new SingleRowInputStep(currentInputRow, context);
+                matchChainStart.setPrevious(singleRowInput);
+
+                // Execute the match chain (streaming)
+                currentMatchResults = matchChainEnd.syncPull(context, Math.min(100, MAX_BUFFER_SIZE));
+              } finally {
+                if (context.isProfiling())
+                  cost += (System.nanoTime() - begin);
+              }
             }
-          }
-
-          if (!prevResults.hasNext()) {
-            finished = true;
           }
         } else {
           // No input: standalone OPTIONAL MATCH
           // Execute match chain without input
           matchChainStart.setPrevious(null);
-          final ResultSet matchResults = matchChainEnd.syncPull(context, nRecords);
+          final ResultSet matchResults = matchChainEnd.syncPull(context, Math.min(nRecords, MAX_BUFFER_SIZE));
 
-          // Collect matches
+          // Collect matches with bounded buffer
+          final int maxToFetch = Math.min(n, MAX_BUFFER_SIZE);
           boolean foundAnyMatch = false;
-          while (buffer.size() < n && matchResults.hasNext()) {
+          while (buffer.size() < maxToFetch && matchResults.hasNext()) {
             buffer.add(matchResults.next());
             foundAnyMatch = true;
           }
@@ -183,6 +268,10 @@ public class OptionalMatchStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
+        if (currentMatchResults != null) {
+          currentMatchResults.close();
+          currentMatchResults = null;
+        }
         OptionalMatchStep.this.close();
       }
     };
@@ -222,8 +311,11 @@ public class OptionalMatchStep extends AbstractExecutionStep {
     final String ind = getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ OPTIONAL MATCH (variables: ").append(String.join(", ", variableNames)).append(")");
+    if (countOnlyMode) {
+      builder.append(" [COUNT-ONLY MODE]");
+    }
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
         builder.append(", ").append(getRowCountFormatted());
       builder.append(")");
