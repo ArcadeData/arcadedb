@@ -61,7 +61,7 @@ public class StackOverflowQueryTest {
         int rowCount = 0;
         // System.out.println("Results:");
         // System.out.println("-----------------------------------------");
-        System.out.printf("%-15s | %-15s%n", "Question ID", "Total Comments");
+//        System.out.printf("%-15s | %-15s%n", "Question ID", "Total Comments");
         // System.out.println("-----------------------------------------");
 
         while (resultSet.hasNext()) {
@@ -69,7 +69,7 @@ public class StackOverflowQueryTest {
           final Object questionId = row.getProperty("question_id");
           final Object totalComments = row.getProperty("total_comments");
 
-          System.out.printf("%-15s | %-15s%n", questionId, totalComments);
+//          System.out.printf("%-15s | %-15s%n", questionId, totalComments);
           rowCount++;
         }
 
