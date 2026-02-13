@@ -18,47 +18,28 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.function.*;
 import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
-import com.arcadedb.query.opencypher.traversal.TraversalPath;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 
-import com.arcadedb.query.opencypher.temporal.*;
-
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.OffsetTime;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.temporal.TemporalAccessor;
-import java.util.*;
-import java.util.regex.Pattern;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Factory for Cypher functions.
  * Provides a bridge between Cypher function names and ArcadeDB SQL functions.
  * Also implements Cypher-specific functions that don't have SQL equivalents.
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherFunctionFactory {
   private static final String SQL_PREFIX = "sql.";
 
   private final DefaultSQLFunctionFactory sqlFunctionFactory;
-  private final Map<String, String> cypherToSqlMapping;
+  private final Map<String, String>       cypherToSqlMapping;
 
   public CypherFunctionFactory(final DefaultSQLFunctionFactory sqlFunctionFactory) {
     this.sqlFunctionFactory = sqlFunctionFactory;
@@ -93,8 +74,7 @@ public class CypherFunctionFactory {
     mapping.put("sum", "sum");
     mapping.put("avg", "avg");
     // min/max handled as Cypher-specific to support mixed-type comparison
-    mapping.put("stdev", "stddev");
-    mapping.put("stdevp", "stddev");
+    // stdev/stdevp handled as Cypher-specific (sample vs population)
 
     // String functions - need to check if SQL has these
     mapping.put("toupper", "upper");
@@ -229,7 +209,7 @@ public class CypherFunctionFactory {
       case "nodes", "relationships", "length" -> true;
       // Math functions
       case "rand", "sign", "ceil", "floor", "abs", "sqrt", "round", "isnan",
-          "cosh", "sinh", "tanh", "cot", "coth", "pi", "e", "randomuuid" -> true;
+           "cosh", "sinh", "tanh", "cot", "coth", "pi", "e", "randomuuid" -> true;
       // General functions
       case "coalesce" -> true;
       // Predicate functions
@@ -241,11 +221,12 @@ public class CypherFunctionFactory {
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean" -> true;
       // Aggregation functions
-      case "collect", "percentiledisc", "percentilecont", "min", "max" -> true;
+      case "collect", "percentiledisc", "percentilecont", "min", "max", "stdev", "stdevp" -> true;
       // Temporal constructor functions
       case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
       // Temporal truncation functions
-      case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" -> true;
+      case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" ->
+          true;
       // Temporal epoch functions
       case "datetime.fromepoch", "datetime.fromepochmillis" -> true;
       // Temporal format function
@@ -334,6 +315,8 @@ public class CypherFunctionFactory {
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
       case "percentiledisc" -> new PercentileDiscFunction();
       case "percentilecont" -> new PercentileContFunction();
+      case "stdev" -> distinct ? new DistinctAggregationWrapper(new StDevFunction()) : new StDevFunction();
+      case "stdevp" -> distinct ? new DistinctAggregationWrapper(new StDevPFunction()) : new StDevPFunction();
       // Temporal format function
       case "format" -> new FormatFunction();
       // Vector similarity functions
@@ -366,7 +349,8 @@ public class CypherFunctionFactory {
       case "date.realtime", "date.statement", "date.transaction" -> new DateConstructorFunction();
       case "localtime.realtime", "localtime.statement", "localtime.transaction" -> new LocalTimeConstructorFunction();
       case "time.realtime", "time.statement", "time.transaction" -> new TimeConstructorFunction();
-      case "localdatetime.realtime", "localdatetime.statement", "localdatetime.transaction" -> new LocalDateTimeConstructorFunction();
+      case "localdatetime.realtime", "localdatetime.statement", "localdatetime.transaction" ->
+          new LocalDateTimeConstructorFunction();
       case "datetime.realtime", "datetime.statement", "datetime.transaction" -> new DateTimeConstructorFunction();
       default -> throw new CommandExecutionException("Cypher function not implemented: " + functionName);
     };
