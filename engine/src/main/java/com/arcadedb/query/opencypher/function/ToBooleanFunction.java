@@ -41,6 +41,8 @@ public class ToBooleanFunction implements StatelessFunction {
       return null;
     if (args[0] instanceof Boolean)
       return args[0];
+    if (args[0] instanceof Number)
+      return ((Number) args[0]).longValue() != 0L;
     if (args[0] instanceof String) {
       final String str = ((String) args[0]).toLowerCase();
       if ("true".equals(str))

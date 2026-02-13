@@ -263,6 +263,21 @@ class CypherFunctionFactoryExtendedTest {
   }
 
   @Test
+  void shouldExecuteToBooleanFromInteger() {
+    final var trueResult = database.query("opencypher", "RETURN toBoolean(1) AS result");
+    assertThat(trueResult.hasNext()).isTrue();
+    assertThat(trueResult.next().<Boolean>getProperty("result")).isTrue();
+
+    final var falseResult = database.query("opencypher", "RETURN toBoolean(0) AS result");
+    assertThat(falseResult.hasNext()).isTrue();
+    assertThat(falseResult.next().<Boolean>getProperty("result")).isFalse();
+
+    final var nonZeroResult = database.query("opencypher", "RETURN toBoolean(42) AS result");
+    assertThat(nonZeroResult.hasNext()).isTrue();
+    assertThat(nonZeroResult.next().<Boolean>getProperty("result")).isTrue();
+  }
+
+  @Test
   void shouldExecuteLeftFunction() {
     final var result = database.query("opencypher", "RETURN left('hello', 3) AS result");
     assertThat(result.hasNext()).isTrue();
