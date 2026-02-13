@@ -81,6 +81,8 @@
         <json-path.version>2.10.0</json-path.version>
         <slf4j.version>2.0.17</slf4j.version>
         <undertow-core.version>2.3.23.Final</undertow-core.version>
+        <neo4j-driver.version>5.28.10</neo4j-driver.version>
+
 
         <skipITs>true</skipITs>
         <skipTests>false</skipTests>

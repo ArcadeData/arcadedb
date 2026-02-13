@@ -596,13 +596,14 @@ public class BoltProtocolIT extends BaseGraphServerTest {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // ArcadeDB auto-creates types
-        session.run("CREATE (n:MultiProp {" +
-            "stringProp: 'hello', " +
-            "intProp: 42, " +
-            "floatProp: 3.14, " +
-            "boolProp: true, " +
-            "listProp: [1, 2, 3]" +
-            "})");
+        session.run("""
+            CREATE (n:MultiProp {
+            stringProp: 'hello',
+            intProp: 42,
+            floatProp: 3.14,
+            boolProp: true,
+            listProp: [1, 2, 3]
+            })""");
 
         Result result = session.run("MATCH (n:MultiProp) RETURN n");
         assertThat(result.hasNext()).isTrue();

@@ -69,7 +69,8 @@ public class BoltNetworkExecutor extends Thread {
   private static final byte[] BOLT_MAGIC = { 0x60, 0x60, (byte) 0xB0, 0x17 };
 
   // Supported protocol versions (in order of preference)
-  private static final int[] SUPPORTED_VERSIONS = { 0x00000104, 0x00000004, 0x00000003 }; // v4.4, v4.0, v3.0
+  // Encoding: [unused(8)][range(8)][minor(8)][major(8)] — major = value & 0xFF, minor = (value >> 8) & 0xFF
+  private static final int[] SUPPORTED_VERSIONS = { 0x00000404, 0x00000004, 0x00000003 }; // v4.4, v4.0, v3.0
 
   // Server states
   private enum State {
@@ -205,13 +206,24 @@ public class BoltNetworkExecutor extends Thread {
           Arrays.toString(Arrays.stream(clientVersions).mapToObj(v -> String.format("0x%08X", v)).toArray()));
     }
 
-    // Select best matching version
+    // Select best matching version using Bolt version negotiation with range support.
+    // Each client version entry encodes: major = value & 0xFF, minor = (value >> 8) & 0xFF,
+    // range = (value >> 16) & 0xFF. The range means the client supports minor versions
+    // from (minor - range) up to minor (inclusive) for the given major version.
     protocolVersion = 0;
     for (final int clientVersion : clientVersions) {
+      if (clientVersion == 0)
+        continue;
+
+      final int clientMajor = clientVersion & 0xFF;
+      final int clientMinor = (clientVersion >> 8) & 0xFF;
+      final int clientRange = (clientVersion >> 16) & 0xFF;
+
       for (final int supportedVersion : SUPPORTED_VERSIONS) {
-        // Check major version match (upper 16 bits for BOLT 4.x)
-        if (clientVersion == supportedVersion ||
-            (clientVersion >> 8) == (supportedVersion >> 8)) {
+        final int serverMajor = supportedVersion & 0xFF;
+        final int serverMinor = (supportedVersion >> 8) & 0xFF;
+
+        if (clientMajor == serverMajor && serverMinor <= clientMinor && serverMinor >= clientMinor - clientRange) {
           protocolVersion = supportedVersion;
           break;
         }
