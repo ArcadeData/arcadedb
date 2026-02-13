@@ -34,7 +34,7 @@ class ReusingSpaceTest extends TestHelper {
       db.getSchema().getOrCreateVertexType("CreateAndDelete");
       if (db.countType("CreateAndDelete", true) > 0) {
         db.getSchema().dropType("CreateAndDelete");
-        db.getSchema().getOrCreateVertexType("CreateAndDelete", 1);
+        db.getSchema().buildVertexType().withName("CreateAndDelete").withTotalBuckets(1).withIgnoreIfExists(true).create();
       }
       assertThat(db.countType("CreateAndDelete", true)).isEqualTo(0);
 
