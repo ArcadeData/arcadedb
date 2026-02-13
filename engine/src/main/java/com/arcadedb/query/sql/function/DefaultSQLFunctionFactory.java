@@ -61,8 +61,10 @@ import com.arcadedb.query.sql.function.math.SQLFunctionPow;
 import com.arcadedb.query.sql.function.math.SQLFunctionRandomInt;
 import com.arcadedb.query.sql.function.math.SQLFunctionSquareRoot;
 import com.arcadedb.query.sql.function.math.SQLFunctionStandardDeviation;
+import com.arcadedb.query.sql.function.math.SQLFunctionStandardDeviationP;
 import com.arcadedb.query.sql.function.math.SQLFunctionSum;
 import com.arcadedb.query.sql.function.math.SQLFunctionVariance;
+import com.arcadedb.query.sql.function.math.SQLFunctionVarianceP;
 import com.arcadedb.query.sql.function.misc.SQLFunctionBoolAnd;
 import com.arcadedb.query.sql.function.misc.SQLFunctionBoolOr;
 import com.arcadedb.query.sql.function.misc.SQLFunctionCoalesce;
@@ -186,8 +188,10 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionRandomInt.NAME, SQLFunctionRandomInt.class);
     register(SQLFunctionSquareRoot.NAME, SQLFunctionSquareRoot.class);
     register(SQLFunctionStandardDeviation.NAME, SQLFunctionStandardDeviation.class);
+    register(SQLFunctionStandardDeviationP.NAME, SQLFunctionStandardDeviationP.class);
     register(SQLFunctionSum.NAME, SQLFunctionSum.class);
     register(SQLFunctionVariance.NAME, SQLFunctionVariance.class);
+    register(SQLFunctionVarianceP.NAME, SQLFunctionVarianceP.class);
 
     // Misc
     register(SQLFunctionBoolAnd.NAME, SQLFunctionBoolAnd.class);

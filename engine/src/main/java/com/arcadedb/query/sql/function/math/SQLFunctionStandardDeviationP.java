@@ -19,27 +19,13 @@
 package com.arcadedb.query.sql.function.math;
 
 /**
- * Compute the sample standard deviation for a given field (divides by n-1).
- *
- * @author Fabrizio Fortino
+ * Compute the population standard deviation for a given field (divides by n).
  */
-public class SQLFunctionStandardDeviation extends SQLFunctionVariance {
+public class SQLFunctionStandardDeviationP extends SQLFunctionStandardDeviation {
 
-  public static final String NAME = "stddev";
+  public static final String NAME = "stddevp";
 
-  public SQLFunctionStandardDeviation() {
-    super(NAME, false);
-  }
-
-  protected SQLFunctionStandardDeviation(final String name, final boolean population) {
-    super(name, population);
-  }
-
-  @Override
-  public Object getResult() {
-    final Object variance = super.getResult();
-    if (variance != null)
-      return Math.sqrt((Double) variance);
-    return null;
+  public SQLFunctionStandardDeviationP() {
+    super(NAME, true);
   }
 }

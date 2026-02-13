@@ -24,10 +24,13 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLAggregatedFunction;
 
 /**
- * Compute the variance estimation for a given field.
+ * Compute the variance for a given field.
  * <p>
- * This class uses the Weldford's algorithm (presented in Donald Knuth's Art of Computer Programming) to avoid multiple distribution
- * values' passes. When executed in distributed mode it uses the Chan at al. pairwise variance algorithm to merge the results.
+ * By default computes sample variance (divides by n-1, per SQL standard).
+ * Subclasses can set {@code population=true} for population variance (divides by n).
+ * <p>
+ * This class uses the Welford's algorithm (presented in Donald Knuth's Art of Computer Programming) to avoid multiple distribution
+ * values' passes. When executed in distributed mode it uses the Chan et al. pairwise variance algorithm to merge the results.
  * <br>
  * <br>
  * <b>References</b>
@@ -52,16 +55,19 @@ public class SQLFunctionVariance extends SQLAggregatedFunction {
 
   public static final String NAME = "variance";
 
+  protected final boolean population;
+
   private long   n;
   private double mean;
   private double m2;
 
   public SQLFunctionVariance() {
-    super(NAME);
+    this(NAME, false);
   }
 
-  protected SQLFunctionVariance(final String name) {
+  protected SQLFunctionVariance(final String name, final boolean population) {
     super(name);
+    this.population = population;
   }
 
   @Override
@@ -70,9 +76,8 @@ public class SQLFunctionVariance extends SQLAggregatedFunction {
     if (params[0] instanceof Number number) {
       addValue(number);
     } else if (MultiValue.isMultiValue(params[0])) {
-      for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
+      for (final Object n : MultiValue.getMultiValueIterable(params[0]))
         addValue((Number) n);
-      }
     }
     return null;
   }
@@ -84,12 +89,16 @@ public class SQLFunctionVariance extends SQLAggregatedFunction {
 
   @Override
   public Object getResult() {
-    return this.evaluate();
+    if (n == 0)
+      return null;
+    if (n == 1)
+      return 0.0;
+    return population ? m2 / n : m2 / (n - 1);
   }
 
   @Override
   public String getSyntax() {
-    return NAME + "(<field>)";
+    return getName() + "(<field>)";
   }
 
   private void addValue(final Number value) {
@@ -101,9 +110,4 @@ public class SQLFunctionVariance extends SQLAggregatedFunction {
       mean = nextM;
     }
   }
-
-  private Double evaluate() {
-    return n > 1 ? m2 / n : null;
-  }
-
 }
