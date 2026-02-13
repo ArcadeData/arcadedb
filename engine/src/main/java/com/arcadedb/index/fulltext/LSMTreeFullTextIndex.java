@@ -48,6 +48,7 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -80,6 +81,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   private final FullTextIndexMetadata ftMetadata;
   private       TypeIndex             typeIndex;
 
+  /**
+   * Factory handler for creating LSMTreeFullTextIndex instances.
+   * Validates that the index is not unique and is defined on STRING properties.
+   */
   public static class LSMTreeFullTextIndexFactoryHandler implements IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder builder) {
@@ -159,6 +164,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return get(keys, -1);
   }
 
+  /**
+   * Searches the index for the given query text.
+   * The query text is parsed into terms, analyzed, and then matched against the index.
+   * Results are scored based on the number of matching terms (coordination factor).
+   *
+   * @param keys  The query arguments. keys[0] is expected to be the query string.
+   * @param limit The maximum number of results to return. -1 for no limit.
+   * @return An IndexCursor containing the matching results, sorted by score descending.
+   */
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
     final HashMap<RID, AtomicInteger> scoreMap = new HashMap<>();
@@ -184,6 +198,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         while (rids.hasNext()) {
           final RID rid = rids.next().getIdentity();
 
+          // Accumulate score for this RID based on term frequency in the query
           final AtomicInteger score = scoreMap.get(rid);
           if (score == null)
             scoreMap.put(rid, new AtomicInteger(1));
@@ -227,6 +242,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * For example, "title:java programming" returns:
    * - QueryTerm(fieldName="title", value="java")
    * - QueryTerm(fieldName=null, value="programming")
+   *
+   * @param queryText The raw query string.
+   * @return A list of parsed QueryTerms.
    */
   private List<QueryTerm> parseQueryTerms(final String queryText) {
     final List<QueryTerm> terms = new ArrayList<>();
@@ -266,6 +284,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return props != null ? props.size() : 1;
   }
 
+  /**
+   * Indexes a document.
+   * Tokenizes the input values and updates the underlying LSM tree.
+   * Handles both single-property and multi-property indexes.
+   *
+   * @param keys The values of the indexed properties for the document.
+   * @param rids The RIDs associated with these keys (usually just one).
+   */
   @Override
   public void put(final Object[] keys, final RID[] rids) {
     // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
@@ -300,6 +326,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Removes a document from the index.
+   * Tokenizes the input values and removes the corresponding entries from the underlying LSM tree.
+   *
+   * @param keys The values of the indexed properties to remove.
+   */
   @Override
   public void remove(final Object[] keys) {
     // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
@@ -330,6 +362,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Removes a specific RID associated with the given keys from the index.
+   *
+   * @param keys The values of the indexed properties.
+   * @param rid  The specific RID to remove.
+   */
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
     // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
@@ -588,6 +626,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Analyzes the input text using the provided Lucene Analyzer.
+   * Tokenizes the text and returns a list of tokens (strings).
+   *
+   * @param analyzer The Lucene Analyzer to use.
+   * @param text     The input text objects to analyze.
+   * @return A list of tokens extracted from the text.
+   */
   public List<String> analyzeText(final Analyzer analyzer, final Object[] text) {
     final List<String> tokens = new ArrayList<>();
 
@@ -642,51 +688,41 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * @throws IllegalArgumentException if sourceRids is null, empty, or exceeds maxSourceDocs
    */
   public IndexCursor searchMoreLikeThis(final Set<RID> sourceRids, final MoreLikeThisConfig config) {
-    // Validate inputs
-    if (sourceRids == null) {
+    if (sourceRids == null)
       throw new IllegalArgumentException("sourceRids cannot be null");
-    }
-    if (sourceRids.isEmpty()) {
+    if (sourceRids.isEmpty())
       throw new IllegalArgumentException("sourceRids cannot be empty");
-    }
-    if (sourceRids.size() > config.getMaxSourceDocs()) {
+    if (sourceRids.size() > config.getMaxSourceDocs())
       throw new IllegalArgumentException(
           "Number of source documents (" + sourceRids.size() + ") exceeds maxSourceDocs (" + config.getMaxSourceDocs() + ")");
-    }
 
     // Step 1 & 2: Extract terms from source documents and count term frequencies
     final Map<String, Integer> termFreqs = new HashMap<>();
+    final List<String> propertyNames = getPropertyNames();
 
-    for (final RID sourceRid : sourceRids) {
-      // Load the document
-      final Identifiable identifiable = sourceRid.getRecord();
-      if (identifiable == null) {
-        continue;
-      }
+    if (propertyNames != null && !propertyNames.isEmpty()) {
+      for (final RID sourceRid : sourceRids) {
+        final Identifiable identifiable = sourceRid.getRecord();
+        if (identifiable == null)
+          continue;
 
-      // Extract text from indexed properties
-      final List<String> propertyNames = getPropertyNames();
-      if (propertyNames != null && !propertyNames.isEmpty()) {
         final Document doc = (Document) identifiable;
         for (final String propName : propertyNames) {
           final Object value = doc.get(propName);
-          if (value != null) {
-            // Analyze the text to get tokens
-            final List<String> tokens = analyzeText(indexAnalyzer, new Object[] { value });
-            for (final String token : tokens) {
-              if (token != null) {
-                termFreqs.merge(token, 1, Integer::sum);
-              }
-            }
+          if (value == null)
+            continue;
+
+          final List<String> tokens = analyzeText(indexAnalyzer, new Object[] { value });
+          for (final String token : tokens) {
+            if (token != null)
+              termFreqs.merge(token, 1, Integer::sum);
           }
         }
       }
     }
 
-    // If no terms extracted, return empty cursor
-    if (termFreqs.isEmpty()) {
+    if (termFreqs.isEmpty())
       return new TempIndexCursor(Collections.emptyList());
-    }
 
     // Step 3: Get document frequencies for each term
     final Map<String, Integer> docFreqs = new HashMap<>();
@@ -707,48 +743,32 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final MoreLikeThisQueryBuilder queryBuilder = new MoreLikeThisQueryBuilder(config);
     final List<String> topTerms = queryBuilder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
-    // If no terms selected, return empty cursor
-    if (topTerms.isEmpty()) {
+    if (topTerms.isEmpty())
       return new TempIndexCursor(Collections.emptyList());
-    }
 
     // Step 5: Execute OR query and accumulate scores
-    final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
+    final Map<RID, Integer> scoreMap = new HashMap<>();
     for (final String term : topTerms) {
       final IndexCursor termCursor = underlyingIndex.get(new String[] { term });
       while (termCursor.hasNext()) {
         final RID rid = termCursor.next().getIdentity();
-        final AtomicInteger score = scoreMap.get(rid);
-        if (score == null) {
-          scoreMap.put(rid, new AtomicInteger(1));
-        } else {
-          score.incrementAndGet();
-        }
+        scoreMap.merge(rid, 1, Integer::sum);
       }
     }
 
     // Step 6: Exclude source documents if configured
     if (config.isExcludeSource()) {
-      for (final RID sourceRid : sourceRids) {
+      for (final RID sourceRid : sourceRids)
         scoreMap.remove(sourceRid);
-      }
     }
 
     // Step 7: Build result list sorted by score descending
     final List<IndexCursorEntry> results = new ArrayList<>(scoreMap.size());
-    for (final Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet()) {
-      results.add(new IndexCursorEntry(null, entry.getKey(), entry.getValue().get()));
-    }
+    for (final Map.Entry<RID, Integer> entry : scoreMap.entrySet())
+      results.add(new IndexCursorEntry(null, entry.getKey(), entry.getValue()));
 
-    // Sort by score descending
-    if (results.size() > 1) {
-      results.sort((o1, o2) -> {
-        if (o1.score == o2.score) {
-          return 0;
-        }
-        return o1.score < o2.score ? 1 : -1; // Descending order
-      });
-    }
+    if (results.size() > 1)
+      results.sort(Comparator.comparingInt((IndexCursorEntry e) -> e.score).reversed());
 
     return new TempIndexCursor(results);
   }

@@ -24,19 +24,26 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 
 /**
  * Thread local to store transaction data.
  */
 public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.DatabaseContextTL>> {
-  public static final  DatabaseContext                                           INSTANCE = new DatabaseContext();
-  private static final ConcurrentHashMap<Thread, Map<String, DatabaseContextTL>> CONTEXTS = new ConcurrentHashMap<>();
+  public static final  DatabaseContext                                           INSTANCE          = new DatabaseContext();
+  private static final ConcurrentHashMap<Thread, Map<String, DatabaseContextTL>> CONTEXTS          = new ConcurrentHashMap<>();
+  private static final AtomicInteger                                             INIT_CALL_COUNTER = new AtomicInteger();
+  private static final int                                                       CLEANUP_INTERVAL  = 1000;
 
   public DatabaseContextTL init(final DatabaseInternal database) {
     return init(database, null);
   }
 
   public DatabaseContextTL init(final DatabaseInternal database, final TransactionContext firstTransaction) {
+    // PERIODIC CLEANUP OF DEAD THREAD ENTRIES AS SAFETY NET
+    if (INIT_CALL_COUNTER.incrementAndGet() % CLEANUP_INTERVAL == 0)
+      cleanupDeadThreads();
+
     Map<String, DatabaseContextTL> map = get();
 
     final String key = database.getDatabasePath();
@@ -136,6 +143,22 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       }
     }
     return null;
+  }
+
+  /**
+   * Removes all database contexts for the current thread. Virtual thread callers should invoke this in their finally blocks
+   * to prevent memory leaks since virtual threads may not be garbage collected promptly while referenced by CONTEXTS.
+   */
+  public void removeCurrentThreadContexts() {
+    super.remove();
+    CONTEXTS.remove(Thread.currentThread());
+  }
+
+  /**
+   * Scans CONTEXTS and removes entries for threads that are no longer alive. Called periodically as a safety net.
+   */
+  private static void cleanupDeadThreads() {
+    CONTEXTS.keySet().removeIf(thread -> !thread.isAlive());
   }
 
   public static class DatabaseContextTL {

@@ -137,13 +137,13 @@ class BoltChunkedIOTest {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     final BoltChunkedOutput output = new BoltChunkedOutput(baos);
 
-    output.writeRawInt(0x00000104); // BOLT version 4.4
+    output.writeRawInt(0x00000404); // BOLT version 4.4
 
     final byte[] result = baos.toByteArray();
     assertThat(result).hasSize(4);
     assertThat(result[0]).isEqualTo((byte) 0x00);
     assertThat(result[1]).isEqualTo((byte) 0x00);
-    assertThat(result[2]).isEqualTo((byte) 0x01);
+    assertThat(result[2]).isEqualTo((byte) 0x04);
     assertThat(result[3]).isEqualTo((byte) 0x04);
   }
 

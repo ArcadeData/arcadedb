@@ -64,6 +64,11 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
 
+  // Configurable batch size for streaming aggregation (default: 10,000)
+  private static final int DEFAULT_BATCH_SIZE = 10000;
+  private static final int BATCH_SIZE = Integer.parseInt(
+      System.getProperty("arcadedb.aggregation.batchSize", String.valueOf(DEFAULT_BATCH_SIZE)));
+
   public GroupByAggregationStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
     super(context);
@@ -75,9 +80,6 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("GroupByAggregationStep requires a previous step");
-
-    // Pull all results from previous step
-    final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
 
     // Identify grouping keys (non-aggregated expressions) and aggregations
     final List<GroupingKey> groupingKeys = new ArrayList<>();
@@ -103,111 +105,78 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       }
     }
 
-    // Group rows by grouping key values
-    // Map: GroupKey -> List of Result rows in that group
-    final Map<GroupKeyValues, List<Result>> groups = new LinkedHashMap<>();
+    // Group rows by grouping key values, incrementally feeding to aggregators
+    // Map: GroupKey -> GroupAggregators (holds aggregation functions for this group)
+    final Map<GroupKeyValues, GroupAggregators> groups = new LinkedHashMap<>();
 
+    // Pull all rows and incrementally update group aggregators
     final long beginGrouping = context.isProfiling() ? System.nanoTime() : 0;
     try {
+      final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+
       while (prevResults.hasNext()) {
         final Result inputRow = prevResults.next();
+
+        if (context.isProfiling())
+          rowCount++;
 
         // Evaluate grouping key for this row
         final GroupKeyValues keyValues = evaluateGroupingKey(groupingKeys, inputRow, context);
 
-        // Add row to its group
-        groups.computeIfAbsent(keyValues, k -> new ArrayList<>()).add(inputRow);
+        // Get or create aggregators for this group
+        GroupAggregators groupAgg = groups.get(keyValues);
+        if (groupAgg == null) {
+          groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
+          groups.put(keyValues, groupAgg);
+        }
+
+        // Feed this row to the group's aggregators
+        feedRowToAggregators(inputRow, groupAgg, aggregationItems, complexAggregationItems, context);
       }
     } finally {
       if (context.isProfiling())
         cost += (System.nanoTime() - beginGrouping);
     }
 
-    // Process each group and compute aggregations
+    // Build final results from all groups
     final List<Result> results = new ArrayList<>();
 
     final long beginAggregation = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      for (final Map.Entry<GroupKeyValues, List<Result>> groupEntry : groups.entrySet()) {
-      final GroupKeyValues keyValues = groupEntry.getKey();
-      final List<Result> groupRows = groupEntry.getValue();
+      for (final Map.Entry<GroupKeyValues, GroupAggregators> groupEntry : groups.entrySet()) {
+        final GroupKeyValues keyValues = groupEntry.getKey();
+        final GroupAggregators groupAgg = groupEntry.getValue();
 
-      // Create aggregators for this group
-      final Map<String, StatelessFunction> aggregators = new HashMap<>();
-      for (final AggregationItem aggItem : aggregationItems) {
-        // Pass the DISTINCT flag to create the appropriate function instance
-        final StatelessFunction function = functionFactory.getFunctionExecutor(
-            aggItem.funcExpr.getFunctionName(), aggItem.funcExpr.isDistinct());
-        aggregators.put(aggItem.outputName, function);
-      }
+        // Build result for this group
+        final ResultInternal groupResult = new ResultInternal();
 
-      // Create aggregators for complex aggregation expressions
-      final Map<String, Map<String, StatelessFunction>> complexAggregators = new HashMap<>();
-      for (final ComplexAggregationItem complexItem : complexAggregationItems) {
-        final Map<String, StatelessFunction> innerFuncs = new HashMap<>();
-        for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexItem.innerAggregations.entrySet()) {
-          final FunctionCallExpression innerAgg = innerEntry.getValue();
-          innerFuncs.put(innerEntry.getKey(), functionFactory.getFunctionExecutor(
-              innerAgg.getFunctionName(), innerAgg.isDistinct()));
-        }
-        complexAggregators.put(complexItem.outputName, innerFuncs);
-      }
-
-      // Process all rows in this group
-      for (final Result groupRow : groupRows) {
-        // Process regular aggregations
-        for (final AggregationItem aggItem : aggregationItems) {
-          final StatelessFunction function = aggregators.get(aggItem.outputName);
-          final Object[] args = new Object[aggItem.funcExpr.getArguments().size()];
-          for (int i = 0; i < args.length; i++)
-            args[i] = evaluator.evaluate(aggItem.funcExpr.getArguments().get(i), groupRow, context);
-          function.execute(args, context);
+        // Add grouping key values
+        for (int i = 0; i < groupingKeys.size(); i++) {
+          groupResult.setProperty(groupingKeys.get(i).outputName, keyValues.values.get(i));
         }
 
-        // Process inner aggregations for complex aggregation items
+        // Add aggregated values
+        for (final Map.Entry<String, StatelessFunction> entry : groupAgg.aggregators.entrySet()) {
+          final Object aggregatedValue = entry.getValue().getAggregatedResult();
+          groupResult.setProperty(entry.getKey(), aggregatedValue);
+        }
+
+        // Evaluate complex aggregation expressions using pre-computed aggregation values
         for (final ComplexAggregationItem complexItem : complexAggregationItems) {
-          final Map<String, StatelessFunction> innerFuncs = complexAggregators.get(complexItem.outputName);
-          for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexItem.innerAggregations.entrySet()) {
-            final FunctionCallExpression innerAgg = innerEntry.getValue();
-            final StatelessFunction function = innerFuncs.get(innerEntry.getKey());
-            final Object[] args = new Object[innerAgg.getArguments().size()];
-            for (int i = 0; i < args.length; i++)
-              args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), groupRow, context);
-            function.execute(args, context);
+          final Map<String, StatelessFunction> innerFuncs = groupAgg.complexAggregators.get(complexItem.outputName);
+          final Map<String, Object> overrides = new HashMap<>();
+          for (final Map.Entry<String, StatelessFunction> funcEntry : innerFuncs.entrySet())
+            overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
+          evaluator.setAggregationOverrides(overrides);
+          try {
+            final Object value = evaluator.evaluate(complexItem.expression, groupResult, context);
+            groupResult.setProperty(complexItem.outputName, value);
+          } finally {
+            evaluator.clearAggregationOverrides();
           }
         }
-      }
 
-      // Build result for this group
-      final ResultInternal groupResult = new ResultInternal();
-
-      // Add grouping key values
-      for (int i = 0; i < groupingKeys.size(); i++) {
-        groupResult.setProperty(groupingKeys.get(i).outputName, keyValues.values.get(i));
-      }
-
-      // Add aggregated values
-      for (final Map.Entry<String, StatelessFunction> entry : aggregators.entrySet()) {
-        final Object aggregatedValue = entry.getValue().getAggregatedResult();
-        groupResult.setProperty(entry.getKey(), aggregatedValue);
-      }
-
-      // Evaluate complex aggregation expressions using pre-computed aggregation values
-      for (final ComplexAggregationItem complexItem : complexAggregationItems) {
-        final Map<String, StatelessFunction> innerFuncs = complexAggregators.get(complexItem.outputName);
-        final Map<String, Object> overrides = new HashMap<>();
-        for (final Map.Entry<String, StatelessFunction> funcEntry : innerFuncs.entrySet())
-          overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
-        evaluator.setAggregationOverrides(overrides);
-        try {
-          final Object value = evaluator.evaluate(complexItem.expression, groupResult, context);
-          groupResult.setProperty(complexItem.outputName, value);
-        } finally {
-          evaluator.clearAggregationOverrides();
-        }
-      }
-
-      results.add(groupResult);
+        results.add(groupResult);
       }
     } finally {
       if (context.isProfiling())
@@ -244,6 +213,75 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       values.add(value);
     }
     return new GroupKeyValues(values);
+  }
+
+  /**
+   * Create fresh aggregators for a new group.
+   */
+  private GroupAggregators createGroupAggregators(final List<AggregationItem> aggregationItems,
+      final List<ComplexAggregationItem> complexAggregationItems) {
+    final Map<String, StatelessFunction> aggregators = new HashMap<>();
+    for (final AggregationItem aggItem : aggregationItems) {
+      final StatelessFunction function = functionFactory.getFunctionExecutor(
+          aggItem.funcExpr.getFunctionName(), aggItem.funcExpr.isDistinct());
+      aggregators.put(aggItem.outputName, function);
+    }
+
+    final Map<String, Map<String, StatelessFunction>> complexAggregators = new HashMap<>();
+    for (final ComplexAggregationItem complexItem : complexAggregationItems) {
+      final Map<String, StatelessFunction> innerFuncs = new HashMap<>();
+      for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexItem.innerAggregations.entrySet()) {
+        final FunctionCallExpression innerAgg = innerEntry.getValue();
+        innerFuncs.put(innerEntry.getKey(), functionFactory.getFunctionExecutor(
+            innerAgg.getFunctionName(), innerAgg.isDistinct()));
+      }
+      complexAggregators.put(complexItem.outputName, innerFuncs);
+    }
+
+    return new GroupAggregators(aggregators, complexAggregators);
+  }
+
+  /**
+   * Feed a single row to a group's aggregators.
+   */
+  private void feedRowToAggregators(final Result row, final GroupAggregators groupAgg,
+      final List<AggregationItem> aggregationItems, final List<ComplexAggregationItem> complexAggregationItems,
+      final CommandContext context) {
+    // Process regular aggregations
+    for (final AggregationItem aggItem : aggregationItems) {
+      final StatelessFunction function = groupAgg.aggregators.get(aggItem.outputName);
+      final Object[] args = new Object[aggItem.funcExpr.getArguments().size()];
+      for (int i = 0; i < args.length; i++)
+        args[i] = evaluator.evaluate(aggItem.funcExpr.getArguments().get(i), row, context);
+      function.execute(args, context);
+    }
+
+    // Process inner aggregations for complex aggregation items
+    for (final ComplexAggregationItem complexItem : complexAggregationItems) {
+      final Map<String, StatelessFunction> innerFuncs = groupAgg.complexAggregators.get(complexItem.outputName);
+      for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexItem.innerAggregations.entrySet()) {
+        final FunctionCallExpression innerAgg = innerEntry.getValue();
+        final StatelessFunction function = innerFuncs.get(innerEntry.getKey());
+        final Object[] args = new Object[innerAgg.getArguments().size()];
+        for (int i = 0; i < args.length; i++)
+          args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), row, context);
+        function.execute(args, context);
+      }
+    }
+  }
+
+  /**
+   * Holds aggregation functions for a single group.
+   */
+  private static class GroupAggregators {
+    final Map<String, StatelessFunction> aggregators;
+    final Map<String, Map<String, StatelessFunction>> complexAggregators;
+
+    GroupAggregators(final Map<String, StatelessFunction> aggregators,
+        final Map<String, Map<String, StatelessFunction>> complexAggregators) {
+      this.aggregators = aggregators;
+      this.complexAggregators = complexAggregators;
+    }
   }
 
   @Override

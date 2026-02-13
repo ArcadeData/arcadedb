@@ -53,6 +53,7 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
+import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
@@ -602,23 +603,37 @@ public class CypherExecutionPlan {
 
         // Apply ORDER BY if present in WITH
         if (withClause.getOrderByClause() != null) {
+          // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+          // When SKIP is also present, TopK must keep SKIP + LIMIT results
+          Integer limitVal = withClause.getLimit() != null ?
+              new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+                  new ResultInternal(), context) : null;
+          final Integer originalLimitVal = limitVal;
+          if (limitVal != null && withClause.getSkip() != null) {
+            final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+                new ResultInternal(), context);
+            limitVal = limitVal + skipVal;
+          }
+
+          // Top-K must account for SKIP so enough rows survive after skipping
+          final Integer skipVal = withClause.getSkip() != null ?
+              new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+                  new ResultInternal(), context) : null;
+          final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+
           final OrderByStep orderByStep =
-              new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
+              new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
           orderByStep.setPrevious(currentStep);
           currentStep = orderByStep;
 
           // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
-          if (withClause.getSkip() != null) {
-            final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-                new ResultInternal(), context);
-            final SkipStep skipStep = new SkipStep(_skipVal, context);
+          if (skipVal != null) {
+            final SkipStep skipStep = new SkipStep(skipVal, context);
             skipStep.setPrevious(currentStep);
             currentStep = skipStep;
           }
           if (withClause.getLimit() != null) {
-            final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-                new ResultInternal(), context);
-            final LimitStep limitStep = new LimitStep(_limitVal, context);
+            final LimitStep limitStep = new LimitStep(originalLimitVal, context);
             limitStep.setPrevious(currentStep);
             currentStep = limitStep;
           }
@@ -658,8 +673,25 @@ public class CypherExecutionPlan {
 
     // Step 8: ORDER BY (if any)
     if (statement.getOrderByClause() != null) {
+      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+      // When SKIP is also present, TopK must keep SKIP + LIMIT results so SKIP can discard from them
+      Integer limitVal = statement.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+              new ResultInternal(), context) : null;
+      if (limitVal != null && statement.getSkip() != null) {
+        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
+            new ResultInternal(), context);
+        limitVal = limitVal + skipVal;
+      }
+
+      // Top-K must account for SKIP so enough rows survive after skipping
+      final Integer skipVal = statement.getSkip() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
+              new ResultInternal(), context) : null;
+      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context, functionFactory);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -675,9 +707,9 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT (if any)
     if (statement.getLimit() != null) {
-      final LimitStep limitStep =
-          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
-              new ResultInternal(), context), context);
+      final int limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+          new ResultInternal(), context);
+      final LimitStep limitStep = new LimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -872,7 +904,23 @@ public class CypherExecutionPlan {
         case MATCH:
           final MatchClause matchClause = entry.getTypedClause();
           if (matchClause.isOptional()) {
-            // Try count optimization: peek at next clause
+            // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
+            final AbstractExecutionStep chainedOptimized = tryOptimizeChainedOptionalMatchCount(
+                matchClause, clausesInOrder, entryIndex, currentStep, context, boundVariables);
+            if (chainedOptimized != null) {
+              currentStep = chainedOptimized;
+              entryIndex += 2; // skip both the next OPTIONAL MATCH and the WITH clause
+              // Update boundVariables from the WITH clause
+              final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
+              boundVariables.clear();
+              for (final ReturnClause.ReturnItem item : nextWith.getItems()) {
+                final String alias = item.getAlias();
+                boundVariables.add(alias != null ? alias : item.getExpression().getText());
+              }
+              break;
+            }
+
+            // Try single OPTIONAL MATCH count optimization
             final AbstractExecutionStep optimized = tryOptimizeOptionalMatchCount(
                 matchClause, clausesInOrder, entryIndex, currentStep, context, boundVariables);
             if (optimized != null) {
@@ -1020,8 +1068,25 @@ public class CypherExecutionPlan {
 
     // ORDER BY
     if (statement.getOrderByClause() != null && currentStep != null) {
+      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+      // When SKIP is also present, TopK must keep SKIP + LIMIT results
+      Integer limitVal = statement.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+              new ResultInternal(), context) : null;
+      if (limitVal != null && statement.getSkip() != null) {
+        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
+            new ResultInternal(), context);
+        limitVal = limitVal + skipVal;
+      }
+
+      // Top-K must account for SKIP so enough rows survive after skipping
+      final Integer skipVal = statement.getSkip() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
+              new ResultInternal(), context) : null;
+      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context, functionFactory);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -1037,9 +1102,9 @@ public class CypherExecutionPlan {
 
     // LIMIT
     if (statement.getLimit() != null && currentStep != null) {
-      final LimitStep limitStep =
-          new LimitStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
-              new ResultInternal(), context), context);
+      final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
+          new ResultInternal(), context);
+      final LimitStep limitStep = new LimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -1099,24 +1164,38 @@ public class CypherExecutionPlan {
 
     // Apply ORDER BY if present in WITH
     if (withClause.getOrderByClause() != null) {
+      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+      // When SKIP is also present, TopK must keep SKIP + LIMIT results
+      Integer limitVal = withClause.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+              new ResultInternal(), context) : null;
+      final Integer originalLimitVal = limitVal;
+      if (limitVal != null && withClause.getSkip() != null) {
+        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+            new ResultInternal(), context);
+        limitVal = limitVal + skipVal;
+      }
+
+      // Top-K must account for SKIP so enough rows survive after skipping
+      final Integer skipVal = withClause.getSkip() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+              new ResultInternal(), context) : null;
+      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+
       final OrderByStep orderByStep =
-          new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
+          new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
       if (currentStep != null)
         orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
 
       // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
-      if (withClause.getSkip() != null) {
-        final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-            new ResultInternal(), context);
-        final SkipStep skipStep = new SkipStep(_skipVal, context);
+      if (skipVal != null) {
+        final SkipStep skipStep = new SkipStep(skipVal, context);
         skipStep.setPrevious(currentStep);
         currentStep = skipStep;
       }
       if (withClause.getLimit() != null) {
-        final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-            new ResultInternal(), context);
-        final LimitStep limitStep = new LimitStep(_limitVal, context);
+        final LimitStep limitStep = new LimitStep(originalLimitVal, context);
         limitStep.setPrevious(currentStep);
         currentStep = limitStep;
       }
@@ -1268,14 +1347,36 @@ public class CypherExecutionPlan {
           matchChainStart = shortestStep;
         }
       } else {
-        final NodePattern sourceNode = pathPattern.getFirstNode();
-        final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
+        NodePattern sourceNode = pathPattern.getFirstNode();
+        String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
             ("  src" + anonymousVarCounter++);
 
         // Check if source node variable is already bound (either from previous MATCH or
         // from earlier patterns in this same MATCH clause)
-        final boolean sourceAlreadyBound = stepBeforeMatch != null &&
+        boolean sourceAlreadyBound = stepBeforeMatch != null &&
             (boundVariables.contains(sourceVar) || matchVariables.contains(sourceVar));
+
+        // OPTIMIZATION: For single-hop patterns where source is unbound but target IS bound,
+        // reverse the traversal direction. Instead of scanning all source vertices and checking
+        // if each connects to the bound target (O(N)), start from the bound target and follow
+        // edges in the reverse direction (O(degree)).
+        // Example: OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) where q is bound
+        // Without reversal: scan all Comments → check if each connects to q (slow!)
+        // With reversal: start from q → follow INCOMING COMMENTED_ON edges (fast!)
+        boolean reversed = false;
+        if (!sourceAlreadyBound && pathPattern.getRelationshipCount() == 1
+            && !pathPattern.getRelationship(0).isVariableLength()) {
+          final NodePattern targetNode = pathPattern.getLastNode();
+          final String targetVar = targetNode.getVariable();
+          if (targetVar != null && stepBeforeMatch != null
+              && (boundVariables.contains(targetVar) || matchVariables.contains(targetVar))) {
+            // Target IS bound — reverse the traversal
+            reversed = true;
+            sourceNode = targetNode;
+            sourceVar = targetVar;
+            sourceAlreadyBound = true;
+          }
+        }
 
         if (!sourceAlreadyBound) {
           matchVariables.add(sourceVar);
@@ -1331,29 +1432,49 @@ public class CypherExecutionPlan {
           // relationship uniqueness checking works (edges must be stored in results)
           final String relVar = (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty())
               ? relPattern.getVariable() : ("  rel" + anonymousVarCounter++);
-          final String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
+          String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
               ("  tgt" + anonymousVarCounter++);
+
+          // When reversed, swap source/target variables and use the original source as target
+          final String effectiveSourceVar;
+          final String effectiveTargetVar;
+          final NodePattern effectiveTargetNode;
+          final Direction directionOverride;
+          if (reversed) {
+            effectiveSourceVar = currentSourceVar; // already swapped to bound target
+            effectiveTargetVar = pathPattern.getFirstNode().getVariable() != null ?
+                pathPattern.getFirstNode().getVariable() : targetVar;
+            targetVar = effectiveTargetVar;
+            effectiveTargetNode = pathPattern.getFirstNode(); // original source becomes target for label filtering
+            directionOverride = relPattern.getDirection().reverse();
+          } else {
+            effectiveSourceVar = currentSourceVar;
+            effectiveTargetVar = targetVar;
+            effectiveTargetNode = targetNode;
+            directionOverride = null;
+          }
 
           // Always track relationship variables (including anonymous generated ones)
           // so cross-MATCH uniqueness scoping works correctly
           matchVariables.add(relVar);
-          matchVariables.add(targetVar);
+          matchVariables.add(effectiveTargetVar);
 
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
-            nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, true,
-                targetNode, context);
+            nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
+                true, effectiveTargetNode, context);
           } else {
             // Pass target node pattern for label filtering, bound variables for identity
             // checking, and a snapshot for relationship uniqueness scoping.
             // The snapshot captures only variables from previous steps (via WITH/previous MATCHes).
             // Relationship uniqueness only applies within a single MATCH clause.
-            nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
-                targetNode, boundVariables, new HashSet<>(boundVariables), context);
+            nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
+                pathVariable, effectiveTargetNode, boundVariables, new HashSet<>(boundVariables),
+                directionOverride, context);
           }
 
           // Update source for next hop in multi-hop patterns
-          currentSourceVar = targetVar;
+          currentSourceVar = effectiveTargetVar;
 
           if (isOptional && matchChainStart == null) {
             matchChainStart = nextStep;
@@ -1796,24 +1917,38 @@ public class CypherExecutionPlan {
 
       // Apply ORDER BY if present in WITH
       if (withClause.getOrderByClause() != null) {
+        // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+        // When SKIP is also present, TopK must keep SKIP + LIMIT results
+        Integer limitVal = withClause.getLimit() != null ?
+            new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
+                new ResultInternal(), context) : null;
+        final Integer originalLimitVal = limitVal;
+        if (limitVal != null && withClause.getSkip() != null) {
+          final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+              new ResultInternal(), context);
+          limitVal = limitVal + skipVal;
+        }
+
+        // Top-K must account for SKIP so enough rows survive after skipping
+        final Integer skipVal = withClause.getSkip() != null ?
+            new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
+                new ResultInternal(), context) : null;
+        final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+
         final OrderByStep orderByStep =
-            new OrderByStep(withClause.getOrderByClause(), context, functionFactory);
+            new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
         if (currentStep != null)
           orderByStep.setPrevious(currentStep);
         currentStep = orderByStep;
 
         // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
-        if (withClause.getSkip() != null) {
-          final int _skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-              new ResultInternal(), context);
-          final SkipStep skipStep = new SkipStep(_skipVal, context);
+        if (skipVal != null) {
+          final SkipStep skipStep = new SkipStep(skipVal, context);
           skipStep.setPrevious(currentStep);
           currentStep = skipStep;
         }
         if (withClause.getLimit() != null) {
-          final int _limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-              new ResultInternal(), context);
-          final LimitStep limitStep = new LimitStep(_limitVal, context);
+          final LimitStep limitStep = new LimitStep(originalLimitVal, context);
           limitStep.setPrevious(currentStep);
           currentStep = limitStep;
         }
@@ -1899,8 +2034,25 @@ public class CypherExecutionPlan {
 
     // Step 8: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
+      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
+      // When SKIP is also present, TopK must keep SKIP + LIMIT results
+      Integer limitVal = statement.getLimit() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
+              context) : null;
+      if (limitVal != null && statement.getSkip() != null) {
+        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
+            new ResultInternal(), context);
+        limitVal = limitVal + skipVal;
+      }
+
+      // Top-K must account for SKIP so enough rows survive after skipping
+      final Integer skipVal = statement.getSkip() != null ?
+          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(),
+              context) : null;
+      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+
       final OrderByStep orderByStep = new OrderByStep(
-          statement.getOrderByClause(), context, functionFactory);
+          statement.getOrderByClause(), context, functionFactory, topKVal);
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -1916,9 +2068,9 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
-      final LimitStep limitStep = new LimitStep(
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
-              context), context);
+      final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
+          context);
+      final LimitStep limitStep = new LimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -1942,6 +2094,291 @@ public class CypherExecutionPlan {
    */
   public PhysicalPlan getPhysicalPlan() {
     return physicalPlan;
+  }
+
+  /**
+   * Attempts to optimize chained OPTIONAL MATCH + count() pattern.
+   * <p>
+   * Detects pattern:
+   * OPTIONAL MATCH (bound)-[r1:TYPE1]->(intermediate)
+   * OPTIONAL MATCH (target)-[r2:TYPE2]->(intermediate)
+   * WITH bound, count(target) AS cnt
+   * <p>
+   * Uses vertex.getVertices() for first hop + vertex.countEdges() for second hop,
+   * avoiding materialization of target vertices.
+   *
+   * @return optimized CountChainedEdgesStep if pattern matches, null otherwise
+   */
+  private AbstractExecutionStep tryOptimizeChainedOptionalMatchCount(final MatchClause firstMatch,
+                                                                      final List<ClauseEntry> clausesInOrder,
+                                                                      final int currentIndex,
+                                                                      final AbstractExecutionStep currentStep,
+                                                                      final CommandContext context,
+                                                                      final Set<String> boundVariables) {
+    // 1. First OPTIONAL MATCH must have exactly one path pattern (single hop)
+    if (!firstMatch.hasPathPatterns() || firstMatch.getPathPatterns().size() != 1)
+      return null;
+
+    final PathPattern firstPattern = firstMatch.getPathPatterns().get(0);
+    if (firstPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern firstRel = firstPattern.getRelationship(0);
+    if (firstRel.isVariableLength())
+      return null;
+
+    // No property constraints
+    if (firstRel.getProperties() != null && !firstRel.getProperties().isEmpty())
+      return null;
+
+    // No WHERE clause
+    if (firstMatch.hasWhereClause())
+      return null;
+
+    // 2. Next clause must be another OPTIONAL MATCH
+    if (currentIndex + 1 >= clausesInOrder.size())
+      return null;
+
+    final ClauseEntry secondEntry = clausesInOrder.get(currentIndex + 1);
+    if (secondEntry.getType() != ClauseEntry.ClauseType.MATCH)
+      return null;
+
+    final MatchClause secondMatch = secondEntry.getTypedClause();
+    if (!secondMatch.isOptional())
+      return null;
+
+    // Second OPTIONAL MATCH must also have exactly one path pattern (single hop)
+    if (!secondMatch.hasPathPatterns() || secondMatch.getPathPatterns().size() != 1)
+      return null;
+
+    final PathPattern secondPattern = secondMatch.getPathPatterns().get(0);
+    if (secondPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern secondRel = secondPattern.getRelationship(0);
+    if (secondRel.isVariableLength())
+      return null;
+
+    // No property constraints
+    if (secondRel.getProperties() != null && !secondRel.getProperties().isEmpty())
+      return null;
+
+    // No WHERE clause
+    if (secondMatch.hasWhereClause())
+      return null;
+
+    // 3. After second OPTIONAL MATCH must be a WITH clause
+    if (currentIndex + 2 >= clausesInOrder.size())
+      return null;
+
+    final ClauseEntry withEntry = clausesInOrder.get(currentIndex + 2);
+    if (withEntry.getType() != ClauseEntry.ClauseType.WITH)
+      return null;
+
+    final WithClause withClause = withEntry.getTypedClause();
+
+    // WITH must have aggregations + non-aggregations
+    if (!withClause.hasAggregations() || !withClause.hasNonAggregations())
+      return null;
+
+    // WITH must not have ORDER BY, SKIP, LIMIT, WHERE
+    if (withClause.getOrderByClause() != null || withClause.getSkip() != null
+        || withClause.getLimit() != null || withClause.getWhereClause() != null)
+      return null;
+
+    // 4. Analyze the pattern structure
+    // First pattern: (node1)-[r1]->(node2)
+    final NodePattern firstNode1 = firstPattern.getFirstNode();
+    final NodePattern firstNode2 = firstPattern.getLastNode();
+    final String firstVar1 = firstNode1.getVariable();
+    final String firstVar2 = firstNode2.getVariable();
+
+    if (firstVar1 == null || firstVar2 == null)
+      return null;
+
+    // Check node patterns don't have property constraints
+    if (firstNode1.getProperties() != null && !firstNode1.getProperties().isEmpty())
+      return null;
+    if (firstNode2.getProperties() != null && !firstNode2.getProperties().isEmpty())
+      return null;
+
+    // Second pattern: (node3)-[r2]->(node4)
+    final NodePattern secondNode1 = secondPattern.getFirstNode();
+    final NodePattern secondNode2 = secondPattern.getLastNode();
+    final String secondVar1 = secondNode1.getVariable();
+    final String secondVar2 = secondNode2.getVariable();
+
+    if (secondVar1 == null || secondVar2 == null)
+      return null;
+
+    // Check node patterns don't have property constraints
+    if (secondNode1.getProperties() != null && !secondNode1.getProperties().isEmpty())
+      return null;
+    if (secondNode2.getProperties() != null && !secondNode2.getProperties().isEmpty())
+      return null;
+
+    // 5. Determine the pattern structure
+    // We need: (bound)-[r1]->(intermediate) and (target)-[r2]->(intermediate)
+    // where bound is already in boundVariables and intermediate is the shared node
+
+    // Check which variable is bound
+    final String boundVar;
+    final String intermediateVar;
+    final boolean firstVarIsBound = boundVariables.contains(firstVar1);
+    final boolean secondVarIsBound = boundVariables.contains(firstVar2);
+
+    if (firstVarIsBound && !secondVarIsBound) {
+      boundVar = firstVar1;
+      intermediateVar = firstVar2;
+    } else if (secondVarIsBound && !firstVarIsBound) {
+      boundVar = firstVar2;
+      intermediateVar = firstVar1;
+    } else {
+      return null; // Both bound or neither bound
+    }
+
+    // The intermediate variable must appear in the second pattern
+    final String targetVar;
+    if (secondVar1.equals(intermediateVar)) {
+      targetVar = secondVar2;
+    } else if (secondVar2.equals(intermediateVar)) {
+      targetVar = secondVar1;
+    } else {
+      return null; // Patterns don't share a variable
+    }
+
+    // 6. Analyze the WITH clause
+    final List<ReturnClause.ReturnItem> groupingKeys = new ArrayList<>();
+    FunctionCallExpression countExpr = null;
+    String countAlias = null;
+    int aggregationCount = 0;
+
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      if (item.getExpression().containsAggregation()) {
+        aggregationCount++;
+        if (!(item.getExpression() instanceof FunctionCallExpression))
+          return null;
+        final FunctionCallExpression funcExpr = (FunctionCallExpression) item.getExpression();
+        if (!"count".equals(funcExpr.getFunctionName()))
+          return null;
+        if (funcExpr.isDistinct())
+          return null;
+        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().get(0) instanceof VariableExpression))
+          return null;
+        countExpr = funcExpr;
+        countAlias = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
+      } else
+        groupingKeys.add(item);
+    }
+
+    // Must have exactly one count aggregation
+    if (aggregationCount != 1 || countExpr == null)
+      return null;
+
+    // Count argument must be the target variable
+    final String countArgVariable = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
+    if (!countArgVariable.equals(targetVar))
+      return null;
+
+    // All grouping keys must reference already-bound variables
+    for (final ReturnClause.ReturnItem key : groupingKeys) {
+      final String keyExprText = key.getExpression() instanceof VariableExpression
+          ? ((VariableExpression) key.getExpression()).getVariableName()
+          : key.getExpression().getText();
+      if (!boundVariables.contains(keyExprText))
+        return null;
+    }
+
+    // The bound vertex must be in the grouping keys
+    boolean boundVertexInGroupingKeys = false;
+    for (final ReturnClause.ReturnItem key : groupingKeys) {
+      final String keyExprText = key.getExpression() instanceof VariableExpression
+          ? ((VariableExpression) key.getExpression()).getVariableName()
+          : key.getExpression().getText();
+      if (keyExprText.equals(boundVar)) {
+        boundVertexInGroupingKeys = true;
+        break;
+      }
+    }
+    if (!boundVertexInGroupingKeys)
+      return null;
+
+    // 7. Compute directions and types
+    // First hop: bound -> intermediate
+    final Vertex.DIRECTION firstHopDirection;
+    final Direction firstRelDirection = firstRel.getDirection();
+
+    if (firstVar1.equals(boundVar)) {
+      // bound is firstNode
+      if (firstRelDirection == Direction.OUT)
+        firstHopDirection = Vertex.DIRECTION.OUT;
+      else if (firstRelDirection == Direction.IN)
+        firstHopDirection = Vertex.DIRECTION.IN;
+      else
+        firstHopDirection = Vertex.DIRECTION.BOTH;
+    } else {
+      // bound is lastNode — reverse the direction
+      if (firstRelDirection == Direction.OUT)
+        firstHopDirection = Vertex.DIRECTION.IN;
+      else if (firstRelDirection == Direction.IN)
+        firstHopDirection = Vertex.DIRECTION.OUT;
+      else
+        firstHopDirection = Vertex.DIRECTION.BOTH;
+    }
+
+    // Second hop: direction is FROM intermediate's perspective (used in intermediate.countEdges())
+    // The pattern describes direction between target and intermediate, so we must compute
+    // the direction as seen by the intermediate vertex.
+    final Vertex.DIRECTION secondHopDirection;
+    final Direction secondRelDirection = secondRel.getDirection();
+
+    if (secondVar1.equals(targetVar)) {
+      // target is firstNode, intermediate is lastNode
+      // Pattern: (target)-[OUT]->(intermediate) means edges come IN to intermediate
+      if (secondRelDirection == Direction.OUT)
+        secondHopDirection = Vertex.DIRECTION.IN;
+      else if (secondRelDirection == Direction.IN)
+        secondHopDirection = Vertex.DIRECTION.OUT;
+      else
+        secondHopDirection = Vertex.DIRECTION.BOTH;
+    } else {
+      // target is lastNode, intermediate is firstNode
+      // Pattern: (intermediate)-[OUT]->(target) means edges go OUT from intermediate
+      if (secondRelDirection == Direction.OUT)
+        secondHopDirection = Vertex.DIRECTION.OUT;
+      else if (secondRelDirection == Direction.IN)
+        secondHopDirection = Vertex.DIRECTION.IN;
+      else
+        secondHopDirection = Vertex.DIRECTION.BOTH;
+    }
+
+    // Edge types
+    final List<String> firstRelTypes = firstRel.getTypes();
+    final String[] firstHopTypes = (firstRelTypes != null && !firstRelTypes.isEmpty())
+        ? firstRelTypes.toArray(new String[0]) : null;
+
+    final List<String> secondRelTypes = secondRel.getTypes();
+    final String[] secondHopTypes = (secondRelTypes != null && !secondRelTypes.isEmpty())
+        ? secondRelTypes.toArray(new String[0]) : null;
+
+    // Build pass-through aliases map
+    final Map<String, String> passThroughAliases = new LinkedHashMap<>();
+    for (final ReturnClause.ReturnItem key : groupingKeys) {
+      final String alias = key.getAlias() != null ? key.getAlias() : key.getExpression().getText();
+      final String varName = key.getExpression() instanceof VariableExpression
+          ? ((VariableExpression) key.getExpression()).getVariableName()
+          : key.getExpression().getText();
+      passThroughAliases.put(alias, varName);
+    }
+
+    // Build the optimized step
+    final CountChainedEdgesStep chainedStep = new CountChainedEdgesStep(
+        boundVar, firstHopDirection, firstHopTypes, secondHopDirection, secondHopTypes,
+        countAlias, passThroughAliases, context);
+    if (currentStep != null)
+      chainedStep.setPrevious(currentStep);
+
+    return chainedStep;
   }
 
   /**

@@ -37,6 +37,7 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.*;
 
 import java.util.ArrayList;
@@ -317,6 +318,7 @@ public class CreateStep extends AbstractExecutionStep {
       }
 
       // Create relationships between vertices
+      final List<Edge> edges = new ArrayList<>();
       for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
         final RelationshipPattern relPattern = pathPattern.getRelationship(i);
         final Vertex fromVertex;
@@ -331,9 +333,18 @@ public class CreateStep extends AbstractExecutionStep {
         }
 
         final Edge edge = createEdge(fromVertex, toVertex, relPattern, result);
+        edges.add(edge);
         if (relPattern.getVariable() != null) {
           result.setProperty(relPattern.getVariable(), edge);
         }
+      }
+
+      // Build and assign path variable if specified (e.g., CREATE p=(...)-[...]->(...))
+      if (pathPattern.hasPathVariable()) {
+        final TraversalPath path = new TraversalPath(vertices.get(0));
+        for (int i = 0; i < edges.size(); i++)
+          path.addStep(edges.get(i), vertices.get(i + 1));
+        result.setProperty(pathPattern.getPathVariable(), path);
       }
     }
   }

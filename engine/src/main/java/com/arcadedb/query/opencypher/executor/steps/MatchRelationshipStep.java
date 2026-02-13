@@ -59,6 +59,11 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private final NodePattern targetNodePattern;
   private final Set<String> boundVariableNames;
   private final Set<String> previousStepVariables; // Snapshot for uniqueness scoping
+  private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
+
+  // Profiling: track fast path vs standard path usage
+  private long fastPathCount = 0;
+  private long standardPathCount = 0;
 
   /**
    * Creates a match relationship step.
@@ -124,6 +129,19 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
       final Set<String> boundVariableNames, final Set<String> previousStepVariables, final CommandContext context) {
+    this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, targetNodePattern,
+        boundVariableNames, previousStepVariables, null, context);
+  }
+
+  /**
+   * Creates a match relationship step with direction override.
+   * Used when the plan builder reverses the traversal direction (e.g., when the target
+   * is bound but the source is not, the plan starts from the bound target and reverses).
+   */
+  public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
+      final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
+      final Set<String> boundVariableNames, final Set<String> previousStepVariables,
+      final Direction directionOverride, final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
@@ -133,6 +151,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     this.targetNodePattern = targetNodePattern;
     this.boundVariableNames = boundVariableNames;
     this.previousStepVariables = previousStepVariables;
+    this.directionOverride = directionOverride;
   }
 
   @Override
@@ -143,6 +162,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<Edge> currentEdges = null;
+      private Iterator<Vertex> currentVertices = null;
+      private boolean useFastPath = false;
       private Set<RID> seenEdges = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
@@ -176,101 +197,11 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         while (buffer.size() < n) {
-          // Get edges from current vertex
-          if (currentEdges != null && currentEdges.hasNext()) {
-            final long begin = context.isProfiling() ? System.nanoTime() : 0;
-            try {
-              if (context.isProfiling())
-                rowCount++;
-
-              final Edge edge = currentEdges.next();
-
-              // For undirected patterns, deduplicate self-loop edges
-              // (self-loops appear twice: once as OUT, once as IN)
-              if (seenEdges != null && !seenEdges.add(edge.getIdentity()))
-                continue;
-
-              final Vertex targetVertex = getTargetVertex(edge, (Vertex) lastResult.getProperty(sourceVariable));
-
-              // Filter by edge type if specified
-              if (pattern.hasTypes() && !matchesEdgeType(edge))
-                continue;
-
-              // Filter by inline relationship properties if specified
-              if (pattern.hasProperties() && !matchesEdgeProperties(edge))
-                continue;
-
-              // Relationship uniqueness: Cypher requires each relationship in a pattern
-              // to be matched to a distinct edge (no edge traversed twice)
-              if (isEdgeAlreadyUsed(lastResult, edge))
-                continue;
-
-              // Filter by target node label if specified in the pattern
-              if (targetNodePattern != null && targetNodePattern.hasLabels()) {
-                if (!matchesTargetLabel(targetVertex)) {
-                  continue;
-                }
-              }
-
-              // If the relationship variable is already bound from a previous step,
-              // verify the traversed edge matches the bound value (identity check)
-              if (relationshipVariable != null && boundVariableNames != null
-                  && boundVariableNames.contains(relationshipVariable)) {
-                final Object boundRel = lastResult.getProperty(relationshipVariable);
-                if (boundRel instanceof Edge) {
-                  if (!((Edge) boundRel).getIdentity().equals(edge.getIdentity()))
-                    continue;
-                }
-              }
-
-              // If the target variable is already bound from a previous step,
-              // verify the traversed vertex matches the bound value (identity check)
-              if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
-                final Object boundValue = lastResult.getProperty(targetVariable);
-                if (boundValue instanceof Vertex) {
-                  if (!((Vertex) boundValue).getIdentity().equals(targetVertex.getIdentity())) {
-                    continue;
-                  }
-                }
-              }
-
-              // Create result with edge and target vertex
-              final ResultInternal result = new ResultInternal();
-
-              // Copy all properties from previous result
-              for (final String prop : lastResult.getPropertyNames()) {
-                result.setProperty(prop, lastResult.getProperty(prop));
-              }
-
-              // Add relationship binding if variable is specified
-              if (relationshipVariable != null && !relationshipVariable.isEmpty()) {
-                result.setProperty(relationshipVariable, edge);
-              }
-
-              // Add target vertex binding
-              result.setProperty(targetVariable, targetVertex);
-
-              // Add path binding if path variable is specified (e.g., p = (a)-[r]->(b))
-              if (pathVariable != null && !pathVariable.isEmpty()) {
-                // Check if there's an existing path from a previous hop to extend
-                final Object existingPath = lastResult.getProperty(pathVariable);
-                final TraversalPath path;
-                if (existingPath instanceof TraversalPath)
-                  // Extend existing path (multi-hop pattern)
-                  path = new TraversalPath((TraversalPath) existingPath, edge, targetVertex);
-                else {
-                  // Create new path starting from source vertex
-                  path = new TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
-                  path.addStep(edge, targetVertex);
-                }
-                result.setProperty(pathVariable, path);
-              }
-
-              buffer.add(result);
-            } finally {
-              if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
-            }
+          // Process using fast path (vertices directly) or standard path (edges)
+          if (useFastPath && currentVertices != null && currentVertices.hasNext()) {
+            processFastPath(n);
+          } else if (!useFastPath && currentEdges != null && currentEdges.hasNext()) {
+            processStandardPath(n);
           } else {
             // Initialize prevResults on first call
             if (prevResults == null) {
@@ -288,14 +219,177 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;
-              currentEdges = getEdges(sourceVertex);
-              // Track seen edges for BOTH direction to deduplicate self-loops
-              seenEdges = pattern.getDirection() == Direction.BOTH ? new HashSet<>() : null;
+
+              // Determine if we can use fast path for this vertex
+              useFastPath = canUseFastPath(lastResult);
+
+              if (useFastPath) {
+                // Fast path: get vertices directly without loading edges
+                currentVertices = getVertices(sourceVertex);
+                currentEdges = null;
+                seenEdges = null;
+              } else {
+                // Standard path: load edges
+                currentEdges = getEdges(sourceVertex);
+                currentVertices = null;
+                // Track seen edges for BOTH direction to deduplicate self-loops
+                seenEdges = getEffectiveDirection() == Direction.BOTH ? new HashSet<>() : null;
+              }
             } else {
               // Source is not a vertex, skip
               currentEdges = null;
+              currentVertices = null;
               seenEdges = null;
+              useFastPath = false;
             }
+          }
+        }
+      }
+
+      private void processFastPath(final int n) {
+        while (currentVertices.hasNext() && buffer.size() < n) {
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
+
+            final Vertex targetVertex = currentVertices.next();
+
+            // Filter by target node label if specified in the pattern
+            if (targetNodePattern != null && targetNodePattern.hasLabels()) {
+              if (!matchesTargetLabel(targetVertex)) {
+                continue;
+              }
+            }
+
+            // If the target variable is already bound from a previous step,
+            // verify the traversed vertex matches the bound value (identity check)
+            if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
+              final Object boundValue = lastResult.getProperty(targetVariable);
+              if (boundValue instanceof Vertex) {
+                if (!((Vertex) boundValue).getIdentity().equals(targetVertex.getIdentity())) {
+                  continue;
+                }
+              }
+            }
+
+            // Create result with target vertex (no edge binding in fast path)
+            final ResultInternal result = new ResultInternal();
+
+            // Copy all properties from previous result
+            for (final String prop : lastResult.getPropertyNames()) {
+              result.setProperty(prop, lastResult.getProperty(prop));
+            }
+
+            // Add target vertex binding
+            result.setProperty(targetVariable, targetVertex);
+
+            buffer.add(result);
+            if (context.isProfiling())
+              fastPathCount++;
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
+          }
+        }
+      }
+
+      private void processStandardPath(final int n) {
+        while (currentEdges.hasNext() && buffer.size() < n) {
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (context.isProfiling())
+              rowCount++;
+
+            final Edge edge = currentEdges.next();
+
+            // For undirected patterns, deduplicate self-loop edges
+            // (self-loops appear twice: once as OUT, once as IN)
+            if (seenEdges != null && !seenEdges.add(edge.getIdentity()))
+              continue;
+
+            final Vertex targetVertex = getTargetVertex(edge, (Vertex) lastResult.getProperty(sourceVariable));
+
+            // Filter by edge type if specified
+            if (pattern.hasTypes() && !matchesEdgeType(edge))
+              continue;
+
+            // Filter by inline relationship properties if specified
+            if (pattern.hasProperties() && !matchesEdgeProperties(edge))
+              continue;
+
+            // Relationship uniqueness: Cypher requires each relationship in a pattern
+            // to be matched to a distinct edge (no edge traversed twice)
+            if (isEdgeAlreadyUsed(lastResult, edge))
+              continue;
+
+            // Filter by target node label if specified in the pattern
+            if (targetNodePattern != null && targetNodePattern.hasLabels()) {
+              if (!matchesTargetLabel(targetVertex)) {
+                continue;
+              }
+            }
+
+            // If the relationship variable is already bound from a previous step,
+            // verify the traversed edge matches the bound value (identity check)
+            if (relationshipVariable != null && boundVariableNames != null
+                && boundVariableNames.contains(relationshipVariable)) {
+              final Object boundRel = lastResult.getProperty(relationshipVariable);
+              if (boundRel instanceof Edge) {
+                if (!((Edge) boundRel).getIdentity().equals(edge.getIdentity()))
+                  continue;
+              }
+            }
+
+            // If the target variable is already bound from a previous step,
+            // verify the traversed vertex matches the bound value (identity check)
+            if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
+              final Object boundValue = lastResult.getProperty(targetVariable);
+              if (boundValue instanceof Vertex) {
+                if (!((Vertex) boundValue).getIdentity().equals(targetVertex.getIdentity())) {
+                  continue;
+                }
+              }
+            }
+
+            // Create result with edge and target vertex
+            final ResultInternal result = new ResultInternal();
+
+            // Copy all properties from previous result
+            for (final String prop : lastResult.getPropertyNames()) {
+              result.setProperty(prop, lastResult.getProperty(prop));
+            }
+
+            // Add relationship binding if variable is specified
+            if (relationshipVariable != null && !relationshipVariable.isEmpty()) {
+              result.setProperty(relationshipVariable, edge);
+            }
+
+            // Add target vertex binding
+            result.setProperty(targetVariable, targetVertex);
+
+            // Add path binding if path variable is specified (e.g., p = (a)-[r]->(b))
+            if (pathVariable != null && !pathVariable.isEmpty()) {
+              // Check if there's an existing path from a previous hop to extend
+              final Object existingPath = lastResult.getProperty(pathVariable);
+              final TraversalPath path;
+              if (existingPath instanceof TraversalPath)
+                // Extend existing path (multi-hop pattern)
+                path = new TraversalPath((TraversalPath) existingPath, edge, targetVertex);
+              else {
+                // Create new path starting from source vertex
+                path = new TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
+                path.addStep(edge, targetVertex);
+              }
+              result.setProperty(pathVariable, path);
+            }
+
+            buffer.add(result);
+            if (context.isProfiling())
+              standardPathCount++;
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin);
           }
         }
       }
@@ -308,10 +402,82 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
+   * Determines if we can use the fast path (skip loading edges).
+   * Fast path is possible when:
+   * - No relationship variable binding (anonymous relationship) OR internal anonymous variable
+   * - No edge properties to filter
+   * - No path variable
+   * - No edges already in the result (for uniqueness checking)
+   */
+  private boolean canUseFastPath(final Result result) {
+    // Check if edge variable is needed
+    // Allow fast path for internal anonymous variables (start with spaces like "  rel0")
+    // since they're only created for uniqueness checking but aren't actually used
+    final boolean isInternalAnonymousVar = relationshipVariable != null &&
+        !relationshipVariable.isEmpty() &&
+        relationshipVariable.charAt(0) == ' ';
+
+    if (relationshipVariable != null && !relationshipVariable.isEmpty() && !isInternalAnonymousVar)
+      return false;
+
+    // Check if edge properties need to be filtered
+    if (pattern.hasProperties())
+      return false;
+
+    // Check if path variable requires edge tracking
+    if (pathVariable != null && !pathVariable.isEmpty())
+      return false;
+
+    // Check if relationship variable is pre-bound (requires edge identity check)
+    if (boundVariableNames != null && relationshipVariable != null
+        && boundVariableNames.contains(relationshipVariable))
+      return false;
+
+    // Check if result already contains edges (would need uniqueness checking)
+    if (resultContainsEdges(result))
+      return false;
+
+    return true;
+  }
+
+  /**
+   * Checks if the result contains any edges that would require uniqueness checking.
+   */
+  @SuppressWarnings("unchecked")
+  private boolean resultContainsEdges(final Result result) {
+    for (final String prop : result.getPropertyNames()) {
+      // Skip the current relationship variable if it's being rebound
+      if (prop.equals(relationshipVariable))
+        continue;
+      // Skip variables from previous MATCH clauses
+      if (previousStepVariables != null && previousStepVariables.contains(prop))
+        continue;
+      final Object val = result.getProperty(prop);
+      if (val instanceof Edge)
+        return true;
+      if (val instanceof TraversalPath)
+        return true;
+      if (val instanceof List) {
+        for (final Object item : (List<Object>) val)
+          if (item instanceof Edge)
+            return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns the effective direction, using the override if set, otherwise the pattern direction.
+   */
+  private Direction getEffectiveDirection() {
+    return directionOverride != null ? directionOverride : pattern.getDirection();
+  }
+
+  /**
    * Gets edges from a vertex based on the relationship pattern.
    */
   private Iterator<Edge> getEdges(final Vertex vertex) {
-    final Direction direction = pattern.getDirection();
+    final Direction direction = getEffectiveDirection();
     final String[] types = pattern.hasTypes() ?
         pattern.getTypes().toArray(new String[0]) :
         null;
@@ -324,21 +490,39 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
+   * Gets vertices directly from a vertex based on the relationship pattern.
+   * This is an optimized path that skips loading edge objects.
+   */
+  private Iterator<Vertex> getVertices(final Vertex vertex) {
+    final Direction direction = getEffectiveDirection();
+    final String[] types = pattern.hasTypes() ?
+        pattern.getTypes().toArray(new String[0]) :
+        null;
+
+    if (types == null || types.length == 0) {
+      return vertex.getVertices(direction.toArcadeDirection()).iterator();
+    } else {
+      return vertex.getVertices(direction.toArcadeDirection(), types).iterator();
+    }
+  }
+
+  /**
    * Gets the target vertex from an edge based on direction.
+   * Optimized to avoid loading both vertices when direction is known.
    */
   private Vertex getTargetVertex(final Edge edge, final Vertex sourceVertex) {
-    final Vertex out = edge.getOutVertex();
-    final Vertex in = edge.getInVertex();
-
-    // Determine which vertex is the target based on direction
-    if (pattern.getDirection() == Direction.OUT) {
-      return in;
-    } else if (pattern.getDirection() == Direction.IN) {
-      return out;
+    final Direction direction = getEffectiveDirection();
+    // Optimize for directional patterns - only load the target vertex
+    if (direction == Direction.OUT) {
+      return edge.getInVertex();
+    } else if (direction == Direction.IN) {
+      return edge.getOutVertex();
     } else {
-      // BOTH direction - return the vertex that's not the source
+      // BOTH direction - need to check which vertex is the source
+      // Load out vertex first (more common case for directed graphs)
+      final Vertex out = edge.getOutVertex();
       if (out.getIdentity().equals(sourceVertex.getIdentity())) {
-        return in;
+        return edge.getInVertex();
       } else {
         return out;
       }
@@ -437,6 +621,23 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
         builder.append(", ").append(getRowCountFormatted());
+
+      // Show fast path vs standard path statistics
+      if (fastPathCount > 0 || standardPathCount > 0) {
+        builder.append(", traversal: ");
+        if (fastPathCount > 0 && standardPathCount > 0) {
+          // Mixed: both paths used
+          builder.append("mixed [fast: ").append(fastPathCount);
+          builder.append(", edges: ").append(standardPathCount).append("]");
+        } else if (fastPathCount > 0) {
+          // Fast path only
+          builder.append("optimized (").append(fastPathCount).append(" vertices)");
+        } else {
+          // Standard path only
+          builder.append("standard (").append(standardPathCount).append(" edges)");
+        }
+      }
+
       builder.append(")");
     }
     return builder.toString();

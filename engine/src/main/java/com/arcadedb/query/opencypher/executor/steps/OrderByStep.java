@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.PriorityQueue;
 
 /**
  * Execution step for ORDER BY clause.
@@ -44,21 +45,40 @@ import java.util.NoSuchElementException;
  * <p>
  * Example: ORDER BY n.name ASC, n.age DESC
  * <p>
- * Note: This step materializes all results in memory for sorting.
+ * **Memory Optimization**: When LIMIT is specified, uses Top-K algorithm with a
+ * bounded priority queue (O(K) memory) instead of materializing all results (O(N) memory).
+ * <p>
+ * Without LIMIT: Materializes all N results in memory for sorting.
+ * With LIMIT K: Uses priority queue of size K, keeping only top K results.
  */
 public class OrderByStep extends AbstractExecutionStep {
   private final OrderByClause       orderByClause;
   private final ExpressionEvaluator evaluator;
+  private final Integer             limit; // Downstream LIMIT value for Top-K optimization
 
   public OrderByStep(final OrderByClause orderByClause, final CommandContext context) {
-    this(orderByClause, context, null);
+    this(orderByClause, context, null, null);
   }
 
   public OrderByStep(final OrderByClause orderByClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory) {
+    this(orderByClause, context, functionFactory, null);
+  }
+
+  /**
+   * Creates an OrderByStep with optional LIMIT for Top-K optimization.
+   *
+   * @param orderByClause    ORDER BY clause defining sort order
+   * @param context          command context
+   * @param functionFactory  function factory for expression evaluation
+   * @param limit            downstream LIMIT value (null if no LIMIT present)
+   */
+  public OrderByStep(final OrderByClause orderByClause, final CommandContext context,
+                     final CypherFunctionFactory functionFactory, final Integer limit) {
     super(context);
     this.orderByClause = orderByClause;
     this.evaluator = functionFactory != null ? new ExpressionEvaluator(functionFactory) : null;
+    this.limit = limit;
   }
 
   @Override
@@ -87,29 +107,100 @@ public class OrderByStep extends AbstractExecutionStep {
 
       /**
        * Materializes all results from previous step and sorts them.
+       * Uses Top-K algorithm with bounded priority queue when LIMIT is present.
        */
       private void materializeAndSort() {
-        sortedResults = new ArrayList<>();
-
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (context.isProfiling())
             rowCount++;
 
-          // Fetch all results from previous step
-          final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
-          while (prevResults.hasNext()) {
-            sortedResults.add(prevResults.next());
-          }
+          // Top-K optimization: Use bounded priority queue when LIMIT is present
+          if (limit != null && limit > 0 && !orderByClause.isEmpty()) {
+            sortedResults = materializeTopK(limit);
+          } else {
+            // Standard sorting: materialize all results
+            sortedResults = new ArrayList<>();
+            final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
+            while (prevResults.hasNext()) {
+              sortedResults.add(prevResults.next());
+            }
 
-          // Sort results according to ORDER BY clause
-          if (!orderByClause.isEmpty()) {
-            sortedResults.sort(createComparator());
+            // Sort results according to ORDER BY clause
+            if (!orderByClause.isEmpty()) {
+              sortedResults.sort(createComparator());
+            }
           }
         } finally {
           if (context.isProfiling())
             cost += (System.nanoTime() - begin);
         }
+      }
+
+      /**
+       * Top-K algorithm: Maintains a bounded priority queue of size K.
+       * Memory: O(K) instead of O(N) where K << N
+       *
+       * CRITICAL: Pulls results in batches instead of Integer.MAX_VALUE to avoid
+       * causing upstream steps (like OptionalMatchStep) to materialize everything.
+       *
+       * Algorithm:
+       * 1. Create max-heap (priority queue with reversed comparator) of size K
+       * 2. For each input row (pulled in batches):
+       *    - If heap size < K: add row
+       *    - If heap size = K: compare with top element
+       *      - If new row is better (smaller), remove top and add new row
+       *      - Otherwise, discard new row
+       * 3. Extract all K elements and reverse order (heap is max-heap for min-K)
+       *
+       * Example: ORDER BY score DESC LIMIT 10
+       * - Comparator orders DESC (high scores first)
+       * - Reversed comparator creates min-heap (low scores at top)
+       * - Keeps top 10 highest scores, discards rest
+       *
+       * @param k the limit value (top K results to return)
+       * @return list of top K results in correct sort order
+       */
+      private List<Result> materializeTopK(final int k) {
+        final Comparator<Result> comparator = createComparator();
+        // Reverse comparator for max-heap behavior (worst elements at top)
+        final Comparator<Result> reversedComparator = comparator.reversed();
+
+        // Priority queue with reversed comparator: worst elements bubble to top
+        final PriorityQueue<Result> topK = new PriorityQueue<>(Math.min(k + 1, 1000), reversedComparator);
+
+        // Pull all results and maintain a top-K heap
+        final int batchSize = Math.max(1000, k * 10);
+        final ResultSet prevResults = prev.syncPull(context, batchSize);
+
+        while (prevResults.hasNext()) {
+          final Result row = prevResults.next();
+
+          if (topK.size() < k) {
+            // Haven't reached K elements yet, add unconditionally
+            topK.offer(row);
+          } else {
+            // Heap is full, check if new element is better than worst element
+            final Result worst = topK.peek();
+            if (comparator.compare(row, worst) < 0) {
+              // New row is better than worst row, replace it
+              topK.poll();  // Remove worst
+              topK.offer(row);  // Add new
+            }
+            // Otherwise discard the row (it's worse than our current top K)
+          }
+        }
+
+        // Extract results from heap and reverse to get correct sort order
+        final List<Result> results = new ArrayList<>(topK.size());
+        while (!topK.isEmpty()) {
+          results.add(topK.poll());
+        }
+
+        // Heap extracts in reverse order, so reverse the list to get correct order
+        java.util.Collections.reverse(results);
+
+        return results;
       }
 
       /**

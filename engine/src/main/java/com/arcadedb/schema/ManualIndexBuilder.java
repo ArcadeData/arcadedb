@@ -44,8 +44,10 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
   public Index create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    if (database.isAsyncProcessing())
-      throw new NeedRetryException("Cannot create a new index while asynchronous tasks are running");
+    // Wait for any running async tasks (e.g., compaction) to complete before creating new index
+    // This prevents NeedRetryException when creating multiple indexes sequentially on large datasets
+    while (database.isAsyncProcessing())
+      database.async().waitCompletion();
 
     final LocalSchema schema = database.getSchema().getEmbedded();
 

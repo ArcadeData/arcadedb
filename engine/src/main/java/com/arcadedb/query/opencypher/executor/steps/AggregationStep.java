@@ -57,6 +57,11 @@ public class AggregationStep extends AbstractExecutionStep {
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
 
+  // Configurable batch size for streaming aggregation (default: 10,000)
+  private static final int DEFAULT_BATCH_SIZE = 10000;
+  private static final int BATCH_SIZE = Integer.parseInt(
+      System.getProperty("arcadedb.aggregation.batchSize", String.valueOf(DEFAULT_BATCH_SIZE)));
+
   public AggregationStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
     super(context);
@@ -68,9 +73,6 @@ public class AggregationStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("AggregationStep requires a previous step");
-
-    // Pull all results from previous step and aggregate
-    final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
 
     // Map of aggregation functions (one per aggregation expression)
     final Map<String, StatelessFunction> aggregators = new HashMap<>();
@@ -109,6 +111,8 @@ public class AggregationStep extends AbstractExecutionStep {
     }
 
     // Process all rows, feeding data to aggregators
+    final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
