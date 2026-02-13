@@ -57,6 +57,11 @@ public class AggregationStep extends AbstractExecutionStep {
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
 
+  // Configurable batch size for streaming aggregation (default: 10,000)
+  private static final int DEFAULT_BATCH_SIZE = 10000;
+  private static final int BATCH_SIZE = Integer.parseInt(
+      System.getProperty("arcadedb.aggregation.batchSize", String.valueOf(DEFAULT_BATCH_SIZE)));
+
   public AggregationStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
     super(context);
@@ -68,9 +73,6 @@ public class AggregationStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("AggregationStep requires a previous step");
-
-    // Pull all results from previous step and aggregate
-    final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
 
     // Map of aggregation functions (one per aggregation expression)
     final Map<String, StatelessFunction> aggregators = new HashMap<>();
@@ -108,47 +110,55 @@ public class AggregationStep extends AbstractExecutionStep {
       }
     }
 
-    // Process all rows, feeding data to aggregators
-    while (prevResults.hasNext()) {
-      final Result inputRow = prevResults.next();
-      final long begin = context.isProfiling() ? System.nanoTime() : 0;
-      try {
-        if (context.isProfiling())
-          rowCount++;
+    // Process all rows in batches, feeding data to aggregators
+    // This prevents OOM when aggregating large result sets
+    boolean hasMore = true;
+    while (hasMore) {
+      final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+      hasMore = false;
 
-        // Process regular aggregations
-        for (final Map.Entry<String, Expression> entry : aggregationExpressions.entrySet()) {
-          final String outputName = entry.getKey();
-          final Expression expr = entry.getValue();
-          final StatelessFunction function = aggregators.get(outputName);
+      while (prevResults.hasNext()) {
+        final Result inputRow = prevResults.next();
+        hasMore = true;
+        final long begin = context.isProfiling() ? System.nanoTime() : 0;
+        try {
+          if (context.isProfiling())
+            rowCount++;
 
-          // Evaluate the function arguments for this row
-          if (expr instanceof FunctionCallExpression) {
-            final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
-            final Object[] args = new Object[funcExpr.getArguments().size()];
-            for (int i = 0; i < args.length; i++) {
-              args[i] = evaluator.evaluate(funcExpr.getArguments().get(i), inputRow, context);
+          // Process regular aggregations
+          for (final Map.Entry<String, Expression> entry : aggregationExpressions.entrySet()) {
+            final String outputName = entry.getKey();
+            final Expression expr = entry.getValue();
+            final StatelessFunction function = aggregators.get(outputName);
+
+            // Evaluate the function arguments for this row
+            if (expr instanceof FunctionCallExpression) {
+              final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
+              final Object[] args = new Object[funcExpr.getArguments().size()];
+              for (int i = 0; i < args.length; i++) {
+                args[i] = evaluator.evaluate(funcExpr.getArguments().get(i), inputRow, context);
+              }
+
+              // Feed this row's data to the aggregator
+              function.execute(args, context);
             }
-
-            // Feed this row's data to the aggregator
-            function.execute(args, context);
           }
-        }
 
-        // Process complex aggregation expressions - feed data to all inner aggregation functions
-        for (final ComplexAggregationInfo complexInfo : complexAggregations.values()) {
-          for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexInfo.innerAggregations.entrySet()) {
-            final FunctionCallExpression innerAgg = innerEntry.getValue();
-            final StatelessFunction function = complexInfo.innerFunctions.get(innerEntry.getKey());
-            final Object[] args = new Object[innerAgg.getArguments().size()];
-            for (int i = 0; i < args.length; i++)
-              args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
-            function.execute(args, context);
+          // Process complex aggregation expressions - feed data to all inner aggregation functions
+          for (final ComplexAggregationInfo complexInfo : complexAggregations.values()) {
+            for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexInfo.innerAggregations.entrySet()) {
+              final FunctionCallExpression innerAgg = innerEntry.getValue();
+              final StatelessFunction function = complexInfo.innerFunctions.get(innerEntry.getKey());
+              final Object[] args = new Object[innerAgg.getArguments().size()];
+              for (int i = 0; i < args.length; i++)
+                args[i] = evaluator.evaluate(innerAgg.getArguments().get(i), inputRow, context);
+              function.execute(args, context);
+            }
           }
+        } finally {
+          if (context.isProfiling())
+            cost += (System.nanoTime() - begin);
         }
-      } finally {
-        if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
       }
     }
 
