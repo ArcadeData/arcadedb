@@ -198,10 +198,14 @@ public class StreamingAggregationTest {
       final Result row = resultSet.next();
 
       assertThat(((Number) row.getProperty("question_count")).longValue()).isEqualTo(100);
-      // Direct comments: questions 1,2,3 have 1,2,3 direct comments respectively (pattern q % 4)
-      // Sum = 0+1+2+3+0+1+2+3+... for 100 questions = 25 iterations × (0+1+2+3) = 25 × 6 = 150
-      assertThat(((Number) row.getProperty("direct_comment_count")).longValue()).isEqualTo(150);
-      assertThat(((Number) row.getProperty("answer_count")).longValue()).isEqualTo(1000);
+      // The two OPTIONAL MATCHes create a cartesian product: each comment row is multiplied
+      // by the 10 answers per question. Direct comments without cartesian = 25 × (0+1+2+3) = 150,
+      // but each comment row appears 10 times (once per answer), so count(c1) = 150 × 10 = 1500.
+      assertThat(((Number) row.getProperty("direct_comment_count")).longValue()).isEqualTo(1500);
+      // Similarly, answer rows are multiplied by comment rows per question:
+      // q%4=0: 1×10=10, q%4=1: 1×10=10, q%4=2: 2×10=20, q%4=3: 3×10=30
+      // 25 × (10+10+20+30) = 25 × 70 = 1750
+      assertThat(((Number) row.getProperty("answer_count")).longValue()).isEqualTo(1750);
     }
   }
 
