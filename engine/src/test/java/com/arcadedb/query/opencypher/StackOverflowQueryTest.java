@@ -23,18 +23,18 @@ public class StackOverflowQueryTest {
     final File dbDir = new File(dbPath);
 
     if (!dbDir.exists()) {
-      System.out.println("Database not found at: " + dbPath);
-      System.out.println("Skipping test - database required for manual testing");
+      // System.out.println("Database not found at: " + dbPath);
+      // System.out.println("Skipping test - database required for manual testing");
       return;
     }
 
-    System.out.println("========================================");
-    System.out.println("Testing OptionalMatch Streaming Optimization");
-    System.out.println("========================================");
-    System.out.println();
-    System.out.println("Database: " + dbPath);
-    System.out.println("Max buffer size: " + System.getProperty("arcadedb.optionalMatch.maxBufferSize", "10000"));
-    System.out.println();
+    // System.out.println("========================================");
+    // System.out.println("Testing OptionalMatch Streaming Optimization");
+    // System.out.println("========================================");
+    // System.out.println();
+    // System.out.println("Database: " + dbPath);
+    // System.out.println("Max buffer size: " + System.getProperty("arcadedb.optionalMatch.maxBufferSize", "10000"));
+    // System.out.println();
 
     try (final Database db = new DatabaseFactory(dbPath).open()) {
       final String query = """
@@ -49,20 +49,20 @@ public class StackOverflowQueryTest {
           LIMIT 10
           """;
 
-      System.out.println("Query:");
-      System.out.println(query);
-      System.out.println();
-      System.out.println("========================================");
-      System.out.println();
+      // System.out.println("Query:");
+      // System.out.println(query);
+      // System.out.println();
+      // System.out.println("========================================");
+      // System.out.println();
 
       final long startTime = System.currentTimeMillis();
 
       try (final ResultSet resultSet = db.command("opencypher", query)) {
         int rowCount = 0;
-        System.out.println("Results:");
-        System.out.println("-----------------------------------------");
+        // System.out.println("Results:");
+        // System.out.println("-----------------------------------------");
         System.out.printf("%-15s | %-15s%n", "Question ID", "Total Comments");
-        System.out.println("-----------------------------------------");
+        // System.out.println("-----------------------------------------");
 
         while (resultSet.hasNext()) {
           final Result row = resultSet.next();
@@ -73,22 +73,22 @@ public class StackOverflowQueryTest {
           rowCount++;
         }
 
-        System.out.println("-----------------------------------------");
-        System.out.println();
+        // System.out.println("-----------------------------------------");
+        // System.out.println();
 
         final long endTime = System.currentTimeMillis();
         final long duration = endTime - startTime;
 
-        System.out.println("========================================");
-        System.out.println("Success! Query completed without OOM");
-        System.out.println("========================================");
-        System.out.println();
-        System.out.println("Rows returned: " + rowCount);
-        System.out.println("Execution time: " + duration + " ms");
-        System.out.println();
-        System.out.println("Before optimization: This query would cause OOM crash");
-        System.out.println("After optimization: Bounded buffering (10K rows max per OPTIONAL MATCH)");
-        System.out.println("Memory usage: ~40MB (4 × 10K buffer) instead of 100GB+");
+        // System.out.println("========================================");
+        // System.out.println("Success! Query completed without OOM");
+        // System.out.println("========================================");
+        // System.out.println();
+        // System.out.println("Rows returned: " + rowCount);
+        // System.out.println("Execution time: " + duration + " ms");
+        // System.out.println();
+        // System.out.println("Before optimization: This query would cause OOM crash");
+        // System.out.println("After optimization: Bounded buffering (10K rows max per OPTIONAL MATCH)");
+        // System.out.println("Memory usage: ~40MB (4 × 10K buffer) instead of 100GB+");
 
         // Verify we got some results
         assertThat(rowCount).isGreaterThan(0).isLessThanOrEqualTo(10);
@@ -109,13 +109,13 @@ public class StackOverflowQueryTest {
     final File dbDir = new File(dbPath);
 
     if (!dbDir.exists()) {
-      System.out.println("Database not found - skipping test");
+      // System.out.println("Database not found - skipping test");
       return;
     }
 
-    System.out.println("========================================");
-    System.out.println("Test 1: Just first OPTIONAL MATCH");
-    System.out.println("========================================");
+    // System.out.println("========================================");
+    // System.out.println("Test 1: Just first OPTIONAL MATCH");
+    // System.out.println("========================================");
 
     try (final Database db = new DatabaseFactory(dbPath).open()) {
       final String query = """
@@ -124,18 +124,18 @@ public class StackOverflowQueryTest {
           RETURN count(*) AS total
           """;
 
-      System.out.println("Query: " + query);
+      // System.out.println("Query: " + query);
       final long start = System.currentTimeMillis();
 
       try (final ResultSet rs = db.command("opencypher", query)) {
         while (rs.hasNext()) {
           final Result r = rs.next();
-          System.out.println("Total rows: " + r.getProperty("total"));
+          // System.out.println("Total rows: " + r.getProperty("total"));
         }
       }
 
-      System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
-      System.out.println("✅ Test 1 passed - no OOM\n");
+      // System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
+      // System.out.println("✅ Test 1 passed - no OOM\n");
     } catch (OutOfMemoryError e) {
       System.err.println("❌ Test 1 FAILED with OOM");
       throw e;
@@ -148,13 +148,13 @@ public class StackOverflowQueryTest {
     final File dbDir = new File(dbPath);
 
     if (!dbDir.exists()) {
-      System.out.println("Database not found - skipping test");
+      // System.out.println("Database not found - skipping test");
       return;
     }
 
-    System.out.println("========================================");
-    System.out.println("Test 2: OPTIONAL MATCH with aggregation");
-    System.out.println("========================================");
+    // System.out.println("========================================");
+    // System.out.println("Test 2: OPTIONAL MATCH with aggregation");
+    // System.out.println("========================================");
 
     try (final Database db = new DatabaseFactory(dbPath).open()) {
       final String query = """
@@ -164,18 +164,18 @@ public class StackOverflowQueryTest {
           RETURN count(*) AS total
           """;
 
-      System.out.println("Query: " + query);
+      // System.out.println("Query: " + query);
       final long start = System.currentTimeMillis();
 
       try (final ResultSet rs = db.command("opencypher", query)) {
         while (rs.hasNext()) {
           final Result r = rs.next();
-          System.out.println("Total questions: " + r.getProperty("total"));
+          // System.out.println("Total questions: " + r.getProperty("total"));
         }
       }
 
-      System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
-      System.out.println("✅ Test 2 passed - no OOM\n");
+      // System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
+      // System.out.println("✅ Test 2 passed - no OOM\n");
     } catch (OutOfMemoryError e) {
       System.err.println("❌ Test 2 FAILED with OOM - AggregationStep is the culprit!");
       throw e;
@@ -188,13 +188,13 @@ public class StackOverflowQueryTest {
     final File dbDir = new File(dbPath);
 
     if (!dbDir.exists()) {
-      System.out.println("Database not found - skipping test");
+      // System.out.println("Database not found - skipping test");
       return;
     }
 
-    System.out.println("========================================");
-    System.out.println("Test 3: Two OPTIONAL MATCH with aggregation");
-    System.out.println("========================================");
+    // System.out.println("========================================");
+    // System.out.println("Test 3: Two OPTIONAL MATCH with aggregation");
+    // System.out.println("========================================");
 
     try (final Database db = new DatabaseFactory(dbPath).open()) {
       final String query = """
@@ -205,18 +205,18 @@ public class StackOverflowQueryTest {
           RETURN count(*) AS total
           """;
 
-      System.out.println("Query: " + query);
+      // System.out.println("Query: " + query);
       final long start = System.currentTimeMillis();
 
       try (final ResultSet rs = db.command("opencypher", query)) {
         while (rs.hasNext()) {
           final Result r = rs.next();
-          System.out.println("Total: " + r.getProperty("total"));
+          // System.out.println("Total: " + r.getProperty("total"));
         }
       }
 
-      System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
-      System.out.println("✅ Test 3 passed - no OOM\n");
+      // System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
+      // System.out.println("✅ Test 3 passed - no OOM\n");
     } catch (OutOfMemoryError e) {
       System.err.println("❌ Test 3 FAILED with OOM");
       throw e;
@@ -229,13 +229,13 @@ public class StackOverflowQueryTest {
     final File dbDir = new File(dbPath);
 
     if (!dbDir.exists()) {
-      System.out.println("Database not found - skipping test");
+      // System.out.println("Database not found - skipping test");
       return;
     }
 
-    System.out.println("========================================");
-    System.out.println("Test 4: Three OPTIONAL MATCH - FULL QUERY");
-    System.out.println("========================================");
+    // System.out.println("========================================");
+    // System.out.println("Test 4: Three OPTIONAL MATCH - FULL QUERY");
+    // System.out.println("========================================");
 
     try (final Database db = new DatabaseFactory(dbPath).open()) {
       final String query = """
@@ -247,18 +247,18 @@ public class StackOverflowQueryTest {
           RETURN count(*) AS total
           """;
 
-      System.out.println("Query: " + query);
+      // System.out.println("Query: " + query);
       final long start = System.currentTimeMillis();
 
       try (final ResultSet rs = db.command("opencypher", query)) {
         while (rs.hasNext()) {
           final Result r = rs.next();
-          System.out.println("Total: " + r.getProperty("total"));
+          // System.out.println("Total: " + r.getProperty("total"));
         }
       }
 
-      System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
-      System.out.println("✅ Test 4 passed - no OOM\n");
+      // System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
+      // System.out.println("✅ Test 4 passed - no OOM\n");
     } catch (OutOfMemoryError e) {
       System.err.println("❌ Test 4 FAILED with OOM - This is the cartesian explosion!");
       throw e;
@@ -271,13 +271,13 @@ public class StackOverflowQueryTest {
     final File dbDir = new File(dbPath);
 
     if (!dbDir.exists()) {
-      System.out.println("Database not found - skipping test");
+      // System.out.println("Database not found - skipping test");
       return;
     }
 
-    System.out.println("========================================");
-    System.out.println("Test 5: FULL QUERY with ORDER BY and arithmetic");
-    System.out.println("========================================");
+    // System.out.println("========================================");
+    // System.out.println("Test 5: FULL QUERY with ORDER BY and arithmetic");
+    // System.out.println("========================================");
 
     try (final Database db = new DatabaseFactory(dbPath).open()) {
       final String query = """
@@ -292,7 +292,7 @@ public class StackOverflowQueryTest {
           LIMIT 10
           """;
 
-      System.out.println("Query: " + query);
+      // System.out.println("Query: " + query);
       final long start = System.currentTimeMillis();
 
       try (final ResultSet rs = db.command("opencypher", query)) {
@@ -301,11 +301,11 @@ public class StackOverflowQueryTest {
           final Result r = rs.next();
           count++;
         }
-        System.out.println("Returned " + count + " rows");
+        // System.out.println("Returned " + count + " rows");
       }
 
-      System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
-      System.out.println("✅ Test 5 passed - no OOM\n");
+      // System.out.println("Duration: " + (System.currentTimeMillis() - start) + " ms");
+      // System.out.println("✅ Test 5 passed - no OOM\n");
     } catch (OutOfMemoryError e) {
       System.err.println("❌ Test 5 FAILED with OOM - ORDER BY causes the problem!");
       throw e;
@@ -318,15 +318,15 @@ public class StackOverflowQueryTest {
     final File dbDir = new File(dbPath);
 
     if (!dbDir.exists()) {
-      System.out.println("Database not found at: " + dbPath);
-      System.out.println("Skipping test - database required for manual testing");
+      // System.out.println("Database not found at: " + dbPath);
+      // System.out.println("Skipping test - database required for manual testing");
       return;
     }
 
-    System.out.println("========================================");
-    System.out.println("Testing with PROFILE to see execution plan");
-    System.out.println("========================================");
-    System.out.println();
+    // System.out.println("========================================");
+    // System.out.println("Testing with PROFILE to see execution plan");
+    // System.out.println("========================================");
+    // System.out.println();
 
     try (final Database db = new DatabaseFactory(dbPath).open()) {
       final String query = """
@@ -347,14 +347,14 @@ public class StackOverflowQueryTest {
         }
 
         // Print execution plan
-        System.out.println();
-        System.out.println("Execution Plan:");
-        System.out.println("========================================");
-        System.out.println(resultSet.getExecutionPlan().get().prettyPrint(0, 2));
-        System.out.println("========================================");
-        System.out.println();
-        System.out.println("Look for 'OPTIONAL MATCH' steps in the plan above.");
-        System.out.println("The streaming optimization is active (bounded buffering).");
+        // System.out.println();
+        // System.out.println("Execution Plan:");
+        // System.out.println("========================================");
+        // System.out.println(resultSet.getExecutionPlan().get().prettyPrint(0, 2));
+        // System.out.println("========================================");
+        // System.out.println();
+        // System.out.println("Look for 'OPTIONAL MATCH' steps in the plan above.");
+        // System.out.println("The streaming optimization is active (bounded buffering).");
       }
     }
   }
