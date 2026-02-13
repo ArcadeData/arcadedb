@@ -433,7 +433,7 @@ public class CypherOptimizer {
         final Object vertexObj = result.getProperty(targetVariable);
         if (vertexObj instanceof Vertex) {
           final Vertex vertex = (Vertex) vertexObj;
-          return targetLabel.equals(vertex.getTypeName());
+          return vertex.getType().instanceOf(targetLabel);
         }
         return false;
       }
