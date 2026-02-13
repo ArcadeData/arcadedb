@@ -74,7 +74,8 @@ public class CypherFunctionFactory {
     mapping.put("sum", "sum");
     mapping.put("avg", "avg");
     // min/max handled as Cypher-specific to support mixed-type comparison
-    // stdev/stdevp handled as Cypher-specific (sample vs population)
+    mapping.put("stdev", "stddev");
+    mapping.put("stdevp", "stddevp");
 
     // String functions - need to check if SQL has these
     mapping.put("toupper", "upper");
@@ -221,7 +222,7 @@ public class CypherFunctionFactory {
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean" -> true;
       // Aggregation functions
-      case "collect", "percentiledisc", "percentilecont", "min", "max", "stdev", "stdevp" -> true;
+      case "collect", "percentiledisc", "percentilecont", "min", "max" -> true;
       // Temporal constructor functions
       case "date", "localtime", "time", "localdatetime", "datetime", "duration" -> true;
       // Temporal truncation functions
@@ -315,8 +316,6 @@ public class CypherFunctionFactory {
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
       case "percentiledisc" -> new PercentileDiscFunction();
       case "percentilecont" -> new PercentileContFunction();
-      case "stdev" -> distinct ? new DistinctAggregationWrapper(new StDevFunction()) : new StDevFunction();
-      case "stdevp" -> distinct ? new DistinctAggregationWrapper(new StDevPFunction()) : new StDevPFunction();
       // Temporal format function
       case "format" -> new FormatFunction();
       // Vector similarity functions

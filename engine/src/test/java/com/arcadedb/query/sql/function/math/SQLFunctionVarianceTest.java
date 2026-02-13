@@ -22,6 +22,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 class SQLFunctionVarianceTest {
 
@@ -39,38 +40,65 @@ class SQLFunctionVarianceTest {
   }
 
   @Test
+  void singleValue() {
+    variance.execute(null, null, null, new Object[] { 5 }, null);
+    assertThat((Double) variance.getResult()).isCloseTo(0.0, within(0.0001));
+  }
+
+  @Test
   void variance() {
+    // Sample variance of [4, 7, 15, 3]: mean=7.25, sum_sq_diff=88.75, sample=88.75/3
     final Integer[] scores = { 4, 7, 15, 3 };
 
-    for (final Integer s : scores) {
+    for (final Integer s : scores)
       variance.execute(null, null, null, new Object[] { s }, null);
-    }
 
-    final Object result = variance.getResult();
-    assertThat(result).isEqualTo(22.1875);
+    assertThat((Double) variance.getResult()).isCloseTo(88.75 / 3.0, within(0.0001));
   }
 
   @Test
   void variance1() {
+    // Sample variance of [4, 7]: mean=5.5, sum_sq_diff=4.5, sample=4.5/1
     final Integer[] scores = { 4, 7 };
 
-    for (final Integer s : scores) {
+    for (final Integer s : scores)
       variance.execute(null, null, null, new Object[] { s }, null);
-    }
 
-    final Object result = variance.getResult();
-    assertThat(result).isEqualTo(2.25);
+    assertThat((Double) variance.getResult()).isCloseTo(4.5, within(0.0001));
   }
 
   @Test
   void variance2() {
+    // Sample variance of [15, 3]: mean=9, sum_sq_diff=72, sample=72/1
     final Integer[] scores = { 15, 3 };
 
-    for (final Integer s : scores) {
+    for (final Integer s : scores)
       variance.execute(null, null, null, new Object[] { s }, null);
-    }
 
-    final Object result = variance.getResult();
-    assertThat(result).isEqualTo(36.0);
+    assertThat((Double) variance.getResult()).isCloseTo(72.0, within(0.0001));
+  }
+
+  @Test
+  void populationVariance() {
+    // Population variance of [4, 7, 15, 3]: mean=7.25, sum_sq_diff=88.75, pop=88.75/4
+    final SQLFunctionVarianceP varianceP = new SQLFunctionVarianceP();
+    final Integer[] scores = { 4, 7, 15, 3 };
+
+    for (final Integer s : scores)
+      varianceP.execute(null, null, null, new Object[] { s }, null);
+
+    assertThat((Double) varianceP.getResult()).isCloseTo(22.1875, within(0.0001));
+  }
+
+  @Test
+  void populationVarianceTwoValues() {
+    // Population variance of [4, 7]: mean=5.5, sum_sq_diff=4.5, pop=4.5/2
+    final SQLFunctionVarianceP varianceP = new SQLFunctionVarianceP();
+    final Integer[] scores = { 4, 7 };
+
+    for (final Integer s : scores)
+      varianceP.execute(null, null, null, new Object[] { s }, null);
+
+    assertThat((Double) varianceP.getResult()).isCloseTo(2.25, within(0.0001));
   }
 }
