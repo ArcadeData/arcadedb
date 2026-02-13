@@ -59,6 +59,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private final NodePattern targetNodePattern;
   private final Set<String> boundVariableNames;
   private final Set<String> previousStepVariables; // Snapshot for uniqueness scoping
+  private final Direction directionOverride; // When non-null, overrides pattern.getDirection()
 
   // Profiling: track fast path vs standard path usage
   private long fastPathCount = 0;
@@ -128,6 +129,19 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
       final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
       final Set<String> boundVariableNames, final Set<String> previousStepVariables, final CommandContext context) {
+    this(sourceVariable, relationshipVariable, targetVariable, pattern, pathVariable, targetNodePattern,
+        boundVariableNames, previousStepVariables, null, context);
+  }
+
+  /**
+   * Creates a match relationship step with direction override.
+   * Used when the plan builder reverses the traversal direction (e.g., when the target
+   * is bound but the source is not, the plan starts from the bound target and reverses).
+   */
+  public MatchRelationshipStep(final String sourceVariable, final String relationshipVariable, final String targetVariable,
+      final RelationshipPattern pattern, final String pathVariable, final NodePattern targetNodePattern,
+      final Set<String> boundVariableNames, final Set<String> previousStepVariables,
+      final Direction directionOverride, final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
@@ -137,6 +151,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     this.targetNodePattern = targetNodePattern;
     this.boundVariableNames = boundVariableNames;
     this.previousStepVariables = previousStepVariables;
+    this.directionOverride = directionOverride;
   }
 
   @Override
@@ -218,7 +233,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                 currentEdges = getEdges(sourceVertex);
                 currentVertices = null;
                 // Track seen edges for BOTH direction to deduplicate self-loops
-                seenEdges = pattern.getDirection() == Direction.BOTH ? new HashSet<>() : null;
+                seenEdges = getEffectiveDirection() == Direction.BOTH ? new HashSet<>() : null;
               }
             } else {
               // Source is not a vertex, skip
@@ -389,14 +404,20 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   /**
    * Determines if we can use the fast path (skip loading edges).
    * Fast path is possible when:
-   * - No relationship variable binding (anonymous relationship)
+   * - No relationship variable binding (anonymous relationship) OR internal anonymous variable
    * - No edge properties to filter
    * - No path variable
    * - No edges already in the result (for uniqueness checking)
    */
   private boolean canUseFastPath(final Result result) {
     // Check if edge variable is needed
-    if (relationshipVariable != null && !relationshipVariable.isEmpty())
+    // Allow fast path for internal anonymous variables (start with spaces like "  rel0")
+    // since they're only created for uniqueness checking but aren't actually used
+    final boolean isInternalAnonymousVar = relationshipVariable != null &&
+        !relationshipVariable.isEmpty() &&
+        relationshipVariable.charAt(0) == ' ';
+
+    if (relationshipVariable != null && !relationshipVariable.isEmpty() && !isInternalAnonymousVar)
       return false;
 
     // Check if edge properties need to be filtered
@@ -446,10 +467,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
+   * Returns the effective direction, using the override if set, otherwise the pattern direction.
+   */
+  private Direction getEffectiveDirection() {
+    return directionOverride != null ? directionOverride : pattern.getDirection();
+  }
+
+  /**
    * Gets edges from a vertex based on the relationship pattern.
    */
   private Iterator<Edge> getEdges(final Vertex vertex) {
-    final Direction direction = pattern.getDirection();
+    final Direction direction = getEffectiveDirection();
     final String[] types = pattern.hasTypes() ?
         pattern.getTypes().toArray(new String[0]) :
         null;
@@ -466,7 +494,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * This is an optimized path that skips loading edge objects.
    */
   private Iterator<Vertex> getVertices(final Vertex vertex) {
-    final Direction direction = pattern.getDirection();
+    final Direction direction = getEffectiveDirection();
     final String[] types = pattern.hasTypes() ?
         pattern.getTypes().toArray(new String[0]) :
         null;
@@ -483,10 +511,11 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * Optimized to avoid loading both vertices when direction is known.
    */
   private Vertex getTargetVertex(final Edge edge, final Vertex sourceVertex) {
+    final Direction direction = getEffectiveDirection();
     // Optimize for directional patterns - only load the target vertex
-    if (pattern.getDirection() == Direction.OUT) {
+    if (direction == Direction.OUT) {
       return edge.getInVertex();
-    } else if (pattern.getDirection() == Direction.IN) {
+    } else if (direction == Direction.IN) {
       return edge.getOutVertex();
     } else {
       // BOTH direction - need to check which vertex is the source
