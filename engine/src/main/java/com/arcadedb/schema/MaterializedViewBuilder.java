@@ -130,6 +130,9 @@ public class MaterializedViewBuilder {
     if (refreshMode == MaterializedViewRefreshMode.INCREMENTAL)
       registerListeners(schema, view, sourceTypeNames);
 
+    if (refreshMode == MaterializedViewRefreshMode.PERIODIC && refreshInterval > 0)
+      schema.getMaterializedViewScheduler().schedule(database, view);
+
     return view;
   }
 

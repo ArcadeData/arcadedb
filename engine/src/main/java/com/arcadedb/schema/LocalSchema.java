@@ -109,6 +109,7 @@ public class LocalSchema implements Schema {
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
+  private              MaterializedViewScheduler              materializedViewScheduler;
 
   public LocalSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -597,6 +598,10 @@ public class LocalSchema implements Schema {
     if (view == null)
       throw new SchemaException("Materialized view '" + viewName + "' not found");
 
+    // Cancel periodic scheduler if active
+    if (materializedViewScheduler != null)
+      materializedViewScheduler.cancel(viewName);
+
     // Remove the view definition
     materializedViews.remove(viewName);
 
@@ -820,6 +825,11 @@ public class LocalSchema implements Schema {
       }
     }
 
+    if (materializedViewScheduler != null) {
+      materializedViewScheduler.shutdown();
+      materializedViewScheduler = null;
+    }
+
     writeStatisticsFile();
     materializedViews.clear();
     files.clear();
@@ -828,6 +838,12 @@ public class LocalSchema implements Schema {
     indexMap.clear();
     dictionary = null;
     bucketId2TypeMap.clear();
+  }
+
+  public MaterializedViewScheduler getMaterializedViewScheduler() {
+    if (materializedViewScheduler == null)
+      materializedViewScheduler = new MaterializedViewScheduler();
+    return materializedViewScheduler;
   }
 
   private void readStatisticsFile() {
@@ -1452,6 +1468,9 @@ public class LocalSchema implements Schema {
           // Re-register listeners for INCREMENTAL views
           if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
             MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
+
+          if (view.getRefreshMode() == MaterializedViewRefreshMode.PERIODIC)
+            getMaterializedViewScheduler().schedule(database, view);
 
           // Crash recovery: if status is BUILDING, it was interrupted
           if ("BUILDING".equals(view.getStatus()))
