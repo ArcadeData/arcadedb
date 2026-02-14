@@ -108,10 +108,16 @@ export class ArcadeStudioTestHelper {
    * @param waitForGraph - Whether to wait for graph rendering (default: true)
    */
   async executeQuery(query: string, waitForGraph = true): Promise<void> {
-    // Get query textarea and fill it
-    const queryTextarea = this.page.getByRole('tabpanel').getByRole('textbox');
-    await expect(queryTextarea).toBeVisible();
-    await queryTextarea.fill(query);
+    // Set query via CodeMirror API (fill() doesn't reliably update CodeMirror's internal model)
+    await this.page.evaluate((q) => {
+      (window as any).editor.setValue(q);
+    }, query);
+
+    // Dismiss any existing error toasts that could block the execute button
+    await this.page.evaluate(() => {
+      const toasts = document.querySelectorAll('.swal2-container');
+      toasts.forEach(t => t.remove());
+    });
 
     // Execute query
     await this.page.getByRole('button', { name: '' }).first().click();
