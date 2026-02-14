@@ -1,0 +1,120 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.schema;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class MaterializedViewSQLTest extends TestHelper {
+
+  @BeforeEach
+  public void setupTypes() {
+    if (!database.getSchema().existsType("Account"))
+      database.transaction(() -> {
+        database.getSchema().createDocumentType("Account");
+        database.newDocument("Account").set("name", "Alice").set("active", true).save();
+        database.newDocument("Account").set("name", "Bob").set("active", false).save();
+      });
+  }
+
+  @Test
+  void createViaSql() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW ActiveAccounts AS SELECT name FROM Account WHERE active = true");
+
+    assertThat(database.getSchema().existsMaterializedView("ActiveAccounts")).isTrue();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM ActiveAccounts")) {
+      assertThat(rs.stream().count()).isEqualTo(1);
+    }
+
+    // Cleanup
+    database.command("sql", "DROP MATERIALIZED VIEW ActiveAccounts");
+  }
+
+  @Test
+  void createWithRefreshMode() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW ActiveAccountsInc AS SELECT name FROM Account WHERE active = true REFRESH INCREMENTAL");
+
+    final MaterializedView view = database.getSchema().getMaterializedView("ActiveAccountsInc");
+    assertThat(view.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.INCREMENTAL);
+
+    database.command("sql", "DROP MATERIALIZED VIEW ActiveAccountsInc");
+  }
+
+  @Test
+  void createWithBuckets() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW AccountView AS SELECT name FROM Account BUCKETS 4");
+
+    assertThat(database.getSchema().existsMaterializedView("AccountView")).isTrue();
+
+    database.command("sql", "DROP MATERIALIZED VIEW AccountView");
+  }
+
+  @Test
+  void createIfNotExists() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW TestView AS SELECT FROM Account");
+    // Should not throw
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW IF NOT EXISTS TestView AS SELECT FROM Account");
+
+    database.command("sql", "DROP MATERIALIZED VIEW TestView");
+  }
+
+  @Test
+  void refreshViaSql() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW RefreshView AS SELECT name FROM Account");
+
+    // Add more data
+    database.transaction(() ->
+        database.newDocument("Account").set("name", "Charlie").set("active", true).save());
+
+    database.command("sql", "REFRESH MATERIALIZED VIEW RefreshView");
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM RefreshView")) {
+      assertThat(rs.stream().count()).isEqualTo(3); // Alice, Bob, Charlie
+    }
+
+    database.command("sql", "DROP MATERIALIZED VIEW RefreshView");
+  }
+
+  @Test
+  void dropViaSql() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW DropMe AS SELECT FROM Account");
+    assertThat(database.getSchema().existsMaterializedView("DropMe")).isTrue();
+
+    database.command("sql", "DROP MATERIALIZED VIEW DropMe");
+    assertThat(database.getSchema().existsMaterializedView("DropMe")).isFalse();
+  }
+
+  @Test
+  void dropIfExists() {
+    // Should not throw
+    database.command("sql", "DROP MATERIALIZED VIEW IF EXISTS NonExistent");
+  }
+}
