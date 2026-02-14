@@ -19,7 +19,9 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
@@ -878,6 +880,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
       Future<?> beginFuture = txCtx.executor.submit(() -> {
+        // Initialize the DatabaseContext on this dedicated thread before any DB operation
+        DatabaseContext.INSTANCE.init((DatabaseInternal) database);
         database.begin();
       });
       beginFuture.get(); // Wait for begin to complete
@@ -2426,6 +2430,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.FINE, "getDatabase(): db = %s isOpen = %s", db, db.isOpen());
 
       if (db != null) {
+        // Initialize the DatabaseContext thread-local for this thread (required by ArcadeDB's
+        // transaction management). Other wire protocols (HTTP, Postgres) do this as well.
+        // Always call init() to ensure the context references the correct database instance,
+        // since gRPC reuses threads from its pool and a stale context may exist.
+        DatabaseContext.INSTANCE.init((DatabaseInternal) db);
         return db;
       }
     }
