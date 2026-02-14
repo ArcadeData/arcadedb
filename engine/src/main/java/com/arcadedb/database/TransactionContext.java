@@ -81,6 +81,7 @@ public class TransactionContext implements Transaction {
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   private       Object                               requester;
+  private       List<Runnable>                       afterCommitCallbacks  = null;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -131,7 +132,7 @@ public class TransactionContext implements Transaction {
     if (phase1 != null)
       commit2ndPhase(phase1);
     else
-      reset();
+      resetAndFireCallbacks();
 
     if (database.getSchema().getEmbedded().isDirty())
       database.getSchema().getEmbedded().saveConfiguration();
@@ -254,6 +255,31 @@ public class TransactionContext implements Transaction {
         }
 
     reset();
+  }
+
+  /**
+   * Registers a callback to be executed after a successful commit. Callbacks fire in registration order.
+   * If the transaction is rolled back, callbacks are discarded without firing.
+   * Callback exceptions are logged but do not affect the commit or other callbacks.
+   */
+  public void addAfterCommitCallback(final Runnable callback) {
+    if (afterCommitCallbacks == null)
+      afterCommitCallbacks = new ArrayList<>();
+    afterCommitCallbacks.add(callback);
+  }
+
+  private void resetAndFireCallbacks() {
+    final List<Runnable> callbacks = afterCommitCallbacks;
+    reset();
+    if (callbacks != null) {
+      for (final Runnable callback : callbacks) {
+        try {
+          callback.run();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+        }
+      }
+    }
   }
 
   public void assureIsActive() {
@@ -710,7 +736,7 @@ public class TransactionContext implements Transaction {
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
-      reset();
+      resetAndFireCallbacks();
     }
   }
 
@@ -753,6 +779,7 @@ public class TransactionContext implements Transaction {
     immutablePages.clear();
     bucketRecordDelta.clear();
     deletedRecordsInTx.clear();
+    afterCommitCallbacks = null;
     txId = -1;
   }
 
