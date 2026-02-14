@@ -19,6 +19,9 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.event.AfterRecordCreateListener;
+import com.arcadedb.event.AfterRecordDeleteListener;
+import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.exception.SchemaException;
 
 import java.util.ArrayList;
@@ -123,7 +126,23 @@ public class MaterializedViewBuilder {
     MaterializedViewRefresher.fullRefresh(database, view);
     schema.saveConfiguration();
 
+    // Register event listeners for INCREMENTAL mode
+    if (refreshMode == MaterializedViewRefreshMode.INCREMENTAL)
+      registerListeners(schema, view, sourceTypeNames);
+
     return view;
+  }
+
+  static void registerListeners(final LocalSchema schema, final MaterializedViewImpl view,
+      final List<String> sourceTypeNames) {
+    final MaterializedViewChangeListener listener =
+        new MaterializedViewChangeListener(schema.getDatabase(), view);
+    for (final String srcType : sourceTypeNames) {
+      final DocumentType type = schema.getType(srcType);
+      type.getEvents().registerListener((AfterRecordCreateListener) listener);
+      type.getEvents().registerListener((AfterRecordUpdateListener) listener);
+      type.getEvents().registerListener((AfterRecordDeleteListener) listener);
+    }
   }
 
   private List<String> extractSourceTypes(final String sql) {

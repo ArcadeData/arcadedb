@@ -1449,6 +1449,10 @@ public class LocalSchema implements Schema {
           final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
           materializedViews.put(viewName, view);
 
+          // Re-register listeners for INCREMENTAL views
+          if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+            MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
+
           // Crash recovery: if status is BUILDING, it was interrupted
           if ("BUILDING".equals(view.getStatus()))
             view.setStatus("STALE");
