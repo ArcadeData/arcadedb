@@ -5681,6 +5681,94 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
+  // =========================================================================
+  // MATERIALIZED VIEW MANAGEMENT
+  // =========================================================================
+
+  @Override
+  public CreateMaterializedViewStatement visitCreateMaterializedViewStmt(
+      final SQLParser.CreateMaterializedViewStmtContext ctx) {
+    final CreateMaterializedViewStatement stmt = new CreateMaterializedViewStatement(-1);
+    final SQLParser.CreateMaterializedViewBodyContext bodyCtx = ctx.createMaterializedViewBody();
+
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.selectStatement = (SelectStatement) visit(bodyCtx.selectStatement());
+
+    if (bodyCtx.materializedViewRefreshClause() != null) {
+      final SQLParser.MaterializedViewRefreshClauseContext refreshCtx =
+          bodyCtx.materializedViewRefreshClause();
+      if (refreshCtx.MANUAL() != null)
+        stmt.refreshMode = "MANUAL";
+      else if (refreshCtx.INCREMENTAL() != null)
+        stmt.refreshMode = "INCREMENTAL";
+      else if (refreshCtx.EVERY() != null) {
+        stmt.refreshMode = "PERIODIC";
+        stmt.refreshInterval = Integer.parseInt(refreshCtx.INTEGER_LITERAL().getText());
+        final SQLParser.MaterializedViewTimeUnitContext unitCtx =
+            refreshCtx.materializedViewTimeUnit();
+        if (unitCtx.SECOND() != null)
+          stmt.refreshUnit = "SECOND";
+        else if (unitCtx.MINUTE() != null)
+          stmt.refreshUnit = "MINUTE";
+        else if (unitCtx.HOUR() != null)
+          stmt.refreshUnit = "HOUR";
+      }
+    }
+
+    if (bodyCtx.BUCKETS() != null)
+      stmt.buckets = Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText());
+
+    return stmt;
+  }
+
+  @Override
+  public DropMaterializedViewStatement visitDropMaterializedViewStmt(
+      final SQLParser.DropMaterializedViewStmtContext ctx) {
+    final DropMaterializedViewStatement stmt = new DropMaterializedViewStatement(-1);
+    final SQLParser.DropMaterializedViewBodyContext bodyCtx = ctx.dropMaterializedViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    return stmt;
+  }
+
+  @Override
+  public RefreshMaterializedViewStatement visitRefreshMaterializedViewStmt(
+      final SQLParser.RefreshMaterializedViewStmtContext ctx) {
+    final RefreshMaterializedViewStatement stmt = new RefreshMaterializedViewStatement(-1);
+    stmt.name = (Identifier) visit(ctx.refreshMaterializedViewBody().identifier());
+    return stmt;
+  }
+
+  @Override
+  public AlterMaterializedViewStatement visitAlterMaterializedViewStmt(
+      final SQLParser.AlterMaterializedViewStmtContext ctx) {
+    final AlterMaterializedViewStatement stmt = new AlterMaterializedViewStatement(-1);
+    final SQLParser.AlterMaterializedViewBodyContext bodyCtx = ctx.alterMaterializedViewBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+
+    final SQLParser.MaterializedViewRefreshClauseContext refreshCtx =
+        bodyCtx.materializedViewRefreshClause();
+    if (refreshCtx.MANUAL() != null)
+      stmt.refreshMode = "MANUAL";
+    else if (refreshCtx.INCREMENTAL() != null)
+      stmt.refreshMode = "INCREMENTAL";
+    else if (refreshCtx.EVERY() != null) {
+      stmt.refreshMode = "PERIODIC";
+      stmt.refreshInterval = Integer.parseInt(refreshCtx.INTEGER_LITERAL().getText());
+      final SQLParser.MaterializedViewTimeUnitContext unitCtx =
+          refreshCtx.materializedViewTimeUnit();
+      if (unitCtx.SECOND() != null)
+        stmt.refreshUnit = "SECOND";
+      else if (unitCtx.MINUTE() != null)
+        stmt.refreshUnit = "MINUTE";
+      else if (unitCtx.HOUR() != null)
+        stmt.refreshUnit = "HOUR";
+    }
+
+    return stmt;
+  }
+
   /**
    * Visit trigger timing (BEFORE or AFTER).
    */
