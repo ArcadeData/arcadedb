@@ -187,6 +187,18 @@ public interface Schema {
    */
   void dropTrigger(String triggerName);
 
+  // -- Materialized View management --
+
+  boolean existsMaterializedView(String viewName);
+
+  MaterializedView getMaterializedView(String viewName);
+
+  MaterializedView[] getMaterializedViews();
+
+  void dropMaterializedView(String viewName);
+
+  MaterializedViewBuilder buildMaterializedView();
+
   TypeBuilder<? extends DocumentType> buildDocumentType();
 
   TypeBuilder<VertexType> buildVertexType();

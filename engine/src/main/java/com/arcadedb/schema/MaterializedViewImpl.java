@@ -121,8 +121,7 @@ public class MaterializedViewImpl implements MaterializedView {
 
   @Override
   public void drop() {
-    // TODO: implement in Task 7 when dropMaterializedView is added to Schema
-    throw new UnsupportedOperationException("Drop not yet implemented");
+    database.getSchema().dropMaterializedView(name);
   }
 
   @Override

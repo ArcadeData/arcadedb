@@ -92,6 +92,7 @@ public class LocalSchema implements Schema {
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
   protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
+  protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
@@ -570,6 +571,47 @@ public class LocalSchema implements Schema {
     });
   }
 
+  // -- Materialized View management --
+
+  @Override
+  public boolean existsMaterializedView(final String viewName) {
+    return materializedViews.containsKey(viewName);
+  }
+
+  @Override
+  public MaterializedView getMaterializedView(final String viewName) {
+    final MaterializedViewImpl view = materializedViews.get(viewName);
+    if (view == null)
+      throw new SchemaException("Materialized view '" + viewName + "' not found");
+    return view;
+  }
+
+  @Override
+  public MaterializedView[] getMaterializedViews() {
+    return materializedViews.values().toArray(new MaterializedView[0]);
+  }
+
+  @Override
+  public void dropMaterializedView(final String viewName) {
+    final MaterializedViewImpl view = materializedViews.get(viewName);
+    if (view == null)
+      throw new SchemaException("Materialized view '" + viewName + "' not found");
+
+    // Remove the view definition
+    materializedViews.remove(viewName);
+
+    // Drop the backing type (which drops buckets and indexes)
+    if (existsType(view.getBackingTypeName()))
+      dropType(view.getBackingTypeName());
+
+    saveConfiguration();
+  }
+
+  @Override
+  public MaterializedViewBuilder buildMaterializedView() {
+    return new MaterializedViewBuilder((DatabaseInternal) database);
+  }
+
   /**
    * Register a trigger as an event listener on the appropriate type.
    */
@@ -779,6 +821,7 @@ public class LocalSchema implements Schema {
     }
 
     writeStatisticsFile();
+    materializedViews.clear();
     files.clear();
     types.clear();
     bucketMap.clear();
@@ -891,6 +934,14 @@ public class LocalSchema implements Schema {
 
   public void dropType(final String typeName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    // Prevent dropping a type that is a backing type for a materialized view
+    for (final MaterializedViewImpl view : materializedViews.values()) {
+      if (view.getBackingTypeName().equals(typeName))
+        throw new SchemaException(
+            "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
+                "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
+    }
 
     recordFileChanges(() -> {
       boolean setMultipleUpdate = !multipleUpdate;
@@ -1390,6 +1441,20 @@ public class LocalSchema implements Schema {
         }
       }
 
+      // Load materialized views
+      if (root.has("materializedViews")) {
+        final JSONObject mvJSON = root.getJSONObject("materializedViews");
+        for (final String viewName : mvJSON.keySet()) {
+          final JSONObject viewDef = mvJSON.getJSONObject(viewName);
+          final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
+          materializedViews.put(viewName, view);
+
+          // Crash recovery: if status is BUILDING, it was interrupted
+          if ("BUILDING".equals(view.getStatus()))
+            view.setStatus("STALE");
+        }
+      }
+
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
     } finally {
@@ -1451,6 +1516,12 @@ public class LocalSchema implements Schema {
 
     for (final Trigger trigger : this.triggers.values())
       triggersJson.put(trigger.getName(), trigger.toJSON());
+
+    // Serialize materialized views
+    final JSONObject mvJSON = new JSONObject();
+    for (final Map.Entry<String, MaterializedViewImpl> entry : materializedViews.entrySet())
+      mvJSON.put(entry.getKey(), entry.getValue().toJSON());
+    root.put("materializedViews", mvJSON);
 
     return root;
   }
