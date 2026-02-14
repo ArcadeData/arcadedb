@@ -21,13 +21,15 @@ package com.arcadedb.query.sql.method.conversion;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodAsRecordTest extends TestHelper {
 
-  private SQLMethodAsRecord method = new SQLMethodAsRecord();
+  private final SQLMethodAsRecord method = new SQLMethodAsRecord();
 
   @Override
   protected void beginTest() {
@@ -44,8 +46,9 @@ class SQLMethodAsRecordTest extends TestHelper {
   void fromString() {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("Doc").save();
+      final CommandContext context = new BasicCommandContext().setDatabase(database);
 
-      final Object result = method.execute(doc.getIdentity().toString(), null, null, null);
+      final Object result = method.execute(doc.getIdentity().toString(), null, context, null);
       assertThat(result).isInstanceOf(Record.class);
       assertThat(((Record) result).getIdentity()).isEqualTo(doc.getIdentity());
     });
