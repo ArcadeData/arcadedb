@@ -521,6 +521,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     checkIsValid();
     mutable.nullStrategy = nullStrategy;
+    if (mutable.getSubIndex() != null)
+      mutable.getSubIndex().nullStrategy = nullStrategy;
   }
 
   @Override
