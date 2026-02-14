@@ -19,11 +19,46 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+
+import java.util.logging.Level;
 
 public class MaterializedViewRefresher {
 
   public static void fullRefresh(final Database database, final MaterializedViewImpl view) {
-    // TODO: implement in Task 8
-    throw new UnsupportedOperationException("Full refresh not yet implemented");
+    view.setStatus("BUILDING");
+    try {
+      database.transaction(() -> {
+        final String backingTypeName = view.getBackingTypeName();
+
+        // Truncate existing data
+        database.command("sql", "DELETE FROM " + backingTypeName);
+
+        // Execute the defining query and insert results
+        try (final ResultSet rs = database.query("sql", view.getQuery())) {
+          while (rs.hasNext()) {
+            final Result result = rs.next();
+            final MutableDocument doc = database.newDocument(backingTypeName);
+            for (final String prop : result.getPropertyNames()) {
+              if (!prop.startsWith("@"))
+                doc.set(prop, result.getProperty(prop));
+            }
+            doc.save();
+          }
+        }
+      });
+
+      view.updateLastRefreshTime();
+      view.setStatus("VALID");
+
+    } catch (final Exception e) {
+      view.setStatus("ERROR");
+      LogManager.instance().log(MaterializedViewRefresher.class, Level.SEVERE,
+          "Error refreshing materialized view '%s': %s", e, view.getName(), e.getMessage());
+      throw e;
+    }
   }
 }
