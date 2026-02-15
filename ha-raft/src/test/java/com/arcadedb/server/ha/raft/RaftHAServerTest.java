@@ -39,8 +39,8 @@ class RaftHAServerTest {
     final List<RaftPeer> peers = RaftHAServer.parsePeerList("host1:2424,host2:2424,host3:2424", 2434);
     assertThat(peers).hasSize(3);
     assertThat(peers.get(0).getAddress()).isEqualTo("host1:2434");
-    assertThat(peers.get(1).getAddress()).isEqualTo("host2:2434");
-    assertThat(peers.get(2).getAddress()).isEqualTo("host3:2434");
+    assertThat(peers.get(1).getAddress()).isEqualTo("host2:2435");
+    assertThat(peers.get(2).getAddress()).isEqualTo("host3:2436");
   }
 
   @Test

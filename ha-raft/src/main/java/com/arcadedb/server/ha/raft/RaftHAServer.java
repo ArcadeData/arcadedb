@@ -25,7 +25,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
-import org.apache.ratis.grpc.GrpcFactory;
+import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
@@ -33,12 +33,15 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 
+import org.apache.ratis.util.TimeDuration;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -85,10 +88,10 @@ public class RaftHAServer {
   }
 
   /**
-   * Parses a comma-separated server list (host:httpPort) into RaftPeer objects
-   * using the specified Raft port instead of the HTTP port.
+   * Parses a comma-separated server list (host:httpPort) into RaftPeer objects.
+   * Each peer is assigned a unique Raft port: peer-0 gets baseRaftPort, peer-1 gets baseRaftPort+1, etc.
    */
-  static List<RaftPeer> parsePeerList(final String serverList, final int raftPort) {
+  static List<RaftPeer> parsePeerList(final String serverList, final int baseRaftPort) {
     final String[] entries = serverList.split(",");
     final List<RaftPeer> peers = new ArrayList<>(entries.length);
 
@@ -97,7 +100,7 @@ public class RaftHAServer {
       final String host = entry.substring(0, entry.indexOf(':'));
       final RaftPeer peer = RaftPeer.newBuilder()
           .setId("peer-" + i)
-          .setAddress(host + ":" + raftPort)
+          .setAddress(host + ":" + (baseRaftPort + i))
           .build();
       peers.add(peer);
     }
@@ -129,10 +132,21 @@ public class RaftHAServer {
   public void start() throws IOException {
     final RaftProperties properties = new RaftProperties();
 
-    final int raftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
-    GrpcConfigKeys.Server.setPort(properties, raftPort);
+    // Use the port assigned to this specific peer (baseRaftPort + peerIndex)
+    final int localPeerIndex = Integer.parseInt(localPeerId.toString().substring("peer-".length()));
+    final int baseRaftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
+    final int localRaftPort = baseRaftPort + localPeerIndex;
+    GrpcConfigKeys.Server.setPort(properties, localRaftPort);
 
-    final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage");
+    // Configure Raft RPC timeouts for cluster stability
+    RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(2, TimeUnit.SECONDS));
+    RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(5, TimeUnit.SECONDS));
+    RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
+
+    final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
+    // Clean existing Raft storage to avoid FORMAT conflicts on restart
+    if (storageDir.exists())
+      deleteRecursive(storageDir);
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
     raftServer = RaftServer.newBuilder()
@@ -140,7 +154,7 @@ public class RaftHAServer {
         .setGroup(raftGroup)
         .setStateMachine(stateMachine)
         .setProperties(properties)
-        .setParameters(GrpcFactory.newRaftParameters(null))
+        .setParameters(new Parameters())
         .build();
 
     raftServer.start();
@@ -148,7 +162,7 @@ public class RaftHAServer {
     raftClient = RaftClient.newBuilder()
         .setRaftGroup(raftGroup)
         .setProperties(properties)
-        .setParameters(GrpcFactory.newRaftParameters(null))
+        .setParameters(new Parameters())
         .build();
 
     LogManager.instance().log(this, Level.INFO, "RaftHAServer started: peerId='%s'", localPeerId);
@@ -227,5 +241,15 @@ public class RaftHAServer {
 
   public RaftPeerId getLocalPeerId() {
     return localPeerId;
+  }
+
+  private static void deleteRecursive(final File file) {
+    if (file.isDirectory()) {
+      final File[] children = file.listFiles();
+      if (children != null)
+        for (final File child : children)
+          deleteRecursive(child);
+    }
+    file.delete();
   }
 }

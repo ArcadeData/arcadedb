@@ -42,6 +42,7 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.protocol.Message;
@@ -62,6 +63,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer server;
   private final LocalDatabase  proxied;
   private final RaftHAServer   raftHAServer;
+
 
   public RaftReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied, final RaftHAServer raftHAServer) {
     this.server = server;
@@ -700,7 +702,60 @@ public class RaftReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
-    return proxied.recordFileChanges(callback);
+    if (!isLeader())
+      return proxied.recordFileChanges(callback);
+
+    // On the leader, record file changes and send them via Raft immediately
+    // (like the legacy HA system) so replicas have the files before WAL pages arrive
+    final boolean alreadyRecording = !proxied.getFileManager().startRecordingChanges();
+    if (alreadyRecording)
+      return proxied.recordFileChanges(callback);
+
+    final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
+
+    // Capture schema changes, then send via Raft after releasing the write lock
+    final Map<Integer, String> addFiles = new HashMap<>();
+    final Map<Integer, String> removeFiles = new HashMap<>();
+    String serializedSchema = "";
+
+    try {
+      final RET result = proxied.recordFileChanges(callback);
+
+      // Capture file changes
+      final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
+      final boolean schemaChanged = proxied.getSchema().getEmbedded().isDirty() ||
+          schemaVersionBefore < 0 || proxied.getSchema().getEmbedded().getVersion() != schemaVersionBefore;
+
+      if (fileChanges != null)
+        for (final FileManager.FileChange c : fileChanges) {
+          if (c.create)
+            addFiles.put(c.fileId, c.fileName);
+          else
+            removeFiles.put(c.fileId, c.fileName);
+        }
+
+      if (schemaChanged) {
+        final JSONObject schemaJson = proxied.getSchema().getEmbedded().toJSON();
+        schemaJson.put("schemaVersion", schemaJson.getLong("schemaVersion") + 1);
+        serializedSchema = schemaJson.toString();
+      }
+
+      // Send schema changes via Raft so replicas have the files before WAL pages arrive
+      if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
+        final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles);
+        final RaftClientReply reply = raftHAServer.getClient().io().send(Message.valueOf(schemaEntry));
+        if (!reply.isSuccess())
+          throw new TransactionException("Raft consensus failed for schema change on database '" + getName() + "'");
+        LogManager.instance().log(this, Level.FINE, "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s",
+            addFiles.size(), removeFiles.size(), schemaChanged);
+      }
+
+      return result;
+    } catch (final IOException e) {
+      throw new TransactionException("Error sending schema changes via Raft", e);
+    } finally {
+      proxied.getFileManager().stopRecordingChanges();
+    }
   }
 
   @Override

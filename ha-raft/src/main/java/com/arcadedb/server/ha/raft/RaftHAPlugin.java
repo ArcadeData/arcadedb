@@ -60,10 +60,14 @@ public class RaftHAPlugin implements ServerPlugin {
 
     try {
       raftHAServer = new RaftHAServer(server, configuration);
+      raftHAServer.getStateMachine().setRaftHAServer(raftHAServer);
       raftHAServer.start();
 
       // Register the database wrapper so the server wraps databases with RaftReplicatedDatabase
       server.setDatabaseWrapper(db -> new RaftReplicatedDatabase(server, db, raftHAServer));
+
+      // Re-wrap any databases that were already loaded before this plugin started
+      server.rewrapDatabases();
 
       LogManager.instance().log(this, Level.INFO, "Raft HA plugin started successfully");
     } catch (final IOException e) {
