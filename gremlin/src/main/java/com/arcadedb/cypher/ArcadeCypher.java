@@ -49,6 +49,13 @@ import java.util.regex.Pattern;
  */
 
 public class ArcadeCypher extends ArcadeGremlin {
+
+  @Override
+  protected String getEffectiveEngine() {
+    // Cypher-to-Gremlin translation always produces Groovy-style Gremlin
+    // (via Translator.builder().gremlinGroovy()), so we must use the Groovy engine
+    return "groovy";
+  }
   private static final Map<String, CachedStatement> STATEMENT_CACHE = new ConcurrentHashMap<>();
   private static final int                          CACHE_SIZE      = GlobalConfiguration.CYPHER_STATEMENT_CACHE.getValueAsInteger();
   private              String                       cypher;

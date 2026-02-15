@@ -188,22 +188,29 @@ public class ArcadeGremlin extends ArcadeQuery {
     return this;
   }
 
-  private Iterator<?> executeStatement() throws ScriptException {
+  protected String getEffectiveEngine() {
     final BasicDatabase database = graph.getDatabase();
-    String gremlinEngine = database instanceof Database d ?
+    return database instanceof Database d ?
         d.getConfiguration().getValueAsString(GlobalConfiguration.GREMLIN_ENGINE) :
-            GlobalConfiguration.GREMLIN_ENGINE.getValueAsString();
+        GlobalConfiguration.GREMLIN_ENGINE.getValueAsString();
+  }
 
-    if ("auto".equals(gremlinEngine)) {
-      if (parameters == null || parameters.isEmpty()) {
-        // NO PARAMETERS, USES THE NEW ENGINE
-        try {
-          return executeStatement("java");
-        } catch (ScriptException e) {
-          // EXCEPTION PARSING, TRYING WITH OLD GROOVY PARSER
-          LogManager.instance()
-              .log(this, Level.FINE, "The gremlin query '%s' could not be parsed, using the legacy `groovy` parser", e, query);
-        }
+  private Iterator<?> executeStatement() throws ScriptException {
+    String gremlinEngine = getEffectiveEngine();
+
+    if ("auto".equals(gremlinEngine) || "java".equals(gremlinEngine)) {
+      // TRY THE NATIVE JAVA ENGINE FIRST
+      try {
+        return executeStatement("java");
+      } catch (ScriptException e) {
+        if ("java".equals(gremlinEngine) && (parameters == null || parameters.isEmpty()))
+          // STRICT JAVA MODE WITH NO PARAMETERS: DO NOT FALLBACK
+          throw e;
+
+        // FALLBACK TO GROOVY FOR QUERIES WITH PARAMETERS OR IN AUTO MODE
+        // (TinkerPop 3.8.0 restricted parameter placement in gremlin-lang grammar)
+        LogManager.instance()
+            .log(this, Level.FINE, "The gremlin query '%s' could not be parsed by the Java engine, falling back to the `groovy` engine", e, query);
       }
       gremlinEngine = "groovy";
     }
