@@ -82,6 +82,8 @@ public class PluginManager {
   }
 
   private void discoverPluginsOnMainClassLoader() {
+    final boolean autoDiscoverRaft = isRaftHAEnabled();
+
     final ServiceLoader<ServerPlugin> serviceLoader = ServiceLoader.load(ServerPlugin.class, getClass().getClassLoader());
 
     for (ServerPlugin pluginInstance : serviceLoader) {
@@ -89,13 +91,25 @@ public class PluginManager {
       if (configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getSimpleName())
           || configuredPlugins.contains(pluginInstance.getClass().getName())) {
         // Register the plugin
+      final boolean configured = configuredPlugins.contains(name) || configuredPlugins.contains(pluginInstance.getClass().getName());
+      final boolean isRaftPlugin = autoDiscoverRaft && "RaftHAPlugin".equals(name);
+
+      if (configured || isRaftPlugin) {
+        // Register the plugin
         final PluginDescriptor descriptor = new PluginDescriptor(name, getClass().getClassLoader());
         descriptor.setPluginInstance(pluginInstance);
         plugins.put(name, descriptor);
 
-        LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s", name);
+        LogManager.instance().log(this, Level.INFO, "Discovered plugin on main class loader: %s%s",
+            name, isRaftPlugin && !configured ? " (auto-discovered for Raft HA)" : "");
+    }
       }
     }
+  }
+
+  private boolean isRaftHAEnabled() {
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)
+        && "raft".equalsIgnoreCase(configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION));
   }
 
   /**

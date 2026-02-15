@@ -45,6 +45,11 @@ public class RaftHAPlugin implements ServerPlugin {
   }
 
   @Override
+  public PluginInstallationPriority getInstallationPriority() {
+    return PluginInstallationPriority.AFTER_HTTP_ON;
+  }
+
+  @Override
   public void startService() {
     if (!isRaftEnabled()) {
       LogManager.instance().log(this, Level.FINE, "Raft HA plugin not activated (HA_IMPLEMENTATION != raft or HA not enabled)");
@@ -56,6 +61,9 @@ public class RaftHAPlugin implements ServerPlugin {
     try {
       raftHAServer = new RaftHAServer(server, configuration);
       raftHAServer.start();
+
+      // Register the database wrapper so the server wraps databases with RaftReplicatedDatabase
+      server.setDatabaseWrapper(db -> new RaftReplicatedDatabase(server, db, raftHAServer));
 
       LogManager.instance().log(this, Level.INFO, "Raft HA plugin started successfully");
     } catch (final IOException e) {
