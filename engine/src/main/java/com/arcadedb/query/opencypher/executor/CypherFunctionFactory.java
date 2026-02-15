@@ -205,7 +205,7 @@ public class CypherFunctionFactory {
   private boolean isCypherSpecificFunction(final String functionName) {
     return switch (functionName) {
       // Graph functions
-      case "id", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
+      case "id", "elementid", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
       // Path functions
       case "nodes", "relationships", "length" -> true;
       // Math functions
@@ -304,7 +304,7 @@ public class CypherFunctionFactory {
       // General functions
       case "coalesce" -> new CoalesceFunction();
       // Graph functions
-      case "id" -> new IdFunction();
+      case "id", "elementid" -> new IdFunction();
       case "labels" -> new LabelsFunction();
       case "type" -> new TypeFunction();
       case "keys" -> new KeysFunction();
