@@ -63,7 +63,7 @@ public class NodeDegreeIn extends AbstractNodeFunction {
         count += vertex.countEdges(Vertex.DIRECTION.IN, relType);
       }
     } else {
-      count = vertex.countEdges(Vertex.DIRECTION.IN, null);
+      count = vertex.countEdges(Vertex.DIRECTION.IN);
     }
 
     return count;
