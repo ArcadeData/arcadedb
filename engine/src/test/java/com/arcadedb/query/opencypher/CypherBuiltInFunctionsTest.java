@@ -1349,8 +1349,6 @@ class CypherBuiltInFunctionsTest extends TestHelper {
           "RETURN allReduce(acc = 0, x IN [] | acc + x, acc < 10) as result");
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
-      System.out.println("DEBUG result type: " + row.getProperty("result").getClass() + " value: " + row.getProperty("result"));
-      System.out.println("DEBUG props: " + row.getPropertyNames());
       assertThat((boolean) row.getProperty("result")).isTrue();
       assertThat(rs.hasNext()).isFalse();
     });

@@ -361,6 +361,8 @@ class CypherExpressionBuilder {
         return parsePatternComprehension(e1.patternComprehension());
       if (e1.reduceExpression() != null)
         return parseReduceExpression(e1.reduceExpression());
+      if (e1.allReduceExpression() != null)
+        return parseAllReduceExpression(e1.allReduceExpression());
       if (e1.existsExpression() != null)
         return parseExistsExpression(e1.existsExpression());
       if (e1.countStar() != null) {
@@ -416,6 +418,11 @@ class CypherExpressionBuilder {
     final Cypher25Parser.ReduceExpressionContext reduceCtx = findReduceExpressionRecursive(node);
     if (reduceCtx != null)
       return parseReduceExpression(reduceCtx);
+
+    // Check for allReduce expressions
+    final Cypher25Parser.AllReduceExpressionContext allReduceCtx = findAllReduceExpressionRecursive(node);
+    if (allReduceCtx != null)
+      return parseAllReduceExpression(allReduceCtx);
 
     // Check for list comprehensions [x IN list | expr]
     final Cypher25Parser.ListComprehensionContext listCompCtx = findListComprehensionRecursive(node);
@@ -1373,6 +1380,26 @@ class CypherExpressionBuilder {
   }
 
   /**
+   * Recursively find AllReduceExpressionContext in the parse tree.
+   */
+  Cypher25Parser.AllReduceExpressionContext findAllReduceExpressionRecursive(
+      final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.AllReduceExpressionContext)
+      return (Cypher25Parser.AllReduceExpressionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.AllReduceExpressionContext found = findAllReduceExpressionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
    * Recursively find MapProjectionContext in the parse tree.
    */
   Cypher25Parser.MapProjectionContext findMapProjectionRecursive(
@@ -2076,6 +2103,32 @@ class CypherExpressionBuilder {
 
     return new ReduceExpression(accumulatorVariable, initialValue, iteratorVariable,
         listExpression, reduceExpression, ctx.getText());
+  }
+
+  /**
+   * Parse an allReduce expression into an AllReduceExpression.
+   * Syntax: allReduce(accumulator = initial, variable IN list | expression, predicate)
+   */
+  AllReduceExpression parseAllReduceExpression(final Cypher25Parser.AllReduceExpressionContext ctx) {
+    if (ctx.allReduceExpressionValidArguments() != null) {
+      final Cypher25Parser.AllReduceExpressionValidArgumentsContext validCtx = ctx.allReduceExpressionValidArguments();
+      final List<Cypher25Parser.VariableContext> variables = validCtx.variable();
+      final List<Cypher25Parser.ExpressionContext> expressions = validCtx.expression();
+
+      final String accumulatorVariable = variables.get(0).getText();
+      final Expression initialValue = parseExpression(expressions.get(0));
+
+      final String iteratorVariable = variables.get(1).getText();
+      final Expression listExpression = parseExpression(expressions.get(1));
+
+      final Expression reduceExpression = parseExpression(expressions.get(2));
+      final Expression predicateExpression = parseExpression(expressions.get(3));
+
+      return new AllReduceExpression(accumulatorVariable, initialValue, iteratorVariable,
+          listExpression, reduceExpression, predicateExpression, ctx.getText());
+    }
+
+    throw new IllegalArgumentException("Invalid allReduce() syntax: " + ctx.getText());
   }
 
   // ============================================================================

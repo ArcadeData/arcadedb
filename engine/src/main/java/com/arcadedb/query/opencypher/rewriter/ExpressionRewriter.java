@@ -89,6 +89,8 @@ public abstract class ExpressionRewriter {
       return visitPatternComprehension((PatternComprehensionExpression) expression);
     if (expression instanceof ReduceExpression)
       return visitReduce((ReduceExpression) expression);
+    if (expression instanceof AllReduceExpression)
+      return visitAllReduce((AllReduceExpression) expression);
     if (expression instanceof ListPredicateExpression)
       return visitListPredicate((ListPredicateExpression) expression);
     if (expression instanceof ExistsExpression)
@@ -271,6 +273,14 @@ public abstract class ExpressionRewriter {
    */
   protected Expression visitReduce(final ReduceExpression expr) {
     // TODO: Implement when ReduceExpression exposes expressions
+    return expr;
+  }
+
+  /**
+   * Rewrite an allReduce expression.
+   * Default: return as-is.
+   */
+  protected Expression visitAllReduce(final AllReduceExpression expr) {
     return expr;
   }
 

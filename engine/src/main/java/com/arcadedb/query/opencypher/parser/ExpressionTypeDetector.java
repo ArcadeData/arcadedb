@@ -84,6 +84,11 @@ class ExpressionTypeDetector {
     if (reduceCtx != null && reduceCtx.getText().length() >= exprText.length() - 2)
       return builder.parseReduceExpression(reduceCtx);
 
+    // allReduce expressions
+    final Cypher25Parser.AllReduceExpressionContext allReduceCtx = builder.findAllReduceExpressionRecursive(ctx);
+    if (allReduceCtx != null && allReduceCtx.getText().length() >= exprText.length() - 2)
+      return builder.parseAllReduceExpression(allReduceCtx);
+
     // Pattern comprehensions
     final Cypher25Parser.PatternComprehensionContext patternCompCtx = builder.findPatternComprehensionRecursive(ctx);
     if (patternCompCtx != null && patternCompCtx.getText().length() >= exprText.length() - 2)
