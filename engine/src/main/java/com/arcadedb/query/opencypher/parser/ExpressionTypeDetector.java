@@ -198,6 +198,19 @@ class ExpressionTypeDetector {
    * Returns null if not a primary expression.
    */
   Expression tryParsePrimary(final Cypher25Parser.ExpressionContext ctx) {
+    // Check for vector functions BEFORE list literals, because vector functions
+    // contain list literals as arguments (e.g., vector([1.0, 2.0], 2, FLOAT32))
+    // and the recursive list finder would incorrectly match the inner list.
+    final Cypher25Parser.Expression1Context vecExpr1 = findExpression1OnSpine(ctx);
+    if (vecExpr1 != null) {
+      if (vecExpr1.vectorFunction() != null)
+        return builder.parseVectorFunction(vecExpr1.vectorFunction());
+      if (vecExpr1.vectorNormFunction() != null)
+        return builder.parseVectorNormFunction(vecExpr1.vectorNormFunction());
+      if (vecExpr1.vectorDistanceFunction() != null)
+        return builder.parseVectorDistanceFunction(vecExpr1.vectorDistanceFunction());
+    }
+
     // Check for top-level list literals BEFORE function invocations.
     // Otherwise, [date({...})] would be parsed as date() because findFunctionInvocationRecursive
     // finds the nested function call inside the list. For cases like tail([1,2,3]),
@@ -261,5 +274,42 @@ class ExpressionTypeDetector {
       return builder.parseExpression2WithPostfix(expr2Ctx);
 
     return null;
+  }
+
+  /**
+   * Walk the expression grammar spine (Expression → Expression11 → ... → Expression1) to find
+   * the Expression1 context without branching into alternatives. Returns null if the spine
+   * has branches (e.g., multiple Expression11 children indicating OR).
+   */
+  private Cypher25Parser.Expression1Context findExpression1OnSpine(final Cypher25Parser.ExpressionContext ctx) {
+    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
+    if (e11List.size() != 1)
+      return null;
+    final Cypher25Parser.Expression11Context e11 = e11List.get(0);
+    final List<Cypher25Parser.Expression10Context> e10List = e11.expression10();
+    if (e10List.size() != 1)
+      return null;
+    final Cypher25Parser.Expression10Context e10 = e10List.get(0);
+    if (e10.expression9().size() != 1)
+      return null;
+    final Cypher25Parser.Expression9Context e9 = e10.expression9().get(0);
+    final Cypher25Parser.Expression8Context e8 = e9.expression8();
+    if (e8 == null || e8.expression7().size() != 1)
+      return null;
+    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
+    final Cypher25Parser.Expression6Context e6 = e7.expression6();
+    if (e6 == null || e6.expression5().size() != 1)
+      return null;
+    final Cypher25Parser.Expression5Context e5 = e6.expression5().get(0);
+    if (e5.expression4().size() != 1)
+      return null;
+    final Cypher25Parser.Expression4Context e4 = e5.expression4().get(0);
+    if (e4.expression3().size() != 1)
+      return null;
+    final Cypher25Parser.Expression3Context e3 = e4.expression3().get(0);
+    final Cypher25Parser.Expression2Context e2 = e3.expression2();
+    if (e2 == null || !e2.postFix().isEmpty())
+      return null;
+    return e2.expression1();
   }
 }

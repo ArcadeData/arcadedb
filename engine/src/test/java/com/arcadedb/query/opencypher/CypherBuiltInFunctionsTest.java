@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.function.Function;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
@@ -32,6 +34,8 @@ import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -1215,6 +1219,96 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final var lowerLeft = Map.of("longitude", 0.0, "latitude", 0.0);
     final var upperRight = Map.of("longitude", 10.0, "latitude", 10.0);
     assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isTrue();
+  }
+
+  // ===================== VECTOR / VECTOR_NORM / VECTOR_DISTANCE FUNCTION TESTS (Issue #3427) =====================
+
+  @Test
+  void vectorNormEuclidean() {
+    // RETURN vector_norm(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), EUCLIDEAN) AS norm
+    // Expected: sqrt(1^2 + 5^2 + 3^2 + 6.7^2) = sqrt(1 + 25 + 9 + 44.89) = sqrt(79.89) ≈ 8.938
+    final Database database = new DatabaseFactory("./target/databases/testopencypher-vector-norm").create();
+    try {
+      database.transaction(() -> {
+        final ResultSet result = database.query("opencypher",
+            "RETURN vector_norm(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), EUCLIDEAN) AS norm");
+
+        assertThat(result.hasNext()).isTrue();
+        final Result r = result.next();
+        final Number norm = r.getProperty("norm");
+        assertThat(norm).isNotNull();
+        assertThat(norm.doubleValue()).isCloseTo(8.938, within(0.01));
+      });
+    } finally {
+      database.drop();
+    }
+  }
+
+  @Test
+  void vectorNormManhattan() {
+    // RETURN vector_norm(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), MANHATTAN) AS norm
+    // Expected: |1| + |5| + |3| + |6.7| = 15.7
+    final Database database = new DatabaseFactory("./target/databases/testopencypher-vector-norm-manhattan").create();
+    try {
+      database.transaction(() -> {
+        final ResultSet result = database.query("opencypher",
+            "RETURN vector_norm(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), MANHATTAN) AS norm");
+
+        assertThat(result.hasNext()).isTrue();
+        final Result r = result.next();
+        final Number norm = r.getProperty("norm");
+        assertThat(norm).isNotNull();
+        assertThat(norm.doubleValue()).isCloseTo(15.7, within(0.01));
+      });
+    } finally {
+      database.drop();
+    }
+  }
+
+  @Test
+  void vectorDistanceEuclidean() {
+    // RETURN vector_distance(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), vector([5.0, 2.5, 3.1, 9.0], 4, FLOAT32), EUCLIDEAN) AS distance
+    // Expected: sqrt((5-1)^2 + (2.5-5)^2 + (3.1-3)^2 + (9-6.7)^2) = sqrt(16 + 6.25 + 0.01 + 5.29) = sqrt(27.55) ≈ 5.249
+    final Database database = new DatabaseFactory("./target/databases/testopencypher-vector-distance").create();
+    try {
+      database.transaction(() -> {
+        final ResultSet result = database.query("opencypher",
+            "RETURN vector_distance(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), vector([5.0, 2.5, 3.1, 9.0], 4, FLOAT32), EUCLIDEAN) AS distance");
+
+        assertThat(result.hasNext()).isTrue();
+        final Result r = result.next();
+        final Number distance = r.getProperty("distance");
+        assertThat(distance).isNotNull();
+        assertThat(distance.doubleValue()).isCloseTo(5.249, within(0.01));
+      });
+    } finally {
+      database.drop();
+    }
+  }
+
+  @Test
+  void vectorFunctionReturnsFloatArray() {
+    // RETURN vector([1.0, 2.0, 3.0], 3, FLOAT32) AS v
+    final Database database = new DatabaseFactory("./target/databases/testopencypher-vector-create").create();
+    try {
+      database.transaction(() -> {
+        final ResultSet result = database.query("opencypher",
+            "RETURN vector([1.0, 2.0, 3.0], 3, FLOAT32) AS v");
+
+        assertThat(result.hasNext()).isTrue();
+        final Result r = result.next();
+        final Object v = r.getProperty("v");
+        assertThat(v).isNotNull();
+        assertThat(v).isInstanceOf(float[].class);
+        final float[] vec = (float[]) v;
+        assertThat(vec).hasSize(3);
+        assertThat(vec[0]).isCloseTo(1.0f, within(0.001f));
+        assertThat(vec[1]).isCloseTo(2.0f, within(0.001f));
+        assertThat(vec[2]).isCloseTo(3.0f, within(0.001f));
+      });
+    } finally {
+      database.drop();
+    }
   }
 
   // Note: Integration tests for Cypher queries with built-in functions
