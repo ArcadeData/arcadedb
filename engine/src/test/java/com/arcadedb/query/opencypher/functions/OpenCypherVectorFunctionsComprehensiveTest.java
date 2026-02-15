@@ -229,8 +229,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_distance(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), vector([5.0, 2.5, 3.1, 9.0], 4, FLOAT32), EUCLIDEAN) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double distance = (Double) result.next().getProperty("result");
-    assertThat(distance).isCloseTo(5.248, within(0.01));
+    final Number distance = (Number) result.next().getProperty("result");
+    assertThat(distance.doubleValue()).isCloseTo(5.248, within(0.01));
   }
 
   @Test
@@ -238,8 +238,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_distance(vector([1, 2, 3], 3, INTEGER8), vector([4, 5, 6], 3, INTEGER8), EUCLIDEAN_SQUARED) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double distance = (Double) result.next().getProperty("result");
-    assertThat(distance).isCloseTo(27.0, within(0.01));
+    final Number distance = (Number) result.next().getProperty("result");
+    assertThat(distance.doubleValue()).isCloseTo(27.0, within(0.01));
   }
 
   @Test
@@ -247,8 +247,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_distance(vector([1, 2, 3], 3, INTEGER8), vector([4, 5, 6], 3, INTEGER8), MANHATTAN) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double distance = (Double) result.next().getProperty("result");
-    assertThat(distance).isCloseTo(9.0, within(0.01));
+    final Number distance = (Number) result.next().getProperty("result");
+    assertThat(distance.doubleValue()).isCloseTo(9.0, within(0.01));
   }
 
   @Test
@@ -256,8 +256,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_distance(vector([1, 2, 3], 3, INTEGER8), vector([1, 2, 4], 3, INTEGER8), COSINE) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double distance = (Double) result.next().getProperty("result");
-    assertThat(distance).isCloseTo(0.008539, within(0.001));
+    final Number distance = (Number) result.next().getProperty("result");
+    assertThat(distance.doubleValue()).isCloseTo(0.008539, within(0.001));
   }
 
   @Test
@@ -265,7 +265,7 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_distance(vector([1, 2, 3], 3, INTEGER8), vector([4, 5, 6], 3, INTEGER8), DOT) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double distance = (Double) result.next().getProperty("result");
+    final Number distance = (Number) result.next().getProperty("result");
     Assertions.assertThat(distance != null).isTrue();
   }
 
@@ -274,8 +274,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_distance(vector([1, 2, 3], 3, INTEGER8), vector([1, 2, 4], 3, INTEGER8), HAMMING) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double distance = (Double) result.next().getProperty("result");
-    assertThat(distance).isCloseTo(1.0, within(0.01));
+    final Number distance = (Number) result.next().getProperty("result");
+    assertThat(distance.doubleValue()).isCloseTo(1.0, within(0.01));
   }
 
   @Test
@@ -283,8 +283,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_distance(vector([1, 2, 3], 3, INTEGER8), vector([1, 2, 3], 3, INTEGER8), EUCLIDEAN) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double distance = (Double) result.next().getProperty("result");
-    assertThat(distance).isCloseTo(0.0, within(0.0001));
+    final Number distance = (Number) result.next().getProperty("result");
+    assertThat(distance.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   // ==================== vector_norm() Tests ====================
@@ -294,8 +294,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_norm(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), EUCLIDEAN) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double norm = (Double) result.next().getProperty("result");
-    assertThat(norm).isCloseTo(8.938, within(0.01));
+    final Number norm = (Number) result.next().getProperty("result");
+    assertThat(norm.doubleValue()).isCloseTo(8.938, within(0.01));
   }
 
   @Test
@@ -303,8 +303,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_norm(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), MANHATTAN) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double norm = (Double) result.next().getProperty("result");
-    assertThat(norm).isCloseTo(15.7, within(0.01));
+    final Number norm = (Number) result.next().getProperty("result");
+    assertThat(norm.doubleValue()).isCloseTo(15.7, within(0.01));
   }
 
   @Test
@@ -312,8 +312,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_norm(vector([0, 0, 0], 3, FLOAT32), EUCLIDEAN) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double norm = (Double) result.next().getProperty("result");
-    assertThat(norm).isCloseTo(0.0, within(0.0001));
+    final Number norm = (Number) result.next().getProperty("result");
+    assertThat(norm.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
@@ -321,8 +321,8 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN vector_norm(vector([1, 0, 0], 3, FLOAT32), EUCLIDEAN) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double norm = (Double) result.next().getProperty("result");
-    assertThat(norm).isCloseTo(1.0, within(0.0001));
+    final Number norm = (Number) result.next().getProperty("result");
+    assertThat(norm.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   // ==================== Combined/Integration Tests ====================
@@ -337,12 +337,12 @@ class OpenCypherVectorFunctionsComprehensiveTest {
             "       vector_distance(v, v, EUCLIDEAN) AS eucDist");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
-    final Double cosSim = (Double) row.getProperty("cosSim");
-    final Double eucSim = (Double) row.getProperty("eucSim");
-    final Double eucDist = (Double) row.getProperty("eucDist");
-    assertThat(cosSim).isCloseTo(1.0, within(0.0001));
-    assertThat(eucSim).isCloseTo(1.0, within(0.0001));
-    assertThat(eucDist).isCloseTo(0.0, within(0.0001));
+    final Number cosSim = (Number) row.getProperty("cosSim");
+    final Number eucSim = (Number) row.getProperty("eucSim");
+    final Number eucDist = (Number) row.getProperty("eucDist");
+    assertThat(cosSim.doubleValue()).isCloseTo(1.0, within(0.0001));
+    assertThat(eucSim.doubleValue()).isCloseTo(1.0, within(0.0001));
+    assertThat(eucDist.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
@@ -365,9 +365,9 @@ class OpenCypherVectorFunctionsComprehensiveTest {
             "       vector_distance(v, vector([0, 0], 2, FLOAT32), EUCLIDEAN) AS distFromOrigin");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
-    final Double norm = (Double) row.getProperty("norm");
-    final Double distFromOrigin = (Double) row.getProperty("distFromOrigin");
-    assertThat(norm).isCloseTo(distFromOrigin, within(0.0001));
+    final Number norm = (Number) row.getProperty("norm");
+    final Number distFromOrigin = (Number) row.getProperty("distFromOrigin");
+    assertThat(norm.doubleValue()).isCloseTo(distFromOrigin.doubleValue(), within(0.0001));
   }
 
   @Test
@@ -412,9 +412,9 @@ class OpenCypherVectorFunctionsComprehensiveTest {
     Assertions.assertThat(row.getProperty("manhattan") != null).isTrue();
     Assertions.assertThat(row.getProperty("cosine") != null).isTrue();
 
-    final Double euclidean = (Double) row.getProperty("euclidean");
-    final Double manhattan = (Double) row.getProperty("manhattan");
-    assertThat(euclidean).isGreaterThan(0.0);
-    assertThat(manhattan).isGreaterThan(0.0);
+    final Number euclidean = (Number) row.getProperty("euclidean");
+    final Number manhattan = (Number) row.getProperty("manhattan");
+    assertThat(euclidean.doubleValue()).isGreaterThan(0.0);
+    assertThat(manhattan.doubleValue()).isGreaterThan(0.0);
   }
 }

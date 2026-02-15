@@ -56,7 +56,8 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
   void eBasic() {
     final ResultSet result = database.command("opencypher", "RETURN e() AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.E, within(0.0000001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(Math.E, within(0.0000001));
   }
 
   @Test
@@ -73,28 +74,32 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
   void expZero() {
     final ResultSet result = database.command("opencypher", "RETURN exp(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
   void expOne() {
     final ResultSet result = database.command("opencypher", "RETURN exp(1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.E, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(Math.E, within(0.0001));
   }
 
   @Test
   void expNegative() {
     final ResultSet result = database.command("opencypher", "RETURN exp(-1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0 / Math.E, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(1.0 / Math.E, within(0.0001));
   }
 
   @Test
   void expLargeValue() {
     final ResultSet result = database.command("opencypher", "RETURN exp(10.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isGreaterThan(20000.0);
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isGreaterThan(20000.0);
   }
 
   @Test
@@ -118,21 +123,24 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
   void logOne() {
     final ResultSet result = database.command("opencypher", "RETURN log(1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void logE() {
     final ResultSet result = database.command("opencypher", "RETURN log(e()) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
   void logPositive() {
     final ResultSet result = database.command("opencypher", "RETURN log(10.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.log(10.0), within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(Math.log(10.0), within(0.0001));
   }
 
   @Test
@@ -147,7 +155,8 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
   void logNegativeReturnsNaN() {
     final ResultSet result = database.command("opencypher", "RETURN log(-1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isNaN();
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isNaN();
   }
 
   @Test
@@ -163,28 +172,32 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
   void log10One() {
     final ResultSet result = database.command("opencypher", "RETURN log10(1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void log10Ten() {
     final ResultSet result = database.command("opencypher", "RETURN log10(10.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
   void log10Hundred() {
     final ResultSet result = database.command("opencypher", "RETURN log10(100.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(2.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(2.0, within(0.0001));
   }
 
   @Test
   void log10Thousand() {
     final ResultSet result = database.command("opencypher", "RETURN log10(1000.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(3.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(3.0, within(0.0001));
   }
 
   @Test
@@ -199,7 +212,8 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
   void log10NegativeReturnsNaN() {
     final ResultSet result = database.command("opencypher", "RETURN log10(-1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isNaN();
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isNaN();
   }
 
   @Test
@@ -215,42 +229,48 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
   void sqrtZero() {
     final ResultSet result = database.command("opencypher", "RETURN sqrt(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void sqrtOne() {
     final ResultSet result = database.command("opencypher", "RETURN sqrt(1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
   void sqrtFour() {
     final ResultSet result = database.command("opencypher", "RETURN sqrt(4.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(2.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(2.0, within(0.0001));
   }
 
   @Test
   void sqrtNine() {
     final ResultSet result = database.command("opencypher", "RETURN sqrt(9.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(3.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(3.0, within(0.0001));
   }
 
   @Test
   void sqrtTwo() {
     final ResultSet result = database.command("opencypher", "RETURN sqrt(2.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.sqrt(2.0), within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(Math.sqrt(2.0), within(0.0001));
   }
 
   @Test
   void sqrtNegativeReturnsNaN() {
     final ResultSet result = database.command("opencypher", "RETURN sqrt(-1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isNaN();
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isNaN();
   }
 
   @Test
@@ -268,7 +288,8 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN log(exp(2.0)) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(2.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(2.0, within(0.0001));
   }
 
   @Test
@@ -277,7 +298,8 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN exp(log(5.0)) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(5.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(5.0, within(0.0001));
   }
 
   @Test
@@ -286,7 +308,8 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "WITH 7.0 AS x RETURN sqrt(x * x) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(7.0, within(0.0001));
+    Number resultNum = (Number) result.next().getProperty("result");
+    assertThat(resultNum.doubleValue()).isCloseTo(7.0, within(0.0001));
   }
 
   @Test
@@ -296,9 +319,9 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
         "WITH 100.0 AS x RETURN log10(x) AS log10_val, log(x) / log(10.0) AS log_ratio");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
-    final Double log10Val = (Double) row.getProperty("log10_val");
-    final Double logRatio = (Double) row.getProperty("log_ratio");
-    assertThat(log10Val).isCloseTo(logRatio, within(0.0001));
+    final Number log10Val = (Number) row.getProperty("log10_val");
+    final Number logRatio = (Number) row.getProperty("log_ratio");
+    assertThat(log10Val.doubleValue()).isCloseTo(logRatio.doubleValue(), within(0.0001));
   }
 
   @Test
@@ -308,9 +331,9 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
         "WITH 16.0 AS x RETURN sqrt(x) AS sqrt_val, exp(log(x) / 2.0) AS exp_val");
     Assertions.assertThat(result.hasNext() != false).isTrue();
     final var row = result.next();
-    final Double sqrtVal = (Double) row.getProperty("sqrt_val");
-    final Double expVal = (Double) row.getProperty("exp_val");
-    assertThat(sqrtVal).isCloseTo(expVal, within(0.0001));
+    final Number sqrtVal = (Number) row.getProperty("sqrt_val");
+    final Number expVal = (Number) row.getProperty("exp_val");
+    assertThat(sqrtVal.doubleValue()).isCloseTo(expVal.doubleValue(), within(0.0001));
   }
 
   @Test
@@ -320,8 +343,8 @@ class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
         "WITH 100.0 AS initial, 0.05 AS rate, 10.0 AS time " +
             "RETURN initial * exp(rate * time) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final Double growth = (Double) result.next().getProperty("result");
-    assertThat(growth).isGreaterThan(100.0);
-    assertThat(growth).isCloseTo(164.87, within(0.1));
+    final Number growth = (Number) result.next().getProperty("result");
+    assertThat(growth.doubleValue()).isGreaterThan(100.0);
+    assertThat(growth.doubleValue()).isCloseTo(164.87, within(0.1));
   }
 }
