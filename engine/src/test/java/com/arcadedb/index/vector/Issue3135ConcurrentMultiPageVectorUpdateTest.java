@@ -26,10 +26,10 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
-import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -54,7 +54,6 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
   private static final int CONCURRENT_THREADS = 100;  // Number of concurrent update threads
   private static final int EMBEDDING_DIM = 3072;  // Dimension to force multi-page records
 
-  private final Random random = new Random(42);  // Fixed seed for reproducibility
   private final AtomicInteger updateErrors = new AtomicInteger(0);
   private final AtomicInteger verifyErrors = new AtomicInteger(0);
 
@@ -147,8 +146,16 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
           try (final ResultSet rs = database.query("sql", "SELECT embedding FROM RecordV WHERE id=?", id)) {
             if (rs.hasNext()) {
               final float[] embedding = rs.next().getProperty("embedding");
-              assertThat(embedding).isNotNull();
-              assertThat(embedding.length).isEqualTo(EMBEDDING_DIM);
+              if (embedding == null) {
+                verifyErrors.incrementAndGet();
+                System.err.println("   Corruption detected on " + id + ": embedding is null");
+              } else if (embedding.length != EMBEDDING_DIM) {
+                verifyErrors.incrementAndGet();
+                System.err.println("   Corruption detected on " + id + ": embedding length is " + embedding.length + " instead of " + EMBEDDING_DIM);
+              }
+            } else {
+              verifyErrors.incrementAndGet();
+              System.err.println("   Corruption detected on " + id + ": record not found");
             }
           }
         }, true, 1);
@@ -207,9 +214,9 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
 
   private float[] randomEmbedding() {
     final float[] embedding = new float[EMBEDDING_DIM];
-    for (int i = 0; i < EMBEDDING_DIM; i++) {
-      embedding[i] = random.nextFloat();
-    }
+    final ThreadLocalRandom rnd = ThreadLocalRandom.current();
+    for (int i = 0; i < EMBEDDING_DIM; i++)
+      embedding[i] = rnd.nextFloat();
     return embedding;
   }
 }
