@@ -56,21 +56,24 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void acosBasic() {
     final ResultSet result = database.command("opencypher", "RETURN acos(1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void acosZero() {
     final ResultSet result = database.command("opencypher", "RETURN acos(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.PI / 2, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(Math.PI / 2, within(0.0001));
   }
 
   @Test
   void acosNegativeOne() {
     final ResultSet result = database.command("opencypher", "RETURN acos(-1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.PI, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(Math.PI, within(0.0001));
   }
 
   @Test
@@ -97,21 +100,24 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void asinBasic() {
     final ResultSet result = database.command("opencypher", "RETURN asin(1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.PI / 2, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(Math.PI / 2, within(0.0001));
   }
 
   @Test
   void asinZero() {
     final ResultSet result = database.command("opencypher", "RETURN asin(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void asinNegativeOne() {
     final ResultSet result = database.command("opencypher", "RETURN asin(-1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(-Math.PI / 2, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(-Math.PI / 2, within(0.0001));
   }
 
   @Test
@@ -138,21 +144,24 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void atanBasic() {
     final ResultSet result = database.command("opencypher", "RETURN atan(1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.PI / 4, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(Math.PI / 4, within(0.0001));
   }
 
   @Test
   void atanZero() {
     final ResultSet result = database.command("opencypher", "RETURN atan(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void atanNegative() {
     final ResultSet result = database.command("opencypher", "RETURN atan(-1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(-Math.PI / 4, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(-Math.PI / 4, within(0.0001));
   }
 
   @Test
@@ -168,26 +177,31 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void atan2Basic() {
     final ResultSet result = database.command("opencypher", "RETURN atan2(1.0, 1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.PI / 4, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(Math.PI / 4, within(0.0001));
   }
 
   @Test
   void atan2Quadrants() {
     ResultSet result = database.command("opencypher", "RETURN atan2(1.0, 1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.PI / 4, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(Math.PI / 4, within(0.0001));
 
     result = database.command("opencypher", "RETURN atan2(1.0, -1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(3 * Math.PI / 4, within(0.0001));
+    numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(3 * Math.PI / 4, within(0.0001));
 
     result = database.command("opencypher", "RETURN atan2(-1.0, -1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(-3 * Math.PI / 4, within(0.0001));
+    numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(-3 * Math.PI / 4, within(0.0001));
 
     result = database.command("opencypher", "RETURN atan2(-1.0, 1.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(-Math.PI / 4, within(0.0001));
+    numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(-Math.PI / 4, within(0.0001));
   }
 
   @Test
@@ -207,21 +221,24 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void cosBasic() {
     final ResultSet result = database.command("opencypher", "RETURN cos(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
   void cosPi() {
     final ResultSet result = database.command("opencypher", "RETURN cos(pi()) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(-1.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(-1.0, within(0.0001));
   }
 
   @Test
   void cosPiOver2() {
     final ResultSet result = database.command("opencypher", "RETURN cos(pi() / 2) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
@@ -237,7 +254,8 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void coshZero() {
     final ResultSet result = database.command("opencypher", "RETURN cosh(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
@@ -263,7 +281,8 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void cotBasic() {
     final ResultSet result = database.command("opencypher", "RETURN cot(pi() / 4) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.001));
   }
 
   @Test
@@ -310,21 +329,24 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void degreesFromPi() {
     final ResultSet result = database.command("opencypher", "RETURN degrees(pi()) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(180.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(180.0, within(0.0001));
   }
 
   @Test
   void degreesFromZero() {
     final ResultSet result = database.command("opencypher", "RETURN degrees(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void degreesFrom2Pi() {
     final ResultSet result = database.command("opencypher", "RETURN degrees(2 * pi()) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(360.0, within(0.001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(360.0, within(0.001));
   }
 
   @Test
@@ -340,14 +362,16 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void haversinZero() {
     final ResultSet result = database.command("opencypher", "RETURN haversin(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void haversinPi() {
     final ResultSet result = database.command("opencypher", "RETURN haversin(pi()) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
@@ -363,7 +387,8 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void piBasic() {
     final ResultSet result = database.command("opencypher", "RETURN pi() AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.PI, within(0.0000001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(Math.PI, within(0.0000001));
   }
 
   @Test
@@ -380,21 +405,24 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void radiansFrom180() {
     final ResultSet result = database.command("opencypher", "RETURN radians(180.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(Math.PI, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(Math.PI, within(0.0001));
   }
 
   @Test
   void radiansFromZero() {
     final ResultSet result = database.command("opencypher", "RETURN radians(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void radiansFrom360() {
     final ResultSet result = database.command("opencypher", "RETURN radians(360.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(2 * Math.PI, within(0.001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(2 * Math.PI, within(0.001));
   }
 
   @Test
@@ -410,21 +438,24 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void sinZero() {
     final ResultSet result = database.command("opencypher", "RETURN sin(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void sinPiOver2() {
     final ResultSet result = database.command("opencypher", "RETURN sin(pi() / 2) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
   void sinPi() {
     final ResultSet result = database.command("opencypher", "RETURN sin(pi()) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
@@ -440,7 +471,8 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void sinhZero() {
     final ResultSet result = database.command("opencypher", "RETURN sinh(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
@@ -466,14 +498,16 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void tanZero() {
     final ResultSet result = database.command("opencypher", "RETURN tan(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void tanPiOver4() {
     final ResultSet result = database.command("opencypher", "RETURN tan(pi() / 4) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.001));
   }
 
   @Test
@@ -489,21 +523,24 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
   void tanhZero() {
     final ResultSet result = database.command("opencypher", "RETURN tanh(0.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(0.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(0.0, within(0.0001));
   }
 
   @Test
   void tanhLargePositive() {
     final ResultSet result = database.command("opencypher", "RETURN tanh(10.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.001));
   }
 
   @Test
   void tanhLargeNegative() {
     final ResultSet result = database.command("opencypher", "RETURN tanh(-10.0) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(-1.0, within(0.001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(-1.0, within(0.001));
   }
 
   @Test
@@ -521,7 +558,8 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "WITH pi() / 3 AS x RETURN sin(x) * sin(x) + cos(x) * cos(x) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
@@ -529,7 +567,8 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "RETURN degrees(radians(90.0)) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(90.0, within(0.001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(90.0, within(0.001));
   }
 
   @Test
@@ -538,7 +577,8 @@ class OpenCypherMathTrigonometricFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "WITH 1.5 AS x RETURN cosh(x) * cosh(x) - sinh(x) * sinh(x) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat((Double) result.next().getProperty("result")).isCloseTo(1.0, within(0.0001));
+    Number numResult = (Number) result.next().getProperty("result");
+    assertThat(numResult.doubleValue()).isCloseTo(1.0, within(0.0001));
   }
 
   @Test
