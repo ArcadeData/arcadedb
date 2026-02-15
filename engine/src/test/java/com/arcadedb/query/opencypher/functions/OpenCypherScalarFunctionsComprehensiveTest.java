@@ -399,7 +399,7 @@ class OpenCypherScalarFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final Map<String, Object> props = (Map<String, Object>) result.next().getProperty("result");
-    assertThat(props).containsEntry("a", 1);
+    assertThat(props).containsEntry("a", 1L);
     assertThat(props).containsEntry("b", "test");
   }
 

@@ -92,7 +92,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> distinct = (List<Object>) result.next().getProperty("result");
     assertThat(distinct).hasSize(5);
-    assertThat(distinct.get(0)).isEqualTo(1);
+    assertThat(distinct.get(0)).isEqualTo(1L);
     assertThat(distinct.get(1)).isEqualTo(true);
     assertThat(distinct.get(2)).isNull();
     assertThat(distinct.get(3)).isEqualTo("a");
