@@ -156,9 +156,11 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 | Group ID | Artifact ID | Version | License | Homepage |
 |----------|-------------|---------|---------|----------|
-| org.apache.tinkerpop | gremlin-core | 3.7.x | Apache 2.0 | https://tinkerpop.apache.org/ |
-| org.apache.tinkerpop | gremlin-driver | 3.7.x | Apache 2.0 | https://tinkerpop.apache.org/ |
-| org.apache.tinkerpop | gremlin-groovy | 3.7.x | Apache 2.0 | https://tinkerpop.apache.org/ |
+| org.apache.tinkerpop | gremlin-core | 3.8.x | Apache 2.0 | https://tinkerpop.apache.org/ |
+| org.apache.tinkerpop | gremlin-driver | 3.8.x | Apache 2.0 | https://tinkerpop.apache.org/ |
+| org.apache.tinkerpop | gremlin-server | 3.8.x | Apache 2.0 | https://tinkerpop.apache.org/ |
+| org.apache.tinkerpop | gremlin-util | 3.8.x | Apache 2.0 | https://tinkerpop.apache.org/ |
+| org.apache.tinkerpop | gremlin-groovy | 3.8.x | Apache 2.0 | https://tinkerpop.apache.org/ |
 | org.apache.groovy | groovy | ~4.0.x | Apache 2.0 | https://groovy-lang.org/ |
 
 **Note:** Gremlin support is an optional module. These dependencies are only included when the Gremlin module is enabled.
