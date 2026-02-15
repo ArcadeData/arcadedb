@@ -24,10 +24,12 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * length() function - returns the length of a path (number of relationships).
+ *
+ * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class LengthFunction implements StatelessFunction {
   @Override
@@ -37,9 +39,11 @@ public class LengthFunction implements StatelessFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1) {
+    if (args.length != 1)
       throw new CommandExecutionException("length() requires exactly one argument");
-    }
+
+    if (args[0] == null)
+      return null;
     if (args[0] instanceof TraversalPath)
       return (long) ((TraversalPath) args[0]).length();
     if (args[0] instanceof List) {

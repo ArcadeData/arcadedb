@@ -288,6 +288,16 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
+  void lengthFunctionNull() {
+    // Length also works on strings
+    final ResultSet result = database.command("opencypher",
+        "RETURN length(null) as result");
+
+    assertThat(result.hasNext()).isTrue();
+    assertThat((Object) result.next().getProperty("RETURN length(null) as result")).isNull();
+  }
+
+  @Test
   void lengthFunctionOnString() {
     // Length also works on strings
     final ResultSet result = database.command("opencypher",
