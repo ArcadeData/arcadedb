@@ -72,6 +72,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
@@ -97,6 +98,8 @@ public class ArcadeDBServer {
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
+  private             Function<LocalDatabase, DatabaseInternal> databaseWrapper;
+//  private             ServerMonitor                         serverMonitor;
 
   static {
     // must be called before any Logger method is used.
@@ -196,8 +199,13 @@ public class ArcadeDBServer {
     httpServer.startService();
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-      haServer = new HAServer(this, configuration);
-      haServer.startService();
+      final String haImpl = configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION);
+      if ("raft".equalsIgnoreCase(haImpl))
+        LogManager.instance().log(this, Level.INFO, "Using Raft HA implementation (loaded via plugin manager)");
+      else {
+        haServer = new HAServer(this, configuration);
+        haServer.startService();
+      }
     }
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
@@ -406,8 +414,12 @@ public class ArcadeDBServer {
         embeddedDatabase = (DatabaseInternal) factory.open(mode);
       }
 
-      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-        embeddedDatabase = new ReplicatedDatabase(this, (LocalDatabase) embeddedDatabase);
+      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
+        if (databaseWrapper != null)
+          embeddedDatabase = databaseWrapper.apply((LocalDatabase) embeddedDatabase);
+        else
+          embeddedDatabase = new ReplicatedDatabase(this, (LocalDatabase) embeddedDatabase);
+      }
 
       serverDatabase = new ServerDatabase(this, embeddedDatabase);
 
@@ -443,6 +455,14 @@ public class ArcadeDBServer {
 
   public HAServer getHA() {
     return haServer;
+  }
+
+  /**
+   * Sets a custom database wrapper function used by HA plugins (e.g., Raft) to wrap
+   * LocalDatabase instances with a replicated database implementation.
+   */
+  public void setDatabaseWrapper(final Function<LocalDatabase, DatabaseInternal> wrapper) {
+    this.databaseWrapper = wrapper;
   }
 
   public ServerSecurity getSecurity() {
@@ -533,8 +553,12 @@ public class ArcadeDBServer {
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
         }
 
-        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-          embDatabase = new ReplicatedDatabase(this, (LocalDatabase) embDatabase);
+        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
+          if (databaseWrapper != null)
+            embDatabase = databaseWrapper.apply((LocalDatabase) embDatabase);
+          else
+            embDatabase = new ReplicatedDatabase(this, (LocalDatabase) embDatabase);
+        }
 
         db = new ServerDatabase(this, embDatabase);
 
