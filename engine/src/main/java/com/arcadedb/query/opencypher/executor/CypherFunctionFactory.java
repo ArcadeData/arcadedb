@@ -205,7 +205,7 @@ public class CypherFunctionFactory {
   private boolean isCypherSpecificFunction(final String functionName) {
     return switch (functionName) {
       // Graph functions
-      case "id", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
+      case "id", "elementid", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
       // Path functions
       case "nodes", "relationships", "length" -> true;
       // Math functions
@@ -216,16 +216,17 @@ public class CypherFunctionFactory {
       // General functions
       case "coalesce" -> true;
       // Predicate functions
-      case "isempty" -> true;
+      case "isempty", "exists" -> true;
       // List functions
       case "size", "head", "tail", "last", "range" -> true;
       // String functions
-      case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "ltrim", "rtrim" -> true;
+      case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "lower", "upper", "ltrim", "rtrim", "btrim" -> true;
       // String functions (additional)
-      case "trim", "replace", "char_length", "character_length" -> true;
+      case "trim", "replace", "char_length", "character_length", "normalize" -> true;
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean",
-           "tostringornull", "tointegerornull", "tofloatornull", "tobooleanornull" -> true;
+           "tostringornull", "tointegerornull", "tofloatornull", "tobooleanornull",
+           "tobooleanlist", "tofloatlist", "tointegerlist", "tostringlist" -> true;
       // Scalar functions
       case "nullif", "valuetype" -> true;
       // Aggregation functions
@@ -248,7 +249,12 @@ public class CypherFunctionFactory {
       // Vector construction and distance functions (used by Cypher vector(), vector_norm(), vector_distance())
       // Note: vector_norm and vector_distance with EUCLIDEAN/DOT metrics delegate to SQL functions
       // (vector.magnitude, vector.l1Norm, vector.l2Distance, vector.dotProduct) via the SQL bridge
-      case "vector_create", "vector_distance_manhattan", "vector_distance_cosine" -> true;
+      case "vector_create", "vector_distance_manhattan", "vector_distance_cosine",
+           "vector", "vector_dimension_count", "vector_distance" -> true;
+      // Vector distance functions
+      case "vector.distance.euclidean" -> true;
+      // Vector norm function
+      case "vector.norm" -> true;
       // Geo-spatial functions
       case "point.withinbbox" -> true;
       // Temporal clock functions (realtime/statement/transaction are aliases for current instant)
@@ -305,6 +311,7 @@ public class CypherFunctionFactory {
       case "coalesce" -> new CoalesceFunction();
       // Graph functions
       case "id" -> new IdFunction();
+      case "elementid" -> new ElementIdFunction();
       case "labels" -> new LabelsFunction();
       case "type" -> new TypeFunction();
       case "keys" -> new KeysFunction();
@@ -323,19 +330,21 @@ public class CypherFunctionFactory {
       case "range" -> new RangeFunction();
       // Predicate functions
       case "isempty" -> new IsEmptyFunction();
+      case "exists" -> new ExistsFunction();
       // String functions
       case "left" -> new LeftFunction();
       case "right" -> new RightFunction();
       case "reverse" -> new ReverseFunction();
       case "split" -> new SplitFunction();
       case "substring" -> new SubstringFunction();
-      case "tolower" -> new ToLowerFunction();
-      case "toupper" -> new ToUpperFunction();
+      case "tolower", "lower" -> new ToLowerFunction();
+      case "toupper", "upper" -> new ToUpperFunction();
       case "ltrim" -> new LTrimFunction();
       case "rtrim" -> new RTrimFunction();
-      case "trim" -> new TrimFunction();
+      case "trim", "btrim" -> new TrimFunction();
       case "replace" -> new ReplaceFunction();
       case "char_length", "character_length" -> new CharLengthFunction();
+      case "normalize" -> new NormalizeFunction();
       // Type conversion functions
       case "tostring" -> new ToStringFunction();
       case "tointeger" -> new ToIntegerFunction();
@@ -345,6 +354,11 @@ public class CypherFunctionFactory {
       case "tointegerornull" -> new OrNullFunction("toIntegerOrNull", new ToIntegerFunction());
       case "tofloatornull" -> new OrNullFunction("toFloatOrNull", new ToFloatFunction());
       case "tobooleanornull" -> new OrNullFunction("toBooleanOrNull", new ToBooleanFunction());
+      // List conversion functions
+      case "tobooleanlist" -> new ToBooleanListFunction();
+      case "tofloatlist" -> new ToFloatListFunction();
+      case "tointegerlist" -> new ToIntegerListFunction();
+      case "tostringlist" -> new ToStringListFunction();
       // Scalar functions
       case "nullif" -> new NullIfFunction();
       case "valuetype" -> new ValueTypeFunction();
@@ -366,6 +380,13 @@ public class CypherFunctionFactory {
       case "vector_create" -> new VectorCreateFunction();
       case "vector_distance_manhattan" -> new VectorDistanceManhattanFunction();
       case "vector_distance_cosine" -> new VectorDistanceCosineFunction();
+      case "vector" -> new VectorCreateFunction();
+      case "vector_dimension_count" -> new VectorDimensionCountFunction();
+      case "vector_distance" -> new VectorDistanceFunction();
+      // Vector distance functions
+      case "vector.distance.euclidean" -> new VectorDistanceEuclideanFunction();
+      // Vector norm function
+      case "vector.norm" -> new VectorNormFunction();
       // Geo-spatial functions
       case "point.withinbbox" -> new PointWithinBBoxFunction();
       // Temporal constructor functions
