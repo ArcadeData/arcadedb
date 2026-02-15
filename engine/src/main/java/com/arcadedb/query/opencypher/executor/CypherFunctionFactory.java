@@ -72,7 +72,7 @@ public class CypherFunctionFactory {
     // Aggregation functions
     mapping.put("count", "count");
     mapping.put("sum", "sum");
-    mapping.put("avg", "avg");
+    // avg is handled as Cypher-specific (always returns Double, matching Neo4j)
     // min/max handled as Cypher-specific to support mixed-type comparison
     mapping.put("stdev", "stddev");
     mapping.put("stdevp", "stddevp");
@@ -229,7 +229,7 @@ public class CypherFunctionFactory {
       // Scalar functions
       case "nullif", "valuetype" -> true;
       // Aggregation functions
-      case "collect", "percentiledisc", "percentilecont", "min", "max" -> true;
+      case "collect", "percentiledisc", "percentilecont", "min", "max", "avg" -> true;
       // Temporal functions
       case "timestamp" -> true;
       // Temporal constructor functions
@@ -349,6 +349,7 @@ public class CypherFunctionFactory {
       case "nullif" -> new NullIfFunction();
       case "valuetype" -> new ValueTypeFunction();
       // Aggregation functions
+      case "avg" -> distinct ? new DistinctAggregationWrapper(new CypherAvgFunction()) : new CypherAvgFunction();
       case "collect" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
       case "min" -> distinct ? new DistinctAggregationWrapper(new CypherMinFunction()) : new CypherMinFunction();
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
