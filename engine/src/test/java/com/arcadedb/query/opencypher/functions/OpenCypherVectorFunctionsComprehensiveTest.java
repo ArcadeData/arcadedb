@@ -36,7 +36,10 @@ class OpenCypherVectorFunctionsComprehensiveTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/testOpenCypherVectorFunctions").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/testOpenCypherVectorFunctions");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
   }
 
   @AfterEach
