@@ -179,6 +179,11 @@ class CypherExpressionBuilder {
         return parseListLiteral(listCtx);
     }
 
+    // Check for trim function with extended syntax (LEADING/TRAILING/BOTH ... FROM ...)
+    final Cypher25Parser.TrimFunctionContext trimCtx = findTrimFunctionRecursive(ctx);
+    if (trimCtx != null)
+      return parseTrimFunction(trimCtx);
+
     // Check for function invocations (after top-level list check)
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
@@ -780,6 +785,54 @@ class CypherExpressionBuilder {
     }
 
     return null;
+  }
+
+  /**
+   * Recursively find trimFunction in the parse tree.
+   */
+  private Cypher25Parser.TrimFunctionContext findTrimFunctionRecursive(final ParseTree node) {
+    if (node == null)
+      return null;
+    if (node instanceof Cypher25Parser.TrimFunctionContext)
+      return (Cypher25Parser.TrimFunctionContext) node;
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.TrimFunctionContext found = findTrimFunctionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Parse a trimFunction context into a FunctionCallExpression.
+   * Handles both simple trim(source) and extended trim(LEADING/TRAILING/BOTH trimChar FROM source).
+   */
+  private Expression parseTrimFunction(final Cypher25Parser.TrimFunctionContext ctx) {
+    final List<Expression> args = new ArrayList<>();
+
+    if (ctx.FROM() != null) {
+      // Extended syntax: trim(MODE trimChar FROM source)
+      String mode = "BOTH"; // default
+      if (ctx.LEADING() != null)
+        mode = "LEADING";
+      else if (ctx.TRAILING() != null)
+        mode = "TRAILING";
+
+      args.add(new LiteralExpression(mode, mode));
+
+      // trimCharacterString may be null (e.g., trim(LEADING FROM source))
+      if (ctx.trimCharacterString != null)
+        args.add(parseExpression(ctx.trimCharacterString));
+      else
+        args.add(new LiteralExpression(null, "null"));
+
+      args.add(parseExpression(ctx.trimSource));
+    } else {
+      // Simple syntax: trim(source)
+      args.add(parseExpression(ctx.trimSource));
+    }
+
+    return new FunctionCallExpression("trim", args, false);
   }
 
   /**

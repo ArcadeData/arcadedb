@@ -23,7 +23,14 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * trim() function - strips leading and trailing whitespace from a string.
+ * trim() function - strips characters from a string.
+ * <p>
+ * Supports two forms:
+ * <ul>
+ *   <li>trim(source) - strips leading and trailing whitespace</li>
+ *   <li>trim(mode, trimCharacter, source) - strips specified character from leading/trailing/both sides</li>
+ * </ul>
+ * Mode values: "BOTH", "LEADING", "TRAILING"
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -35,10 +42,49 @@ public class TrimFunction implements StatelessFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("trim() requires exactly one argument");
-    if (args[0] == null)
-      return null;
-    return args[0].toString().strip();
+    if (args.length == 1) {
+      // Simple form: trim(source)
+      if (args[0] == null)
+        return null;
+      return args[0].toString().strip();
+    }
+
+    if (args.length == 3) {
+      // Extended form: trim(mode, trimCharacter, source)
+      final String mode = args[0].toString();
+      final String source = args[2] != null ? args[2].toString() : null;
+      if (source == null)
+        return null;
+
+      final String trimChar = args[1] != null ? args[1].toString() : null;
+      if (trimChar == null || trimChar.isEmpty())
+        return switch (mode) {
+          case "LEADING" -> source.stripLeading();
+          case "TRAILING" -> source.stripTrailing();
+          default -> source.strip();
+        };
+
+      return switch (mode) {
+        case "LEADING" -> stripLeading(source, trimChar);
+        case "TRAILING" -> stripTrailing(source, trimChar);
+        default -> stripLeading(stripTrailing(source, trimChar), trimChar);
+      };
+    }
+
+    throw new CommandExecutionException("trim() requires 1 or 3 arguments");
+  }
+
+  private static String stripLeading(final String source, final String trimChar) {
+    int start = 0;
+    while (start < source.length() && source.startsWith(trimChar, start))
+      start += trimChar.length();
+    return source.substring(start);
+  }
+
+  private static String stripTrailing(final String source, final String trimChar) {
+    int end = source.length();
+    while (end >= trimChar.length() && source.startsWith(trimChar, end - trimChar.length()))
+      end -= trimChar.length();
+    return source.substring(0, end);
   }
 }

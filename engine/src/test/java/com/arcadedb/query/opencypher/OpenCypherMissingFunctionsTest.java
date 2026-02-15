@@ -189,6 +189,51 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
+  void testTrimLeading() {
+    try (final ResultSet rs = database.command("opencypher", "RETURN trim(LEADING 'x' FROM 'xxhelloxx') AS val")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("helloxx");
+    }
+  }
+
+  @Test
+  void testTrimTrailing() {
+    try (final ResultSet rs = database.command("opencypher", "RETURN trim(TRAILING 'x' FROM 'xxhelloxx') AS val")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("xxhello");
+    }
+  }
+
+  @Test
+  void testTrimBoth() {
+    try (final ResultSet rs = database.command("opencypher", "RETURN trim(BOTH 'x' FROM 'xxhelloxx') AS val")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("hello");
+    }
+  }
+
+  @Test
+  void testTrimAllThree() {
+    try (final ResultSet rs = database.command("opencypher",
+        "RETURN trim(LEADING 'x' FROM 'xxhelloxx') AS lead, trim(TRAILING 'x' FROM 'xxhelloxx') AS trail, trim(BOTH 'x' FROM 'xxhelloxx') AS both")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("lead")).isEqualTo("helloxx");
+      assertThat(row.<String>getProperty("trail")).isEqualTo("xxhello");
+      assertThat(row.<String>getProperty("both")).isEqualTo("hello");
+    }
+  }
+
+  @Test
+  void testTrimDefaultFromSyntax() {
+    // trim(FROM 'xxhelloxx') should trim whitespace (FROM without mode or character)
+    try (final ResultSet rs = database.command("opencypher", "RETURN trim(BOTH FROM '  hello  ') AS val")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("hello");
+    }
+  }
+
+  @Test
   void testReplace() {
     try (final ResultSet rs = database.command("opencypher", "RETURN replace('hello world', 'world', 'cypher') AS val")) {
       assertThat(rs.hasNext()).isTrue();
