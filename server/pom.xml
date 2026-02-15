@@ -35,7 +35,7 @@
 
     <properties>
         <metrics.version>4.2.19</metrics.version>
-        <micrometer.version>1.16.2</micrometer.version>
+        <micrometer.version>1.16.3</micrometer.version>
         <swagger.version>2.2.42</swagger.version>
         <swagger-parser.version>2.1.37</swagger-parser.version>
     </properties>
