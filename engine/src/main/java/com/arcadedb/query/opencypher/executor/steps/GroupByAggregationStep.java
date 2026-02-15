@@ -127,6 +127,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         GroupAggregators groupAgg = groups.get(keyValues);
         if (groupAgg == null) {
           groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
+          groupAgg.representativeRow = inputRow;
           groups.put(keyValues, groupAgg);
         }
 
@@ -161,7 +162,9 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           groupResult.setProperty(entry.getKey(), aggregatedValue);
         }
 
-        // Evaluate complex aggregation expressions using pre-computed aggregation values
+        // Evaluate complex aggregation expressions using pre-computed aggregation values.
+        // Use the representative input row so that property access (e.g. p.age) can resolve
+        // the original variables, not just the grouped string keys.
         for (final ComplexAggregationItem complexItem : complexAggregationItems) {
           final Map<String, StatelessFunction> innerFuncs = groupAgg.complexAggregators.get(complexItem.outputName);
           final Map<String, Object> overrides = new HashMap<>();
@@ -169,7 +172,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
             overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
           evaluator.setAggregationOverrides(overrides);
           try {
-            final Object value = evaluator.evaluate(complexItem.expression, groupResult, context);
+            final Object value = evaluator.evaluate(complexItem.expression, groupAgg.representativeRow, context);
             groupResult.setProperty(complexItem.outputName, value);
           } finally {
             evaluator.clearAggregationOverrides();
@@ -271,11 +274,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   }
 
   /**
-   * Holds aggregation functions for a single group.
+   * Holds aggregation functions for a single group and a representative input row.
    */
   private static class GroupAggregators {
     final Map<String, StatelessFunction> aggregators;
     final Map<String, Map<String, StatelessFunction>> complexAggregators;
+    Result representativeRow;
 
     GroupAggregators(final Map<String, StatelessFunction> aggregators,
         final Map<String, Map<String, StatelessFunction>> complexAggregators) {
