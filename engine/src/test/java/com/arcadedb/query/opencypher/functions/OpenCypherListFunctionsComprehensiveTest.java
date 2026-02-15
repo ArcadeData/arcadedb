@@ -81,7 +81,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> distinct = (List<Object>) result.next().getProperty("result");
-    assertThat(distinct).containsExactly(1, 3, 2, 4);
+    assertThat(distinct).containsExactly(1L, 3L, 2L, 4L);
   }
 
   @Test
@@ -223,7 +223,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> inserted = (List<Object>) result.next().getProperty("result");
-    assertThat(inserted).containsExactly(0, 1, 2, 3);
+    assertThat(inserted).containsExactly(0L, 1L, 2L, 3L);
   }
 
   @Test
@@ -233,7 +233,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> inserted = (List<Object>) result.next().getProperty("result");
-    assertThat(inserted).containsExactly(1, 2, 3, 4);
+    assertThat(inserted).containsExactly(1L, 2L, 3L, 4L);
   }
 
   @Test
@@ -332,7 +332,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> removed = (List<Object>) result.next().getProperty("result");
-    assertThat(removed).containsExactly(true, 1, 5.4);
+    assertThat(removed).containsExactly(true, 1L, 5.4);
   }
 
   @Test
@@ -342,7 +342,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> removed = (List<Object>) result.next().getProperty("result");
-    assertThat(removed).containsExactly(2, 3);
+    assertThat(removed).containsExactly(2L, 3L);
   }
 
   @Test
@@ -352,7 +352,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> removed = (List<Object>) result.next().getProperty("result");
-    assertThat(removed).containsExactly(1, 2);
+    assertThat(removed).containsExactly(1L, 2L);
   }
 
   @Test
@@ -400,7 +400,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> sorted = (List<Object>) result.next().getProperty("result");
-    assertThat(sorted).containsExactly(1, 2, 3, 5, 9);
+    assertThat(sorted).containsExactly(1L, 2L, 3L, 5L, 9L);
   }
 
   @Test
@@ -775,7 +775,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> combined = (List<Object>) result.next().getProperty("result");
-    assertThat(combined).containsExactly(2, 3, 5, 9); // sorted, then tail
+    assertThat(combined).containsExactly(2L, 3L, 5L, 9L); // sorted, then tail
   }
 
   @Test

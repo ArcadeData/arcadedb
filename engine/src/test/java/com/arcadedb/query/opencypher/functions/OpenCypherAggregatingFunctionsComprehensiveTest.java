@@ -119,7 +119,7 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
     Assertions.assertThat(result.hasNext() != false).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> collected = (List<Object>) result.next().getProperty("result");
-    assertThat(collected).containsExactly(1, 2, 3, 4);
+    assertThat(collected).containsExactly(1L, 2L, 3L, 4L);
   }
 
   @Test
