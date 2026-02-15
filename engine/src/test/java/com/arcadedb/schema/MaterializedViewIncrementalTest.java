@@ -90,6 +90,74 @@ class MaterializedViewIncrementalTest extends TestHelper {
   }
 
   @Test
+  void dropUnregistersListeners() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("UnregTest");
+    });
+
+    database.transaction(() -> {
+      database.newDocument("UnregTest").set("v", 1).save();
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("UnregView")
+          .withQuery("SELECT v FROM UnregTest")
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
+          .create();
+    });
+
+    // Drop the view
+    database.transaction(() -> {
+      database.getSchema().dropMaterializedView("UnregView");
+    });
+
+    // Insert after drop should not cause errors (listeners should be unregistered)
+    database.transaction(() -> {
+      database.newDocument("UnregTest").set("v", 2).save();
+    });
+
+    assertThat(database.getSchema().existsMaterializedView("UnregView")).isFalse();
+  }
+
+  @Test
+  void incrementalRefreshWorksAfterRollback() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("PostRollback");
+    });
+
+    database.transaction(() -> {
+      database.newDocument("PostRollback").set("v", 1).save();
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("PostRollbackView")
+          .withQuery("SELECT v FROM PostRollback")
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
+          .create();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM PostRollbackView")) {
+      assertThat(rs.stream().count()).isEqualTo(1);
+    }
+
+    // Rollback a transaction
+    database.begin();
+    database.newDocument("PostRollback").set("v", 2).save();
+    database.rollback();
+
+    // Now commit a new transaction — incremental refresh should still work
+    database.transaction(() -> {
+      database.newDocument("PostRollback").set("v", 3).save();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM PostRollbackView")) {
+      assertThat(rs.stream().count()).isEqualTo(2);
+    }
+  }
+
+  @Test
   void complexQueryFullRefreshAfterCommit() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("Sale");

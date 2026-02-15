@@ -117,4 +117,27 @@ class MaterializedViewSQLTest extends TestHelper {
     // Should not throw
     database.command("sql", "DROP MATERIALIZED VIEW IF EXISTS NonExistent");
   }
+
+  @Test
+  void querySchemaMetadata() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW MetaView AS SELECT name FROM Account WHERE active = true");
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:materializedViews")) {
+      assertThat(rs.hasNext()).isTrue();
+      final com.arcadedb.query.sql.executor.Result result = rs.next();
+      assertThat((String) result.getProperty("name")).isEqualTo("MetaView");
+      assertThat((String) result.getProperty("query")).isNotNull();
+      assertThat((String) result.getProperty("backingType")).isNotNull();
+      assertThat((String) result.getProperty("refreshMode")).isEqualTo("MANUAL");
+      assertThat((String) result.getProperty("status")).isEqualTo("VALID");
+    }
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT FROM schema:materializedViews WHERE name = 'MetaView'")) {
+      assertThat(rs.hasNext()).isTrue();
+    }
+
+    database.command("sql", "DROP MATERIALIZED VIEW MetaView");
+  }
 }
