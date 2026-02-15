@@ -179,6 +179,11 @@ class CypherExpressionBuilder {
         return parseListLiteral(listCtx);
     }
 
+    // Check for trim function with extended syntax (LEADING/TRAILING/BOTH ... FROM ...)
+    final Cypher25Parser.TrimFunctionContext trimCtx = findTrimFunctionRecursive(ctx);
+    if (trimCtx != null)
+      return parseTrimFunction(trimCtx);
+
     // Check for function invocations (after top-level list check)
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
     final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
@@ -361,6 +366,8 @@ class CypherExpressionBuilder {
         return parsePatternComprehension(e1.patternComprehension());
       if (e1.reduceExpression() != null)
         return parseReduceExpression(e1.reduceExpression());
+      if (e1.allReduceExpression() != null)
+        return parseAllReduceExpression(e1.allReduceExpression());
       if (e1.existsExpression() != null)
         return parseExistsExpression(e1.existsExpression());
       if (e1.countStar() != null) {
@@ -416,6 +423,11 @@ class CypherExpressionBuilder {
     final Cypher25Parser.ReduceExpressionContext reduceCtx = findReduceExpressionRecursive(node);
     if (reduceCtx != null)
       return parseReduceExpression(reduceCtx);
+
+    // Check for allReduce expressions
+    final Cypher25Parser.AllReduceExpressionContext allReduceCtx = findAllReduceExpressionRecursive(node);
+    if (allReduceCtx != null)
+      return parseAllReduceExpression(allReduceCtx);
 
     // Check for list comprehensions [x IN list | expr]
     final Cypher25Parser.ListComprehensionContext listCompCtx = findListComprehensionRecursive(node);
@@ -773,6 +785,54 @@ class CypherExpressionBuilder {
     }
 
     return null;
+  }
+
+  /**
+   * Recursively find trimFunction in the parse tree.
+   */
+  private Cypher25Parser.TrimFunctionContext findTrimFunctionRecursive(final ParseTree node) {
+    if (node == null)
+      return null;
+    if (node instanceof Cypher25Parser.TrimFunctionContext)
+      return (Cypher25Parser.TrimFunctionContext) node;
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.TrimFunctionContext found = findTrimFunctionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Parse a trimFunction context into a FunctionCallExpression.
+   * Handles both simple trim(source) and extended trim(LEADING/TRAILING/BOTH trimChar FROM source).
+   */
+  private Expression parseTrimFunction(final Cypher25Parser.TrimFunctionContext ctx) {
+    final List<Expression> args = new ArrayList<>();
+
+    if (ctx.FROM() != null) {
+      // Extended syntax: trim(MODE trimChar FROM source)
+      String mode = "BOTH"; // default
+      if (ctx.LEADING() != null)
+        mode = "LEADING";
+      else if (ctx.TRAILING() != null)
+        mode = "TRAILING";
+
+      args.add(new LiteralExpression(mode, mode));
+
+      // trimCharacterString may be null (e.g., trim(LEADING FROM source))
+      if (ctx.trimCharacterString != null)
+        args.add(parseExpression(ctx.trimCharacterString));
+      else
+        args.add(new LiteralExpression(null, "null"));
+
+      args.add(parseExpression(ctx.trimSource));
+    } else {
+      // Simple syntax: trim(source)
+      args.add(parseExpression(ctx.trimSource));
+    }
+
+    return new FunctionCallExpression("trim", args, false);
   }
 
   /**
@@ -1365,6 +1425,26 @@ class CypherExpressionBuilder {
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.ReduceExpressionContext found = findReduceExpressionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+
+    return null;
+  }
+
+  /**
+   * Recursively find AllReduceExpressionContext in the parse tree.
+   */
+  Cypher25Parser.AllReduceExpressionContext findAllReduceExpressionRecursive(
+      final ParseTree node) {
+    if (node == null)
+      return null;
+
+    if (node instanceof Cypher25Parser.AllReduceExpressionContext)
+      return (Cypher25Parser.AllReduceExpressionContext) node;
+
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.AllReduceExpressionContext found = findAllReduceExpressionRecursive(node.getChild(i));
       if (found != null)
         return found;
     }
@@ -2076,6 +2156,32 @@ class CypherExpressionBuilder {
 
     return new ReduceExpression(accumulatorVariable, initialValue, iteratorVariable,
         listExpression, reduceExpression, ctx.getText());
+  }
+
+  /**
+   * Parse an allReduce expression into an AllReduceExpression.
+   * Syntax: allReduce(accumulator = initial, variable IN list | expression, predicate)
+   */
+  AllReduceExpression parseAllReduceExpression(final Cypher25Parser.AllReduceExpressionContext ctx) {
+    if (ctx.allReduceExpressionValidArguments() != null) {
+      final Cypher25Parser.AllReduceExpressionValidArgumentsContext validCtx = ctx.allReduceExpressionValidArguments();
+      final List<Cypher25Parser.VariableContext> variables = validCtx.variable();
+      final List<Cypher25Parser.ExpressionContext> expressions = validCtx.expression();
+
+      final String accumulatorVariable = variables.get(0).getText();
+      final Expression initialValue = parseExpression(expressions.get(0));
+
+      final String iteratorVariable = variables.get(1).getText();
+      final Expression listExpression = parseExpression(expressions.get(1));
+
+      final Expression reduceExpression = parseExpression(expressions.get(2));
+      final Expression predicateExpression = parseExpression(expressions.get(3));
+
+      return new AllReduceExpression(accumulatorVariable, initialValue, iteratorVariable,
+          listExpression, reduceExpression, predicateExpression, ctx.getText());
+    }
+
+    throw new IllegalArgumentException("Invalid allReduce() syntax: " + ctx.getText());
   }
 
   // ============================================================================

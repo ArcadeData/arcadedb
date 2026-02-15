@@ -114,7 +114,7 @@ public class FunctionValidator {
     registerFunction("tostring", 1, 1, "Convert to string", false);
     registerFunction("tolower", 1, 1, "Convert to lowercase", false);
     registerFunction("toupper", 1, 1, "Convert to uppercase", false);
-    registerFunction("trim", 1, 1, "Trim whitespace", false);
+    registerFunction("trim", 1, 3, "Trim whitespace", false);
     registerFunction("ltrim", 1, 1, "Trim left whitespace", false);
     registerFunction("rtrim", 1, 1, "Trim right whitespace", false);
     registerFunction("substring", 2, 3, "Extract substring", false);

@@ -1311,6 +1311,75 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     }
   }
 
+  @Test
+  void vectorFunctionDimensionMismatchShouldThrow() {
+    // Issue #3426: RETURN vector([1.0, 2.0], 5, FLOAT) should raise an error
+    // because the array has 2 elements but the declared dimension is 5
+    final Database database = new DatabaseFactory("./target/databases/testopencypher-vector-dim-mismatch").create();
+    try {
+      database.transaction(() -> {
+        // Test with FLOAT
+        assertThatThrownBy(() -> {
+          final ResultSet rs = database.query("opencypher",
+              "RETURN vector([1.0, 2.0], 5, FLOAT) AS v");
+          while (rs.hasNext())
+            rs.next();
+        }).hasMessageContaining("dimension mismatch");
+
+        // Test with FLOAT32
+        assertThatThrownBy(() -> {
+          final ResultSet rs = database.query("opencypher",
+              "RETURN vector([1.0, 2.0], 5, FLOAT32) AS v");
+          while (rs.hasNext())
+            rs.next();
+        }).hasMessageContaining("dimension mismatch");
+      });
+    } finally {
+      database.drop();
+    }
+  }
+
+  // ===== allReduce() tests =====
+
+  @Test
+  void testAllReduceEmptyList() {
+    // allReduce on empty list should return true (vacuous truth)
+    database.transaction(() -> {
+      final ResultSet rs = database.query("opencypher",
+          "RETURN allReduce(acc = 0, x IN [] | acc + x, acc < 10) as result");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((boolean) row.getProperty("result")).isTrue();
+      assertThat(rs.hasNext()).isFalse();
+    });
+  }
+
+  @Test
+  void testAllReducePredicateAlwaysTrue() {
+    // All intermediate accumulated values satisfy the predicate
+    database.transaction(() -> {
+      final ResultSet rs = database.query("opencypher",
+          "RETURN allReduce(acc = 0, x IN [1, 2, 3] | acc + x, acc < 100) as result");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((boolean) row.getProperty("result")).isTrue();
+      assertThat(rs.hasNext()).isFalse();
+    });
+  }
+
+  @Test
+  void testAllReducePredicateFails() {
+    // Predicate fails at some step: 0+1=1<3, 1+2=3 NOT < 3 -> false
+    database.transaction(() -> {
+      final ResultSet rs = database.query("opencypher",
+          "RETURN allReduce(acc = 0, x IN [1, 2, 3] | acc + x, acc < 3) as result");
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((boolean) row.getProperty("result")).isFalse();
+      assertThat(rs.hasNext()).isFalse();
+    });
+  }
+
   // Note: Integration tests for Cypher queries with built-in functions
   // should be placed in a test class that has access to the Cypher query engine.
   // The tests above verify the function implementations directly.
