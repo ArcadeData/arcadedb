@@ -27,8 +27,6 @@ import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.log.LogManager;
 
-import java.util.HashSet;
-import java.util.Set;
 import java.util.logging.Level;
 
 public class MaterializedViewChangeListener
@@ -36,12 +34,12 @@ public class MaterializedViewChangeListener
 
   private final MaterializedViewImpl view;
   private final Database database;
-  // Track which threads already have a callback registered for this view
-  private final ThreadLocal<Set<Long>> registeredTxIds = ThreadLocal.withInitial(HashSet::new);
+  private final String callbackKey;
 
   public MaterializedViewChangeListener(final Database database, final MaterializedViewImpl view) {
     this.database = database;
     this.view = view;
+    this.callbackKey = "mv-refresh:" + view.getName();
   }
 
   @Override
@@ -65,16 +63,8 @@ public class MaterializedViewChangeListener
       return;
 
     final TransactionContext tx = db.getTransaction();
-    final long txId = Thread.currentThread().threadId();
-
-    // Only register one callback per transaction per view
-    if (registeredTxIds.get().contains(txId))
-      return;
-    registeredTxIds.get().add(txId);
-
-    tx.addAfterCommitCallback(() -> {
+    tx.addAfterCommitCallbackIfAbsent(callbackKey, () -> {
       try {
-        registeredTxIds.get().remove(txId);
         MaterializedViewRefresher.fullRefresh(database, view);
       } catch (final Exception e) {
         view.setStatus("STALE");

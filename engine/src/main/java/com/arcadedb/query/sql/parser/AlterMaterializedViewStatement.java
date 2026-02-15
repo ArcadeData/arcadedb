@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -34,7 +35,7 @@ public class AlterMaterializedViewStatement extends DDLStatement {
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     // TODO: implement alter logic
-    throw new UnsupportedOperationException("ALTER MATERIALIZED VIEW not yet implemented");
+    throw new CommandExecutionException("ALTER MATERIALIZED VIEW is not yet supported");
   }
 
   @Override

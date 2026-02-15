@@ -35,8 +35,9 @@ public class MaterializedViewImpl implements MaterializedView {
   private final MaterializedViewRefreshMode refreshMode;
   private final boolean simpleQuery;
   private final long refreshInterval;
-  private long lastRefreshTime;
-  private String status;
+  private volatile long lastRefreshTime;
+  private volatile String status;
+  private transient MaterializedViewChangeListener changeListener;
 
   public MaterializedViewImpl(final Database database, final String name, final String query,
       final String backingTypeName, final List<String> sourceTypeNames,
@@ -104,6 +105,14 @@ public class MaterializedViewImpl implements MaterializedView {
 
   public void setStatus(final String status) {
     this.status = status;
+  }
+
+  public MaterializedViewChangeListener getChangeListener() {
+    return changeListener;
+  }
+
+  public void setChangeListener(final MaterializedViewChangeListener listener) {
+    this.changeListener = listener;
   }
 
   public void updateLastRefreshTime() {

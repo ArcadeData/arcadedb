@@ -82,6 +82,7 @@ public class TransactionContext implements Transaction {
   private       LocalTransactionExplicitLock         explicitLock;
   private       Object                               requester;
   private       List<Runnable>                       afterCommitCallbacks  = null;
+  private       Set<String>                          registeredCallbackKeys = null;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -266,6 +267,19 @@ public class TransactionContext implements Transaction {
     if (afterCommitCallbacks == null)
       afterCommitCallbacks = new ArrayList<>();
     afterCommitCallbacks.add(callback);
+  }
+
+  /**
+   * Registers a post-commit callback only if no callback with the given key has been registered yet
+   * in this transaction. Returns true if the callback was registered, false if skipped.
+   */
+  public boolean addAfterCommitCallbackIfAbsent(final String key, final Runnable callback) {
+    if (registeredCallbackKeys == null)
+      registeredCallbackKeys = new HashSet<>();
+    if (!registeredCallbackKeys.add(key))
+      return false;
+    addAfterCommitCallback(callback);
+    return true;
   }
 
   private void resetAndFireCallbacks() {
@@ -780,6 +794,7 @@ public class TransactionContext implements Transaction {
     bucketRecordDelta.clear();
     deletedRecordsInTx.clear();
     afterCommitCallbacks = null;
+    registeredCallbackKeys = null;
     txId = -1;
   }
 

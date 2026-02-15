@@ -602,14 +602,23 @@ public class LocalSchema implements Schema {
     if (materializedViewScheduler != null)
       materializedViewScheduler.cancel(viewName);
 
-    // Remove the view definition
-    materializedViews.remove(viewName);
+    // Unregister incremental listeners from source types
+    if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+      MaterializedViewBuilder.unregisterListeners(this, view);
 
-    // Drop the backing type (which drops buckets and indexes)
-    if (existsType(view.getBackingTypeName()))
-      dropType(view.getBackingTypeName());
+    // Wrap in recordFileChanges so that the MV metadata removal and backing type
+    // drop are replicated atomically to HA replicas
+    recordFileChanges(() -> {
+      // Remove the view definition
+      materializedViews.remove(viewName);
 
-    saveConfiguration();
+      // Drop the backing type (which drops buckets and indexes)
+      if (existsType(view.getBackingTypeName()))
+        dropType(view.getBackingTypeName());
+
+      saveConfiguration();
+      return null;
+    });
   }
 
   @Override
@@ -840,7 +849,7 @@ public class LocalSchema implements Schema {
     bucketId2TypeMap.clear();
   }
 
-  public MaterializedViewScheduler getMaterializedViewScheduler() {
+  public synchronized MaterializedViewScheduler getMaterializedViewScheduler() {
     if (materializedViewScheduler == null)
       materializedViewScheduler = new MaterializedViewScheduler();
     return materializedViewScheduler;
@@ -1458,6 +1467,8 @@ public class LocalSchema implements Schema {
       }
 
       // Load materialized views
+      // Always clear and re-populate from the schema file to keep in sync
+      materializedViews.clear();
       if (root.has("materializedViews")) {
         final JSONObject mvJSON = root.getJSONObject("materializedViews");
         for (final String viewName : mvJSON.keySet()) {

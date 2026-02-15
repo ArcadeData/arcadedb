@@ -107,45 +107,66 @@ public class MaterializedViewBuilder {
     // Classify query complexity
     final boolean simple = MaterializedViewQueryClassifier.isSimple(query, database);
 
-    // Create the backing document type (schema-less)
-    final TypeBuilder<?> typeBuilder = schema.buildDocumentType().withName(name);
-    if (buckets > 0)
-      typeBuilder.withTotalBuckets(buckets);
-    if (pageSize > 0)
-      typeBuilder.withPageSize(pageSize);
-    typeBuilder.create();
+    // Wrap in recordFileChanges so that all schema mutations (backing type creation,
+    // MV metadata registration, and initial data population) are replicated atomically
+    // to HA replicas as a single schema change
+    return schema.recordFileChanges(() -> {
+      // Create the backing document type (schema-less)
+      final TypeBuilder<?> typeBuilder = schema.buildDocumentType().withName(name);
+      if (buckets > 0)
+        typeBuilder.withTotalBuckets(buckets);
+      if (pageSize > 0)
+        typeBuilder.withPageSize(pageSize);
+      typeBuilder.create();
 
-    // Create and register the materialized view
-    final MaterializedViewImpl view = new MaterializedViewImpl(
-        database, name, query, name, sourceTypeNames,
-        refreshMode, simple, refreshInterval);
-    schema.materializedViews.put(name, view);
-    schema.saveConfiguration();
+      // Create and register the materialized view
+      final MaterializedViewImpl view = new MaterializedViewImpl(
+          database, name, query, name, sourceTypeNames,
+          refreshMode, simple, refreshInterval);
+      schema.materializedViews.put(name, view);
+      schema.saveConfiguration();
 
-    // Perform initial full refresh
-    MaterializedViewRefresher.fullRefresh(database, view);
-    schema.saveConfiguration();
+      // Perform initial full refresh
+      MaterializedViewRefresher.fullRefresh(database, view);
+      schema.saveConfiguration();
 
-    // Register event listeners for INCREMENTAL mode
-    if (refreshMode == MaterializedViewRefreshMode.INCREMENTAL)
-      registerListeners(schema, view, sourceTypeNames);
+      // Register event listeners for INCREMENTAL mode
+      if (refreshMode == MaterializedViewRefreshMode.INCREMENTAL)
+        registerListeners(schema, view, sourceTypeNames);
 
-    if (refreshMode == MaterializedViewRefreshMode.PERIODIC && refreshInterval > 0)
-      schema.getMaterializedViewScheduler().schedule(database, view);
+      if (refreshMode == MaterializedViewRefreshMode.PERIODIC && refreshInterval > 0)
+        schema.getMaterializedViewScheduler().schedule(database, view);
 
-    return view;
+      return view;
+    });
   }
 
   static void registerListeners(final LocalSchema schema, final MaterializedViewImpl view,
       final List<String> sourceTypeNames) {
     final MaterializedViewChangeListener listener =
         new MaterializedViewChangeListener(schema.getDatabase(), view);
+    view.setChangeListener(listener);
     for (final String srcType : sourceTypeNames) {
       final DocumentType type = schema.getType(srcType);
       type.getEvents().registerListener((AfterRecordCreateListener) listener);
       type.getEvents().registerListener((AfterRecordUpdateListener) listener);
       type.getEvents().registerListener((AfterRecordDeleteListener) listener);
     }
+  }
+
+  static void unregisterListeners(final LocalSchema schema, final MaterializedViewImpl view) {
+    final MaterializedViewChangeListener listener = view.getChangeListener();
+    if (listener == null)
+      return;
+    for (final String srcType : view.getSourceTypeNames()) {
+      if (!schema.existsType(srcType))
+        continue;
+      final DocumentType type = schema.getType(srcType);
+      type.getEvents().unregisterListener((AfterRecordCreateListener) listener);
+      type.getEvents().unregisterListener((AfterRecordUpdateListener) listener);
+      type.getEvents().unregisterListener((AfterRecordDeleteListener) listener);
+    }
+    view.setChangeListener(null);
   }
 
   private List<String> extractSourceTypes(final String sql) {
