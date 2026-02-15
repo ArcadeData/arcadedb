@@ -372,6 +372,12 @@ class CypherExpressionBuilder {
         return parseExpression(e1.parenthesizedExpression().expression());
       if (e1.shortestPathExpression() != null)
         return parseShortestPathExpression(e1.shortestPathExpression());
+      if (e1.vectorFunction() != null)
+        return parseVectorFunction(e1.vectorFunction());
+      if (e1.vectorNormFunction() != null)
+        return parseVectorNormFunction(e1.vectorNormFunction());
+      if (e1.vectorDistanceFunction() != null)
+        return parseVectorDistanceFunction(e1.vectorDistanceFunction());
       // Check for map literal
       final Cypher25Parser.MapContext e1MapCtx = findMapRecursive(e1);
       if (e1MapCtx != null)
@@ -2372,5 +2378,53 @@ class CypherExpressionBuilder {
         throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + originalText);
       return val;
     }
+  }
+
+  /**
+   * Parse vector(values, dimension, type) into a FunctionCallExpression.
+   * Delegates to the "vector_create" Cypher function which converts a list to float[].
+   */
+  Expression parseVectorFunction(final Cypher25Parser.VectorFunctionContext ctx) {
+    final List<Expression> args = new ArrayList<>();
+    args.add(parseExpression(ctx.vectorValue));
+    args.add(parseExpression(ctx.dimension));
+    return new FunctionCallExpression("vector_create", args, false);
+  }
+
+  /**
+   * Parse vector_norm(vector, metric) into a FunctionCallExpression.
+   * Maps EUCLIDEAN to SQL vector.magnitude, MANHATTAN to SQL vector.l1Norm.
+   */
+  Expression parseVectorNormFunction(final Cypher25Parser.VectorNormFunctionContext ctx) {
+    final String metric = ctx.vectorNormDistanceMetric().getText().toUpperCase();
+    final String functionName = switch (metric) {
+      case "EUCLIDEAN" -> "vector.magnitude";
+      case "MANHATTAN" -> "vector.l1Norm";
+      default -> throw new CommandParsingException("Unsupported vector_norm metric: " + metric);
+    };
+
+    final List<Expression> args = new ArrayList<>();
+    args.add(parseExpression(ctx.vectorValue));
+    return new FunctionCallExpression(functionName, args, false);
+  }
+
+  /**
+   * Parse vector_distance(v1, v2, metric) into a FunctionCallExpression.
+   * Reuses SQL vector functions where available, falls back to Cypher-specific for others.
+   */
+  Expression parseVectorDistanceFunction(final Cypher25Parser.VectorDistanceFunctionContext ctx) {
+    final String metric = ctx.vectorDistanceMetric().getText().toUpperCase();
+    final String functionName = switch (metric) {
+      case "EUCLIDEAN" -> "vector.l2Distance";
+      case "MANHATTAN" -> "vector_distance_manhattan";
+      case "COSINE" -> "vector_distance_cosine";
+      case "DOT" -> "vector.dotProduct";
+      default -> throw new CommandParsingException("Unsupported vector_distance metric: " + metric);
+    };
+
+    final List<Expression> args = new ArrayList<>();
+    args.add(parseExpression(ctx.vector1));
+    args.add(parseExpression(ctx.vector2));
+    return new FunctionCallExpression(functionName, args, false);
   }
 }

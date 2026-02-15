@@ -164,14 +164,8 @@ public class CypherFunctionFactory {
       return createCypherSpecificExecutor(functionName, distinct);
     }
 
-    // Check for custom functions (library.function pattern)
-    if (functionName.contains(".")) {
-      final StatelessFunction customFunction = getOrCreateCustomFunctionAdapter(functionName);
-      if (customFunction != null)
-        return customFunction;
-    }
-
-    // Get SQL function (either mapped or direct)
+    // Get SQL function (either mapped or direct) - checked BEFORE custom functions
+    // so that registered SQL functions (e.g., vector.magnitude) are found
     final String sqlFunctionName = cypherToSqlMapping.getOrDefault(functionName, functionName);
     if (sqlFunctionFactory.hasFunction(sqlFunctionName)) {
       final SQLFunction sqlFunction = sqlFunctionFactory.getFunctionInstance(sqlFunctionName);
@@ -179,6 +173,13 @@ public class CypherFunctionFactory {
       if (distinct && bridge.aggregateResults())
         return new DistinctAggregationWrapper(bridge);
       return bridge;
+    }
+
+    // Check for custom functions (library.function pattern) - checked AFTER SQL functions
+    if (functionName.contains(".")) {
+      final StatelessFunction customFunction = getOrCreateCustomFunctionAdapter(functionName);
+      if (customFunction != null)
+        return customFunction;
     }
 
     throw new CommandExecutionException("Unknown function: " + cypherFunctionName);
@@ -244,6 +245,10 @@ public class CypherFunctionFactory {
       case "duration.between", "duration.inmonths", "duration.indays", "duration.inseconds" -> true;
       // Vector similarity functions
       case "vector.similarity.cosine", "vector.similarity.euclidean" -> true;
+      // Vector construction and distance functions (used by Cypher vector(), vector_norm(), vector_distance())
+      // Note: vector_norm and vector_distance with EUCLIDEAN/DOT metrics delegate to SQL functions
+      // (vector.magnitude, vector.l1Norm, vector.l2Distance, vector.dotProduct) via the SQL bridge
+      case "vector_create", "vector_distance_manhattan", "vector_distance_cosine" -> true;
       // Geo-spatial functions
       case "point.withinbbox" -> true;
       // Temporal clock functions (realtime/statement/transaction are aliases for current instant)
@@ -356,6 +361,10 @@ public class CypherFunctionFactory {
       // Vector similarity functions
       case "vector.similarity.cosine" -> new VectorSimilarityCosineFunction();
       case "vector.similarity.euclidean" -> new VectorSimilarityEuclideanFunction();
+      // Vector construction and distance functions
+      case "vector_create" -> new VectorCreateFunction();
+      case "vector_distance_manhattan" -> new VectorDistanceManhattanFunction();
+      case "vector_distance_cosine" -> new VectorDistanceCosineFunction();
       // Geo-spatial functions
       case "point.withinbbox" -> new PointWithinBBoxFunction();
       // Temporal constructor functions
