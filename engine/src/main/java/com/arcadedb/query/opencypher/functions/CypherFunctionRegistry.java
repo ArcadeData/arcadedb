@@ -22,6 +22,7 @@ import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.functions.agg.*;
+import com.arcadedb.query.opencypher.functions.coll.*;
 import com.arcadedb.query.opencypher.functions.convert.*;
 import com.arcadedb.query.opencypher.functions.create.*;
 import com.arcadedb.query.opencypher.functions.date.*;
@@ -213,6 +214,8 @@ public final class CypherFunctionRegistry {
    * Called during static initialization and reset.
    */
   private static void registerBuiltInFunctions() {
+    // Collection functions
+    registerCollFunctions();
     // Text functions
     registerTextFunctions();
     // Map functions
@@ -235,6 +238,17 @@ public final class CypherFunctionRegistry {
     registerPathFunctions();
     // Create functions
     registerCreateFunctions();
+  }
+
+  private static void registerCollFunctions() {
+    register(new CollDistinct());
+    register(new CollFlatten());
+    register(new CollIndexOf());
+    register(new CollInsert());
+    register(new CollMax());
+    register(new CollMin());
+    register(new CollRemove());
+    register(new CollSort());
   }
 
   private static void registerTextFunctions() {

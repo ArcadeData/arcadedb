@@ -155,6 +155,24 @@ public class FunctionValidator {
 
     // Predicate functions
     registerFunction("exists", 1, 1, "Check if property exists", false);
+
+    // String aliases (Neo4j 5+)
+    registerFunction("lower", 1, 1, "Convert to lowercase (alias for toLower)", false);
+    registerFunction("upper", 1, 1, "Convert to uppercase (alias for toUpper)", false);
+    registerFunction("btrim", 1, 3, "Trim both sides (alias for trim)", false);
+
+    // List conversion functions
+    registerFunction("tobooleanlist", 1, 1, "Convert list elements to booleans", false);
+    registerFunction("tofloatlist", 1, 1, "Convert list elements to floats", false);
+    registerFunction("tointegerlist", 1, 1, "Convert list elements to integers", false);
+    registerFunction("tostringlist", 1, 1, "Convert list elements to strings", false);
+
+    // Vector functions
+    registerFunction("vector", 1, 2, "Create vector from list (alias for vector_create)", false);
+    registerFunction("vector_dimension_count", 1, 1, "Return dimension count of vector", false);
+    registerFunction("vector_distance", 2, 3, "Calculate distance between vectors", false);
+    registerFunction("vector.distance.euclidean", 2, 2, "Euclidean distance between vectors", false);
+    registerFunction("vector.norm", 1, 1, "L2 norm (magnitude) of vector", false);
     registerFunction("coalesce", 1, -1, "First non-null value", false);
     registerFunction("isempty", 1, 1, "Check if list/map/string is empty", false);
     registerFunction("isnan", 1, 1, "Check if value is NaN", false);

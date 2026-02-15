@@ -47,6 +47,7 @@ class OpenCypherGroupByTest {
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Product");
     database.getSchema().createEdgeType("PURCHASED");
+    database.getSchema().createEdgeType("KNOWS");
 
     // Create test data:
     //   People in different cities with different ages
@@ -196,6 +197,33 @@ class OpenCypherGroupByTest {
     assertThat(((Number) row.getProperty("total")).longValue()).isEqualTo(5L);
     // Ages: 30, 25, 35, 40, 28 -> sum=158, count=5, avg=31.6
     assertThat(((Number) row.getProperty("avgAge")).doubleValue()).isEqualTo(31.6);
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3421
+   * RETURN p.age, p.age - max(f.age) as result was returning null for result.
+   * The complex aggregation expression couldn't resolve p.age because the grouped
+   * result only had "p.age" as a string key, not the original variable p.
+   */
+  @Test
+  void complexAggregationExpressionWithGroupBy() {
+    // Create the exact data from the issue
+    database.command("opencypher",
+        "CREATE (k:Person {name: 'Keanu Reeves', age: 58})-[:KNOWS]->(:Person {age: 70}), " +
+            "(k)-[:KNOWS]->(:Person {age: 55})");
+
+    // This should return p.age=58 and result=58-70=-12
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person {name:'Keanu Reeves'})-[:KNOWS]-(f:Person) " +
+            "RETURN p.age, p.age - max(f.age) as result");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat(((Number) row.getProperty("p.age")).intValue()).isEqualTo(58);
+    final Object resultVal = row.getProperty("result");
+    assertThat(resultVal).as("result should not be null").isNotNull();
+    assertThat(((Number) resultVal).longValue()).isEqualTo(-12L);
     assertThat(result.hasNext()).isFalse();
   }
 
