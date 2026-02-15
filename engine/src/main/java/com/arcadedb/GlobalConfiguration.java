@@ -550,6 +550,18 @@ public enum GlobalConfiguration {
       "When running inside Kubernetes use this suffix to reach the other servers. Example: arcadedb.default.svc.cluster.local",
       String.class, ""),
 
+  // RAFT HA
+  HA_IMPLEMENTATION("arcadedb.ha.implementation", SCOPE.SERVER,
+      "HA implementation to use: 'legacy' for the existing custom protocol, 'raft' for the new Apache Ratis-based implementation",
+      String.class, "legacy", Set.of("legacy", "raft")),
+
+  HA_RAFT_PORT("arcadedb.ha.raftPort", SCOPE.SERVER,
+      "TCP/IP port for Apache Ratis gRPC communication between cluster nodes", Integer.class, 2434),
+
+  HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
+      "Raft log index gap threshold for replication lag warnings. When a replica falls behind by more than this many entries, a warning is logged",
+      Long.class, 1000L),
+
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
