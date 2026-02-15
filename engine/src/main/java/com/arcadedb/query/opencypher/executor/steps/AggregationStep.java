@@ -112,9 +112,12 @@ public class AggregationStep extends AbstractExecutionStep {
 
     // Process all rows, feeding data to aggregators
     final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+    Result representativeRow = null;
 
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
+      if (representativeRow == null)
+        representativeRow = inputRow;
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         if (context.isProfiling())
@@ -168,7 +171,9 @@ public class AggregationStep extends AbstractExecutionStep {
         aggregatedResult.setProperty(outputName, aggregatedValue);
       }
 
-      // Evaluate complex aggregation expressions using pre-computed aggregation values
+      // Evaluate complex aggregation expressions using pre-computed aggregation values.
+      // Use the representative input row so that property access (e.g. p.age) can resolve
+      // the original variables, not just the aggregated result keys.
       for (final Map.Entry<String, ComplexAggregationInfo> entry : complexAggregations.entrySet()) {
         final String outputName = entry.getKey();
         final ComplexAggregationInfo complexInfo = entry.getValue();
@@ -178,10 +183,11 @@ public class AggregationStep extends AbstractExecutionStep {
         for (final Map.Entry<String, StatelessFunction> funcEntry : complexInfo.innerFunctions.entrySet())
           overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
 
-        // Evaluate the full expression with overrides
+        // Evaluate the full expression with overrides, using representative row for variable resolution
         evaluator.setAggregationOverrides(overrides);
         try {
-          final Object value = evaluator.evaluate(complexInfo.expression, aggregatedResult, context);
+          final Result evalRow = representativeRow != null ? representativeRow : aggregatedResult;
+          final Object value = evaluator.evaluate(complexInfo.expression, evalRow, context);
           aggregatedResult.setProperty(outputName, value);
         } finally {
           evaluator.clearAggregationOverrides();
