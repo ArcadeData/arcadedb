@@ -417,7 +417,7 @@ public class ArcadeDBServer {
       if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
         if (databaseWrapper != null)
           embeddedDatabase = databaseWrapper.apply((LocalDatabase) embeddedDatabase);
-        else
+        else if (!"raft".equalsIgnoreCase(configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION)))
           embeddedDatabase = new ReplicatedDatabase(this, (LocalDatabase) embeddedDatabase);
       }
 
@@ -463,6 +463,29 @@ public class ArcadeDBServer {
    */
   public void setDatabaseWrapper(final Function<LocalDatabase, DatabaseInternal> wrapper) {
     this.databaseWrapper = wrapper;
+  }
+
+  /**
+   * Re-wraps all already-loaded databases using the current databaseWrapper.
+   * Called by HA plugins (e.g., Raft) that start after databases are already loaded,
+   * to replace the plain LocalDatabase with a replicated database implementation.
+   */
+  public void rewrapDatabases() {
+    if (databaseWrapper == null)
+      return;
+
+    for (final var entry : databases.entrySet()) {
+      final ServerDatabase serverDb = entry.getValue();
+      final DatabaseInternal wrapped = serverDb.getWrappedDatabaseInstance();
+
+      // Only re-wrap if the underlying database is a plain LocalDatabase (not already wrapped)
+      if (wrapped instanceof LocalDatabase localDb) {
+        final DatabaseInternal newWrapped = databaseWrapper.apply(localDb);
+        final ServerDatabase newServerDb = new ServerDatabase(newWrapped);
+        databases.put(entry.getKey(), newServerDb);
+        LogManager.instance().log(this, Level.INFO, "Re-wrapped database '%s' with HA wrapper", entry.getKey());
+      }
+    }
   }
 
   public ServerSecurity getSecurity() {
@@ -556,7 +579,7 @@ public class ArcadeDBServer {
         if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
           if (databaseWrapper != null)
             embDatabase = databaseWrapper.apply((LocalDatabase) embDatabase);
-          else
+          else if (!"raft".equalsIgnoreCase(configuration.getValueAsString(GlobalConfiguration.HA_IMPLEMENTATION)))
             embDatabase = new ReplicatedDatabase(this, (LocalDatabase) embDatabase);
         }
 

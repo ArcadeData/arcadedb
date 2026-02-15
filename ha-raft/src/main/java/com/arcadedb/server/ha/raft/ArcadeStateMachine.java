@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
@@ -44,11 +45,16 @@ import java.util.logging.Level;
  */
 public class ArcadeStateMachine extends BaseStateMachine {
 
-  private ArcadeDBServer          server;
+  private volatile ArcadeDBServer  server;
+  private volatile RaftHAServer   raftHAServer;
   private volatile TermIndex      lastAppliedTermIndex;
 
   public void setServer(final ArcadeDBServer server) {
     this.server = server;
+  }
+
+  public void setRaftHAServer(final RaftHAServer raftHAServer) {
+    this.raftHAServer = raftHAServer;
   }
 
   @Override
@@ -80,6 +86,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    // On the leader, the transaction was already applied via commit2ndPhase() in RaftReplicatedDatabase.
+    // Only replicas need to apply WAL changes from the state machine.
+    if (raftHAServer != null && raftHAServer.isLeader()) {
+      LogManager.instance().log(this, Level.FINE, "Skipping tx apply on leader for database '%s'", decoded.databaseName());
+      return;
+    }
+
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
     final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
 
@@ -90,8 +103,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   private void applySchemaEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    // On the leader, schema changes were already applied locally during the transaction
+    if (raftHAServer != null && raftHAServer.isLeader()) {
+      LogManager.instance().log(this, Level.FINE, "Skipping schema apply on leader for database '%s'", decoded.databaseName());
+      return;
+    }
+
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
     final String databasePath = db.getDatabasePath();
+
+    LogManager.instance().log(this, Level.FINE,
+        "Applying schema entry to database '%s': filesToAdd=%d, filesToRemove=%d, hasSchemaJson=%s",
+        decoded.databaseName(),
+        decoded.filesToAdd() != null ? decoded.filesToAdd().size() : 0,
+        decoded.filesToRemove() != null ? decoded.filesToRemove().size() : 0,
+        decoded.schemaJson() != null && !decoded.schemaJson().isEmpty());
 
     try {
       if (decoded.filesToAdd() != null)
@@ -108,7 +134,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
         db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
 
-      db.getSchema().getEmbedded().initComponents();
+      // Reload the schema from disk so types, buckets, and file IDs are registered in memory
+      db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
 
     } catch (final IOException e) {
       throw new RuntimeException("Failed to apply schema entry for database '" + decoded.databaseName() + "'", e);
