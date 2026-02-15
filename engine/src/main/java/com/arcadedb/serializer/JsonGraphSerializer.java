@@ -114,8 +114,8 @@ public class JsonGraphSerializer extends JsonSerializer {
           inEdges.put(e.getIdentity().toString());
         object.put("i", inEdges);
       } else {
-        object.put("i", vertex.countEdges(Vertex.DIRECTION.IN, null));
-        object.put("o", vertex.countEdges(Vertex.DIRECTION.OUT, null));
+        object.put("i", vertex.countEdges(Vertex.DIRECTION.IN));
+        object.put("o", vertex.countEdges(Vertex.DIRECTION.OUT));
       }
 
     } else if (document instanceof Edge edge1) {

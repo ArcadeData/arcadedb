@@ -340,8 +340,8 @@ public class JsonSerializer {
         object.put(CAT_PROPERTY, "v");
         if (includeVertexEdges) {
           if (useVertexEdgeSize) {
-            object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT, null));
-            object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN, null));
+            object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT));
+            object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN));
 
           } else {
             final JSONArray outEdges = new JSONArray();

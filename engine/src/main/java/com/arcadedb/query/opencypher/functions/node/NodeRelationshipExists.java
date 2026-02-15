@@ -67,7 +67,7 @@ public class NodeRelationshipExists extends AbstractNodeFunction {
       }
       return false;
     } else {
-      return vertex.countEdges(direction, null) > 0;
+      return vertex.countEdges(direction) > 0;
     }
   }
 
