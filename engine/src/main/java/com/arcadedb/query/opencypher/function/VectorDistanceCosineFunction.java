@@ -20,47 +20,46 @@ package com.arcadedb.query.opencypher.function;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.List;
-
 /**
- * length() function - returns the length of a path (number of relationships).
+ * Computes the cosine distance between two vectors.
+ * Formula: 1 - cosine_similarity(v1, v2)
  *
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LengthFunction implements StatelessFunction {
+public class VectorDistanceCosineFunction implements StatelessFunction {
   @Override
   public String getName() {
-    return "length";
+    return "vector_distance_cosine";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("length() requires exactly one argument");
-
-    if (args[0] == null)
+    if (args.length != 2)
+      throw new CommandExecutionException("vector_distance_cosine() requires exactly 2 arguments");
+    if (args[0] == null || args[1] == null)
       return null;
-    if (args[0] instanceof TraversalPath)
-      return (long) ((TraversalPath) args[0]).length();
-    if (args[0] instanceof List) {
-      // Path is represented as a list of alternating vertices and edges
-      // Length = number of edges
-      final List<?> path = (List<?>) args[0];
-      long edgeCount = 0;
-      for (final Object element : path) {
-        if (element instanceof Edge) {
-          edgeCount++;
-        }
-      }
-      return edgeCount;
-    } else if (args[0] instanceof String) {
-      // Also support string length for compatibility
-      return (long) ((String) args[0]).length();
+
+    final float[] v1 = CypherFunctionHelper.toFloatArray(args[0]);
+    final float[] v2 = CypherFunctionHelper.toFloatArray(args[1]);
+
+    if (v1.length != v2.length)
+      throw new CommandExecutionException("vector_distance_cosine() requires vectors of the same dimension");
+
+    double dotProduct = 0.0;
+    double normA = 0.0;
+    double normB = 0.0;
+    for (int i = 0; i < v1.length; i++) {
+      dotProduct += v1[i] * v2[i];
+      normA += v1[i] * v1[i];
+      normB += v2[i] * v2[i];
     }
-    return 0L;
+
+    final double denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    if (denominator == 0.0)
+      return 0.0;
+
+    return 1.0 - (dotProduct / denominator);
   }
 }

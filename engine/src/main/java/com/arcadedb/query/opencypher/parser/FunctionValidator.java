@@ -175,6 +175,11 @@ public class FunctionValidator {
     registerFunction("vector.similarity.cosine", 2, 2, "Cosine similarity between vectors", false);
     registerFunction("vector.similarity.euclidean", 2, 2, "Euclidean similarity between vectors", false);
 
+    // Vector construction and distance functions (Cypher-specific; others delegate to SQL functions)
+    registerFunction("vector_create", 1, 2, "Create vector from list", false);
+    registerFunction("vector_distance_manhattan", 2, 2, "Manhattan distance between vectors", false);
+    registerFunction("vector_distance_cosine", 2, 2, "Cosine distance between vectors", false);
+
     // Geo-spatial functions
     registerFunction("point.withinbbox", 3, 3, "Check if point is within bounding box", false);
 

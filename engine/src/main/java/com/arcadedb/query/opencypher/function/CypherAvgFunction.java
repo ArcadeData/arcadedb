@@ -20,47 +20,47 @@ package com.arcadedb.query.opencypher.function;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.List;
-
 /**
- * length() function - returns the length of a path (number of relationships).
+ * Cypher avg() aggregation function.
+ * Always returns a Double result matching Neo4j/OpenCypher semantics,
+ * unlike the SQL avg() which preserves the input numeric type.
+ * Skips nulls.
  *
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LengthFunction implements StatelessFunction {
+public class CypherAvgFunction implements StatelessFunction {
+  private double sum = 0.0;
+  private int    count = 0;
+
   @Override
   public String getName() {
-    return "length";
+    return "avg";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
-      throw new CommandExecutionException("length() requires exactly one argument");
-
+      throw new CommandExecutionException("avg() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof TraversalPath)
-      return (long) ((TraversalPath) args[0]).length();
-    if (args[0] instanceof List) {
-      // Path is represented as a list of alternating vertices and edges
-      // Length = number of edges
-      final List<?> path = (List<?>) args[0];
-      long edgeCount = 0;
-      for (final Object element : path) {
-        if (element instanceof Edge) {
-          edgeCount++;
-        }
-      }
-      return edgeCount;
-    } else if (args[0] instanceof String) {
-      // Also support string length for compatibility
-      return (long) ((String) args[0]).length();
+    if (args[0] instanceof Number number) {
+      sum += number.doubleValue();
+      count++;
     }
-    return 0L;
+    return null;
+  }
+
+  @Override
+  public boolean aggregateResults() {
+    return true;
+  }
+
+  @Override
+  public Object getAggregatedResult() {
+    if (count == 0)
+      return null;
+    return sum / count;
   }
 }

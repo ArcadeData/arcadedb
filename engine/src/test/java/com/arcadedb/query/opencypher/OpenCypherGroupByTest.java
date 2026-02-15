@@ -94,20 +94,19 @@ class OpenCypherGroupByTest {
   @Test
   void groupByWithAverage() {
     // Group by city and compute average age
-    // Note: SQL avg() returns integer result when averaging integers
+    // Cypher avg() always returns a Double, matching Neo4j semantics
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) RETURN n.city AS city, avg(n.age) AS avgAge ORDER BY city");
 
-    // Expecting: LA=37 (truncated from 37.5), NYC=27 (truncated from 27.5), SF=28
-    final Map<String, Long> expectedAverages = new HashMap<>();
-    expectedAverages.put("LA", 37L);
-    expectedAverages.put("NYC", 27L);
-    expectedAverages.put("SF", 28L);
+    final Map<String, Double> expectedAverages = new HashMap<>();
+    expectedAverages.put("LA", 37.5);
+    expectedAverages.put("NYC", 27.5);
+    expectedAverages.put("SF", 28.0);
 
     while (result.hasNext()) {
       final Result row = result.next();
       final String city = (String) row.getProperty("city");
-      final long avgAge = ((Number) row.getProperty("avgAge")).longValue();
+      final double avgAge = ((Number) row.getProperty("avgAge")).doubleValue();
       assertThat(avgAge).isEqualTo(expectedAverages.get(city));
     }
   }
@@ -115,7 +114,7 @@ class OpenCypherGroupByTest {
   @Test
   void groupByWithMultipleAggregations() {
     // Group by city with multiple aggregations: count, avg, min, max
-    // Note: SQL avg() returns integer result when averaging integers
+    // Cypher avg() always returns a Double, matching Neo4j semantics
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) " +
             "RETURN n.city AS city, count(n) AS cnt, avg(n.age) AS avgAge, " +
@@ -126,7 +125,7 @@ class OpenCypherGroupByTest {
     final Result la = result.next();
     assertThat((String) la.getProperty("city")).isEqualTo("LA");
     assertThat(((Number) la.getProperty("cnt")).longValue()).isEqualTo(2L);
-    assertThat(((Number) la.getProperty("avgAge")).longValue()).isEqualTo(37L);
+    assertThat(((Number) la.getProperty("avgAge")).doubleValue()).isEqualTo(37.5);
     assertThat(((Number) la.getProperty("minAge")).longValue()).isEqualTo(35L);
     assertThat(((Number) la.getProperty("maxAge")).longValue()).isEqualTo(40L);
 
@@ -134,7 +133,7 @@ class OpenCypherGroupByTest {
     final Result nyc = result.next();
     assertThat((String) nyc.getProperty("city")).isEqualTo("NYC");
     assertThat(((Number) nyc.getProperty("cnt")).longValue()).isEqualTo(2L);
-    assertThat(((Number) nyc.getProperty("avgAge")).longValue()).isEqualTo(27L);
+    assertThat(((Number) nyc.getProperty("avgAge")).doubleValue()).isEqualTo(27.5);
     assertThat(((Number) nyc.getProperty("minAge")).longValue()).isEqualTo(25L);
     assertThat(((Number) nyc.getProperty("maxAge")).longValue()).isEqualTo(30L);
 
@@ -142,7 +141,7 @@ class OpenCypherGroupByTest {
     final Result sf = result.next();
     assertThat((String) sf.getProperty("city")).isEqualTo("SF");
     assertThat(((Number) sf.getProperty("cnt")).longValue()).isEqualTo(1L);
-    assertThat(((Number) sf.getProperty("avgAge")).longValue()).isEqualTo(28L);
+    assertThat(((Number) sf.getProperty("avgAge")).doubleValue()).isEqualTo(28.0);
     assertThat(((Number) sf.getProperty("minAge")).longValue()).isEqualTo(28L);
     assertThat(((Number) sf.getProperty("maxAge")).longValue()).isEqualTo(28L);
 
@@ -188,15 +187,37 @@ class OpenCypherGroupByTest {
   @Test
   void pureAggregationWithoutGrouping() {
     // Pure aggregation without grouping (should use AggregationStep, not GroupByAggregationStep)
-    // Note: SQL avg() returns integer result when averaging integers
+    // Cypher avg() always returns a Double, matching Neo4j semantics
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) RETURN count(n) AS total, avg(n.age) AS avgAge");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
     assertThat(((Number) row.getProperty("total")).longValue()).isEqualTo(5L);
-    // Ages: 30, 25, 35, 40, 28 -> sum=158, count=5, avg=31.6 truncated to 31
-    assertThat(((Number) row.getProperty("avgAge")).longValue()).isEqualTo(31L);
+    // Ages: 30, 25, 35, 40, 28 -> sum=158, count=5, avg=31.6
+    assertThat(((Number) row.getProperty("avgAge")).doubleValue()).isEqualTo(31.6);
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/3425
+   * Cypher avg() was returning integer (61) instead of float (61.8) for integer inputs.
+   */
+  @Test
+  void avgReturnsFloatForIntegerInputs() {
+    // Use exact data from the issue
+    database.command("opencypher",
+        "CREATE (:Person {age: 58}), (:Person {age: 70}), (:Person {age: 55}), (:Person {age: 55}), (:Person {age: 71})");
+
+    // avg of 58+70+55+55+71 = 309, 309/5 = 61.8
+    // Note: there are also 5 persons from setUp (ages 30,25,35,40,28), but we filter by age >= 55
+    final ResultSet result = database.command("opencypher",
+        "MATCH (p:Person) WHERE p.age >= 55 RETURN avg(p.age) as result");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    // Must be 61.8, not 61 (the bug was integer truncation)
+    assertThat(((Number) row.getProperty("result")).doubleValue()).isEqualTo(61.8);
     assertThat(result.hasNext()).isFalse();
   }
 }

@@ -63,7 +63,7 @@ public class NodeDegreeOut extends AbstractNodeFunction {
         count += vertex.countEdges(Vertex.DIRECTION.OUT, relType);
       }
     } else {
-      count = vertex.countEdges(Vertex.DIRECTION.OUT, null);
+      count = vertex.countEdges(Vertex.DIRECTION.OUT);
     }
 
     return count;
