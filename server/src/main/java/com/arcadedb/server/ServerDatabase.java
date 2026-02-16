@@ -63,9 +63,11 @@ import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.monitor.ProfilingResultSet;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.Callable;
 
 /**
  * Wrapper of database returned from the server when runs embedded that prevents the close(), drop() and kill() by the user.
