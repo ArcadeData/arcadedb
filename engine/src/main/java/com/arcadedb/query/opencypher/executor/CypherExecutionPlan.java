@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
@@ -60,6 +61,7 @@ import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
+import com.arcadedb.query.opencypher.executor.steps.LoadCSVStep;
 import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
@@ -899,6 +901,16 @@ public class CypherExecutionPlan {
             unwindStep.setPrevious(currentStep);
           }
           currentStep = unwindStep;
+          break;
+
+        case LOAD_CSV:
+          final LoadCSVClause loadCSVClause = entry.getTypedClause();
+          final LoadCSVStep loadCSVStep =
+              new LoadCSVStep(loadCSVClause, context, functionFactory);
+          if (currentStep != null) {
+            loadCSVStep.setPrevious(currentStep);
+          }
+          currentStep = loadCSVStep;
           break;
 
         case MATCH:

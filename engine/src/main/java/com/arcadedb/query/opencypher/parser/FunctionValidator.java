@@ -236,6 +236,10 @@ public class FunctionValidator {
     registerFunction("nullif", 2, 2, "Null if equal", false);
     registerFunction("valuetype", 1, 1, "Value type string", false);
     registerFunction("elementid", 1, 1, "Element ID", false);
+
+    // LOAD CSV context functions
+    registerFunction("file", 0, 0, "Current LOAD CSV file URL", false);
+    registerFunction("linenumber", 0, 0, "Current LOAD CSV line number", false);
   }
 
   private static void registerFunction(final String name, final int minArgs, final int maxArgs,

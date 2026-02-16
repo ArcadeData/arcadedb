@@ -129,6 +129,12 @@ public class ExpressionEvaluator {
       args[i] = evaluate(expression.getArguments().get(i), result, context);
     }
 
+    // Propagate LOAD CSV context from current row to context for file()/linenumber()
+    if (result != null && result.hasProperty("__loadCSV_file")) {
+      context.setVariable("__loadCSV_file", result.getProperty("__loadCSV_file"));
+      context.setVariable("__loadCSV_linenumber", result.getProperty("__loadCSV_linenumber"));
+    }
+
     // Execute function
     return function.execute(args, context);
   }

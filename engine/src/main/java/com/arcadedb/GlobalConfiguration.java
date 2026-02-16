@@ -274,6 +274,16 @@ public enum GlobalConfiguration {
       "Higher values improve performance but consume more memory. Default: 20000. Recommended range: 10000-100000. Set to 0 to disable batching.",
       Integer.class, 20_000),
 
+  OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS("arcadedb.opencypher.loadCsv.allowFileUrls", SCOPE.DATABASE,
+      "Allow LOAD CSV to access local files via file:/// URLs and bare file paths. "
+          + "Disable for security in multi-tenant server deployments.",
+      Boolean.class, true),
+
+  OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY("arcadedb.opencypher.loadCsv.importDirectory", SCOPE.DATABASE,
+      "Root directory for LOAD CSV file:/// URLs. When set, file paths are resolved relative to this "
+          + "directory and path traversal (../) is blocked. Empty string means no restriction.",
+      String.class, ""),
+
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
 
