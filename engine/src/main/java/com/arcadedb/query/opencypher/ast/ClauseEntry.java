@@ -40,7 +40,8 @@ public class ClauseEntry {
     RETURN,
     CALL,
     FOREACH,
-    SUBQUERY
+    SUBQUERY,
+    LOAD_CSV
   }
 
   private final ClauseType type;

@@ -50,6 +50,7 @@ class ClauseDispatcher {
     register(Cypher25Parser.ClauseContext::removeClause, this::handleRemove);
     register(Cypher25Parser.ClauseContext::foreachClause, this::handleForeach);
     register(Cypher25Parser.ClauseContext::subqueryClause, this::handleSubquery);
+    register(Cypher25Parser.ClauseContext::loadCSVClause, this::handleLoadCSV);
   }
 
   /**
@@ -161,5 +162,10 @@ class ClauseDispatcher {
   private void handleSubquery(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
                               final CypherASTBuilder astBuilder) {
     builder.addSubquery(astBuilder.visitSubqueryClause(ctx.subqueryClause()));
+  }
+
+  private void handleLoadCSV(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
+                              final CypherASTBuilder astBuilder) {
+    builder.addLoadCSV(astBuilder.visitLoadCSVClause(ctx.loadCSVClause()));
   }
 }
