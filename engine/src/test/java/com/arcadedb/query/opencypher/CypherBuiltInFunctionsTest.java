@@ -27,7 +27,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
-import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
@@ -36,7 +36,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 

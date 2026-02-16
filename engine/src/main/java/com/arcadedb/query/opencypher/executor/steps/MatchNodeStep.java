@@ -30,7 +30,7 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
-import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
