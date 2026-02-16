@@ -23,10 +23,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 
-
-import java.io.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.File;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
