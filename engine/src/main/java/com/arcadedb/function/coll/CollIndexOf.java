@@ -54,7 +54,7 @@ public class CollIndexOf extends AbstractCollFunction {
     if (args.length != 2)
       throw new CommandExecutionException("coll.indexOf() requires exactly 2 arguments");
     final List<Object> list = asList(args[0]);
-    if (list == null)
+    if (list == null || args[1] == null)
       return null;
     return (long) list.indexOf(args[1]);
   }
