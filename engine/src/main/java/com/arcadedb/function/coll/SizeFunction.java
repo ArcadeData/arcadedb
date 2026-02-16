@@ -41,8 +41,16 @@ public class SizeFunction implements StatelessFunction {
       return null;
     if (args[0] instanceof List)
       return (long) ((List<?>) args[0]).size();
-    else if (args[0] instanceof String)
+    if (args[0] instanceof String)
       return (long) ((String) args[0]).length();
+    if (args[0] instanceof float[])
+      return (long) ((float[]) args[0]).length;
+    if (args[0] instanceof double[])
+      return (long) ((double[]) args[0]).length;
+    if (args[0] instanceof int[])
+      return (long) ((int[]) args[0]).length;
+    if (args[0] instanceof long[])
+      return (long) ((long[]) args[0]).length;
     return null;
   }
 }
