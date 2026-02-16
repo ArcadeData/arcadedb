@@ -31,7 +31,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
 import java.util.HashMap;
 import java.util.Map;

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.query.opencypher.functions.convert.*;
+import com.arcadedb.function.convert.*;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;

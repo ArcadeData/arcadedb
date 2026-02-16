@@ -1,0 +1,62 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.function.sql;
+
+import com.arcadedb.log.LogManager;
+import com.arcadedb.function.sql.misc.SQLStaticReflectiveFunction;
+
+import java.lang.reflect.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
+
+/**
+ * Factory for custom SQL functions.
+ *
+ * @author Fabrizio Fortino
+ */
+public class SQLFunctionReflectionFactory {
+  private final DefaultSQLFunctionFactory factory;
+
+  public SQLFunctionReflectionFactory(final DefaultSQLFunctionFactory factory) {
+    this.factory = factory;
+    register("math_", Math.class);
+  }
+
+  public void register(final String prefix, final Class<?> clazz) {
+    final Map<String, List<Method>> methodsMap = Arrays.stream(clazz.getMethods())
+        .filter(m -> Modifier.isStatic(m.getModifiers()))
+        .collect(Collectors.groupingBy(Method::getName));
+
+    for (final Map.Entry<String, List<Method>> entry : methodsMap.entrySet()) {
+      final String name = prefix + entry.getKey();
+      if (factory.getFunctionNames().contains(name)) {
+        LogManager.instance().log(this, Level.WARNING, "Unable to register reflective function with name '%s'", name);
+      } else {
+        final List<Method> methodsList = methodsMap.get(entry.getKey());
+        final Method[] methods = new Method[methodsList.size()];
+        int i = 0;
+        for (final Method m : methodsList) {
+          methods[i++] = m;
+        }
+        factory.register(name.toLowerCase(Locale.ENGLISH), new SQLStaticReflectiveFunction(name, methods));
+      }
+    }
+  }
+}
