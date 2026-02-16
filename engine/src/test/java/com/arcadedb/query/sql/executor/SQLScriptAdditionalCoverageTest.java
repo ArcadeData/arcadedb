@@ -23,7 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.SQLQueryEngine;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

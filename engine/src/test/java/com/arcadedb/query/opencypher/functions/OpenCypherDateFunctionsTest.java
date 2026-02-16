@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.query.opencypher.functions.date.*;
+import com.arcadedb.function.date.*;
 import org.junit.jupiter.api.Test;
 
 import java.time.ZoneId;

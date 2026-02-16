@@ -44,7 +44,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.function.geo.GeoUtils;
+import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;

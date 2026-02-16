@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.query.opencypher.functions.util.*;
+import com.arcadedb.function.util.*;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

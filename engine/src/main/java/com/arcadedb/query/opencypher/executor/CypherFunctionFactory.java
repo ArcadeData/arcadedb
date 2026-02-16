@@ -20,10 +20,20 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.query.opencypher.function.*;
-import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
+import com.arcadedb.function.vector.*;
+import com.arcadedb.function.text.*;
+import com.arcadedb.function.convert.*;
+import com.arcadedb.function.coll.*;
+import com.arcadedb.function.graph.*;
+import com.arcadedb.function.temporal.*;
+import com.arcadedb.function.agg.*;
+import com.arcadedb.function.misc.*;
+import com.arcadedb.function.geo.*;
+import com.arcadedb.function.cypher.*;
+import com.arcadedb.function.math.*;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.sql.executor.SQLFunction;
-import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
 import java.util.HashMap;
 import java.util.Map;

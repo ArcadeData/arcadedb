@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.executor.FunctionAggregationContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
-import com.arcadedb.query.sql.function.graph.SQLFunctionMove;
+import com.arcadedb.function.sql.graph.SQLFunctionMove;
 
 import java.util.*;
 import java.util.stream.*;

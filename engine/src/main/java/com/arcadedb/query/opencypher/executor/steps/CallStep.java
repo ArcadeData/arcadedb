@@ -28,7 +28,7 @@ import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
-import com.arcadedb.query.opencypher.functions.CypherFunctionRegistry;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.*;
