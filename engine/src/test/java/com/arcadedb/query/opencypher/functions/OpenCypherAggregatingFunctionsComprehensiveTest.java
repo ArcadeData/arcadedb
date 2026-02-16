@@ -96,7 +96,7 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "UNWIND [null, null] AS val RETURN avg(val) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+    Assertions.assertThat(result.next().getProperty("result")).isNull();
   }
 
   // ==================== collect() Tests ====================
