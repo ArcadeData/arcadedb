@@ -19,8 +19,10 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
@@ -42,6 +44,9 @@ import java.util.NoSuchElementException;
  * For each input row from the previous step, executes the inner query
  * with the outer row's variables available (imported via WITH inside the subquery).
  * The inner query's RETURN values are merged with the outer row.
+ * <p>
+ * When IN TRANSACTIONS is specified, the subquery commits changes in batches
+ * rather than accumulating all changes in a single transaction.
  * <p>
  * Example:
  * <pre>
@@ -69,6 +74,13 @@ public class SubqueryStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    if (subqueryClause.isInTransactions())
+      return syncPullInTransactions(context, nRecords);
+
+    return syncPullNormal(context, nRecords);
+  }
+
+  private ResultSet syncPullNormal(final CommandContext context, final int nRecords) {
     final boolean hasPrevious = prev != null;
 
     return new ResultSet() {
@@ -184,6 +196,133 @@ public class SubqueryStep extends AbstractExecutionStep {
   }
 
   /**
+   * IN TRANSACTIONS mode: collects all input rows, executes the inner query in batches,
+   * committing after each batch.
+   */
+  private ResultSet syncPullInTransactions(final CommandContext context, final int nRecords) {
+    final boolean hasPrevious = prev != null;
+
+    // Resolve batch size
+    final int batchSize = resolveBatchSize(context);
+
+    return new ResultSet() {
+      private ResultSet prevResults = null;
+      private final List<Result> buffer = new ArrayList<>();
+      private int bufferIndex = 0;
+      private boolean finished = false;
+
+      @Override
+      public boolean hasNext() {
+        if (bufferIndex < buffer.size())
+          return true;
+        if (finished)
+          return false;
+        fetchMore(nRecords);
+        return bufferIndex < buffer.size();
+      }
+
+      @Override
+      public Result next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        return buffer.get(bufferIndex++);
+      }
+
+      private void fetchMore(final int n) {
+        buffer.clear();
+        bufferIndex = 0;
+
+        if (prevResults == null) {
+          if (hasPrevious)
+            prevResults = prev.syncPull(context, nRecords);
+          else {
+            prevResults = new ResultSet() {
+              private boolean consumed = false;
+
+              @Override
+              public boolean hasNext() {
+                return !consumed;
+              }
+
+              @Override
+              public Result next() {
+                if (consumed)
+                  throw new NoSuchElementException();
+                consumed = true;
+                return new ResultInternal();
+              }
+
+              @Override
+              public void close() {
+              }
+            };
+          }
+        }
+
+        // Collect a batch of outer rows
+        final List<Result> batch = new ArrayList<>();
+        while (batch.size() < batchSize && prevResults.hasNext())
+          batch.add(prevResults.next());
+
+        if (batch.isEmpty()) {
+          finished = true;
+          return;
+        }
+
+        // Execute the batch in its own transaction
+        database.begin();
+        try {
+          for (final Result outerRow : batch) {
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
+
+              final List<Result> innerResults = executeInnerQuery(outerRow, context);
+
+              if (innerResults.isEmpty()) {
+                if (subqueryClause.isOptional())
+                  buffer.add(outerRow);
+              } else {
+                for (final Result innerRow : innerResults)
+                  buffer.add(mergeResults(outerRow, innerRow));
+              }
+            } finally {
+              if (context.isProfiling())
+                cost += (System.nanoTime() - begin);
+            }
+          }
+          database.commit();
+        } catch (final Exception e) {
+          database.rollbackAllNested();
+          throw e;
+        }
+
+        // If no more input, mark finished
+        if (!prevResults.hasNext())
+          finished = true;
+      }
+
+      @Override
+      public void close() {
+        SubqueryStep.this.close();
+      }
+    };
+  }
+
+  private int resolveBatchSize(final CommandContext context) {
+    final Expression batchSizeExpr = subqueryClause.getBatchSize();
+    if (batchSizeExpr == null)
+      return subqueryClause.getDefaultBatchSize();
+
+    final Object value = expressionEvaluator.evaluate(batchSizeExpr, new ResultInternal(), context);
+    if (value instanceof Number number)
+      return number.intValue();
+
+    throw new CommandExecutionException("IN TRANSACTIONS batch size must be a number, got: " + value);
+  }
+
+  /**
    * Executes the inner query with the outer row as the initial seed.
    * The seed row provides variables for the inner query's WITH clause.
    */
@@ -230,6 +369,8 @@ public class SubqueryStep extends AbstractExecutionStep {
     else
       builder.append("+ ");
     builder.append("CALL SUBQUERY { ... }");
+    if (subqueryClause.isInTransactions())
+      builder.append(" IN TRANSACTIONS");
     if (context.isProfiling())
       builder.append(" (").append(getCostFormatted()).append(")");
     return builder.toString();

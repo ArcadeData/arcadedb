@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,8 +36,12 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPOutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for LOAD CSV Cypher clause.
@@ -53,6 +59,10 @@ public class OpenCypherLoadCSVTest {
 
   @AfterEach
   void tearDown() throws IOException {
+    // Reset configuration changes
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS, true);
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY, "");
+
     if (database != null) {
       database.drop();
       database = null;
@@ -284,5 +294,238 @@ public class OpenCypherLoadCSVTest {
     assertThat(results).hasSize(1);
     @SuppressWarnings("unchecked") final List<String> row = results.get(0).getProperty("row");
     assertThat(row).containsExactly("hello", "world");
+  }
+
+  // ===== Security: File URLs disabled =====
+
+  @Test
+  void loadCSVFileUrlsDisabled() throws IOException {
+    final Path csvFile = testDataDir.resolve("security.csv");
+    Files.writeString(csvFile, "a,b\n");
+
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS, false);
+
+    final String url = csvFile.toAbsolutePath().toUri().toString();
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "LOAD CSV FROM '" + url + "' AS row RETURN row")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    })).isInstanceOf(SecurityException.class)
+        .hasMessageContaining("file:/// URLs are disabled");
+  }
+
+  @Test
+  void loadCSVBarePathDisabledWhenFileUrlsOff() throws IOException {
+    final Path csvFile = testDataDir.resolve("security2.csv");
+    Files.writeString(csvFile, "a,b\n");
+
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS, false);
+
+    final String path = csvFile.toAbsolutePath().toString();
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "LOAD CSV FROM '" + path + "' AS row RETURN row")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    })).isInstanceOf(SecurityException.class);
+  }
+
+  // ===== Security: Import directory restriction =====
+
+  @Test
+  void loadCSVImportDirectoryAllowsFilesInside() throws IOException {
+    final Path csvFile = testDataDir.resolve("inside.csv");
+    Files.writeString(csvFile, "hello,world\n");
+
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY,
+        testDataDir.toAbsolutePath().toString());
+
+    // Use just the filename — should resolve relative to the import directory
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "LOAD CSV FROM 'inside.csv' AS row RETURN row")) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+
+    assertThat(results).hasSize(1);
+    @SuppressWarnings("unchecked") final List<String> row = results.get(0).getProperty("row");
+    assertThat(row).containsExactly("hello", "world");
+  }
+
+  @Test
+  void loadCSVImportDirectoryBlocksPathTraversal() throws IOException {
+    final Path csvFile = testDataDir.resolve("traversal.csv");
+    Files.writeString(csvFile, "a,b\n");
+
+    // Set import directory to a subdirectory
+    final Path subDir = testDataDir.resolve("allowed");
+    Files.createDirectories(subDir);
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY,
+        subDir.toAbsolutePath().toString());
+
+    // Try to access parent directory with ../
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "LOAD CSV FROM '../traversal.csv' AS row RETURN row")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    })).isInstanceOf(SecurityException.class)
+        .hasMessageContaining("path traversal blocked");
+  }
+
+  // ===== Gzip compression =====
+
+  @Test
+  void loadCSVGzipCompressed() throws IOException {
+    final Path gzFile = testDataDir.resolve("data.csv.gz");
+    try (final GZIPOutputStream gos = new GZIPOutputStream(new FileOutputStream(gzFile.toFile()))) {
+      gos.write("name,age\nAlice,30\nBob,25\n".getBytes());
+    }
+
+    final String url = gzFile.toAbsolutePath().toUri().toString();
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "LOAD CSV WITH HEADERS FROM '" + url + "' AS row RETURN row.name AS name, row.age AS age")) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+
+    assertThat(results).hasSize(2);
+    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.get(0).<String>getProperty("age")).isEqualTo("30");
+    assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Bob");
+    assertThat(results.get(1).<String>getProperty("age")).isEqualTo("25");
+  }
+
+  // ===== ZIP compression =====
+
+  @Test
+  void loadCSVZipCompressed() throws IOException {
+    final Path zipFile = testDataDir.resolve("data.csv.zip");
+    try (final ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile.toFile()))) {
+      zos.putNextEntry(new ZipEntry("data.csv"));
+      zos.write("name,age\nCharlie,40\nDiana,35\n".getBytes());
+      zos.closeEntry();
+    }
+
+    final String url = zipFile.toAbsolutePath().toUri().toString();
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "LOAD CSV WITH HEADERS FROM '" + url + "' AS row RETURN row.name AS name, row.age AS age")) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+
+    assertThat(results).hasSize(2);
+    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Charlie");
+    assertThat(results.get(0).<String>getProperty("age")).isEqualTo("40");
+    assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Diana");
+    assertThat(results.get(1).<String>getProperty("age")).isEqualTo("35");
+  }
+
+  // ===== Backslash quote escaping =====
+
+  @Test
+  void loadCSVBackslashEscaping() throws IOException {
+    final Path csvFile = testDataDir.resolve("backslash.csv");
+    // Use backslash escaping: \"
+    Files.writeString(csvFile, "name,quote\n\"Alice\",\"She said \\\"hello\\\"\"\nBob,world\n");
+
+    final String url = csvFile.toAbsolutePath().toUri().toString();
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "LOAD CSV WITH HEADERS FROM '" + url + "' AS row RETURN row.name AS name, row.quote AS quote")) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+
+    assertThat(results).hasSize(2);
+    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.get(0).<String>getProperty("quote")).isEqualTo("She said \"hello\"");
+    assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Bob");
+    assertThat(results.get(1).<String>getProperty("quote")).isEqualTo("world");
+  }
+
+  // ===== CALL {} IN TRANSACTIONS =====
+
+  @Test
+  void loadCSVCallInTransactionsWithBatchSize() throws IOException {
+    final Path csvFile = testDataDir.resolve("batch.csv");
+    final StringBuilder csv = new StringBuilder("name\n");
+    for (int i = 0; i < 100; i++)
+      csv.append("Person").append(i).append("\n");
+    Files.writeString(csvFile, csv.toString());
+
+    database.getSchema().createVertexType("BatchPerson");
+
+    // IN TRANSACTIONS manages its own transactions
+    database.setAutoTransaction(true);
+    final String url = csvFile.toAbsolutePath().toUri().toString();
+    try (final ResultSet rs = database.command("opencypher",
+        "LOAD CSV WITH HEADERS FROM '" + url + "' AS row " +
+            "CALL { WITH row CREATE (n:BatchPerson {name: row.name}) } IN TRANSACTIONS OF 25 ROWS")) {
+      while (rs.hasNext())
+        rs.next();
+    }
+
+    // Verify all 100 nodes were created
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "MATCH (n:BatchPerson) RETURN count(n) AS cnt")) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+
+    assertThat(results).hasSize(1);
+    assertThat(results.get(0).<Long>getProperty("cnt")).isEqualTo(100L);
+  }
+
+  @Test
+  void loadCSVCallInTransactionsDefaultBatch() throws IOException {
+    final Path csvFile = testDataDir.resolve("defaultbatch.csv");
+    final StringBuilder csv = new StringBuilder("name\n");
+    for (int i = 0; i < 50; i++)
+      csv.append("Item").append(i).append("\n");
+    Files.writeString(csvFile, csv.toString());
+
+    database.getSchema().createVertexType("DefaultBatchItem");
+
+    // IN TRANSACTIONS manages its own transactions
+    database.setAutoTransaction(true);
+    final String url = csvFile.toAbsolutePath().toUri().toString();
+    try (final ResultSet rs = database.command("opencypher",
+        "LOAD CSV WITH HEADERS FROM '" + url + "' AS row " +
+            "CALL { WITH row CREATE (n:DefaultBatchItem {name: row.name}) } IN TRANSACTIONS")) {
+      while (rs.hasNext())
+        rs.next();
+    }
+
+    // Verify all 50 nodes were created
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "MATCH (n:DefaultBatchItem) RETURN count(n) AS cnt")) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+
+    assertThat(results).hasSize(1);
+    assertThat(results.get(0).<Long>getProperty("cnt")).isEqualTo(50L);
   }
 }

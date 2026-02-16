@@ -352,7 +352,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse the inner query
     final CypherStatement innerStatement = (CypherStatement) visit(ctx.queryWithLocalDefinitions());
 
-    return new SubqueryClause(innerStatement, scopeVariables, optional);
+    // Parse IN TRANSACTIONS parameters
+    boolean inTransactions = false;
+    Expression batchSize = null;
+    final Cypher25Parser.SubqueryInTransactionsParametersContext txParams = ctx.subqueryInTransactionsParameters();
+    if (txParams != null) {
+      inTransactions = true;
+      if (txParams.subqueryInTransactionsBatchParameters() != null && !txParams.subqueryInTransactionsBatchParameters().isEmpty()) {
+        final Cypher25Parser.SubqueryInTransactionsBatchParametersContext batchCtx =
+            txParams.subqueryInTransactionsBatchParameters(0);
+        if (batchCtx.expression() != null)
+          batchSize = expressionBuilder.parseExpression(batchCtx.expression());
+      }
+    }
+
+    return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize);
   }
 
   @Override

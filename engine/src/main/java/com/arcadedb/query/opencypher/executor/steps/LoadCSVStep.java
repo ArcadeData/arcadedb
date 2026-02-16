@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -31,18 +32,22 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * Execution step for LOAD CSV clause.
@@ -177,7 +182,7 @@ public class LoadCSVStep extends AbstractExecutionStep {
               throw new CommandExecutionException("LOAD CSV URL expression evaluated to null");
             currentUrl = urlValue.toString();
             currentLineNumber = 0;
-            currentReader = openReader(currentUrl);
+            currentReader = openReader(currentUrl, context);
 
             if (loadCSVClause.isWithHeaders()) {
               final String headerLine = readCSVLine(currentReader);
@@ -227,20 +232,71 @@ public class LoadCSVStep extends AbstractExecutionStep {
   }
 
   /**
-   * Opens a BufferedReader for the given URL string.
+   * Opens a raw InputStream for the given URL string, applying security checks.
    * Supports file:/// URLs, http(s):// URLs, and bare file paths.
    */
-  static BufferedReader openReader(final String url) throws IOException {
-    if (url.startsWith("file:///")) {
-      final String path = URI.create(url).getPath();
-      return new BufferedReader(new FileReader(path, StandardCharsets.UTF_8));
-    } else if (url.startsWith("http://") || url.startsWith("https://")) {
+  static InputStream openRawInputStream(final String url, final CommandContext context) throws IOException {
+    if (url.startsWith("http://") || url.startsWith("https://")) {
       final URL netUrl = URI.create(url).toURL();
-      return new BufferedReader(new InputStreamReader(netUrl.openStream(), StandardCharsets.UTF_8));
-    } else {
-      // Bare file path
-      return new BufferedReader(new FileReader(new File(url), StandardCharsets.UTF_8));
+      return netUrl.openStream();
     }
+
+    // File-based URL — check security settings
+    final boolean allowFileUrls = context.getDatabase().getConfiguration()
+        .getValueAsBoolean(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS);
+    if (!allowFileUrls)
+      throw new SecurityException("LOAD CSV file:/// URLs are disabled. Set arcadedb.opencypher.loadCsv.allowFileUrls=true to enable.");
+
+    String filePath;
+    if (url.startsWith("file:///"))
+      filePath = URI.create(url).getPath();
+    else
+      filePath = url;
+
+    filePath = resolveAndValidatePath(filePath, context);
+    return new FileInputStream(filePath);
+  }
+
+  /**
+   * Resolves a file path against the configured import directory and validates
+   * that the resolved path does not escape outside the import directory.
+   */
+  static String resolveAndValidatePath(final String path, final CommandContext context) throws IOException {
+    final String importDir = context.getDatabase().getConfiguration()
+        .getValueAsString(GlobalConfiguration.OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY);
+
+    if (importDir == null || importDir.isEmpty())
+      return path; // No restriction
+
+    final Path importDirPath = Path.of(importDir).toAbsolutePath().normalize();
+    final Path resolvedPath = importDirPath.resolve(path).normalize().toAbsolutePath();
+
+    if (!resolvedPath.startsWith(importDirPath))
+      throw new SecurityException(
+          "LOAD CSV path traversal blocked: resolved path '" + resolvedPath + "' is outside import directory '" + importDirPath + "'");
+
+    return resolvedPath.toString();
+  }
+
+  /**
+   * Opens a BufferedReader for the given URL string, with security checks and compression support.
+   * Supports file:/// URLs, http(s):// URLs, and bare file paths.
+   * Transparently decompresses .gz and .zip files.
+   */
+  static BufferedReader openReader(final String url, final CommandContext context) throws IOException {
+    InputStream is = openRawInputStream(url, context);
+
+    if (url.endsWith(".gz"))
+      is = new GZIPInputStream(is);
+    else if (url.endsWith(".zip")) {
+      final ZipInputStream zis = new ZipInputStream(is);
+      final ZipEntry entry = zis.getNextEntry();
+      if (entry == null)
+        throw new CommandExecutionException("ZIP file is empty: " + url);
+      is = zis;
+    }
+
+    return new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
   }
 
   /**
@@ -268,13 +324,18 @@ public class LoadCSVStep extends AbstractExecutionStep {
     }
   }
 
+  /**
+   * Counts unescaped quotes in a string, accounting for both "" and \" escape sequences.
+   */
   private static int countUnescapedQuotes(final String s) {
     int count = 0;
     for (int i = 0; i < s.length(); i++) {
-      if (s.charAt(i) == '"') {
+      if (s.charAt(i) == '\\' && i + 1 < s.length() && s.charAt(i + 1) == '"') {
+        i++; // Skip backslash-escaped quote
+      } else if (s.charAt(i) == '"') {
         count++;
         if (i + 1 < s.length() && s.charAt(i + 1) == '"')
-          i++; // Skip escaped quote
+          i++; // Skip double-quote escape
       }
     }
     return count;
@@ -282,7 +343,7 @@ public class LoadCSVStep extends AbstractExecutionStep {
 
   /**
    * Parses a CSV line into fields following RFC 4180 (handles quoted fields with embedded
-   * delimiters, newlines, and escaped quotes).
+   * delimiters, newlines, and escaped quotes). Also supports backslash escaping (\").
    */
   static List<String> parseCSVLine(final String line, final String delimiter) {
     final List<String> fields = new ArrayList<>();
@@ -311,6 +372,10 @@ public class LoadCSVStep extends AbstractExecutionStep {
               i++; // Skip closing quote
               break;
             }
+          } else if (line.charAt(i) == '\\' && i + 1 < len && line.charAt(i + 1) == '"') {
+            // Backslash escape: \" → "
+            sb.append('"');
+            i += 2;
           } else {
             sb.append(line.charAt(i));
             i++;
