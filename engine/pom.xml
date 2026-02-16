@@ -46,7 +46,7 @@
         <antlr4.version>4.9.1</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
         <cucumber.version>7.34.2</cucumber.version>
-        <junit-platform-suite.version>6.0.2</junit-platform-suite.version>
+        <junit-platform-suite.version>6.0.3</junit-platform-suite.version>
     </properties>
 
     <build>
