@@ -744,7 +744,7 @@ git commit -m "feat(fulltext): support multi-property full-text indexes"
 **Step 1: Write the failing test**
 
 ```java
-package com.arcadedb.query.sql.function.text;
+package com.arcadedb.function.sql.text;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
@@ -812,7 +812,7 @@ Expected: FAIL with "Unknown function 'SEARCH_INDEX'"
 **Step 3: Create SQLFunctionSearchIndex**
 
 ```java
-package com.arcadedb.query.sql.function.text;
+package com.arcadedb.function.sql.text;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
@@ -824,7 +824,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
@@ -903,7 +903,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract {
 Add to `DefaultSQLFunctionFactory.java` after line 194 (in the Text section):
 
 ```java
-import com.arcadedb.query.sql.function.text.SQLFunctionSearchIndex;
+import com.arcadedb.function.sql.text.SQLFunctionSearchIndex;
 
 // In constructor, add after SQLFunctionStrcmpci:
 register(SQLFunctionSearchIndex.NAME, SQLFunctionSearchIndex.class);
@@ -1318,7 +1318,7 @@ git commit -m "feat(fulltext): integrate Lucene QueryParser in SEARCH_INDEX func
 **Step 1: Write the failing test**
 
 ```java
-package com.arcadedb.query.sql.function.text;
+package com.arcadedb.function.sql.text;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
@@ -1369,7 +1369,7 @@ Expected: FAIL with "Unknown function 'SEARCH_FIELDS'"
 **Step 3: Create SQLFunctionSearchFields**
 
 ```java
-package com.arcadedb.query.sql.function.text;
+package com.arcadedb.function.sql.text;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
@@ -1384,7 +1384,7 @@ import com.arcadedb.index.fulltext.FullTextQueryExecutor;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -1500,7 +1500,7 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
 Add after SQLFunctionSearchIndex registration:
 
 ```java
-import com.arcadedb.query.sql.function.text.SQLFunctionSearchFields;
+import com.arcadedb.function.sql.text.SQLFunctionSearchFields;
 
 register(SQLFunctionSearchFields.NAME, SQLFunctionSearchFields.class);
 ```
