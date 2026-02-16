@@ -96,7 +96,7 @@ class CompressionAwareServiceTest {
     String statsString = stats.getStats();
 
     // Should not throw with zero counts
-    assertThat(statsString).contains("0.0%");
+    assertThat(statsString).matches(".*0(.|,)0%.*");
   }
 
   @Test
@@ -108,6 +108,6 @@ class CompressionAwareServiceTest {
     stats.recordRequest(false);
 
     String statsString = stats.getStats();
-    assertThat(statsString).contains("50.0%");
+    assertThat(statsString).matches(".*50(.|,)0%.*");
   }
 }
