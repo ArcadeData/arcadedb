@@ -22,8 +22,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ReplicationCallback;
 
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 public class ReplicationServerQuorumMajority1ServerOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
