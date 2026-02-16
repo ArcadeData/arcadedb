@@ -417,6 +417,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
+      Set<RID> removedRids = null;
+      boolean hasRemoves = false;
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = getDatabase().getTransaction()
           .getIndexChanges().getIndexKeys(getName());
@@ -426,9 +428,18 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         if (values != null) {
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
-                // REMOVED
-                return EMPTY_CURSOR;
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE) {
+                if (isUnique())
+                  // FOR UNIQUE INDEXES, A REMOVE MEANS THE KEY IS GONE
+                  return EMPTY_CURSOR;
+
+                hasRemoves = true;
+                if (removedRids == null)
+                  removedRids = new HashSet<>();
+                if (value.rid != null)
+                  removedRids.add(value.rid);
+                continue;
+              }
 
               if (txChanges == null)
                 txChanges = new HashSet<>();
@@ -445,10 +456,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
       final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, limit));
 
-      if (txChanges != null) {
-        // MERGE SETS
-        while (result.hasNext())
-          txChanges.add(new IndexCursorEntry(convertedKeys, result.next(), 1));
+      if (txChanges != null || hasRemoves) {
+        if (txChanges == null)
+          txChanges = new HashSet<>();
+
+        // MERGE WITH DISK RESULTS, FILTERING OUT REMOVED RIDS
+        while (result.hasNext()) {
+          final Identifiable next = result.next();
+          if (removedRids == null || !removedRids.contains(next.getIdentity()))
+            txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
+        }
         return new TempIndexCursor(txChanges);
       }
 
