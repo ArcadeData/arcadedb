@@ -79,7 +79,7 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
   void avgBasic() {
     final ResultSet result = database.command("opencypher",
         "MATCH (p:Person) RETURN avg(p.age) AS result");
-    Assertions.assertThat(result.hasNext() != false).isTrue();
+    Assertions.assertThat(result.hasNext()).isTrue();
     assertThat(((Number) result.next().getProperty("result")).doubleValue()).isCloseTo(61.8, within(0.1));
   }
 
