@@ -71,25 +71,50 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.flatten ==========
   @Test
-  void testCollFlatten() {
+  void testCollFlattenDefaultOneLevelDeep() {
+    // #3442: default flatten should only flatten one level deep
+    final ResultSet rs = database.query("opencypher", "RETURN coll.flatten(['a', ['b', ['c']]]) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    // One level flatten: ['a', 'b', ['c']]
+    assertThat(result).hasSize(3);
+    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.get(1)).isEqualTo("b");
+    assertThat(result.get(2)).isInstanceOf(List.class);
+  }
+
+  @Test
+  void testCollFlattenDepthZero() {
+    // #3443: coll.flatten(list, 0) should return the list unchanged
+    final ResultSet rs = database.query("opencypher", "RETURN coll.flatten(['a', ['b']], 0) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<Object> result = rs.next().getProperty("result");
+    assertThat(result).hasSize(2);
+    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.get(1)).isInstanceOf(List.class);
+  }
+
+  @Test
+  void testCollFlattenNullDepthReturnsNull() {
+    // #3444: coll.flatten(list, null) should return null
+    final ResultSet rs = database.query("opencypher", "RETURN coll.flatten(['a'], null) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((Object) rs.next().getProperty("result")).isNull();
+  }
+
+  @Test
+  void testCollFlattenMultipleLevels() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.flatten([[1, 2], [3, [4, 5]]]) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
-    assertThat(result).hasSize(5);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
-    assertThat(((Number) result.get(4)).longValue()).isEqualTo(5L);
-  }
-
-  @Test
-  void testCollFlattenShallow() {
-    final ResultSet rs = database.query("opencypher", "RETURN coll.flatten([[1, 2], [3, [4, 5]]], true) AS result");
-    assertThat(rs.hasNext()).isTrue();
-    @SuppressWarnings("unchecked")
-    final List<Object> result = rs.next().getProperty("result");
-    // Shallow: only flattens one level, so [4, 5] stays as a nested list
+    // Default depth=1: flattens one level, so [4, 5] stays nested
     assertThat(result).hasSize(4);
     assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
+    assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
     assertThat(result.get(3)).isInstanceOf(List.class);
   }
 

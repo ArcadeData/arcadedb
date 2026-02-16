@@ -25,8 +25,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * coll.flatten(list, [shallow]) - Flattens nested lists into a single list.
- * If shallow is true (default false), only flattens one level deep.
+ * coll.flatten(list, [depth]) - Flattens nested lists into a single list.
+ * The depth parameter controls how many levels of nesting to flatten (default 1).
+ * If depth is 0, the list is returned unchanged. If depth is null, returns null.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,9 +60,21 @@ public class CollFlatten extends AbstractCollFunction {
     if (list == null)
       return null;
 
-    final boolean shallow = args.length > 1 && args[1] instanceof Boolean && (Boolean) args[1];
+    int maxDepth = 1; // default: flatten one level
+    if (args.length > 1) {
+      if (args[1] == null)
+        return null;
+      if (args[1] instanceof Number)
+        maxDepth = ((Number) args[1]).intValue();
+      else if (args[1] instanceof Boolean)
+        maxDepth = (Boolean) args[1] ? 1 : -1;
+    }
+
+    if (maxDepth == 0)
+      return new ArrayList<>(list);
+
     final List<Object> result = new ArrayList<>();
-    flatten(list, result, shallow ? 1 : -1, 0);
+    flatten(list, result, maxDepth, 0);
     return result;
   }
 
