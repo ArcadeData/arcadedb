@@ -217,6 +217,61 @@ public class DeleteStatementTest extends TestHelper {
 
   }
 
+  @Test
+  void deleteEdgesSequentiallyWithOrConditions() {
+    // Reproduction test for issue #3452
+    // Edge is not deleted when multiple sequential DELETEs with OR conditions are executed
+    database.command("sql", "CREATE VERTEX TYPE node");
+    database.command("sql", "CREATE VERTEX TYPE trs");
+    database.command("sql", "CREATE PROPERTY node.id STRING");
+    database.command("sql", "CREATE INDEX ON node (id) UNIQUE");
+    database.command("sql", "CREATE PROPERTY trs.id STRING");
+    database.command("sql", "CREATE INDEX ON trs (id) UNIQUE");
+    database.command("sql", "CREATE EDGE TYPE node_trs");
+    database.command("sql", "CREATE PROPERTY node_trs.from_id STRING");
+    database.command("sql", "CREATE INDEX ON node_trs (from_id) NOTUNIQUE");
+    database.command("sql", "CREATE PROPERTY node_trs.to_id STRING");
+    database.command("sql", "CREATE INDEX ON node_trs (to_id) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON node_trs (from_id,to_id) UNIQUE");
+
+    // Insert vertices
+    database.command("sql", "INSERT INTO node (id) VALUES ('node_1')");
+    database.command("sql", "INSERT INTO node (id) VALUES ('node_2')");
+    database.command("sql", "INSERT INTO node (id) VALUES ('node_3')");
+    database.command("sql", "INSERT INTO trs (id) VALUES ('trs_1')");
+
+    // Get RIDs for creating edges
+    final String node1Rid = database.query("sql", "SELECT FROM node WHERE id = 'node_1'").next().getIdentity().get().toString();
+    final String node2Rid = database.query("sql", "SELECT FROM node WHERE id = 'node_2'").next().getIdentity().get().toString();
+    final String node3Rid = database.query("sql", "SELECT FROM node WHERE id = 'node_3'").next().getIdentity().get().toString();
+    final String trs1Rid = database.query("sql", "SELECT FROM trs WHERE id = 'trs_1'").next().getIdentity().get().toString();
+
+    // Create edges
+    database.command("sql", "CREATE EDGE node_trs FROM " + node1Rid + " TO " + trs1Rid + " SET from_id='node_1', to_id='trs_1'");
+    database.command("sql", "CREATE EDGE node_trs FROM " + node2Rid + " TO " + trs1Rid + " SET from_id='node_2', to_id='trs_1'");
+    database.command("sql", "CREATE EDGE node_trs FROM " + node3Rid + " TO " + trs1Rid + " SET from_id='node_3', to_id='trs_1'");
+
+    // Verify we have 3 edges
+    ResultSet result = database.query("sql", "SELECT FROM node_trs");
+    assertThat(result.stream().count()).isEqualTo(3);
+
+    // Sequential deletes (the bug: third delete fails to remove the last edge)
+    ResultSet del1 = database.command("sql", "DELETE FROM node_trs WHERE (from_id = 'node_1') OR (to_id = 'node_1')");
+    assertThat(del1.next().<Long>getProperty("count")).isEqualTo(1);
+
+    ResultSet del2 = database.command("sql", "DELETE FROM node_trs WHERE (from_id = 'node_2') OR (to_id = 'node_2')");
+    assertThat(del2.next().<Long>getProperty("count")).isEqualTo(1);
+
+    ResultSet del3 = database.command("sql", "DELETE FROM node_trs WHERE (from_id = 'trs_1') OR (to_id = 'trs_1')");
+    assertThat(del3.next().<Long>getProperty("count")).isEqualTo(1);
+
+    // Verify all edges are deleted
+    result = database.query("sql", "SELECT FROM node_trs");
+    assertThat(result.stream().count()).isZero();
+
+    database.commit();
+  }
+
   protected SqlParser getParserFor(final String string) {
     final InputStream is = new ByteArrayInputStream(string.getBytes());
     final SqlParser osql = new SqlParser(null, is);

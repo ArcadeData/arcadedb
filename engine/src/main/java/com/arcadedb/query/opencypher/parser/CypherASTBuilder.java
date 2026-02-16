@@ -352,7 +352,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse the inner query
     final CypherStatement innerStatement = (CypherStatement) visit(ctx.queryWithLocalDefinitions());
 
-    return new SubqueryClause(innerStatement, scopeVariables, optional);
+    // Parse IN TRANSACTIONS parameters
+    boolean inTransactions = false;
+    Expression batchSize = null;
+    final Cypher25Parser.SubqueryInTransactionsParametersContext txParams = ctx.subqueryInTransactionsParameters();
+    if (txParams != null) {
+      inTransactions = true;
+      if (txParams.subqueryInTransactionsBatchParameters() != null && !txParams.subqueryInTransactionsBatchParameters().isEmpty()) {
+        final Cypher25Parser.SubqueryInTransactionsBatchParametersContext batchCtx =
+            txParams.subqueryInTransactionsBatchParameters(0);
+        if (batchCtx.expression() != null)
+          batchSize = expressionBuilder.parseExpression(batchCtx.expression());
+      }
+    }
+
+    return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize);
   }
 
   @Override
@@ -413,6 +427,19 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
     final String variable = stripBackticks(ctx.variable().getText());
     return new UnwindClause(listExpression, variable);
+  }
+
+  public LoadCSVClause visitLoadCSVClause(final Cypher25Parser.LoadCSVClauseContext ctx) {
+    // Grammar: LOAD CSV (WITH HEADERS)? FROM expression AS variable (FIELDTERMINATOR stringLiteral)?
+    final boolean withHeaders = ctx.HEADERS() != null;
+    final Expression urlExpression = expressionBuilder.parseExpression(ctx.expression());
+    final String variable = stripBackticks(ctx.variable().getText());
+    String fieldTerminator = ",";
+    if (ctx.FIELDTERMINATOR() != null) {
+      final String raw = ctx.stringLiteral().getText();
+      fieldTerminator = decodeStringLiteral(raw.substring(1, raw.length() - 1));
+    }
+    return new LoadCSVClause(urlExpression, variable, withHeaders, fieldTerminator);
   }
 
   public ForeachClause visitForeachClause(final Cypher25Parser.ForeachClauseContext ctx) {

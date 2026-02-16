@@ -254,6 +254,8 @@ public class CypherFunctionFactory {
       case "format" -> true;
       // Duration calculation functions
       case "duration.between", "duration.inmonths", "duration.indays", "duration.inseconds" -> true;
+      // LOAD CSV context functions
+      case "file", "linenumber" -> true;
       // Vector similarity functions
       case "vector.similarity.cosine", "vector.similarity.euclidean" -> true;
       // Vector construction and distance functions (used by Cypher vector(), vector_norm(), vector_distance())
@@ -383,6 +385,9 @@ public class CypherFunctionFactory {
       case "timestamp" -> new TimestampFunction();
       // Temporal format function
       case "format" -> new FormatFunction();
+      // LOAD CSV context functions
+      case "file" -> new LoadCSVFileFunction();
+      case "linenumber" -> new LoadCSVLineNumberFunction();
       // Vector similarity functions
       case "vector.similarity.cosine" -> new VectorSimilarityCosineFunction();
       case "vector.similarity.euclidean" -> new VectorSimilarityEuclideanFunction();

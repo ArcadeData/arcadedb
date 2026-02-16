@@ -253,6 +253,10 @@ public class CypherSemanticValidator {
             final UnwindClause unwindClause = entry.getTypedClause();
             boundVars.add(unwindClause.getVariable());
             break;
+          case LOAD_CSV:
+            final LoadCSVClause loadCSVClause2 = entry.getTypedClause();
+            boundVars.add(loadCSVClause2.getVariable());
+            break;
           default:
             break;
         }
@@ -360,6 +364,10 @@ public class CypherSemanticValidator {
           // The list expression in UNWIND may reference outer scope variables
           // but the unwind variable itself is new
           scope.add(unwindClause.getVariable());
+          break;
+        case LOAD_CSV:
+          final LoadCSVClause loadCSVClause = entry.getTypedClause();
+          scope.add(loadCSVClause.getVariable());
           break;
         case WITH:
           // WITH resets scope to only projected aliases

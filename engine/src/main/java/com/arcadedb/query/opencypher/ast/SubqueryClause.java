@@ -28,23 +28,38 @@ import java.util.List;
  * CALL { WITH x RETURN x * 10 AS y }
  * CALL (x) { RETURN x * 10 AS y }
  * OPTIONAL CALL { ... }
+ * CALL { WITH row CREATE (n:Person {name: row.name}) } IN TRANSACTIONS OF 1000 ROWS
  * </pre>
  * <p>
  * A CALL subquery executes an inner query for each input row.
  * Variables are imported from the outer scope via the initial WITH clause
  * inside the subquery body. The inner RETURN clause makes computed values
  * available to the outer query.
+ * <p>
+ * When IN TRANSACTIONS is specified, the subquery commits in batches
+ * rather than accumulating all changes in a single transaction.
  */
 public class SubqueryClause {
+  private static final int DEFAULT_BATCH_SIZE = 1000;
+
   private final CypherStatement innerStatement;
   private final List<String> scopeVariables; // for CALL (x, y) { ... } syntax, null if not specified
   private final boolean optional;
+  private final boolean inTransactions;
+  private final Expression batchSize; // null = default (1000)
 
   public SubqueryClause(final CypherStatement innerStatement, final List<String> scopeVariables,
                          final boolean optional) {
+    this(innerStatement, scopeVariables, optional, false, null);
+  }
+
+  public SubqueryClause(final CypherStatement innerStatement, final List<String> scopeVariables,
+                         final boolean optional, final boolean inTransactions, final Expression batchSize) {
     this.innerStatement = innerStatement;
     this.scopeVariables = scopeVariables;
     this.optional = optional;
+    this.inTransactions = inTransactions;
+    this.batchSize = batchSize;
   }
 
   public CypherStatement getInnerStatement() {
@@ -59,6 +74,18 @@ public class SubqueryClause {
     return optional;
   }
 
+  public boolean isInTransactions() {
+    return inTransactions;
+  }
+
+  public Expression getBatchSize() {
+    return batchSize;
+  }
+
+  public int getDefaultBatchSize() {
+    return DEFAULT_BATCH_SIZE;
+  }
+
   @Override
   public String toString() {
     final StringBuilder sb = new StringBuilder();
@@ -71,6 +98,11 @@ public class SubqueryClause {
       sb.append(") ");
     }
     sb.append("{ ... }");
+    if (inTransactions) {
+      sb.append(" IN TRANSACTIONS");
+      if (batchSize != null)
+        sb.append(" OF ").append(batchSize.getText()).append(" ROWS");
+    }
     return sb.toString();
   }
 }

@@ -102,6 +102,10 @@ class StatementBuilder {
     clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.SUBQUERY, subquery, clauseOrder++));
   }
 
+  void addLoadCSV(final LoadCSVClause loadCSV) {
+    clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.LOAD_CSV, loadCSV, clauseOrder++));
+  }
+
   void setReturn(final ReturnClause returnClause) {
     this.returnClause = returnClause;
     clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.RETURN, returnClause, clauseOrder++));
