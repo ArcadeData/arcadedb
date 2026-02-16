@@ -29,7 +29,7 @@ import java.util.Map;
 /**
  * Benchmark comparing ANTLR vs JavaCC SQL parser performance.
  */
-class ParserBenchmark {
+class SQLParserBenchmark {
 
   private static       Database database;
   private static final int      WARMUP_ITERATIONS    = 100;
@@ -233,8 +233,8 @@ class ParserBenchmark {
     // Header
     System.out.printf("%-30s │ %12s │ %12s │ %12s │ %10s%n",
         "Query Type", "JavaCC (µs)", "ANTLR (µs)", "Diff (µs)", "Winner");
-    System.out.println("-".repeat(30) + "─┼─" + "-".repeat(12) + "─┼─" +
-        "-".repeat(12) + "─┼─" + "-".repeat(12) + "─┼─" + "-".repeat(10));
+    System.out.println("-".repeat(30) + "-┼-" + "-".repeat(12) + "-┼-" +
+        "-".repeat(12) + "-┼-" + "-".repeat(12) + "-┼-" + "-".repeat(10));
 
     long totalJavacc = 0;
     long totalAntlr = 0;
@@ -267,8 +267,8 @@ class ParserBenchmark {
     }
 
     // Totals
-    System.out.println("-".repeat(30) + "─┼─" + "-".repeat(12) + "─┼─" +
-        "-".repeat(12) + "─┼─" + "-".repeat(12) + "─┼─" + "-".repeat(10));
+    System.out.println("-".repeat(30) + "-┼-" + "-".repeat(12) + "-┼-" +
+        "-".repeat(12) + "-┼-" + "-".repeat(12) + "-┼-" + "-".repeat(10));
 
     long totalDiff = totalAntlr - totalJavacc;
     String totalWinner = totalJavacc < totalAntlr ? "JavaCC" :
