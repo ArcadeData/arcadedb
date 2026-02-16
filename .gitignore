@@ -557,6 +557,8 @@ dist
 # Test database files
 *.lsmvecidx
 *.metadata.json
+
+notes.txt
 /.claude/worktrees
 /server/profiler
 /server/chats
