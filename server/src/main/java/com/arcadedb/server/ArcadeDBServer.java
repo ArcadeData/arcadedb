@@ -80,9 +80,7 @@ import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
-  public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = """
-      config/server\
-      -configuration.json""";
+  public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
   private final       ContextConfiguration                  configuration;
   private final       String                                serverName;
   private             String                                hostAddress;
@@ -809,8 +807,8 @@ public class ArcadeDBServer {
       if (hostNameEnvVariable == null) {
         LogManager.instance().log(this, Level.SEVERE,
             """
-            Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server \
-            will be halted""");
+                Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server \
+                will be halted""");
         stop();
         System.exit(1);
         return null;
