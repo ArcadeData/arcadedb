@@ -391,6 +391,108 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
     return Long.parseLong(value.toString());
   }
 
+  @Test
+  void nonIdempotentCommandsRejectedOnQueryEndpoint() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    // Create schema for persistent commands
+    database.command("sql", "CREATE DOCUMENT TYPE doc");
+    database.command("sql", "CREATE PROPERTY doc.id LONG");
+    database.command("sql", "CREATE INDEX ON doc (id) UNIQUE");
+
+    // Insert a document via command endpoint (should work)
+    JSONObject response = executeCommand(0, "redis", "HSET doc {\"id\":1}");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Read-only commands via query endpoint should work
+    response = executeQuery(0, "redis", "PING");
+    assertThat(getResultValue(response)).isEqualTo("PONG");
+
+    response = executeQuery(0, "redis", "HGET doc[id] 1");
+    assertThat(getResultValue(response)).isNotNull();
+
+    response = executeQuery(0, "redis", "HEXISTS doc[id] 1");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+
+    // Non-idempotent commands via query endpoint should be rejected
+    final String expectedError = "Non-idempotent Redis command";
+
+    // HSET on query endpoint
+    try {
+      executeQuery(0, "redis", "HSET doc {\"id\":2}");
+      fail("HSET should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // HDEL on query endpoint
+    try {
+      executeQuery(0, "redis", "HDEL doc[id] 1");
+      fail("HDEL should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // SET on query endpoint
+    try {
+      executeQuery(0, "redis", "SET mykey myvalue");
+      fail("SET should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // INCR on query endpoint
+    try {
+      executeQuery(0, "redis", "INCR counter");
+      fail("INCR should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // GETDEL on query endpoint
+    try {
+      executeQuery(0, "redis", "GETDEL somekey");
+      fail("GETDEL should not be allowed on query endpoint");
+    } catch (final Exception e) {
+      assertThat(e.getMessage()).contains(expectedError);
+    }
+
+    // Verify the document with id=2 was NOT created (HSET was rejected)
+    response = executeQuery(0, "redis", "HEXISTS doc[id] 2");
+    assertThat(getResultValueAsInt(response)).isEqualTo(0);
+
+    // Verify the document with id=1 still exists (HDEL was rejected)
+    response = executeQuery(0, "redis", "HEXISTS doc[id] 1");
+    assertThat(getResultValueAsInt(response)).isEqualTo(1);
+  }
+
+  protected JSONObject executeQuery(final int serverIndex, final String language, final String command) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + getDatabaseName()).openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject();
+    request.put("language", language);
+    request.put("command", command);
+
+    try (OutputStream os = connection.getOutputStream()) {
+      os.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    final int responseCode = connection.getResponseCode();
+    if (responseCode != 200) {
+      final String error = new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+      throw new RuntimeException("HTTP " + responseCode + ": " + error);
+    }
+
+    final String response = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    return new JSONObject(response);
+  }
+
   protected JSONObject executeCommand(final int serverIndex, final String language, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();

@@ -121,11 +121,13 @@ public class RedisQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
+    checkIdempotent(query);
     return executeRedisCommand(query);
   }
 
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Object... parameters) {
+    checkIdempotent(query);
     return executeRedisCommand(query);
   }
 
@@ -137,6 +139,12 @@ public class RedisQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
     return executeRedisCommand(query);
+  }
+
+  private void checkIdempotent(final String query) {
+    final AnalyzedQuery analyzed = analyze(query);
+    if (!analyzed.isIdempotent())
+      throw new CommandParsingException("Non-idempotent Redis command cannot be executed on the query endpoint. Use the command endpoint instead");
   }
 
   private ResultSet executeRedisCommand(final String query) {
