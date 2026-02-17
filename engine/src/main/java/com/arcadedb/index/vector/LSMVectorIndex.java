@@ -150,7 +150,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Graph file for persistent storage of graph topology
   // Allows lazy-loading graph from disk and avoiding expensive rebuilds
-  private final LSMVectorIndexGraphFile graphFile;
+  private LSMVectorIndexGraphFile graphFile;
   private final AtomicInteger           mutationsSinceSerialize;
 
   // Product Quantization (PQ) for zero-disk-I/O approximate search
@@ -434,19 +434,12 @@ vectorBuilder.pqTrainingLimit);
     this.mutable = new LSMVectorIndexMutable(database, name, filePath, id, mode, pageSize, version);
     this.mutable.setMainIndex(this);
 
-    // Discover and load graph file if it exists; create a placeholder if not found
-    // so the graph can be persisted when buildGraphFromScratch() is first called
-    final LSMVectorIndexGraphFile discoveredGraphFile = discoverAndLoadGraphFile();
-    if (discoveredGraphFile != null) {
-      this.graphFile = discoveredGraphFile;
+    // Discover and load graph file if it exists on disk.
+    // If no graph file exists yet, graphFile stays null and will be created lazily
+    // by getOrCreateGraphFile() when buildGraphFromScratch() first needs to persist.
+    this.graphFile = discoverAndLoadGraphFile();
+    if (this.graphFile != null)
       this.graphFile.setMainIndex(this);
-    } else {
-      final String graphFileName = name + "_" + LSMVectorIndexGraphFile.FILE_EXT;
-      final String graphFilePath = filePath + "_" + LSMVectorIndexGraphFile.FILE_EXT;
-      this.graphFile = new LSMVectorIndexGraphFile(database, graphFileName, graphFilePath, mode, pageSize);
-      this.graphFile.setMainIndex(this);
-      database.getSchema().getEmbedded().registerFile(this.graphFile);
-    }
 
     // Create PQ file handler (for zero-disk-I/O search)
     // PQ data will be loaded after schema loads metadata (see loadVectorsAfterSchemaLoad)
@@ -739,6 +732,32 @@ vectorBuilder.pqTrainingLimit);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error discovering graph file for %s: %s", indexName,
        e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Returns the existing graphFile or lazily creates one on disk when needed (e.g. first graph build
+   * on an index that was loaded without a persisted .vecgraph file). This avoids creating empty files
+   * eagerly in the loading constructor.
+   */
+  private LSMVectorIndexGraphFile getOrCreateGraphFile() {
+    if (graphFile != null)
+      return graphFile;
+
+    try {
+      final DatabaseInternal db = getDatabase();
+      final String graphFileName = indexName + "_" + LSMVectorIndexGraphFile.FILE_EXT;
+      final String graphFilePath = mutable.getFilePath() + "_" + LSMVectorIndexGraphFile.FILE_EXT;
+      this.graphFile = new LSMVectorIndexGraphFile(db, graphFileName, graphFilePath,
+          db.getMode(), mutable.getPageSize());
+      this.graphFile.setMainIndex(this);
+      db.getSchema().getEmbedded().registerFile(this.graphFile);
+      LogManager.instance().log(this, Level.INFO, "Created graph file on demand for index: %s", indexName);
+      return graphFile;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Could not create graph file for index %s: %s",
+          indexName, e.getMessage());
       return null;
     }
   }
@@ -1346,7 +1365,8 @@ vectorBuilder.pqTrainingLimit);
 
       // Persist graph to disk IMMEDIATELY in its own transaction
       // This ensures the graph is available on next database open (fast restart)
-      if (graphFile != null) {
+      final LSMVectorIndexGraphFile gf = getOrCreateGraphFile();
+      if (gf != null) {
         final int totalNodes = graphIndex.getIdUpperBound();
         LogManager.instance().log(this, Level.FINE, "Writing vector graph to disk for index: %s (nodes=%d)",
          indexName, totalNodes);
@@ -1379,7 +1399,7 @@ vectorBuilder.pqTrainingLimit);
         };
 
         try {
-          graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
+          gf.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
 
           // Report persistence completion
           if (effectiveGraphCallback != null) {
@@ -1398,11 +1418,12 @@ vectorBuilder.pqTrainingLimit);
                  indexName);
           }
 
-          // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so
-          // the current session benefits from inline vector storage immediately
+          // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so the
+          // current session benefits from inline vector storage immediately. This is safe because
+          // the transaction has been committed above, so all graph pages are flushed and visible.
           if (metadata.storeVectorsInGraph) {
             try {
-              final OnDiskGraphIndex diskGraph = graphFile.loadGraph();
+              final OnDiskGraphIndex diskGraph = gf.loadGraph();
               if (diskGraph != null) {
                 lock.writeLock().lock();
                 try {
@@ -1416,7 +1437,8 @@ vectorBuilder.pqTrainingLimit);
               }
             } catch (final Exception e) {
               LogManager.instance().log(this, Level.WARNING,
-                  "Could not reload graph as OnDiskGraphIndex (will use in-memory graph): %s", e.getMessage());
+                  "Could not reload graph as OnDiskGraphIndex (will use in-memory graph): %s: %s",
+                  e.getClass().getSimpleName(), e.getMessage());
             }
           }
 
