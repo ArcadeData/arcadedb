@@ -238,17 +238,17 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
       final Vertex albert = connected.next();
       assertThat(albert.getString("lastName")).isEqualTo("Red");
 
-      assertThat(kimbal.countEdges(IN, (String[]) null)).isEqualTo(1L);
+      assertThat(kimbal.countEdges(IN)).isEqualTo(1L);
       assertThat(kimbal.countEdges(IN, EDGE1_TYPE_NAME)).isEqualTo(1L);
       assertThat(kimbal.countEdges(IN, EDGE2_TYPE_NAME)).isEqualTo(0L);
-      assertThat(kimbal.countEdges(OUT, (String[]) null)).isEqualTo(0);
+      assertThat(kimbal.countEdges(OUT)).isEqualTo(0);
       assertThat(kimbal.countEdges(OUT, EDGE1_TYPE_NAME)).isEqualTo(0);
       assertThat(kimbal.countEdges(OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
 
-      assertThat(albert.countEdges(OUT, (String[]) null)).isEqualTo(1L);
+      assertThat(albert.countEdges(OUT)).isEqualTo(1L);
       assertThat(albert.countEdges(OUT, EDGE1_TYPE_NAME)).isEqualTo(1L);
       assertThat(albert.countEdges(OUT, EDGE2_TYPE_NAME)).isEqualTo(0L);
-      assertThat(albert.countEdges(IN, (String[]) null)).isEqualTo(0);
+      assertThat(albert.countEdges(IN)).isEqualTo(0);
       assertThat(albert.countEdges(IN, EDGE1_TYPE_NAME)).isEqualTo(0);
       assertThat(albert.countEdges(IN, EDGE2_TYPE_NAME)).isEqualTo(0);
 
