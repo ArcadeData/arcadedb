@@ -155,8 +155,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         findPaths(neighbor, target, relTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
 
         // Backtrack
-        currentPath.removeLast();
-        currentPath.removeLast();
+        currentPath.remove(currentPath.size() - 1);
+        currentPath.remove(currentPath.size() - 1);
         visited.remove(neighborId);
       }
     }
@@ -178,8 +178,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         findPaths(neighbor, target, relTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
 
         // Backtrack
-        currentPath.removeLast();
-        currentPath.removeLast();
+        currentPath.remove(currentPath.size() - 1);
+        currentPath.remove(currentPath.size() - 1);
         visited.remove(neighborId);
       }
     }

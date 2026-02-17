@@ -158,8 +158,8 @@ public class PathExpand extends AbstractPathProcedure {
             currentPath, visited, allPaths, context);
 
         // Backtrack
-        currentPath.removeLast();
-        currentPath.removeLast();
+        currentPath.remove(currentPath.size() - 1); // Remove neighbor
+        currentPath.remove(currentPath.size() - 1); // Remove edge
         visited.remove(neighborId);
       }
     }

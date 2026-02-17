@@ -104,6 +104,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -1863,12 +1864,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       if (typeName != null && !typeName.isBlank() && getSchema().existsType(typeName)) {
         Object type = getSchema().getType(typeName);
 
-        return switch (type) {
-          case VertexType v -> "v";
-          case EdgeType e -> "e";
-          case DocumentType d -> "d";
-          default -> null;
-        };
+        if (Objects.requireNonNull(type) instanceof VertexType) {
+          return "v";
+        } else if (type instanceof EdgeType) {
+          return "e";
+        } else if (type instanceof DocumentType) {
+          return "d";
+        }
+        return null;
       } else
         return null;
 
@@ -1929,20 +1932,18 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // --- Debug helpers (client) ---
   private static String summarize(final Object o) {
     try {
-      switch (o) {
-        case null:
-          return "null";
-        case CharSequence s:
-          return "String(" + s.length() + ")";
-        case byte[] b:
-          return "bytes[" + b.length + "]";
-        case Collection<?> c:
-          return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-        case Map<?, ?> m:
-          return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
-        default:
-          return o.getClass().getSimpleName();
+      if (o == null) {
+        return "null";
+      } else if (o instanceof CharSequence s) {
+        return "String(" + s.length() + ")";
+      } else if (o instanceof byte[] b) {
+        return "bytes[" + b.length + "]";
+      } else if (o instanceof Collection<?> c) {
+        return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
+      } else if (o instanceof Map<?, ?> m) {
+        return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
       }
+      return o.getClass().getSimpleName();
     } catch (Exception e) {
       return o.getClass().getSimpleName();
     }

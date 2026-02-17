@@ -25,7 +25,11 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -35,13 +39,19 @@ import java.util.*;
 public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   protected Vertex extractVertex(final Object arg, final String paramName) {
-    return switch (arg) {
-      case null -> throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
-      case Vertex vertex -> vertex;
-      case Document doc when doc instanceof Vertex v -> v;
-      default -> throw new IllegalArgumentException(
+    Vertex res;
+    if (arg == null) {
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
+    } else if (arg instanceof Vertex vertex) {
+      res = vertex;
+    } else if (arg instanceof Document doc && doc instanceof Vertex v) {
+      res = v;
+    } else {
+      throw new IllegalArgumentException(
           getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
-    };
+    }
+
+    return res;
   }
 
   protected String extractString(final Object arg, final String paramName) {
@@ -52,12 +62,17 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   @SuppressWarnings("unchecked")
   protected String[] extractRelTypes(final Object arg) {
-    return switch (arg) {
-      case null -> null;
-      case String s -> new String[]{s};
-      case Collection<?> coll -> coll.stream().map(Object::toString).toArray(String[]::new);
-      default -> new String[]{arg.toString()};
-    };
+    String[] res;
+    if (arg == null) {
+      res = null;
+    } else if (arg instanceof String s) {
+      res = new String[] { s };
+    } else if (arg instanceof Collection<?> coll) {
+      res = coll.stream().map(Object::toString).toArray(String[]::new);
+    } else {
+      res = new String[] { arg.toString() };
+    }
+    return res;
   }
 
   @SuppressWarnings("unchecked")

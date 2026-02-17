@@ -119,7 +119,7 @@ public class PatternComprehensionExpression implements Expression {
 
     // Remove start vertex from path when backtracking
     if (hopIndex == 0 && pathVariable != null && !pathElements.isEmpty())
-      pathElements.removeLast();
+      pathElements.remove(pathElements.size() - 1);
   }
 
   private void traverseEdges(final Result baseResult, final CommandContext context,
@@ -191,8 +191,8 @@ public class PatternComprehensionExpression implements Expression {
 
       // Remove edge and target from path when backtracking
       if (pathVariable != null) {
-        pathElements.removeLast();
-        pathElements.removeLast();
+        pathElements.remove(pathElements.size() - 1);
+        pathElements.remove(pathElements.size() - 1);
       }
     }
   }

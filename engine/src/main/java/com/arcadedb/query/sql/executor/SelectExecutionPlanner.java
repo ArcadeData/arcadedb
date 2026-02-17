@@ -447,7 +447,7 @@ public class SelectExecutionPlanner {
       return false;
 
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().get(0), maxMinInfo.isMax, context));
     return true;
   }
 
@@ -471,7 +471,7 @@ public class SelectExecutionPlanner {
     if (info.preAggregateProjection == null || info.preAggregateProjection.getItems().size() != 1)
       return null;
 
-    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().getFirst();
+    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().get(0);
     final Expression exp = aggregateItem.getExpression();
 
     if (exp.getMathExpression() == null || !(exp.getMathExpression() instanceof BaseExpression base))
@@ -497,7 +497,7 @@ public class SelectExecutionPlanner {
       return null;
 
     // Get the property name from the pre-aggregate projection
-    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().getFirst();
+    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().get(0);
     final Expression preAggExp = preAggItem.getExpression();
 
     if (preAggExp.getMathExpression() == null || !(preAggExp.getMathExpression() instanceof BaseExpression preAggBase))
@@ -522,7 +522,7 @@ public class SelectExecutionPlanner {
     for (final TypeIndex index : indexes) {
       // Must be a single-property index on the exact property
       final List<String> propNames = index.getPropertyNames();
-      if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
+      if (propNames.size() == 1 && propNames.get(0).equals(propertyName)) {
         // Must support ordered iterations (RangeIndex like LSM_TREE)
         if (index.supportsOrderedIterations())
           return index;
@@ -1874,7 +1874,7 @@ public class SelectExecutionPlanner {
           nullPlan.chain(new FetchFromTypeExecutionStep(queryTarget.getStringValue(), filterClusters, context, true));
 
           // Create IS NULL filter for the first indexed property
-          final String propertyName = indexFields.getFirst();
+          final String propertyName = indexFields.get(0);
           final IsNullCondition isNullCondition = new IsNullCondition(-1);
           final Expression expr = new Expression(new Identifier(propertyName));
           isNullCondition.setExpression(expr);
@@ -2340,7 +2340,7 @@ public class SelectExecutionPlanner {
           .toList();
 
       // get only the descriptors with the lowest cost
-      final int lowestCost = sortedDescriptors.getFirst(0).getFirst();
+      final int lowestCost = sortedDescriptors.get(0).getFirst();
       descriptors = sortedDescriptors.stream()
           .filter(x -> x.getFirst().equals(lowestCost))
           .map(x -> x.getSecond())

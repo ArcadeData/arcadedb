@@ -98,7 +98,7 @@ class OpenCypherOptionalMatchTest {
     result.close();
 
     assertThat(allResults.size()).as("Expected exactly 1 result").isEqualTo(1);
-    assertThat(allResults.getFirst().<String>getProperty("person")).isEqualTo("Charlie");
+    assertThat(allResults.get(0).<String>getProperty("person")).isEqualTo("Charlie");
   }
 
   @Test
@@ -119,7 +119,7 @@ class OpenCypherOptionalMatchTest {
     result.close();
 
     assertThat(allResults.size()).as("Expected exactly 1 result").isEqualTo(1);
-    final Result row = allResults.getFirst();
+    final Result row = allResults.get(0);
     assertThat(row.<String>getProperty("person")).isEqualTo("Charlie");
     assertThat(row.<String>getProperty("knows")).as("Expected NULL for knows when no relationship exists").isNull();
   }

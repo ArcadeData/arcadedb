@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.utility.Pair;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
@@ -289,7 +290,9 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   }
 
   private boolean indexKeyFromIncluded(final AndBlock keyCondition, final BinaryCondition additional) {
-    final BooleanExpression exp = keyCondition.getSubBlocks().getLast();
+
+    List<BooleanExpression> subBlocks = keyCondition.getSubBlocks();
+    final BooleanExpression exp = subBlocks.get(subBlocks.size() - 1);
     if (exp instanceof BinaryCondition binaryCondition) {
       final BinaryCompareOperator operator = binaryCondition.getOperator();
       final BinaryCompareOperator additionalOperator = additional == null ? null : additional.getOperator();

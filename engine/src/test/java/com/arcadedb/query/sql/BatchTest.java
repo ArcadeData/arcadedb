@@ -551,7 +551,7 @@ class BatchTest extends TestHelper {
         // Verify the result contains the expected document
         if (value instanceof List<?> list) {
           assertThat(list).isNotEmpty();
-          final Object firstItem = list.getFirst();
+          final Object firstItem = list.get(0);
           if (firstItem instanceof Result r) {
             assertThat((Object) r.getProperty("name")).isEqualTo("test");
           }

@@ -181,24 +181,18 @@ public class MergeNode implements CypherProcedure {
 
   @SuppressWarnings("unchecked")
   private List<String> extractLabels(final Object arg) {
-    switch (arg) {
-      case null -> {
-        return List.of();
-      }
-      case List<?> list -> {
-        final List<String> result = new ArrayList<>();
-        for (final Object item : list) {
-          if (item != null) {
-            result.add(item.toString());
-          }
+    if (arg == null) {
+      return List.of();
+    } else if (arg instanceof List<?> list) {
+      final List<String> result = new ArrayList<>();
+      for (final Object item : list) {
+        if (item != null) {
+          result.add(item.toString());
         }
-        return result;
       }
-      case String s -> {
-        return List.of(s);
-      }
-      default -> {
-      }
+      return result;
+    } else if (arg instanceof String s) {
+      return List.of(s);
     }
 
     throw new IllegalArgumentException(

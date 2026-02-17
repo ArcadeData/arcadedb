@@ -538,7 +538,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // Full-text queries contain search terms/phrases, not document property values, so bucket
     // selection based on hashing those keys would incorrectly query only one bucket.
     final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+        indexesOnBuckets.get(0).getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
       // Full-text searches must scan all buckets to ensure complete results

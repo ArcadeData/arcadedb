@@ -86,7 +86,7 @@ class CreateDocumentTypeStatementExecutionTest {
       assertThat(type).isNotNull();
       // Verify the page size was set on the buckets
       assertThat(type.getBuckets(false)).isNotEmpty();
-      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
       assertThat(bucket.getPageSize()).isEqualTo(customPageSize);
       result.close();
     });
@@ -120,7 +120,7 @@ class CreateDocumentTypeStatementExecutionTest {
       final VertexType type = (VertexType) schema.getType(typeName);
       assertThat(type).isNotNull();
       assertThat(type.getBuckets(false)).isNotEmpty();
-      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
       assertThat(bucket.getPageSize()).isEqualTo(customPageSize);
       result.close();
     });
@@ -136,7 +136,7 @@ class CreateDocumentTypeStatementExecutionTest {
       final EdgeType type = (EdgeType) schema.getType(typeName);
       assertThat(type).isNotNull();
       assertThat(type.getBuckets(false)).isNotEmpty();
-      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
       assertThat(bucket.getPageSize()).isEqualTo(customPageSize);
       result.close();
     });
@@ -152,7 +152,7 @@ class CreateDocumentTypeStatementExecutionTest {
       final EdgeType type = (EdgeType) schema.getType(typeName);
       assertThat(type).isNotNull();
       assertThat(type.getBuckets(false)).isNotEmpty();
-      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
       assertThat(bucket.getPageSize()).isEqualTo(customPageSize);
       result.close();
     });

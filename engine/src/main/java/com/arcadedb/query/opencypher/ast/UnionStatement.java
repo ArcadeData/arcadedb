@@ -105,17 +105,17 @@ public class UnionStatement implements CypherStatement {
 
   @Override
   public List<MatchClause> getMatchClauses() {
-    return queries.getFirst().getMatchClauses();
+    return queries.get(0).getMatchClauses();
   }
 
   @Override
   public WhereClause getWhereClause() {
-    return queries.getFirst().getWhereClause();
+    return queries.get(0).getWhereClause();
   }
 
   @Override
   public ReturnClause getReturnClause() {
-    return queries.getFirst().getReturnClause();
+    return queries.get(0).getReturnClause();
   }
 
   @Override
@@ -161,36 +161,36 @@ public class UnionStatement implements CypherStatement {
 
   @Override
   public CreateClause getCreateClause() {
-    return queries.getFirst().getCreateClause();
+    return queries.get(0).getCreateClause();
   }
 
   @Override
   public SetClause getSetClause() {
-    return queries.getFirst().getSetClause();
+    return queries.get(0).getSetClause();
   }
 
   @Override
   public DeleteClause getDeleteClause() {
-    return queries.getFirst().getDeleteClause();
+    return queries.get(0).getDeleteClause();
   }
 
   @Override
   public MergeClause getMergeClause() {
-    return queries.getFirst().getMergeClause();
+    return queries.get(0).getMergeClause();
   }
 
   @Override
   public List<UnwindClause> getUnwindClauses() {
-    return queries.getFirst().getUnwindClauses();
+    return queries.get(0).getUnwindClauses();
   }
 
   @Override
   public List<WithClause> getWithClauses() {
-    return queries.getFirst().getWithClauses();
+    return queries.get(0).getWithClauses();
   }
 
   @Override
   public List<ClauseEntry> getClausesInOrder() {
-    return queries.getFirst().getClausesInOrder();
+    return queries.get(0).getClausesInOrder();
   }
 }

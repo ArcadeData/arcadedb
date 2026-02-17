@@ -100,7 +100,7 @@ public class RedisQueryEngine implements QueryEngine {
       };
     }
 
-    final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+    final String cmd = parts.get(0).toUpperCase(Locale.ENGLISH);
     final boolean isIdempotent = switch (cmd) {
       case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> true;
       default -> false;
@@ -241,7 +241,7 @@ public class RedisQueryEngine implements QueryEngine {
       throw new CommandParsingException("Empty Redis command");
     }
 
-    final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+    final String cmd = parts.get(0).toUpperCase(Locale.ENGLISH);
     return switch (cmd) {
       case "PING" -> ping(parts);
       case "SET" -> set(parts);

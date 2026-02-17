@@ -31,8 +31,8 @@ import java.util.List;
  * Example: percentileCont(n.age, 0.4) returns the 40th percentile age
  */
 public class PercentileContFunction implements StatelessFunction {
-  private final List<Number> values = new ArrayList<>();
-  private double percentile = -1;
+  private final List<Number> values     = new ArrayList<>();
+  private       double       percentile = -1;
 
   @Override
   public String getName() {
@@ -66,9 +66,9 @@ public class PercentileContFunction implements StatelessFunction {
       return null;
     values.sort((a, b) -> Double.compare(a.doubleValue(), b.doubleValue()));
     if (percentile == 1.0)
-      return values.getLast().doubleValue();
+      return values.get(values.size() - 1).doubleValue();
     if (percentile == 0.0)
-      return values.getFirst().doubleValue();
+      return values.get(0).doubleValue();
     final double pos = percentile * (values.size() - 1);
     final int lower = (int) Math.floor(pos);
     final int upper = (int) Math.ceil(pos);

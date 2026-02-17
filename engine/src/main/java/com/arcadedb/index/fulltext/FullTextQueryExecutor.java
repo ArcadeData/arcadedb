@@ -60,9 +60,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class FullTextQueryExecutor {
-  private final LSMTreeFullTextIndex   index;
-  private final Analyzer               analyzer;
-  private final FullTextIndexMetadata  metadata;
+  private final LSMTreeFullTextIndex  index;
+  private final Analyzer              analyzer;
+  private final FullTextIndexMetadata metadata;
 
   /**
    * Creates a new FullTextQueryExecutor for the given index.
@@ -97,6 +97,7 @@ public class FullTextQueryExecutor {
    *
    * @param queryString the query string in Lucene syntax
    * @param limit       maximum number of results to return (-1 for unlimited)
+   *
    * @return cursor with matching documents, sorted by score descending
    */
   public IndexCursor search(final String queryString, final int limit) {
@@ -149,8 +150,8 @@ public class FullTextQueryExecutor {
 
       // First pass: collect MUST_NOT terms
       for (final BooleanClause clause : bq.clauses()) {
-        if (clause.occur() == BooleanClause.Occur.MUST_NOT) {
-          collectTermsForExclusion(clause.query(), excluded);
+        if (clause.getOccur() == BooleanClause.Occur.MUST_NOT) {
+          collectTermsForExclusion(clause.getQuery(), excluded);
         }
       }
 
@@ -159,9 +160,9 @@ public class FullTextQueryExecutor {
       final Map<RID, AtomicInteger> shouldResults = new HashMap<>();
 
       for (final BooleanClause clause : bq.clauses()) {
-        if (clause.occur() == BooleanClause.Occur.MUST) {
+        if (clause.getOccur() == BooleanClause.Occur.MUST) {
           final Map<RID, AtomicInteger> termResults = new HashMap<>();
-          collectMatches(clause.query(), termResults, excluded);
+          collectMatches(clause.getQuery(), termResults, excluded);
 
           if (mustResults == null) {
             mustResults = termResults;
@@ -175,8 +176,8 @@ public class FullTextQueryExecutor {
               }
             }
           }
-        } else if (clause.occur() == BooleanClause.Occur.SHOULD) {
-          collectMatches(clause.query(), shouldResults, excluded);
+        } else if (clause.getOccur() == BooleanClause.Occur.SHOULD) {
+          collectMatches(clause.getQuery(), shouldResults, excluded);
         }
       }
 
@@ -224,7 +225,7 @@ public class FullTextQueryExecutor {
       }
     } else if (query instanceof BooleanQuery) {
       for (final BooleanClause clause : ((BooleanQuery) query).clauses()) {
-        collectTermsForExclusion(clause.query(), excluded);
+        collectTermsForExclusion(clause.getQuery(), excluded);
       }
     }
   }

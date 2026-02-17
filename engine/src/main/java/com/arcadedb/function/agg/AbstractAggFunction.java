@@ -53,26 +53,19 @@ public abstract class AbstractAggFunction implements StatelessFunction {
         }
       }
     } else if (input.getClass().isArray()) {
-      switch (input) {
-        case double[] doubles -> {
-          for (final double d : doubles)
-            result.add(d);
-        }
-        case int[] ints -> {
-          for (final int i : ints)
-            result.add((double) i);
-        }
-        case long[] longs -> {
-          for (final long l : longs)
-            result.add((double) l);
-        }
-        case Object[] objects -> {
-          for (final Object item : objects) {
-            if (item instanceof Number)
-              result.add(((Number) item).doubleValue());
-          }
-        }
-        default -> {
+      if (input instanceof double[] doubles) {
+        for (final double d : doubles)
+          result.add(d);
+      } else if (input instanceof int[] ints) {
+        for (final int i : ints)
+          result.add((double) i);
+      } else if (input instanceof long[] longs) {
+        for (final long l : longs)
+          result.add((double) l);
+      } else if (input instanceof Object[] objects) {
+        for (final Object item : objects) {
+          if (item instanceof Number)
+            result.add(((Number) item).doubleValue());
         }
       }
     } else if (input instanceof Number)
@@ -92,24 +85,17 @@ public abstract class AbstractAggFunction implements StatelessFunction {
     if (input instanceof Collection) {
       result.addAll((Collection<?>) input);
     } else if (input.getClass().isArray()) {
-      switch (input) {
-        case Object[] objects -> {
-          Collections.addAll(result, objects);
-        }
-        case int[] ints -> {
-          for (final int i : ints)
-            result.add(i);
-        }
-        case long[] longs -> {
-          for (final long l : longs)
-            result.add(l);
-        }
-        case double[] doubles -> {
-          for (final double d : doubles)
-            result.add(d);
-        }
-        default -> {
-        }
+      if (input instanceof Object[] objects) {
+        Collections.addAll(result, objects);
+      } else if (input instanceof int[] ints) {
+        for (final int i : ints)
+          result.add(i);
+      } else if (input instanceof long[] longs) {
+        for (final long l : longs)
+          result.add(l);
+      } else if (input instanceof double[] doubles) {
+        for (final double d : doubles)
+          result.add(d);
       }
     } else {
       result.add(input);

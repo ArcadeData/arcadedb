@@ -88,7 +88,7 @@ class CypherResultFormatTest {
     }
 
     assertThat(results).hasSize(1);
-    assertThat(results.getFirst().getPropertyNames()).contains("r");
+    assertThat(results.get(0).getPropertyNames()).contains("r");
   }
 
   @Test
@@ -149,7 +149,7 @@ class CypherResultFormatTest {
     }
 
     assertThat(results).hasSize(1);
-    assertThat(results.getFirst().isProjection()).as("Count result should be a projection").isTrue();
+    assertThat(results.get(0).isProjection()).as("Count result should be a projection").isTrue();
   }
 
   @Test
