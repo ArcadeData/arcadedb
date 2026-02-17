@@ -194,6 +194,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public com.arcadedb.security.SecurityManager getSecurity() {
+        return null;
+      }
+
+      @Override
       public Map<String, Object> getWrappers() {
         return null;
       }

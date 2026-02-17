@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
@@ -32,13 +33,16 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -77,7 +81,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
         @Override
         public boolean isDDL() {
-          return statement instanceof CypherDDLStatement;
+          return statement instanceof CypherDDLStatement || statement instanceof CypherAdminStatement;
         }
       };
     } catch (final Exception e) {
@@ -144,6 +148,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // DDL statements (constraints) are executed directly without the planner pipeline
       if (statement instanceof CypherDDLStatement)
         return executeDDL((CypherDDLStatement) statement);
+
+      // Admin statements (user management) are executed directly against the security manager
+      if (statement instanceof CypherAdminStatement)
+        return executeAdmin((CypherAdminStatement) statement);
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException e) {
@@ -254,6 +262,67 @@ public class OpenCypherQueryEngine implements QueryEngine {
         schema.getType(typeName).getPropertyIfExists(propName).setMandatory(true);
       break;
     }
+  }
+
+  /**
+   * Executes an admin statement (user management) directly against the security manager.
+   */
+  private ResultSet executeAdmin(final CypherAdminStatement admin) {
+    final SecurityManager security = database.getSecurity();
+    if (security == null)
+      throw new CommandExecutionException("User management commands require server mode");
+
+    final InternalResultSet resultSet = new InternalResultSet();
+
+    switch (admin.getKind()) {
+    case SHOW_USERS: {
+      final Set<String> userNames = security.getUsers();
+      for (final String userName : userNames) {
+        final Map<String, Object> info = security.getUserInfo(userName);
+        final ResultInternal result = new ResultInternal();
+        result.setProperty("user", userName);
+        result.setProperty("databases", info != null ? info.get("databases") : Set.of());
+        resultSet.add(result);
+      }
+      break;
+    }
+    case SHOW_CURRENT_USER: {
+      final String currentUser = database.getCurrentUserName();
+      final ResultInternal result = new ResultInternal();
+      result.setProperty("user", currentUser != null ? currentUser : "");
+      if (currentUser != null) {
+        final Map<String, Object> info = security.getUserInfo(currentUser);
+        result.setProperty("databases", info != null ? info.get("databases") : Set.of());
+      } else
+        result.setProperty("databases", Set.of());
+      resultSet.add(result);
+      break;
+    }
+    case CREATE_USER: {
+      if (admin.isIfNotExists() && security.existsUser(admin.getUserName()))
+        break;
+      security.createUser(admin.getUserName(), admin.getPassword());
+      break;
+    }
+    case DROP_USER: {
+      if (admin.isIfExists()) {
+        security.dropUser(admin.getUserName());
+      } else {
+        if (!security.existsUser(admin.getUserName()))
+          throw new CommandExecutionException("User '" + admin.getUserName() + "' does not exist");
+        security.dropUser(admin.getUserName());
+      }
+      break;
+    }
+    case ALTER_USER: {
+      if (!security.existsUser(admin.getUserName()))
+        throw new CommandExecutionException("User '" + admin.getUserName() + "' does not exist");
+      security.setUserPassword(admin.getUserName(), admin.getPassword());
+      break;
+    }
+    }
+
+    return resultSet;
   }
 
   private void executeDropConstraint(final CypherDDLStatement ddl, final Schema schema) {

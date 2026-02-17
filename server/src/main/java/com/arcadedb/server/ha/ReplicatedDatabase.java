@@ -163,6 +163,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public com.arcadedb.security.SecurityManager getSecurity() {
+    return server.getSecurity();
+  }
+
+  @Override
   public Map<String, Object> getWrappers() {
     return proxied.getWrappers();
   }

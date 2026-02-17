@@ -64,24 +64,89 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     throw new CommandParsingException("Unsupported statement type");
   }
 
-  private CypherDDLStatement handleCommand(final Cypher25Parser.CommandContext ctx) {
+  private CypherStatement handleCommand(final Cypher25Parser.CommandContext ctx) {
     if (ctx.createCommand() != null)
       return handleCreateCommand(ctx.createCommand());
     if (ctx.dropCommand() != null)
       return handleDropCommand(ctx.dropCommand());
-    throw new CommandParsingException("Only constraint commands are currently supported");
+    if (ctx.showCommand() != null)
+      return handleShowCommand(ctx.showCommand());
+    if (ctx.alterCommand() != null)
+      return handleAlterCommand(ctx.alterCommand());
+    throw new CommandParsingException("Unsupported command type");
   }
 
-  private CypherDDLStatement handleCreateCommand(final Cypher25Parser.CreateCommandContext ctx) {
+  private CypherStatement handleCreateCommand(final Cypher25Parser.CreateCommandContext ctx) {
     if (ctx.createConstraint() != null)
       return handleCreateConstraint(ctx.createConstraint());
-    throw new CommandParsingException("Only CREATE CONSTRAINT is currently supported");
+    if (ctx.createUser() != null)
+      return handleCreateUser(ctx.createUser());
+    throw new CommandParsingException("Only CREATE CONSTRAINT and CREATE USER are currently supported");
   }
 
-  private CypherDDLStatement handleDropCommand(final Cypher25Parser.DropCommandContext ctx) {
+  private CypherStatement handleDropCommand(final Cypher25Parser.DropCommandContext ctx) {
     if (ctx.dropConstraint() != null)
       return handleDropConstraint(ctx.dropConstraint());
-    throw new CommandParsingException("Only DROP CONSTRAINT is currently supported");
+    if (ctx.dropUser() != null)
+      return handleDropUser(ctx.dropUser());
+    throw new CommandParsingException("Only DROP CONSTRAINT and DROP USER are currently supported");
+  }
+
+  private CypherAdminStatement handleShowCommand(final Cypher25Parser.ShowCommandContext ctx) {
+    if (ctx.showUsers() != null)
+      return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_USERS, null, null, false, false);
+    if (ctx.showCurrentUser() != null)
+      return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_CURRENT_USER, null, null, false, false);
+    throw new CommandParsingException("Only SHOW USERS and SHOW CURRENT USER are currently supported");
+  }
+
+  private CypherAdminStatement handleAlterCommand(final Cypher25Parser.AlterCommandContext ctx) {
+    if (ctx.alterUser() != null)
+      return handleAlterUser(ctx.alterUser());
+    throw new CommandParsingException("Only ALTER USER is currently supported");
+  }
+
+  private CypherAdminStatement handleCreateUser(final Cypher25Parser.CreateUserContext ctx) {
+    final String userName = stripBackticks(ctx.commandNameExpression().getText());
+    final boolean ifNotExists = ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null;
+
+    String password = null;
+    if (ctx.password() != null && !ctx.password().isEmpty()) {
+      final Cypher25Parser.PasswordContext pwdCtx = ctx.password(0);
+      password = extractPasswordValue(pwdCtx.passwordExpression());
+    }
+    if (password == null)
+      throw new CommandParsingException("CREATE USER requires SET PASSWORD");
+
+    return new CypherAdminStatement(CypherAdminStatement.Kind.CREATE_USER, userName, password, ifNotExists, false);
+  }
+
+  private CypherAdminStatement handleDropUser(final Cypher25Parser.DropUserContext ctx) {
+    final String userName = stripBackticks(ctx.commandNameExpression().getText());
+    final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
+    return new CypherAdminStatement(CypherAdminStatement.Kind.DROP_USER, userName, null, false, ifExists);
+  }
+
+  private CypherAdminStatement handleAlterUser(final Cypher25Parser.AlterUserContext ctx) {
+    final String userName = stripBackticks(ctx.commandNameExpression().getText());
+
+    String password = null;
+    if (ctx.password() != null && !ctx.password().isEmpty()) {
+      final Cypher25Parser.PasswordContext pwdCtx = ctx.password(0);
+      password = extractPasswordValue(pwdCtx.passwordExpression());
+    }
+    if (password == null)
+      throw new CommandParsingException("ALTER USER requires SET PASSWORD");
+
+    return new CypherAdminStatement(CypherAdminStatement.Kind.ALTER_USER, userName, password, false, false);
+  }
+
+  private String extractPasswordValue(final Cypher25Parser.PasswordExpressionContext ctx) {
+    if (ctx.stringLiteral() != null) {
+      final String raw = ctx.stringLiteral().getText();
+      return decodeStringLiteral(raw.substring(1, raw.length() - 1));
+    }
+    throw new CommandParsingException("Password must be a string literal");
   }
 
   private CypherDDLStatement handleCreateConstraint(final Cypher25Parser.CreateConstraintContext ctx) {
