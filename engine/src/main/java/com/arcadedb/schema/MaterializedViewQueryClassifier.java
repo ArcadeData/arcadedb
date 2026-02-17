@@ -19,6 +19,13 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.Projection;
+import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
 
 /**
  * Determines if a defining query is "simple" (eligible for per-record incremental refresh).
@@ -28,36 +35,43 @@ import com.arcadedb.database.Database;
 public class MaterializedViewQueryClassifier {
 
   public static boolean isSimple(final String sql, final Database database) {
-    final String upper = sql.toUpperCase().trim();
-
-    if (upper.contains("GROUP BY"))
-      return false;
-    if (upper.contains("SUM(") || upper.contains("COUNT(") || upper.contains("AVG(") ||
-        upper.contains("MIN(") || upper.contains("MAX("))
-      return false;
-    if (upper.contains("TRAVERSE"))
-      return false;
-    if (upper.contains(" JOIN "))
-      return false;
-
-    // Check for subqueries
-    final int firstSelect = upper.indexOf("SELECT");
-    if (firstSelect >= 0) {
-      final int secondSelect = upper.indexOf("SELECT", firstSelect + 6);
-      if (secondSelect >= 0)
+    try {
+      final Statement parsed = ((DatabaseInternal) database).getStatementCache().get(sql);
+      if (!(parsed instanceof SelectStatement select))
         return false;
-    }
 
-    // Count FROM clauses
-    int fromCount = 0;
-    int searchFrom = 0;
-    while ((searchFrom = upper.indexOf("FROM ", searchFrom)) >= 0) {
-      fromCount++;
-      searchFrom += 5;
-    }
-    if (fromCount > 1)
+      // GROUP BY present
+      if (select.getGroupBy() != null)
+        return false;
+
+      // Check for aggregate functions in projection
+      final Projection projection = select.getProjection();
+      if (projection != null && projection.getItems() != null) {
+        final BasicCommandContext ctx = new BasicCommandContext();
+        ctx.setDatabase((DatabaseInternal) database);
+        for (final ProjectionItem item : projection.getItems())
+          if (item.isAggregate(ctx))
+            return false;
+      }
+
+      // Check FROM clause: must be a simple type identifier (no subquery, no function call)
+      if (select.getTarget() != null && select.getTarget().getItem() != null) {
+        final FromItem item = select.getTarget().getItem();
+        // Subquery in FROM
+        if (item.getStatement() != null)
+          return false;
+        // Function call in FROM
+        if (item.getFunctionCall() != null)
+          return false;
+        // No type identifier (e.g., bucket or index source)
+        if (item.getIdentifier() == null)
+          return false;
+      }
+
+      return true;
+    } catch (final Exception e) {
+      // If parsing fails, treat as complex query to be safe
       return false;
-
-    return true;
+    }
   }
 }

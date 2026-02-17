@@ -129,14 +129,14 @@ public class RemoteSchema implements Schema {
   @Override
   public boolean existsMaterializedView(final String viewName) {
     final ResultSet result = remoteDatabase.command("sql",
-        "SELECT FROM schema:materializedViews WHERE name = '" + viewName + "'");
+        "SELECT FROM schema:materializedViews WHERE name = `" + viewName + "`");
     return result.hasNext();
   }
 
   @Override
   public MaterializedView getMaterializedView(final String viewName) {
     final ResultSet result = remoteDatabase.command("sql",
-        "SELECT FROM schema:materializedViews WHERE name = '" + viewName + "'");
+        "SELECT FROM schema:materializedViews WHERE name = `" + viewName + "`");
     if (result.hasNext())
       return new RemoteMaterializedView(result.next());
     throw new SchemaException("Materialized view '" + viewName + "' not found");
@@ -154,6 +154,13 @@ public class RemoteSchema implements Schema {
   @Override
   public void dropMaterializedView(final String viewName) {
     remoteDatabase.command("sql", "DROP MATERIALIZED VIEW `" + viewName + "`");
+  }
+
+  @Override
+  public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
+      final long newIntervalMs) {
+    throw new UnsupportedOperationException(
+        "alterMaterializedView() is not supported remotely. Use SQL ALTER MATERIALIZED VIEW instead.");
   }
 
   @Override

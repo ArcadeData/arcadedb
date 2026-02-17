@@ -23,6 +23,10 @@ import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -170,24 +174,15 @@ public class MaterializedViewBuilder {
   }
 
   private List<String> extractSourceTypes(final String sql) {
-    // Parse the SQL and extract type names from the FROM clause
     final List<String> types = new ArrayList<>();
-    final String upper = sql.toUpperCase();
-    int fromIdx = upper.indexOf("FROM ");
-    while (fromIdx >= 0) {
-      final int start = fromIdx + 5;
-      int i = start;
-      while (i < sql.length() && sql.charAt(i) == ' ')
-        i++;
-      final int nameStart = i;
-      while (i < sql.length() && (Character.isLetterOrDigit(sql.charAt(i)) || sql.charAt(i) == '_'))
-        i++;
-      if (i > nameStart) {
-        final String typeName = sql.substring(nameStart, i);
-        if (!typeName.isEmpty() && !types.contains(typeName))
-          types.add(typeName);
+    final Statement parsed = database.getStatementCache().get(sql);
+    if (parsed instanceof SelectStatement select) {
+      final FromClause from = select.getTarget();
+      if (from != null) {
+        final FromItem item = from.getItem();
+        if (item != null && item.getIdentifier() != null)
+          types.add(item.getIdentifier().getStringValue());
       }
-      fromIdx = upper.indexOf("FROM ", i);
     }
     return types;
   }
