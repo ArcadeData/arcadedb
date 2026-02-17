@@ -327,9 +327,10 @@ class OpenCypherCollectUnwindTest {
   void unwindNestedLists() {
     // Test unwinding nested lists
     final ResultSet result = database.command("opencypher",
-        "UNWIND [[1, 2], [3, 4]] AS innerList " +
-            "UNWIND innerList AS num " +
-            "RETURN num");
+        """
+        UNWIND [[1, 2], [3, 4]] AS innerList \
+        UNWIND innerList AS num \
+        RETURN num""");
 
     final List<Integer> numbers = new ArrayList<>();
     while (result.hasNext()) {

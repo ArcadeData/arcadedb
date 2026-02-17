@@ -92,8 +92,9 @@ class Issue3402Test {
     // This should NOT throw NumberFormatException
     // Query with distance function - this is where the bug occurs
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (ping1:Ping {id: 1}), (ping2:Ping {id: 2}) " +
-        "RETURN distance(ping1.location, ping2.location) as dist")) {
+        """
+        MATCH (ping1:Ping {id: 1}), (ping2:Ping {id: 2}) \
+        RETURN distance(ping1.location, ping2.location) as dist""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
       final Object dist = result.getProperty("dist");
@@ -113,20 +114,23 @@ class Issue3402Test {
     // Create test data similar to the original issue
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (p1:Person {name: 'Alice'})-[:OWNS]->(d1:Device {imei: 'IMEI_001'})-[:GENERATED]->" +
-          "(ping1:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')})");
+          """
+          CREATE (p1:Person {name: 'Alice'})-[:OWNS]->(d1:Device {imei: 'IMEI_001'})-[:GENERATED]->\
+          (ping1:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')})""");
       database.command("opencypher",
-          "CREATE (p2:Person {name: 'Bob'})-[:OWNS]->(d2:Device {imei: 'IMEI_002'})-[:GENERATED]->" +
-          "(ping2:Ping {location: point(48.8606, 2.3376), time: datetime('2024-01-01T12:05:00')})");
+          """
+          CREATE (p2:Person {name: 'Bob'})-[:OWNS]->(d2:Device {imei: 'IMEI_002'})-[:GENERATED]->\
+          (ping2:Ping {location: point(48.8606, 2.3376), time: datetime('2024-01-01T12:05:00')})""");
     });
 
     // Query with distance in WHERE clause - reproduces the original issue
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (person1:Person)-[:OWNS]->(device1:Device)-[:GENERATED]->(ping1:Ping), " +
-        "      (person2:Person)-[:OWNS]->(device2:Device)-[:GENERATED]->(ping2:Ping) " +
-        "WHERE id(device1) < id(device2) " +
-        "  AND distance(ping1.location, ping2.location) < 5000 " +
-        "RETURN person1.name, person2.name, distance(ping1.location, ping2.location) as dist")) {
+        """
+        MATCH (person1:Person)-[:OWNS]->(device1:Device)-[:GENERATED]->(ping1:Ping), \
+              (person2:Person)-[:OWNS]->(device2:Device)-[:GENERATED]->(ping2:Ping) \
+        WHERE id(device1) < id(device2) \
+          AND distance(ping1.location, ping2.location) < 5000 \
+        RETURN person1.name, person2.name, distance(ping1.location, ping2.location) as dist""")) {
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
@@ -151,8 +155,9 @@ class Issue3402Test {
 
     // Test default (meters for Cypher style)
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (ping1:Ping {id: 1}), (ping2:Ping {id: 2}) " +
-        "RETURN distance(ping1.location, ping2.location) as dist")) {
+        """
+        MATCH (ping1:Ping {id: 1}), (ping2:Ping {id: 2}) \
+        RETURN distance(ping1.location, ping2.location) as dist""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
       final double distMeters = ((Number) result.getProperty("dist")).doubleValue();
@@ -161,8 +166,9 @@ class Issue3402Test {
 
     // Test explicit kilometers
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (ping1:Ping {id: 1}), (ping2:Ping {id: 2}) " +
-        "RETURN distance(ping1.location, ping2.location, 'km') as dist")) {
+        """
+        MATCH (ping1:Ping {id: 1}), (ping2:Ping {id: 2}) \
+        RETURN distance(ping1.location, ping2.location, 'km') as dist""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
       final double distKm = ((Number) result.getProperty("dist")).doubleValue();
@@ -171,8 +177,9 @@ class Issue3402Test {
 
     // Test explicit meters
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (ping1:Ping {id: 1}), (ping2:Ping {id: 2}) " +
-        "RETURN distance(ping1.location, ping2.location, 'm') as dist")) {
+        """
+        MATCH (ping1:Ping {id: 1}), (ping2:Ping {id: 2}) \
+        RETURN distance(ping1.location, ping2.location, 'm') as dist""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
       final double distMeters = ((Number) result.getProperty("dist")).doubleValue();
@@ -198,15 +205,16 @@ class Issue3402Test {
 
     // Run the problematic query from the issue
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (person1:Person)-[:OWNS]->(device1:Device)-[:GENERATED]->(ping1:Ping), " +
-        "      (person2:Person)-[:OWNS]->(device2:Device)-[:GENERATED]->(ping2:Ping) " +
-        "WHERE id(device1) < id(device2) " +
-        "  AND ping1.time > datetime('2024-01-01T00:00:00') " +
-        "  AND distance(ping1.location, ping2.location) < 1500 " +
-        "RETURN person1.name, device1.imei, ping1.time, " +
-        "       person2.name, device2.imei, ping2.time, " +
-        "       distance(ping1.location, ping2.location) as dist_m " +
-        "LIMIT 100")) {
+        """
+        MATCH (person1:Person)-[:OWNS]->(device1:Device)-[:GENERATED]->(ping1:Ping), \
+              (person2:Person)-[:OWNS]->(device2:Device)-[:GENERATED]->(ping2:Ping) \
+        WHERE id(device1) < id(device2) \
+          AND ping1.time > datetime('2024-01-01T00:00:00') \
+          AND distance(ping1.location, ping2.location) < 1500 \
+        RETURN person1.name, device1.imei, ping1.time, \
+               person2.name, device2.imei, ping2.time, \
+               distance(ping1.location, ping2.location) as dist_m \
+        LIMIT 100""")) {
 
       // Should execute without throwing NumberFormatException
       long count = 0;
@@ -236,27 +244,30 @@ class Issue3402Test {
 
       // Create pings with spatial points
       database.command("opencypher",
-          "MATCH (d:Device {imei: 'IMEI_001'}) " +
-          "CREATE (ping:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')}), " +
-          "(d)-[:GENERATED]->(ping)");
+          """
+          MATCH (d:Device {imei: 'IMEI_001'}) \
+          CREATE (ping:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')}), \
+          (d)-[:GENERATED]->(ping)""");
       database.command("opencypher",
-          "MATCH (d:Device {imei: 'IMEI_002'}) " +
-          "CREATE (ping:Ping {location: point(48.8606, 2.3376), time: datetime('2024-01-01T12:05:00')}), " +
-          "(d)-[:GENERATED]->(ping)");
+          """
+          MATCH (d:Device {imei: 'IMEI_002'}) \
+          CREATE (ping:Ping {location: point(48.8606, 2.3376), time: datetime('2024-01-01T12:05:00')}), \
+          (d)-[:GENERATED]->(ping)""");
     });
 
     // This is the exact query structure from the issue (adapted for smaller dataset)
     // Should NOT throw "For input string: \"POINT (48.885347 2.322881)\""
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (person1:Person)-[:OWNS]->(device1:Device)-[:GENERATED]->(ping1:Ping), " +
-        "      (person2:Person)-[:OWNS]->(device2:Device)-[:GENERATED]->(ping2:Ping) " +
-        "WHERE id(device1) < id(device2) " +
-        "  AND ping1.time > datetime('2024-01-01T00:00:00') " +
-        "  AND distance(ping1.location, ping2.location) < 1500 " +
-        "RETURN person1.name, device1.imei, ping1.time, " +
-        "       person2.name, device2.imei, ping2.time, " +
-        "       distance(ping1.location, ping2.location) as dist_m " +
-        "LIMIT 100")) {
+        """
+        MATCH (person1:Person)-[:OWNS]->(device1:Device)-[:GENERATED]->(ping1:Ping), \
+              (person2:Person)-[:OWNS]->(device2:Device)-[:GENERATED]->(ping2:Ping) \
+        WHERE id(device1) < id(device2) \
+          AND ping1.time > datetime('2024-01-01T00:00:00') \
+          AND distance(ping1.location, ping2.location) < 1500 \
+        RETURN person1.name, device1.imei, ping1.time, \
+               person2.name, device2.imei, ping2.time, \
+               distance(ping1.location, ping2.location) as dist_m \
+        LIMIT 100""")) {
 
       // Should successfully execute without NumberFormatException
       assertThat(rs.hasNext()).isTrue();

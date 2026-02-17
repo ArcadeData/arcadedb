@@ -1001,8 +1001,9 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   void optionalMatch() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql",
-          "MATCH {type: V1, as: a, WHERE: (idx = 0)}.out('E1'){as: b} " +
-              "RETURN a.name as aName, b.name as bName");
+          """
+          MATCH {type: V1, as: a, WHERE: (idx = 0)}.out('E1'){as: b} \
+          RETURN a.name as aName, b.name as bName""");
       assertThat(rs.hasNext()).isTrue();
       rs.close();
     });

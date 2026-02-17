@@ -61,9 +61,10 @@ class OpenCypherZeroLengthPathTest {
     });
 
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:SoloNode) " +
-            "MATCH p=(a)-[*0..1]->(b) " +
-            "RETURN count(p) AS cnt");
+        """
+        MATCH (a:SoloNode) \
+        MATCH p=(a)-[*0..1]->(b) \
+        RETURN count(p) AS cnt""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -75,10 +76,11 @@ class OpenCypherZeroLengthPathTest {
   void zeroLengthPathWithCreateAndWith() {
     // Exact query from issue #3337
     final ResultSet result = database.command("opencypher",
-        "CREATE (a:SoloNode) " +
-            "WITH a " +
-            "MATCH p=(a)-[*0..1]->(b) " +
-            "RETURN count(p) AS cnt");
+        """
+        CREATE (a:SoloNode) \
+        WITH a \
+        MATCH p=(a)-[*0..1]->(b) \
+        RETURN count(p) AS cnt""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -96,9 +98,10 @@ class OpenCypherZeroLengthPathTest {
     });
 
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}) " +
-            "MATCH p=(a)-[*0..1]->(b) " +
-            "RETURN b.name AS name ORDER BY name");
+        """
+        MATCH (a:Person {name: 'Alice'}) \
+        MATCH p=(a)-[*0..1]->(b) \
+        RETURN b.name AS name ORDER BY name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row1 = result.next();
@@ -124,9 +127,10 @@ class OpenCypherZeroLengthPathTest {
     });
 
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}) " +
-            "MATCH p=(a)-[*0..2]->(b) " +
-            "RETURN count(p) AS cnt");
+        """
+        MATCH (a:Person {name: 'Alice'}) \
+        MATCH p=(a)-[*0..2]->(b) \
+        RETURN count(p) AS cnt""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -145,9 +149,10 @@ class OpenCypherZeroLengthPathTest {
     });
 
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}) " +
-            "MATCH p=(a)-[*0..0]->(b) " +
-            "RETURN b.name AS name");
+        """
+        MATCH (a:Person {name: 'Alice'}) \
+        MATCH p=(a)-[*0..0]->(b) \
+        RETURN b.name AS name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();

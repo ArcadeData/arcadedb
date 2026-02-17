@@ -53,12 +53,13 @@ class OpenCypherListPredicateTest {
   void allPredicates() {
     // Exact query from the issue
     final ResultSet rs = database.query("opencypher",
-        "WITH [1, 2, 3, 4] AS list " +
-            "RETURN " +
-            "  all(x IN list WHERE x > 0) AS is_all_pos, " +
-            "  any(x IN list WHERE x = 4) AS has_four, " +
-            "  none(x IN list WHERE x < 0) AS no_neg, " +
-            "  single(x IN list WHERE x = 2) AS just_one_two");
+        """
+        WITH [1, 2, 3, 4] AS list \
+        RETURN \
+          all(x IN list WHERE x > 0) AS is_all_pos, \
+          any(x IN list WHERE x = 4) AS has_four, \
+          none(x IN list WHERE x < 0) AS no_neg, \
+          single(x IN list WHERE x = 2) AS just_one_two""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result row = rs.next();
@@ -136,10 +137,11 @@ class OpenCypherListPredicateTest {
   @Test
   void emptyList() {
     final ResultSet rs = database.query("opencypher",
-        "RETURN all(x IN [] WHERE x > 0) AS a, " +
-            "any(x IN [] WHERE x > 0) AS b, " +
-            "none(x IN [] WHERE x > 0) AS c, " +
-            "single(x IN [] WHERE x > 0) AS d");
+        """
+        RETURN all(x IN [] WHERE x > 0) AS a, \
+        any(x IN [] WHERE x > 0) AS b, \
+        none(x IN [] WHERE x > 0) AS c, \
+        single(x IN [] WHERE x > 0) AS d""");
     assertThat(rs.hasNext()).isTrue();
     final Result row = rs.next();
     // all() on empty list is true (vacuous truth)
@@ -165,8 +167,9 @@ class OpenCypherListPredicateTest {
   void quantifierWithSharedList() {
     // TCK Quantifier5 [2]: none(x IN list WHERE none(y IN list WHERE x <= y))
     final ResultSet rs = database.query("opencypher",
-        "WITH [1, 2, 3, 4, 5, 6, 7, 8, 9] AS list " +
-            "RETURN none(x IN list WHERE none(y IN list WHERE x <= y)) AS result");
+        """
+        WITH [1, 2, 3, 4, 5, 6, 7, 8, 9] AS list \
+        RETURN none(x IN list WHERE none(y IN list WHERE x <= y)) AS result""");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Boolean) rs.next().getProperty("result")).isTrue();
   }
@@ -175,8 +178,9 @@ class OpenCypherListPredicateTest {
   void noneEqualsNotAny() {
     // TCK Quantifier5 [3]: none(...) = (NOT any(...))
     final ResultSet rs = database.query("opencypher",
-        "RETURN none(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2) = " +
-            "(NOT any(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2)) AS result");
+        """
+        RETURN none(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2) = \
+        (NOT any(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2)) AS result""");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Boolean) rs.next().getProperty("result")).isTrue();
   }
@@ -222,8 +226,9 @@ class OpenCypherListPredicateTest {
   void noneEqualsSizeFilter() {
     // TCK Quantifier5 [5]
     final ResultSet rs = database.query("opencypher",
-        "RETURN none(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2) = " +
-            "(size([x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2 | x]) = 0) AS result");
+        """
+        RETURN none(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2) = \
+        (size([x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2 | x]) = 0) AS result""");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Boolean) rs.next().getProperty("result")).isTrue();
   }
@@ -238,8 +243,9 @@ class OpenCypherListPredicateTest {
     });
 
     final ResultSet rs = database.query("opencypher",
-        "MATCH (n:Item) WITH collect(n.val) AS vals " +
-            "RETURN all(v IN vals WHERE v > 0) AS result");
+        """
+        MATCH (n:Item) WITH collect(n.val) AS vals \
+        RETURN all(v IN vals WHERE v > 0) AS result""");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Boolean) rs.next().getProperty("result")).isTrue();
   }
@@ -249,28 +255,30 @@ class OpenCypherListPredicateTest {
     // Create the binary-tree-1 graph (exact TCK setup)
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (a:A {name: 'a'}), (b1:X {name: 'b1'}), (b2:X {name: 'b2'}), " +
-              "(b3:X {name: 'b3'}), (b4:X {name: 'b4'}), " +
-              "(c11:X {name: 'c11'}), (c12:X {name: 'c12'}), " +
-              "(c21:X {name: 'c21'}), (c22:X {name: 'c22'}), " +
-              "(c31:X {name: 'c31'}), (c32:X {name: 'c32'}), " +
-              "(c41:X {name: 'c41'}), (c42:X {name: 'c42'}) " +
-              "CREATE (a)-[:KNOWS]->(b1), (a)-[:KNOWS]->(b2), " +
-              "(a)-[:FOLLOWS]->(b3), (a)-[:FOLLOWS]->(b4) " +
-              "CREATE (b1)-[:FRIEND]->(c11), (b1)-[:FRIEND]->(c12), " +
-              "(b2)-[:FRIEND]->(c21), (b2)-[:FRIEND]->(c22), " +
-              "(b3)-[:FRIEND]->(c31), (b3)-[:FRIEND]->(c32), " +
-              "(b4)-[:FRIEND]->(c41), (b4)-[:FRIEND]->(c42) " +
-              "CREATE (b1)-[:FRIEND]->(b2), (b2)-[:FRIEND]->(b3), " +
-              "(b3)-[:FRIEND]->(b4), (b4)-[:FRIEND]->(b1)");
+          """
+          CREATE (a:A {name: 'a'}), (b1:X {name: 'b1'}), (b2:X {name: 'b2'}), \
+          (b3:X {name: 'b3'}), (b4:X {name: 'b4'}), \
+          (c11:X {name: 'c11'}), (c12:X {name: 'c12'}), \
+          (c21:X {name: 'c21'}), (c22:X {name: 'c22'}), \
+          (c31:X {name: 'c31'}), (c32:X {name: 'c32'}), \
+          (c41:X {name: 'c41'}), (c42:X {name: 'c42'}) \
+          CREATE (a)-[:KNOWS]->(b1), (a)-[:KNOWS]->(b2), \
+          (a)-[:FOLLOWS]->(b3), (a)-[:FOLLOWS]->(b4) \
+          CREATE (b1)-[:FRIEND]->(c11), (b1)-[:FRIEND]->(c12), \
+          (b2)-[:FRIEND]->(c21), (b2)-[:FRIEND]->(c22), \
+          (b3)-[:FRIEND]->(c31), (b3)-[:FRIEND]->(c32), \
+          (b4)-[:FRIEND]->(c41), (b4)-[:FRIEND]->(c42) \
+          CREATE (b1)-[:FRIEND]->(b2), (b2)-[:FRIEND]->(b3), \
+          (b3)-[:FRIEND]->(b4), (b4)-[:FRIEND]->(b1)""");
     });
 
     // TCK Scenario [2]: friend of a friend that is not a friend
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:A)-[:KNOWS]->(b)-->(c) " +
-            "OPTIONAL MATCH (a)-[r:KNOWS]->(c) " +
-            "WITH c WHERE r IS NULL " +
-            "RETURN c.name");
+        """
+        MATCH (a:A)-[:KNOWS]->(b)-->(c) \
+        OPTIONAL MATCH (a)-[r:KNOWS]->(c) \
+        WITH c WHERE r IS NULL \
+        RETURN c.name""");
     final List<String> names = new ArrayList<>();
     while (rs.hasNext())
       names.add((String) rs.next().getProperty("c.name"));

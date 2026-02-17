@@ -58,13 +58,15 @@ class Issue3331Test {
     // Exact scenario from issue #3331
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), " +
-              "(a)-[:KNOWS]->(:Person {name:'C'})");
+          """
+          CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
+          (a)-[:KNOWS]->(:Person {name:'C'})""");
     });
 
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'A'}) " +
-            "RETURN [(a)-->(friend) WHERE friend.name <> 'B' | friend.name] AS result")) {
+        """
+        MATCH (a:Person {name: 'A'}) \
+        RETURN [(a)-->(friend) WHERE friend.name <> 'B' | friend.name] AS result""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       final Object resultObj = row.getProperty("result");
@@ -80,13 +82,15 @@ class Issue3331Test {
     // Pattern comprehension without WHERE clause
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), " +
-              "(a)-[:KNOWS]->(:Person {name:'C'})");
+          """
+          CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
+          (a)-[:KNOWS]->(:Person {name:'C'})""");
     });
 
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'A'}) " +
-            "RETURN [(a)-->(friend) | friend.name] AS result")) {
+        """
+        MATCH (a:Person {name: 'A'}) \
+        RETURN [(a)-->(friend) | friend.name] AS result""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       final Object resultObj = row.getProperty("result");
@@ -102,13 +106,15 @@ class Issue3331Test {
     // Pattern comprehension with specific relationship type
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), " +
-              "(a)-[:LIKES]->(:Person {name:'C'})");
+          """
+          CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
+          (a)-[:LIKES]->(:Person {name:'C'})""");
     });
 
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'A'}) " +
-            "RETURN [(a)-[:KNOWS]->(friend) | friend.name] AS result")) {
+        """
+        MATCH (a:Person {name: 'A'}) \
+        RETURN [(a)-[:KNOWS]->(friend) | friend.name] AS result""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       final Object resultObj = row.getProperty("result");
@@ -128,8 +134,9 @@ class Issue3331Test {
     });
 
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Person {name: 'A'}) " +
-            "RETURN [(a)-->(friend) | friend.name] AS result")) {
+        """
+        MATCH (a:Person {name: 'A'}) \
+        RETURN [(a)-->(friend) | friend.name] AS result""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       final Object resultObj = row.getProperty("result");

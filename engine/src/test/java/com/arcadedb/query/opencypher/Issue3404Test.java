@@ -105,8 +105,9 @@ class Issue3404Test {
   @Test
   void collectRelationshipsReturnsListNotCount() {
     // Query that collects relationships
-    final String query = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                         "RETURN ID(nodeDOc), COLLECT(ID(chunk)), COLLECT(rel)";
+    final String query = """
+                         MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                         RETURN ID(nodeDOc), COLLECT(ID(chunk)), COLLECT(rel)""";
 
     try (final ResultSet rs = database.query("opencypher", query)) {
       while (rs.hasNext()) {
@@ -147,8 +148,9 @@ class Issue3404Test {
   @Test
   void collectRelationshipsWithIdStillWorks() {
     // Verify that the workaround (wrapping in ID()) still works
-    final String query = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                         "RETURN ID(nodeDOc), COLLECT(ID(rel))";
+    final String query = """
+                         MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                         RETURN ID(nodeDOc), COLLECT(ID(rel))""";
 
     try (final ResultSet rs = database.query("opencypher", query)) {
       assertThat(rs.hasNext()).isTrue();
@@ -200,8 +202,9 @@ class Issue3404Test {
   @Test
   void collectNodesStillWorks() {
     // Verify that COLLECT still works correctly for nodes
-    final String query = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                         "RETURN ID(nodeDOc), COLLECT(chunk) AS chunks";
+    final String query = """
+                         MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                         RETURN ID(nodeDOc), COLLECT(chunk) AS chunks""";
 
     try (final ResultSet rs = database.query("opencypher", query)) {
       assertThat(rs.hasNext()).isTrue();
@@ -226,8 +229,9 @@ class Issue3404Test {
         .setExpandVertexEdges(false);
     serializer.setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
 
-    final String query = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                         "RETURN ID(nodeDOc) AS docId, COLLECT(rel) AS rels";
+    final String query = """
+                         MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                         RETURN ID(nodeDOc) AS docId, COLLECT(rel) AS rels""";
 
     try (final ResultSet rs = database.query("opencypher", query)) {
       assertThat(rs.hasNext()).isTrue();

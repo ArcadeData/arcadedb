@@ -507,8 +507,9 @@ vectorBuilder.pqTrainingLimit);
    */
   public void loadVectorsAfterSchemaLoad() {
     LogManager.instance()
-        .log(this, Level.SEVERE, "loadVectorsAfterSchemaLoad called for index %s: dimensions=%d, mutablePages=%d, " +
-                "hasGraphFile=%s",
+        .log(this, Level.SEVERE, """
+                loadVectorsAfterSchemaLoad called for index %s: dimensions=%d, mutablePages=%d, \
+                hasGraphFile=%s""",
             indexName, metadata.dimensions, mutable.getTotalPages(), graphFile != null);
 
     // CRASH RECOVERY: Check if index was BUILDING when database crashed/shutdown
@@ -517,8 +518,9 @@ vectorBuilder.pqTrainingLimit);
       if (loadedState == BUILD_STATE.BUILDING) {
         // Index was being built when database crashed/shutdown
         LogManager.instance().log(this, Level.WARNING,
-            "Vector index '%s' was BUILDING during last shutdown. Marking as INVALID. " +
-                "Run 'REBUILD INDEX %s' to recover.", indexName, indexName);
+            """
+            Vector index '%s' was BUILDING during last shutdown. Marking as INVALID. \
+            Run 'REBUILD INDEX %s' to recover.""", indexName, indexName);
 
         this.buildState = BUILD_STATE.INVALID;
         this.metadata.buildState = BUILD_STATE.INVALID.name();
@@ -543,8 +545,9 @@ vectorBuilder.pqTrainingLimit);
     if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
       try {
         LogManager.instance()
-            .log(this, Level.SEVERE, "Loading vectors for index %s after schema load (dimensions=%d, pages=%d, " +
-             "fileId=%d)",
+            .log(this, Level.SEVERE, """
+             Loading vectors for index %s after schema load (dimensions=%d, pages=%d, \
+             fileId=%d)""",
                 indexName, metadata.dimensions, mutable.getTotalPages(), mutable.getFileId());
 
         loadVectorsFromPages();
@@ -725,8 +728,9 @@ vectorBuilder.pqTrainingLimit);
       }
 
       LogManager.instance()
-          .log(this, Level.FINE, "No graph file found in FileManager for index %s. Graph will be built on first " +
-                  "search.",
+          .log(this, Level.FINE, """
+                  No graph file found in FileManager for index %s. Graph will be built on first \
+                  search.""",
               indexName);
       return null;
     } catch (final Exception e) {
@@ -809,8 +813,9 @@ vectorBuilder.pqTrainingLimit);
           pqFile != null && !pqFile.exists();
       if (needsGraphRebuildForPQ) {
         LogManager.instance().log(this, Level.INFO,
-            "PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal " +
-             "consistency: %s",
+            """
+            PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal \
+            consistency: %s""",
             indexName);
       }
 
@@ -826,8 +831,9 @@ vectorBuilder.pqTrainingLimit);
       });
       if (hasDeletedVectors) {
         LogManager.instance().log(this, Level.INFO,
-            "Deleted vectors detected in index %s - rebuilding graph from scratch to ensure ordinal consistency " +
-                "(fixes issue #3135: stale ordinal mappings after vector updates)",
+            """
+            Deleted vectors detected in index %s - rebuilding graph from scratch to ensure ordinal consistency \
+            (fixes issue #3135: stale ordinal mappings after vector updates)""",
             indexName);
       }
 
@@ -1096,8 +1102,9 @@ vectorBuilder.pqTrainingLimit);
         vectorIds = activeVectorIds; // Use vector IDs from pages
       } else {
         LogManager.instance().log(this, Level.SEVERE,
-            "FALLBACK: Could not read vectors from pages (database closing), using existing vectorIndex with %d " +
-             "entries",
+            """
+            FALLBACK: Could not read vectors from pages (database closing), using existing vectorIndex with %d \
+            entries""",
             vectorIndex.size());
         // Build vector IDs from existing vectorIndex
         vectorIds = vectorIndex.getAllVectorIds().filter(id -> {
@@ -1248,8 +1255,9 @@ vectorBuilder.pqTrainingLimit);
       }
 
       final int graphBuildCacheSize = getGraphBuildCacheSize();
-      LogManager.instance().log(this, Level.INFO, "Building graph with %d vectors using property '%s' (cache enabled:" +
-       " size=%d)",
+      LogManager.instance().log(this, Level.INFO, """
+       Building graph with %d vectors using property '%s' (cache enabled:\
+        size=%d)""",
           filteredVectorIds.length, vectorProp, graphBuildCacheSize);
 
       // Create lazy-loading vector values that reads vectors from documents or index pages (if quantized)
@@ -1344,8 +1352,9 @@ vectorBuilder.pqTrainingLimit);
 
         LogManager.instance().log(this, Level.INFO, "JVector graph index built successfully");
       } catch (final AssertionError e) {
-        LogManager.instance().log(this, Level.SEVERE, "JVector assertion failed during graph build (dimensions=%d, " +
-         "vectors=%d): %s",
+        LogManager.instance().log(this, Level.SEVERE, """
+         JVector assertion failed during graph build (dimensions=%d, \
+         vectors=%d): %s""",
             metadata.dimensions, vectors.size(), e.getMessage());
         throw e;
       }
@@ -1469,8 +1478,9 @@ vectorBuilder.pqTrainingLimit);
           // Don't throw - allow the index to continue working, just won't have persisted graph
         }
       } else {
-        LogManager.instance().log(this, Level.SEVERE, "PERSIST: graphFile is NULL, cannot persist graph for index: " +
-         "%s", indexName);
+        LogManager.instance().log(this, Level.SEVERE, """
+         PERSIST: graphFile is NULL, cannot persist graph for index: \
+         %s""", indexName);
       }
       this.mutationsSinceSerialize.set(0);
 
@@ -1488,8 +1498,9 @@ vectorBuilder.pqTrainingLimit);
       final long configuredChunkSize = chunkSizeMB;
       chunkSizeMB = 50;
       LogManager.instance()
-          .log(this, Level.WARNING, "arcadedb.index.buildChunkSizeMB was %dMB during graph persistence; forcing " +
-                  "fallback to 50MB",
+          .log(this, Level.WARNING, """
+                  arcadedb.index.buildChunkSizeMB was %dMB during graph persistence; forcing \
+                  fallback to 50MB""",
               configuredChunkSize);
     }
     return chunkSizeMB;
@@ -1765,8 +1776,9 @@ vectorBuilder.pqTrainingLimit);
       if (offsetFreeContent < HEADER_BASE_SIZE || offsetFreeContent > currentPage.getMaxContentSize()) {
         // Old format page or corrupted, create new page
         LogManager.instance()
-            .log(this, Level.WARNING, "Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating new " +
-             "page",
+            .log(this, Level.WARNING, """
+             Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating new \
+             page""",
                 offsetFreeContent, lastPageNum, HEADER_BASE_SIZE, currentPage.getMaxContentSize());
         currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
         lastPageNum++;
@@ -1903,8 +1915,9 @@ vectorBuilder.pqTrainingLimit);
         if (offsetFreeContent < HEADER_BASE_SIZE || offsetFreeContent > currentPage.getMaxContentSize()) {
           // Old format page or corrupted, create new page
           LogManager.instance()
-              .log(this, Level.WARNING, "Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating " +
-               "new page",
+              .log(this, Level.WARNING, """
+               Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating \
+               new page""",
                   offsetFreeContent, lastPageNum, HEADER_BASE_SIZE, currentPage.getMaxContentSize());
           currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
           lastPageNum++;
@@ -2381,8 +2394,9 @@ vectorBuilder.pqTrainingLimit);
             bitsFilter);
 
         LogManager.instance()
-            .log(this, Level.INFO, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, " +
-             "ordinalToVectorIdLength=%d",
+            .log(this, Level.INFO, """
+             GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, \
+             ordinalToVectorIdLength=%d""",
                 searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
 
         // Extract RIDs and scores from search results using ordinal mapping
@@ -3270,8 +3284,9 @@ vectorBuilder.pqTrainingLimit);
       if (vectorIndex.size() > 0 && (graphState == GraphState.LOADING || graphState == GraphState.MUTABLE)) {
         try {
           LogManager.instance()
-              .log(this, Level.FINE, "Building graph before close for index: %s (this may take 1-2 minutes for large " +
-              "datasets)",
+              .log(this, Level.FINE, """
+              Building graph before close for index: %s (this may take 1-2 minutes for large \
+              datasets)""",
                   indexName);
           final long startTime = System.currentTimeMillis();
           buildGraphFromScratch();
@@ -3833,8 +3848,9 @@ vectorBuilder.pqTrainingLimit);
       final int numberOfEntries = page.readInt(OFFSET_NUM_ENTRIES);
 
       LogManager.instance().log(this, Level.FINE,
-          "applyReplicatedPageUpdate: index=%s, pageNum=%d, fileId=%d, entries=%d, freeContent=%d, " +
-           "vectorIndexSizeBefore=%d",
+          """
+          applyReplicatedPageUpdate: index=%s, pageNum=%d, fileId=%d, entries=%d, freeContent=%d, \
+          vectorIndexSizeBefore=%d""",
           indexName, pageNum, fileId, numberOfEntries, offsetFreeContent, vectorIndex.size());
 
       if (numberOfEntries == 0)

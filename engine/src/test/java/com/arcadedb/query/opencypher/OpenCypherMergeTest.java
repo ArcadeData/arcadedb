@@ -238,8 +238,9 @@ public class OpenCypherMergeTest {
     // MERGE relationship using backticks around the type name 'in' (which is a reserved keyword)
     database.transaction(() -> {
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}), (b:Company {name: 'TechCorp'}) " +
-          "MERGE (a)-[r:`in`]->(b) RETURN a, b, r");
+          """
+          MATCH (a:Person {name: 'Alice'}), (b:Company {name: 'TechCorp'}) \
+          MERGE (a)-[r:`in`]->(b) RETURN a, b, r""");
     });
 
     // Verify the relationship type is "in" (without backticks)
@@ -255,8 +256,9 @@ public class OpenCypherMergeTest {
     // MERGE again - should find the existing relationship (proves backticks are treated consistently)
     database.transaction(() -> {
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}), (b:Company {name: 'TechCorp'}) " +
-          "MERGE (a)-[r2:`in`]->(b) RETURN r2");
+          """
+          MATCH (a:Person {name: 'Alice'}), (b:Company {name: 'TechCorp'}) \
+          MERGE (a)-[r2:`in`]->(b) RETURN r2""");
     });
 
     // Verify still only one relationship

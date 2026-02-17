@@ -20,14 +20,15 @@ public class CompareParserAST {
     Database database = factory.create();
 
     try {
-      String query = "MATCH {type:Employee, where: (name = 'p10')}" +
-          ".out('WorksAt')" +
-          ".out('ParentDepartment'){" +
-          "    while: (in('ManagerOf').size() == 0)," +
-          "    where: (in('ManagerOf').size() > 0)" +
-          "}" +
-          ".in('ManagerOf'){as: manager}" +
-          "RETURN manager";
+      String query = """
+          MATCH {type:Employee, where: (name = 'p10')}\
+          .out('WorksAt')\
+          .out('ParentDepartment'){\
+              while: (in('ManagerOf').size() == 0),\
+              where: (in('ManagerOf').size() > 0)\
+          }\
+          .in('ManagerOf'){as: manager}\
+          RETURN manager""";
 
       System.out.println("=== ANTLR Parser AST ===");
       GlobalConfiguration.SQL_PARSER_IMPLEMENTATION.setValue("antlr");

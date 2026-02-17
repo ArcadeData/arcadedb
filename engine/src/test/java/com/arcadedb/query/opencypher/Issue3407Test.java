@@ -62,20 +62,22 @@ class Issue3407Test {
 
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (p:Person {name: 'Suspect_1'})\n" +
-          "CREATE (d:Device {imei: 'IMEI_1', num: '0612345678'})\n" +
-          "CREATE (p)-[:OWNS]->(d)\n" +
-          "CREATE (ping:Ping {location: point(48.85, 2.35), time: datetime('2024-01-01T12:00:00')})\n" +
-          "CREATE (d)-[:GENERATED]->(ping)");
+          """
+          CREATE (p:Person {name: 'Suspect_1'})
+          CREATE (d:Device {imei: 'IMEI_1', num: '0612345678'})
+          CREATE (p)-[:OWNS]->(d)
+          CREATE (ping:Ping {location: point(48.85, 2.35), time: datetime('2024-01-01T12:00:00')})
+          CREATE (d)-[:GENERATED]->(ping)""");
     });
 
     // Test PROFILE with a query that uses traditional execution
     // (queries with UNWIND, WITH, or complex patterns often use traditional execution)
     final ResultSet result = database.command("opencypher",
-        "PROFILE WITH 5 AS nb_persons " +
-        "UNWIND range(1, nb_persons) AS i " +
-        "CREATE (p:Person {name: 'Suspect_' + tostring(i)}) " +
-        "RETURN count(p) AS created");
+        """
+        PROFILE WITH 5 AS nb_persons \
+        UNWIND range(1, nb_persons) AS i \
+        CREATE (p:Person {name: 'Suspect_' + tostring(i)}) \
+        RETURN count(p) AS created""");
 
     assertThat(result.getExecutionPlan().isPresent()).isTrue();
     final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);
@@ -219,13 +221,14 @@ class Issue3407Test {
 
     // Execute a query with PROFILE that exercises multiple steps
     final ResultSet result = database.command("opencypher",
-        "PROFILE WITH 10 AS nb_persons " +
-        "UNWIND range(1, nb_persons) AS i " +
-        "CREATE (p:Person {name: 'Person_' + tostring(i)}) " +
-        "WITH p " +
-        "CREATE (d:Device {imei: 'IMEI_' + p.name}) " +
-        "CREATE (p)-[:OWNS]->(d) " +
-        "RETURN count(p) AS created");
+        """
+        PROFILE WITH 10 AS nb_persons \
+        UNWIND range(1, nb_persons) AS i \
+        CREATE (p:Person {name: 'Person_' + tostring(i)}) \
+        WITH p \
+        CREATE (d:Device {imei: 'IMEI_' + p.name}) \
+        CREATE (p)-[:OWNS]->(d) \
+        RETURN count(p) AS created""");
 
     assertThat(result.getExecutionPlan().isPresent()).isTrue();
     final String profile = result.getExecutionPlan().get().prettyPrint(0, 2);

@@ -76,9 +76,10 @@ class Issue3129Test {
     // Execute UNWIND + MERGE query
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "UNWIND $batch AS BatchEntry " +
-          "MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name }) " +
-          "RETURN ID(n) AS id",
+          """
+          UNWIND $batch AS BatchEntry \
+          MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name }) \
+          RETURN ID(n) AS id""",
           Map.of("batch", batch));
 
       final Set<String> rids = new HashSet<>();
@@ -130,9 +131,10 @@ class Issue3129Test {
     // Execute UNWIND + MERGE query
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "UNWIND $batch AS BatchEntry " +
-          "MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name }) " +
-          "RETURN ID(n) AS id",
+          """
+          UNWIND $batch AS BatchEntry \
+          MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name }) \
+          RETURN ID(n) AS id""",
           Map.of("batch", batch));
 
       final List<String> rids = new ArrayList<>();

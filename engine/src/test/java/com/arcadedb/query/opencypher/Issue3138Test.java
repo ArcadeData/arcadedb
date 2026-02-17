@@ -101,10 +101,11 @@ class Issue3138Test {
     // Execute the UNWIND + MATCH + MERGE query
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "UNWIND $batch as row " +
-              "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
-              "MERGE (a)-[r:in]->(b) " +
-              "RETURN a, b, r",
+          """
+          UNWIND $batch as row \
+          MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id \
+          MERGE (a)-[r:in]->(b) \
+          RETURN a, b, r""",
           Map.of("batch", batch));
 
       int count = 0;
@@ -146,10 +147,11 @@ class Issue3138Test {
     // Execute the UNWIND + MATCH + CREATE query
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "UNWIND $batch as row " +
-              "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
-              "CREATE (a)-[r:in]->(b) " +
-              "RETURN a, b, r",
+          """
+          UNWIND $batch as row \
+          MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id \
+          CREATE (a)-[r:in]->(b) \
+          RETURN a, b, r""",
           Map.of("batch", batch));
 
       int count = 0;
@@ -190,9 +192,10 @@ class Issue3138Test {
     // Execute just UNWIND + MATCH + RETURN
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
-          "UNWIND $batch as row " +
-              "MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id " +
-              "RETURN a, b",
+          """
+          UNWIND $batch as row \
+          MATCH (a),(b) WHERE ID(a) = row.source_id AND ID(b) = row.target_id \
+          RETURN a, b""",
           Map.of("batch", batch));
 
       int count = 0;
@@ -409,8 +412,9 @@ class Issue3138Test {
     database.transaction(() -> {
       // First check what values are compared
       final ResultSet debugRs = database.query("opencypher",
-          "UNWIND $batch as row MATCH (a:Source) " +
-              "RETURN ID(a) as aid, row.source_id as sid, ID(a) = row.source_id as isEqual",
+          """
+          UNWIND $batch as row MATCH (a:Source) \
+          RETURN ID(a) as aid, row.source_id as sid, ID(a) = row.source_id as isEqual""",
           Map.of("batch", batch));
 
       int debugCount = 0;
@@ -486,11 +490,12 @@ class Issue3138Test {
     // Execute UNWIND + MATCH with type constraint + MERGE (exact pattern from issue #1948)
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "UNWIND $batch as row " +
-              "MATCH (a:Source) WHERE ID(a) = row.source_id " +
-              "MATCH (b) WHERE ID(b) = row.target_id " +
-              "MERGE (a)-[r:in]->(b) " +
-              "RETURN a, b, r",
+          """
+          UNWIND $batch as row \
+          MATCH (a:Source) WHERE ID(a) = row.source_id \
+          MATCH (b) WHERE ID(b) = row.target_id \
+          MERGE (a)-[r:in]->(b) \
+          RETURN a, b, r""",
           Map.of("batch", batch));
 
       int count = 0;
@@ -532,9 +537,10 @@ class Issue3138Test {
 
     // Execute UNWIND + MATCH with type constraint only (no MERGE)
     final ResultSet rs = database.query("opencypher",
-        "UNWIND $batch as row " +
-            "MATCH (a:Source) WHERE ID(a) = row.source_id " +
-            "RETURN a, row",
+        """
+        UNWIND $batch as row \
+        MATCH (a:Source) WHERE ID(a) = row.source_id \
+        RETURN a, row""",
         Map.of("batch", batch));
 
     int count = 0;

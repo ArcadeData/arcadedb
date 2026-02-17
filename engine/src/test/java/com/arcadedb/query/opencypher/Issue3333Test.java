@@ -52,10 +52,11 @@ class Issue3333Test {
   void stringMatchingInReturn() {
     // Exact scenario from issue #3333
     try (final ResultSet rs = database.query("opencypher",
-        "WITH 'Hello World' AS txt " +
-            "RETURN txt STARTS WITH 'He' AS a, " +
-            "txt CONTAINS 'lo' AS b, " +
-            "txt ENDS WITH 'rld' AS c")) {
+        """
+        WITH 'Hello World' AS txt \
+        RETURN txt STARTS WITH 'He' AS a, \
+        txt CONTAINS 'lo' AS b, \
+        txt ENDS WITH 'rld' AS c""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       assertThat(row.<Boolean>getProperty("a")).isTrue();
@@ -69,10 +70,11 @@ class Issue3333Test {
   void stringMatchingInReturnFalse() {
     // Test that false results are returned correctly too
     try (final ResultSet rs = database.query("opencypher",
-        "WITH 'Hello World' AS txt " +
-            "RETURN txt STARTS WITH 'Xyz' AS a, " +
-            "txt CONTAINS 'xyz' AS b, " +
-            "txt ENDS WITH 'xyz' AS c")) {
+        """
+        WITH 'Hello World' AS txt \
+        RETURN txt STARTS WITH 'Xyz' AS a, \
+        txt CONTAINS 'xyz' AS b, \
+        txt ENDS WITH 'xyz' AS c""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       assertThat(row.<Boolean>getProperty("a")).isFalse();
@@ -91,10 +93,11 @@ class Issue3333Test {
     });
 
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (p:Person) " +
-            "RETURN p.name STARTS WITH 'Ali' AS startsWithAli, " +
-            "p.name CONTAINS 'John' AS containsJohn, " +
-            "p.name ENDS WITH 'son' AS endsWithSon")) {
+        """
+        MATCH (p:Person) \
+        RETURN p.name STARTS WITH 'Ali' AS startsWithAli, \
+        p.name CONTAINS 'John' AS containsJohn, \
+        p.name ENDS WITH 'son' AS endsWithSon""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       assertThat(row.<Boolean>getProperty("startsWithAli")).isTrue();
@@ -108,8 +111,9 @@ class Issue3333Test {
   void regexInReturn() {
     // Test that regex (=~) also works in RETURN
     try (final ResultSet rs = database.query("opencypher",
-        "WITH 'Hello World' AS txt " +
-            "RETURN txt =~ 'Hello.*' AS matchesRegex")) {
+        """
+        WITH 'Hello World' AS txt \
+        RETURN txt =~ 'Hello.*' AS matchesRegex""")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
       assertThat(row.<Boolean>getProperty("matchesRegex")).isTrue();

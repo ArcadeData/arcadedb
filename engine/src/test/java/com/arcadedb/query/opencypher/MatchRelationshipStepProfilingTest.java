@@ -50,12 +50,14 @@ class MatchRelationshipStepProfilingTest {
       database.command("opencypher", "CREATE (c:Person {name: 'Charlie', age: 28})");
 
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) " +
-              "CREATE (a)-[:KNOWS {since: 2020}]->(b)");
+          """
+          MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) \
+          CREATE (a)-[:KNOWS {since: 2020}]->(b)""");
 
       database.command("opencypher",
-          "MATCH (b:Person {name: 'Bob'}), (c:Person {name: 'Charlie'}) " +
-              "CREATE (b)-[:KNOWS {since: 2021}]->(c)");
+          """
+          MATCH (b:Person {name: 'Bob'}), (c:Person {name: 'Charlie'}) \
+          CREATE (b)-[:KNOWS {since: 2021}]->(c)""");
     });
   }
 
@@ -116,8 +118,9 @@ class MatchRelationshipStepProfilingTest {
   void profilingShowsMixedPath() {
     // Multi-hop query: first hop fast, second hop standard
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (a:Person {name: 'Alice'})-[:KNOWS]->()-[r:KNOWS]->(c) " +
-            "RETURN c.name AS name, r.since AS since");
+        """
+        PROFILE MATCH (a:Person {name: 'Alice'})-[:KNOWS]->()-[r:KNOWS]->(c) \
+        RETURN c.name AS name, r.since AS since""");
 
     // Consume results
     while (result.hasNext()) {

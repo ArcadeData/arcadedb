@@ -197,12 +197,13 @@ class CountEdgesOptimizationTest {
   void multipleOptionalMatchCountChains() {
     // Integration test: multiple OPTIONAL MATCH + count chains (stackoverflow-like pattern)
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question) " +
-        "OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) " +
-        "WITH q, count(c) AS commentCount " +
-        "OPTIONAL MATCH (a:Answer)-[:ANSWERED]->(q) " +
-        "WITH q, commentCount, count(a) AS answerCount " +
-        "RETURN q.name AS name, commentCount, answerCount ORDER BY name");
+        """
+        MATCH (q:Question) \
+        OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) \
+        WITH q, count(c) AS commentCount \
+        OPTIONAL MATCH (a:Answer)-[:ANSWERED]->(q) \
+        WITH q, commentCount, count(a) AS answerCount \
+        RETURN q.name AS name, commentCount, answerCount ORDER BY name""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result r1 = rs.next();
@@ -297,10 +298,11 @@ class CountEdgesOptimizationTest {
       // OPTIONAL MATCH counts comments per answer
       // WITH groups by q (NOT by a!) and should aggregate counts
       final ResultSet rs = testDb.query("opencypher",
-          "MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) " +
-          "OPTIONAL MATCH (a)-[:HAS_COMMENT]->(c:Comment) " +
-          "WITH q, count(c) AS comment_count " +
-          "RETURN q.id AS qid, comment_count");
+          """
+          MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) \
+          OPTIONAL MATCH (a)-[:HAS_COMMENT]->(c:Comment) \
+          WITH q, count(c) AS comment_count \
+          RETURN q.id AS qid, comment_count""");
 
       assertThat(rs.hasNext()).isTrue();
       final Result r = rs.next();

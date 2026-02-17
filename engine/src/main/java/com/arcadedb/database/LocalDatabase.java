@@ -1828,8 +1828,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database " +
-                "'%s'", e, name);
+            .log(this, Level.WARNING, """
+                Error on stopping asynchronous manager during closing operation for database \
+                '%s'""", e, name);
       }
     }
 
@@ -1854,8 +1855,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           async.close();
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database " +
-                "'%s'", e, name);
+            .log(this, Level.WARNING, """
+                Error on stopping asynchronous manager during closing operation for database \
+                '%s'""", e, name);
       }
 
       if (drop)
@@ -1884,8 +1886,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on clearing transaction status during closing operation for database " +
-                "'%s'", e, name);
+            .log(this, Level.WARNING, """
+                Error on clearing transaction status during closing operation for database \
+                '%s'""", e, name);
       }
 
       for (QueryEngine e : reusableQueryEngines.values())
@@ -1900,8 +1903,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       } catch (final Throwable e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error on closing internal components during closing operation for database " +
-                "'%s'", e, name);
+            .log(this, Level.WARNING, """
+                Error on closing internal components during closing operation for database \
+                '%s'""", e, name);
       } finally {
         Profiler.INSTANCE.unregisterDatabase(LocalDatabase.this);
       }

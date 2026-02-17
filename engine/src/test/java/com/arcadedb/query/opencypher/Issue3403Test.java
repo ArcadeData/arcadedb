@@ -102,9 +102,10 @@ class Issue3403Test {
   @Test
   void notOperatorWithoutParentheses() {
     // Query without extra parentheses around NOT
-    final String query1 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                          "WHERE NOT (chunk:CHUNK)--(:IMAGE) " +
-                          "RETURN nodeDOc, chunk";
+    final String query1 = """
+                          MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                          WHERE NOT (chunk:CHUNK)--(:IMAGE) \
+                          RETURN nodeDOc, chunk""";
 
     long count1;
     try (final ResultSet rs = database.query("opencypher", query1)) {
@@ -120,9 +121,10 @@ class Issue3403Test {
   @Test
   void notOperatorWithParentheses() {
     // Query with extra parentheses around NOT expression
-    final String query2 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                          "WHERE (NOT (chunk:CHUNK)--(:IMAGE)) " +
-                          "RETURN nodeDOc, chunk";
+    final String query2 = """
+                          MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                          WHERE (NOT (chunk:CHUNK)--(:IMAGE)) \
+                          RETURN nodeDOc, chunk""";
 
     long count2;
     try (final ResultSet rs = database.query("opencypher", query2)) {
@@ -138,14 +140,16 @@ class Issue3403Test {
   @Test
   void bothQueriesReturnSameResults() {
     // Query without extra parentheses around NOT
-    final String query1 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                          "WHERE NOT (chunk:CHUNK)--(:IMAGE) " +
-                          "RETURN nodeDOc, chunk";
+    final String query1 = """
+                          MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                          WHERE NOT (chunk:CHUNK)--(:IMAGE) \
+                          RETURN nodeDOc, chunk""";
 
     // Query with extra parentheses around NOT expression
-    final String query2 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                          "WHERE (NOT (chunk:CHUNK)--(:IMAGE)) " +
-                          "RETURN nodeDOc, chunk";
+    final String query2 = """
+                          MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                          WHERE (NOT (chunk:CHUNK)--(:IMAGE)) \
+                          RETURN nodeDOc, chunk""";
 
     long count1;
     try (final ResultSet rs = database.query("opencypher", query1)) {
@@ -239,13 +243,15 @@ class Issue3403Test {
   @Test
   void complexOriginalQueryWithTripleParentheses() {
     // Test the original complex query from the issue with triple parentheses
-    final String query1 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                          "WHERE NOT (chunk:CHUNK)--(:IMAGE) " +
-                          "RETURN nodeDOc, chunk";
+    final String query1 = """
+                          MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                          WHERE NOT (chunk:CHUNK)--(:IMAGE) \
+                          RETURN nodeDOc, chunk""";
 
-    final String query2 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
-                          "WHERE (((NOT (chunk:CHUNK)--(:IMAGE)))) " +
-                          "RETURN nodeDOc, chunk";
+    final String query2 = """
+                          MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) \
+                          WHERE (((NOT (chunk:CHUNK)--(:IMAGE)))) \
+                          RETURN nodeDOc, chunk""";
 
     long count1;
     try (final ResultSet rs = database.query("opencypher", query1)) {

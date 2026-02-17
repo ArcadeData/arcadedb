@@ -259,10 +259,11 @@ class CypherTest {
               "CREATE PROPERTY CHUNK.pages STRING;");
 
       // Test the original failing query from issue #3118
-      String originalQuery = "UNWIND [] AS BatchEntry " +
-          "MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name, " +
-          "text: BatchEntry.text, index: BatchEntry.index, pages: BatchEntry.pages }) " +
-          "return ID(n) as id";
+      String originalQuery = """
+          UNWIND [] AS BatchEntry \
+          MERGE (n:CHUNK { subtype: BatchEntry.subtype, name: BatchEntry.name, \
+          text: BatchEntry.text, index: BatchEntry.index, pages: BatchEntry.pages }) \
+          return ID(n) as id""";
 
       final ResultSet result = graph.database.query("cypher", originalQuery);
 

@@ -182,9 +182,10 @@ class CypherExecutionPlanTest {
   @Test
   void shouldExecuteQueryWithUnion() {
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (p:Person) WHERE p.age < 30 RETURN p.name AS name " +
-        "UNION " +
-        "MATCH (c:Company) RETURN c.name AS name");
+        """
+        MATCH (p:Person) WHERE p.age < 30 RETURN p.name AS name \
+        UNION \
+        MATCH (c:Company) RETURN c.name AS name""");
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSizeGreaterThanOrEqualTo(2);
@@ -193,9 +194,10 @@ class CypherExecutionPlanTest {
   @Test
   void shouldExecuteQueryWithUnionAll() {
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (p:Person) WHERE p.age < 30 RETURN p.name AS name " +
-        "UNION ALL " +
-        "MATCH (p:Person) WHERE p.age < 30 RETURN p.name AS name");
+        """
+        MATCH (p:Person) WHERE p.age < 30 RETURN p.name AS name \
+        UNION ALL \
+        MATCH (p:Person) WHERE p.age < 30 RETURN p.name AS name""");
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSizeGreaterThanOrEqualTo(2);
@@ -240,10 +242,11 @@ class CypherExecutionPlanTest {
   @Test
   void shouldExecuteQueryWithMultipleWith() {
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (p:Person) " +
-        "WITH p.age AS age WHERE age > 25 " +
-        "WITH age * 2 AS doubleAge " +
-        "RETURN doubleAge");
+        """
+        MATCH (p:Person) \
+        WITH p.age AS age WHERE age > 25 \
+        WITH age * 2 AS doubleAge \
+        RETURN doubleAge""");
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSize(2);
@@ -381,8 +384,9 @@ class CypherExecutionPlanTest {
   @Test
   void shouldHandleComplexPattern() {
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) " +
-        "RETURN a.name AS first, b.name AS second, c.name AS third");
+        """
+        MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) \
+        RETURN a.name AS first, b.name AS second, c.name AS third""");
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSizeGreaterThanOrEqualTo(1);
@@ -391,8 +395,9 @@ class CypherExecutionPlanTest {
   @Test
   void shouldExecuteQueryWithCase() {
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (p:Person) RETURN p.name AS name, " +
-        "CASE WHEN p.age < 30 THEN 'Young' ELSE 'Senior' END AS category");
+        """
+        MATCH (p:Person) RETURN p.name AS name, \
+        CASE WHEN p.age < 30 THEN 'Young' ELSE 'Senior' END AS category""");
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSize(3);
@@ -490,9 +495,10 @@ class CypherExecutionPlanTest {
   @Test
   void shouldExecuteComplexAggregationQuery() {
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (p:Person) " +
-        "RETURN p.age > 30 AS isOlder, count(p) AS total, avg(p.age) AS avgAge " +
-        "ORDER BY isOlder");
+        """
+        MATCH (p:Person) \
+        RETURN p.age > 30 AS isOlder, count(p) AS total, avg(p.age) AS avgAge \
+        ORDER BY isOlder""");
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSizeGreaterThanOrEqualTo(1);

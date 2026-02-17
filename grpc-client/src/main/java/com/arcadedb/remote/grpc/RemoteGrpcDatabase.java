@@ -984,8 +984,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         Result result = rs.next();
         // Try to get Record from Result
         if (result.isElement()) {
-          return result.getRecord().orElseThrow(() -> new IllegalStateException("Result claims to be element but has " +
-              "no Record"));
+          return result.getRecord().orElseThrow(() -> new IllegalStateException("""
+              Result claims to be element but has \
+              no Record"""));
         }
         // For non-Record results, throw or skip
         throw new IllegalStateException("Result is not a Record: " + result);
@@ -1121,8 +1122,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
       if (LogManager.instance().isDebugEnabled()) {
-        LogManager.instance().log(this, Level.FINE, "CLIENT updateRecord(full): db=%s, txOpen=%s, rid=%s, " +
-                "timeoutMs=%s", getName(),
+        LogManager.instance().log(this, Level.FINE, """
+                CLIENT updateRecord(full): db=%s, txOpen=%s, rid=%s, \
+                timeoutMs=%s""", getName(),
             (transactionId != null), rid,
             timeoutMs);
       }

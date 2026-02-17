@@ -33,10 +33,12 @@ import java.util.logging.LogManager;
  */
 public class DefaultLogger implements Logger {
   private static final String DEFAULT_LOG                  = "com.arcadedb";
-  private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb" +
-      ".installCustomFormatter";
-  private static final String FILE_LOG_PROPERTIES          = "arcadedb-log" +
-      ".properties";
+  private static final String ENV_INSTALL_CUSTOM_FORMATTER = """
+      arcadedb\
+      .installCustomFormatter""";
+  private static final String FILE_LOG_PROPERTIES          = """
+      arcadedb-log\
+      .properties""";
 
   private volatile boolean initialized = false;
 

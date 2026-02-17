@@ -179,8 +179,9 @@ class CollectDistinctTest {
 
     // Group by city and collect distinct ages
     ResultSet rs = database.query("opencypher",
-        "MATCH (p:Person)-[:LIVES_IN]->(c:City) " +
-            "RETURN c.name as city, collect(DISTINCT p.age) as ages");
+        """
+        MATCH (p:Person)-[:LIVES_IN]->(c:City) \
+        RETURN c.name as city, collect(DISTINCT p.age) as ages""");
 
     // Collect all results into a map for order-independent checking
     Map<String, List<Integer>> results = new HashMap<>();

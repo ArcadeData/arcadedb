@@ -181,9 +181,10 @@ class OpenCypherCustomFunctionTest {
   @Test
   void cypherFunctionWithGraphQuery() {
     database.command("sql",
-        "DEFINE FUNCTION graph.countNeighbors " +
-        "\"MATCH (n) WHERE id(n) = $nodeId MATCH (n)-[]->() RETURN count(*) as cnt\" " +
-        "PARAMETERS [nodeId] LANGUAGE cypher");
+        """
+        DEFINE FUNCTION graph.countNeighbors \
+        "MATCH (n) WHERE id(n) = $nodeId MATCH (n)-[]->() RETURN count(*) as cnt" \
+        PARAMETERS [nodeId] LANGUAGE cypher""");
 
     // Create test graph
     final ResultSet createResult = database.command("opencypher", "CREATE (a:Person)-[:KNOWS]->(b:Person) RETURN id(a) as aid");

@@ -40,13 +40,14 @@ class OpenCypherForeachTest {
     // Exact scenario from issue #3328
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (root:TestNode {name: 'Root'})\n" +
-          "FOREACH (i IN [1, 2, 3] |\n" +
-          "  CREATE (root)-[:HAS_ITEM]->(:Item {id: i})\n" +
-          ")\n" +
-          "WITH root\n" +
-          "MATCH (root)-[:HAS_ITEM]->(item)\n" +
-          "RETURN count(item) AS total");
+          """
+          CREATE (root:TestNode {name: 'Root'})
+          FOREACH (i IN [1, 2, 3] |
+            CREATE (root)-[:HAS_ITEM]->(:Item {id: i})
+          )
+          WITH root
+          MATCH (root)-[:HAS_ITEM]->(item)
+          RETURN count(item) AS total""");
     });
 
     // Verify: 3 items should have been created
@@ -62,9 +63,10 @@ class OpenCypherForeachTest {
     // Simple FOREACH creating standalone nodes
     database.transaction(() -> {
       database.command("opencypher",
-          "FOREACH (name IN ['Alice', 'Bob', 'Charlie'] |\n" +
-          "  CREATE (:Person {name: name})\n" +
-          ")");
+          """
+          FOREACH (name IN ['Alice', 'Bob', 'Charlie'] |
+            CREATE (:Person {name: name})
+          )""");
     });
 
     final ResultSet verify = database.query("opencypher",
@@ -88,10 +90,11 @@ class OpenCypherForeachTest {
     // Use FOREACH inside a query with MATCH context
     database.transaction(() -> {
       database.command("opencypher",
-          "MATCH (p:Person)\n" +
-          "FOREACH (tag IN ['developer', 'tester'] |\n" +
-          "  CREATE (p)-[:HAS_TAG]->(:Tag {value: tag})\n" +
-          ")");
+          """
+          MATCH (p:Person)
+          FOREACH (tag IN ['developer', 'tester'] |
+            CREATE (p)-[:HAS_TAG]->(:Tag {value: tag})
+          )""");
     });
 
     // Each person should have 2 tags = 4 total
@@ -106,11 +109,12 @@ class OpenCypherForeachTest {
     // FOREACH should pass through input rows unchanged
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
-          "CREATE (root:Root {name: 'test'})\n" +
-          "FOREACH (i IN [1, 2] |\n" +
-          "  CREATE (:Child {id: i})\n" +
-          ")\n" +
-          "RETURN root.name AS name");
+          """
+          CREATE (root:Root {name: 'test'})
+          FOREACH (i IN [1, 2] |
+            CREATE (:Child {id: i})
+          )
+          RETURN root.name AS name""");
 
       assertThat(result.hasNext()).isTrue();
       assertThat((String) result.next().getProperty("name")).isEqualTo("test");
@@ -132,11 +136,12 @@ class OpenCypherForeachTest {
     // Use FOREACH with SET to update nodes
     database.transaction(() -> {
       database.command("opencypher",
-          "MATCH (item:Item)\n" +
-          "WITH collect(item) AS items\n" +
-          "FOREACH (item IN items |\n" +
-          "  SET item.status = 'done'\n" +
-          ")");
+          """
+          MATCH (item:Item)
+          WITH collect(item) AS items
+          FOREACH (item IN items |
+            SET item.status = 'done'
+          )""");
     });
 
     // All items should be 'done'

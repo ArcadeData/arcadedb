@@ -1080,8 +1080,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final String text = ctx.getText();
 
     // Try to parse as "variable.property operator value"
-    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)" +
-        "?)");
+    final Pattern pattern = Pattern.compile("""
+        (\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|"[^"]*"|\\d+(?:\\.\\d+)\
+        ?)""");
     final Matcher matcher = pattern.matcher(text);
 
     if (matcher.find()) {

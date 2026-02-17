@@ -64,8 +64,9 @@ class CypherMapBackticksTest {
 
     // Query with map literal using backticked key (fixed direction to match CREATE)
     final ResultSet result = database.query("opencypher",
-      "MATCH (d:DOCUMENT)-->(c:CHUNK) WHERE c.llm_flag = true " +
-      "RETURN collect({`@rid`: ID(c), text: c.text}) AS chunks");
+      """
+      MATCH (d:DOCUMENT)-->(c:CHUNK) WHERE c.llm_flag = true \
+      RETURN collect({`@rid`: ID(c), text: c.text}) AS chunks""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -93,8 +94,9 @@ class CypherMapBackticksTest {
 
     // Query with multiple backticked keys (fixed direction to match CREATE)
     final ResultSet result = database.query("opencypher",
-      "MATCH (d:DOCUMENT)-->(c:CHUNK) " +
-      "RETURN {`@rid`: ID(c), `@type`: 'chunk', normalKey: c.text} AS data");
+      """
+      MATCH (d:DOCUMENT)-->(c:CHUNK) \
+      RETURN {`@rid`: ID(c), `@type`: 'chunk', normalKey: c.text} AS data""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -122,8 +124,9 @@ class CypherMapBackticksTest {
 
     // Query with escaped backticks (`` -> `) in key name
     final ResultSet result = database.query("opencypher",
-      "MATCH (n:DOCUMENT) " +
-      "RETURN {`key``with``backticks`: n.name} AS data");
+      """
+      MATCH (n:DOCUMENT) \
+      RETURN {`key``with``backticks`: n.name} AS data""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -164,8 +167,9 @@ class CypherMapBackticksTest {
 
     // Query with map projection using backticked key
     final ResultSet result = database.query("opencypher",
-      "MATCH (n:DOCUMENT) " +
-      "RETURN n{.name, `@id`: n.id} AS data");
+      """
+      MATCH (n:DOCUMENT) \
+      RETURN n{.name, `@id`: n.id} AS data""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -191,8 +195,9 @@ class CypherMapBackticksTest {
 
     // Access properties using backticks
     final ResultSet result = database.query("opencypher",
-      "MATCH (n:DOCUMENT) " +
-      "RETURN n.`@id` AS id, n.`@type` AS type, n.name AS name");
+      """
+      MATCH (n:DOCUMENT) \
+      RETURN n.`@id` AS id, n.`@type` AS type, n.name AS name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();

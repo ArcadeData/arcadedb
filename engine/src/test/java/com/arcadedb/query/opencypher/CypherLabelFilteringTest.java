@@ -117,9 +117,10 @@ class CypherLabelFilteringTest {
   void targetNodeLabelFiltering() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
-          "MATCH (chunk:CHUNK) WHERE ID(chunk) = $_id " +
-              "OPTIONAL MATCH (chunk:CHUNK)<-[r:in]-(target:NER) " +
-              "RETURN chunk.name AS chunkName, collect(DISTINCT target) AS targets",
+          """
+          MATCH (chunk:CHUNK) WHERE ID(chunk) = $_id \
+          OPTIONAL MATCH (chunk:CHUNK)<-[r:in]-(target:NER) \
+          RETURN chunk.name AS chunkName, collect(DISTINCT target) AS targets""",
           Map.of("_id", chunkId));
 
       assertThat(rs.hasNext()).isTrue();
@@ -150,9 +151,10 @@ class CypherLabelFilteringTest {
   void boundVariableWithLabelInSubsequentMatch() {
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
-          "MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) = $_id " +
-              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) " +
-              "RETURN searchedChunk.name AS chunkName, sourceDoc.name AS docName",
+          """
+          MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) = $_id \
+          MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) \
+          RETURN searchedChunk.name AS chunkName, sourceDoc.name AS docName""",
           Map.of("_id", chunkId));
 
       assertThat(rs.hasNext()).isTrue();
@@ -178,17 +180,18 @@ class CypherLabelFilteringTest {
   void fullQueryWithLabelsOnBoundVariables() {
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) IN $_ids " +
-              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) " +
-              "OPTIONAL MATCH (searchedChunk:CHUNK)<-[chunkNerOneRel:in]-(nerOne:NER) " +
-              "OPTIONAL MATCH (nerOne:NER)-[nerOneNerTwoRel:related]->(nerTwo:NER)-[chunkNerTwoRel:in]->(searchedChunk:CHUNK) " +
-              "OPTIONAL MATCH (searchedChunk:CHUNK)<-[themeToChunkRel:topic]-(theme:THEME) " +
-              "RETURN " +
-              "  collect(DISTINCT searchedChunk) AS searchedChunks, " +
-              "  collect(DISTINCT sourceDoc) AS sourceDocs, " +
-              "  collect(DISTINCT nerOne) AS nerOnes, " +
-              "  collect(DISTINCT nerTwo) AS nerTwos, " +
-              "  collect(DISTINCT theme) AS themes",
+          """
+          MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) IN $_ids \
+          MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) \
+          OPTIONAL MATCH (searchedChunk:CHUNK)<-[chunkNerOneRel:in]-(nerOne:NER) \
+          OPTIONAL MATCH (nerOne:NER)-[nerOneNerTwoRel:related]->(nerTwo:NER)-[chunkNerTwoRel:in]->(searchedChunk:CHUNK) \
+          OPTIONAL MATCH (searchedChunk:CHUNK)<-[themeToChunkRel:topic]-(theme:THEME) \
+          RETURN \
+            collect(DISTINCT searchedChunk) AS searchedChunks, \
+            collect(DISTINCT sourceDoc) AS sourceDocs, \
+            collect(DISTINCT nerOne) AS nerOnes, \
+            collect(DISTINCT nerTwo) AS nerTwos, \
+            collect(DISTINCT theme) AS themes""",
           Map.of("_ids", List.of(chunkId)));
 
       assertThat(rs.hasNext()).isTrue();
@@ -233,12 +236,13 @@ class CypherLabelFilteringTest {
   void searchedChunksDoNotContainNERNodes() {
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) IN $_ids " +
-              "MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) " +
-              "OPTIONAL MATCH (searchedChunk:CHUNK)<-[chunkNerOneRel:in]-(nerOne:NER) " +
-              "RETURN " +
-              "  collect(DISTINCT searchedChunk) AS searchedChunks, " +
-              "  collect(DISTINCT nerOne) AS nerOnes",
+          """
+          MATCH (searchedChunk:CHUNK) WHERE ID(searchedChunk) IN $_ids \
+          MATCH (sourceDoc:DOCUMENT)<-[chunkDocRel:in]-(searchedChunk:CHUNK) \
+          OPTIONAL MATCH (searchedChunk:CHUNK)<-[chunkNerOneRel:in]-(nerOne:NER) \
+          RETURN \
+            collect(DISTINCT searchedChunk) AS searchedChunks, \
+            collect(DISTINCT nerOne) AS nerOnes""",
           Map.of("_ids", List.of(chunkId)));
 
       assertThat(rs.hasNext()).isTrue();
