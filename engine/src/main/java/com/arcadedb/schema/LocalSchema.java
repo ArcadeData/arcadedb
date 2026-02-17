@@ -622,6 +622,35 @@ public class LocalSchema implements Schema {
   }
 
   @Override
+  public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
+      final long newIntervalMs) {
+    final MaterializedViewImpl oldView = materializedViews.get(viewName);
+    if (oldView == null)
+      throw new SchemaException("Materialized view '" + viewName + "' not found");
+
+    // Tear down old refresh infrastructure
+    if (oldView.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+      MaterializedViewBuilder.unregisterListeners(this, oldView);
+    if (materializedViewScheduler != null)
+      materializedViewScheduler.cancel(viewName);
+
+    recordFileChanges(() -> {
+      // Create new view instance with updated refresh mode
+      final MaterializedViewImpl newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
+      materializedViews.put(viewName, newView);
+      saveConfiguration();
+
+      // Set up new refresh infrastructure
+      if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
+        MaterializedViewBuilder.registerListeners(this, newView, newView.getSourceTypeNames());
+      if (newMode == MaterializedViewRefreshMode.PERIODIC && newIntervalMs > 0)
+        getMaterializedViewScheduler().schedule((DatabaseInternal) database, newView);
+
+      return null;
+    });
+  }
+
+  @Override
   public MaterializedViewBuilder buildMaterializedView() {
     return new MaterializedViewBuilder((DatabaseInternal) database);
   }

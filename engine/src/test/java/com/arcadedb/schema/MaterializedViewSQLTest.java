@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -139,5 +140,108 @@ class MaterializedViewSQLTest extends TestHelper {
     }
 
     database.command("sql", "DROP MATERIALIZED VIEW MetaView");
+  }
+
+  @Test
+  void alterToIncremental() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW AlterIncView AS SELECT name FROM Account");
+
+    assertThat(database.getSchema().getMaterializedView("AlterIncView").getRefreshMode())
+        .isEqualTo(MaterializedViewRefreshMode.MANUAL);
+
+    database.command("sql", "ALTER MATERIALIZED VIEW AlterIncView REFRESH INCREMENTAL");
+
+    assertThat(database.getSchema().getMaterializedView("AlterIncView").getRefreshMode())
+        .isEqualTo(MaterializedViewRefreshMode.INCREMENTAL);
+
+    // Insert new data — incremental listener should trigger post-commit refresh
+    database.transaction(() ->
+        database.newDocument("Account").set("name", "Dave").set("active", true).save());
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM AlterIncView")) {
+      assertThat(rs.stream().count()).isEqualTo(3); // Alice, Bob, Dave
+    }
+
+    database.command("sql", "DROP MATERIALIZED VIEW AlterIncView");
+  }
+
+  @Test
+  void alterFromIncrementalToManual() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW AlterManView AS SELECT name FROM Account REFRESH INCREMENTAL");
+
+    assertThat(database.getSchema().getMaterializedView("AlterManView").getRefreshMode())
+        .isEqualTo(MaterializedViewRefreshMode.INCREMENTAL);
+
+    database.command("sql", "ALTER MATERIALIZED VIEW AlterManView REFRESH MANUAL");
+
+    assertThat(database.getSchema().getMaterializedView("AlterManView").getRefreshMode())
+        .isEqualTo(MaterializedViewRefreshMode.MANUAL);
+
+    // Insert — view should NOT auto-refresh (listener unregistered)
+    database.transaction(() ->
+        database.newDocument("Account").set("name", "Eve").set("active", true).save());
+
+    // View should still have only the original 2 records
+    try (final ResultSet rs = database.query("sql", "SELECT FROM AlterManView")) {
+      assertThat(rs.stream().count()).isEqualTo(2);
+    }
+
+    database.command("sql", "DROP MATERIALIZED VIEW AlterManView");
+  }
+
+  @Test
+  void alterToPeriodic() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW AlterPerView AS SELECT name FROM Account");
+
+    database.command("sql", "ALTER MATERIALIZED VIEW AlterPerView REFRESH EVERY 10 MINUTE");
+
+    final MaterializedView view = database.getSchema().getMaterializedView("AlterPerView");
+    assertThat(view.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.PERIODIC);
+    assertThat(view.getRefreshInterval()).isEqualTo(600_000L);
+
+    database.command("sql", "DROP MATERIALIZED VIEW AlterPerView");
+  }
+
+  @Test
+  void alterFromPeriodicToManual() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW AlterPMView AS SELECT name FROM Account REFRESH EVERY 1 SECOND");
+
+    assertThat(database.getSchema().getMaterializedView("AlterPMView").getRefreshMode())
+        .isEqualTo(MaterializedViewRefreshMode.PERIODIC);
+
+    database.command("sql", "ALTER MATERIALIZED VIEW AlterPMView REFRESH MANUAL");
+
+    assertThat(database.getSchema().getMaterializedView("AlterPMView").getRefreshMode())
+        .isEqualTo(MaterializedViewRefreshMode.MANUAL);
+
+    database.command("sql", "DROP MATERIALIZED VIEW AlterPMView");
+  }
+
+  @Test
+  void alterNonExistentViewThrows() {
+    assertThatThrownBy(() ->
+        database.command("sql", "ALTER MATERIALIZED VIEW NonExistent REFRESH MANUAL"))
+        .isInstanceOf(Exception.class);
+  }
+
+  @Test
+  void alterSurvivesReopen() {
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW AlterReopenView AS SELECT name FROM Account");
+
+    database.command("sql", "ALTER MATERIALIZED VIEW AlterReopenView REFRESH INCREMENTAL");
+
+    // Reopen database
+    database.close();
+    database = factory.open();
+
+    final MaterializedView view = database.getSchema().getMaterializedView("AlterReopenView");
+    assertThat(view.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.INCREMENTAL);
+
+    database.command("sql", "DROP MATERIALIZED VIEW AlterReopenView");
   }
 }

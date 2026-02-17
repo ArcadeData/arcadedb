@@ -123,6 +123,16 @@ public class MaterializedViewImpl implements MaterializedView {
     this.lastRefreshTime = lastRefreshTime;
   }
 
+  MaterializedViewImpl copyWithRefreshMode(final MaterializedViewRefreshMode newMode,
+      final long newInterval) {
+    final MaterializedViewImpl copy = new MaterializedViewImpl(
+        database, name, query, backingTypeName, sourceTypeNames,
+        newMode, simpleQuery, newInterval);
+    copy.lastRefreshTime = this.lastRefreshTime;
+    copy.status = this.status;
+    return copy;
+  }
+
   @Override
   public void refresh() {
     MaterializedViewRefresher.fullRefresh(database, this);

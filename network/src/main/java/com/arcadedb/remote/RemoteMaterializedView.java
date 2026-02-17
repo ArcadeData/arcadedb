@@ -91,6 +91,11 @@ public class RemoteMaterializedView implements MaterializedView {
   }
 
   @Override
+  public long getRefreshInterval() {
+    return refreshInterval;
+  }
+
+  @Override
   public void refresh() {
     throw new UnsupportedOperationException("refresh() is not supported in remote materialized view. Use SQL REFRESH MATERIALIZED VIEW instead.");
   }

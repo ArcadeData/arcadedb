@@ -39,6 +39,8 @@ public interface MaterializedView {
 
   boolean isSimpleQuery();
 
+  long getRefreshInterval();
+
   void refresh();
 
   void drop();

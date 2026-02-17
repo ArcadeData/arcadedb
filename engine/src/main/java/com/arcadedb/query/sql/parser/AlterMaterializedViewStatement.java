@@ -18,9 +18,12 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.MaterializedViewRefreshMode;
 
 public class AlterMaterializedViewStatement extends DDLStatement {
   public Identifier name;
@@ -34,12 +37,43 @@ public class AlterMaterializedViewStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    // TODO: implement alter logic
-    throw new CommandExecutionException("ALTER MATERIALIZED VIEW is not yet supported");
+    final Database database = context.getDatabase();
+    final String viewName = name.getStringValue();
+
+    final MaterializedViewRefreshMode mode;
+    if ("INCREMENTAL".equalsIgnoreCase(refreshMode))
+      mode = MaterializedViewRefreshMode.INCREMENTAL;
+    else if ("PERIODIC".equalsIgnoreCase(refreshMode))
+      mode = MaterializedViewRefreshMode.PERIODIC;
+    else
+      mode = MaterializedViewRefreshMode.MANUAL;
+
+    long intervalMs = 0;
+    if (mode == MaterializedViewRefreshMode.PERIODIC && refreshInterval > 0) {
+      intervalMs = refreshInterval * 1000L; // default seconds
+      if ("MINUTE".equalsIgnoreCase(refreshUnit))
+        intervalMs = refreshInterval * 60_000L;
+      else if ("HOUR".equalsIgnoreCase(refreshUnit))
+        intervalMs = refreshInterval * 3_600_000L;
+    }
+
+    database.getSchema().alterMaterializedView(viewName, mode, intervalMs);
+
+    final InternalResultSet result = new InternalResultSet();
+    final ResultInternal r = new ResultInternal();
+    r.setProperty("operation", "alter materialized view");
+    r.setProperty("name", viewName);
+    r.setProperty("refreshMode", mode.name());
+    result.add(r);
+    return result;
   }
 
   @Override
   public String toString() {
-    return "ALTER MATERIALIZED VIEW " + name + " REFRESH " + refreshMode;
+    final StringBuilder sb = new StringBuilder("ALTER MATERIALIZED VIEW ");
+    sb.append(name).append(" REFRESH ").append(refreshMode);
+    if ("PERIODIC".equalsIgnoreCase(refreshMode) && refreshInterval > 0)
+      sb.append(" EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
+    return sb.toString();
   }
 }
