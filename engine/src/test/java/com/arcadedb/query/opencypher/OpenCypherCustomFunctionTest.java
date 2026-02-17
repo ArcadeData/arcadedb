@@ -53,7 +53,7 @@ class OpenCypherCustomFunctionTest {
   // Phase 1: SQL Function Tests
 
   @Test
-  void testSQLFunctionInExpression() {
+  void sqlFunctionInExpression() {
     database.command("sql", "DEFINE FUNCTION math.sum \"SELECT :a + :b\" PARAMETERS [a,b] LANGUAGE sql");
 
     final ResultSet rs = database.query("opencypher", "RETURN math.sum(3, 5) as result");
@@ -62,7 +62,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testSQLFunctionInWhereClause() {
+  void sqlFunctionInWhereClause() {
     database.command("sql", "DEFINE FUNCTION math.threshold \"SELECT 5\" LANGUAGE sql");
     database.command("opencypher", "CREATE (:Number {value: 10})");
     database.command("opencypher", "CREATE (:Number {value: 3})");
@@ -74,7 +74,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testSQLFunctionWithMultipleArgs() {
+  void sqlFunctionWithMultipleArgs() {
     database.command("sql", "DEFINE FUNCTION math.add3 \"SELECT :a + :b + :c\" PARAMETERS [a,b,c] LANGUAGE sql");
 
     final ResultSet rs = database.query("opencypher", "RETURN math.add3(1, 2, 3) as result");
@@ -83,7 +83,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testSQLFunctionReturningNull() {
+  void sqlFunctionReturningNull() {
     database.command("sql", "DEFINE FUNCTION test.returnNull \"SELECT null\" LANGUAGE sql");
 
     final ResultSet rs = database.query("opencypher", "RETURN test.returnNull() as result");
@@ -92,7 +92,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testUndefinedFunctionThrowsError() {
+  void undefinedFunctionThrowsError() {
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("opencypher", "RETURN nonexistent.func() as result");
       rs.hasNext(); // Force query evaluation (queries are lazy)
@@ -102,7 +102,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testSQLFunctionInListComprehension() {
+  void sqlFunctionInListComprehension() {
     database.command("sql", "DEFINE FUNCTION math.double \"SELECT :x * 2\" PARAMETERS [x] LANGUAGE sql");
 
     final ResultSet rs = database.query("opencypher", "RETURN [x IN range(1,3) | math.double(x)] as result");
@@ -112,7 +112,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testCALLClauseStillWorks() {
+  void callClauseStillWorks() {
     database.command("sql", "DEFINE FUNCTION math.multiply \"SELECT :a * :b\" PARAMETERS [a,b] LANGUAGE sql");
 
     final ResultSet rs = database.query("opencypher", "CALL math.multiply(4, 2) YIELD result RETURN result");
@@ -121,7 +121,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testFunctionRedefinition() {
+  void functionRedefinition() {
     // Define initial function
     database.command("sql", "DEFINE FUNCTION test.value \"SELECT 10\" LANGUAGE sql");
 
@@ -141,7 +141,7 @@ class OpenCypherCustomFunctionTest {
   // Phase 2: JavaScript Function Tests
 
   @Test
-  void testJavaScriptFunctionInExpression() {
+  void javaScriptFunctionInExpression() {
     database.command("sql", "DEFINE FUNCTION js.multiply \"return x * y\" PARAMETERS [x,y] LANGUAGE js");
 
     final ResultSet rs = database.query("opencypher", "RETURN js.multiply(4, 2) as result");
@@ -150,7 +150,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testJavaScriptFunctionWithString() {
+  void javaScriptFunctionWithString() {
     database.command("sql", "DEFINE FUNCTION js.greet \"return 'Hello ' + name\" PARAMETERS [name] LANGUAGE js");
 
     final ResultSet rs = database.query("opencypher", "RETURN js.greet('World') as result");
@@ -161,7 +161,7 @@ class OpenCypherCustomFunctionTest {
   // Phase 3: Cypher Function Tests
 
   @Test
-  void testDefineCypherFunction() {
+  void defineCypherFunction() {
     database.command("sql", "DEFINE FUNCTION cypher.double \"RETURN $x * 2\" PARAMETERS [x] LANGUAGE cypher");
 
     final ResultSet rs = database.query("opencypher", "RETURN cypher.double(5) as result");
@@ -170,7 +170,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testDefineCypherFunctionWithOpenCypherAlias() {
+  void defineCypherFunctionWithOpenCypherAlias() {
     database.command("sql", "DEFINE FUNCTION cypher.triple \"RETURN $x * 3\" PARAMETERS [x] LANGUAGE opencypher");
 
     final ResultSet rs = database.query("opencypher", "RETURN cypher.triple(5) as result");
@@ -179,7 +179,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testCypherFunctionWithGraphQuery() {
+  void cypherFunctionWithGraphQuery() {
     database.command("sql",
         "DEFINE FUNCTION graph.countNeighbors " +
         "\"MATCH (n) WHERE id(n) = $nodeId MATCH (n)-[]->() RETURN count(*) as cnt\" " +
@@ -199,7 +199,7 @@ class OpenCypherCustomFunctionTest {
   // Phase 4: Cross-Language Tests
 
   @Test
-  void testCypherFunctionCallableFromSQL() {
+  void cypherFunctionCallableFromSQL() {
     database.command("sql", "DEFINE FUNCTION cypher.greet \"RETURN 'Hello ' + $name\" PARAMETERS [name] LANGUAGE cypher");
 
     // Call Cypher function from SQL
@@ -209,7 +209,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testSQLFunctionCallableFromCypher() {
+  void sqlFunctionCallableFromCypher() {
     // Use a custom library name to avoid conflicts with built-in SQL functions
     // Test that SQL function can be called from Cypher
     database.command("sql", "DEFINE FUNCTION custom.addTen \"SELECT :value + 10\" PARAMETERS [value] LANGUAGE sql");
@@ -221,7 +221,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testJavaScriptFunctionCallableFromCypher() {
+  void javaScriptFunctionCallableFromCypher() {
     database.command("sql", "DEFINE FUNCTION js.power \"return Math.pow(x, y)\" PARAMETERS [x,y] LANGUAGE js");
 
     // Call JS function from Cypher
@@ -233,7 +233,7 @@ class OpenCypherCustomFunctionTest {
   // Phase 5: Edge Cases
 
   @Test
-  void testFunctionWithNoParameters() {
+  void functionWithNoParameters() {
     database.command("sql", "DEFINE FUNCTION test.pi \"SELECT 3.14159\" LANGUAGE sql");
 
     final ResultSet rs = database.query("opencypher", "RETURN test.pi() as result");
@@ -242,7 +242,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testFunctionInComplexExpression() {
+  void functionInComplexExpression() {
     database.command("sql", "DEFINE FUNCTION math.square \"SELECT :x * :x\" PARAMETERS [x] LANGUAGE sql");
 
     final ResultSet rs = database.query("opencypher", "RETURN math.square(3) + math.square(4) as result");
@@ -251,7 +251,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testFunctionWithGraphDataInCypher() {
+  void functionWithGraphDataInCypher() {
     database.command("sql", "DEFINE FUNCTION cypher.getLabel \"MATCH (n) WHERE id(n) = $id RETURN labels(n)[0] as lbl\" PARAMETERS [id] LANGUAGE cypher");
 
     // Create node
@@ -265,7 +265,7 @@ class OpenCypherCustomFunctionTest {
   }
 
   @Test
-  void testMultipleFunctionCalls() {
+  void multipleFunctionCalls() {
     database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b\" PARAMETERS [a,b] LANGUAGE sql");
     database.command("sql", "DEFINE FUNCTION math.sub \"SELECT :a - :b\" PARAMETERS [a,b] LANGUAGE sql");
 

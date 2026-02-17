@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Test for map literals with backticked keys.
  * Ensures that backticks are properly stripped from map keys in RETURN clauses.
  */
-public class CypherMapBackticksTest {
+class CypherMapBackticksTest {
   private Database database;
 
   @BeforeEach
@@ -55,7 +55,7 @@ public class CypherMapBackticksTest {
   }
 
   @Test
-  void testMapLiteralWithBacktickedKeys() {
+  void mapLiteralWithBacktickedKeys() {
     // Create test data
     database.transaction(() -> {
       database.command("opencypher",
@@ -84,7 +84,7 @@ public class CypherMapBackticksTest {
   }
 
   @Test
-  void testMapLiteralWithMultipleBacktickedKeys() {
+  void mapLiteralWithMultipleBacktickedKeys() {
     // Create test data
     database.transaction(() -> {
       database.command("opencypher",
@@ -113,7 +113,7 @@ public class CypherMapBackticksTest {
   }
 
   @Test
-  void testMapLiteralWithEscapedBackticks() {
+  void mapLiteralWithEscapedBackticks() {
     // Create test data
     database.transaction(() -> {
       database.command("opencypher",
@@ -137,7 +137,7 @@ public class CypherMapBackticksTest {
   }
 
   @Test
-  void testCreateWithBacktickedMapKeys() {
+  void createWithBacktickedMapKeys() {
     // Test CREATE clause with backticked keys in map literal
     database.transaction(() -> {
       database.command("opencypher",
@@ -155,7 +155,7 @@ public class CypherMapBackticksTest {
   }
 
   @Test
-  void testMapProjectionWithBacktickedKeys() {
+  void mapProjectionWithBacktickedKeys() {
     // Test map projection with backticked keys
     database.transaction(() -> {
       database.command("opencypher",
@@ -182,7 +182,7 @@ public class CypherMapBackticksTest {
   }
 
   @Test
-  void testPropertyAccessWithBackticks() {
+  void propertyAccessWithBackticks() {
     // Test that property access with backticks works correctly
     database.transaction(() -> {
       database.command("opencypher",

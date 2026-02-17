@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for zero-length path patterns in OpenCypher.
  * Regression test for https://github.com/ArcadeData/arcadedb/issues/3337
  */
-public class OpenCypherZeroLengthPathTest {
+class OpenCypherZeroLengthPathTest {
   private Database database;
 
   @BeforeEach

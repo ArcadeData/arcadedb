@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that anonymous relationships use the optimized getVertices() path
  * when edges aren't needed (no edge variable, properties, or path tracking).
  */
-public class MatchRelationshipStepOptimizationTest {
+class MatchRelationshipStepOptimizationTest {
   private Database database;
 
   @BeforeEach

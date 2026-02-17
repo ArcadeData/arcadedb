@@ -54,7 +54,7 @@ class Issue3331Test {
   }
 
   @Test
-  void testPatternComprehensionFromIssue() {
+  void patternComprehensionFromIssue() {
     // Exact scenario from issue #3331
     database.transaction(() -> {
       database.command("opencypher",
@@ -76,7 +76,7 @@ class Issue3331Test {
   }
 
   @Test
-  void testPatternComprehensionNoFilter() {
+  void patternComprehensionNoFilter() {
     // Pattern comprehension without WHERE clause
     database.transaction(() -> {
       database.command("opencypher",
@@ -98,7 +98,7 @@ class Issue3331Test {
   }
 
   @Test
-  void testPatternComprehensionWithRelType() {
+  void patternComprehensionWithRelType() {
     // Pattern comprehension with specific relationship type
     database.transaction(() -> {
       database.command("opencypher",
@@ -120,7 +120,7 @@ class Issue3331Test {
   }
 
   @Test
-  void testPatternComprehensionEmptyResult() {
+  void patternComprehensionEmptyResult() {
     // Pattern comprehension that matches nothing
     database.transaction(() -> {
       database.command("opencypher",

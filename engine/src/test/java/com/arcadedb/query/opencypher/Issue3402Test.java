@@ -63,7 +63,7 @@ class Issue3402Test {
   }
 
   @Test
-  void testSimplePointCreationAndRetrieval() {
+  void simplePointCreationAndRetrieval() {
     // Create a simple ping with a point location
     database.transaction(() -> {
       database.command("opencypher",
@@ -80,7 +80,7 @@ class Issue3402Test {
   }
 
   @Test
-  void testDistanceWithTwoPoints() {
+  void distanceWithTwoPoints() {
     // Create two pings with point locations
     database.transaction(() -> {
       database.command("opencypher",
@@ -109,7 +109,7 @@ class Issue3402Test {
   }
 
   @Test
-  void testDistanceInWhereClause() {
+  void distanceInWhereClause() {
     // Create test data similar to the original issue
     database.transaction(() -> {
       database.command("opencypher",
@@ -140,7 +140,7 @@ class Issue3402Test {
   }
 
   @Test
-  void testDistanceWithUnits() {
+  void distanceWithUnits() {
     // Create two pings with known distance
     database.transaction(() -> {
       database.command("opencypher",
@@ -181,7 +181,7 @@ class Issue3402Test {
   }
 
   @Test
-  void testComplexQueryFromIssue() {
+  void complexQueryFromIssue() {
     // Create a subset of data from the original issue (smaller for testing)
     database.transaction(() -> {
       // Create 3 persons with devices and pings
@@ -224,7 +224,7 @@ class Issue3402Test {
   }
 
   @Test
-  void testExactScenarioFromGitHubIssue() {
+  void exactScenarioFromGitHubIssue() {
     // This test reproduces the exact scenario from GitHub issue #3402
     // Create data matching the issue's structure
     database.transaction(() -> {

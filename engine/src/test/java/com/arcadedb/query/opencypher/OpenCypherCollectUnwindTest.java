@@ -377,7 +377,7 @@ class OpenCypherCollectUnwindTest {
    * - Edge case: no matching documents (should return null gracefully)
    */
   @Test
-  void testHeadCollectInWithClause() {
+  void headCollectInWithClause() {
     // Setup: Create CHUNK -> DOCUMENT relationship matching issue #3307
     database.getSchema().createVertexType("CHUNK");
     database.getSchema().createVertexType("DOCUMENT");

@@ -97,7 +97,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testStaticInitialization() {
+  void staticInitialization() {
     // Verify that built-in procedures are registered on initialization
     assertThat(CypherProcedureRegistry.size()).isGreaterThan(0);
 
@@ -120,7 +120,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testRegisterNewProcedure() {
+  void registerNewProcedure() {
     // Create and register a test procedure
     final TestProcedure procedure = new TestProcedure("test.procedure");
     CypherProcedureRegistry.register(procedure);
@@ -132,7 +132,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testRegisterDuplicateProcedure() {
+  void registerDuplicateProcedure() {
     // Register a procedure
     final TestProcedure procedure1 = new TestProcedure("test.duplicate");
     CypherProcedureRegistry.register(procedure1);
@@ -149,7 +149,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testRegisterOrReplace() {
+  void registerOrReplace() {
     // Register a procedure
     final TestProcedure procedure1 = new TestProcedure("test.replace");
     CypherProcedureRegistry.registerOrReplace(procedure1);
@@ -167,7 +167,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testGetExistingProcedure() {
+  void getExistingProcedure() {
     final TestProcedure procedure = new TestProcedure("test.get");
     CypherProcedureRegistry.register(procedure);
 
@@ -178,14 +178,14 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testGetNonExistingProcedure() {
+  void getNonExistingProcedure() {
     final CypherProcedure retrieved = CypherProcedureRegistry.get("test.nonexistent");
 
     assertThat(retrieved).isNull();
   }
 
   @Test
-  void testGetWithApocPrefix() {
+  void getWithApocPrefix() {
     // Test APOC compatibility - apoc. prefix should be stripped
     final CypherProcedure mergeRelationship = CypherProcedureRegistry.get("merge.relationship");
     final CypherProcedure apocMergeRelationship = CypherProcedureRegistry.get("apoc.merge.relationship");
@@ -195,7 +195,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testGetCaseInsensitive() {
+  void getCaseInsensitive() {
     // Test case insensitivity
     final CypherProcedure lowercase = CypherProcedureRegistry.get("merge.relationship");
     final CypherProcedure uppercase = CypherProcedureRegistry.get("MERGE.RELATIONSHIP");
@@ -208,7 +208,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testHasProcedure() {
+  void hasProcedure() {
     final TestProcedure procedure = new TestProcedure("test.has");
     CypherProcedureRegistry.register(procedure);
 
@@ -217,21 +217,21 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testHasProcedureWithApocPrefix() {
+  void hasProcedureWithApocPrefix() {
     // Test APOC compatibility in hasProcedure
     assertThat(CypherProcedureRegistry.hasProcedure("merge.relationship")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("apoc.merge.relationship")).isTrue();
   }
 
   @Test
-  void testHasProcedureCaseInsensitive() {
+  void hasProcedureCaseInsensitive() {
     assertThat(CypherProcedureRegistry.hasProcedure("merge.relationship")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("MERGE.RELATIONSHIP")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("Merge.Relationship")).isTrue();
   }
 
   @Test
-  void testGetProcedureNames() {
+  void getProcedureNames() {
     final Set<String> names = CypherProcedureRegistry.getProcedureNames();
 
     assertThat(names).isNotNull();
@@ -240,7 +240,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testGetProcedureNamesIsUnmodifiable() {
+  void getProcedureNamesIsUnmodifiable() {
     final Set<String> names = CypherProcedureRegistry.getProcedureNames();
 
     // Verify the set is unmodifiable by attempting to modify it
@@ -254,7 +254,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testGetAllProcedures() {
+  void getAllProcedures() {
     final var procedures = CypherProcedureRegistry.getAllProcedures();
 
     assertThat(procedures).isNotNull();
@@ -263,7 +263,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testGetAllProceduresIsUnmodifiable() {
+  void getAllProceduresIsUnmodifiable() {
     final var procedures = CypherProcedureRegistry.getAllProcedures();
 
     // Verify the collection is unmodifiable by attempting to modify it
@@ -276,7 +276,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testSize() {
+  void size() {
     final int initialSize = CypherProcedureRegistry.size();
 
     final TestProcedure procedure1 = new TestProcedure("test.size1");
@@ -289,7 +289,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testUnregisterExistingProcedure() {
+  void unregisterExistingProcedure() {
     final TestProcedure procedure = new TestProcedure("test.unregister");
     CypherProcedureRegistry.register(procedure);
 
@@ -302,14 +302,14 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testUnregisterNonExistingProcedure() {
+  void unregisterNonExistingProcedure() {
     final CypherProcedure unregistered = CypherProcedureRegistry.unregister("test.notfound");
 
     assertThat(unregistered).isNull();
   }
 
   @Test
-  void testUnregisterWithApocPrefix() {
+  void unregisterWithApocPrefix() {
     final TestProcedure procedure = new TestProcedure("test.apocunregister");
     CypherProcedureRegistry.register(procedure);
 
@@ -321,7 +321,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testClear() {
+  void clear() {
     // Save the current state
     final int sizeBeforeClear = CypherProcedureRegistry.size();
 
@@ -338,7 +338,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testReset() {
+  void reset() {
     // Add a custom procedure
     final TestProcedure procedure = new TestProcedure("test.reset");
     CypherProcedureRegistry.register(procedure);
@@ -361,7 +361,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testApocPrefixWithCustomProcedure() {
+  void apocPrefixWithCustomProcedure() {
     // Test that APOC prefix works with custom procedures too
     final TestProcedure procedure = new TestProcedure("test.custom");
     CypherProcedureRegistry.register(procedure);
@@ -374,7 +374,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testMultipleApocPrefixes() {
+  void multipleApocPrefixes() {
     // Test that APOC prefix is only stripped once
     final TestProcedure procedure = new TestProcedure("test.apoc");
     CypherProcedureRegistry.register(procedure);
@@ -386,7 +386,7 @@ class CypherProcedureRegistryTest {
   }
 
   @Test
-  void testCypherProcedureInterface() {
+  void cypherProcedureInterface() {
     // Test that CypherProcedure extends Procedure
     final TestProcedure procedure = new TestProcedure("test.interface");
 

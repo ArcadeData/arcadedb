@@ -49,7 +49,7 @@ class Issue3333Test {
   }
 
   @Test
-  void testStringMatchingInReturn() {
+  void stringMatchingInReturn() {
     // Exact scenario from issue #3333
     try (final ResultSet rs = database.query("opencypher",
         "WITH 'Hello World' AS txt " +
@@ -66,7 +66,7 @@ class Issue3333Test {
   }
 
   @Test
-  void testStringMatchingInReturnFalse() {
+  void stringMatchingInReturnFalse() {
     // Test that false results are returned correctly too
     try (final ResultSet rs = database.query("opencypher",
         "WITH 'Hello World' AS txt " +
@@ -83,7 +83,7 @@ class Issue3333Test {
   }
 
   @Test
-  void testStringMatchingWithPropertyInReturn() {
+  void stringMatchingWithPropertyInReturn() {
     // Test with node property access
     database.getSchema().createVertexType("Person");
     database.transaction(() -> {
@@ -105,7 +105,7 @@ class Issue3333Test {
   }
 
   @Test
-  void testRegexInReturn() {
+  void regexInReturn() {
     // Test that regex (=~) also works in RETURN
     try (final ResultSet rs = database.query("opencypher",
         "WITH 'Hello World' AS txt " +

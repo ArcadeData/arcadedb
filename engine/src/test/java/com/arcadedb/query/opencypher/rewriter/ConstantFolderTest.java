@@ -31,12 +31,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ConstantFolderTest {
+class ConstantFolderTest {
 
   private final ConstantFolder rewriter = new ConstantFolder();
 
   @Test
-  public void testArithmeticAddIntegers() {
+  void arithmeticAddIntegers() {
     // 1 + 2 → 3
     final ArithmeticExpression expr = new ArithmeticExpression(
         new LiteralExpression(1, "1"),
@@ -51,7 +51,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testArithmeticSubtract() {
+  void arithmeticSubtract() {
     // 10 - 3 → 7
     final ArithmeticExpression expr = new ArithmeticExpression(
         new LiteralExpression(10, "10"),
@@ -66,7 +66,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testArithmeticMultiply() {
+  void arithmeticMultiply() {
     // 5 * 3 → 15
     final ArithmeticExpression expr = new ArithmeticExpression(
         new LiteralExpression(5, "5"),
@@ -81,7 +81,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testArithmeticDivide() {
+  void arithmeticDivide() {
     // 10 / 2 → 5
     final ArithmeticExpression expr = new ArithmeticExpression(
         new LiteralExpression(10, "10"),
@@ -96,7 +96,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testArithmeticPower() {
+  void arithmeticPower() {
     // 2 ^ 3 → 8.0
     final ArithmeticExpression expr = new ArithmeticExpression(
         new LiteralExpression(2, "2"),
@@ -111,7 +111,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testStringConcatenation() {
+  void stringConcatenation() {
     // 'hello' + ' world' → 'hello world'
     final ArithmeticExpression expr = new ArithmeticExpression(
         new LiteralExpression("hello", "'hello'"),
@@ -126,7 +126,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testListConcatenation() {
+  void listConcatenation() {
     // [1, 2] + [3, 4] → [1, 2, 3, 4]
     final ArithmeticExpression expr = new ArithmeticExpression(
         new LiteralExpression(Arrays.asList(1, 2), "[1, 2]"),
@@ -141,7 +141,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testComparisonGreaterThan() {
+  void comparisonGreaterThan() {
     // 5 > 3 → true
     final ComparisonExpression expr = new ComparisonExpression(
         new LiteralExpression(5, "5"),
@@ -157,7 +157,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testComparisonEquals() {
+  void comparisonEquals() {
     // 'a' = 'a' → true
     final ComparisonExpression expr = new ComparisonExpression(
         new LiteralExpression("a", "'a'"),
@@ -172,7 +172,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testNullPropagation() {
+  void nullPropagation() {
     // null + 5 → null
     final ArithmeticExpression expr = new ArithmeticExpression(
         new LiteralExpression(null, "null"),
@@ -187,7 +187,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testNestedArithmetic() {
+  void nestedArithmetic() {
     // (1 + 2) * 3 → 3 * 3 → 9
     final ArithmeticExpression inner = new ArithmeticExpression(
         new LiteralExpression(1, "1"),
@@ -208,7 +208,7 @@ public class ConstantFolderTest {
   }
 
   @Test
-  public void testDoNotFoldWithVariable() {
+  void doNotFoldWithVariable() {
     // x + 5 → x + 5 (no folding, has variable)
     final ArithmeticExpression expr = new ArithmeticExpression(
         new VariableExpression("x"),

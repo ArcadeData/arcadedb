@@ -103,7 +103,7 @@ class Issue3404Test {
   }
 
   @Test
-  void testCollectRelationshipsReturnsListNotCount() {
+  void collectRelationshipsReturnsListNotCount() {
     // Query that collects relationships
     final String query = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
                          "RETURN ID(nodeDOc), COLLECT(ID(chunk)), COLLECT(rel)";
@@ -145,7 +145,7 @@ class Issue3404Test {
   }
 
   @Test
-  void testCollectRelationshipsWithIdStillWorks() {
+  void collectRelationshipsWithIdStillWorks() {
     // Verify that the workaround (wrapping in ID()) still works
     final String query = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
                          "RETURN ID(nodeDOc), COLLECT(ID(rel))";
@@ -172,7 +172,7 @@ class Issue3404Test {
   }
 
   @Test
-  void testCollectWithNoGrouping() {
+  void collectWithNoGrouping() {
     // Test COLLECT without grouping (should collect all relationships into one list)
     final String query = "MATCH ()<-[rel:in]-() RETURN COLLECT(rel) AS allRels";
 
@@ -198,7 +198,7 @@ class Issue3404Test {
   }
 
   @Test
-  void testCollectNodesStillWorks() {
+  void collectNodesStillWorks() {
     // Verify that COLLECT still works correctly for nodes
     final String query = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
                          "RETURN ID(nodeDOc), COLLECT(chunk) AS chunks";
@@ -220,7 +220,7 @@ class Issue3404Test {
   }
 
   @Test
-  void testJsonSerializationForStudio() {
+  void jsonSerializationForStudio() {
     // Test that JSON serialization (as used by Studio) correctly serializes COLLECT(rel) as a list, not a count
     final JsonGraphSerializer serializer = JsonGraphSerializer.createJsonGraphSerializer()
         .setExpandVertexEdges(false);

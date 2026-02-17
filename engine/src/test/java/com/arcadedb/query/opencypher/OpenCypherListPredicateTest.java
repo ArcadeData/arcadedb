@@ -50,7 +50,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testAllPredicates() {
+  void allPredicates() {
     // Exact query from the issue
     final ResultSet rs = database.query("opencypher",
         "WITH [1, 2, 3, 4] AS list " +
@@ -70,7 +70,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testAllPredicateTrue() {
+  void allPredicateTrue() {
     final ResultSet rs = database.query("opencypher",
         "RETURN all(x IN [2, 4, 6] WHERE x > 0) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -78,7 +78,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testAllPredicateFalse() {
+  void allPredicateFalse() {
     final ResultSet rs = database.query("opencypher",
         "RETURN all(x IN [1, 2, 3] WHERE x > 2) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -86,7 +86,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testAnyPredicateTrue() {
+  void anyPredicateTrue() {
     final ResultSet rs = database.query("opencypher",
         "RETURN any(x IN [1, 2, 3] WHERE x = 2) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -94,7 +94,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testAnyPredicateFalse() {
+  void anyPredicateFalse() {
     final ResultSet rs = database.query("opencypher",
         "RETURN any(x IN [1, 2, 3] WHERE x > 10) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -102,7 +102,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testNonePredicateTrue() {
+  void nonePredicateTrue() {
     final ResultSet rs = database.query("opencypher",
         "RETURN none(x IN [1, 2, 3] WHERE x > 5) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -110,7 +110,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testNonePredicateFalse() {
+  void nonePredicateFalse() {
     final ResultSet rs = database.query("opencypher",
         "RETURN none(x IN [1, 2, 3] WHERE x = 2) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -118,7 +118,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testSinglePredicateTrue() {
+  void singlePredicateTrue() {
     final ResultSet rs = database.query("opencypher",
         "RETURN single(x IN [1, 2, 3] WHERE x = 2) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -126,7 +126,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testSinglePredicateFalse() {
+  void singlePredicateFalse() {
     final ResultSet rs = database.query("opencypher",
         "RETURN single(x IN [1, 2, 3] WHERE x > 1) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -134,7 +134,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testEmptyList() {
+  void emptyList() {
     final ResultSet rs = database.query("opencypher",
         "RETURN all(x IN [] WHERE x > 0) AS a, " +
             "any(x IN [] WHERE x > 0) AS b, " +
@@ -153,7 +153,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testNestedQuantifiers() {
+  void nestedQuantifiers() {
     // TCK Quantifier5 [1]: none(x IN list WHERE none(y IN x WHERE y = 'abc'))
     final ResultSet rs = database.query("opencypher",
         "RETURN none(x IN [['abc'], ['abc', 'def']] WHERE none(y IN x WHERE y = 'abc')) AS result");
@@ -162,7 +162,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testQuantifierWithSharedList() {
+  void quantifierWithSharedList() {
     // TCK Quantifier5 [2]: none(x IN list WHERE none(y IN list WHERE x <= y))
     final ResultSet rs = database.query("opencypher",
         "WITH [1, 2, 3, 4, 5, 6, 7, 8, 9] AS list " +
@@ -172,7 +172,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testNoneEqualsNotAny() {
+  void noneEqualsNotAny() {
     // TCK Quantifier5 [3]: none(...) = (NOT any(...))
     final ResultSet rs = database.query("opencypher",
         "RETURN none(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2) = " +
@@ -182,7 +182,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testAllWithNot() {
+  void allWithNot() {
     // Test all() with NOT inside WHERE
     ResultSet rs = database.query("opencypher",
         "RETURN all(x IN [1, 2, 3] WHERE NOT (x = 2)) AS result");
@@ -191,7 +191,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testQuantifierEqualsQuantifier() {
+  void quantifierEqualsQuantifier() {
     // Compare two quantifier results
     final ResultSet rs = database.query("opencypher",
         "RETURN none(x IN [1, 2, 3] WHERE x = 2) = all(x IN [1, 2, 3] WHERE NOT (x = 2)) AS result");
@@ -200,7 +200,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testSizeOfListComprehension() {
+  void sizeOfListComprehension() {
     // Test size() on list comprehension
     ResultSet rs1 = database.query("opencypher",
         "RETURN size([x IN [1, 2, 3, 4, 5] WHERE x > 3 | x]) AS result");
@@ -210,7 +210,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testSizeComprehensionInComparison() {
+  void sizeComprehensionInComparison() {
     // Test size() on list comprehension compared to number without parens
     final ResultSet rs = database.query("opencypher",
         "RETURN size([x IN [1, 2, 3, 4, 5] WHERE x > 3 | x]) = 2 AS result");
@@ -219,7 +219,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testNoneEqualsSizeFilter() {
+  void noneEqualsSizeFilter() {
     // TCK Quantifier5 [5]
     final ResultSet rs = database.query("opencypher",
         "RETURN none(x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2) = " +
@@ -229,7 +229,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testWithMatchedNodes() {
+  void withMatchedNodes() {
     database.getSchema().createVertexType("Item");
     database.transaction(() -> {
       database.newVertex("Item").set("val", 10).save();
@@ -245,7 +245,7 @@ class OpenCypherListPredicateTest {
   }
 
   @Test
-  void testTriadicSelectionDebug() {
+  void triadicSelectionDebug() {
     // Create the binary-tree-1 graph (exact TCK setup)
     database.transaction(() -> {
       database.command("opencypher",

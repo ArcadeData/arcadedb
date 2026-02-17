@@ -100,7 +100,7 @@ class Issue3403Test {
   }
 
   @Test
-  void testNotOperatorWithoutParentheses() {
+  void notOperatorWithoutParentheses() {
     // Query without extra parentheses around NOT
     final String query1 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
                           "WHERE NOT (chunk:CHUNK)--(:IMAGE) " +
@@ -118,7 +118,7 @@ class Issue3403Test {
   }
 
   @Test
-  void testNotOperatorWithParentheses() {
+  void notOperatorWithParentheses() {
     // Query with extra parentheses around NOT expression
     final String query2 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
                           "WHERE (NOT (chunk:CHUNK)--(:IMAGE)) " +
@@ -136,7 +136,7 @@ class Issue3403Test {
   }
 
   @Test
-  void testBothQueriesReturnSameResults() {
+  void bothQueriesReturnSameResults() {
     // Query without extra parentheses around NOT
     final String query1 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
                           "WHERE NOT (chunk:CHUNK)--(:IMAGE) " +
@@ -167,7 +167,7 @@ class Issue3403Test {
   }
 
   @Test
-  void testSimpleNotPattern() {
+  void simpleNotPattern() {
     // Simplified test to verify NOT pattern predicate works correctly
     final String query1 = "MATCH (c:CHUNK) WHERE NOT (c)--(:IMAGE) RETURN c";
     final String query2 = "MATCH (c:CHUNK) WHERE (NOT (c)--(:IMAGE)) RETURN c";
@@ -191,7 +191,7 @@ class Issue3403Test {
   }
 
   @Test
-  void testTripleParentheses() {
+  void tripleParentheses() {
     // Test with triple parentheses to verify fix works with multiple nesting levels
     final String query1 = "MATCH (c:CHUNK) WHERE NOT (c)--(:IMAGE) RETURN c";
     final String query2 = "MATCH (c:CHUNK) WHERE (((NOT (c)--(:IMAGE)))) RETURN c";
@@ -214,7 +214,7 @@ class Issue3403Test {
   }
 
   @Test
-  void testMultipleParenthesesAroundPattern() {
+  void multipleParenthesesAroundPattern() {
     // Test with multiple parentheses around the pattern itself
     final String query1 = "MATCH (c:CHUNK) WHERE NOT (c)--(:IMAGE) RETURN c";
     final String query2 = "MATCH (c:CHUNK) WHERE NOT (((c)--(:IMAGE))) RETURN c";
@@ -237,7 +237,7 @@ class Issue3403Test {
   }
 
   @Test
-  void testComplexOriginalQueryWithTripleParentheses() {
+  void complexOriginalQueryWithTripleParentheses() {
     // Test the original complex query from the issue with triple parentheses
     final String query1 = "MATCH (nodeDOc:DOCUMENT)<-[rel:in]-(chunk:CHUNK) " +
                           "WHERE NOT (chunk:CHUNK)--(:IMAGE) " +

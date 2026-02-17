@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for MatchRelationshipStep profiling output.
  * Verifies that PROFILE shows whether fast path (vertices) or standard path (edges) was used.
  */
-public class MatchRelationshipStepProfilingTest {
+class MatchRelationshipStepProfilingTest {
   private Database database;
 
   @BeforeEach

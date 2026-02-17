@@ -50,14 +50,14 @@ class ProtoUtilsTest {
   // ========== toGrpcValue Tests ==========
 
   @Test
-  void testToGrpcValueNull() {
+  void toGrpcValueNull() {
     final GrpcValue value = ProtoUtils.toGrpcValue(null);
     assertThat(value).isNotNull();
     assertThat(value.getKindCase()).isEqualTo(GrpcValue.KindCase.KIND_NOT_SET);
   }
 
   @Test
-  void testToGrpcValueBoolean() {
+  void toGrpcValueBoolean() {
     final GrpcValue valueTrue = ProtoUtils.toGrpcValue(true);
     assertThat(valueTrue.getBoolValue()).isTrue();
 
@@ -66,44 +66,44 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testToGrpcValueInteger() {
+  void toGrpcValueInteger() {
     final GrpcValue value = ProtoUtils.toGrpcValue(42);
     assertThat(value.getInt32Value()).isEqualTo(42);
   }
 
   @Test
-  void testToGrpcValueLong() {
+  void toGrpcValueLong() {
     final GrpcValue value = ProtoUtils.toGrpcValue(9876543210L);
     assertThat(value.getInt64Value()).isEqualTo(9876543210L);
   }
 
   @Test
-  void testToGrpcValueFloat() {
+  void toGrpcValueFloat() {
     final GrpcValue value = ProtoUtils.toGrpcValue(3.14f);
     assertThat(value.getFloatValue()).isCloseTo(3.14f, within(0.001f));
   }
 
   @Test
-  void testToGrpcValueDouble() {
+  void toGrpcValueDouble() {
     final GrpcValue value = ProtoUtils.toGrpcValue(2.718281828);
     assertThat(value.getDoubleValue()).isCloseTo(2.718281828, within(0.000001));
   }
 
   @Test
-  void testToGrpcValueString() {
+  void toGrpcValueString() {
     final GrpcValue value = ProtoUtils.toGrpcValue("Hello, World!");
     assertThat(value.getStringValue()).isEqualTo("Hello, World!");
   }
 
   @Test
-  void testToGrpcValueByteArray() {
+  void toGrpcValueByteArray() {
     final byte[] bytes = new byte[]{1, 2, 3, 4, 5};
     final GrpcValue value = ProtoUtils.toGrpcValue(bytes);
     assertThat(value.getBytesValue().toByteArray()).isEqualTo(bytes);
   }
 
   @Test
-  void testToGrpcValueDate() {
+  void toGrpcValueDate() {
     final Date date = new Date(1234567890000L); // Fixed timestamp
     final GrpcValue value = ProtoUtils.toGrpcValue(date);
 
@@ -114,7 +114,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testToGrpcValueRID() {
+  void toGrpcValueRID() {
     final RID rid = new RID(null, "#10:5");
     final GrpcValue value = ProtoUtils.toGrpcValue(rid);
 
@@ -123,7 +123,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testToGrpcValueBigDecimal() {
+  void toGrpcValueBigDecimal() {
     final BigDecimal decimal = new BigDecimal("123.456");
     final GrpcValue value = ProtoUtils.toGrpcValue(decimal);
 
@@ -133,7 +133,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testToGrpcValueBigDecimalLarge() {
+  void toGrpcValueBigDecimalLarge() {
     // Test with a BigDecimal that exceeds long range
     final BigDecimal largeDec = new BigDecimal("9999999999999999999999.123456");
     final GrpcValue value = ProtoUtils.toGrpcValue(largeDec);
@@ -144,7 +144,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testToGrpcValueList() {
+  void toGrpcValueList() {
     final List<Object> list = new ArrayList<>();
     list.add(1);
     list.add("two");
@@ -160,7 +160,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testToGrpcValueMap() {
+  void toGrpcValueMap() {
     final Map<String, Object> map = new HashMap<>();
     map.put("name", "Alice");
     map.put("age", 30);
@@ -180,14 +180,14 @@ class ProtoUtilsTest {
   // ========== fromGrpcValue Tests ==========
 
   @Test
-  void testFromGrpcValueNull() {
+  void fromGrpcValueNull() {
     final GrpcValue value = GrpcValue.newBuilder().build();
     final Object result = ProtoUtils.fromGrpcValue(value);
     assertThat(result).isNull();
   }
 
   @Test
-  void testFromGrpcValueBoolean() {
+  void fromGrpcValueBoolean() {
     final GrpcValue valueTrue = GrpcValue.newBuilder().setBoolValue(true).build();
     assertThat(ProtoUtils.fromGrpcValue(valueTrue)).isEqualTo(true);
 
@@ -196,46 +196,46 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testFromGrpcValueInt32() {
+  void fromGrpcValueInt32() {
     final GrpcValue value = GrpcValue.newBuilder().setInt32Value(42).build();
     assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo(42);
   }
 
   @Test
-  void testFromGrpcValueInt64() {
+  void fromGrpcValueInt64() {
     final GrpcValue value = GrpcValue.newBuilder().setInt64Value(9876543210L).build();
     assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo(9876543210L);
   }
 
   @Test
-  void testFromGrpcValueFloat() {
+  void fromGrpcValueFloat() {
     final GrpcValue value = GrpcValue.newBuilder().setFloatValue(3.14f).build();
     final Object result = ProtoUtils.fromGrpcValue(value);
     assertThat((Float) result).isCloseTo(3.14f, within(0.001f));
   }
 
   @Test
-  void testFromGrpcValueDouble() {
+  void fromGrpcValueDouble() {
     final GrpcValue value = GrpcValue.newBuilder().setDoubleValue(2.718281828).build();
     final Object result = ProtoUtils.fromGrpcValue(value);
     assertThat((Double) result).isCloseTo(2.718281828, within(0.000001));
   }
 
   @Test
-  void testFromGrpcValueString() {
+  void fromGrpcValueString() {
     final GrpcValue value = GrpcValue.newBuilder().setStringValue("Hello, World!").build();
     assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo("Hello, World!");
   }
 
   @Test
-  void testFromGrpcValueBytes() {
+  void fromGrpcValueBytes() {
     final byte[] bytes = new byte[]{1, 2, 3, 4, 5};
     final GrpcValue value = GrpcValue.newBuilder().setBytesValue(ByteString.copyFrom(bytes)).build();
     assertThat((byte[]) ProtoUtils.fromGrpcValue(value)).isEqualTo(bytes);
   }
 
   @Test
-  void testFromGrpcValueTimestamp() {
+  void fromGrpcValueTimestamp() {
     final Timestamp ts = Timestamp.newBuilder().setSeconds(1234567890).setNanos(123456789).build();
     final GrpcValue value = GrpcValue.newBuilder().setTimestampValue(ts).build();
 
@@ -245,7 +245,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testFromGrpcValueList() {
+  void fromGrpcValueList() {
     final GrpcValue value = GrpcValue.newBuilder()
         .setListValue(GrpcList.newBuilder()
             .addValues(GrpcValue.newBuilder().setInt32Value(1).build())
@@ -266,7 +266,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testFromGrpcValueMap() {
+  void fromGrpcValueMap() {
     final GrpcValue value = GrpcValue.newBuilder()
         .setMapValue(GrpcMap.newBuilder()
             .putEntries("name", GrpcValue.newBuilder().setStringValue("Alice").build())
@@ -287,7 +287,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testFromGrpcValueEmbedded() {
+  void fromGrpcValueEmbedded() {
     final GrpcValue value = GrpcValue.newBuilder()
         .setEmbeddedValue(GrpcEmbedded.newBuilder()
             .setType("TestDoc")
@@ -307,7 +307,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testFromGrpcValueLink() {
+  void fromGrpcValueLink() {
     final GrpcValue value = GrpcValue.newBuilder()
         .setLinkValue(GrpcLink.newBuilder()
             .setRid("#10:5")
@@ -319,7 +319,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testFromGrpcValueDecimal() {
+  void fromGrpcValueDecimal() {
     final GrpcValue value = GrpcValue.newBuilder()
         .setDecimalValue(GrpcDecimal.newBuilder()
             .setUnscaled(123456L)
@@ -339,7 +339,7 @@ class ProtoUtilsTest {
   // ========== mapToProtoRecord Tests ==========
 
   @Test
-  void testMapToProtoRecord() {
+  void mapToProtoRecord() {
     final Map<String, Object> map = new HashMap<>();
     map.put("field1", "value1");
     map.put("field2", 42);
@@ -356,7 +356,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testMapToProtoRecordNoRID() {
+  void mapToProtoRecordNoRID() {
     final Map<String, Object> map = new HashMap<>();
     map.put("field1", "value1");
 
@@ -367,7 +367,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testMapToProtoRecordNoType() {
+  void mapToProtoRecordNoType() {
     final Map<String, Object> map = new HashMap<>();
     map.put("field1", "value1");
 
@@ -380,7 +380,7 @@ class ProtoUtilsTest {
   // ========== Round-trip Tests ==========
 
   @Test
-  void testRoundTripPrimitives() {
+  void roundTripPrimitives() {
     // Boolean
     assertRoundTrip(true);
     assertRoundTrip(false);
@@ -399,7 +399,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testRoundTripCollections() {
+  void roundTripCollections() {
     // List
     final List<Object> list = new ArrayList<>();
     list.add(1);
@@ -415,7 +415,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testRoundTripBigDecimal() {
+  void roundTripBigDecimal() {
     final BigDecimal decimal = new BigDecimal("123.456");
     final GrpcValue grpcValue = ProtoUtils.toGrpcValue(decimal);
     final Object result = ProtoUtils.fromGrpcValue(grpcValue);
@@ -425,7 +425,7 @@ class ProtoUtilsTest {
   }
 
   @Test
-  void testRoundTripDate() {
+  void roundTripDate() {
     final Date date = new Date(1234567890000L);
     final GrpcValue grpcValue = ProtoUtils.toGrpcValue(date);
     final Object result = ProtoUtils.fromGrpcValue(grpcValue);
