@@ -252,6 +252,7 @@ class Database:
         pq_clusters: Optional[int] = None,
         pq_center_globally: Optional[bool] = None,
         pq_training_limit: Optional[int] = None,
+        build_graph_now: bool = True,
     ) -> "VectorIndex":
         """
         Create a vector index for similarity search (JVector implementation).
@@ -304,6 +305,9 @@ class Database:
                 Requires quantization="PRODUCT".
             pq_training_limit: Max vectors to use for PQ training. Requires
                 quantization="PRODUCT".
+            build_graph_now: If True (default), eagerly builds the vector graph
+                immediately after index creation. If False, graph preparation is
+                deferred and may happen lazily on first search.
             store_vectors_in_graph: Whether to store vectors inline in the graph
                 structure (default: False). If True, increases disk usage but
                 significantly speeds up search for large datasets by avoiding document
@@ -389,7 +393,11 @@ class Database:
 
             from .vector import VectorIndex
 
-            return VectorIndex(java_index, self)
+            index = VectorIndex(java_index, self)
+            if build_graph_now:
+                index.build_graph_now()
+
+            return index
         except Exception as e:
             raise ArcadeDBError(f"Failed to create vector index: {e}") from e
 
@@ -782,8 +790,18 @@ class Database:
 class DatabaseFactory:
     """Factory for creating/opening ArcadeDB databases."""
 
-    def __init__(self, path: str):
-        start_jvm()
+    def __init__(
+        self,
+        path: str,
+        jvm_kwargs: Optional[dict] = None,
+    ):
+        """
+        Args:
+            path: Database path
+            jvm_kwargs: Optional JVM args passed to start_jvm()
+                Example: {"heap_size": "8g"}
+        """
+        start_jvm(**(jvm_kwargs or {}))
         from com.arcadedb.database import DatabaseFactory as JavaDatabaseFactory
 
         self._java_factory = JavaDatabaseFactory(path)
@@ -813,15 +831,39 @@ class DatabaseFactory:
 
 
 # Convenience functions
-def create_database(path: str) -> Database:
-    """Create a new database at the given path."""
-    factory = DatabaseFactory(path)
+def create_database(
+    path: str,
+    jvm_kwargs: Optional[dict] = None,
+) -> Database:
+    """Create a new database at the given path.
+
+    Args:
+        path: Database path
+        jvm_kwargs: Optional JVM args passed to start_jvm()
+            Example: {"heap_size": "8g"}
+    """
+    factory = DatabaseFactory(
+        path,
+        jvm_kwargs=jvm_kwargs,
+    )
     return factory.create()
 
 
-def open_database(path: str) -> Database:
-    """Open an existing database at the given path."""
-    factory = DatabaseFactory(path)
+def open_database(
+    path: str,
+    jvm_kwargs: Optional[dict] = None,
+) -> Database:
+    """Open an existing database at the given path.
+
+    Args:
+        path: Database path
+        jvm_kwargs: Optional JVM args passed to start_jvm()
+            Example: {"heap_size": "8g"}
+    """
+    factory = DatabaseFactory(
+        path,
+        jvm_kwargs=jvm_kwargs,
+    )
     return factory.open()
 
 

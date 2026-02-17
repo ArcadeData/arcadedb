@@ -19,8 +19,8 @@ Graph-Based Collaborative Filtering Performance:
   - Still produces high-quality recommendations
   - Best for real-time recommendations
 
-For the large dataset (20M ratings), use these environment variables:
-  ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g"
+For the large dataset (20M ratings), use:
+    --heap-size 8g
 
 KNOWN ISSUES: ArcadeDB Bugs and Limitations
 --------------------------------------------
@@ -103,12 +103,12 @@ def check_dependencies():
         sys.exit(1)
 
 
-def import_from_jsonl(jsonl_path, db_path):
+def import_from_jsonl(jsonl_path, db_path, jvm_kwargs=None):
     """Import database from JSONL export."""
     start_time = time.time()
 
     # Create new database
-    with arcadedb.create_database(str(db_path)) as db:
+    with arcadedb.create_database(str(db_path), jvm_kwargs=jvm_kwargs) as db:
         # Import using SQL IMPORT DATABASE command
         abs_path = Path(jsonl_path).resolve()
         # Convert Windows backslashes to forward slashes for SQL URI
@@ -128,7 +128,9 @@ def load_embedding_model(model_name):
     return model
 
 
-def generate_embeddings(db, model, model_name, property_suffix="", limit=None):
+def generate_embeddings(
+    db, model, model_name, property_suffix="", limit=None, force_embed=False
+):
     """Generate embeddings for movies and store them.
 
     Args:
@@ -154,7 +156,7 @@ def generate_embeddings(db, model, model_name, property_suffix="", limit=None):
         result = list(db.query("sql", query))
         existing_embeddings = result[0].get("count")
 
-        if existing_embeddings > 0 and not args.force_embed:
+        if existing_embeddings > 0 and not force_embed:
             print(f"Found {existing_embeddings} existing embeddings for {model_name}")
             return existing_embeddings
     except Exception:
@@ -460,8 +462,16 @@ def main():
         required=False,
         help="Limit number of movies to process (for debugging)",
     )
+    parser.add_argument(
+        "--heap-size",
+        type=str,
+        default=None,
+        help="Set JVM max heap size (e.g. 8g, 4096m). Overrides default 4g.",
+    )
 
     args = parser.parse_args()
+
+    jvm_kwargs = {"heap_size": args.heap_size} if args.heap_size else {}
 
     # Track overall timing
     script_start_time = time.time()
@@ -492,7 +502,7 @@ def main():
             shutil.rmtree(work_db)
 
         # Import from JSONL
-        import_time = import_from_jsonl(jsonl_path, work_db)
+        import_time = import_from_jsonl(jsonl_path, work_db, jvm_kwargs=jvm_kwargs)
         print(f"  ✓ Working database ready: {work_db}")
         print(f"  ⏱️  Import time: {import_time:.2f}s")
     elif args.source_db:
@@ -524,7 +534,7 @@ def main():
     # Load database
     print(f"\nOpening database: {args.db_path}")
 
-    with arcadedb.open_database(args.db_path) as db:
+    with arcadedb.open_database(args.db_path, jvm_kwargs=jvm_kwargs) as db:
         # Build vector indexes for 2 models
         print("\n" + "=" * 80)
         print("BUILDING VECTOR INDEXES")
@@ -535,7 +545,12 @@ def main():
         print(f"\nModel 1: {model_1_name}")
         model_1 = load_embedding_model(model_1_name)
         num_embedded = generate_embeddings(
-            db, model_1, model_1_name, "_v1", limit=args.limit
+            db,
+            model_1,
+            model_1_name,
+            "_v1",
+            limit=args.limit,
+            force_embed=args.force_embed,
         )
         print(f"✓ Embedded {num_embedded:,} movies")
         index_v1 = create_vector_index(db, property_suffix="_v1")
@@ -545,7 +560,12 @@ def main():
         print(f"\nModel 2: {model_2_name}")
         model_2 = load_embedding_model(model_2_name)
         num_embedded = generate_embeddings(
-            db, model_2, model_2_name, "_v2", limit=args.limit
+            db,
+            model_2,
+            model_2_name,
+            "_v2",
+            limit=args.limit,
+            force_embed=args.force_embed,
         )
         print(f"✓ Embedded {num_embedded:,} movies")
         index_v2 = create_vector_index(db, property_suffix="_v2")

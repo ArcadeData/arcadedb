@@ -130,10 +130,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
-        # Temporarily limit to three platforms (skip macOS x86_64, all Windows)
+        python-version:
+          - '3.10'
+          - '3.11'
+          - '3.12'
+          - '3.13'
+          # - '3.14'  # Temporarily disabled to reduce wheel storage usage
+        # Temporarily limit to four platforms (skip macOS x86_64, Windows ARM64)
         # platform: ['linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64']
-        platform: ['linux/amd64', 'linux/arm64', 'darwin/arm64']
+        platform: ['linux/amd64', 'linux/arm64', 'darwin/arm64', 'windows/amd64']
         include:
           - platform: linux/amd64
             runs-on: ubuntu-24.04
@@ -141,13 +146,13 @@ jobs:
             runs-on: ubuntu-24.04-arm
           - platform: darwin/arm64
             runs-on: macos-15
+          - platform: windows/amd64
+            runs-on: windows-2025
           # - platform: darwin/amd64
           #   runs-on: macos-15-intel
-          # - platform: windows/amd64
-          #   runs-on: windows-2025
           # - platform: windows/arm64
           #   runs-on: windows-11-arm
-          # macOS x86_64 and all Windows temporarily disabled
+          # macOS x86_64 and Windows ARM64 temporarily disabled
 
     steps:
       - name: Checkout code
@@ -163,7 +168,7 @@ jobs:
         if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
-          distribution: 'temurin'
+          distribution: 'corretto'
           java-version: '25'
 
       - name: Set up Docker Buildx (Linux only)
@@ -179,6 +184,8 @@ jobs:
         shell: bash
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           uv --version
 
       - name: Install Python build dependencies
@@ -186,7 +193,7 @@ jobs:
         run: |
           uv pip install --system build wheel setuptools
 
-      # Windows currently disabled, no symlink needed
+      # Windows currently enabled, no symlink needed
       # - name: Create python3 symlink (Windows only)
       #   if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
       #   shell: bash
@@ -240,10 +247,20 @@ jobs:
             python3 download_data.py movielens-small
           fi
 
-          if echo "$examples" | grep -qE '(^|[[:space:]])07_stackoverflow_multimodel\.py([[:space:]]|$)'; then
+          if echo "$examples" | grep -qE '(^|[[:space:]])(08_stackoverflow_tables_oltp|09_stackoverflow_tables_olap|10_stackoverflow_graph_oltp|11_stackoverflow_graph_olap|14_stackoverflow_hybrid_queries)\.py([[:space:]]|$)'; then
             echo "📥 Downloading Stack Overflow Small dataset..."
-            python3 download_data.py stackoverflow-small
+            python3 download_data.py stackoverflow-small --no-vectors
           fi
+
+      - name: Download datasets
+        shell: bash
+        run: |
+          uv pip install --system tqdm py7zr lxml
+          cd bindings/python/examples
+          echo "📥 Downloading MovieLens Small dataset..."
+          python3 download_data.py movielens-small
+          echo "📥 Downloading Stack Overflow Small dataset..."
+          python3 download_data.py stackoverflow-small --no-vectors
 
       - name: Install timeout command (macOS only)
         if: matrix.platform == 'darwin/amd64' || matrix.platform == 'darwin/arm64'
@@ -252,12 +269,12 @@ jobs:
           # macOS doesn't have timeout command by default, use coreutils
           brew install coreutils
 
-      # Windows currently disabled, no env override needed
-      # - name: Set UTF-8 encoding (Windows only)
-      #   if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
-      #   shell: bash
-      #   run: |
-      #     echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
+      - name: Set UTF-8 encoding (Windows only)
+        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+        shell: bash
+        run: |
+          echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
+          echo "PYTHONUTF8=1" >> $GITHUB_ENV
 
       - name: Run all examples
         id: run_examples
@@ -316,11 +333,6 @@ jobs:
                 example_args="--import-jsonl ./exports/movielens_graph_small_db.jsonl.tgz"
                 example_name="$example (vector search, import from JSONL)"
                 timeout_duration=900  # 15 minutes
-                ;;
-              "07_stackoverflow_multimodel.py")
-                example_args="--dataset stackoverflow-small"
-                example_name="$example (stackoverflow-small dataset)"
-                timeout_duration=1800  # 30 minutes
                 ;;
               *)
                 example_args=""
@@ -476,7 +488,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "All examples ran successfully across all enabled platforms." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Platforms tested**: linux/amd64, linux/arm64, darwin/arm64" >> $GITHUB_STEP_SUMMARY
+            echo "**Platforms tested**: linux/amd64, linux/arm64, darwin/arm64, windows/amd64" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Some platforms failed example testing**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

@@ -38,6 +38,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import jpype
+
 from .exceptions import ArcadeDBError
 from .jvm import start_jvm
 
@@ -59,16 +61,28 @@ class Importer:
     - Parallel processing support
     """
 
-    def __init__(self, database):
+    def __init__(
+        self,
+        database,
+        jvm_kwargs: Optional[Dict[str, Any]] = None,
+    ):
         """
         Initialize importer for a database.
 
         Args:
             database: Database instance to import data into
+            jvm_kwargs: Optional JVM args passed to start_jvm()
+                Example: {"heap_size": "8g"}
         """
         self.database = database
         self._java_db = database._java_db
-        start_jvm()
+        self._jvm_kwargs = jvm_kwargs or {}
+        self._heap_size = self._jvm_kwargs.get("heap_size")
+        if jpype.isJVMStarted():
+            if jvm_kwargs:
+                start_jvm(**self._jvm_kwargs)
+        else:
+            start_jvm(**self._jvm_kwargs)
 
         # Import Java classes
         from com.arcadedb.integration.importer import Importer as JavaImporter
@@ -493,23 +507,39 @@ class Importer:
                     "outofmemoryerror",
                 ]
             ):
-                current_args = os.environ.get("ARCADEDB_JVM_ARGS")
-                if current_args and "-Xmx" in current_args:
-                    # Extract heap size from args
-                    import re
-
-                    match = re.search(r"-Xmx(\S+)", current_args)
-                    heap_size = match.group(1) if match else "unknown"
-                    heap_msg = f"Current JVM heap: {heap_size}\n"
+                if self._heap_size:
+                    heap_msg = f"Current JVM heap: {self._heap_size}\n"
                 else:
-                    heap_msg = "Current JVM heap: 4g (default)\n"
+                    current_args = os.environ.get("ARCADEDB_JVM_ARGS")
+                    if current_args and "-Xmx" in current_args:
+                        # Extract heap size from args
+                        import re
+
+                        match = re.search(r"-Xmx(\S+)", current_args)
+                        heap_size = match.group(1) if match else "unknown"
+                        heap_msg = f"Current JVM heap: {heap_size}\n"
+                    else:
+                        heap_msg = "Current JVM heap: unknown\n"
+                        try:
+                            runtime = jpype.JClass("java.lang.Runtime").getRuntime()
+                            max_bytes = int(runtime.maxMemory())
+                            if max_bytes > 0:
+                                gb = max_bytes / (1024**3)
+                                if gb >= 1:
+                                    heap_size = f"{gb:.1f}g"
+                                else:
+                                    mb = max_bytes / (1024**2)
+                                    heap_size = f"{mb:.0f}m"
+                                heap_msg = f"Current JVM heap: {heap_size} (runtime)\n"
+                        except Exception:
+                            pass
 
                 raise ArcadeDBError(
                     f"Import failed ({format_type} -> {import_type}): Out of memory.\n"
                     f"{heap_msg}"
-                    f"💡 Try increasing heap size with environment variable:\n"
-                    f'   export ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g"\n'
-                    f"   Note: Must be set BEFORE running Python (before JVM starts)\n"
+                    f"💡 Try increasing heap size by passing "
+                    f"jvm_kwargs={{'heap_size': '8g'}} when creating the database "
+                    f"or importer (before JVM starts).\n"
                     f"Original error: {e}"
                 ) from e
 
@@ -724,7 +754,11 @@ def import_neo4j(database, file_path: str, **options) -> Dict[str, Any]:
 
 
 def import_xml(
-    database, file_path: str, import_type: str = "documents", **options
+    database,
+    file_path: str,
+    import_type: str = "documents",
+    jvm_kwargs: Optional[Dict[str, Any]] = None,
+    **options,
 ) -> Dict[str, Any]:
     """
     Import XML file into database using Java XMLImporterFormat.
@@ -734,6 +768,8 @@ def import_xml(
         file_path: Path to XML file
         import_type: Type of import: 'documents' or 'vertices'
                     (default: 'documents')
+        jvm_kwargs: Optional JVM args passed to start_jvm()
+            Example: {"heap_size": "8g"}
         **options: Additional options:
             - objectNestLevel: Nesting level for object extraction
               Example: For <posts><row .../></posts>, use objectNestLevel=1
@@ -763,7 +799,7 @@ def import_xml(
         ...     parsingLimitEntries=1000
         ... )
     """
-    importer = Importer(database)
+    importer = Importer(database, jvm_kwargs=jvm_kwargs)
     return importer.import_file(
         file_path, format_type="xml", import_type=import_type, type_name=None, **options
     )

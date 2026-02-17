@@ -24,7 +24,10 @@ FROM arcadedata/arcadedb:${ARCADEDB_TAG} AS java-builder
 # nothing to do here; jars will be copied from /home/arcadedb/lib in the python-builder stage
 
 # Stage 2: Build minimal JRE with jlink
-FROM eclipse-temurin:25-jdk-jammy AS jre-builder
+FROM amazoncorretto:25 AS jre-builder
+
+# Install required tooling (findutils for jar exclusion, binutils for jlink)
+RUN yum -y install findutils binutils && yum clean all
 
 ARG TARGET_PLATFORM
 ARG USE_LOCAL_JARS

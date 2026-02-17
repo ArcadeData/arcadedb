@@ -121,10 +121,15 @@ jobs:
       # Don't cancel other matrix jobs if one fails
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
-        # Temporarily limit to three platforms (skip macOS x86_64 and all Windows)
+        python-version:
+          - '3.10'
+          - '3.11'
+          - '3.12'
+          - '3.13'
+          # - '3.14'  # Temporarily disabled to reduce wheel storage usage
+        # Temporarily limit to four platforms (skip macOS x86_64, Windows ARM64)
         # platform: ['linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64']
-        platform: ['linux/amd64', 'linux/arm64', 'darwin/arm64']
+        platform: ['linux/amd64', 'linux/arm64', 'darwin/arm64', 'windows/amd64']
         include:
           - platform: linux/amd64
             runs-on: ubuntu-24.04
@@ -132,13 +137,13 @@ jobs:
             runs-on: ubuntu-24.04-arm
           - platform: darwin/arm64
             runs-on: macos-15
+          - platform: windows/amd64
+            runs-on: windows-2025
           # - platform: darwin/amd64
           #   runs-on: macos-15-intel
-          # - platform: windows/amd64
-          #   runs-on: windows-2025
           # - platform: windows/arm64
           #   runs-on: windows-11-arm
-          # macOS x86_64 and all Windows temporarily disabled
+          # macOS x86_64 and Windows ARM64 temporarily disabled
 
     steps:
       - name: Checkout code
@@ -153,6 +158,8 @@ jobs:
         shell: bash
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           uv --version
 
       - name: Download ArcadeDB JARs artifact
@@ -168,7 +175,7 @@ jobs:
         if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
-          distribution: 'temurin'
+          distribution: 'corretto'
           java-version: '25'
 
       - name: Set up Docker Buildx (Linux only)
@@ -180,7 +187,14 @@ jobs:
         run: |
           uv pip install --system build wheel setuptools
 
-      # Windows currently disabled, no symlink needed
+      - name: Set UTF-8 encoding (Windows only)
+        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+        shell: bash
+        run: |
+          echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
+          echo "PYTHONUTF8=1" >> $GITHUB_ENV
+
+      # Windows currently enabled, no symlink needed
       # - name: Create python3 symlink (Windows only)
       #   if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
       #   shell: bash
@@ -419,8 +433,9 @@ jobs:
             echo "**Package**: arcadedb-embedded" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "ℹ️ **Note**: Some platform/Python combinations are excluded from testing:" >> $GITHUB_STEP_SUMMARY
-            echo "- Windows ARM64 + Python 3.10, 3.14 (no GitHub-hosted runners available)" >> $GITHUB_STEP_SUMMARY
-            echo "- macOS x86_64 + Python 3.13, 3.14 (no suitable dependencies available)" >> $GITHUB_STEP_SUMMARY
+            echo "- Python 3.14 is temporarily disabled to reduce wheel storage usage" >> $GITHUB_STEP_SUMMARY
+            echo "- Windows ARM64 (no GitHub-hosted runners available)" >> $GITHUB_STEP_SUMMARY
+            echo "- macOS x86_64 (temporarily disabled)" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Some platforms failed testing**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
