@@ -341,7 +341,7 @@ public class CallStep extends AbstractExecutionStep {
   private List<Map<String, Object>> getLabels(final CommandContext context) {
     final List<Map<String, Object>> results = new ArrayList<>();
     for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (type instanceof VertexType) {
+      if (type instanceof VertexType && !type.getName().contains("~")) {
         results.add(CollectionUtils.singletonMap("label", type.getName()));
       }
     }
@@ -354,7 +354,7 @@ public class CallStep extends AbstractExecutionStep {
   private List<Map<String, Object>> getRelationshipTypes(final CommandContext context) {
     final List<Map<String, Object>> results = new ArrayList<>();
     for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (type instanceof EdgeType) {
+      if (type instanceof EdgeType && !type.getName().contains("~")) {
         results.add(CollectionUtils.singletonMap("relationshipType", type.getName()));
       }
     }
@@ -367,8 +367,10 @@ public class CallStep extends AbstractExecutionStep {
   private List<Map<String, Object>> getPropertyKeys(final CommandContext context) {
     final Set<String> propertyKeys = new HashSet<>();
     for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      for (final String propName : type.getPropertyNames()) {
-        propertyKeys.add(propName);
+      if (!type.getName().contains("~")) {
+        for (final String propName : type.getPropertyNames()) {
+          propertyKeys.add(propName);
+        }
       }
     }
     final List<Map<String, Object>> results = new ArrayList<>();
@@ -384,6 +386,8 @@ public class CallStep extends AbstractExecutionStep {
   private List<Map<String, Object>> getSchemaVisualization(final CommandContext context) {
     final List<Map<String, Object>> results = new ArrayList<>();
     for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
+      if (type.getName().contains("~"))
+        continue;
       final Map<String, Object> typeInfo = new HashMap<>();
       typeInfo.put("name", type.getName());
       if (type instanceof VertexType) {

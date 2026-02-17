@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
+import com.arcadedb.query.opencypher.ast.ListSliceExpression;
 import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -266,6 +267,8 @@ public class AggregationStep extends AbstractExecutionStep {
     } else if (expr instanceof MapExpression me) {
       for (final Expression value : me.getEntries().values())
         collectAggregations(value, innerAggs, innerFunctions);
+    } else if (expr instanceof ListSliceExpression lse) {
+      collectAggregations(lse.getListExpression(), innerAggs, innerFunctions);
     } else if (expr instanceof BooleanWrapperExpression bwe) {
       collectBooleanAggregations(bwe.getBooleanExpression(), innerAggs, innerFunctions);
     }
