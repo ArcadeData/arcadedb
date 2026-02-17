@@ -14,6 +14,8 @@ cd bindings/python/examples
 python 01_simple_document_store.py
 ```
 
+See the dataset downloader guide: [docs/examples/download_data.md](../docs/examples/download_data.md).
+
 ## Available Examples
 
 ### 📄 [01_simple_document_store.py](./01_simple_document_store.py)
@@ -49,7 +51,6 @@ Complete social network modeling with graph database:
 
 **Status:** ✅ Fully functional - 8 people, 24 bidirectional edges, comprehensive queries
 
-
 ### 🔍 [03_vector_search.py](./03_vector_search.py) ✅ **COMPLETE**
 **Vector Embeddings | HNSW (JVector) Index | Semantic Search | Performance Analysis**
 
@@ -68,9 +69,12 @@ High-performance CSV import for document data:
 - Batch processing for optimal performance
 - Index creation strategies
 
+**Note:** Download the MovieLens dataset first with `python download_data.py movielens-<size>`.
+
 **Learn:** ETL patterns, bulk import, schema management, performance tuning
 
 **Status:** ✅ Fully functional - Imports 100K+ records efficiently
+
 ---
 
 ### 🕸️ [05_csv_import_graph.py](./05_csv_import_graph.py) ✅ **COMPLETE**
@@ -105,39 +109,7 @@ Building a movie recommendation engine:
 
 ---
 
-### 📚 [07_stackoverflow_multimodel.py](./07_stackoverflow_multimodel.py) ✅ **COMPLETE**
-**Multi-Model | Complex Schema | Advanced Analytics | Full Pipeline**
 
-Comprehensive Stack Overflow dataset analysis:
-- **Phase 1 (Document):** Import Posts, Users, Tags, Comments, Votes
-- **Phase 2 (Graph):** Create relationships (ASKED, ANSWERED, HAS_TAG, VOTED)
-- **Phase 3 (Vector):** Semantic search for questions and tags
-- **Phase 4 (Analytics):** Complex multi-model queries and aggregations
-- Handling large datasets (XML parsing, batching)
-- Advanced schema design with inheritance and polymorphism
-
-**Learn:** Multi-model architecture, complex ETL, advanced querying, full-stack analytics
-
-**Status:** ✅ Fully functional - Validated on Stack Exchange datasets
-
----
-
-### 🌐 [08_server_mode_rest_api.py](./08_server_mode_rest_api.py) ✅ **COMPLETE**
-**Server Mode | HTTP API | Studio UI | Concurrency | Polyglot Querying**
-
-Running ArcadeDB as a server with concurrent client simulation:
-- Starting the embedded server programmatically
-- **Concurrent Load Testing:** Simulating multiple HTTP clients using `ThreadPoolExecutor`
-- **Polyglot Workload:** Executing mixed SQL and OpenCypher queries in parallel
-- Accessing the **Studio Web UI** for visual exploration
-- Using the **HTTP REST API** (via `requests`) for remote interaction
-- Validating complex graph patterns and aggregations under load
-
-**Learn:** Server management, concurrency patterns, HTTP API integration, mixed SQL/OpenCypher workloads
-
-**Status:** ✅ Fully functional - Simulates 6 concurrent clients executing 30+ diverse queries
-
----
 
 ## 💡 Tips
 
