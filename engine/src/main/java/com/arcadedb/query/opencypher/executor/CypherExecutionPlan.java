@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
@@ -92,13 +93,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Function;
 
 /**
@@ -345,7 +340,7 @@ public class CypherExecutionPlan {
     if (expressionEvaluator != null) {
       final CypherFunctionFactory factory = expressionEvaluator.getFunctionFactory();
       context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,
-          (Function<String, com.arcadedb.function.StatelessFunction>) name -> {
+          (Function<String, StatelessFunction>) name -> {
             try {
               return factory.getFunctionExecutor(name);
             } catch (final Exception e) {
@@ -2748,7 +2743,7 @@ public class CypherExecutionPlan {
   private AbstractExecutionStep addWithProjection(final WithClause withClause,
                                                   AbstractExecutionStep currentStep, final CommandContext context) {
     // Collect projected variable names from WITH items
-    final Set<String> projectedVars = new java.util.LinkedHashSet<>();
+    final Set<String> projectedVars = new LinkedHashSet<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
       if ("*".equals(item.getOutputName()))
         return currentStep; // WITH * keeps everything

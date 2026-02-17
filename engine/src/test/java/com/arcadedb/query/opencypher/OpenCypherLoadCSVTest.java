@@ -32,10 +32,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.zip.GZIPOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -70,7 +67,7 @@ public class OpenCypherLoadCSVTest {
     // Clean up test CSV files
     if (Files.exists(testDataDir)) {
       Files.walk(testDataDir)
-          .sorted(java.util.Comparator.reverseOrder())
+          .sorted(Comparator.reverseOrder())
           .map(Path::toFile)
           .forEach(File::delete);
     }

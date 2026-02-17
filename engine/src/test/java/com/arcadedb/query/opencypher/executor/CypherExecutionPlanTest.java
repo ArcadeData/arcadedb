@@ -27,6 +27,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -359,7 +361,7 @@ class CypherExecutionPlanTest {
   void shouldExecuteQueryWithParameters() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age = $age RETURN p.name AS name",
-        java.util.Map.of("age", 30));
+        Map.of("age", 30));
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
@@ -370,7 +372,7 @@ class CypherExecutionPlanTest {
   void shouldExecuteQueryWithMultipleParameters() {
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) WHERE p.age >= $minAge AND p.age <= $maxAge RETURN p.name AS name ORDER BY p.age",
-        java.util.Map.of("minAge", 25, "maxAge", 30));
+        Map.of("minAge", 25, "maxAge", 30));
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSize(2);

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures;
 
+import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import org.junit.jupiter.api.AfterEach;
@@ -27,7 +28,9 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.api.parallel.ResourceLock;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -48,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class CypherProcedureRegistryTest {
 
   private int initialProcedureCount;
-  private static java.util.Map<String, CypherProcedure> savedProcedures;
+  private static Map<String, CypherProcedure> savedProcedures;
 
   @BeforeEach
   void setUp() {
@@ -58,7 +61,7 @@ class CypherProcedureRegistryTest {
 
     // Save all current procedures before any test that might modify them
     if (savedProcedures == null) {
-      savedProcedures = new java.util.HashMap<>();
+      savedProcedures = new HashMap<>();
       for (final String name : CypherProcedureRegistry.getProcedureNames()) {
         savedProcedures.put(name, CypherProcedureRegistry.get(name));
       }
@@ -88,7 +91,7 @@ class CypherProcedureRegistryTest {
    */
   private void restoreSavedProcedures() {
     CypherProcedureRegistry.clear();
-    for (final java.util.Map.Entry<String, CypherProcedure> entry : savedProcedures.entrySet()) {
+    for (final Map.Entry<String, CypherProcedure> entry : savedProcedures.entrySet()) {
       CypherProcedureRegistry.registerOrReplace(entry.getValue());
     }
   }
@@ -391,7 +394,7 @@ class CypherProcedureRegistryTest {
     assertThat(procedure).isInstanceOf(CypherProcedure.class);
 
     // Verify it's also a Procedure (CypherProcedure extends Procedure)
-    assertThat(procedure).isInstanceOf(com.arcadedb.function.procedure.Procedure.class);
+    assertThat(procedure).isInstanceOf(Procedure.class);
 
     // Verify all Procedure methods work
     assertThat(procedure.getName()).isEqualTo("test.interface");

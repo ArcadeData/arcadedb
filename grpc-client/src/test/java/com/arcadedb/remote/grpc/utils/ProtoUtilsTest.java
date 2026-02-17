@@ -19,6 +19,11 @@
 package com.arcadedb.remote.grpc.utils;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.server.grpc.GrpcDecimal;
+import com.arcadedb.server.grpc.GrpcEmbedded;
+import com.arcadedb.server.grpc.GrpcLink;
+import com.arcadedb.server.grpc.GrpcList;
+import com.arcadedb.server.grpc.GrpcMap;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
 import com.google.protobuf.ByteString;
@@ -242,7 +247,7 @@ class ProtoUtilsTest {
   @Test
   void testFromGrpcValueList() {
     final GrpcValue value = GrpcValue.newBuilder()
-        .setListValue(com.arcadedb.server.grpc.GrpcList.newBuilder()
+        .setListValue(GrpcList.newBuilder()
             .addValues(GrpcValue.newBuilder().setInt32Value(1).build())
             .addValues(GrpcValue.newBuilder().setStringValue("two").build())
             .addValues(GrpcValue.newBuilder().setDoubleValue(3.0).build())
@@ -263,7 +268,7 @@ class ProtoUtilsTest {
   @Test
   void testFromGrpcValueMap() {
     final GrpcValue value = GrpcValue.newBuilder()
-        .setMapValue(com.arcadedb.server.grpc.GrpcMap.newBuilder()
+        .setMapValue(GrpcMap.newBuilder()
             .putEntries("name", GrpcValue.newBuilder().setStringValue("Alice").build())
             .putEntries("age", GrpcValue.newBuilder().setInt32Value(30).build())
             .putEntries("active", GrpcValue.newBuilder().setBoolValue(true).build())
@@ -284,7 +289,7 @@ class ProtoUtilsTest {
   @Test
   void testFromGrpcValueEmbedded() {
     final GrpcValue value = GrpcValue.newBuilder()
-        .setEmbeddedValue(com.arcadedb.server.grpc.GrpcEmbedded.newBuilder()
+        .setEmbeddedValue(GrpcEmbedded.newBuilder()
             .setType("TestDoc")
             .putFields("field1", GrpcValue.newBuilder().setStringValue("value1").build())
             .putFields("field2", GrpcValue.newBuilder().setInt32Value(42).build())
@@ -304,7 +309,7 @@ class ProtoUtilsTest {
   @Test
   void testFromGrpcValueLink() {
     final GrpcValue value = GrpcValue.newBuilder()
-        .setLinkValue(com.arcadedb.server.grpc.GrpcLink.newBuilder()
+        .setLinkValue(GrpcLink.newBuilder()
             .setRid("#10:5")
             .build())
         .build();
@@ -316,7 +321,7 @@ class ProtoUtilsTest {
   @Test
   void testFromGrpcValueDecimal() {
     final GrpcValue value = GrpcValue.newBuilder()
-        .setDecimalValue(com.arcadedb.server.grpc.GrpcDecimal.newBuilder()
+        .setDecimalValue(GrpcDecimal.newBuilder()
             .setUnscaled(123456L)
             .setScale(3)
             .build())

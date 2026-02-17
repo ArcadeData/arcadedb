@@ -78,6 +78,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1565,7 +1566,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             ctx.closeQuietly();
           }
         });
-      } catch (java.util.concurrent.RejectedExecutionException ignore) {
+      } catch (RejectedExecutionException ignore) {
         // Executor already shut down - cleanup was already done
       }
       streamExecutor.shutdown();
@@ -1719,7 +1720,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               ctx.closeQuietly();
             }
           });
-        } catch (java.util.concurrent.RejectedExecutionException ignore) {
+        } catch (RejectedExecutionException ignore) {
           // Executor already shut down
         }
         streamExecutor.shutdown();

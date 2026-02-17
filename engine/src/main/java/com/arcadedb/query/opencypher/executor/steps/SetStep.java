@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -196,7 +197,7 @@ public class SetStep extends AbstractExecutionStep {
     final MutableDocument mutableDoc = doc.modify();
 
     // Remove all existing properties except internal ones
-    final Set<String> existingProps = new java.util.HashSet<>(mutableDoc.getPropertyNames());
+    final Set<String> existingProps = new HashSet<>(mutableDoc.getPropertyNames());
     for (final String prop : existingProps) {
       if (!prop.startsWith("@"))
         mutableDoc.remove(prop);

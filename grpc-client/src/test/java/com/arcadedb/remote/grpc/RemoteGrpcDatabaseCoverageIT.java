@@ -26,6 +26,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteException;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
@@ -250,7 +251,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
     final RID ridObj = new RID(grpc, rid);
 
     assertThatThrownBy(() -> grpc.lookupByRID(ridObj))
-        .isInstanceOfAny(RecordNotFoundException.class, com.arcadedb.remote.RemoteException.class);
+        .isInstanceOfAny(RecordNotFoundException.class, RemoteException.class);
   }
 
   @Test

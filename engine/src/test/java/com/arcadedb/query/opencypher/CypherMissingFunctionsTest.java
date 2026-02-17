@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -358,7 +360,7 @@ class CypherMissingFunctionsTest {
     final ResultSet rs = database.query("opencypher",
         "RETURN vector_distance(vector([0.0, 0.0]), vector([3.0, 4.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, org.assertj.core.data.Offset.offset(0.001));
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, Offset.offset(0.001));
   }
 
   @Test
@@ -366,7 +368,7 @@ class CypherMissingFunctionsTest {
     final ResultSet rs = database.query("opencypher",
         "RETURN vector_distance(vector([0.0, 0.0]), vector([3.0, 4.0]), 'MANHATTAN') AS result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(7.0, org.assertj.core.data.Offset.offset(0.001));
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(7.0, Offset.offset(0.001));
   }
 
   // ========== vector.distance.euclidean ==========
@@ -375,7 +377,7 @@ class CypherMissingFunctionsTest {
     final ResultSet rs = database.query("opencypher",
         "RETURN vector.distance.euclidean(vector([1.0, 0.0]), vector([0.0, 1.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(Math.sqrt(2.0), org.assertj.core.data.Offset.offset(0.001));
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(Math.sqrt(2.0), Offset.offset(0.001));
   }
 
   // ========== vector.norm ==========
@@ -383,7 +385,7 @@ class CypherMissingFunctionsTest {
   void testVectorNorm() {
     final ResultSet rs = database.query("opencypher", "RETURN vector.norm(vector([3.0, 4.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, org.assertj.core.data.Offset.offset(0.001));
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, Offset.offset(0.001));
   }
 
   // ========== APOC-compatible access via apoc.coll.* ==========

@@ -26,6 +26,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -268,7 +271,7 @@ class OpenCypherListPredicateTest {
             "OPTIONAL MATCH (a)-[r:KNOWS]->(c) " +
             "WITH c WHERE r IS NULL " +
             "RETURN c.name");
-    final java.util.List<String> names = new java.util.ArrayList<>();
+    final List<String> names = new ArrayList<>();
     while (rs.hasNext())
       names.add((String) rs.next().getProperty("c.name"));
     // Expected: b3, c11, c12, c21, c22 (excludes b2 because a-[:KNOWS]->b2)

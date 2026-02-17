@@ -25,6 +25,8 @@ import com.arcadedb.query.opencypher.grammar.Cypher25ParserBaseVisitor;
 import com.arcadedb.query.opencypher.rewriter.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -1408,7 +1410,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Gets the original text from the input stream for a parse tree context,
    * preserving whitespace and case from the query.
    */
-  static String getOriginalText(final org.antlr.v4.runtime.ParserRuleContext ctx) {
+  static String getOriginalText(final ParserRuleContext ctx) {
     if (ctx.getStart() == null || ctx.getStop() == null)
       return ctx.getText();
     return ctx.getStart().getInputStream().getText(

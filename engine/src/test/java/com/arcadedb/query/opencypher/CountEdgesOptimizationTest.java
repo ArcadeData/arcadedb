@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -240,14 +241,14 @@ class CountEdgesOptimizationTest {
       }
 
       // Test single type
-      assertThat(v.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "COMMENTED_ON")).isEqualTo(3L);
-      assertThat(v.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "ANSWERED")).isEqualTo(2L);
+      assertThat(v.countEdges(Vertex.DIRECTION.IN, "COMMENTED_ON")).isEqualTo(3L);
+      assertThat(v.countEdges(Vertex.DIRECTION.IN, "ANSWERED")).isEqualTo(2L);
 
       // Test multiple types via varargs
-      assertThat(v.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "COMMENTED_ON", "ANSWERED")).isEqualTo(5L);
+      assertThat(v.countEdges(Vertex.DIRECTION.IN, "COMMENTED_ON", "ANSWERED")).isEqualTo(5L);
 
       // Test no filter (all types)
-      assertThat(v.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN)).isEqualTo(5L);
+      assertThat(v.countEdges(Vertex.DIRECTION.IN)).isEqualTo(5L);
     });
   }
 

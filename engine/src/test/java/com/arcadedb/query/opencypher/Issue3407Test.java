@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -180,7 +182,7 @@ class Issue3407Test {
     // Test that PROFILE shows timing, row counts, and index usage
     database.getSchema().createVertexType("Person");
     database.getSchema().getType("Person").createProperty("name", String.class);
-    database.getSchema().getType("Person").createTypeIndex(com.arcadedb.schema.Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    database.getSchema().getType("Person").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
 
     database.transaction(() -> {
       for (int i = 0; i < 50; i++) {
