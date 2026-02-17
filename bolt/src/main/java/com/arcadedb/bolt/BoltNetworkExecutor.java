@@ -38,6 +38,9 @@ import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
@@ -47,10 +50,17 @@ import com.arcadedb.utility.CollectionUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -87,8 +97,8 @@ public class BoltNetworkExecutor extends Thread {
 
   private final ArcadeDBServer      server;
   private final Socket              socket;
-  private final BoltChunkedInput    input;
-  private final BoltChunkedOutput   output;
+  private       BoltChunkedInput    input;
+  private       BoltChunkedOutput   output;
   private final boolean             debug;
   private final BoltNetworkListener listener; // For notifying when connection closes
 
@@ -106,13 +116,14 @@ public class BoltNetworkExecutor extends Thread {
    * Thread-safety: This class is designed to handle a single connection in a dedicated thread.
    * All state variables are accessed only by the executor thread and do not require synchronization.
    */
-  private ResultSet    currentResultSet;
-  private List<String> currentFields;
-  private Result       firstResult; // Buffered first result for field name extraction
-  private int          recordsStreamed;
-  private long         queryStartTime; // Nanosecond timestamp when query execution started
-  private long         firstRecordTime; // Nanosecond timestamp when first record was retrieved
-  private boolean      isWriteOperation; // Whether the current query performs writes
+  private ResultSet          currentResultSet;
+  private List<String>       currentFields;
+  private Result             firstResult; // Buffered first result for field name extraction
+  private List<List<Object>> syntheticResults; // For system queries that return synthetic data
+  private int                recordsStreamed;
+  private long               queryStartTime; // Nanosecond timestamp when query execution started
+  private long               firstRecordTime; // Nanosecond timestamp when first record was retrieved
+  private boolean            isWriteOperation; // Whether the current query performs writes
 
   public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener)
       throws IOException {
@@ -186,25 +197,66 @@ public class BoltNetworkExecutor extends Thread {
 
   /**
    * Perform BOLT handshake with version negotiation.
+   * Supports both raw TCP and WebSocket transport (for Neo4j Desktop/Browser).
    */
   private boolean performHandshake() throws IOException {
     // Read magic bytes
-    final byte[] magic = input.readRaw(4);
+    byte[] magic = input.readRaw(4);
+
+    // Check if this is an HTTP request (WebSocket upgrade or plain HTTP probe)
+    if (isHttpRequest(magic)) {
+      final Map<String, String> headers = readHttpHeaders();
+      final String upgrade = headers.get("upgrade");
+
+      if (upgrade != null && "websocket".equalsIgnoreCase(upgrade)) {
+        // WebSocket upgrade - Neo4j Desktop/Browser uses WebSocket transport for Bolt
+        completeWebSocketUpgrade(headers);
+
+        // Reinitialize I/O with WebSocket framing and read Bolt magic from WebSocket stream
+        input = new BoltChunkedInput(new BoltWebSocketInputStream(socket.getInputStream()));
+        output = new BoltChunkedOutput(new BoltWebSocketOutputStream(socket.getOutputStream()));
+        try {
+          magic = input.readRaw(4);
+        } catch (final EOFException e) {
+          // Client closed WebSocket without sending Bolt data (e.g. Neo4j Desktop health/SSO probe)
+          if (debug)
+            LogManager.instance().log(this, Level.INFO, "BOLT WebSocket closed without Bolt handshake from %s",
+                socket.getRemoteSocketAddress());
+          return false;
+        }
+      } else {
+        // Plain HTTP request (e.g. SSO/OIDC discovery probe)
+        handleHttpOnBoltPort();
+        return false;
+      }
+    }
+
     if (!Arrays.equals(magic, BOLT_MAGIC)) {
-      LogManager.instance().log(this, Level.WARNING, "Invalid BOLT magic bytes");
+      if (magic[0] == 0x16 && magic[1] == 0x03)
+        LogManager.instance().log(this, Level.WARNING,
+            "TLS/SSL connection attempted on BOLT port. ArcadeDB BOLT does not support encryption. "
+                + "Configure the client to use bolt:// (unencrypted) instead of bolt+s:// or bolt+ssc://");
+      else
+        LogManager.instance().log(this, Level.WARNING,
+            "Invalid BOLT magic bytes: [%d, %d, %d, %d]", magic[0], magic[1], magic[2], magic[3]);
       return false;
     }
 
+    return negotiateVersion();
+  }
+
+  /**
+   * Negotiate BOLT protocol version with the client.
+   */
+  private boolean negotiateVersion() throws IOException {
     // Read 4 proposed versions (each 4 bytes, big-endian)
     final int[] clientVersions = new int[4];
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++)
       clientVersions[i] = input.readRawInt();
-    }
 
-    if (debug) {
+    if (debug)
       LogManager.instance().log(this, Level.INFO, "BOLT client versions: %s",
           Arrays.toString(Arrays.stream(clientVersions).mapToObj(v -> String.format("0x%08X", v)).toArray()));
-    }
 
     // Select best matching version using Bolt version negotiation with range support.
     // The range means the client supports minor versions from (minor - range) up to minor
@@ -239,9 +291,8 @@ public class BoltNetworkExecutor extends Thread {
       return false;
     }
 
-    if (debug) {
-      LogManager.instance().log(this, Level.INFO, "BOLT negotiated version: 0x%08X", protocolVersion);
-    }
+    LogManager.instance().log(this, Level.INFO, "BOLT connection from %s, negotiated version %d.%d",
+        socket.getRemoteSocketAddress(), getMajorVersion(protocolVersion), getMinorVersion(protocolVersion));
 
     return true;
   }
@@ -408,11 +459,13 @@ public class BoltNetworkExecutor extends Thread {
 
     sendSuccess(Map.of());
 
-    // Check database health and force re-authentication if database is unavailable
-    if (database == null || !database.isOpen()) {
-      state = State.AUTHENTICATION;
-    } else {
+    // If the user has authenticated, go to READY (the database may not be selected yet
+    // and will be resolved on the next RUN/BEGIN). Only revert to AUTHENTICATION if
+    // the user hasn't authenticated at all.
+    if (user != null) {
       state = State.READY;
+    } else {
+      state = State.AUTHENTICATION;
     }
   }
 
@@ -437,23 +490,37 @@ public class BoltNetworkExecutor extends Thread {
       databaseName = db;
     }
 
-    // Ensure database is open
-    if (!ensureDatabase()) {
+    final String query = message.getQuery();
+    final Map<String, Object> params = message.getParameters();
+
+    if (debug)
+      LogManager.instance().log(this, Level.INFO, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
+
+    // Start timing for performance metrics
+    queryStartTime = System.nanoTime();
+    firstRecordTime = 0;
+    syntheticResults = null;
+
+    // Ensure database is open (maps "system"/"neo4j" to default database)
+    if (!ensureDatabase())
+      return;
+
+    // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
+    if (handleSystemQuery(query)) {
+      currentResultSet = null;
+      firstResult = null;
+      recordsStreamed = 0;
+      isWriteOperation = false;
+
+      final Map<String, Object> metadata = new LinkedHashMap<>();
+      metadata.put("fields", currentFields);
+      metadata.put("t_first", 0L);
+      sendSuccess(metadata);
+      state = explicitTransaction ? State.TX_STREAMING : State.STREAMING;
       return;
     }
 
     try {
-      final String query = message.getQuery();
-      final Map<String, Object> params = message.getParameters();
-
-      if (debug) {
-        LogManager.instance().log(this, Level.INFO, "BOLT executing: %s with params %s", query, params);
-      }
-
-      // Start timing for performance metrics
-      queryStartTime = System.nanoTime();
-      firstRecordTime = 0;
-
       // Determine if this is a write query using the query analyzer
       isWriteOperation = isWriteQuery(query);
 
@@ -465,6 +532,11 @@ public class BoltNetworkExecutor extends Thread {
       }
       currentFields = extractFieldNames(currentResultSet);
       recordsStreamed = 0;
+
+      if (debug) {
+        LogManager.instance().log(this, Level.INFO, "BOLT query fields=%s firstResult=%s", currentFields,
+            firstResult != null ? firstResult.toJSON() : "null");
+      }
 
       // Build success response with query metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
@@ -508,7 +580,7 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    if (currentResultSet == null) {
+    if (currentResultSet == null && syntheticResults == null) {
       sendFailure(BoltException.PROTOCOL_ERROR, "No active result set");
       state = State.FAILED;
       return;
@@ -518,26 +590,36 @@ public class BoltNetworkExecutor extends Thread {
       final long n = message.getN();
       long count = 0;
 
-      // First, return the buffered first result if present
-      if (firstResult != null && (n < 0 || count < n)) {
-        final List<Object> values = extractRecordValues(firstResult);
-        sendRecord(values);
-        count++;
-        recordsStreamed++;
-        firstResult = null;
+      // Handle synthetic results (from system queries)
+      if (syntheticResults != null) {
+        while (!syntheticResults.isEmpty() && (n < 0 || count < n)) {
+          sendRecord(syntheticResults.remove(0));
+          count++;
+          recordsStreamed++;
+        }
+      } else {
+        // First, return the buffered first result if present
+        if (firstResult != null && (n < 0 || count < n)) {
+          final List<Object> values = extractRecordValues(firstResult);
+          sendRecord(values);
+          count++;
+          recordsStreamed++;
+          firstResult = null;
+        }
+
+        // Then continue with the rest of the result set
+        while (currentResultSet.hasNext() && (n < 0 || count < n)) {
+          final Result record = currentResultSet.next();
+          final List<Object> values = extractRecordValues(record);
+
+          sendRecord(values);
+          count++;
+          recordsStreamed++;
+        }
       }
 
-      // Then continue with the rest of the result set
-      while (currentResultSet.hasNext() && (n < 0 || count < n)) {
-        final Result record = currentResultSet.next();
-        final List<Object> values = extractRecordValues(record);
-
-        sendRecord(values);
-        count++;
-        recordsStreamed++;
-      }
-
-      final boolean hasMore = firstResult != null || currentResultSet.hasNext();
+      final boolean hasMore = syntheticResults != null ? !syntheticResults.isEmpty()
+          : (firstResult != null || currentResultSet.hasNext());
 
       // Build success metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
@@ -550,14 +632,17 @@ public class BoltNetworkExecutor extends Thread {
         final long tLastMs = (System.nanoTime() - queryStartTime) / 1_000_000;
         metadata.put("t_last", tLastMs);
 
-        try {
-          currentResultSet.close();
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during PULL completion", e);
+        if (currentResultSet != null) {
+          try {
+            currentResultSet.close();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during PULL completion", e);
+          }
         }
         currentResultSet = null;
         currentFields = null;
         firstResult = null;
+        syntheticResults = null;
         state = explicitTransaction ? State.TX_READY : State.READY;
       }
       metadata.put("has_more", hasMore);
@@ -602,6 +687,7 @@ public class BoltNetworkExecutor extends Thread {
     currentResultSet = null;
     currentFields = null;
     firstResult = null;
+    syntheticResults = null;
 
     final Map<String, Object> metadata = new LinkedHashMap<>();
     metadata.put("has_more", false);
@@ -742,9 +828,7 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     // For single-server setup, return this server as the only endpoint
-    final String host = socket.getLocalAddress().getHostAddress();
-    final int port = GlobalConfiguration.BOLT_PORT.getValueAsInteger();
-    final String address = host + ":" + port;
+    final String address = getBoltAddress(GlobalConfiguration.BOLT_PORT.getValueAsInteger());
 
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", GlobalConfiguration.BOLT_ROUTING_TTL.getValueAsLong());
@@ -780,14 +864,25 @@ public class BoltNetworkExecutor extends Thread {
    */
   private boolean ensureDatabase() throws IOException {
     if (database != null && database.isOpen()) {
-      return true;
+      // Check if we need to switch to a different database
+      final String currentDbName = database.getName();
+      if (databaseName != null && !databaseName.isEmpty()
+          && !"system".equals(databaseName) && !"neo4j".equals(databaseName)
+          && !currentDbName.equals(databaseName)) {
+        // Database name changed, need to switch
+        database = null;
+      } else {
+        return true;
+      }
     }
 
-    if (databaseName == null || databaseName.isEmpty()) {
-      // Try to use configured default database
-      databaseName = GlobalConfiguration.BOLT_DEFAULT_DATABASE.getValueAsString();
+    // Resolve the target database name, mapping virtual names to real databases
+    String targetName = databaseName;
+    if (targetName == null || targetName.isEmpty() || "system".equals(targetName) || "neo4j".equals(targetName)) {
+      // "system" and "neo4j" are Neo4j virtual databases; map to default ArcadeDB database
+      targetName = GlobalConfiguration.BOLT_DEFAULT_DATABASE.getValueAsString();
 
-      if (databaseName == null || databaseName.isEmpty()) {
+      if (targetName == null || targetName.isEmpty()) {
         // If no default configured, use the first available database
         final Collection<String> databases = server.getDatabaseNames();
         if (databases.isEmpty()) {
@@ -795,24 +890,188 @@ public class BoltNetworkExecutor extends Thread {
           state = State.FAILED;
           return false;
         }
-        databaseName = databases.iterator().next();
+        targetName = databases.iterator().next();
       }
     }
 
     try {
-      database = server.getDatabase(databaseName);
+      database = server.getDatabase(targetName);
       if (database == null || !database.isOpen()) {
-        sendFailure(BoltException.DATABASE_ERROR, "Database not found: " + databaseName);
+        sendFailure(BoltException.DATABASE_ERROR, "Database not found: " + targetName);
         state = State.FAILED;
         return false;
       }
       return true;
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";
-      sendFailure(BoltException.DATABASE_ERROR, "Cannot open database: " + databaseName + " - " + message);
+      sendFailure(BoltException.DATABASE_ERROR, "Cannot open database: " + targetName + " - " + message);
       state = State.FAILED;
       return false;
     }
+  }
+
+  /**
+   * Handles known Neo4j system queries (e.g., dbms.components, SHOW DATABASES).
+   * Returns true if the query was handled as a system query, false if it should be executed normally.
+   */
+  private boolean handleSystemQuery(final String query) throws IOException {
+    final String normalized = query.trim().toLowerCase().replaceAll("\\s+", " ");
+
+    if (normalized.contains("dbms.components")) {
+      // CALL dbms.components() - returns server version info
+      currentFields = List.of("name", "versions", "edition");
+      syntheticResults = new ArrayList<>();
+      syntheticResults.add(List.of("Neo4j Kernel", List.of("5.26.0"), "community"));
+      return true;
+
+    } else if (normalized.startsWith("show database") || normalized.contains("dbms.showdatabase")
+        || normalized.contains("dbms.listdatabases")) {
+      // SHOW DATABASES or CALL dbms.listDatabases()
+      currentFields = List.of("name", "type", "aliases", "access", "address", "role",
+          "writer", "requestedStatus", "currentStatus", "statusMessage", "default", "home",
+          "constituents");
+      syntheticResults = new ArrayList<>();
+      for (final String dbName : server.getDatabaseNames()) {
+        syntheticResults.add(List.of(dbName, "standard", List.of(), "read-write",
+            getBoltAddress(GlobalConfiguration.BOLT_PORT.getValueAsInteger()), "primary",
+            true, "online", "online", "", dbName.equals(database != null ? database.getName() : ""), false,
+            List.of()));
+      }
+      // Also add the virtual "system" database entry
+      syntheticResults.add(List.of("system", "system", List.of(), "read-write",
+          getBoltAddress(GlobalConfiguration.BOLT_PORT.getValueAsInteger()), "primary",
+          false, "online", "online", "", false, false, List.of()));
+      return true;
+
+    } else if (normalized.contains("show current user") || normalized.contains("dbms.showcurrentuser")) {
+      // SHOW CURRENT USER or CALL dbms.showCurrentUser()
+      currentFields = List.of("user", "roles", "passwordChangeRequired", "suspended", "home");
+      syntheticResults = new ArrayList<>();
+      final List<Object> userRecord = new ArrayList<>();
+      userRecord.add(user != null ? user.getName() : "anonymous");
+      userRecord.add(List.of("admin"));
+      userRecord.add(false);
+      userRecord.add(false);
+      userRecord.add(null); // home database (null = use default)
+      syntheticResults.add(userRecord);
+      return true;
+
+    } else if (normalized.contains("dbms.info")) {
+      // CALL dbms.info() - returns basic server info
+      currentFields = List.of("id", "name", "creationDate");
+      syntheticResults = new ArrayList<>();
+      syntheticResults.add(List.of("arcadedb-" + server.getServerName(), server.getServerName(), ""));
+      return true;
+
+    } else if (normalized.contains("db.ping")) {
+      // CALL db.ping() - health check
+      currentFields = List.of("success");
+      syntheticResults = new ArrayList<>();
+      syntheticResults.add(List.of(true));
+      return true;
+
+    } else if (normalized.contains("dbms.clientconfig")) {
+      // CALL dbms.clientConfig() - client configuration
+      currentFields = List.of("name", "value");
+      syntheticResults = new ArrayList<>();
+      return true;
+
+    } else if (normalized.startsWith("show procedure")) {
+      // SHOW PROCEDURES YIELD * - return empty list
+      currentFields = List.of("name", "description", "mode", "worksOnSystem", "argumentDescription",
+          "returnDescription", "admin", "option");
+      syntheticResults = new ArrayList<>();
+      return true;
+
+    } else if (normalized.startsWith("show function")) {
+      // SHOW FUNCTIONS YIELD * - return empty list
+      currentFields = List.of("name", "category", "description", "isBuiltIn", "argumentDescription",
+          "returnDescription", "aggregating");
+      syntheticResults = new ArrayList<>();
+      return true;
+
+    } else if (normalized.contains("db.labels") && normalized.contains("db.relationshiptypes")
+        && normalized.contains("db.propertykeys")) {
+      // Combined UNION query from Neo4j Desktop: collects labels, relationship types, property keys as lists
+      currentFields = List.of("result");
+      syntheticResults = new ArrayList<>();
+      if (database != null) {
+        // Labels (vertex types, excluding composite ~ types)
+        final List<Object> labels = new ArrayList<>();
+        for (final DocumentType type : database.getSchema().getTypes())
+          if (type instanceof VertexType && !type.getName().contains("~"))
+            labels.add(type.getName());
+        syntheticResults.add(List.of((Object) labels));
+
+        // Relationship types (edge types)
+        final List<Object> relTypes = new ArrayList<>();
+        for (final DocumentType type : database.getSchema().getTypes())
+          if (type instanceof EdgeType)
+            relTypes.add(type.getName());
+        syntheticResults.add(List.of((Object) relTypes));
+
+        // Property keys (from all non-composite types)
+        final Set<String> allKeys = new java.util.TreeSet<>();
+        for (final DocumentType type : database.getSchema().getTypes())
+          if (!type.getName().contains("~"))
+            allKeys.addAll(type.getPropertyNames());
+        syntheticResults.add(List.of((Object) new ArrayList<>(allKeys)));
+      }
+      return true;
+
+    } else if (normalized.contains("db.labels")) {
+      // CALL db.labels() - return vertex type names (excluding composite types with ~)
+      currentFields = List.of("label");
+      syntheticResults = new ArrayList<>();
+      if (database != null) {
+        for (final DocumentType type : database.getSchema().getTypes())
+          if (type instanceof VertexType && !type.getName().contains("~"))
+            syntheticResults.add(List.of(type.getName()));
+      }
+      return true;
+
+    } else if (normalized.contains("db.relationshiptypes")) {
+      // CALL db.relationshipTypes() - return edge type names
+      currentFields = List.of("relationshipType");
+      syntheticResults = new ArrayList<>();
+      if (database != null) {
+        for (final DocumentType type : database.getSchema().getTypes())
+          if (type instanceof EdgeType)
+            syntheticResults.add(List.of(type.getName()));
+      }
+      return true;
+
+    } else if (normalized.contains("db.propertykeys")) {
+      // CALL db.propertyKeys() - return all property key names
+      currentFields = List.of("propertyKey");
+      syntheticResults = new ArrayList<>();
+      if (database != null) {
+        final Set<String> allKeys = new java.util.TreeSet<>();
+        for (final DocumentType type : database.getSchema().getTypes()) {
+          if (!type.getName().contains("~"))
+            allKeys.addAll(type.getPropertyNames());
+        }
+        for (final String key : allKeys)
+          syntheticResults.add(List.of(key));
+      }
+      return true;
+
+    } else if (normalized.startsWith("show index") || normalized.startsWith("show vector index")) {
+      // SHOW INDEXES / SHOW VECTOR INDEXES - return empty list
+      currentFields = List.of("id", "name", "state", "populationPercent", "type", "entityType",
+          "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount");
+      syntheticResults = new ArrayList<>();
+      return true;
+
+    } else if (normalized.contains("dbms.licenseagreementdetails")) {
+      // CALL dbms.licenseAgreementDetails() - return empty/default
+      currentFields = List.of("name", "status", "version");
+      syntheticResults = new ArrayList<>();
+      syntheticResults.add(List.of("ArcadeDB", "active", "community"));
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -978,6 +1237,137 @@ public class BoltNetworkExecutor extends Thread {
     final PackStreamWriter writer = new PackStreamWriter();
     message.writeTo(writer);
     output.writeMessage(writer.toByteArray());
+  }
+
+  /**
+   * Checks if the first 4 bytes look like an HTTP request method.
+   * Neo4j Desktop and some clients may send HTTP/WebSocket requests to the Bolt port.
+   */
+  private static boolean isHttpRequest(final byte[] magic) {
+    final String prefix = new String(magic, StandardCharsets.US_ASCII);
+    return "GET ".equals(prefix) || "POST".equals(prefix) || "PUT ".equals(prefix)
+        || "HEAD".equals(prefix) || "DELE".equals(prefix) || "OPTI".equals(prefix);
+  }
+
+  /**
+   * Reads HTTP request headers from the socket after the first 4 bytes (method prefix) were already consumed.
+   * Returns headers as a map with lowercased keys.
+   */
+  private Map<String, String> readHttpHeaders() throws IOException {
+    final InputStream rawIn = socket.getInputStream();
+    final Map<String, String> headers = new LinkedHashMap<>();
+    final StringBuilder line = new StringBuilder();
+    boolean firstLine = true;
+    final int maxBytes = 8192;
+    int bytesRead = 0;
+
+    while (bytesRead < maxBytes) {
+      final int b = rawIn.read();
+      if (b == -1)
+        break;
+      bytesRead++;
+
+      if (b == '\n') {
+        final String l = line.toString().trim();
+        line.setLength(0);
+
+        if (l.isEmpty())
+          break; // End of headers
+
+        if (firstLine) {
+          firstLine = false; // Skip request line (e.g., "/ HTTP/1.1")
+        } else {
+          final int colon = l.indexOf(':');
+          if (colon > 0)
+            headers.put(l.substring(0, colon).trim().toLowerCase(), l.substring(colon + 1).trim());
+        }
+      } else if (b != '\r') {
+        line.append((char) b);
+      }
+    }
+
+    return headers;
+  }
+
+  /**
+   * Completes the WebSocket upgrade handshake. After this, the connection speaks WebSocket frames.
+   * Echoes back Sec-WebSocket-Protocol if the client requested one (required by Neo4j Desktop).
+   */
+  private void completeWebSocketUpgrade(final Map<String, String> headers) throws IOException {
+    final String key = headers.get("sec-websocket-key");
+    if (key == null)
+      throw new IOException("Missing Sec-WebSocket-Key header in WebSocket upgrade request");
+
+    final String acceptKey = computeWebSocketAccept(key);
+    final String protocol = headers.get("sec-websocket-protocol");
+
+    final StringBuilder response = new StringBuilder();
+    response.append("HTTP/1.1 101 Switching Protocols\r\n");
+    response.append("Upgrade: websocket\r\n");
+    response.append("Connection: Upgrade\r\n");
+    response.append("Sec-WebSocket-Accept: ").append(acceptKey).append("\r\n");
+    if (protocol != null && !protocol.isEmpty())
+      response.append("Sec-WebSocket-Protocol: ").append(protocol).append("\r\n");
+    response.append("\r\n");
+
+    final OutputStream rawOut = socket.getOutputStream();
+    rawOut.write(response.toString().getBytes(StandardCharsets.UTF_8));
+    rawOut.flush();
+
+    LogManager.instance().log(this, Level.INFO, "BOLT WebSocket upgrade completed for %s (protocol=%s)",
+        socket.getRemoteSocketAddress(), protocol != null ? protocol : "none");
+  }
+
+  /**
+   * Computes the Sec-WebSocket-Accept value per RFC 6455.
+   */
+  private static String computeWebSocketAccept(final String key) {
+    try {
+      final MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+      final byte[] hash = sha1.digest((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.UTF_8));
+      return Base64.getEncoder().encodeToString(hash);
+    } catch (final NoSuchAlgorithmException e) {
+      throw new RuntimeException("SHA-1 not available", e);
+    }
+  }
+
+  /**
+   * Responds to a plain HTTP request on the Bolt port with a JSON error.
+   * Headers have already been read by {@link #readHttpHeaders()}.
+   */
+  private void handleHttpOnBoltPort() throws IOException {
+    final String address = getBoltAddress(socket.getLocalPort());
+    final String body = "{\"error\":\"This is a Bolt connector. Connect using bolt://" + address + "\"}";
+
+    final String httpResponse = "HTTP/1.1 400 Bad Request\r\n"
+        + "Content-Type: application/json\r\n"
+        + "Content-Length: " + body.getBytes(StandardCharsets.UTF_8).length + "\r\n"
+        + "Access-Control-Allow-Origin: *\r\n"
+        + "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+        + "Access-Control-Allow-Headers: *\r\n"
+        + "Connection: close\r\n"
+        + "\r\n"
+        + body;
+
+    output.writeRaw(httpResponse.getBytes(StandardCharsets.UTF_8));
+
+    LogManager.instance().log(this, Level.INFO,
+        "HTTP request on BOLT port from %s, responded with Bolt endpoint info for %s",
+        socket.getRemoteSocketAddress(), address);
+  }
+
+  /**
+   * Returns a Bolt-compatible host:port address for the current connection.
+   * Handles IPv6 by using "localhost" for loopback addresses and bracketing otherwise.
+   */
+  private String getBoltAddress(final int port) {
+    final InetAddress addr = socket.getLocalAddress();
+    final String hostAddress = addr.getHostAddress();
+    if (addr.isLoopbackAddress())
+      return "localhost:" + port;
+    if (hostAddress.contains(":"))
+      return "[" + hostAddress + "]:" + port;
+    return hostAddress + ":" + port;
   }
 
   /**

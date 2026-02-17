@@ -59,7 +59,6 @@ public class PluginManager {
     this.configuration = configuration;
     this.pluginsDirectory = server.getRootPath() + File.separator + "lib" + File.separator + "plugins";
     configuredPlugins = getConfiguredPlugins();
-
   }
 
   private Set<String> getConfiguredPlugins() {

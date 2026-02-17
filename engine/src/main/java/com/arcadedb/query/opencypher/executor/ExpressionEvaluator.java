@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
+import com.arcadedb.query.opencypher.ast.ListSliceExpression;
 import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
@@ -88,6 +89,8 @@ public class ExpressionEvaluator {
       return evaluateListComprehension((ListComprehensionExpression) expression, result, context);
     } else if (aggregationOverrides != null && expression instanceof ListPredicateExpression) {
       return evaluateListPredicate((ListPredicateExpression) expression, result, context);
+    } else if (expression instanceof ListSliceExpression lse) {
+      return evaluateListSlice(lse, result, context);
     }
 
     // Fallback
@@ -333,6 +336,52 @@ public class ExpressionEvaluator {
       case NONE -> matchCount == 0;
       case SINGLE -> matchCount == 1;
     };
+  }
+
+  private Object evaluateListSlice(final ListSliceExpression expression, final Result result,
+      final CommandContext context) {
+    // Evaluate the inner list expression through this evaluator so aggregation overrides apply
+    final Object listValue = evaluate(expression.getListExpression(), result, context);
+    if (listValue == null)
+      return null;
+
+    final int size;
+    if (listValue instanceof List)
+      size = ((List<?>) listValue).size();
+    else if (listValue instanceof String)
+      size = ((String) listValue).length();
+    else
+      throw new IllegalArgumentException("Cannot slice type: " + listValue.getClass().getSimpleName());
+
+    int from = 0;
+    if (expression.getFromExpression() != null) {
+      final Object fromValue = evaluate(expression.getFromExpression(), result, context);
+      if (fromValue == null)
+        return null;
+      from = ((Number) fromValue).intValue();
+    }
+
+    int to = size;
+    if (expression.getToExpression() != null) {
+      final Object toValue = evaluate(expression.getToExpression(), result, context);
+      if (toValue == null)
+        return null;
+      to = ((Number) toValue).intValue();
+    }
+
+    if (from < 0)
+      from = Math.max(0, size + from);
+    if (to < 0)
+      to = Math.max(0, size + to);
+    from = Math.min(from, size);
+    to = Math.min(to, size);
+
+    if (from >= to)
+      return listValue instanceof String ? "" : new ArrayList<>();
+
+    if (listValue instanceof List)
+      return new ArrayList<>(((List<?>) listValue).subList(from, to));
+    return ((String) listValue).substring(from, to);
   }
 
   /**

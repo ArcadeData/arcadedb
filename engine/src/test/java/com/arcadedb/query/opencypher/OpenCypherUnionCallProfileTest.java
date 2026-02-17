@@ -240,6 +240,52 @@ class OpenCypherUnionCallProfileTest {
   }
 
   @Test
+  void callDbLabelsYieldCollectSlice() {
+    // Neo4j Desktop sends this exact query pattern to discover metadata
+    final var personType = database.getSchema().createVertexType("Person");
+    personType.createProperty("name", String.class);
+    database.getSchema().createVertexType("Company");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:Person {name: 'Alice'})");
+      database.command("opencypher", "CREATE (n:Company {name: 'ArcadeDB'})");
+    });
+
+    // Test the exact Neo4j Desktop metadata query
+    final ResultSet result = database.query("opencypher",
+        "CALL db.labels() YIELD label " +
+        "RETURN COLLECT(label)[..1000] AS result " +
+        "UNION ALL " +
+        "CALL db.relationshipTypes() YIELD relationshipType " +
+        "RETURN COLLECT(relationshipType)[..1000] AS result " +
+        "UNION ALL " +
+        "CALL db.propertyKeys() YIELD propertyKey " +
+        "RETURN COLLECT(propertyKey)[..1000] AS result");
+
+    // Should return 3 rows (one per UNION ALL branch)
+    assertThat(result.hasNext()).isTrue();
+    final Result labelsRow = result.next();
+    @SuppressWarnings("unchecked")
+    final List<String> labels = (List<String>) labelsRow.getProperty("result");
+    assertThat(labels).containsExactlyInAnyOrder("Person", "Company");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result relTypesRow = result.next();
+    @SuppressWarnings("unchecked")
+    final List<String> relTypes = (List<String>) relTypesRow.getProperty("result");
+    assertThat(relTypes).containsExactlyInAnyOrder("KNOWS");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result propKeysRow = result.next();
+    @SuppressWarnings("unchecked")
+    final List<String> propKeys = (List<String>) propKeysRow.getProperty("result");
+    assertThat(propKeys).contains("name");
+
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
   void callCustomSQLFunction() {
     // Define a custom SQL function
     database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b AS result\" PARAMETERS [a,b] LANGUAGE sql");
