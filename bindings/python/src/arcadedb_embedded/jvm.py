@@ -7,6 +7,7 @@ Handles JVM initialization and JAR file management.
 import glob
 import os
 import platform
+import shlex
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
@@ -184,7 +185,7 @@ def _normalize_jvm_args(jvm_args: Optional[Union[Iterable[str], str]]) -> list[s
     if not jvm_args:
         return []
     if isinstance(jvm_args, str):
-        return jvm_args.split()
+        return shlex.split(jvm_args)
     return list(jvm_args)
 
 
@@ -241,7 +242,7 @@ def _build_jvm_args(
     # JVM arguments: start from env, then merge explicit args
     jvm_args_str = os.environ.get("ARCADEDB_JVM_ARGS")
     if jvm_args_str:
-        merged_args = jvm_args_str.split()
+        merged_args = shlex.split(jvm_args_str)
     else:
         merged_args = []
 

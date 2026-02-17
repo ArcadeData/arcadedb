@@ -663,18 +663,18 @@ def demonstrate_opencypher_queries(db):
             print(f"      🌐 {name} from {city}")
         print(f"      ⏱️  Time: {time.time() - query_start:.3f}s")
 
-        print(f"  ⏱️  OpenCypher section: {time.time() - section_start:.3f}s")
-        print("\n  💡 OpenCypher features demonstrated:")
-        print("      • Pattern matching with MATCH")
-        print("      • Filtering with WHERE")
-        print("      • DISTINCT for deduplication")
+        print(f"  ⏱️  Gremlin section: {time.time() - section_start:.3f}s")
+        print("\n  💡 Gremlin features demonstrated:")
+        print("      • Graph traversal with g.V()")
+        print("      • Filtering with has() and where()")
+        print("      • Projections with project() and by()")
         print("      • Aggregations with count()")
-        print("      • Variable-length paths with *1..3")
-        print("      • Sorting with ORDER BY")
+        print("      • Variable-length paths with repeat()")
+        print("      • Sorting with order()")
 
     except Exception as e:
-        print(f"    ❌ Error in OpenCypher queries: {e}")
-        print("    💡 Note: OpenCypher support depends on your ArcadeDB build")
+        print(f"    ❌ Error in Gremlin queries: {e}")
+        print("    💡 Note: Gremlin support depends on your ArcadeDB build")
         import traceback
 
         traceback.print_exc()
