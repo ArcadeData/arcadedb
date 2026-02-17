@@ -52,7 +52,7 @@ vector = [
     "numpy>=1.20.0",
 ]
 examples = [
-    "py7zr>=0.20.0",  # Required for Stack Exchange data downloads (Example 07)
+    "py7zr>=0.20.0",  # Required for Stack Exchange data downloads
 ]
 
 [project.urls]

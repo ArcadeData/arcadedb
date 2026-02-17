@@ -42,3 +42,6 @@ README.old.md
 
 # Jupyter Notebooks for internal testing
 notebooks/
+
+# local built jars
+local-jars/

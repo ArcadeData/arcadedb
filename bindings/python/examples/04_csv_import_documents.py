@@ -60,15 +60,14 @@ Usage:
 4. Run with custom batch size:
    python 04_csv_import_documents.py --batch-size 10000
 5. Run with custom JVM heap, parallel threads, and batch size:
-   ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g" python 04_csv_import_documents.py --dataset movielens-large --parallel 8 --batch-size 10000
+    python 04_csv_import_documents.py --dataset movielens-large --parallel 8 --batch-size 10000 --heap-size 8g
 
 The script will automatically download the dataset if it doesn't exist.
 
 Memory Requirements:
 - Small dataset (~100K ratings): 4GB heap (default) is sufficient
 - Large dataset (~33M ratings): 4GB heap (default) should work, 8GB for safety
-- Very large datasets (100M+ records): Set ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g" or higher
-- Must be set BEFORE running the script (before JVM starts)
+- Very large datasets (100M+ records): Use --heap-size 8g or higher
 
 Dataset Options:
 - movielens-small: ~1 MB, ~100K ratings, 9K movies, 600 users
@@ -955,6 +954,12 @@ parser.add_argument(
     help="Number of records to commit per batch (default: 5000)",
 )
 parser.add_argument(
+    "--heap-size",
+    type=str,
+    default=None,
+    help="Set JVM max heap size (e.g. 8g, 4096m). Overrides default 4g.",
+)
+parser.add_argument(
     "--db-name",
     type=str,
     default=None,
@@ -1000,22 +1005,14 @@ else:
 print()
 
 # Check JVM heap configuration for large imports
-jvm_args = os.environ.get("ARCADEDB_JVM_ARGS")
-if jvm_args and "-Xmx" in jvm_args:
-    import re
-
-    match = re.search(r"-Xmx(\S+)", jvm_args)
-    heap_size = match.group(1) if match else "unknown"
-    print(f"💡 JVM Max Heap: {heap_size}")
+if args.heap_size:
+    print(f"💡 JVM Max Heap: {args.heap_size} (from --heap-size)")
 else:
     print("💡 JVM Max Heap: 4g (default)")
     print("   ℹ️  Using default JVM heap (4g)")
     if args.dataset == "movielens-large":
         print("   💡 For large datasets, you can increase it:")
-        print('      export ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g"  # or run with:')
-        print(
-            '      ARCADEDB_JVM_ARGS="-Xmx8g -Xms8g" python 04_csv_import_documents.py'
-        )
+        print("      Use --heap-size 8g (or higher)")
 print()
 
 # -----------------------------------------------------------------------------
@@ -1070,7 +1067,10 @@ if os.path.exists(db_path):
 if os.path.exists("./log"):
     shutil.rmtree("./log")
 
-db = arcadedb.create_database(db_path)
+db = arcadedb.create_database(
+    db_path,
+    jvm_kwargs={"heap_size": args.heap_size} if args.heap_size else None,
+)
 
 print(f"   ✅ Database created at: {db_path}")
 print("   💡 Using embedded mode - no server needed!")

@@ -6,7 +6,7 @@
 #
 # Quick local-jar workflow (no host Java install required):
 #   1) Build ArcadeDB JARs in Docker:
-#        docker run --rm -v "$PWD":/src -w /src maven:3.9-eclipse-temurin-25 \
+#        docker run --rm -v "$PWD":/src -w /src maven:3.9-amazoncorretto-25 \
 #          sh -c "git config --global --add safe.directory /src && ./mvnw -DskipTests -pl package -am package"
 #   2) Point the build at your JAR directory:
 #        cd bindings/python && ./build.sh linux/amd64 3.12 package/target/arcadedb-*/lib
@@ -44,6 +44,15 @@ print_usage() {
     echo "  linux/amd64    Linux x86_64 (Docker build)"
     echo "  linux/arm64    Linux ARM64 (Docker build, native ARM64 runner)"
     echo "  darwin/arm64   macOS ARM64 Apple Silicon (native build on macOS)"
+    echo "  windows/amd64  Windows x86_64 (native build on Windows)"
+    echo ""
+    echo "PYTHON_VERSION:"
+    echo "  Python version for wheel (default: 3.12)"
+    echo "  Examples: 3.10, 3.11, 3.12, 3.13, 3.14"
+    echo ""
+    echo "JAR_LIB_DIR (optional):"
+    echo "  Directory containing ArcadeDB JARs to embed"
+    echo "  If omitted, JARs are pulled from arcadedata/arcadedb:<version>"
     echo ""
     echo "PYTHON_VERSION:"
     echo "  Python version for wheel (default: 3.12)"
@@ -67,7 +76,7 @@ print_usage() {
     echo "Package features:"
     echo "  ✅ Bundled platform-specific JRE (no Java required)"
     echo "  ✅ Optimized JAR selection (see jar_exclusions.txt)"
-    echo "  ✅ Multi-platform support (3 platforms)"
+    echo "  ✅ Multi-platform support (4 platforms)"
     echo "  📦 Size: ~215MB (compressed), ~289MB (installed)"
     echo ""
 }
