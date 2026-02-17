@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
@@ -138,6 +139,8 @@ public interface DatabaseInternal extends Database {
   void saveConfiguration() throws IOException;
 
   Map<String, Object> alignToReplicas();
+
+  SecurityManager getSecurity();
 
   /**
    * Executes an operation after having locked files.

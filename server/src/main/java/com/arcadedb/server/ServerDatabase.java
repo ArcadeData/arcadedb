@@ -58,6 +58,7 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 
 import java.io.*;
@@ -616,6 +617,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Map<String, Object> getGlobalVariables() {
     return wrapped.getGlobalVariables();
+  }
+
+  @Override
+  public SecurityManager getSecurity() {
+    return wrapped.getSecurity();
   }
 
   @Override

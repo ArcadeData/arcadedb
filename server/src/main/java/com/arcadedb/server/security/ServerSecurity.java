@@ -214,6 +214,36 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   @Override
+  public Map<String, Object> getUserInfo(final String userName) {
+    final ServerSecurityUser user = users.get(userName);
+    if (user == null)
+      return null;
+    final Map<String, Object> info = new HashMap<>();
+    info.put("name", user.getName());
+    info.put("databases", user.getAuthorizedDatabases());
+    return info;
+  }
+
+  @Override
+  public void createUser(final String name, final String password) {
+    final String encodedPassword = encodePassword(password);
+    final JSONObject config = new JSONObject();
+    config.put("name", name);
+    config.put("password", encodedPassword);
+    config.put("databases", new JSONObject().put("*", new com.arcadedb.serializer.json.JSONArray().put("admin")));
+    createUser(config);
+  }
+
+  @Override
+  public void setUserPassword(final String userName, final String password) {
+    final ServerSecurityUser user = users.get(userName);
+    if (user == null)
+      throw new ServerSecurityException("User '" + userName + "' not found");
+    user.setPassword(encodePassword(password));
+    saveUsers();
+  }
+
+  @Override
   public void updateSchema(final DatabaseInternal database) {
     if (database == null)
       return;
