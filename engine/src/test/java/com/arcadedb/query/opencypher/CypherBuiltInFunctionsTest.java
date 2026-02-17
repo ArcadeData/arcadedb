@@ -725,7 +725,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final List<Double> result = (List<Double>) fn.execute(
         new Object[] { List.of(1.0, 2.0, 3.0, 4.0, 5.0), List.of(0.5) }, null);
     assertThat(result).hasSize(1);
-    assertThat(result.getFirst()).isCloseTo(3.0, within(0.001));
+    assertThat(result.get(0)).isCloseTo(3.0, within(0.001));
   }
 
   @Test
