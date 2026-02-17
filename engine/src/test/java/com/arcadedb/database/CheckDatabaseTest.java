@@ -346,6 +346,6 @@ class CheckDatabaseTest extends TestHelper {
     final EdgeLinkedList outEdges = ((DatabaseInternal) database).getGraphEngine()
         .getEdgeHeadChunk((VertexInternal) rootVertex.asVertex(), Vertex.DIRECTION.OUT);
 
-    return (int) outEdges.count(null);
+    return (int) outEdges.count((String[]) null);
   }
 }

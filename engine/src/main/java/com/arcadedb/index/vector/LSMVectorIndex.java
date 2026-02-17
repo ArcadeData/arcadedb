@@ -61,6 +61,7 @@ import com.arcadedb.utility.Pair;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
+import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
@@ -433,10 +434,18 @@ vectorBuilder.pqTrainingLimit);
     this.mutable = new LSMVectorIndexMutable(database, name, filePath, id, mode, pageSize, version);
     this.mutable.setMainIndex(this);
 
-    // Discover and load graph file if it exists
-    this.graphFile = discoverAndLoadGraphFile();
-    if (this.graphFile != null) {
+    // Discover and load graph file if it exists; create a placeholder if not found
+    // so the graph can be persisted when buildGraphFromScratch() is first called
+    final LSMVectorIndexGraphFile discoveredGraphFile = discoverAndLoadGraphFile();
+    if (discoveredGraphFile != null) {
+      this.graphFile = discoveredGraphFile;
       this.graphFile.setMainIndex(this);
+    } else {
+      final String graphFileName = name + "_" + LSMVectorIndexGraphFile.FILE_EXT;
+      final String graphFilePath = filePath + "_" + LSMVectorIndexGraphFile.FILE_EXT;
+      this.graphFile = new LSMVectorIndexGraphFile(database, graphFileName, graphFilePath, mode, pageSize);
+      this.graphFile.setMainIndex(this);
+      database.getSchema().getEmbedded().registerFile(this.graphFile);
     }
 
     // Create PQ file handler (for zero-disk-I/O search)
@@ -1389,14 +1398,26 @@ vectorBuilder.pqTrainingLimit);
                  indexName);
           }
 
-          // Phase 2: Note - we don't reload the graph immediately as OnDiskGraphIndex here because:
-          // 1. The in-memory OnHeapGraphIndex works perfectly for searches
-          // 2. Page visibility issues after commit make immediate reload unreliable
-          // 3. On next database restart, ensureGraphAvailable() will load it as OnDiskGraphIndex
-          // 4. The inline vectors will be available when loaded from disk on restart
+          // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so
+          // the current session benefits from inline vector storage immediately
           if (metadata.storeVectorsInGraph) {
-            LogManager.instance().log(this, Level.INFO,
-                "Graph persisted with inline vectors - will use OnDiskGraphIndex on next database open");
+            try {
+              final OnDiskGraphIndex diskGraph = graphFile.loadGraph();
+              if (diskGraph != null) {
+                lock.writeLock().lock();
+                try {
+                  this.graphIndex = diskGraph;
+                  this.graphState = GraphState.IMMUTABLE;
+                } finally {
+                  lock.writeLock().unlock();
+                }
+                LogManager.instance().log(this, Level.INFO,
+                    "Graph reloaded as OnDiskGraphIndex with inline vectors for index: %s", indexName);
+              }
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Could not reload graph as OnDiskGraphIndex (will use in-memory graph): %s", e.getMessage());
+            }
           }
 
           // Build and persist Product Quantization if PRODUCT quantization is enabled

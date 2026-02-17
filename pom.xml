@@ -163,6 +163,7 @@
                 <version>${maven-resources-plugin.version}</version>
                 <configuration>
                     <nonFilteredFileExtensions>jpg,jpeg,gif,bmp,png,svg,ttf,woff,woff2,swf</nonFilteredFileExtensions>
+                    <propertiesEncoding>${project.build.sourceEncoding}</propertiesEncoding>
                 </configuration>
             </plugin>
             <plugin>
