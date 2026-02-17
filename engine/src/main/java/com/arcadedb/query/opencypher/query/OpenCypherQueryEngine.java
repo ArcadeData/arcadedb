@@ -22,15 +22,19 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
-import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
 import java.util.HashMap;
@@ -73,8 +77,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
         @Override
         public boolean isDDL() {
-          // Cypher doesn't have DDL statements
-          return false;
+          return statement instanceof CypherDDLStatement;
         }
       };
     } catch (final Exception e) {
@@ -137,6 +140,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       // Use statement cache to avoid re-parsing
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
+
+      // DDL statements (constraints) are executed directly without the planner pipeline
+      if (statement instanceof CypherDDLStatement)
+        return executeDDL((CypherDDLStatement) statement);
+
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException e) {
       throw e;
@@ -191,6 +199,71 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (profile)
       return plan.profile();
     return plan.execute();
+  }
+
+  /**
+   * Executes a DDL statement (constraint creation/deletion) directly against the schema.
+   */
+  private ResultSet executeDDL(final CypherDDLStatement ddl) {
+    final Schema schema = database.getSchema();
+
+    switch (ddl.getKind()) {
+    case CREATE_CONSTRAINT:
+      executeCreateConstraint(ddl, schema);
+      break;
+    case DROP_CONSTRAINT:
+      executeDropConstraint(ddl, schema);
+      break;
+    }
+
+    return new InternalResultSet();
+  }
+
+  private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema) {
+    final String typeName = ddl.getLabelName();
+    final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
+
+    // Ensure all properties exist before creating indexes (ArcadeDB requires this)
+    for (final String propName : propertyNames) {
+      if (schema.getType(typeName).getPropertyIfExists(propName) == null)
+        schema.getType(typeName).createProperty(propName, com.arcadedb.schema.Type.STRING);
+    }
+
+    switch (ddl.getConstraintKind()) {
+    case UNIQUE:
+      schema.buildTypeIndex(typeName, propertyNames)
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withUnique(true)
+          .withIgnoreIfExists(ddl.isIfNotExists())
+          .create();
+      break;
+
+    case NOT_NULL:
+      for (final String propName : propertyNames)
+        schema.getType(typeName).getPropertyIfExists(propName).setMandatory(true);
+      break;
+
+    case KEY:
+      // NODE KEY = unique index + mandatory properties
+      schema.buildTypeIndex(typeName, propertyNames)
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withUnique(true)
+          .withIgnoreIfExists(ddl.isIfNotExists())
+          .create();
+      for (final String propName : propertyNames)
+        schema.getType(typeName).getPropertyIfExists(propName).setMandatory(true);
+      break;
+    }
+  }
+
+  private void executeDropConstraint(final CypherDDLStatement ddl, final Schema schema) {
+    final String constraintName = ddl.getConstraintName();
+    if (ddl.isIfExists()) {
+      if (schema.existsIndex(constraintName))
+        schema.dropIndex(constraintName);
+    } else {
+      schema.dropIndex(constraintName);
+    }
   }
 
   /**

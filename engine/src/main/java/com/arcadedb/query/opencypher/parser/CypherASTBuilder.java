@@ -57,11 +57,107 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   @Override
   public CypherStatement visitStatement(final Cypher25Parser.StatementContext ctx) {
-    // For now, focus on queryWithLocalDefinitions (the most common case)
-    if (ctx.queryWithLocalDefinitions() != null) {
+    if (ctx.queryWithLocalDefinitions() != null)
       return (CypherStatement) visit(ctx.queryWithLocalDefinitions());
+    if (ctx.command() != null)
+      return handleCommand(ctx.command());
+    throw new CommandParsingException("Unsupported statement type");
+  }
+
+  private CypherDDLStatement handleCommand(final Cypher25Parser.CommandContext ctx) {
+    if (ctx.createCommand() != null)
+      return handleCreateCommand(ctx.createCommand());
+    if (ctx.dropCommand() != null)
+      return handleDropCommand(ctx.dropCommand());
+    throw new CommandParsingException("Only constraint commands are currently supported");
+  }
+
+  private CypherDDLStatement handleCreateCommand(final Cypher25Parser.CreateCommandContext ctx) {
+    if (ctx.createConstraint() != null)
+      return handleCreateConstraint(ctx.createConstraint());
+    throw new CommandParsingException("Only CREATE CONSTRAINT is currently supported");
+  }
+
+  private CypherDDLStatement handleDropCommand(final Cypher25Parser.DropCommandContext ctx) {
+    if (ctx.dropConstraint() != null)
+      return handleDropConstraint(ctx.dropConstraint());
+    throw new CommandParsingException("Only DROP CONSTRAINT is currently supported");
+  }
+
+  private CypherDDLStatement handleCreateConstraint(final Cypher25Parser.CreateConstraintContext ctx) {
+    // Extract optional constraint name
+    final String constraintName = ctx.symbolicNameOrStringParameter() != null
+        ? stripBackticks(ctx.symbolicNameOrStringParameter().getText()) : null;
+
+    // IF NOT EXISTS
+    final boolean ifNotExists = ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null;
+
+    // Extract label name and determine if it's a node or relationship constraint
+    final boolean forRelationship;
+    final String labelName;
+    if (ctx.commandNodePattern() != null) {
+      forRelationship = false;
+      labelName = stripBackticks(ctx.commandNodePattern().labelType().symbolicNameString().getText());
+    } else if (ctx.commandRelPattern() != null) {
+      forRelationship = true;
+      labelName = stripBackticks(ctx.commandRelPattern().relType().symbolicNameString().getText());
+    } else {
+      throw new CommandParsingException("CREATE CONSTRAINT requires a node or relationship pattern");
     }
-    throw new CommandParsingException("Command statements not yet supported");
+
+    // Extract property names from constraintType
+    final Cypher25Parser.ConstraintTypeContext constraintType = ctx.constraintType();
+    final List<String> propertyNames = extractPropertyNames(constraintType);
+
+    // Determine constraint kind
+    final CypherDDLStatement.ConstraintKind constraintKind;
+    if (constraintType instanceof Cypher25Parser.ConstraintIsUniqueContext)
+      constraintKind = CypherDDLStatement.ConstraintKind.UNIQUE;
+    else if (constraintType instanceof Cypher25Parser.ConstraintIsNotNullContext)
+      constraintKind = CypherDDLStatement.ConstraintKind.NOT_NULL;
+    else if (constraintType instanceof Cypher25Parser.ConstraintKeyContext)
+      constraintKind = CypherDDLStatement.ConstraintKind.KEY;
+    else
+      throw new CommandParsingException("Unsupported constraint type: " + constraintType.getText());
+
+    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_CONSTRAINT, constraintKind,
+        constraintName, labelName, propertyNames, ifNotExists, false, forRelationship);
+  }
+
+  private CypherDDLStatement handleDropConstraint(final Cypher25Parser.DropConstraintContext ctx) {
+    final String constraintName = stripBackticks(ctx.symbolicNameOrStringParameter().getText());
+    final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
+    return new CypherDDLStatement(CypherDDLStatement.Kind.DROP_CONSTRAINT, null,
+        constraintName, null, null, false, ifExists, false);
+  }
+
+  /**
+   * Extracts property names from a constraintType context.
+   * Handles both single property (p.id) and property list ((p.first, p.last)).
+   */
+  private List<String> extractPropertyNames(final Cypher25Parser.ConstraintTypeContext ctx) {
+    // propertyList() is defined on each specific subclass, not on the base ConstraintTypeContext
+    final Cypher25Parser.PropertyListContext propList;
+    if (ctx instanceof Cypher25Parser.ConstraintIsUniqueContext)
+      propList = ((Cypher25Parser.ConstraintIsUniqueContext) ctx).propertyList();
+    else if (ctx instanceof Cypher25Parser.ConstraintIsNotNullContext)
+      propList = ((Cypher25Parser.ConstraintIsNotNullContext) ctx).propertyList();
+    else if (ctx instanceof Cypher25Parser.ConstraintKeyContext)
+      propList = ((Cypher25Parser.ConstraintKeyContext) ctx).propertyList();
+    else
+      throw new CommandParsingException("Unsupported constraint type for property extraction");
+
+    final List<String> names = new ArrayList<>();
+    if (propList.enclosedPropertyList() != null) {
+      // Parenthesized list: (p.first, p.last)
+      final Cypher25Parser.EnclosedPropertyListContext enclosed = propList.enclosedPropertyList();
+      for (final Cypher25Parser.PropertyContext prop : enclosed.property())
+        names.add(stripBackticks(prop.propertyKeyName().getText()));
+    } else {
+      // Single property: p.id
+      names.add(stripBackticks(propList.property().propertyKeyName().getText()));
+    }
+    return names;
   }
 
   @Override
