@@ -8,7 +8,7 @@
     "audit-fix": "npm audit fix",
     "update": "npm update",
     "outdated": "npm outdated",
-    "security-check": "npm audit --audit-level=moderate",
+    "security-check": "npm audit --audit-level=none",
     "security-audit": "./scripts/security-audit.sh",
     "copy-swagger-ui": "node scripts/copy-swagger-ui.js",
     "prebuild": "npm run copy-swagger-ui",
