@@ -21,11 +21,18 @@ package com.arcadedb.log;
 import com.arcadedb.utility.AnsiLogFormatter;
 import com.arcadedb.utility.SystemVariableResolver;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.logging.*;
+import java.util.logging.ConsoleHandler;
+import java.util.logging.Handler;
+import java.util.logging.Level;
 import java.util.logging.LogManager;
+import java.util.logging.LogRecord;
 
 /**
  * Default Logger implementation that writes to the Java Logging Framework.
@@ -33,12 +40,8 @@ import java.util.logging.LogManager;
  */
 public class DefaultLogger implements Logger {
   private static final String DEFAULT_LOG                  = "com.arcadedb";
-  private static final String ENV_INSTALL_CUSTOM_FORMATTER = """
-      arcadedb\
-      .installCustomFormatter""";
-  private static final String FILE_LOG_PROPERTIES          = """
-      arcadedb-log\
-      .properties""";
+  private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
+  private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
 
   private volatile boolean initialized = false;
 
@@ -165,11 +168,11 @@ public class DefaultLogger implements Logger {
   }
 
   public void log(final Object requester, final Level level, String message, final Throwable exception,
-                  final String context,
-                  final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
-                  final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
-                  final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15,
-                  final Object arg16, final Object arg17) {
+      final String context,
+      final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
+      final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
+      final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15,
+      final Object arg16, final Object arg17) {
     if (message == null)
       return;
 
@@ -261,7 +264,7 @@ public class DefaultLogger implements Logger {
    * Helper method to log directly to System.err during shutdown.
    */
   private void logToSystemErr(String message, final Throwable exception, final String context,
-                              final boolean hasParams, final Object... args) {
+      final boolean hasParams, final Object... args) {
     try {
       if (context != null)
         message = "<" + context + "> " + message;
@@ -280,7 +283,7 @@ public class DefaultLogger implements Logger {
   }
 
   public void log(final Object requester, final Level level, String message, final Throwable exception,
-                  final String context, final Object... args) {
+      final String context, final Object... args) {
     if (message == null)
       return;
 
