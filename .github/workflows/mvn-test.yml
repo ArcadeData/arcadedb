@@ -179,7 +179,7 @@ jobs:
           key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run Benchmark Unit Tests with Coverage
-        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dgroups=benchmark
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dgroups=benchmark -Dsurefire.includes=**/*Benchmark.java
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
