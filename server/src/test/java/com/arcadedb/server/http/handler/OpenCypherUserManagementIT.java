@@ -19,10 +19,17 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -40,16 +47,18 @@ class OpenCypherUserManagementIT extends BaseGraphServerTest {
 
   @AfterEach
   public void cleanupTestUsers() {
-    final Database database = getServerDatabase(0, getDatabaseName());
-    if (database != null) {
-      try {
-        database.command("opencypher", "DROP USER testUser IF EXISTS");
-      } catch (final Exception ignored) {
-      }
-      try {
-        database.command("opencypher", "DROP USER anotherUser IF EXISTS");
-      } catch (final Exception ignored) {
-      }
+    final ServerSecurity security = getServer(0).getSecurity();
+    try {
+      security.dropUser("testUser");
+    } catch (final Exception ignored) {
+    }
+    try {
+      security.dropUser("anotherUser");
+    } catch (final Exception ignored) {
+    }
+    try {
+      security.dropUser("readonlyUser");
+    } catch (final Exception ignored) {
     }
   }
 
@@ -166,5 +175,95 @@ class OpenCypherUserManagementIT extends BaseGraphServerTest {
     assertThatThrownBy(() -> database.command("opencypher", "ALTER USER nonExistentUser SET PASSWORD 'NewPass456!'"))
         .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("does not exist");
+  }
+
+  @Test
+  void nonAdminUserCannotShowUsers() {
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    try {
+      setReadonlyUser(database);
+
+      assertThatThrownBy(() -> database.command("opencypher", "SHOW USERS"))
+          .isInstanceOf(SecurityException.class)
+          .hasMessageContaining("not allowed to update security");
+    } finally {
+      restoreRootUser(database);
+    }
+  }
+
+  @Test
+  void nonAdminUserCanShowCurrentUser() {
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    try {
+      setReadonlyUser(database);
+
+      final ResultSet resultSet = database.command("opencypher", "SHOW CURRENT USER");
+      assertThat(resultSet.hasNext()).isTrue();
+      final Result result = resultSet.next();
+      assertThat(result.<String>getProperty("user")).isEqualTo("readonlyUser");
+    } finally {
+      restoreRootUser(database);
+    }
+  }
+
+  @Test
+  void nonAdminUserCannotCreateUser() {
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    try {
+      setReadonlyUser(database);
+
+      assertThatThrownBy(() -> database.command("opencypher", "CREATE USER testUser SET PASSWORD 'TestPass123!'"))
+          .isInstanceOf(SecurityException.class)
+          .hasMessageContaining("not allowed to update security");
+    } finally {
+      restoreRootUser(database);
+    }
+  }
+
+  @Test
+  void nonAdminUserCannotDropUser() {
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    try {
+      setReadonlyUser(database);
+
+      assertThatThrownBy(() -> database.command("opencypher", "DROP USER root"))
+          .isInstanceOf(SecurityException.class)
+          .hasMessageContaining("not allowed to update security");
+    } finally {
+      restoreRootUser(database);
+    }
+  }
+
+  @Test
+  void nonAdminUserCannotAlterUser() {
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    try {
+      setReadonlyUser(database);
+
+      assertThatThrownBy(() -> database.command("opencypher", "ALTER USER root SET PASSWORD 'Hacked123!'"))
+          .isInstanceOf(SecurityException.class)
+          .hasMessageContaining("not allowed to update security");
+    } finally {
+      restoreRootUser(database);
+    }
+  }
+
+  private void setReadonlyUser(final DatabaseInternal database) {
+    final ServerSecurity security = getServer(0).getSecurity();
+    if (!security.existsUser("readonlyUser"))
+      security.createUser(new JSONObject().put("name", "readonlyUser")
+          .put("password", security.encodePassword("ReadOnly123!"))
+          .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray(new String[] { "readonly" }))));
+
+    final ServerSecurityUser user = security.getUser("readonlyUser");
+    final SecurityDatabaseUser dbUser = user.getDatabaseUser(database);
+    DatabaseContext.INSTANCE.init(database).setCurrentUser(dbUser);
+  }
+
+  private void restoreRootUser(final DatabaseInternal database) {
+    final ServerSecurity security = getServer(0).getSecurity();
+    final ServerSecurityUser rootUser = security.getUser("root");
+    if (rootUser != null)
+      DatabaseContext.INSTANCE.init(database).setCurrentUser(rootUser.getDatabaseUser(database));
   }
 }
