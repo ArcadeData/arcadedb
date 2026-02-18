@@ -133,10 +133,48 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
 
     // Test HGET - retrieve by index (syntax: HGET <indexName> <key>)
     response = executeCommand(0, "redis", "HGET Person[id] 1");
-    final String docJson = (String) getResultValue(response);
-    final JSONObject doc = new JSONObject(docJson);
+    final JSONArray results = response.getJSONArray("result");
+    assertThat(results.length()).isEqualTo(1);
+    final JSONObject doc = results.getJSONObject(0);
     assertThat(doc.getInt("id")).isEqualTo(1);
     assertThat(doc.getString("name")).isEqualTo("John");
+  }
+
+  @Test
+  void hGetReturnsConsistentFormatWithSQL() throws Exception {
+    // Issue #3470: Redis HGET should return documents in the same format as SQL/OpenCypher
+    // i.e. {"result": [{"@rid":"...","@type":"...","id":1}]}
+    // NOT  {"result": [{"value": "{\"@rid\":\"...\",\"id\":1}"}]}
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    database.command("sql", "CREATE VERTEX TYPE doc");
+    database.command("sql", "CREATE PROPERTY doc.id LONG");
+    database.command("sql", "CREATE INDEX ON doc (id) UNIQUE");
+    database.command("sql", "INSERT INTO doc SET id = 1");
+
+    // Query via SQL
+    final JSONObject sqlResponse = executeQuery(0, "sql", "SELECT FROM doc WHERE id = 1");
+    final JSONArray sqlResults = sqlResponse.getJSONArray("result");
+    assertThat(sqlResults.length()).isEqualTo(1);
+    final JSONObject sqlDoc = sqlResults.getJSONObject(0);
+
+    // Query via Redis HGET
+    final JSONObject redisResponse = executeQuery(0, "redis", "HGET doc[id] 1");
+    final JSONArray redisResults = redisResponse.getJSONArray("result");
+    assertThat(redisResults.length()).isEqualTo(1);
+    final JSONObject redisDoc = redisResults.getJSONObject(0);
+
+    // Both should have the same structure: document properties at the top level, not wrapped in "value"
+    assertThat(redisDoc.has("@rid")).isTrue();
+    assertThat(redisDoc.has("@type")).isTrue();
+    assertThat(redisDoc.getLong("id")).isEqualTo(1L);
+
+    // Should NOT have a "value" wrapper
+    assertThat(redisDoc.has("value")).isFalse();
+
+    // Should match SQL result structure
+    assertThat(redisDoc.getString("@rid")).isEqualTo(sqlDoc.getString("@rid"));
+    assertThat(redisDoc.getString("@type")).isEqualTo(sqlDoc.getString("@type"));
   }
 
   @Test
@@ -409,7 +447,8 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
     assertThat(getResultValue(response)).isEqualTo("PONG");
 
     response = executeQuery(0, "redis", "HGET doc[id] 1");
-    assertThat(getResultValue(response)).isNotNull();
+    assertThat(response.getJSONArray("result").length()).isEqualTo(1);
+    assertThat(response.getJSONArray("result").getJSONObject(0).has("@rid")).isTrue();
 
     response = executeQuery(0, "redis", "HEXISTS doc[id] 1");
     assertThat(getResultValueAsInt(response)).isEqualTo(1);

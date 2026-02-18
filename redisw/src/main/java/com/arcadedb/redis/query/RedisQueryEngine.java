@@ -290,9 +290,14 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   private ResultSet createResultSet(final Object result) {
+    if (result instanceof Record record) {
+      // Return documents directly (consistent with SQL/OpenCypher result format)
+      final ResultInternal resultInternal = new ResultInternal(record);
+      return new IteratorResultSet(Collections.singleton((Result) resultInternal).iterator());
+    }
+
     final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("value", result);
-
     return new IteratorResultSet(Collections.singleton((Result) resultInternal).iterator());
   }
 
@@ -447,8 +452,7 @@ public class RedisQueryEngine implements QueryEngine {
 
     // Check if it's a RID
     if (firstArg.startsWith("#")) {
-      final Record record = new RID(database, firstArg).asDocument();
-      return record != null ? record.toJSON(true).toString() : null;
+      return new RID(database, firstArg).asDocument();
     }
 
     // It's an index lookup
@@ -459,8 +463,7 @@ public class RedisQueryEngine implements QueryEngine {
     final String indexName = firstArg;
     final String key = parts.get(2);
 
-    final Record record = getRecordByIndex(indexName, key);
-    return record != null ? record.toJSON(true).toString() : null;
+    return getRecordByIndex(indexName, key);
   }
 
   /**
@@ -483,8 +486,7 @@ public class RedisQueryEngine implements QueryEngine {
         if (!rid.startsWith("#")) {
           throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
         }
-        final Record record = new RID(database, rid).asDocument();
-        results.add(record != null ? record.toJSON(true).toString() : null);
+        results.add(new RID(database, rid).asDocument());
       }
     } else {
       // It's an index lookup
@@ -494,8 +496,7 @@ public class RedisQueryEngine implements QueryEngine {
 
       final String indexName = firstArg;
       for (int i = 2; i < parts.size(); i++) {
-        final Record record = getRecordByIndex(indexName, parts.get(i));
-        results.add(record != null ? record.toJSON(true).toString() : null);
+        results.add(getRecordByIndex(indexName, parts.get(i)));
       }
     }
 
