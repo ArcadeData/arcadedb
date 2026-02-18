@@ -1342,7 +1342,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   // ===== allReduce() tests =====
 
   @Test
-  void testAllReduceEmptyList() {
+  void allReduceEmptyList() {
     // allReduce on empty list should return true (vacuous truth)
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
@@ -1355,7 +1355,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testAllReducePredicateAlwaysTrue() {
+  void allReducePredicateAlwaysTrue() {
     // All intermediate accumulated values satisfy the predicate
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",
@@ -1368,7 +1368,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testAllReducePredicateFails() {
+  void allReducePredicateFails() {
     // Predicate fails at some step: 0+1=1<3, 1+2=3 NOT < 3 -> false
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher",

@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Comparison expression for WHERE clauses.
@@ -239,9 +240,9 @@ public class ComparisonExpression implements BooleanExpression {
     }
 
     // Map comparison with 3VL null propagation
-    if (left instanceof java.util.Map && right instanceof java.util.Map) {
-      final java.util.Map<?, ?> leftMap = (java.util.Map<?, ?>) left;
-      final java.util.Map<?, ?> rightMap = (java.util.Map<?, ?>) right;
+    if (left instanceof Map && right instanceof Map) {
+      final Map<?, ?> leftMap = (Map<?, ?>) left;
+      final Map<?, ?> rightMap = (Map<?, ?>) right;
       if (operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) {
         // Different key sets means definitely not equal
         if (!leftMap.keySet().equals(rightMap.keySet()))

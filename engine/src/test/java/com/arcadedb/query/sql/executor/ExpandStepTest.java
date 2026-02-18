@@ -27,7 +27,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class ExpandStepTest extends TestHelper {
+class ExpandStepTest extends TestHelper {
 
   @Test
   void shouldExpandCollection() {

@@ -95,7 +95,7 @@
 
         <!-- Oleg Cohen - gRPC support -->
 
-        <protobuf-maven-plugin.version>4.1.3</protobuf-maven-plugin.version>
+        <protobuf-maven-plugin.version>5.0.0</protobuf-maven-plugin.version>
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.33.5</protobuf-java.version>
@@ -163,6 +163,7 @@
                 <version>${maven-resources-plugin.version}</version>
                 <configuration>
                     <nonFilteredFileExtensions>jpg,jpeg,gif,bmp,png,svg,ttf,woff,woff2,swf</nonFilteredFileExtensions>
+                    <propertiesEncoding>${project.build.sourceEncoding}</propertiesEncoding>
                 </configuration>
             </plugin>
             <plugin>
@@ -406,15 +407,15 @@
 	                <artifactId>protobuf-maven-plugin</artifactId>
 	                <version>${protobuf-maven-plugin.version}</version>
 	                <configuration>
-	                    <protocVersion>${protoc.version}</protocVersion>
+	                    <protoc>${protoc.version}</protoc>
 	                    <embedSourcesInClassOutputs>true</embedSourcesInClassOutputs>
-	                    <binaryMavenPlugins>
-	                        <binaryMavenPlugin>
+                        <plugins>
+                            <plugin kind="binary-maven">
 	                            <groupId>io.grpc</groupId>
 	                            <artifactId>protoc-gen-grpc-java</artifactId>
 	                            <version>${grpc.version}</version>
-	                        </binaryMavenPlugin>
-	                    </binaryMavenPlugins>
+                            </plugin>
+                        </plugins>
 	                    <sourceDirectories>
 	                        <sourceDirectory>${project.basedir}/src/main/proto</sourceDirectory>
 	                        <sourceDirectory>${project.basedir}/src/generated/proto</sourceDirectory>

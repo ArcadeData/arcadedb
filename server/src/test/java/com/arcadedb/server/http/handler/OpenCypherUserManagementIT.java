@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class OpenCypherUserManagementIT extends BaseGraphServerTest {
 
   @AfterEach
-  public void cleanupTestUsers() {
+  void cleanupTestUsers() {
     final ServerSecurity security = getServer(0).getSecurity();
     try {
       security.dropUser("testUser");

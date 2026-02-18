@@ -240,9 +240,10 @@ class WithAndUnwindTest {
     // This is currently not fully supported - UNWIND after WITH needs work
     // For now, test simpler case: WITH + RETURN only
     final ResultSet result = database.query("opencypher",
-        "MATCH (p:Person) WHERE p.age < 30 " +
-            "WITH p.name AS name, p.age AS age " +
-            "RETURN name, age ORDER BY name");
+        """
+        MATCH (p:Person) WHERE p.age < 30 \
+        WITH p.name AS name, p.age AS age \
+        RETURN name, age ORDER BY name""");
 
     int count = 0;
     while (result.hasNext()) {
@@ -260,10 +261,11 @@ class WithAndUnwindTest {
   @Order(21)
   void multipleWithClauses() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (p:Person) " +
-            "WITH p.name AS name, p.age AS age WHERE age > 25 " +
-            "WITH name, age WHERE age < 35 " +
-            "RETURN name ORDER BY name");
+        """
+        MATCH (p:Person) \
+        WITH p.name AS name, p.age AS age WHERE age > 25 \
+        WITH name, age WHERE age < 35 \
+        RETURN name ORDER BY name""");
 
     int count = 0;
     while (result.hasNext()) {

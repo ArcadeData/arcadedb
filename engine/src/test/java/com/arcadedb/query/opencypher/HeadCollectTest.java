@@ -51,14 +51,15 @@ class HeadCollectTest {
     // Create test data similar to the user's example:
     // CHUNK nodes connected to DOCUMENT nodes
     database.command("opencypher",
-        "CREATE (doc1:DOCUMENT {name: 'ORANO-MAG-2021_205x275_FR_MEL.pdf'}), " +
-            "(doc2:DOCUMENT {name: 'Other-Document.pdf'}), " +
-            "(chunk1:CHUNK {id: 'chunk1'}), " +
-            "(chunk2:CHUNK {id: 'chunk2'}), " +
-            "(chunk3:CHUNK {id: 'chunk3'}), " +
-            "(chunk1)-[:BELONGS_TO]->(doc1), " +
-            "(chunk2)-[:BELONGS_TO]->(doc1), " +
-            "(chunk3)-[:BELONGS_TO]->(doc2)");
+        """
+        CREATE (doc1:DOCUMENT {name: 'ORANO-MAG-2021_205x275_FR_MEL.pdf'}), \
+        (doc2:DOCUMENT {name: 'Other-Document.pdf'}), \
+        (chunk1:CHUNK {id: 'chunk1'}), \
+        (chunk2:CHUNK {id: 'chunk2'}), \
+        (chunk3:CHUNK {id: 'chunk3'}), \
+        (chunk1)-[:BELONGS_TO]->(doc1), \
+        (chunk2)-[:BELONGS_TO]->(doc1), \
+        (chunk3)-[:BELONGS_TO]->(doc2)""");
   }
 
   @AfterEach
@@ -72,10 +73,11 @@ class HeadCollectTest {
   void headCollectInWith() {
     // Test the exact pattern from the issue: head(collect(...)) in WITH clause
     final ResultSet result = database.command("opencypher",
-        "MATCH (c:CHUNK {id: 'chunk1'}) " +
-            "MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH head(collect(ID(doc))) as document_id, head(collect(doc.name)) as document_name " +
-            "RETURN document_id, document_name");
+        """
+        MATCH (c:CHUNK {id: 'chunk1'}) \
+        MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) \
+        WITH head(collect(ID(doc))) as document_id, head(collect(doc.name)) as document_name \
+        RETURN document_id, document_name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -95,12 +97,13 @@ class HeadCollectTest {
   void headCollectMultipleFields() {
     // Test with multiple head(collect(...)) expressions
     final ResultSet result = database.command("opencypher",
-        "MATCH (c:CHUNK {id: 'chunk1'}) " +
-            "MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH head(collect(ID(doc))) as document_id, " +
-            "     head(collect(ID(c))) as chunk_id, " +
-            "     head(collect(doc.name)) as document_name " +
-            "RETURN document_id, chunk_id, document_name");
+        """
+        MATCH (c:CHUNK {id: 'chunk1'}) \
+        MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) \
+        WITH head(collect(ID(doc))) as document_id, \
+             head(collect(ID(c))) as chunk_id, \
+             head(collect(doc.name)) as document_name \
+        RETURN document_id, chunk_id, document_name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -121,10 +124,11 @@ class HeadCollectTest {
   void collectWithoutHead() {
     // Control test: verify that collect() without head() works (returns a list)
     final ResultSet result = database.command("opencypher",
-        "MATCH (c:CHUNK {id: 'chunk1'}) " +
-            "MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH collect(doc.name) as document_names " +
-            "RETURN document_names");
+        """
+        MATCH (c:CHUNK {id: 'chunk1'}) \
+        MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) \
+        WITH collect(doc.name) as document_names \
+        RETURN document_names""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -142,10 +146,11 @@ class HeadCollectTest {
   void lastCollect() {
     // Test with last() instead of head() - similar pattern
     final ResultSet result = database.command("opencypher",
-        "MATCH (c:CHUNK {id: 'chunk1'}) " +
-            "MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH last(collect(doc.name)) as document_name " +
-            "RETURN document_name");
+        """
+        MATCH (c:CHUNK {id: 'chunk1'}) \
+        MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) \
+        WITH last(collect(doc.name)) as document_name \
+        RETURN document_name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -161,11 +166,12 @@ class HeadCollectTest {
   void sizeCollect() {
     // Test with size() wrapping collect() - another wrapped aggregation pattern
     final ResultSet result = database.command("opencypher",
-        "MATCH (c:CHUNK) " +
-            "MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) " +
-            "WITH c.id as chunk_id, size(collect(doc.name)) as doc_count " +
-            "RETURN chunk_id, doc_count " +
-            "ORDER BY chunk_id");
+        """
+        MATCH (c:CHUNK) \
+        MATCH (c)-[:BELONGS_TO]->(doc:DOCUMENT) \
+        WITH c.id as chunk_id, size(collect(doc.name)) as doc_count \
+        RETURN chunk_id, doc_count \
+        ORDER BY chunk_id""");
 
     assertThat(result.hasNext()).isTrue();
 

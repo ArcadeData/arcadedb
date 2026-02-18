@@ -41,6 +41,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.*;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -461,8 +462,8 @@ public class CreateStep extends AbstractExecutionStep {
    */
   private static Object convertTemporalForStorage(final Object value) {
     // Handle collections (lists/arrays of temporal values)
-    if (value instanceof java.util.Collection<?> collection) {
-      final java.util.List<Object> converted = new java.util.ArrayList<>(collection.size());
+    if (value instanceof Collection<?> collection) {
+      final List<Object> converted = new ArrayList<>(collection.size());
       for (final Object item : collection) {
         converted.add(convertTemporalForStorage(item));
       }

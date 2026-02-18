@@ -78,6 +78,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -736,8 +737,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       ProjectionConfig projectionConfig = getProjectionConfig(request);
 
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): projectionConfig.include = %s projectionConfig" +
-              ".mode = %s",
+      LogManager.instance().log(this, Level.FINE, """
+              executeQuery(): projectionConfig.include = %s projectionConfig\
+              .mode = %s""",
           projectionConfig.isInclude(),
           projectionConfig.getEnc());
 
@@ -862,8 +864,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
 
-      LogManager.instance().log(this, Level.FINE, "beginTransaction(): resolved database instance dbName=%s class=%s " +
-              "hash=%s",
+      LogManager.instance().log(this, Level.FINE, """
+              beginTransaction(): resolved database instance dbName=%s class=%s \
+              hash=%s""",
           (database != null ? database.getName() : "<null>"), (database != null ?
               database.getClass().getSimpleName() : "<null>"),
           (database != null ? System.identityHashCode(database) : 0));
@@ -874,8 +877,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Create transaction context with dedicated executor thread
       txCtx = new TransactionContext(database, transactionId);
 
-      LogManager.instance().log(this, Level.FINE, "beginTransaction(): calling database.begin() on dedicated thread " +
-          "for txId=%s", transactionId);
+      LogManager.instance().log(this, Level.FINE, """
+          beginTransaction(): calling database.begin() on dedicated thread \
+          for txId=%s""", transactionId);
 
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
@@ -944,8 +948,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      LogManager.instance().log(this, Level.FINE, "commitTransaction(): committing txId=%s on db=%s (on dedicated " +
-          "thread)", txId, txCtx.db.getName());
+      LogManager.instance().log(this, Level.FINE, """
+          commitTransaction(): committing txId=%s on db=%s (on dedicated \
+          thread)""", txId, txCtx.db.getName());
 
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
@@ -998,8 +1003,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     try {
-      LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated" +
-          " thread)", txId, txCtx.db.getName());
+      LogManager.instance().log(this, Level.FINE, """
+          rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated\
+           thread)""", txId, txCtx.db.getName());
 
       // Execute rollback ON THE SAME THREAD that began the transaction
       Future<?> rollbackFuture = txCtx.executor.submit(() -> {
@@ -1565,7 +1571,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             ctx.closeQuietly();
           }
         });
-      } catch (java.util.concurrent.RejectedExecutionException ignore) {
+      } catch (RejectedExecutionException ignore) {
         // Executor already shut down - cleanup was already done
       }
       streamExecutor.shutdown();
@@ -1719,7 +1725,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               ctx.closeQuietly();
             }
           });
-        } catch (java.util.concurrent.RejectedExecutionException ignore) {
+        } catch (RejectedExecutionException ignore) {
           // Executor already shut down
         }
         streamExecutor.shutdown();
@@ -2161,8 +2167,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           int add = GrpcTypeConverter.bytesOf(k) + child.getSerializedSize();
           if (pc.wouldExceed(add)) {
             LogManager.instance()
-                .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' " +
-                        "(limit=%s, used~%s)",
+                .log(this, Level.FINE, """
+                        GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' \
+                        (limit=%s, used~%s)""",
                     k,
                     pc.softLimitBytes, pc.used.get());
             pc.truncated = true;
@@ -2200,8 +2207,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Soft limit handling
           if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
             pc.truncated = true;
-            LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; " +
-                    "size=%s limit=%s",
+            LogManager.instance().log(this, Level.FINE, """
+                    GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; \
+                    size=%s limit=%s""",
                 jsonBytes.length,
                 pc.softLimitBytes);
             // Prefer a RID fallback if we have one
@@ -2491,8 +2499,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String authenticatedUser = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
     if (authenticatedUser != null && !authenticatedUser.isEmpty()) {
       // User already authenticated via interceptor, no need to validate credentials
-      LogManager.instance().log(this, Level.FINE, "validateCredentials(): user already authenticated via interceptor:" +
-          " %s", authenticatedUser);
+      LogManager.instance().log(this, Level.FINE, """
+          validateCredentials(): user already authenticated via interceptor:\
+           %s""", authenticatedUser);
       return;
     }
 

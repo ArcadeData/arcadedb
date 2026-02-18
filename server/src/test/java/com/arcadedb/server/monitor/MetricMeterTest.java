@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class MetricMeterTest {
+class MetricMeterTest {
 
   @Test
   void shouldIncrementTotalCounter() {
@@ -84,7 +84,7 @@ public class MetricMeterTest {
   }
 
   @Test
-  void shouldTrackRequestsPerSecondSinceLastAsked() throws InterruptedException {
+  void shouldTrackRequestsPerSecondSinceLastAsked() throws Exception {
     final MetricMeter meter = new MetricMeter();
 
     // First batch of hits
@@ -109,7 +109,7 @@ public class MetricMeterTest {
   }
 
   @Test
-  void shouldHandleConcurrentHits() throws InterruptedException {
+  void shouldHandleConcurrentHits() throws Exception {
     final MetricMeter meter = new MetricMeter();
     final int threadCount = 10;
     final int hitsPerThread = 100;
@@ -153,7 +153,7 @@ public class MetricMeterTest {
   }
 
   @Test
-  void shouldHandleDelayBetweenHits() throws InterruptedException {
+  void shouldHandleDelayBetweenHits() throws Exception {
     final MetricMeter meter = new MetricMeter();
 
     meter.hit();
@@ -180,7 +180,7 @@ public class MetricMeterTest {
   }
 
   @Test
-  void shouldCalculateRateOverTime() throws InterruptedException {
+  void shouldCalculateRateOverTime() throws Exception {
     final MetricMeter meter = new MetricMeter();
 
     // Generate some initial hits

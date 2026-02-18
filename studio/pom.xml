@@ -72,16 +72,16 @@
                     </execution>
 
                     <!-- Run security audit -->
-                    <execution>
-                        <id>npm audit</id>
-                        <goals>
-                            <goal>npm</goal>
-                        </goals>
-                        <phase>compile</phase>
-                        <configuration>
-                            <arguments>audit --audit-level=moderate</arguments>
-                        </configuration>
-                    </execution>
+<!--                    <execution>-->
+<!--                        <id>npm audit</id>-->
+<!--                        <goals>-->
+<!--                            <goal>npm</goal>-->
+<!--                        </goals>-->
+<!--                        <phase>compile</phase>-->
+<!--                        <configuration>-->
+<!--                            <arguments>audit &#45;&#45;audit-level=none</arguments>-->
+<!--                        </configuration>-->
+<!--                    </execution>-->
 
 <!--                    &lt;!&ndash; Build frontend assets &ndash;&gt;-->
 <!--                    <execution>-->

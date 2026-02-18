@@ -495,12 +495,14 @@ public class ArcadeGraph implements Graph, Closeable {
         if (gremlinGroovyEngine == null) {
           // INITIALIZE GROOVY ENGINE (with attempted security restrictions - STILL VULNERABLE)
           LogManager.instance().log(this, Level.WARNING,
-              "===== CRITICAL SECURITY WARNING =====\n" +
-                  "Initializing Groovy Gremlin engine which is VULNERABLE to Remote Code Execution (RCE) attacks.\n" +
-                  "Despite security restrictions, authenticated users can execute arbitrary OS commands.\n" +
-                  "DO NOT USE GROOVY ENGINE IN PRODUCTION OR WITH UNTRUSTED USERS.\n" +
-                  "Use the secure Java engine (arcadedb.gremlin.engine=java) instead.\n" +
-                  "======================================");
+              """
+              ===== CRITICAL SECURITY WARNING =====
+              Initializing Groovy Gremlin engine which is VULNERABLE to Remote Code Execution (RCE) attacks.
+              Despite security restrictions, authenticated users can execute arbitrary OS commands.
+              DO NOT USE GROOVY ENGINE IN PRODUCTION OR WITH UNTRUSTED USERS.
+              Use the secure Java engine (arcadedb.gremlin.engine=java) instead.
+              ======================================\
+              """);
           gremlinGroovyEngine = createSecureGroovyEngine(importPlugin);
           gremlinGroovyEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
         }

@@ -155,8 +155,9 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
   void createEdgeWithMandatoryDefaultProperty() {
     database.getSchema().createVertexType("testVertex");
     database.getSchema().createEdgeType("transmit");
-    database.command("sql", "CREATE PROPERTY transmit.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT " +
-        "SYSDATE().asLong())");
+    database.command("sql", """
+        CREATE PROPERTY transmit.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT \
+        SYSDATE().asLong())""");
 
     database.transaction(() -> {
       // Create two vertices using the API (like the passing test)
@@ -205,8 +206,9 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       // Create vertex type with mandatory property that has a default value
       database.command("sql", "CREATE VERTEX TYPE message IF NOT EXISTS");
-      database.command("sql", "CREATE PROPERTY message.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT " +
-          "SYSDATE().asLong())");
+      database.command("sql", """
+          CREATE PROPERTY message.created_timestamp LONG (MANDATORY true, NOTNULL true, DEFAULT \
+          SYSDATE().asLong())""");
     });
 
     // Create vertex with CONTENT but without the mandatory property

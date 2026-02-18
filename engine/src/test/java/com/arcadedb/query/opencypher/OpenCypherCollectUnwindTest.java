@@ -327,9 +327,10 @@ class OpenCypherCollectUnwindTest {
   void unwindNestedLists() {
     // Test unwinding nested lists
     final ResultSet result = database.command("opencypher",
-        "UNWIND [[1, 2], [3, 4]] AS innerList " +
-            "UNWIND innerList AS num " +
-            "RETURN num");
+        """
+        UNWIND [[1, 2], [3, 4]] AS innerList \
+        UNWIND innerList AS num \
+        RETURN num""");
 
     final List<Integer> numbers = new ArrayList<>();
     while (result.hasNext()) {
@@ -377,7 +378,7 @@ class OpenCypherCollectUnwindTest {
    * - Edge case: no matching documents (should return null gracefully)
    */
   @Test
-  void testHeadCollectInWithClause() {
+  void headCollectInWithClause() {
     // Setup: Create CHUNK -> DOCUMENT relationship matching issue #3307
     database.getSchema().createVertexType("CHUNK");
     database.getSchema().createVertexType("DOCUMENT");

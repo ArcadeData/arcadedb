@@ -20,9 +20,9 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-public class SleepParserTestStatementTest extends AbstractParserTest {
+class SleepParserTestStatementTest extends AbstractParserTest {
   @Test
-  public void testPlain() {
+  void plain() {
     checkRightSyntax("SLEEP 100");
 
     checkWrongSyntax("SLEEP");

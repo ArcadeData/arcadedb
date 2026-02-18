@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -196,12 +197,13 @@ class CountEdgesOptimizationTest {
   void multipleOptionalMatchCountChains() {
     // Integration test: multiple OPTIONAL MATCH + count chains (stackoverflow-like pattern)
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question) " +
-        "OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) " +
-        "WITH q, count(c) AS commentCount " +
-        "OPTIONAL MATCH (a:Answer)-[:ANSWERED]->(q) " +
-        "WITH q, commentCount, count(a) AS answerCount " +
-        "RETURN q.name AS name, commentCount, answerCount ORDER BY name");
+        """
+        MATCH (q:Question) \
+        OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) \
+        WITH q, count(c) AS commentCount \
+        OPTIONAL MATCH (a:Answer)-[:ANSWERED]->(q) \
+        WITH q, commentCount, count(a) AS answerCount \
+        RETURN q.name AS name, commentCount, answerCount ORDER BY name""");
 
     assertThat(rs.hasNext()).isTrue();
     final Result r1 = rs.next();
@@ -240,14 +242,14 @@ class CountEdgesOptimizationTest {
       }
 
       // Test single type
-      assertThat(v.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "COMMENTED_ON")).isEqualTo(3L);
-      assertThat(v.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "ANSWERED")).isEqualTo(2L);
+      assertThat(v.countEdges(Vertex.DIRECTION.IN, "COMMENTED_ON")).isEqualTo(3L);
+      assertThat(v.countEdges(Vertex.DIRECTION.IN, "ANSWERED")).isEqualTo(2L);
 
       // Test multiple types via varargs
-      assertThat(v.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN, "COMMENTED_ON", "ANSWERED")).isEqualTo(5L);
+      assertThat(v.countEdges(Vertex.DIRECTION.IN, "COMMENTED_ON", "ANSWERED")).isEqualTo(5L);
 
       // Test no filter (all types)
-      assertThat(v.countEdges(com.arcadedb.graph.Vertex.DIRECTION.IN)).isEqualTo(5L);
+      assertThat(v.countEdges(Vertex.DIRECTION.IN)).isEqualTo(5L);
     });
   }
 
@@ -296,10 +298,11 @@ class CountEdgesOptimizationTest {
       // OPTIONAL MATCH counts comments per answer
       // WITH groups by q (NOT by a!) and should aggregate counts
       final ResultSet rs = testDb.query("opencypher",
-          "MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) " +
-          "OPTIONAL MATCH (a)-[:HAS_COMMENT]->(c:Comment) " +
-          "WITH q, count(c) AS comment_count " +
-          "RETURN q.id AS qid, comment_count");
+          """
+          MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer) \
+          OPTIONAL MATCH (a)-[:HAS_COMMENT]->(c:Comment) \
+          WITH q, count(c) AS comment_count \
+          RETURN q.id AS qid, comment_count""");
 
       assertThat(rs.hasNext()).isTrue();
       final Result r = rs.next();

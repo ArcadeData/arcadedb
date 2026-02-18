@@ -37,19 +37,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class TypeTest extends TestHelper {
+class TypeTest extends TestHelper {
 
   // ───── getById ─────
 
   @Test
-  void testGetByIdValidIds() {
+  void getByIdValidIds() {
     assertThat(Type.getById((byte) 0)).isEqualTo(Type.BOOLEAN);
     assertThat(Type.getById((byte) 7)).isEqualTo(Type.STRING);
     assertThat(Type.getById((byte) 23)).isEqualTo(Type.ARRAY_OF_DOUBLES);
   }
 
   @Test
-  void testGetByIdOutOfRange() {
+  void getByIdOutOfRange() {
     assertThat(Type.getById((byte) -1)).isNull();
     assertThat(Type.getById((byte) 24)).isNull();
     assertThat(Type.getById((byte) 100)).isNull();
@@ -58,25 +58,25 @@ public class TypeTest extends TestHelper {
   // ───── getByBinaryType ─────
 
   @Test
-  void testGetByBinaryType() {
+  void getByBinaryType() {
     for (final Type type : Type.values())
       assertThat(Type.getByBinaryType(type.getBinaryType())).isEqualTo(type);
   }
 
   @Test
-  void testGetByBinaryTypeNotFound() {
+  void getByBinaryTypeNotFound() {
     assertThat(Type.getByBinaryType((byte) -99)).isNull();
   }
 
   // ───── validateValue ─────
 
   @Test
-  void testValidateValueAcceptsNull() {
+  void validateValueAcceptsNull() {
     Type.validateValue(null); // should not throw
   }
 
   @Test
-  void testValidateValueAcceptsKnownTypes() {
+  void validateValueAcceptsKnownTypes() {
     Type.validateValue("hello");
     Type.validateValue(42);
     Type.validateValue(3.14);
@@ -91,7 +91,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testValidateValueRejectsUnknown() {
+  void validateValueRejectsUnknown() {
     assertThatThrownBy(() -> Type.validateValue(new Object()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("is not supported");
@@ -100,7 +100,7 @@ public class TypeTest extends TestHelper {
   // ───── getTypeByName ─────
 
   @Test
-  void testGetTypeByName() {
+  void getTypeByName() {
     assertThat(Type.getTypeByName("Boolean")).isEqualTo(Type.BOOLEAN);
     assertThat(Type.getTypeByName("STRING")).isEqualTo(Type.STRING);
     assertThat(Type.getTypeByName("integer")).isEqualTo(Type.INTEGER);
@@ -123,19 +123,19 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testGetTypeByNameUnknown() {
+  void getTypeByNameUnknown() {
     assertThat(Type.getTypeByName("nonexistent")).isNull();
   }
 
   // ───── getTypeByClass ─────
 
   @Test
-  void testGetTypeByClassNull() {
+  void getTypeByClassNull() {
     assertThat(Type.getTypeByClass(null)).isNull();
   }
 
   @Test
-  void testGetTypeByClassPrimitives() {
+  void getTypeByClassPrimitives() {
     assertThat(Type.getTypeByClass(Boolean.class)).isEqualTo(Type.BOOLEAN);
     assertThat(Type.getTypeByClass(Boolean.TYPE)).isEqualTo(Type.BOOLEAN);
     assertThat(Type.getTypeByClass(Integer.class)).isEqualTo(Type.INTEGER);
@@ -156,7 +156,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testGetTypeByClassCollections() {
+  void getTypeByClassCollections() {
     assertThat(Type.getTypeByClass(List.class)).isEqualTo(Type.LIST);
     assertThat(Type.getTypeByClass(Map.class)).isEqualTo(Type.MAP);
     assertThat(Type.getTypeByClass(byte[].class)).isEqualTo(Type.BINARY);
@@ -164,14 +164,14 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testGetTypeByClassInheritArray() {
+  void getTypeByClassInheritArray() {
     // Non-byte arrays should resolve to LIST via getTypeByClassInherit
     assertThat(Type.getTypeByClass(String[].class)).isEqualTo(Type.LIST);
     assertThat(Type.getTypeByClass(Object[].class)).isEqualTo(Type.LIST);
   }
 
   @Test
-  void testGetTypeByClassInheritSubclass() {
+  void getTypeByClassInheritSubclass() {
     // ArrayList is assignable from List
     assertThat(Type.getTypeByClass(ArrayList.class)).isEqualTo(Type.LIST);
     // HashMap is assignable from Map
@@ -181,7 +181,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testGetTypeByClassArrayTypes() {
+  void getTypeByClassArrayTypes() {
     assertThat(Type.getTypeByClass(short[].class)).isEqualTo(Type.ARRAY_OF_SHORTS);
     assertThat(Type.getTypeByClass(int[].class)).isEqualTo(Type.ARRAY_OF_INTEGERS);
     assertThat(Type.getTypeByClass(long[].class)).isEqualTo(Type.ARRAY_OF_LONGS);
@@ -192,12 +192,12 @@ public class TypeTest extends TestHelper {
   // ───── getTypeByValue ─────
 
   @Test
-  void testGetTypeByValueNull() {
+  void getTypeByValueNull() {
     assertThat(Type.getTypeByValue(null)).isNull();
   }
 
   @Test
-  void testGetTypeByValueKnown() {
+  void getTypeByValueKnown() {
     assertThat(Type.getTypeByValue("hello")).isEqualTo(Type.STRING);
     assertThat(Type.getTypeByValue(42)).isEqualTo(Type.INTEGER);
     assertThat(Type.getTypeByValue(42L)).isEqualTo(Type.LONG);
@@ -212,7 +212,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testGetTypeByValueInherit() {
+  void getTypeByValueInherit() {
     assertThat(Type.getTypeByValue(new ArrayList<>())).isEqualTo(Type.LIST);
     assertThat(Type.getTypeByValue(new HashMap<>())).isEqualTo(Type.MAP);
     assertThat(Type.getTypeByValue(new String[] { "a" })).isEqualTo(Type.LIST);
@@ -221,7 +221,7 @@ public class TypeTest extends TestHelper {
   // ───── Instance methods: isMultiValue, isLink, isEmbedded ─────
 
   @Test
-  void testIsMultiValue() {
+  void isMultiValue() {
     assertThat(Type.LIST.isMultiValue()).isTrue();
     assertThat(Type.MAP.isMultiValue()).isTrue();
     assertThat(Type.STRING.isMultiValue()).isFalse();
@@ -230,14 +230,14 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testIsLink() {
+  void isLink() {
     assertThat(Type.LINK.isLink()).isTrue();
     assertThat(Type.STRING.isLink()).isFalse();
     assertThat(Type.LIST.isLink()).isFalse();
   }
 
   @Test
-  void testIsEmbedded() {
+  void isEmbedded() {
     assertThat(Type.LIST.isEmbedded()).isTrue();
     assertThat(Type.MAP.isEmbedded()).isTrue();
     assertThat(Type.EMBEDDED.isEmbedded()).isFalse();
@@ -247,7 +247,7 @@ public class TypeTest extends TestHelper {
   // ───── getCastable, getDefaultJavaType, getBinaryType, getId ─────
 
   @Test
-  void testGetCastable() {
+  void getCastable() {
     assertThat(Type.BYTE.getCastable()).contains(Type.BYTE, Type.BOOLEAN);
     assertThat(Type.SHORT.getCastable()).contains(Type.SHORT, Type.BOOLEAN, Type.BYTE);
     assertThat(Type.INTEGER.getCastable()).contains(Type.INTEGER, Type.BOOLEAN, Type.BYTE, Type.SHORT);
@@ -259,7 +259,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testGetDefaultJavaType() {
+  void getDefaultJavaType() {
     assertThat(Type.BOOLEAN.getDefaultJavaType()).isEqualTo(Boolean.class);
     assertThat(Type.STRING.getDefaultJavaType()).isEqualTo(String.class);
     assertThat(Type.INTEGER.getDefaultJavaType()).isEqualTo(Integer.class);
@@ -273,7 +273,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testGetId() {
+  void getId() {
     assertThat(Type.BOOLEAN.getId()).isEqualTo(0);
     assertThat(Type.INTEGER.getId()).isEqualTo(1);
     assertThat(Type.STRING.getId()).isEqualTo(7);
@@ -281,20 +281,20 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testGetBinaryType() {
+  void getBinaryType() {
     for (final Type type : Type.values())
       assertThat(type.getBinaryType()).isNotEqualTo((byte) -1);
   }
 
   @Test
-  void testGetJavaTypesDeprecated() {
+  void getJavaTypesDeprecated() {
     assertThat(Type.STRING.getJavaTypes()).isNull();
   }
 
   // ───── asInt, asLong, asFloat, asDouble ─────
 
   @Test
-  void testAsInt() {
+  void asInt() {
     assertThat(Type.INTEGER.asInt(42)).isEqualTo(42);
     assertThat(Type.INTEGER.asInt(42L)).isEqualTo(42);
     assertThat(Type.INTEGER.asInt(42.9)).isEqualTo(42);
@@ -304,13 +304,13 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testAsIntInvalid() {
+  void asIntInvalid() {
     assertThatThrownBy(() -> Type.INTEGER.asInt(new Date()))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  void testAsLong() {
+  void asLong() {
     assertThat(Type.LONG.asLong(42L)).isEqualTo(42L);
     assertThat(Type.LONG.asLong(42)).isEqualTo(42L);
     assertThat(Type.LONG.asLong("123")).isEqualTo(123L);
@@ -319,33 +319,33 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testAsLongInvalid() {
+  void asLongInvalid() {
     assertThatThrownBy(() -> Type.LONG.asLong(new Date()))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  void testAsFloat() {
+  void asFloat() {
     assertThat(Type.FLOAT.asFloat(3.14f)).isEqualTo(3.14f);
     assertThat(Type.FLOAT.asFloat(42)).isEqualTo(42.0f);
     assertThat(Type.FLOAT.asFloat("3.14")).isEqualTo(3.14f);
   }
 
   @Test
-  void testAsFloatInvalid() {
+  void asFloatInvalid() {
     assertThatThrownBy(() -> Type.FLOAT.asFloat(new Date()))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  void testAsDouble() {
+  void asDouble() {
     assertThat(Type.DOUBLE.asDouble(3.14)).isEqualTo(3.14);
     assertThat(Type.DOUBLE.asDouble(42)).isEqualTo(42.0);
     assertThat(Type.DOUBLE.asDouble("3.14")).isEqualTo(3.14);
   }
 
   @Test
-  void testAsDoubleInvalid() {
+  void asDoubleInvalid() {
     assertThatThrownBy(() -> Type.DOUBLE.asDouble(new Date()))
         .isInstanceOf(IllegalArgumentException.class);
   }
@@ -353,7 +353,7 @@ public class TypeTest extends TestHelper {
   // ───── newInstance ─────
 
   @Test
-  void testNewInstance() {
+  void newInstance() {
     assertThat(Type.STRING.newInstance(42)).isEqualTo("42");
     assertThat(Type.INTEGER.newInstance("42")).isEqualTo(42);
     assertThat(Type.LONG.newInstance("100")).isEqualTo(100L);
@@ -365,37 +365,37 @@ public class TypeTest extends TestHelper {
   // ───── convert ─────
 
   @Test
-  void testConvertNullValue() {
+  void convertNullValue() {
     assertThat(Type.convert(database, null, String.class)).isNull();
   }
 
   @Test
-  void testConvertNullTargetClass() {
+  void convertNullTargetClass() {
     assertThat(Type.convert(database, "hello", null)).isEqualTo("hello");
   }
 
   @Test
-  void testConvertSameType() {
+  void convertSameType() {
     assertThat(Type.convert(database, "hello", String.class)).isEqualTo("hello");
     assertThat(Type.convert(database, 42, Integer.class)).isEqualTo(42);
   }
 
   @Test
-  void testConvertToString() {
+  void convertToString() {
     assertThat(Type.convert(database, 42, String.class)).isEqualTo("42");
     assertThat(Type.convert(database, true, String.class)).isEqualTo("true");
     assertThat(Type.convert(database, 3.14, String.class)).isEqualTo("3.14");
   }
 
   @Test
-  void testConvertBinaryToByteArray() {
+  void convertBinaryToByteArray() {
     final Binary binary = new Binary(new byte[] { 1, 2, 3 });
     final Object result = Type.convert(database, binary, byte[].class);
     assertThat(result).isInstanceOf(byte[].class);
   }
 
   @Test
-  void testConvertByteArrayPassthrough() {
+  void convertByteArrayPassthrough() {
     final byte[] bytes = new byte[] { 1, 2, 3 };
     // byte[] target class that is not String returns the byte[] as-is
     final Object result = Type.convert(database, bytes, Integer.class);
@@ -403,7 +403,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertCollectionToFloatArray() {
+  void convertCollectionToFloatArray() {
     final List<Number> list = List.of(1.0f, 2.0f, 3.0f);
     final Object result = Type.convert(database, list, float[].class);
     assertThat(result).isInstanceOf(float[].class);
@@ -411,7 +411,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertCollectionToDoubleArray() {
+  void convertCollectionToDoubleArray() {
     final List<Number> list = List.of(1.0, 2.0, 3.0);
     final Object result = Type.convert(database, list, double[].class);
     assertThat(result).isInstanceOf(double[].class);
@@ -419,7 +419,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertCollectionToIntArray() {
+  void convertCollectionToIntArray() {
     final List<Number> list = List.of(1, 2, 3);
     final Object result = Type.convert(database, list, int[].class);
     assertThat(result).isInstanceOf(int[].class);
@@ -427,7 +427,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertCollectionToLongArray() {
+  void convertCollectionToLongArray() {
     final List<Number> list = List.of(1L, 2L, 3L);
     final Object result = Type.convert(database, list, long[].class);
     assertThat(result).isInstanceOf(long[].class);
@@ -435,7 +435,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertCollectionToShortArray() {
+  void convertCollectionToShortArray() {
     final List<Number> list = List.of((short) 1, (short) 2, (short) 3);
     final Object result = Type.convert(database, list, short[].class);
     assertThat(result).isInstanceOf(short[].class);
@@ -443,13 +443,13 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToEnum() {
+  void convertToEnum() {
     assertThat(Type.convert(database, "STRING", Type.class)).isEqualTo(Type.STRING);
     assertThat(Type.convert(database, 0, Type.class)).isEqualTo(Type.BOOLEAN);
   }
 
   @Test
-  void testConvertToByte() {
+  void convertToByte() {
     assertThat(Type.convert(database, (byte) 1, Byte.class)).isEqualTo((byte) 1);
     assertThat(Type.convert(database, "42", Byte.class)).isEqualTo((byte) 42);
     assertThat(Type.convert(database, 42, Byte.class)).isEqualTo((byte) 42);
@@ -457,7 +457,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToShort() {
+  void convertToShort() {
     assertThat(Type.convert(database, (short) 1, Short.class)).isEqualTo((short) 1);
     assertThat(Type.convert(database, "42", Short.class)).isEqualTo((short) 42);
     assertThat(Type.convert(database, "", Short.class)).isEqualTo((short) 0);
@@ -466,7 +466,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToInteger() {
+  void convertToInteger() {
     assertThat(Type.convert(database, 1, Integer.class)).isEqualTo(1);
     assertThat(Type.convert(database, "42", Integer.class)).isEqualTo(42);
     assertThat(Type.convert(database, "", Integer.class)).isEqualTo(0);
@@ -475,7 +475,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToLong() {
+  void convertToLong() {
     assertThat(Type.convert(database, 1L, Long.class)).isEqualTo(1L);
     assertThat(Type.convert(database, "42", Long.class)).isEqualTo(42L);
     assertThat(Type.convert(database, "", Long.class)).isEqualTo(0L);
@@ -484,7 +484,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToFloat() {
+  void convertToFloat() {
     assertThat(Type.convert(database, 1.0f, Float.class)).isEqualTo(1.0f);
     assertThat(Type.convert(database, "3.14", Float.class)).isEqualTo(3.14f);
     assertThat(Type.convert(database, "", Float.class)).isEqualTo(0f);
@@ -493,7 +493,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToDouble() {
+  void convertToDouble() {
     assertThat(Type.convert(database, 1.0, Double.class)).isEqualTo(1.0);
     assertThat(Type.convert(database, "3.14", Double.class)).isEqualTo(3.14);
     assertThat(Type.convert(database, "", Double.class)).isEqualTo(0.0);
@@ -504,14 +504,14 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToBigDecimal() {
+  void convertToBigDecimal() {
     assertThat(Type.convert(database, "3.14", BigDecimal.class)).isEqualTo(new BigDecimal("3.14"));
     assertThat(Type.convert(database, 42, BigDecimal.class)).isEqualTo(new BigDecimal("42"));
     assertThat(Type.convert(database, 3.14, BigDecimal.class)).isEqualTo(new BigDecimal("3.14"));
   }
 
   @Test
-  void testConvertToBoolean() {
+  void convertToBoolean() {
     assertThat(Type.convert(database, true, Boolean.class)).isEqualTo(true);
     assertThat(Type.convert(database, "true", Boolean.class)).isEqualTo(true);
     assertThat(Type.convert(database, "TRUE", Boolean.class)).isEqualTo(true);
@@ -523,7 +523,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToBooleanInvalid() {
+  void convertToBooleanInvalid() {
     assertThatThrownBy(() -> Type.convert(database, "maybe", Boolean.class))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Value is not boolean");
@@ -531,7 +531,7 @@ public class TypeTest extends TestHelper {
 
   @SuppressWarnings("unchecked")
   @Test
-  void testConvertToSet() {
+  void convertToSet() {
     final List<String> list = List.of("a", "b", "c");
     final Object result = Type.convert(database, list, Set.class);
     assertThat(result).isInstanceOf(Set.class);
@@ -545,7 +545,7 @@ public class TypeTest extends TestHelper {
 
   @SuppressWarnings("unchecked")
   @Test
-  void testConvertToList() {
+  void convertToList() {
     final Set<String> set = Set.of("a", "b");
     final Object result = Type.convert(database, set, List.class);
     assertThat(result).isInstanceOf(List.class);
@@ -559,7 +559,7 @@ public class TypeTest extends TestHelper {
 
   @SuppressWarnings("unchecked")
   @Test
-  void testConvertToCollection() {
+  void convertToCollection() {
     final List<String> list = List.of("a", "b");
     final Object result = Type.convert(database, list, Collection.class);
     assertThat(result).isInstanceOf(Collection.class);
@@ -572,7 +572,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToDate() {
+  void convertToDate() {
     final Date now = new Date();
     // Number -> Date
     assertThat(Type.convert(database, now.getTime(), Date.class)).isEqualTo(now);
@@ -596,7 +596,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToCalendar() {
+  void convertToCalendar() {
     final Date now = new Date();
     final Object result = Type.convert(database, now, Calendar.class);
     assertThat(result).isInstanceOf(Calendar.class);
@@ -604,7 +604,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToLocalDate() {
+  void convertToLocalDate() {
     final LocalDateTime ldt = LocalDateTime.of(2024, 6, 15, 12, 30);
     final Object result = Type.convert(database, ldt, LocalDate.class);
     assertThat(result).isEqualTo(LocalDate.of(2024, 6, 15));
@@ -619,34 +619,34 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToLocalDateFromDate() {
+  void convertToLocalDateFromDate() {
     final Date now = new Date();
     final Object result = Type.convert(database, now, LocalDate.class);
     assertThat(result).isInstanceOf(LocalDate.class);
   }
 
   @Test
-  void testConvertToLocalDateFromCalendar() {
+  void convertToLocalDateFromCalendar() {
     final Calendar cal = Calendar.getInstance();
     final Object result = Type.convert(database, cal, LocalDate.class);
     assertThat(result).isInstanceOf(LocalDate.class);
   }
 
   @Test
-  void testConvertToLocalDateFromStringNumber() {
+  void convertToLocalDateFromStringNumber() {
     final Object result = Type.convert(database, "19724", LocalDate.class);
     assertThat(result).isInstanceOf(LocalDate.class);
   }
 
   @Test
-  void testConvertToLocalDateGuessFormatNullDb() {
+  void convertToLocalDateGuessFormatNullDb() {
     // Without database, guesses format by string length
     final Object result = Type.convert(null, "2024-06-15", LocalDate.class);
     assertThat(result).isEqualTo(LocalDate.of(2024, 6, 15));
   }
 
   @Test
-  void testConvertToLocalDateTime() {
+  void convertToLocalDateTime() {
     // Number -> LocalDateTime
     final Object fromNumber = Type.convert(database, 1000000L, LocalDateTime.class);
     assertThat(fromNumber).isInstanceOf(LocalDateTime.class);
@@ -667,7 +667,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToLocalDateTimeGuessFormatNullDb() {
+  void convertToLocalDateTimeGuessFormatNullDb() {
     // Without database, guesses format by string length
     final Object secsFmt = Type.convert(null, "2024-06-15 12:30:00", LocalDateTime.class);
     assertThat(secsFmt).isInstanceOf(LocalDateTime.class);
@@ -677,35 +677,35 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToZonedDateTimeFromDate() {
+  void convertToZonedDateTimeFromDate() {
     final Date now = new Date();
     final Object result = Type.convert(database, now, ZonedDateTime.class);
     assertThat(result).isNotNull();
   }
 
   @Test
-  void testConvertToZonedDateTimeFromCalendar() {
+  void convertToZonedDateTimeFromCalendar() {
     final Calendar cal = Calendar.getInstance();
     final Object result = Type.convert(database, cal, ZonedDateTime.class);
     assertThat(result).isNotNull();
   }
 
   @Test
-  void testConvertToInstantFromDate() {
+  void convertToInstantFromDate() {
     final Date now = new Date();
     final Object result = Type.convert(database, now, Instant.class);
     assertThat(result).isNotNull();
   }
 
   @Test
-  void testConvertToInstantFromCalendar() {
+  void convertToInstantFromCalendar() {
     final Calendar cal = Calendar.getInstance();
     final Object result = Type.convert(database, cal, Instant.class);
     assertThat(result).isNotNull();
   }
 
   @Test
-  void testConvertToRIDFromString() {
+  void convertToRIDFromString() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("TestRID");
       final var doc = database.newDocument("TestRID");
@@ -718,7 +718,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToRIDFromMultiValue() {
+  void convertToRIDFromMultiValue() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("TestRIDMulti");
       final var doc = database.newDocument("TestRIDMulti");
@@ -732,7 +732,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToRIDFromMultiValueWithResult() {
+  void convertToRIDFromMultiValueWithResult() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("TestRIDResult");
       final var doc = database.newDocument("TestRIDResult");
@@ -749,14 +749,14 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToRIDFromStringInvalid() {
+  void convertToRIDFromStringInvalid() {
     // Invalid RID string should return null (logs error)
     final Object result = Type.convert(database, "not-a-rid", RID.class);
     assertThat(result).isEqualTo("not-a-rid");
   }
 
   @Test
-  void testConvertCompatibleTypes() {
+  void convertCompatibleTypes() {
     // An Integer is assignable to Number
     assertThat(Type.convert(database, 42, Number.class)).isEqualTo(42);
   }
@@ -764,7 +764,7 @@ public class TypeTest extends TestHelper {
   // ───── increment ─────
 
   @Test
-  void testIncrementNulls() {
+  void incrementNulls() {
     assertThatThrownBy(() -> Type.increment(null, 1))
         .isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> Type.increment(1, null))
@@ -772,7 +772,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testIncrementIntegerCombinations() {
+  void incrementIntegerCombinations() {
     assertThat(Type.increment(10, 20)).isEqualTo(30);
     assertThat(Type.increment(10, 20L)).isEqualTo(30L);
     assertThat(Type.increment(10, (short) 5)).isEqualTo(15);
@@ -782,14 +782,14 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testIncrementIntegerOverflow() {
+  void incrementIntegerOverflow() {
     // Integer + Integer overflow -> upgrade to Long
     final Number result = Type.increment(Integer.MAX_VALUE, 1);
     assertThat(result).isInstanceOf(Long.class);
   }
 
   @Test
-  void testIncrementLongCombinations() {
+  void incrementLongCombinations() {
     assertThat(Type.increment(10L, 20)).isEqualTo(30L);
     assertThat(Type.increment(10L, 20L)).isEqualTo(30L);
     assertThat(Type.increment(10L, (short) 5)).isEqualTo(15L);
@@ -799,7 +799,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testIncrementShortCombinations() {
+  void incrementShortCombinations() {
     assertThat(Type.increment((short) 10, 20)).isEqualTo(30);
     assertThat(Type.increment((short) 10, 20L)).isEqualTo(30L);
     assertThat(Type.increment((short) 10, (short) 5)).isEqualTo(15);
@@ -809,14 +809,14 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testIncrementShortOverflow() {
+  void incrementShortOverflow() {
     // Short + Short overflow -> upgrade to Integer
     final Number result = Type.increment((short) Short.MAX_VALUE, (short) 1);
     assertThat(result.intValue()).isEqualTo(Short.MAX_VALUE + 1);
   }
 
   @Test
-  void testIncrementFloatCombinations() {
+  void incrementFloatCombinations() {
     assertThat(Type.increment(1.5f, 2)).isEqualTo(3.5f);
     assertThat(Type.increment(1.5f, 2L)).isEqualTo(3.5f);
     assertThat(Type.increment(1.5f, (short) 2)).isEqualTo(3.5f);
@@ -826,7 +826,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testIncrementDoubleCombinations() {
+  void incrementDoubleCombinations() {
     assertThat(Type.increment(1.5, 2)).isEqualTo(3.5);
     assertThat(Type.increment(1.5, 2L)).isEqualTo(3.5);
     assertThat(Type.increment(1.5, (short) 2)).isEqualTo(3.5);
@@ -836,7 +836,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testIncrementBigDecimalCombinations() {
+  void incrementBigDecimalCombinations() {
     final BigDecimal ten = new BigDecimal("10");
     assertThat(Type.increment(ten, 5)).isEqualTo(new BigDecimal("15"));
     assertThat(Type.increment(ten, 5L)).isEqualTo(new BigDecimal("15"));
@@ -849,7 +849,7 @@ public class TypeTest extends TestHelper {
   // ───── decrement ─────
 
   @Test
-  void testDecrementNulls() {
+  void decrementNulls() {
     assertThatThrownBy(() -> Type.decrement(null, 1))
         .isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> Type.decrement(1, null))
@@ -857,7 +857,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testDecrementIntegerCombinations() {
+  void decrementIntegerCombinations() {
     assertThat(Type.decrement(30, 20)).isEqualTo(10);
     assertThat(Type.decrement(30, 20L)).isEqualTo(10L);
     assertThat(Type.decrement(30, (short) 5)).isEqualTo(25);
@@ -867,7 +867,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testDecrementLongCombinations() {
+  void decrementLongCombinations() {
     assertThat(Type.decrement(30L, 20)).isEqualTo(10L);
     assertThat(Type.decrement(30L, 20L)).isEqualTo(10L);
     assertThat(Type.decrement(30L, (short) 5)).isEqualTo(25L);
@@ -877,7 +877,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testDecrementShortCombinations() {
+  void decrementShortCombinations() {
     assertThat(Type.decrement((short) 30, 20)).isEqualTo(10);
     assertThat(Type.decrement((short) 30, 20L)).isEqualTo(10L);
     assertThat(Type.decrement((short) 30, (short) 5)).isEqualTo(25);
@@ -887,7 +887,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testDecrementFloatCombinations() {
+  void decrementFloatCombinations() {
     assertThat(Type.decrement(3.5f, 2)).isEqualTo(1.5f);
     assertThat(Type.decrement(3.5f, 2L)).isEqualTo(1.5f);
     assertThat(Type.decrement(3.5f, (short) 2)).isEqualTo(1.5f);
@@ -897,7 +897,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testDecrementDoubleCombinations() {
+  void decrementDoubleCombinations() {
     assertThat(Type.decrement(3.5, 2)).isEqualTo(1.5);
     assertThat(Type.decrement(3.5, 2L)).isEqualTo(1.5);
     assertThat(Type.decrement(3.5, (short) 2)).isEqualTo(1.5);
@@ -907,7 +907,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testDecrementBigDecimalCombinations() {
+  void decrementBigDecimalCombinations() {
     final BigDecimal ten = new BigDecimal("10");
     assertThat(Type.decrement(ten, 5)).isEqualTo(new BigDecimal("5"));
     assertThat(Type.decrement(ten, 5L)).isEqualTo(new BigDecimal("5"));
@@ -920,7 +920,7 @@ public class TypeTest extends TestHelper {
   // ───── castComparableNumber ─────
 
   @Test
-  void testCastComparableNumberShort() {
+  void castComparableNumberShort() {
     Number[] result = Type.castComparableNumber((short) 1, 2);
     assertThat(result[0]).isInstanceOf(Integer.class);
 
@@ -941,7 +941,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testCastComparableNumberInteger() {
+  void castComparableNumberInteger() {
     Number[] result = Type.castComparableNumber(1, 2L);
     assertThat(result[0]).isInstanceOf(Long.class);
 
@@ -962,7 +962,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testCastComparableNumberLong() {
+  void castComparableNumberLong() {
     Number[] result = Type.castComparableNumber(1L, 2.0f);
     assertThat(result[0]).isInstanceOf(Float.class);
 
@@ -983,7 +983,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testCastComparableNumberFloat() {
+  void castComparableNumberFloat() {
     Number[] result = Type.castComparableNumber(1.0f, 2.0);
     assertThat(result[0]).isInstanceOf(Double.class);
 
@@ -1001,7 +1001,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testCastComparableNumberDouble() {
+  void castComparableNumberDouble() {
     Number[] result = Type.castComparableNumber(1.0, new BigDecimal("2"));
     assertThat(result[0]).isInstanceOf(BigDecimal.class);
 
@@ -1016,7 +1016,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testCastComparableNumberBigDecimal() {
+  void castComparableNumberBigDecimal() {
     Number[] result = Type.castComparableNumber(new BigDecimal("1"), 2);
     assertThat(result[1]).isInstanceOf(BigDecimal.class);
 
@@ -1034,7 +1034,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testCastComparableNumberByte() {
+  void castComparableNumberByte() {
     Number[] result = Type.castComparableNumber((byte) 1, (short) 2);
     assertThat(result[0]).isInstanceOf(Short.class);
 
@@ -1055,7 +1055,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testCastComparableNumberSameTypes() {
+  void castComparableNumberSameTypes() {
     Number[] result = Type.castComparableNumber(1, 2);
     assertThat(result[0]).isEqualTo(1);
     assertThat(result[1]).isEqualTo(2);
@@ -1068,7 +1068,7 @@ public class TypeTest extends TestHelper {
   // ───── asString (deprecated) ─────
 
   @Test
-  void testAsString() {
+  void asString() {
     assertThat(Type.STRING.asString(42)).isEqualTo("42");
     assertThat(Type.STRING.asString("hello")).isEqualTo("hello");
   }
@@ -1076,14 +1076,14 @@ public class TypeTest extends TestHelper {
   // ───── convertToDate (private, tested via convert) ─────
 
   @Test
-  void testConvertToDateFromStringWithFormat() {
+  void convertToDateFromStringWithFormat() {
     // Tests the database-aware date format parsing
     final Object result = Type.convert(database, "2024-06-15", Date.class);
     assertThat(result).isInstanceOf(Date.class);
   }
 
   @Test
-  void testConvertToDateGuessFormatNullDb() {
+  void convertToDateGuessFormatNullDb() {
     // Without database, guesses format: days
     final Object days = Type.convert(null, "2024-06-15", Date.class);
     assertThat(days).isInstanceOf(Date.class);
@@ -1098,7 +1098,7 @@ public class TypeTest extends TestHelper {
   }
 
   @Test
-  void testConvertToDateFromUnknownType() {
+  void convertToDateFromUnknownType() {
     // Conversion from unsupported type throws IllegalArgumentException which is re-thrown
     assertThatThrownBy(() -> Type.convert(database, new MultiIterator<>(), Date.class))
         .isInstanceOf(IllegalArgumentException.class)
@@ -1108,7 +1108,7 @@ public class TypeTest extends TestHelper {
   // ───── convert: Long target from date types ─────
 
   @Test
-  void testConvertDateToLong() {
+  void convertDateToLong() {
     final Date now = new Date();
     assertThat(Type.convert(database, now, Long.class)).isEqualTo(now.getTime());
   }
