@@ -9,6 +9,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.Collection;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,7 +98,7 @@ class OpenCypherConstraintTest {
 
   @Test
   void createNotNullConstraint() {
-    database.getSchema().getType("Person").createProperty("name", com.arcadedb.schema.Type.STRING);
+    database.getSchema().getType("Person").createProperty("name", Type.STRING);
 
     database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.name IS NOT NULL");
 
@@ -107,7 +109,7 @@ class OpenCypherConstraintTest {
 
   @Test
   void createNodeKeyConstraint() {
-    database.getSchema().getType("Person").createProperty("id", com.arcadedb.schema.Type.STRING);
+    database.getSchema().getType("Person").createProperty("id", Type.STRING);
 
     database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.id IS NODE KEY");
 
@@ -159,7 +161,7 @@ class OpenCypherConstraintTest {
   @Test
   void dropConstraint() {
     // First create property and index manually with a known name
-    database.getSchema().getType("Person").createProperty("id", com.arcadedb.schema.Type.STRING);
+    database.getSchema().getType("Person").createProperty("id", Type.STRING);
     database.getSchema().buildTypeIndex("Person", new String[] { "id" })
         .withType(Schema.INDEX_TYPE.LSM_TREE)
         .withUnique(true)

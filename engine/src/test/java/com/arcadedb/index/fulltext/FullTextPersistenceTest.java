@@ -71,8 +71,10 @@ class FullTextPersistenceTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY Article.content STRING");
       // Create index with custom analyzer via SQL metadata
       database.command("sql",
-          "CREATE INDEX ON Article (content) FULL_TEXT " +
-          "METADATA {\"analyzer\": \"org.apache.lucene.analysis.en.EnglishAnalyzer\"}");
+          """
+          CREATE INDEX ON Article (content) FULL_TEXT \
+          METADATA {"analyzer": "org.apache.lucene.analysis.en.EnglishAnalyzer"}\
+          """);
 
       database.command("sql", "INSERT INTO Article SET content = 'programming languages'");
     });

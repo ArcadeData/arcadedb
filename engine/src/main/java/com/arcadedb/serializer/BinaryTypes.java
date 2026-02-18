@@ -223,6 +223,7 @@ public class BinaryTypes {
       case BinaryTypes.TYPE_ARRAY_OF_FLOATS -> float[].class;
       case BinaryTypes.TYPE_ARRAY_OF_DOUBLES -> double[].class;
       case BinaryTypes.TYPE_COMPRESSED_GEOMETRY -> Shape.class;
+      case BinaryTypes.TYPE_BINARY -> byte[].class;
       // UNKNOWN
       default -> null;
     };

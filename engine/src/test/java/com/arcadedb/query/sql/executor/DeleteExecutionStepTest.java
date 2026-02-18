@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class DeleteExecutionStepTest extends TestHelper {
+class DeleteExecutionStepTest extends TestHelper {
 
   @Test
   void shouldDeleteSingleRecord() {

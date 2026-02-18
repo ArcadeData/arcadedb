@@ -77,9 +77,10 @@ class Issue3154Test {
 
     // This should create a node with name='Alice' and age=30, not name='entry.name' and age='entry.age'
     final ResultSet result = database.command("opencypher",
-        "UNWIND $batch AS entry " +
-        "CREATE (p:USER_RIGHTS {user_name: entry.name, age: entry.age}) " +
-        "RETURN p", params);
+        """
+        UNWIND $batch AS entry \
+        CREATE (p:USER_RIGHTS {user_name: entry.name, age: entry.age}) \
+        RETURN p""", params);
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -98,9 +99,10 @@ class Issue3154Test {
     params.put("right_0", "OWNER");
 
     final ResultSet result = database.command("opencypher",
-        "UNWIND [{user_name: $user_name, right: $right_0}] AS node " +
-        "MERGE (n:USER_RIGHTS {user_name: node.user_name, right: node.right}) " +
-        "RETURN n", params);
+        """
+        UNWIND [{user_name: $user_name, right: $right_0}] AS node \
+        MERGE (n:USER_RIGHTS {user_name: node.user_name, right: node.right}) \
+        RETURN n""", params);
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -130,11 +132,12 @@ class Issue3154Test {
     params.put("batch", batch);
 
     final ResultSet result = database.command("opencypher",
-        "UNWIND $batch AS BatchEntry " +
-        "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID " +
-        "CREATE (p:CHUNK_EMBEDDING {value: BatchEntry.value}) " +
-        "CREATE (p)-[:embb]->(b) " +
-        "RETURN p", params);
+        """
+        UNWIND $batch AS BatchEntry \
+        MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+        CREATE (p:CHUNK_EMBEDDING {value: BatchEntry.value}) \
+        CREATE (p)-[:embb]->(b) \
+        RETURN p""", params);
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -164,11 +167,12 @@ class Issue3154Test {
     params.put("batch", batch);
 
     final ResultSet result = database.command("opencypher",
-        "UNWIND $batch AS BatchEntry " +
-        "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID " +
-        "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) " +
-        "CREATE (p)-[:embb]->(b) " +
-        "RETURN p", params);
+        """
+        UNWIND $batch AS BatchEntry \
+        MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+        CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+        CREATE (p)-[:embb]->(b) \
+        RETURN p""", params);
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -214,11 +218,12 @@ class Issue3154Test {
 
     // Execute the exact query from the issue
     final ResultSet result = database.command("opencypher",
-        "UNWIND $batch AS BatchEntry " +
-        "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID " +
-        "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) " +
-        "CREATE (p)-[:embb]->(b) " +
-        "RETURN p", params);
+        """
+        UNWIND $batch AS BatchEntry \
+        MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+        CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+        CREATE (p)-[:embb]->(b) \
+        RETURN p""", params);
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -255,11 +260,12 @@ class Issue3154Test {
 
     // Execute the exact query from issue #3211
     final ResultSet result = database.command("opencypher",
-        "UNWIND $batch AS BatchEntry " +
-        "MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID " +
-        "CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) " +
-        "CREATE (p)-[:embb]->(b) " +
-        "RETURN p", params);
+        """
+        UNWIND $batch AS BatchEntry \
+        MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+        CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+        CREATE (p)-[:embb]->(b) \
+        RETURN p""", params);
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();

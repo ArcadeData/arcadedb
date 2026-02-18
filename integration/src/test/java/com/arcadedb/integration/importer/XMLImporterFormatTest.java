@@ -51,13 +51,14 @@ class XMLImporterFormatTest extends TestHelper {
   @Test
   void noPropertyCarryoverBetweenRecords() throws Exception {
     final File xmlFile = createTempXMLFile("test-carryover.xml",
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-            "<users>\n" +
-            "  <user id=\"1\" name=\"Alice\" age=\"30\"/>\n" +
-            "  <user id=\"2\" name=\"Bob\"/>\n" +
-            "  <user id=\"3\" name=\"Charlie\" age=\"25\"/>\n" +
-            "  <user id=\"4\" name=\"Diana\"/>\n" +
-            "</users>");
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <users>
+          <user id="1" name="Alice" age="30"/>
+          <user id="2" name="Bob"/>
+          <user id="3" name="Charlie" age="25"/>
+          <user id="4" name="Diana"/>
+        </users>""");
 
     try {
       // Import XML as vertices

@@ -20,6 +20,7 @@ package com.arcadedb.function.sql;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
@@ -102,7 +103,7 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
    */
   protected float[] toFloatArray(final Object vector) {
     try {
-      return com.arcadedb.index.vector.VectorUtils.toFloatArray(vector);
+      return VectorUtils.toFloatArray(vector);
     } catch (final IllegalArgumentException e) {
       throw new CommandSQLParsingException(e.getMessage());
     }

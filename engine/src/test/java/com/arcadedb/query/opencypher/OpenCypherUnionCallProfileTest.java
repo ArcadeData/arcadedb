@@ -73,9 +73,10 @@ class OpenCypherUnionCallProfileTest {
 
     // Test UNION (should remove duplicates)
     final ResultSet result = database.query("opencypher",
-        "MATCH (n:Person) RETURN n.name AS name " +
-        "UNION " +
-        "MATCH (n:Company) RETURN n.name AS name");
+        """
+        MATCH (n:Person) RETURN n.name AS name \
+        UNION \
+        MATCH (n:Company) RETURN n.name AS name""");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext()) {
@@ -100,9 +101,10 @@ class OpenCypherUnionCallProfileTest {
 
     // Test UNION removes duplicates
     final ResultSet result = database.query("opencypher",
-        "MATCH (n:Type1) RETURN n.name AS name " +
-        "UNION " +
-        "MATCH (n:Type2) RETURN n.name AS name");
+        """
+        MATCH (n:Type1) RETURN n.name AS name \
+        UNION \
+        MATCH (n:Type2) RETURN n.name AS name""");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext()) {
@@ -127,9 +129,10 @@ class OpenCypherUnionCallProfileTest {
 
     // Test UNION ALL keeps duplicates
     final ResultSet result = database.query("opencypher",
-        "MATCH (n:Type1) RETURN n.name AS name " +
-        "UNION ALL " +
-        "MATCH (n:Type2) RETURN n.name AS name");
+        """
+        MATCH (n:Type1) RETURN n.name AS name \
+        UNION ALL \
+        MATCH (n:Type2) RETURN n.name AS name""");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext()) {
@@ -156,11 +159,12 @@ class OpenCypherUnionCallProfileTest {
 
     // Test multiple UNIONs
     final ResultSet result = database.query("opencypher",
-        "MATCH (n:TypeA) RETURN n.name AS name " +
-        "UNION " +
-        "MATCH (n:TypeB) RETURN n.name AS name " +
-        "UNION " +
-        "MATCH (n:TypeC) RETURN n.name AS name");
+        """
+        MATCH (n:TypeA) RETURN n.name AS name \
+        UNION \
+        MATCH (n:TypeB) RETURN n.name AS name \
+        UNION \
+        MATCH (n:TypeC) RETURN n.name AS name""");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext()) {

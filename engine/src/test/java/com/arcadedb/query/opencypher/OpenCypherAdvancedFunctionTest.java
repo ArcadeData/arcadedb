@@ -51,11 +51,12 @@ class OpenCypherAdvancedFunctionTest {
     // Create test data:
     //   Alice KNOWS Bob KNOWS Charlie
     database.command("opencypher",
-        "CREATE (alice:Person {name: 'Alice', age: 30}), " +
-            "(bob:Person {name: 'Bob', age: 25}), " +
-            "(charlie:Person {name: 'Charlie', age: 35}), " +
-            "(alice)-[:KNOWS {since: 2020}]->(bob), " +
-            "(bob)-[:KNOWS {since: 2021}]->(charlie)");
+        """
+        CREATE (alice:Person {name: 'Alice', age: 30}), \
+        (bob:Person {name: 'Bob', age: 25}), \
+        (charlie:Person {name: 'Charlie', age: 35}), \
+        (alice)-[:KNOWS {since: 2020}]->(bob), \
+        (bob)-[:KNOWS {since: 2021}]->(charlie)""");
   }
 
   @AfterEach
@@ -249,8 +250,9 @@ class OpenCypherAdvancedFunctionTest {
   void nodesFunction() {
     // Get a path and extract nodes from it
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) " +
-            "RETURN nodes(p) AS nodeList");
+        """
+        MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) \
+        RETURN nodes(p) AS nodeList""");
 
     assertThat(result.hasNext()).isTrue();
     final List<?> nodes = (List<?>) result.next().getProperty("nodeList");
@@ -265,8 +267,9 @@ class OpenCypherAdvancedFunctionTest {
   void relationshipsFunction() {
     // Get a path and extract relationships from it
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) " +
-            "RETURN relationships(p) AS relList");
+        """
+        MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) \
+        RETURN relationships(p) AS relList""");
 
     assertThat(result.hasNext()).isTrue();
     final List<?> rels = (List<?>) result.next().getProperty("relList");
@@ -280,8 +283,9 @@ class OpenCypherAdvancedFunctionTest {
   void lengthFunctionOnPath() {
     // Get a path and return its length (number of relationships)
     final ResultSet result = database.command("opencypher",
-        "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) " +
-            "RETURN length(p) AS pathLength");
+        """
+        MATCH p = (a:Person {name: 'Alice'})-[:KNOWS*2]->(c:Person) \
+        RETURN length(p) AS pathLength""");
 
     assertThat(result.hasNext()).isTrue();
     assertThat(((Number) result.next().getProperty("pathLength")).longValue()).isEqualTo(2L);
@@ -312,10 +316,11 @@ class OpenCypherAdvancedFunctionTest {
   @Test
   void combinedStringFunctions() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (n:Person {name: 'Alice'}) " +
-            "RETURN left(n.name, 2) AS leftPart, " +
-            "       right(n.name, 2) AS rightPart, " +
-            "       reverse(n.name) AS reversed");
+        """
+        MATCH (n:Person {name: 'Alice'}) \
+        RETURN left(n.name, 2) AS leftPart, \
+               right(n.name, 2) AS rightPart, \
+               reverse(n.name) AS reversed""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -328,10 +333,11 @@ class OpenCypherAdvancedFunctionTest {
   @Disabled("Requires WITH clause to be fully implemented")
   void combinedListFunctions() {
     final ResultSet result = database.command("opencypher",
-        "WITH [1, 2, 3, 4, 5] AS list " +
-            "RETURN size(list) AS listSize, " +
-            "       head(list) AS first, " +
-            "       last(list) AS lastElem");
+        """
+        WITH [1, 2, 3, 4, 5] AS list \
+        RETURN size(list) AS listSize, \
+               head(list) AS first, \
+               last(list) AS lastElem""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -343,9 +349,10 @@ class OpenCypherAdvancedFunctionTest {
   @Test
   void typeConversionChain() {
     final ResultSet result = database.command("opencypher",
-        "MATCH (n:Person {name: 'Bob'}) " +
-            "RETURN toString(n.age) AS ageString, " +
-            "       toInteger(toString(n.age)) AS ageInt");
+        """
+        MATCH (n:Person {name: 'Bob'}) \
+        RETURN toString(n.age) AS ageString, \
+               toInteger(toString(n.age)) AS ageInt""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();

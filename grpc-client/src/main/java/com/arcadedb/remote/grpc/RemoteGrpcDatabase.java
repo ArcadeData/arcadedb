@@ -985,8 +985,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         Result result = rs.next();
         // Try to get Record from Result
         if (result.isElement()) {
-          return result.getRecord().orElseThrow(() -> new IllegalStateException("Result claims to be element but has " +
-              "no Record"));
+          return result.getRecord().orElseThrow(() -> new IllegalStateException("""
+              Result claims to be element but has \
+              no Record"""));
         }
         // For non-Record results, throw or skip
         throw new IllegalStateException("Result is not a Record: " + result);
@@ -1122,8 +1123,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
       if (LogManager.instance().isDebugEnabled()) {
-        LogManager.instance().log(this, Level.FINE, "CLIENT updateRecord(full): db=%s, txOpen=%s, rid=%s, " +
-                "timeoutMs=%s", getName(),
+        LogManager.instance().log(this, Level.FINE, """
+                CLIENT updateRecord(full): db=%s, txOpen=%s, rid=%s, \
+                timeoutMs=%s""", getName(),
             (transactionId != null), rid,
             timeoutMs);
       }
@@ -2107,7 +2109,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // Don't double-wrap if the observer is already a ClientResponseObserver (e.g. from wrapClientResponseObserver)
     // because wrapping it again with wrapObserver would hide the ClientResponseObserver interface
     // and prevent beforeStart() from being called.
-    StreamObserver<Resp> effectiveObserver = (responseObserver instanceof io.grpc.stub.ClientResponseObserver)
+    StreamObserver<Resp> effectiveObserver = (responseObserver instanceof ClientResponseObserver)
         ? responseObserver
         : wrapObserver(opName, responseObserver);
     StreamObserver<Req> reqObs = starter.apply(stub, effectiveObserver);

@@ -377,8 +377,9 @@ class OpenCypherExpressionTest {
   @Test
   void combinedMapWithArithmetic() {
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (n:Person) WHERE n.name = 'Alice' " +
-            "RETURN {name: n.name, nextYearAge: n.age + 1, monthlySalary: n.salary / 12} AS info");
+        """
+        MATCH (n:Person) WHERE n.name = 'Alice' \
+        RETURN {name: n.name, nextYearAge: n.age + 1, monthlySalary: n.salary / 12} AS info""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();

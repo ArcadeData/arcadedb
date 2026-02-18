@@ -611,8 +611,9 @@ public class RedisNetworkExecutor extends Thread {
         if (b == '\n')
           break;
         else
-          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on parsing value waiting for LF, but " +
-              "found '%s' after /r", (char) b);
+          LogManager.instance().log(this, Level.SEVERE, """
+              Redis wrapper: Error on parsing value waiting for LF, but \
+              found '%s' after /r""", (char) b);
       }
     }
 
@@ -739,8 +740,9 @@ public class RedisNetworkExecutor extends Thread {
         if (k.startsWith("#"))
           records.add(new RID(database, k).asDocument());
         else
-          throw new RedisException("Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. " +
-              "Example: #13:432");
+          throw new RedisException("""
+              Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. \
+              Example: #13:432""");
       }
     } else {
       // BY INDEX

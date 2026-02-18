@@ -30,12 +30,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ComparisonNormalizerTest {
+class ComparisonNormalizerTest {
 
   private final ComparisonNormalizer rewriter = new ComparisonNormalizer();
 
   @Test
-  public void testSwapLiteralWithProperty() {
+  void swapLiteralWithProperty() {
     // 5 < n.age → n.age > 5
     final PropertyAccessExpression property = new PropertyAccessExpression("n", "age");
     final LiteralExpression literal = new LiteralExpression(5, "5");
@@ -56,7 +56,7 @@ public class ComparisonNormalizerTest {
   }
 
   @Test
-  public void testSwapLiteralWithVariable() {
+  void swapLiteralWithVariable() {
     // 10 > x → x < 10
     final VariableExpression variable = new VariableExpression("x");
     final LiteralExpression literal = new LiteralExpression(10, "10");
@@ -77,7 +77,7 @@ public class ComparisonNormalizerTest {
   }
 
   @Test
-  public void testNoSwapWhenAlreadyNormalized() {
+  void noSwapWhenAlreadyNormalized() {
     // n.age > 5 → n.age > 5 (no change)
     final PropertyAccessExpression property = new PropertyAccessExpression("n", "age");
     final LiteralExpression literal = new LiteralExpression(5, "5");
@@ -94,7 +94,7 @@ public class ComparisonNormalizerTest {
   }
 
   @Test
-  public void testOperatorFlipping() {
+  void operatorFlipping() {
     // Test all operator flips
     final VariableExpression variable = new VariableExpression("x");
     final LiteralExpression literal = new LiteralExpression(5, "5");
@@ -125,7 +125,7 @@ public class ComparisonNormalizerTest {
   }
 
   @Test
-  public void testInterestingnessPriority() {
+  void interestingnessPriority() {
     // Property > Variable > Literal
     final PropertyAccessExpression property = new PropertyAccessExpression("n", "age");
     final VariableExpression variable = new VariableExpression("x");

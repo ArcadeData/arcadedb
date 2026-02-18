@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -97,7 +99,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
       private boolean finished = false;
 
       // Count-only mode: track unique RIDs instead of full Result objects
-      private final Set<com.arcadedb.database.RID> uniqueRIDs = countOnlyMode ? new HashSet<>() : null;
+      private final Set<RID> uniqueRIDs = countOnlyMode ? new HashSet<>() : null;
       private long currentInputMatchCount = 0;
 
       @Override
@@ -149,8 +151,8 @@ public class OptionalMatchStep extends AbstractExecutionStep {
                   // Count-only optimization: just track unique RIDs, don't buffer full objects
                   for (final String varName : variableNames) {
                     final Object val = matchResult.getProperty(varName);
-                    if (val instanceof com.arcadedb.database.Identifiable) {
-                      uniqueRIDs.add(((com.arcadedb.database.Identifiable) val).getIdentity());
+                    if (val instanceof Identifiable) {
+                      uniqueRIDs.add(((Identifiable) val).getIdentity());
                     }
                   }
                   currentInputMatchCount++;

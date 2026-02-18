@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -230,7 +231,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final JSONObject config = new JSONObject();
     config.put("name", name);
     config.put("password", encodedPassword);
-    config.put("databases", new JSONObject().put("*", new com.arcadedb.serializer.json.JSONArray().put("admin")));
+    config.put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
     createUser(config);
   }
 

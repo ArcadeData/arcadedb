@@ -363,10 +363,12 @@ class DuanSSSPBenchmark {
 
     @Override
     public String toString() {
-      return String.format("%s Graph: %d vertices, %d edges\n" +
-              "  Dijkstra:    %.3f ms (avg)\n" +
-              "  DuanSSSP:    %.3f ms (avg)\n" +
-              "  Ratio:       %.2fx (DuanSSSP / Dijkstra)\n",
+      return String.format("""
+              %s Graph: %d vertices, %d edges
+                Dijkstra:    %.3f ms (avg)
+                DuanSSSP:    %.3f ms (avg)
+                Ratio:       %.2fx (DuanSSSP / Dijkstra)
+              """,
           graphType, numVertices, numEdges, dijkstraAvgMs, duanSSSPAvgMs, speedupRatio);
     }
 

@@ -153,8 +153,9 @@ class TriggerBenchmark {
         database.getSchema().createDocumentType("SQLAudit");
       }
       database.command("sql",
-          "CREATE TRIGGER sql_benchmark_trigger BEFORE CREATE ON TYPE SQLTest " +
-              "EXECUTE SQL 'INSERT INTO SQLAudit SET triggered = true'");
+          """
+          CREATE TRIGGER sql_benchmark_trigger BEFORE CREATE ON TYPE SQLTest \
+          EXECUTE SQL 'INSERT INTO SQLAudit SET triggered = true'""");
     });
 
     // Warmup
@@ -209,8 +210,9 @@ class TriggerBenchmark {
         database.getSchema().createDocumentType("JSAudit");
       }
       database.command("sql",
-          "CREATE TRIGGER js_benchmark_trigger BEFORE CREATE ON TYPE JSTest " +
-              "EXECUTE JAVASCRIPT 'database.command(\"sql\", \"INSERT INTO JSAudit SET triggered = true\");'");
+          """
+          CREATE TRIGGER js_benchmark_trigger BEFORE CREATE ON TYPE JSTest \
+          EXECUTE JAVASCRIPT 'database.command("sql", "INSERT INTO JSAudit SET triggered = true");'""");
     });
 
     // Warmup
@@ -265,8 +267,9 @@ class TriggerBenchmark {
         database.getSchema().createDocumentType("JavaAudit");
       }
       database.command("sql",
-          "CREATE TRIGGER java_benchmark_trigger BEFORE CREATE ON TYPE JavaTest " +
-              "EXECUTE JAVA 'com.arcadedb.query.sql.BenchmarkTrigger'");
+          """
+          CREATE TRIGGER java_benchmark_trigger BEFORE CREATE ON TYPE JavaTest \
+          EXECUTE JAVA 'com.arcadedb.query.sql.BenchmarkTrigger'""");
     });
 
     // Warmup

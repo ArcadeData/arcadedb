@@ -53,11 +53,12 @@ class OpenCypherGroupByTest {
     //   People in different cities with different ages
     //   Alice (30, NYC), Bob (25, NYC), Charlie (35, LA), David (40, LA), Eve (28, SF)
     database.command("opencypher",
-        "CREATE (alice:Person {name: 'Alice', age: 30, city: 'NYC'}), " +
-            "(bob:Person {name: 'Bob', age: 25, city: 'NYC'}), " +
-            "(charlie:Person {name: 'Charlie', age: 35, city: 'LA'}), " +
-            "(david:Person {name: 'David', age: 40, city: 'LA'}), " +
-            "(eve:Person {name: 'Eve', age: 28, city: 'SF'})");
+        """
+        CREATE (alice:Person {name: 'Alice', age: 30, city: 'NYC'}), \
+        (bob:Person {name: 'Bob', age: 25, city: 'NYC'}), \
+        (charlie:Person {name: 'Charlie', age: 35, city: 'LA'}), \
+        (david:Person {name: 'David', age: 40, city: 'LA'}), \
+        (eve:Person {name: 'Eve', age: 28, city: 'SF'})""");
   }
 
   @AfterEach
@@ -117,10 +118,11 @@ class OpenCypherGroupByTest {
     // Group by city with multiple aggregations: count, avg, min, max
     // Cypher avg() always returns a Double, matching Neo4j semantics
     final ResultSet result = database.command("opencypher",
-        "MATCH (n:Person) " +
-            "RETURN n.city AS city, count(n) AS cnt, avg(n.age) AS avgAge, " +
-            "min(n.age) AS minAge, max(n.age) AS maxAge " +
-            "ORDER BY city");
+        """
+        MATCH (n:Person) \
+        RETURN n.city AS city, count(n) AS cnt, avg(n.age) AS avgAge, \
+        min(n.age) AS minAge, max(n.age) AS maxAge \
+        ORDER BY city""");
 
     assertThat(result.hasNext()).isTrue();
     final Result la = result.next();
@@ -153,16 +155,18 @@ class OpenCypherGroupByTest {
   void groupByMultipleKeys() {
     // Create more test data with multiple grouping dimensions
     database.command("opencypher",
-        "CREATE (p:Person {name: 'Frank', age: 30, city: 'NYC', department: 'Engineering'}), " +
-            "(q:Person {name: 'Grace', age: 35, city: 'NYC', department: 'Engineering'}), " +
-            "(r:Person {name: 'Henry', age: 40, city: 'NYC', department: 'Sales'}), " +
-            "(s:Person {name: 'Iris', age: 45, city: 'LA', department: 'Engineering'})");
+        """
+        CREATE (p:Person {name: 'Frank', age: 30, city: 'NYC', department: 'Engineering'}), \
+        (q:Person {name: 'Grace', age: 35, city: 'NYC', department: 'Engineering'}), \
+        (r:Person {name: 'Henry', age: 40, city: 'NYC', department: 'Sales'}), \
+        (s:Person {name: 'Iris', age: 45, city: 'LA', department: 'Engineering'})""");
 
     // Group by both city and department
     final ResultSet result = database.command("opencypher",
-        "MATCH (n:Person) WHERE n.department IS NOT NULL " +
-            "RETURN n.city AS city, n.department AS dept, count(n) AS cnt " +
-            "ORDER BY city, dept");
+        """
+        MATCH (n:Person) WHERE n.department IS NOT NULL \
+        RETURN n.city AS city, n.department AS dept, count(n) AS cnt \
+        ORDER BY city, dept""");
 
     assertThat(result.hasNext()).isTrue();
     final Result laEng = result.next();
@@ -210,13 +214,15 @@ class OpenCypherGroupByTest {
   void complexAggregationExpressionWithGroupBy() {
     // Create the exact data from the issue
     database.command("opencypher",
-        "CREATE (k:Person {name: 'Keanu Reeves', age: 58})-[:KNOWS]->(:Person {age: 70}), " +
-            "(k)-[:KNOWS]->(:Person {age: 55})");
+        """
+        CREATE (k:Person {name: 'Keanu Reeves', age: 58})-[:KNOWS]->(:Person {age: 70}), \
+        (k)-[:KNOWS]->(:Person {age: 55})""");
 
     // This should return p.age=58 and result=58-70=-12
     final ResultSet result = database.command("opencypher",
-        "MATCH (p:Person {name:'Keanu Reeves'})-[:KNOWS]-(f:Person) " +
-            "RETURN p.age, p.age - max(f.age) as result");
+        """
+        MATCH (p:Person {name:'Keanu Reeves'})-[:KNOWS]-(f:Person) \
+        RETURN p.age, p.age - max(f.age) as result""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();

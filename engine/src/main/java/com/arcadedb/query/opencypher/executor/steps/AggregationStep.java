@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
@@ -259,7 +260,7 @@ public class AggregationStep extends AbstractExecutionStep {
       collectAggregations(cew.getComparison().getRight(), innerAggs, innerFunctions);
     } else if (expr instanceof CaseExpression ce) {
       collectAggregations(ce.getCaseExpression(), innerAggs, innerFunctions);
-      for (final com.arcadedb.query.opencypher.ast.CaseAlternative alt : ce.getAlternatives()) {
+      for (final CaseAlternative alt : ce.getAlternatives()) {
         collectAggregations(alt.getWhenExpression(), innerAggs, innerFunctions);
         collectAggregations(alt.getThenExpression(), innerAggs, innerFunctions);
       }

@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class DefaultCredentialsValidatorTest {
+class DefaultCredentialsValidatorTest {
 
   @Test
   void shouldValidateCorrectCredentials() {

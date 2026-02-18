@@ -19,12 +19,57 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.CreateClause;
+import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
+import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.DeleteClause;
+import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.ExistsExpression;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.ForeachClause;
+import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.ast.IsNullExpression;
+import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
+import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.MergeClause;
+import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.ast.ParameterExpression;
+import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.RegexExpression;
+import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.RemoveClause;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.ast.StringMatchExpression;
+import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
+import com.arcadedb.query.opencypher.ast.UnwindClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.grammar.Cypher25ParserBaseVisitor;
-import com.arcadedb.query.opencypher.rewriter.*;
+import com.arcadedb.query.opencypher.rewriter.BooleanSimplifier;
+import com.arcadedb.query.opencypher.rewriter.ComparisonNormalizer;
+import com.arcadedb.query.opencypher.rewriter.CompositeRewriter;
+import com.arcadedb.query.opencypher.rewriter.ConstantFolder;
+import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -748,7 +793,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.Expression11Context found = findExpression11(node.getChild(i));
-      if (found != null) return found;
+      if (found != null)
+        return found;
     }
     return null;
   }
@@ -760,7 +806,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.ParenthesizedExpressionContext found =
           findParenthesizedExpressionRecursive(node.getChild(i));
-      if (found != null) return found;
+      if (found != null)
+        return found;
     }
     return null;
   }
@@ -775,7 +822,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.PatternExpressionContext found = findPatternExpressionRecursive(node.getChild(i));
-      if (found != null) return found;
+      if (found != null)
+        return found;
     }
     return null;
   }
@@ -882,13 +930,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
           final int type = terminal.getSymbol().getType();
           ComparisonExpression.Operator op = null;
-          if (type == Cypher25Parser.EQ) op = ComparisonExpression.Operator.EQUALS;
+          if (type == Cypher25Parser.EQ)
+            op = ComparisonExpression.Operator.EQUALS;
           else if (type == Cypher25Parser.NEQ || type == Cypher25Parser.INVALID_NEQ)
             op = ComparisonExpression.Operator.NOT_EQUALS;
-          else if (type == Cypher25Parser.LT) op = ComparisonExpression.Operator.LESS_THAN;
-          else if (type == Cypher25Parser.GT) op = ComparisonExpression.Operator.GREATER_THAN;
-          else if (type == Cypher25Parser.LE) op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-          else if (type == Cypher25Parser.GE) op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+          else if (type == Cypher25Parser.LT)
+            op = ComparisonExpression.Operator.LESS_THAN;
+          else if (type == Cypher25Parser.GT)
+            op = ComparisonExpression.Operator.GREATER_THAN;
+          else if (type == Cypher25Parser.LE)
+            op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+          else if (type == Cypher25Parser.GE)
+            op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
           if (op != null)
             operators.add(op);
         }
@@ -936,7 +989,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new BooleanExpression() {
         @Override
         public boolean evaluate(final Result result,
-                                final CommandContext context) {
+            final CommandContext context) {
           final Object value = exists.evaluate(result, context);
           return value instanceof Boolean && (Boolean) value;
         }
@@ -1078,8 +1131,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final String text = ctx.getText();
 
     // Try to parse as "variable.property operator value"
-    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)" +
-        "?)");
+    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)?)");
     final Matcher matcher = pattern.matcher(text);
 
     if (matcher.find()) {
@@ -1114,8 +1166,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * labelExpression1 : symbolicNameString  # label name
    */
   private LabelCheckExpression parseLabelCheckExpression(final Expression variableExpr,
-                                                         final Cypher25Parser.LabelExpressionContext labelExprCtx,
-                                                         final String text) {
+      final Cypher25Parser.LabelExpressionContext labelExprCtx,
+      final String text) {
     // Extract labels and operator from the label expression
     final List<String> labels = new ArrayList<>();
     LabelCheckExpression.LabelOperator operator = LabelCheckExpression.LabelOperator.AND;
@@ -1398,6 +1450,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Delegates to ParserUtils for implementation.
    *
    * @param name the name potentially wrapped in backticks
+   *
    * @return the name without backticks
    */
   static String stripBackticks(final String name) {
@@ -1408,7 +1461,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Gets the original text from the input stream for a parse tree context,
    * preserving whitespace and case from the query.
    */
-  static String getOriginalText(final org.antlr.v4.runtime.ParserRuleContext ctx) {
+  static String getOriginalText(final ParserRuleContext ctx) {
     if (ctx.getStart() == null || ctx.getStop() == null)
       return ctx.getText();
     return ctx.getStart().getInputStream().getText(
@@ -1500,6 +1553,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Delegates to ParserUtils for implementation.
    *
    * @param input the string with escape sequences (without surrounding quotes)
+   *
    * @return the decoded string
    */
   static String decodeStringLiteral(final String input) {

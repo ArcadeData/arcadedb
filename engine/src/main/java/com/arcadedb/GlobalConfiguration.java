@@ -258,8 +258,9 @@ public enum GlobalConfiguration {
       Integer.class, 300),
 
   SQL_PARSER_IMPLEMENTATION("arcadedb.sql.parserImplementation", SCOPE.DATABASE,
-      "SQL parser implementation to use. 'antlr' (default) uses the new ANTLR4-based parser with improved error messages. " +
-          "'javacc' uses the legacy JavaCC-based parser for backward compatibility.",
+      """
+      SQL parser implementation to use. 'antlr' (default) uses the new ANTLR4-based parser with improved error messages. \
+      'javacc' uses the legacy JavaCC-based parser for backward compatibility.""",
       String.class, "antlr", Set.of("antlr", "javacc")),
 
   // OPENCYPHER
@@ -270,18 +271,21 @@ public enum GlobalConfiguration {
       "Maximum number of OpenCypher execution plans to keep in cache (frequency-based eviction)", Integer.class, 300),
 
   OPENCYPHER_BULK_CREATE_BATCH_SIZE("arcadedb.opencypher.bulkCreateBatchSize", SCOPE.DATABASE,
-      "Batch size for bulk CREATE operations. When a CREATE follows an UNWIND producing multiple rows, records are accumulated and created in batches to reduce transaction overhead. " +
-      "Higher values improve performance but consume more memory. Default: 20000. Recommended range: 10000-100000. Set to 0 to disable batching.",
+      """
+      Batch size for bulk CREATE operations. When a CREATE follows an UNWIND producing multiple rows, records are accumulated and created in batches to reduce transaction overhead. \
+      Higher values improve performance but consume more memory. Default: 20000. Recommended range: 10000-100000. Set to 0 to disable batching.""",
       Integer.class, 20_000),
 
   OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS("arcadedb.opencypher.loadCsv.allowFileUrls", SCOPE.DATABASE,
-      "Allow LOAD CSV to access local files via file:/// URLs and bare file paths. "
-          + "Disable for security in multi-tenant server deployments.",
+      """
+      Allow LOAD CSV to access local files via file:/// URLs and bare file paths. \
+      Disable for security in multi-tenant server deployments.""",
       Boolean.class, true),
 
   OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY("arcadedb.opencypher.loadCsv.importDirectory", SCOPE.DATABASE,
-      "Root directory for LOAD CSV file:/// URLs. When set, file paths are resolved relative to this "
-          + "directory and path traversal (../) is blocked. Empty string means no restriction.",
+      """
+      Root directory for LOAD CSV file:/// URLs. When set, file paths are resolved relative to this \
+      directory and path traversal (../) is blocked. Empty string means no restriction.""",
       String.class, ""),
 
   // COMMAND
@@ -292,9 +296,10 @@ public enum GlobalConfiguration {
       Integer.class, 100),
 
   GREMLIN_ENGINE("arcadedb.gremlin.engine", SCOPE.DATABASE,
-      "Gremlin engine to use. 'java' (default, secure) uses the native Gremlin parser - recommended for production. " +
-          "'groovy' enables the legacy Groovy engine with security restrictions (use only if needed for compatibility). " +
-          "'auto' attempts Java first, falls back to Groovy if needed (not recommended for security-critical deployments).",
+      """
+      Gremlin engine to use. 'java' (default, secure) uses the native Gremlin parser - recommended for production. \
+      'groovy' enables the legacy Groovy engine with security restrictions (use only if needed for compatibility). \
+      'auto' attempts Java first, falls back to Groovy if needed (not recommended for security-critical deployments).""",
       String.class, "java", Set.of("auto", "groovy", "java")),
 
   /**
@@ -320,10 +325,11 @@ public enum GlobalConfiguration {
 
   // INDEXES
   INDEX_BUILD_CHUNK_SIZE_MB("arcadedb.index.buildChunkSizeMB", SCOPE.DATABASE,
-      "Size in MB for transaction chunks during bulk index creation with WAL disabled. " +
-          "Larger chunks reduce commit overhead but use more memory. " +
-          "Smaller chunks reduce memory pressure but add commit overhead. " +
-          "Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.",
+      """
+      Size in MB for transaction chunks during bulk index creation with WAL disabled. \
+      Larger chunks reduce commit overhead but use more memory. \
+      Smaller chunks reduce memory pressure but add commit overhead. \
+      Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.""",
       Long.class, 50L),
 
   INDEX_COMPACTION_RAM_MB("arcadedb.indexCompactionRAM", SCOPE.DATABASE, "Maximum amount of RAM to use for index compaction, in MB",
@@ -333,29 +339,33 @@ public enum GlobalConfiguration {
       "Minimum number of mutable pages for an index to be schedule for automatic compaction. 0 = disabled", Integer.class, 10),
 
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
-      "Maximum number of vector locations to cache in memory per vector index. " +
-          "Set to -1 for unlimited (backward compatible). " +
-          "Each entry uses ~56 bytes. Recommended: 100000 for datasets with 1M+ vectors (~5.6MB), " +
-          "-1 for smaller datasets.",
+      """
+      Maximum number of vector locations to cache in memory per vector index. \
+      Set to -1 for unlimited (backward compatible). \
+      Each entry uses ~56 bytes. Recommended: 100000 for datasets with 1M+ vectors (~5.6MB), \
+      -1 for smaller datasets.""",
       Integer.class, -1),
 
   VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE("arcadedb.vectorIndex.graphBuildCacheSize", SCOPE.DATABASE,
-      "Maximum number of vectors to cache in memory during HNSW graph building. " +
-          "Higher values speed up construction but use more RAM. " +
-          "RAM usage = cacheSize * (dimensions * 4 + 64) bytes. " +
-          "Recommended: 100000 for 768-dim vectors (~30MB), scale based on dimensionality.",
+      """
+      Maximum number of vectors to cache in memory during HNSW graph building. \
+      Higher values speed up construction but use more RAM. \
+      RAM usage = cacheSize * (dimensions * 4 + 64) bytes. \
+      Recommended: 100000 for 768-dim vectors (~30MB), scale based on dimensionality.""",
       Integer.class, 100_000),
 
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
-      "Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. " +
-          "Higher values reduce rebuild cost but may return slightly stale results in queries. " +
-          "Lower values provide fresher results but rebuild more frequently. " +
-          "Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.",
+      """
+      Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. \
+      Higher values reduce rebuild cost but may return slightly stale results in queries. \
+      Lower values provide fresher results but rebuild more frequently. \
+      Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.""",
       Integer.class, 100),
 
     VECTOR_INDEX_GRAPH_BUILD_DIAGNOSTICS("arcadedb.vectorIndex.graphBuildDiagnostics", SCOPE.DATABASE,
-      "Enable diagnostic logging during vector graph build progress (heap/off-heap memory and index file sizes). " +
-          "This provides visibility during graph construction; disable if any logging overhead is a concern.",
+      """
+      Enable diagnostic logging during vector graph build progress (heap/off-heap memory and index file sizes). \
+      This provides visibility during graph construction; disable if any logging overhead is a concern.""",
         Boolean.class, true),
 
   // NETWORK

@@ -56,8 +56,9 @@ class TriggerSQLTest extends TestHelper {
   @Test
   void createTriggerWithSQL() {
     database.command("sql",
-        "CREATE TRIGGER audit_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE SQL 'INSERT INTO AuditLog SET action = \"create\", timestamp = sysdate()'");
+        """
+        CREATE TRIGGER audit_trigger BEFORE CREATE ON TYPE User \
+        EXECUTE SQL 'INSERT INTO AuditLog SET action = "create", timestamp = sysdate()'""");
 
     assertThat(database.getSchema().existsTrigger("audit_trigger")).isTrue();
     final Trigger trigger = database.getSchema().getTrigger("audit_trigger");
@@ -218,8 +219,9 @@ class TriggerSQLTest extends TestHelper {
   @Test
   void beforeCreateTriggerAbort() {
     database.command("sql",
-        "CREATE TRIGGER abort_trigger BEFORE CREATE ON TYPE User " +
-            "EXECUTE JAVASCRIPT 'false;'"); // Return false to abort
+        """
+        CREATE TRIGGER abort_trigger BEFORE CREATE ON TYPE User \
+        EXECUTE JAVASCRIPT 'false;'"""); // Return false to abort
 
     // Record creation should be silently aborted (no exception, just not saved)
     database.transaction(() -> database.newDocument("User").set("name", "Test").save());

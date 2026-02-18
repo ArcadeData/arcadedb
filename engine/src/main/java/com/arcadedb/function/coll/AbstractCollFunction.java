@@ -21,6 +21,7 @@ package com.arcadedb.function.coll;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
@@ -53,7 +54,7 @@ public abstract class AbstractCollFunction implements StatelessFunction {
     if (arg instanceof List)
       return (List<Object>) arg;
     if (arg instanceof Collection)
-      return new java.util.ArrayList<>((Collection<Object>) arg);
+      return new ArrayList<>((Collection<Object>) arg);
     throw new CommandExecutionException(getName() + "() requires a list argument, got: " + arg.getClass().getSimpleName());
   }
 }

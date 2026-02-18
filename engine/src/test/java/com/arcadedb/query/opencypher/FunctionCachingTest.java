@@ -63,7 +63,7 @@ class FunctionCachingTest {
    * We verify this by creating many nodes with function calls in properties.
    */
   @Test
-  void testFunctionCachingInBulkCreate() {
+  void functionCachingInBulkCreate() {
     // Create 1000 nodes with multiple function calls per node
     final String query = """
         UNWIND range(1, 1000) AS i
@@ -103,7 +103,7 @@ class FunctionCachingTest {
    * (same as the use case from the GitHub issue).
    */
   @Test
-  void testFunctionCachingWithPointAndDuration() {
+  void functionCachingWithPointAndDuration() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Ping");
     });
@@ -147,7 +147,7 @@ class FunctionCachingTest {
    * Test that function caching works correctly across multiple batches.
    */
   @Test
-  void testFunctionCachingAcrossBatches() {
+  void functionCachingAcrossBatches() {
     // Create more records than the default batch size (20,000)
     // to ensure caching works across batch boundaries
     final int recordCount = 25000;

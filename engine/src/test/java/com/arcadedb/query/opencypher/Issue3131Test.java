@@ -80,9 +80,10 @@ class Issue3131Test {
     // 3. RETURN all three elements
 
     final ResultSet rs = database.command("opencypher",
-        "MATCH (a), (b) WHERE ID(a) = $source_id AND ID(b) = $target_id " +
-        "MERGE (a)-[r:in]->(b) " +
-        "RETURN a, b, r",
+        """
+        MATCH (a), (b) WHERE ID(a) = $source_id AND ID(b) = $target_id \
+        MERGE (a)-[r:in]->(b) \
+        RETURN a, b, r""",
         Map.of("source_id", sourceRid.toString(), "target_id", targetRid.toString()));
 
     assertThat(rs.hasNext()).as("Should return one result").isTrue();
@@ -108,16 +109,18 @@ class Issue3131Test {
   void mergeRelationshipIdempotency() {
     // First execution - creates the relationship
     database.command("opencypher",
-        "MATCH (a), (b) WHERE ID(a) = $source_id AND ID(b) = $target_id " +
-        "MERGE (a)-[r:in]->(b) " +
-        "RETURN a, b, r",
+        """
+        MATCH (a), (b) WHERE ID(a) = $source_id AND ID(b) = $target_id \
+        MERGE (a)-[r:in]->(b) \
+        RETURN a, b, r""",
         Map.of("source_id", sourceRid.toString(), "target_id", targetRid.toString()));
 
     // Second execution - should find the existing relationship
     final ResultSet rs = database.command("opencypher",
-        "MATCH (a), (b) WHERE ID(a) = $source_id AND ID(b) = $target_id " +
-        "MERGE (a)-[r:in]->(b) " +
-        "RETURN a, b, r",
+        """
+        MATCH (a), (b) WHERE ID(a) = $source_id AND ID(b) = $target_id \
+        MERGE (a)-[r:in]->(b) \
+        RETURN a, b, r""",
         Map.of("source_id", sourceRid.toString(), "target_id", targetRid.toString()));
 
     assertThat(rs.hasNext()).as("Should return one result").isTrue();

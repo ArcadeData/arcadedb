@@ -282,9 +282,10 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
       final float[] queryVector = normalizeVector(new float[] { 1.0f, 0.4f, 0.2f });
 
       final ResultSet rs = database.query("sql",
-          "SELECT title, content, embedding, " +
-              "`vector.cosineSimilarity`(embedding, ?) as vecSim " +
-              "FROM DocTest",
+          """
+          SELECT title, content, embedding, \
+          `vector.cosineSimilarity`(embedding, ?) as vecSim \
+          FROM DocTest""",
           (Object) queryVector);
 
       int resultCount = 0;
@@ -318,11 +319,12 @@ class SQLVectorHybridSearchBlogPostTest extends TestHelper {
       final float[] queryVector = normalizeVector(new float[] { 1.0f, 0.4f, 0.2f });
 
       final ResultSet rs = database.query("sql",
-          "SELECT title, content, " +
-              "`vector.cosineSimilarity`(embedding, ?) as vecSim " +
-              "FROM DocTest " +
-              "ORDER BY vecSim DESC " +
-              "LIMIT 10",
+          """
+          SELECT title, content, \
+          `vector.cosineSimilarity`(embedding, ?) as vecSim \
+          FROM DocTest \
+          ORDER BY vecSim DESC \
+          LIMIT 10""",
           (Object) queryVector);
 
       assertThat(rs.hasNext()).isTrue();

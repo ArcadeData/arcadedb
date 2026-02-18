@@ -300,8 +300,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     final Object old = get(propertyName);
 
     if (old == null)
-      throw new IllegalArgumentException("Cannot store an embedded document in a null map. Create and set the map " +
-          "first");
+      throw new IllegalArgumentException("""
+          Cannot store an embedded document in a null map. Create and set the map \
+          first""");
 
     if (old instanceof Collection)
       throw new IllegalArgumentException("Cannot store an embedded document in a map because a collection was found");

@@ -40,6 +40,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -231,7 +232,7 @@ public class ExpressionEvaluator {
 
   private Object evaluateMap(final MapExpression expression, final Result result,
       final CommandContext context) {
-    final java.util.LinkedHashMap<String, Object> map = new java.util.LinkedHashMap<>();
+    final LinkedHashMap<String, Object> map = new LinkedHashMap<>();
     for (final Map.Entry<String, Expression> entry : expression.getEntries().entrySet())
       map.put(entry.getKey(), evaluate(entry.getValue(), result, context));
     return map;

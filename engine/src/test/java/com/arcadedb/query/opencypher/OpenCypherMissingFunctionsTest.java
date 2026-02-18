@@ -37,7 +37,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   // ===================== TRIGONOMETRIC FUNCTIONS =====================
 
   @Test
-  void testSin() {
+  void sin() {
     try (final ResultSet rs = database.command("opencypher", "RETURN sin(0) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(0.0, within(1e-10));
@@ -45,7 +45,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testCos() {
+  void cos() {
     try (final ResultSet rs = database.command("opencypher", "RETURN cos(0) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(1.0, within(1e-10));
@@ -53,7 +53,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testTan() {
+  void tan() {
     try (final ResultSet rs = database.command("opencypher", "RETURN tan(0) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(0.0, within(1e-10));
@@ -61,7 +61,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testAsin() {
+  void asin() {
     try (final ResultSet rs = database.command("opencypher", "RETURN asin(1) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(Math.PI / 2, within(1e-10));
@@ -69,7 +69,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testAcos() {
+  void acos() {
     try (final ResultSet rs = database.command("opencypher", "RETURN acos(1) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(0.0, within(1e-10));
@@ -77,7 +77,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testAtan() {
+  void atan() {
     try (final ResultSet rs = database.command("opencypher", "RETURN atan(0) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(0.0, within(1e-10));
@@ -85,7 +85,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testAtan2() {
+  void atan2() {
     try (final ResultSet rs = database.command("opencypher", "RETURN atan2(1, 1) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(Math.PI / 4, within(1e-10));
@@ -93,7 +93,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testDegrees() {
+  void degrees() {
     try (final ResultSet rs = database.command("opencypher", "RETURN degrees(3.141592653589793) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(180.0, within(1e-10));
@@ -101,7 +101,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testRadians() {
+  void radians() {
     try (final ResultSet rs = database.command("opencypher", "RETURN radians(180) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(Math.PI, within(1e-10));
@@ -109,7 +109,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testHaversin() {
+  void haversin() {
     // haversin(0) = (1 - cos(0)) / 2 = (1 - 1) / 2 = 0
     try (final ResultSet rs = database.command("opencypher", "RETURN haversin(0) AS val")) {
       assertThat(rs.hasNext()).isTrue();
@@ -118,7 +118,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testHaversinPi() {
+  void haversinPi() {
     // haversin(pi) = (1 - cos(pi)) / 2 = (1 - (-1)) / 2 = 1
     try (final ResultSet rs = database.command("opencypher", "RETURN haversin(pi()) AS val")) {
       assertThat(rs.hasNext()).isTrue();
@@ -129,7 +129,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   // ===================== LOGARITHMIC FUNCTIONS =====================
 
   @Test
-  void testExp() {
+  void exp() {
     try (final ResultSet rs = database.command("opencypher", "RETURN exp(0) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(1.0, within(1e-10));
@@ -137,7 +137,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testExpE() {
+  void expE() {
     try (final ResultSet rs = database.command("opencypher", "RETURN exp(1) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(Math.E, within(1e-10));
@@ -145,7 +145,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testLog() {
+  void log() {
     try (final ResultSet rs = database.command("opencypher", "RETURN log(e()) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(1.0, within(1e-10));
@@ -153,7 +153,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testLog10() {
+  void log10() {
     try (final ResultSet rs = database.command("opencypher", "RETURN log10(100) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(2.0, within(1e-10));
@@ -163,7 +163,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   // ===================== NULL HANDLING FOR MATH =====================
 
   @Test
-  void testTrigFunctionsWithNull() {
+  void trigFunctionsWithNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN sin(null) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("val")).isNull();
@@ -173,7 +173,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   // ===================== STRING FUNCTIONS =====================
 
   @Test
-  void testTrim() {
+  void trim() {
     try (final ResultSet rs = database.command("opencypher", "RETURN trim('  hello  ') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("hello");
@@ -181,7 +181,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testTrimNull() {
+  void trimNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN trim(null) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("val")).isNull();
@@ -189,7 +189,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testTrimLeading() {
+  void trimLeading() {
     try (final ResultSet rs = database.command("opencypher", "RETURN trim(LEADING 'x' FROM 'xxhelloxx') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("helloxx");
@@ -197,7 +197,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testTrimTrailing() {
+  void trimTrailing() {
     try (final ResultSet rs = database.command("opencypher", "RETURN trim(TRAILING 'x' FROM 'xxhelloxx') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("xxhello");
@@ -205,7 +205,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testTrimBoth() {
+  void trimBoth() {
     try (final ResultSet rs = database.command("opencypher", "RETURN trim(BOTH 'x' FROM 'xxhelloxx') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("hello");
@@ -213,7 +213,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testTrimAllThree() {
+  void trimAllThree() {
     try (final ResultSet rs = database.command("opencypher",
         "RETURN trim(LEADING 'x' FROM 'xxhelloxx') AS lead, trim(TRAILING 'x' FROM 'xxhelloxx') AS trail, trim(BOTH 'x' FROM 'xxhelloxx') AS both")) {
       assertThat(rs.hasNext()).isTrue();
@@ -225,7 +225,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testTrimDefaultFromSyntax() {
+  void trimDefaultFromSyntax() {
     // trim(FROM 'xxhelloxx') should trim whitespace (FROM without mode or character)
     try (final ResultSet rs = database.command("opencypher", "RETURN trim(BOTH FROM '  hello  ') AS val")) {
       assertThat(rs.hasNext()).isTrue();
@@ -234,7 +234,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testReplace() {
+  void replace() {
     try (final ResultSet rs = database.command("opencypher", "RETURN replace('hello world', 'world', 'cypher') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("hello cypher");
@@ -242,7 +242,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testReplaceMultipleOccurrences() {
+  void replaceMultipleOccurrences() {
     try (final ResultSet rs = database.command("opencypher", "RETURN replace('abcabc', 'a', 'x') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("xbcxbc");
@@ -250,7 +250,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testCharLength() {
+  void charLength() {
     try (final ResultSet rs = database.command("opencypher", "RETURN char_length('hello') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).longValue()).isEqualTo(5L);
@@ -258,7 +258,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testCharacterLength() {
+  void characterLength() {
     try (final ResultSet rs = database.command("opencypher", "RETURN character_length('hello') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).longValue()).isEqualTo(5L);
@@ -268,7 +268,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   // ===================== TYPE CONVERSION *OrNull FUNCTIONS =====================
 
   @Test
-  void testToIntegerOrNullWithValidInt() {
+  void toIntegerOrNullWithValidInt() {
     try (final ResultSet rs = database.command("opencypher", "RETURN toIntegerOrNull('42') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).longValue()).isEqualTo(42L);
@@ -276,7 +276,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToIntegerOrNullWithInvalidInput() {
+  void toIntegerOrNullWithInvalidInput() {
     try (final ResultSet rs = database.command("opencypher", "RETURN toIntegerOrNull('abc') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("val")).isNull();
@@ -284,7 +284,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToIntegerOrNullWithBoolean() {
+  void toIntegerOrNullWithBoolean() {
     // In Neo4j, toIntegerOrNull(true) returns null because booleans are not valid for toInteger
     // However, ArcadeDB's toInteger supports booleans, so this should return 1
     try (final ResultSet rs = database.command("opencypher", "RETURN toIntegerOrNull(true) AS val")) {
@@ -294,7 +294,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToFloatOrNullValid() {
+  void toFloatOrNullValid() {
     try (final ResultSet rs = database.command("opencypher", "RETURN toFloatOrNull('3.14') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).doubleValue()).isCloseTo(3.14, within(0.001));
@@ -302,7 +302,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToFloatOrNullInvalid() {
+  void toFloatOrNullInvalid() {
     try (final ResultSet rs = database.command("opencypher", "RETURN toFloatOrNull('not_a_number') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("val")).isNull();
@@ -310,7 +310,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToBooleanOrNullValid() {
+  void toBooleanOrNullValid() {
     try (final ResultSet rs = database.command("opencypher", "RETURN toBooleanOrNull('true') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Boolean>getProperty("val")).isTrue();
@@ -318,7 +318,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToBooleanOrNullFromInteger() {
+  void toBooleanOrNullFromInteger() {
     // toBoolean() supports integers: 0 → false, non-zero → true (issue #3418)
     try (final ResultSet rs = database.command("opencypher", "RETURN toBooleanOrNull(42) AS val")) {
       assertThat(rs.hasNext()).isTrue();
@@ -327,7 +327,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToBooleanOrNullInvalid() {
+  void toBooleanOrNullInvalid() {
     // A list is not convertible to boolean, so toBooleanOrNull should return null
     try (final ResultSet rs = database.command("opencypher", "RETURN toBooleanOrNull([1,2,3]) AS val")) {
       assertThat(rs.hasNext()).isTrue();
@@ -336,7 +336,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToStringOrNullValid() {
+  void toStringOrNullValid() {
     try (final ResultSet rs = database.command("opencypher", "RETURN toStringOrNull(42) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("42");
@@ -344,7 +344,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testToStringOrNullNull() {
+  void toStringOrNullNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN toStringOrNull(null) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("val")).isNull();
@@ -354,7 +354,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   // ===================== SCALAR FUNCTIONS =====================
 
   @Test
-  void testNullIfEqual() {
+  void nullIfEqual() {
     try (final ResultSet rs = database.command("opencypher", "RETURN nullIf(1, 1) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("val")).isNull();
@@ -362,7 +362,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testNullIfNotEqual() {
+  void nullIfNotEqual() {
     try (final ResultSet rs = database.command("opencypher", "RETURN nullIf(1, 2) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("val")).intValue()).isEqualTo(1);
@@ -370,7 +370,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testValueTypeInteger() {
+  void valueTypeInteger() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType(42) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("INTEGER");
@@ -378,7 +378,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testValueTypeFloat() {
+  void valueTypeFloat() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType(3.14) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("FLOAT");
@@ -386,7 +386,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testValueTypeString() {
+  void valueTypeString() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType('hello') AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("STRING");
@@ -394,7 +394,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testValueTypeBoolean() {
+  void valueTypeBoolean() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType(true) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("BOOLEAN");
@@ -402,7 +402,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testValueTypeNull() {
+  void valueTypeNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType(null) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("NULL");
@@ -410,7 +410,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testValueTypeList() {
+  void valueTypeList() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType([1,2,3]) AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("LIST<ANY>");
@@ -420,7 +420,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   // ===================== COMBINED / INTEGRATION TESTS =====================
 
   @Test
-  void testDegreesRadiansRoundTrip() {
+  void degreesRadiansRoundTrip() {
     // degrees(radians(90)) should be 90
     try (final ResultSet rs = database.command("opencypher", "RETURN degrees(radians(90)) AS val")) {
       assertThat(rs.hasNext()).isTrue();
@@ -429,7 +429,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testExpLogRoundTrip() {
+  void expLogRoundTrip() {
     // log(exp(5)) should be 5
     try (final ResultSet rs = database.command("opencypher", "RETURN log(exp(5)) AS val")) {
       assertThat(rs.hasNext()).isTrue();
@@ -438,7 +438,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   }
 
   @Test
-  void testSinCosPythagorean() {
+  void sinCosPythagorean() {
     // sin^2(x) + cos^2(x) = 1
     try (final ResultSet rs = database.command("opencypher", "RETURN sin(1.5)*sin(1.5) + cos(1.5)*cos(1.5) AS val")) {
       assertThat(rs.hasNext()).isTrue();

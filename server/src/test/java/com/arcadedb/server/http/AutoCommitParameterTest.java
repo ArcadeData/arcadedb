@@ -34,12 +34,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Test class for the autoCommit parameter in HTTP query/command endpoints.
  */
-public class AutoCommitParameterTest extends BaseGraphServerTest {
+class AutoCommitParameterTest extends BaseGraphServerTest {
 
   private static final String DATABASE_NAME = "graph";
 
   @Test
-  void testExplicitAutoCommitTrueWithCommand() throws Exception {
+  void explicitAutoCommitTrueWithCommand() throws Exception {
     testEachServer((serverIndex) -> {
       // Create test document type
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc");
@@ -75,7 +75,7 @@ public class AutoCommitParameterTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testExplicitAutoCommitFalseWithCommand() throws Exception {
+  void explicitAutoCommitFalseWithCommand() throws Exception {
     testEachServer((serverIndex) -> {
       // Create test document type if not exists
       try {
@@ -114,7 +114,7 @@ public class AutoCommitParameterTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testDefaultBehaviorWithCommand() throws Exception {
+  void defaultBehaviorWithCommand() throws Exception {
     testEachServer((serverIndex) -> {
       // Create test document type
       try {
@@ -153,7 +153,7 @@ public class AutoCommitParameterTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testAutoCommitTrueWithQuery() throws Exception {
+  void autoCommitTrueWithQuery() throws Exception {
     testEachServer((serverIndex) -> {
       // Create test data
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc4");
@@ -188,7 +188,7 @@ public class AutoCommitParameterTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testAutoCommitParameterWithSessionId() throws Exception {
+  void autoCommitParameterWithSessionId() throws Exception {
     testEachServer((serverIndex) -> {
       // Create test document type
       try {
@@ -262,7 +262,7 @@ public class AutoCommitParameterTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testAutoCommitTrueWithRetries() throws Exception {
+  void autoCommitTrueWithRetries() throws Exception {
     testEachServer((serverIndex) -> {
       // Create test document type
       try {
@@ -302,7 +302,7 @@ public class AutoCommitParameterTest extends BaseGraphServerTest {
   }
 
   @Test
-  void testAutoCommitFalseForReadOperation() throws Exception {
+  void autoCommitFalseForReadOperation() throws Exception {
     testEachServer((serverIndex) -> {
       // Create test data
       try {

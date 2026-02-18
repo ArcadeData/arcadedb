@@ -33,6 +33,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZonedDateTime;
+import java.time.temporal.WeekFields;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -142,8 +144,8 @@ public final class CypherFunctionHelper {
       return new CypherDate((LocalDate) val);
     if (val instanceof LocalDateTime)
       return new CypherLocalDateTime((LocalDateTime) val);
-    if (val instanceof java.time.ZonedDateTime)
-      return new CypherDateTime((java.time.ZonedDateTime) val);
+    if (val instanceof ZonedDateTime)
+      return new CypherDateTime((ZonedDateTime) val);
     throw new CommandExecutionException("Expected temporal value but got: " + (val == null ? "null" : val.getClass().getSimpleName()));
   }
 
@@ -166,7 +168,7 @@ public final class CypherFunctionHelper {
       date = date.withDayOfMonth(((Number) value).intValue());
     value = map.get("dayOfWeek");
     if (value != null)
-      date = date.with(java.time.temporal.WeekFields.ISO.dayOfWeek(), ((Number) value).longValue());
+      date = date.with(WeekFields.ISO.dayOfWeek(), ((Number) value).longValue());
     return date;
   }
 
