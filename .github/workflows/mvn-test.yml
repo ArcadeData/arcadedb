@@ -93,7 +93,7 @@ jobs:
 
       - name: Run Unit Tests with Coverage
         # package phase runs surefire (test) and JaCoCo report (prepare-package) without reaching integration-test phase
-        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf -DexcludedGroups=slow,benchmark
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -pl !e2e,!e2e-perf -DexcludedGroups=slow,benchmark -Dsurefire.includes=**/*Test.java,**/*Suite.java
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
