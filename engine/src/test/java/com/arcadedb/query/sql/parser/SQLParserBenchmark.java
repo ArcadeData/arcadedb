@@ -20,6 +20,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -29,6 +30,7 @@ import java.util.Map;
 /**
  * Benchmark comparing ANTLR vs JavaCC SQL parser performance.
  */
+@Tag("benchmark")
 class SQLParserBenchmark {
 
   private static       Database database;
