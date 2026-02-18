@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -739,6 +740,12 @@ public class MergeStep extends AbstractExecutionStep {
       // If the value is an Expression object, evaluate it in the current result context
       if (value instanceof Expression) {
         value = evaluator.evaluate((Expression) value, result, context);
+      }
+      // Resolve parameter references (e.g., $username -> actual value from context)
+      else if (value instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
+        if (context.getInputParameters() != null)
+          value = context.getInputParameters().get(paramName);
       }
       // Legacy support: If the value looks like a property access (e.g., "BatchEntry.subtype"),
       // try to evaluate it against the current result context
