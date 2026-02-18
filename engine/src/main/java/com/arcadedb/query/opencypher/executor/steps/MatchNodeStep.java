@@ -509,8 +509,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
         expectedValue = evaluator.evaluate((Expression) expectedValue, currentResult, context);
       }
 
-      // Resolve parameter references (e.g., $id -> actual value from context)
-      if (expectedValue instanceof String) {
+      // Resolve parameter references (e.g., $username -> actual value from context)
+      if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) expectedValue).getName();
+        if (context.getInputParameters() != null)
+          expectedValue = context.getInputParameters().get(paramName);
+      } else if (expectedValue instanceof String) {
         final String strValue = (String) expectedValue;
 
         // Check if it's a parameter reference
@@ -518,9 +522,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
           final String paramName = strValue.substring(1);
           if (context.getInputParameters() != null) {
             final Object paramValue = context.getInputParameters().get(paramName);
-            if (paramValue != null) {
+            if (paramValue != null)
               expectedValue = paramValue;
-            }
           }
         }
         // Handle string literals: remove quotes
