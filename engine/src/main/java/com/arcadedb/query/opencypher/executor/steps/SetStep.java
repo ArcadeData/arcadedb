@@ -150,7 +150,21 @@ public class SetStep extends AbstractExecutionStep {
   }
 
   private void applyPropertySet(final SetClause.SetItem item, final Result result) {
-    final Object obj = result.getProperty(item.getVariable());
+    final Object obj;
+    final String variableToUpdate;
+
+    if (item.getTargetExpression() != null) {
+      // Expression target: SET (CASE WHEN ... THEN t END).prop = value
+      // Evaluate the target expression to get the document
+      obj = evaluator.evaluate(item.getTargetExpression(), result, context);
+      if (obj == null)
+        return; // CASE returned null — no-op (conditional SET pattern)
+      variableToUpdate = null;
+    } else {
+      obj = result.getProperty(item.getVariable());
+      variableToUpdate = item.getVariable();
+    }
+
     if (!(obj instanceof Document doc))
       return;
 
@@ -163,7 +177,9 @@ public class SetStep extends AbstractExecutionStep {
       mutableDoc.set(item.getProperty(), value);
     }
     mutableDoc.save();
-    ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+
+    if (variableToUpdate != null)
+      ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
   }
 
   @SuppressWarnings("unchecked")

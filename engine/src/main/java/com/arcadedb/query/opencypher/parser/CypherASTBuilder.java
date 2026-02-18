@@ -336,15 +336,34 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         // Pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values
         if (findPatternExpressionRecursive(propCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
-        final String propExpr = propCtx.propertyExpression().getText();
+        final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
-        if (propExpr.contains(".")) {
-          final String[] parts = propExpr.split("\\.", 2);
-          // Strip parentheses from variable name: (n).name -> n.name
-          String varName = parts[0].trim();
-          if (varName.startsWith("(") && varName.endsWith(")"))
-            varName = varName.substring(1, varName.length() - 1).trim();
-          items.add(new SetClause.SetItem(varName, parts[1], valueExpr));
+        // Build the property name from all property accessors (supports chained access like a.b.c)
+        final StringBuilder propertyName = new StringBuilder();
+        for (final Cypher25Parser.PropertyContext prop : propExprCtx.property())
+          if (propertyName.length() > 0)
+            propertyName.append('.').append(stripBackticks(prop.propertyKeyName().getText()));
+          else
+            propertyName.append(stripBackticks(prop.propertyKeyName().getText()));
+        // Check if the base expression is a simple variable or a complex expression (e.g., CASE)
+        final Cypher25Parser.Expression1Context baseExpr1 = propExprCtx.expression1();
+        if (baseExpr1.variable() != null) {
+          // Simple variable: SET n.prop = value
+          items.add(new SetClause.SetItem(baseExpr1.variable().getText(), propertyName.toString(), valueExpr));
+        } else if (baseExpr1.parenthesizedExpression() != null) {
+          // Check if the parenthesized expression contains just a variable
+          final String innerText = baseExpr1.parenthesizedExpression().expression().getText().trim();
+          // Try to parse as a complex expression (e.g., CASE WHEN ... THEN t END)
+          final Expression targetExpr = expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
+          if (targetExpr instanceof VariableExpression) {
+            items.add(new SetClause.SetItem(((VariableExpression) targetExpr).getVariableName(), propertyName.toString(), valueExpr));
+          } else {
+            items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
+          }
+        } else {
+          // Other expression types as base - parse as expression
+          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
+          items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
         }
       } else if (itemCtx instanceof Cypher25Parser.SetPropsContext propsCtx) {
         // SET n = {map} — replace all properties
