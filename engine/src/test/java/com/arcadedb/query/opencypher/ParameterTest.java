@@ -203,6 +203,38 @@ class ParameterTest {
     }
   }
 
+  /**
+   * Regression test for: MATCH (n:LABEL {prop: $param}) returns nothing when using inline
+   * node-pattern property filters with parameters, while the equivalent literal query works.
+   * The parser stores the parameter as a ParameterReference object in the properties map,
+   * and MatchNodeStep.matchesProperties() was not resolving it before comparing.
+   */
+  @Test
+  void inlineNodePatternParameterMatching() {
+    final Database database = new DatabaseFactory("./target/testparams4").create();
+    try {
+      database.getSchema().getOrCreateVertexType("USER_RIGHTS");
+ 
+      database.transaction(() ->
+          database.command("opencypher", "CREATE (n:USER_RIGHTS {user_name: \"random_username_123\"}) RETURN n"));
+ 
+      // Inline property filter with a string parameter should return the node
+      final ResultSet result = database.query("opencypher",
+          "MATCH (n:USER_RIGHTS {user_name: $username}) RETURN n",
+          Map.of("username", "random_username_123"));
+ 
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(1);
+    } finally {
+      database.drop();
+      FileUtils.deleteRecursively(new File("./target/testparams4"));
+    }
+  }
+
   @BeforeEach
   @AfterEach
   void clean() {

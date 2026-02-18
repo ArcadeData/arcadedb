@@ -509,7 +509,17 @@ public class MatchNodeStep extends AbstractExecutionStep {
         expectedValue = evaluator.evaluate((Expression) expectedValue, currentResult, context);
       }
 
-      // Resolve parameter references (e.g., $id -> actual value from context)
+      // Resolve ParameterReference objects (e.g., {user_name: $username} -> actual value from context)
+      if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) expectedValue).getName();
+        if (context.getInputParameters() != null) {
+          final Object paramValue = context.getInputParameters().get(paramName);
+          if (paramValue != null)
+            expectedValue = paramValue;
+        }
+      }
+ 
+      // Resolve parameter references stored as strings (legacy "$paramName" format)
       if (expectedValue instanceof String) {
         final String strValue = (String) expectedValue;
 
