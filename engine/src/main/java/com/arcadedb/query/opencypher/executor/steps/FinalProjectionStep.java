@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -46,7 +46,7 @@ public class FinalProjectionStep extends AbstractExecutionStep {
 
   public FinalProjectionStep(final ReturnClause returnClause, final CommandContext context) {
     super(context);
-    this.requestedProperties = new HashSet<>();
+    this.requestedProperties = new LinkedHashSet<>();
     this.returnAll = returnClause != null && returnClause.isReturnAll();
 
     // Collect the output names from the RETURN clause
