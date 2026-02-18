@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MaterializedViewImpl implements MaterializedView {
   private final Database database;
@@ -38,6 +39,7 @@ public class MaterializedViewImpl implements MaterializedView {
   private volatile long lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private volatile MaterializedViewChangeListener changeListener;
+  final AtomicBoolean refreshInProgress = new AtomicBoolean(false);
 
   public MaterializedViewImpl(final Database database, final String name, final String query,
       final String backingTypeName, final List<String> sourceTypeNames,
@@ -167,9 +169,13 @@ public class MaterializedViewImpl implements MaterializedView {
     for (int i = 0; i < srcArray.length(); i++)
       sourceTypes.add(srcArray.getString(i));
 
+    final String loadedName = json.getString("name");
+    if (loadedName != null && loadedName.contains("`"))
+      throw new IllegalArgumentException("Materialized view name loaded from schema contains illegal backtick character: " + loadedName);
+
     final MaterializedViewImpl view = new MaterializedViewImpl(
         database,
-        json.getString("name"),
+        loadedName,
         json.getString("query"),
         json.getString("backingType"),
         sourceTypes,
