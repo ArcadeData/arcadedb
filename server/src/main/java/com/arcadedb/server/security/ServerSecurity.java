@@ -364,6 +364,53 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
   }
 
+  public synchronized void saveGroup(final String database, final String name, final JSONObject groupConfig) {
+    final JSONObject root = groupRepository.getGroups().copy();
+    final JSONObject databases = root.getJSONObject("databases");
+
+    if (!databases.has(database))
+      databases.put(database, new JSONObject().put("groups", new JSONObject()));
+
+    final JSONObject dbEntry = databases.getJSONObject(database);
+    if (!dbEntry.has("groups"))
+      dbEntry.put("groups", new JSONObject());
+
+    dbEntry.getJSONObject("groups").put(name, groupConfig);
+
+    root.put("version", LATEST_VERSION);
+    try {
+      groupRepository.save(root);
+    } catch (final IOException e) {
+      throw new ServerSecurityException("Error saving group configuration", e);
+    }
+  }
+
+  public synchronized boolean deleteGroup(final String database, final String name) {
+    final JSONObject root = groupRepository.getGroups().copy();
+    final JSONObject databases = root.getJSONObject("databases");
+
+    if (!databases.has(database))
+      return false;
+
+    final JSONObject dbEntry = databases.getJSONObject(database);
+    if (!dbEntry.has("groups"))
+      return false;
+
+    final JSONObject groups = dbEntry.getJSONObject("groups");
+    if (!groups.has(name))
+      return false;
+
+    groups.remove(name);
+
+    root.put("version", LATEST_VERSION);
+    try {
+      groupRepository.save(root);
+    } catch (final IOException e) {
+      throw new ServerSecurityException("Error saving group configuration", e);
+    }
+    return true;
+  }
+
   protected void askForRootPassword() throws IOException {
     String rootPassword = server != null ?
         server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
@@ -532,12 +579,33 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   protected JSONObject getDatabaseGroupsConfiguration(final String databaseName) {
     final JSONObject groupDatabases = groupRepository.getGroups().getJSONObject("databases");
-    JSONObject databaseConfiguration = groupDatabases.has(databaseName) ? groupDatabases.getJSONObject(databaseName) : null;
-    if (databaseConfiguration == null)
-      // GET DEFAULT (*) DATABASE GROUPS
-      databaseConfiguration = groupDatabases.has(SecurityManager.ANY) ? groupDatabases.getJSONObject("*") : null;
-    if (databaseConfiguration == null || !databaseConfiguration.has("groups"))
+
+    // GET WILDCARD (*) DATABASE GROUPS AS BASE
+    final JSONObject wildcardConfiguration = groupDatabases.has(SecurityManager.ANY) ? groupDatabases.getJSONObject("*") : null;
+    final JSONObject wildcardGroups = (wildcardConfiguration != null && wildcardConfiguration.has("groups"))
+        ? wildcardConfiguration.getJSONObject("groups")
+        : null;
+
+    // GET DATABASE-SPECIFIC GROUPS
+    final JSONObject databaseConfiguration = groupDatabases.has(databaseName) ? groupDatabases.getJSONObject(databaseName) : null;
+    final JSONObject databaseGroups = (databaseConfiguration != null && databaseConfiguration.has("groups"))
+        ? databaseConfiguration.getJSONObject("groups")
+        : null;
+
+    if (wildcardGroups == null && databaseGroups == null)
       return null;
-    return databaseConfiguration.getJSONObject("groups");
+
+    if (databaseGroups == null)
+      return wildcardGroups;
+
+    if (wildcardGroups == null)
+      return databaseGroups;
+
+    // MERGE: START WITH WILDCARD GROUPS, THEN OVERLAY DATABASE-SPECIFIC GROUPS (WHICH TAKE PRECEDENCE)
+    final JSONObject merged = wildcardGroups.copy();
+    for (final String groupName : databaseGroups.keySet())
+      merged.put(groupName, databaseGroups.getJSONObject(groupName));
+
+    return merged;
   }
 }

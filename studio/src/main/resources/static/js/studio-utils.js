@@ -36,9 +36,9 @@ function globalNotifyError(response) {
     let title = json.error ? json.error : "Error";
     let message = json.detail ? json.detail : "Error on execution of the command";
 
-    globalNotify(title, escapeHtml(message), "danger");
+    globalNotify(title, message, "danger");
   } catch (e) {
-    globalNotify("Error", escapeHtml(response), "danger");
+    globalNotify("Error", response, "danger");
   }
 }
 

@@ -26,9 +26,13 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
+import com.arcadedb.server.http.handler.DeleteGroupHandler;
+import com.arcadedb.server.http.handler.DeleteUserHandler;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
 import com.arcadedb.server.http.handler.GetApiTokensHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
+import com.arcadedb.server.http.handler.GetGroupsHandler;
+import com.arcadedb.server.http.handler.GetUsersHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
 import com.arcadedb.server.http.handler.GetOpenApiHandler;
@@ -38,6 +42,9 @@ import com.arcadedb.server.http.handler.GetServerHandler;
 import com.arcadedb.server.http.handler.GetSessionsHandler;
 import com.arcadedb.server.http.handler.PostApiTokenHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
+import com.arcadedb.server.http.handler.PostGroupHandler;
+import com.arcadedb.server.http.handler.PostUserHandler;
+import com.arcadedb.server.http.handler.PutUserHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostLoginHandler;
@@ -180,6 +187,13 @@ public class HttpServer implements ServerPlugin {
         .get("/server/api-tokens", new GetApiTokensHandler(this))
         .post("/server/api-tokens", new PostApiTokenHandler(this))
         .delete("/server/api-tokens", new DeleteApiTokenHandler(this))
+        .get("/server/users", new GetUsersHandler(this))
+        .post("/server/users", new PostUserHandler(this))
+        .put("/server/users", new PutUserHandler(this))
+        .delete("/server/users", new DeleteUserHandler(this))
+        .get("/server/groups", new GetGroupsHandler(this))
+        .post("/server/groups", new PostGroupHandler(this))
+        .delete("/server/groups", new DeleteGroupHandler(this))
     );
 
     // Register MCP routes (always available, MCP config controls enabled/disabled)
