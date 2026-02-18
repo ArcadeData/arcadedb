@@ -2,6 +2,7 @@ var editor = null;
 var globalResultset = null;
 var globalGraphMaxResult = 1000;
 var globalCredentials = null;
+var globalBasicAuth = null;
 var globalUsername = null;
 
 var SESSION_STORAGE_KEY = "arcadedb-session";
@@ -80,6 +81,7 @@ function login() {
 
       // Set global credentials to use Bearer token
       globalCredentials = "Bearer " + token;
+      globalBasicAuth = basicAuth;
       globalUsername = username;
 
       console.log("Session stored, calling updateDatabases");
@@ -311,9 +313,6 @@ function updateDatabases(callback) {
         $("#welcomePanel").show();
         $("#loginPopup").modal("show");
 
-        if (typeof globalNotify === 'function') {
-          globalNotify("Session Expired", "Your session has expired. Please log in again.", "danger");
-        }
         return;
       }
 

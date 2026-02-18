@@ -34,6 +34,7 @@
         <li class="nav-item"><a data-toggle="tab" href="#tab-metrics" class="nav-link" id="tab-metrics-sel">Metrics</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-settings" class="nav-link" id="tab-server-settings-sel">Server Settings</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-backup" class="nav-link" id="tab-server-backup-sel">Backup</a></li>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-server-mcp" class="nav-link" id="tab-server-mcp-sel">MCP</a></li>
       </ul>
     </div>
   </div>
@@ -292,6 +293,74 @@
                   <div class="col mb-3">
                     <label for="backupYearly" class="form-label small">Yearly</label>
                     <input type="number" class="form-control form-control-sm" id="backupYearly" value="3" min="0">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-pane fade" id="tab-server-mcp" role="tabpanel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span class="text-muted small">MCP allows LLM clients (Claude Desktop, Cursor) to interact with ArcadeDB using natural language.</span>
+        <div>
+          <button class="btn btn-sm btn-outline-primary" onclick="loadMCPConfig()"><i class="fa fa-sync"></i> Refresh</button>
+          <button class="btn btn-sm btn-success" onclick="saveMCPConfig()"><i class="fa fa-save"></i> Save</button>
+        </div>
+      </div>
+
+      <div id="mcpConfigForm">
+        <div class="row">
+          <!-- Left column: Settings -->
+          <div class="col-md-5">
+            <div class="card mb-2">
+              <div class="card-header py-1"><strong>Settings</strong></div>
+              <div class="card-body py-2">
+                <div class="d-flex align-items-center mb-2">
+                  <label for="mcpEnabled" class="form-label mb-0 me-2 small">MCP Server</label>
+                  <select id="mcpEnabled" class="form-select form-select-sm" style="width:auto">
+                    <option value="true">Enabled</option>
+                    <option value="false">Disabled</option>
+                  </select>
+                </div>
+                <div class="small fw-bold mb-1">Permissions</div>
+                <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" id="mcpAllowReads" checked disabled><label class="form-check-label small" for="mcpAllowReads">Reads</label></div>
+                <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" id="mcpAllowInsert"><label class="form-check-label small" for="mcpAllowInsert">Insert</label></div>
+                <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" id="mcpAllowUpdate"><label class="form-check-label small" for="mcpAllowUpdate">Update</label></div>
+                <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" id="mcpAllowDelete"><label class="form-check-label small" for="mcpAllowDelete">Delete</label></div>
+                <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" id="mcpAllowSchemaChange"><label class="form-check-label small" for="mcpAllowSchemaChange">Schema</label></div>
+                <hr class="my-2">
+                <div class="small fw-bold mb-1">Allowed Users</div>
+                <div class="input-group input-group-sm mb-1" style="max-width:280px">
+                  <input type="text" class="form-control" id="mcpNewUser" placeholder="Username">
+                  <button class="btn btn-outline-secondary" onclick="addMCPUser()">Add</button>
+                </div>
+                <div id="mcpUserList"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right column: Connection Info -->
+          <div class="col-md-7">
+            <div class="card mb-2">
+              <div class="card-header py-1"><strong>Connection Info</strong></div>
+              <div class="card-body py-2">
+                <ul class="nav nav-tabs nav-tabs-sm mb-2" role="tablist">
+                  <li class="nav-item"><a class="nav-link active py-1 small" data-toggle="tab" href="#mcp-config-claude-desktop">Claude Desktop</a></li>
+                  <li class="nav-item"><a class="nav-link py-1 small" data-toggle="tab" href="#mcp-config-claude-code">Claude Code / Cursor</a></li>
+                </ul>
+                <div class="tab-content">
+                  <div class="tab-pane fade show active" id="mcp-config-claude-desktop" role="tabpanel">
+                    <p class="small text-muted mb-1">Copy into <code>claude_desktop_config.json</code> (requires <code>npx</code> / Node.js):</p>
+                    <pre class="bg-light p-2 rounded small mb-1" id="mcpConfigDesktop" style="max-height:220px;overflow:auto;font-size:0.8rem"></pre>
+                    <button class="btn btn-sm btn-primary" onclick="copyMCPConfig('mcpConfigDesktop')"><i class="fa fa-copy"></i> Copy</button>
+                  </div>
+                  <div class="tab-pane fade" id="mcp-config-claude-code" role="tabpanel">
+                    <p class="small text-muted mb-1">Add with <code>claude mcp add arcadedb</code> or copy into MCP settings:</p>
+                    <pre class="bg-light p-2 rounded small mb-1" id="mcpConfigCode" style="max-height:220px;overflow:auto;font-size:0.8rem"></pre>
+                    <button class="btn btn-sm btn-primary" onclick="copyMCPConfig('mcpConfigCode')"><i class="fa fa-copy"></i> Copy</button>
                   </div>
                 </div>
               </div>

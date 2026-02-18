@@ -867,6 +867,160 @@ function saveBackupConfig() {
     });
 }
 
+// MCP configuration
+var mcpConfigData = null;
+var mcpConfigLoaded = false;
+
+function loadMCPConfig() {
+  jQuery
+    .ajax({
+      type: "GET",
+      url: "api/v1/mcp/config",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      mcpConfigData = data;
+      mcpConfigLoaded = true;
+      populateMCPConfigForm(data);
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      globalNotifyError(jqXHR.responseText);
+      mcpConfigLoaded = false;
+    });
+}
+
+function populateMCPConfigForm(config) {
+  $("#mcpEnabled").val(config.enabled ? "true" : "false");
+  $("#mcpAllowReads").prop("checked", config.allowReads !== false);
+  $("#mcpAllowInsert").prop("checked", config.allowInsert === true);
+  $("#mcpAllowUpdate").prop("checked", config.allowUpdate === true);
+  $("#mcpAllowDelete").prop("checked", config.allowDelete === true);
+  $("#mcpAllowSchemaChange").prop("checked", config.allowSchemaChange === true);
+
+  renderMCPUserList(config.allowedUsers || ["root"]);
+  updateMCPConnectionInfo();
+}
+
+function renderMCPUserList(users) {
+  var html = "";
+  for (var i = 0; i < users.length; i++) {
+    html +=
+      '<span class="badge bg-secondary me-1 mb-1">' +
+      escapeHtml(users[i]) +
+      ' <a href="#" onclick="removeMCPUser(\'' +
+      escapeHtml(users[i]) +
+      "')\" class=\"text-white ms-1\"><i class=\"fa fa-times\"></i></a></span>";
+  }
+  $("#mcpUserList").html(html);
+}
+
+function addMCPUser() {
+  var username = $("#mcpNewUser").val().trim();
+  if (!username) return;
+
+  var users = getMCPUsers();
+  if (users.indexOf(username) === -1) {
+    users.push(username);
+    renderMCPUserList(users);
+  }
+  $("#mcpNewUser").val("");
+}
+
+function removeMCPUser(username) {
+  var users = getMCPUsers();
+  users = users.filter(function (u) {
+    return u !== username;
+  });
+  if (users.length === 0) users = ["root"];
+  renderMCPUserList(users);
+}
+
+function getMCPUsers() {
+  var users = [];
+  $("#mcpUserList .badge").each(function () {
+    var text = $(this).clone().children().remove().end().text().trim();
+    if (text) users.push(text);
+  });
+  return users;
+}
+
+function saveMCPConfig() {
+  var config = {
+    enabled: $("#mcpEnabled").val() === "true",
+    allowReads: true,
+    allowInsert: $("#mcpAllowInsert").is(":checked"),
+    allowUpdate: $("#mcpAllowUpdate").is(":checked"),
+    allowDelete: $("#mcpAllowDelete").is(":checked"),
+    allowSchemaChange: $("#mcpAllowSchemaChange").is(":checked"),
+    allowedUsers: getMCPUsers(),
+  };
+
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/mcp/config",
+      data: JSON.stringify(config),
+      contentType: "application/json",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      mcpConfigData = data;
+      globalNotify("MCP Configuration", "Configuration saved successfully", "success");
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      globalNotifyError(jqXHR.responseText);
+    });
+}
+
+function updateMCPConnectionInfo() {
+  var host = window.location.hostname;
+  var port = window.location.port || "2480";
+  var url = window.location.protocol + "//" + host + ":" + port + "/api/v1/mcp";
+
+  var authHeader = globalBasicAuth || "Basic <base64(username:password)>";
+
+  // Claude Desktop format (uses npx mcp-remote bridge)
+  var desktopConfig = {
+    mcpServers: {
+      arcadedb: {
+        command: "npx",
+        args: [
+          "mcp-remote",
+          url,
+          "--header",
+          "Authorization: " + authHeader
+        ]
+      }
+    }
+  };
+
+  // Claude Code / Cursor format (direct Streamable HTTP)
+  var codeConfig = {
+    mcpServers: {
+      arcadedb: {
+        url: url,
+        headers: {
+          Authorization: authHeader
+        }
+      }
+    }
+  };
+
+  $("#mcpConfigDesktop").text(JSON.stringify(desktopConfig, null, 2));
+  $("#mcpConfigCode").text(JSON.stringify(codeConfig, null, 2));
+}
+
+function copyMCPConfig(elementId) {
+  var text = $("#" + elementId).text();
+  navigator.clipboard.writeText(text).then(function () {
+    globalNotify("Copied", "MCP configuration copied to clipboard", "success");
+  });
+}
+
 document.addEventListener("DOMContentLoaded", function (event) {
   $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
     var activeTab = this.id;
@@ -877,6 +1031,10 @@ document.addEventListener("DOMContentLoaded", function (event) {
     } else if (activeTab == "tab-server-backup-sel") {
       if (!backupConfigLoaded) {
         loadBackupConfig();
+      }
+    } else if (activeTab == "tab-server-mcp-sel") {
+      if (!mcpConfigLoaded) {
+        loadMCPConfig();
       }
     }
   });
