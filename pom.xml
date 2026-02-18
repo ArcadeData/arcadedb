@@ -90,6 +90,8 @@
         <undertow-core.version>2.3.23.Final</undertow-core.version>
         <mockito-core.version>5.21.0</mockito-core.version>
         <neo4j-driver.version>5.28.10</neo4j-driver.version>
+        <byte-buddy.version>1.17.7</byte-buddy.version>
+
 
         <protobuf-maven-plugin.version>4.1.3</protobuf-maven-plugin.version>
         <grpc.version>1.79.0</grpc.version>
