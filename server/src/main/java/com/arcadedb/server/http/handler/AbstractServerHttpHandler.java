@@ -100,13 +100,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           if (auth.startsWith(AUTHORIZATION_BEARER)) {
             // Bearer token authentication
             final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
-            final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
-            if (authSession == null) {
-              exchange.setStatusCode(401);
-              sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
-              return;
+
+            if (com.arcadedb.server.security.ApiTokenConfiguration.isApiToken(token)) {
+              // API token authentication (at- prefix)
+              user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
+            } else {
+              // Session token authentication (AU- prefix)
+              final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+              if (authSession == null) {
+                exchange.setStatusCode(401);
+                sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
+                return;
+              }
+              user = authSession.getUser();
             }
-            user = authSession.getUser();
 
           } else if (auth.startsWith(AUTHORIZATION_BASIC)) {
             // Basic authentication

@@ -18,12 +18,10 @@
  */
 package com.arcadedb.server.mcp;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.test.BaseGraphServerTest;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -40,12 +38,6 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   private static final String MCP_URL        = "http://127.0.0.1:2480/api/v1/mcp";
   private static final String MCP_CONFIG_URL = "http://127.0.0.1:2480/api/v1/mcp/config";
 
-  @Override
-  public void setTestConfiguration() {
-    super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("MCP:com.arcadedb.server.mcp.MCPServerPlugin");
-  }
-
   @BeforeEach
   public void enableMCP() throws Exception {
     // MCP is disabled by default, enable it for tests
@@ -53,13 +45,6 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
         .put("enabled", true)
         .put("allowReads", true)
         .put("allowedUsers", new JSONArray().put("root")));
-  }
-
-  @AfterEach
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
   }
 
   @Test

@@ -36,6 +36,7 @@ public class ServerSecurityUser implements SecurityUser {
   private       Set<String>                                           databasesNames;
   private       String                                                password;
   private final ConcurrentHashMap<String, ServerSecurityDatabaseUser> databaseCache = new ConcurrentHashMap();
+  private       JSONObject                                            syntheticGroupConfig;
 
   public ServerSecurityUser(final ArcadeDBServer server, final JSONObject userConfiguration) {
     this.server = server;
@@ -122,6 +123,11 @@ public class ServerSecurityUser implements SecurityUser {
     return this;
   }
 
+  public ServerSecurityUser withSyntheticGroupConfig(final JSONObject syntheticGroupConfig) {
+    this.syntheticGroupConfig = syntheticGroupConfig;
+    return this;
+  }
+
   @Override
   public Set<String> getAuthorizedDatabases() {
     return databasesNames;
@@ -161,7 +167,9 @@ public class ServerSecurityUser implements SecurityUser {
 
     if (database != null) {
       if (!SecurityManager.ANY.equals(database.getName())) {
-        final JSONObject databaseGroups = server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
+        final JSONObject databaseGroups = syntheticGroupConfig != null ?
+            syntheticGroupConfig :
+            server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
         dbu.updateDatabaseConfiguration(databaseGroups);
         dbu.updateFileAccess((DatabaseInternal) database, databaseGroups);
       }

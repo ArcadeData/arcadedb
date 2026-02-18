@@ -68,6 +68,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private static final SecureRandom                    RANDOM               = new SecureRandom();
   public static final  int                             SALT_SIZE            = 32;
   private              Timer                           reloadConfigurationTimer;
+  private final        ApiTokenConfiguration           apiTokenConfig;
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -90,6 +91,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       }
       return null;
     });
+
+    apiTokenConfig = new ApiTokenConfiguration(configPath);
 
     try {
       secretKeyFactory = SecretKeyFactory.getInstance(algorithm);
@@ -127,6 +130,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
         askForRootPassword();
+
+      apiTokenConfig.load();
 
       final long fileLastModified = usersRepository.getFileLastModified();
       if (fileLastModified > -1 && reloadConfigurationTimer == null) {
@@ -478,6 +483,51 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       saveUsers();
     } else
       createUser(new JSONObject().put("name", "root").put("password", encodedPassword));
+  }
+
+  public ApiTokenConfiguration getApiTokenConfiguration() {
+    return apiTokenConfig;
+  }
+
+  public ServerSecurityUser authenticateByApiToken(final String tokenValue) {
+    final JSONObject tokenJson = apiTokenConfig.getToken(tokenValue);
+    if (tokenJson == null)
+      throw new ServerSecurityException("Invalid or expired API token");
+
+    final String database = tokenJson.getString("database");
+    final String tokenName = tokenJson.getString("name");
+    final JSONObject permissions = tokenJson.getJSONObject("permissions");
+
+    // Build synthetic group config from token permissions
+    final String syntheticGroupName = "_apitoken_" + tokenName;
+    final JSONObject groupDef = new JSONObject();
+
+    // Types permissions
+    if (permissions.has("types"))
+      groupDef.put("types", permissions.getJSONObject("types"));
+    else
+      groupDef.put("types", new JSONObject().put("*", new JSONObject().put("access", new com.arcadedb.serializer.json.JSONArray())));
+
+    // Database-level access
+    if (permissions.has("database"))
+      groupDef.put("access", permissions.getJSONArray("database"));
+    else
+      groupDef.put("access", new com.arcadedb.serializer.json.JSONArray());
+
+    groupDef.put("resultSetLimit", -1L);
+    groupDef.put("readTimeout", -1L);
+
+    final JSONObject syntheticGroupConfig = new JSONObject();
+    syntheticGroupConfig.put(syntheticGroupName, groupDef);
+
+    // Build synthetic user configuration
+    final JSONObject userConfig = new JSONObject();
+    userConfig.put("name", "apitoken:" + tokenName);
+    userConfig.put("databases", new JSONObject().put(database, new com.arcadedb.serializer.json.JSONArray().put(syntheticGroupName)));
+
+    final ServerSecurityUser user = new ServerSecurityUser(server, userConfig);
+    user.withSyntheticGroupConfig(syntheticGroupConfig);
+    return user;
   }
 
   protected JSONObject getDatabaseGroupsConfiguration(final String databaseName) {
