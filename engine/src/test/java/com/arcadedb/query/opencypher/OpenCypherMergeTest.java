@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -265,6 +266,61 @@ public class OpenCypherMergeTest {
     assertThat(countVerify.hasNext()).isTrue();
     final Long count = (Long) countVerify.next().getProperty("cnt");
     assertThat(count).isEqualTo(1L);
+  }
+
+  /**
+   * Regression test: MERGE with a parameter reference in properties should find an existing node.
+   */
+  @Test
+  void mergeFindsNodeWithParameterReference() {
+    database.getSchema().getOrCreateVertexType("USER_RIGHTS");
+
+    // Create the node with a literal property value
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:USER_RIGHTS {user_name: \"random_username_123\"}) RETURN n");
+    });
+
+    // MERGE using a parameter reference - should find the existing node, not create a duplicate
+    database.transaction(() -> {
+      final ResultSet result = database.command("opencypher",
+          "MERGE (n:USER_RIGHTS {user_name: $username}) RETURN n",
+          Map.of("username", "random_username_123"));
+      assertThat(result.hasNext()).isTrue();
+      final Vertex v = (Vertex) result.next().toElement();
+      assertThat((String) v.get("user_name")).isEqualTo("random_username_123");
+    });
+
+    // Verify only one node was created (MERGE did not duplicate)
+    final ResultSet verify = database.query("opencypher", "MATCH (n:USER_RIGHTS) RETURN n");
+    int count = 0;
+    while (verify.hasNext()) {
+      verify.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(1);
+  }
+
+  /**
+   * Regression test: MERGE with a parameter reference should create a node when none exists.
+   */
+  @Test
+  void mergeCreatesNodeWithParameterReference() {
+    database.getSchema().getOrCreateVertexType("USER_RIGHTS");
+
+    // MERGE using a parameter reference - node does not exist yet, should be created
+    database.transaction(() -> {
+      final ResultSet result = database.command("opencypher",
+          "MERGE (n:USER_RIGHTS {user_name: $username}) RETURN n",
+          Map.of("username", "new_user_456"));
+      assertThat(result.hasNext()).isTrue();
+      final Vertex v = (Vertex) result.next().toElement();
+      assertThat((String) v.get("user_name")).isEqualTo("new_user_456");
+    });
+
+    // Verify exactly one node was created
+    final ResultSet verify = database.query("opencypher",
+        "MATCH (n:USER_RIGHTS {user_name: \"new_user_456\"}) RETURN n");
+    assertThat(verify.hasNext()).isTrue();
   }
 
   /**
