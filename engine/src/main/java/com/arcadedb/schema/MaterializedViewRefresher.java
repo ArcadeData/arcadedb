@@ -34,8 +34,8 @@ public class MaterializedViewRefresher {
       final String backingTypeName = view.getBackingTypeName();
 
       database.transaction(() -> {
-        // Delete existing data
-        database.command("sql", "DELETE FROM `" + backingTypeName + "`");
+        // Truncate existing data — faster than DELETE FROM (no per-record WAL entries)
+        database.command("sql", "TRUNCATE TYPE `" + backingTypeName + "` UNSAFE");
 
         // Execute the defining query and insert results
         try (final ResultSet rs = database.query("sql", view.getQuery())) {

@@ -575,12 +575,12 @@ public class LocalSchema implements Schema {
   // -- Materialized View management --
 
   @Override
-  public boolean existsMaterializedView(final String viewName) {
+  public synchronized boolean existsMaterializedView(final String viewName) {
     return materializedViews.containsKey(viewName);
   }
 
   @Override
-  public MaterializedView getMaterializedView(final String viewName) {
+  public synchronized MaterializedView getMaterializedView(final String viewName) {
     final MaterializedViewImpl view = materializedViews.get(viewName);
     if (view == null)
       throw new SchemaException("Materialized view '" + viewName + "' not found");
@@ -588,12 +588,12 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public MaterializedView[] getMaterializedViews() {
+  public synchronized MaterializedView[] getMaterializedViews() {
     return materializedViews.values().toArray(new MaterializedView[0]);
   }
 
   @Override
-  public void dropMaterializedView(final String viewName) {
+  public synchronized void dropMaterializedView(final String viewName) {
     final MaterializedViewImpl view = materializedViews.get(viewName);
     if (view == null)
       throw new SchemaException("Materialized view '" + viewName + "' not found");
@@ -622,7 +622,7 @@ public class LocalSchema implements Schema {
   }
 
   @Override
-  public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
+  public synchronized void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
       final long newIntervalMs) {
     final MaterializedViewImpl oldView = materializedViews.get(viewName);
     if (oldView == null)

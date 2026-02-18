@@ -71,9 +71,11 @@ public class AlterMaterializedViewStatement extends DDLStatement {
   @Override
   public String toString() {
     final StringBuilder sb = new StringBuilder("ALTER MATERIALIZED VIEW ");
-    sb.append(name).append(" REFRESH ").append(refreshMode);
+    sb.append(name).append(" REFRESH ");
     if ("PERIODIC".equalsIgnoreCase(refreshMode) && refreshInterval > 0)
-      sb.append(" EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
+      sb.append("EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
+    else
+      sb.append(refreshMode);
     return sb.toString();
   }
 }

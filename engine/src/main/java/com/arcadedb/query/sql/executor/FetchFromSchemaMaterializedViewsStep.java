@@ -90,7 +90,7 @@ public class FetchFromSchemaMaterializedViewsStep extends AbstractExecutionStep 
 
       @Override
       public void close() {
-        result.clear();
+        // nothing to release — backing data is schema metadata held in memory
       }
 
       @Override
