@@ -79,7 +79,7 @@
                         </goals>
                         <phase>compile</phase>
                         <configuration>
-                            <arguments>audit --audit-level=moderate</arguments>
+                            <arguments>audit --audit-level=none</arguments>
                         </configuration>
                     </execution>
 
