@@ -19,10 +19,14 @@
 package com.arcadedb.query.opencypher.temporal;
 
 import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
 import java.time.temporal.WeekFields;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * OpenCypher Date value wrapping java.time.LocalDate.
@@ -52,7 +56,7 @@ public class CypherDate implements CypherTemporalValue {
   static LocalDate parseLocalDate(final String str) {
     // Week date: 2015-W30, 2015W30, 2015-W30-2, 2015W302
     if (str.contains("W")) {
-      final java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+      final Matcher m = Pattern.compile(
           "([-]?\\d{4})-?W(\\d{2})(?:-?(\\d))?").matcher(str);
       if (m.matches()) {
         final int year = Integer.parseInt(m.group(1));
@@ -76,13 +80,13 @@ public class CypherDate implements CypherTemporalValue {
     }
     // Compact date: 20150721
     if (str.matches("[-]?\\d{8}"))
-      return LocalDate.parse(str, java.time.format.DateTimeFormatter.BASIC_ISO_DATE);
+      return LocalDate.parse(str, DateTimeFormatter.BASIC_ISO_DATE);
     // Year-month: 2015-07
     if (str.matches("[-]?\\d{4}-\\d{2}"))
-      return java.time.YearMonth.parse(str).atDay(1);
+      return YearMonth.parse(str).atDay(1);
     // Compact year-month: 201507
     if (str.matches("[-]?\\d{6}"))
-      return java.time.YearMonth.of(Integer.parseInt(str.substring(0, 4)), Integer.parseInt(str.substring(4, 6))).atDay(1);
+      return YearMonth.of(Integer.parseInt(str.substring(0, 4)), Integer.parseInt(str.substring(4, 6))).atDay(1);
     // Year only: 2015
     if (str.matches("[-]?\\d{4}"))
       return LocalDate.of(Integer.parseInt(str), 1, 1);

@@ -18,25 +18,23 @@
  */
 package com.arcadedb.query.opencypher.temporal;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
+import java.time.*;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
 import java.time.temporal.Temporal;
 import java.time.temporal.TemporalAdjusters;
 import java.time.temporal.WeekFields;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Utility methods for temporal parsing and operations.
  */
 public final class TemporalUtil {
 
-  private static final java.util.regex.Pattern COMPACT_OFFSET = java.util.regex.Pattern.compile(
+  private static final Pattern COMPACT_OFFSET = Pattern.compile(
       "([+-])(\\d{2})(\\d{2})(?!:)");
 
   private TemporalUtil() {
@@ -48,7 +46,7 @@ public final class TemporalUtil {
    */
   public static String normalizeOffsetInString(final String str) {
     // Find timezone offset pattern: +HHMM or -HHMM (not followed by colon, not preceded by colon)
-    final java.util.regex.Matcher m = COMPACT_OFFSET.matcher(str);
+    final Matcher m = COMPACT_OFFSET.matcher(str);
     if (m.find()) {
       final StringBuffer sb = new StringBuffer();
       m.appendReplacement(sb, "$1$2:$3");
@@ -195,7 +193,7 @@ public final class TemporalUtil {
     // Adjust for time-of-day: if we overestimate months, the remainder would have wrong sign
     if (totalMonths != 0) {
       final LocalDateTime afterMonths = fromDT.plusMonths(totalMonths);
-      final java.time.Duration remainder = java.time.Duration.between(afterMonths, toDT);
+      final Duration remainder = Duration.between(afterMonths, toDT);
       if (totalMonths > 0 && remainder.isNegative())
         totalMonths--;
       else if (totalMonths < 0 && !remainder.isNegative() && !remainder.isZero())
@@ -219,7 +217,7 @@ public final class TemporalUtil {
     // Adjust for time-of-day: if we overestimate days, the remainder would have wrong sign
     if (totalDays != 0) {
       final LocalDateTime afterDays = fromDT.plusDays(totalDays);
-      final java.time.Duration remainder = java.time.Duration.between(afterDays, toDT);
+      final Duration remainder = Duration.between(afterDays, toDT);
       if (totalDays > 0 && remainder.isNegative())
         totalDays--;
       else if (totalDays < 0 && !remainder.isNegative() && !remainder.isZero())
@@ -237,7 +235,7 @@ public final class TemporalUtil {
     if (isTimeOnly(from) || isTimeOnly(to)) {
       // Two CypherTime values: compare by instant (UTC-normalized)
       if (from instanceof CypherTime && to instanceof CypherTime) {
-        final java.time.Duration duration = java.time.Duration.between(
+        final Duration duration = Duration.between(
             ((CypherTime) from).getValue(), ((CypherTime) to).getValue());
         return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
       }
@@ -248,13 +246,13 @@ public final class TemporalUtil {
         final LocalDate refDate = getReferenceDate(zoned);
         final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
         final ZonedDateTime toZDT = toZonedDateTime(to, zone, refDate);
-        final java.time.Duration duration = java.time.Duration.between(fromZDT, toZDT);
+        final Duration duration = Duration.between(fromZDT, toZDT);
         return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
       }
       // Otherwise compare local times
       final LocalTime fromTime = extractTime(from);
       final LocalTime toTime = extractTime(to);
-      final java.time.Duration duration = java.time.Duration.between(fromTime, toTime);
+      final Duration duration = Duration.between(fromTime, toTime);
       return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
     }
     // Both have date components — handle DST-aware computation
@@ -264,12 +262,12 @@ public final class TemporalUtil {
       final LocalDate refDate = getReferenceDate(zoned);
       final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
       final ZonedDateTime toZDT = toZonedDateTime(to, zone, refDate);
-      final java.time.Duration duration = java.time.Duration.between(fromZDT, toZDT);
+      final Duration duration = Duration.between(fromZDT, toZDT);
       return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
     }
     final LocalDateTime fromDT = extractDateTime(from);
     final LocalDateTime toDT = extractDateTime(to);
-    final java.time.Duration duration = java.time.Duration.between(fromDT, toDT);
+    final Duration duration = Duration.between(fromDT, toDT);
     return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
   }
 
@@ -282,7 +280,7 @@ public final class TemporalUtil {
     if (isTimeOnly(from) || isTimeOnly(to)) {
       // Two CypherTime values: compare by instant (UTC-normalized)
       if (from instanceof CypherTime && to instanceof CypherTime) {
-        final java.time.Duration timeDur = java.time.Duration.between(
+        final Duration timeDur = Duration.between(
             ((CypherTime) from).getValue(), ((CypherTime) to).getValue());
         return new CypherDuration(0, 0, timeDur.getSeconds(), timeDur.getNano());
       }
@@ -293,13 +291,13 @@ public final class TemporalUtil {
         final LocalDate refDate = getReferenceDate(zoned);
         final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
         final ZonedDateTime toZDT = toZonedDateTime(to, zone, refDate);
-        final java.time.Duration timeDur = java.time.Duration.between(fromZDT, toZDT);
+        final Duration timeDur = Duration.between(fromZDT, toZDT);
         return new CypherDuration(0, 0, timeDur.getSeconds(), timeDur.getNano());
       }
       // Otherwise compare local times
       final LocalTime fromTime = extractTime(from);
       final LocalTime toTime = extractTime(to);
-      final java.time.Duration timeDur = java.time.Duration.between(fromTime, toTime);
+      final Duration timeDur = Duration.between(fromTime, toTime);
       return new CypherDuration(0, 0, timeDur.getSeconds(), timeDur.getNano());
     }
 
@@ -308,13 +306,13 @@ public final class TemporalUtil {
     final LocalDateTime toDT = resolveDateTime(to, from);
 
     // Calendar component: months and days
-    final java.time.Period period = fromDT.toLocalDate().until(toDT.toLocalDate());
+    final Period period = fromDT.toLocalDate().until(toDT.toLocalDate());
     long months = period.toTotalMonths();
     long days = period.getDays();
 
     // Clock component: seconds between same-day times
     final LocalDateTime afterCalendar = fromDT.plusMonths(months).plusDays(days);
-    final java.time.Duration clockDuration = java.time.Duration.between(afterCalendar, toDT);
+    final Duration clockDuration = Duration.between(afterCalendar, toDT);
     long seconds = clockDuration.getSeconds();
     int nanos = clockDuration.getNano();
 
@@ -350,7 +348,7 @@ public final class TemporalUtil {
    * Per Cypher spec, these are additive: total = millisecond*1_000_000 + microsecond*1_000 + nanosecond.
    * If none are present, returns the defaultNanos value.
    */
-  public static int computeNanos(final java.util.Map<String, Object> map, final int defaultNanos) {
+  public static int computeNanos(final Map<String, Object> map, final int defaultNanos) {
     final boolean hasMs = map.containsKey("millisecond");
     final boolean hasUs = map.containsKey("microsecond");
     final boolean hasNs = map.containsKey("nanosecond");
@@ -472,17 +470,17 @@ public final class TemporalUtil {
     return LocalDate.of(0, 1, 1);
   }
 
-  private static java.time.Instant toInstant(final CypherTemporalValue val) {
+  private static Instant toInstant(final CypherTemporalValue val) {
     if (val instanceof CypherDateTime)
       return ((CypherDateTime) val).getValue().toInstant();
     if (val instanceof CypherDate)
-      return ((CypherDate) val).getValue().atStartOfDay(java.time.ZoneOffset.UTC).toInstant();
+      return ((CypherDate) val).getValue().atStartOfDay(ZoneOffset.UTC).toInstant();
     if (val instanceof CypherLocalDateTime)
-      return ((CypherLocalDateTime) val).getValue().atZone(java.time.ZoneOffset.UTC).toInstant();
+      return ((CypherLocalDateTime) val).getValue().atZone(ZoneOffset.UTC).toInstant();
     if (val instanceof CypherTime)
       return ((CypherTime) val).getValue().atDate(LocalDate.of(0, 1, 1)).toInstant();
     if (val instanceof CypherLocalTime)
-      return LocalDateTime.of(LocalDate.of(0, 1, 1), ((CypherLocalTime) val).getValue()).atZone(java.time.ZoneOffset.UTC).toInstant();
+      return LocalDateTime.of(LocalDate.of(0, 1, 1), ((CypherLocalTime) val).getValue()).atZone(ZoneOffset.UTC).toInstant();
     throw new IllegalArgumentException("Cannot convert to Instant: " + val.getClass().getSimpleName());
   }
 }

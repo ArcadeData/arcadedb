@@ -108,10 +108,11 @@ class Issue3271Test {
   void simplifiedMultiMatchQuery() {
     // Simplified query from issue - this should work
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
-            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
-            "RETURN n.name AS name");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[r:RELATED_TO]-(m:NER) \
+        MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) \
+        RETURN n.name AS name""");
 
     List<String> names = new ArrayList<>();
     while (rs.hasNext()) {
@@ -132,10 +133,11 @@ class Issue3271Test {
   @Test
   void collectWithMapLiteral() {
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
-            "RETURN n.name AS name, " +
-            "COLLECT({nameT: m.name, typeT: m.subtype}) AS relations");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[r:RELATED_TO]-(m:NER) \
+        RETURN n.name AS name, \
+        COLLECT({nameT: m.name, typeT: m.subtype}) AS relations""");
 
     List<Result> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -168,10 +170,11 @@ class Issue3271Test {
   @Test
   void collectDistinctWithMapLiteral() {
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
-            "RETURN n.name AS name, " +
-            "COLLECT(DISTINCT {nameT: m.name, typeT: m.subtype}) AS relations");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[r:RELATED_TO]-(m:NER) \
+        RETURN n.name AS name, \
+        COLLECT(DISTINCT {nameT: m.name, typeT: m.subtype}) AS relations""");
 
     List<Result> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -199,10 +202,11 @@ class Issue3271Test {
   @Test
   void typeInMapLiteral() {
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
-            "RETURN n.name AS name, " +
-            "COLLECT({typeR: type(r), nameT: m.name}) AS relations");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[r:RELATED_TO]-(m:NER) \
+        RETURN n.name AS name, \
+        COLLECT({typeR: type(r), nameT: m.name}) AS relations""");
 
     List<Result> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -231,10 +235,11 @@ class Issue3271Test {
   @Test
   void headCollect() {
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
-            "RETURN n.name AS name, " +
-            "HEAD(COLLECT({text: chunk.text, doc_name: document.name})) AS context");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) \
+        RETURN n.name AS name, \
+        HEAD(COLLECT({text: chunk.text, doc_name: document.name})) AS context""");
 
     List<Result> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -257,10 +262,11 @@ class Issue3271Test {
   @Test
   void headCollectDistinctWithMapLiteral() {
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
-            "RETURN n.name AS name, " +
-            "HEAD(COLLECT(DISTINCT {text: chunk.text, doc_name: document.name})) AS context");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) \
+        RETURN n.name AS name, \
+        HEAD(COLLECT(DISTINCT {text: chunk.text, doc_name: document.name})) AS context""");
 
     List<Result> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -283,10 +289,11 @@ class Issue3271Test {
   @Test
   void idInMapLiteral() {
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
-            "RETURN n.name AS name, " +
-            "COLLECT({doc_name: document.name, doc_id: ID(document)}) AS contexts");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) \
+        RETURN n.name AS name, \
+        COLLECT({doc_name: document.name, doc_id: ID(document)}) AS contexts""");
 
     List<Result> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -315,12 +322,13 @@ class Issue3271Test {
   @Test
   void fullIssue3271Query() {
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[r:RELATED_TO]-(m:NER) " +
-            "MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) " +
-            "RETURN n.name AS name, " +
-            "COLLECT(DISTINCT {typeO: n.subtype, nameO: n.name, typeR: type(r), typeT: m.subtype, nameT: m.name}) AS relations, " +
-            "HEAD(COLLECT(DISTINCT {text: chunk.text, doc_name: document.name, doc_id: ID(document)})) AS context");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[r:RELATED_TO]-(m:NER) \
+        MATCH (n)-[:IN_CHUNK]-(chunk:CHUNK)-[:FROM_DOC]->(document:DOCUMENT) \
+        RETURN n.name AS name, \
+        COLLECT(DISTINCT {typeO: n.subtype, nameO: n.name, typeR: type(r), typeT: m.subtype, nameT: m.name}) AS relations, \
+        HEAD(COLLECT(DISTINCT {text: chunk.text, doc_name: document.name, doc_id: ID(document)})) AS context""");
 
     List<Result> results = new ArrayList<>();
     while (rs.hasNext()) {
@@ -363,10 +371,11 @@ class Issue3271Test {
   @Test
   void undirectedEdgeInMultiMatch() {
     ResultSet rs = database.query("opencypher",
-        "MATCH (n:NER {subtype:'DATE'}) " +
-            "MATCH (n)-[r]-(m:NER) " +
-            "MATCH (n)-[]-(chunk:CHUNK)-->(document:DOCUMENT) " +
-            "RETURN n.name AS name");
+        """
+        MATCH (n:NER {subtype:'DATE'}) \
+        MATCH (n)-[r]-(m:NER) \
+        MATCH (n)-[]-(chunk:CHUNK)-->(document:DOCUMENT) \
+        RETURN n.name AS name""");
 
     List<String> names = new ArrayList<>();
     while (rs.hasNext()) {

@@ -54,8 +54,9 @@ class EdgeIndexDuplicateKeyTest extends TestHelper {
       database.command("sql", "INSERT INTO duct (id) VALUES ('duct_1')");
       database.command("sql", "INSERT INTO trs (id) VALUES ('trs_1')");
       database.command("sql",
-          "CREATE EDGE trs_duct from (SELECT FROM trs WHERE id='trs_1') to (SELECT FROM duct WHERE id='duct_1') " +
-          "SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1");
+          """
+          CREATE EDGE trs_duct from (SELECT FROM trs WHERE id='trs_1') to (SELECT FROM duct WHERE id='duct_1') \
+          SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1""");
     });
 
     // Transaction #3: Delete and recreate edge (first time - should work)
@@ -63,8 +64,9 @@ class EdgeIndexDuplicateKeyTest extends TestHelper {
       database.command("sql",
           "DELETE FROM trs_duct WHERE (from_id='trs_1') AND (to_id='duct_1') AND (swap='N') AND (order_number=1)");
       database.command("sql",
-          "CREATE EDGE trs_duct from (SELECT FROM trs WHERE id='trs_1') to (SELECT FROM duct WHERE id='duct_1') " +
-          "SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1");
+          """
+          CREATE EDGE trs_duct from (SELECT FROM trs WHERE id='trs_1') to (SELECT FROM duct WHERE id='duct_1') \
+          SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1""");
     });
 
     // Transaction #4: Delete and recreate edge (second time - this should NOT throw DuplicatedKeyException)
@@ -72,8 +74,9 @@ class EdgeIndexDuplicateKeyTest extends TestHelper {
       database.command("sql",
           "DELETE FROM trs_duct WHERE (from_id='trs_1') AND (to_id='duct_1') AND (swap='N') AND (order_number=1)");
       database.command("sql",
-          "CREATE EDGE trs_duct from (SELECT FROM trs WHERE id='trs_1') to (SELECT FROM duct WHERE id='duct_1') " +
-          "SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1");
+          """
+          CREATE EDGE trs_duct from (SELECT FROM trs WHERE id='trs_1') to (SELECT FROM duct WHERE id='duct_1') \
+          SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1""");
     });
 
     // If we got here without exception, the test passes

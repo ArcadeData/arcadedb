@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,7 +53,7 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.distinct ==========
   @Test
-  void testCollDistinct() {
+  void collDistinct() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.distinct([1, 2, 2, 3, 3, 3]) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -63,7 +65,7 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void testCollDistinctNull() {
+  void collDistinctNull() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.distinct(null) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -71,7 +73,7 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.flatten ==========
   @Test
-  void testCollFlattenDefaultOneLevelDeep() {
+  void collFlattenDefaultOneLevelDeep() {
     // #3442: default flatten should only flatten one level deep
     final ResultSet rs = database.query("opencypher", "RETURN coll.flatten(['a', ['b', ['c']]]) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -85,7 +87,7 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void testCollFlattenDepthZero() {
+  void collFlattenDepthZero() {
     // #3443: coll.flatten(list, 0) should return the list unchanged
     final ResultSet rs = database.query("opencypher", "RETURN coll.flatten(['a', ['b']], 0) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -97,7 +99,7 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void testCollFlattenNullDepthReturnsNull() {
+  void collFlattenNullDepthReturnsNull() {
     // #3444: coll.flatten(list, null) should return null
     final ResultSet rs = database.query("opencypher", "RETURN coll.flatten(['a'], null) AS result");
     assertThat(rs.hasNext()).isTrue();
@@ -105,7 +107,7 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void testCollFlattenMultipleLevels() {
+  void collFlattenMultipleLevels() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.flatten([[1, 2], [3, [4, 5]]]) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -120,14 +122,14 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.indexOf ==========
   @Test
-  void testCollIndexOf() {
+  void collIndexOf() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.indexOf([10, 20, 30], 20) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(1L);
   }
 
   @Test
-  void testCollIndexOfNotFound() {
+  void collIndexOfNotFound() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.indexOf([10, 20, 30], 99) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(-1L);
@@ -135,7 +137,7 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.insert ==========
   @Test
-  void testCollInsert() {
+  void collInsert() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.insert([1, 3, 4], 1, 2) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -149,14 +151,14 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.max ==========
   @Test
-  void testCollMax() {
+  void collMax() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.max([3, 1, 4, 1, 5, 9]) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(9L);
   }
 
   @Test
-  void testCollMaxStrings() {
+  void collMaxStrings() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.max(['banana', 'apple', 'cherry']) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("cherry");
@@ -164,7 +166,7 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.min ==========
   @Test
-  void testCollMin() {
+  void collMin() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.min([3, 1, 4, 1, 5, 9]) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(1L);
@@ -172,7 +174,7 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.remove ==========
   @Test
-  void testCollRemove() {
+  void collRemove() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.remove([1, 2, 3, 4], 1) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -184,7 +186,7 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void testCollRemoveMultiple() {
+  void collRemoveMultiple() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.remove([1, 2, 3, 4, 5], 1, 2) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -197,7 +199,7 @@ class CypherMissingFunctionsTest {
 
   // ========== coll.sort ==========
   @Test
-  void testCollSort() {
+  void collSort() {
     final ResultSet rs = database.query("opencypher", "RETURN coll.sort([3, 1, 4, 1, 5]) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -212,7 +214,7 @@ class CypherMissingFunctionsTest {
 
   // ========== elementId ==========
   @Test
-  void testElementId() {
+  void elementId() {
     database.getSchema().createVertexType("TestNode");
     database.transaction(() -> database.command("opencypher", "CREATE (:TestNode {name: 'test'})"));
     final ResultSet rs = database.query("opencypher", "MATCH (n:TestNode) RETURN elementId(n) AS eid");
@@ -224,7 +226,7 @@ class CypherMissingFunctionsTest {
 
   // ========== exists ==========
   @Test
-  void testExistsWithValue() {
+  void existsWithValue() {
     final ResultSet rs = database.query("opencypher", "RETURN exists('hello') AS result");
     assertThat(rs.hasNext()).isTrue();
     final Boolean result = rs.next().getProperty("result");
@@ -232,7 +234,7 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void testExistsWithNull() {
+  void existsWithNull() {
     final ResultSet rs = database.query("opencypher", "RETURN exists(null) AS result");
     assertThat(rs.hasNext()).isTrue();
     final Boolean result = rs.next().getProperty("result");
@@ -241,7 +243,7 @@ class CypherMissingFunctionsTest {
 
   // ========== toBooleanList ==========
   @Test
-  void testToBooleanList() {
+  void toBooleanList() {
     final ResultSet rs = database.query("opencypher", "RETURN toBooleanList(['true', 'false', '1']) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -253,7 +255,7 @@ class CypherMissingFunctionsTest {
 
   // ========== toFloatList ==========
   @Test
-  void testToFloatList() {
+  void toFloatList() {
     final ResultSet rs = database.query("opencypher", "RETURN toFloatList(['1.5', '2.5', '3.5']) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -265,7 +267,7 @@ class CypherMissingFunctionsTest {
 
   // ========== toIntegerList ==========
   @Test
-  void testToIntegerList() {
+  void toIntegerList() {
     final ResultSet rs = database.query("opencypher", "RETURN toIntegerList(['1', '2', '3']) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -278,7 +280,7 @@ class CypherMissingFunctionsTest {
 
   // ========== toStringList ==========
   @Test
-  void testToStringList() {
+  void toStringList() {
     final ResultSet rs = database.query("opencypher", "RETURN toStringList([1, 2, 3]) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -291,7 +293,7 @@ class CypherMissingFunctionsTest {
 
   // ========== lower (alias for toLower) ==========
   @Test
-  void testLower() {
+  void lower() {
     final ResultSet rs = database.query("opencypher", "RETURN lower('HELLO') AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("hello");
@@ -299,7 +301,7 @@ class CypherMissingFunctionsTest {
 
   // ========== upper (alias for toUpper) ==========
   @Test
-  void testUpper() {
+  void upper() {
     final ResultSet rs = database.query("opencypher", "RETURN upper('hello') AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("HELLO");
@@ -307,7 +309,7 @@ class CypherMissingFunctionsTest {
 
   // ========== btrim (alias for trim) ==========
   @Test
-  void testBtrim() {
+  void btrim() {
     final ResultSet rs = database.query("opencypher", "RETURN btrim('  hello  ') AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("hello");
@@ -315,7 +317,7 @@ class CypherMissingFunctionsTest {
 
   // ========== normalize ==========
   @Test
-  void testNormalize() {
+  void normalize() {
     final ResultSet rs = database.query("opencypher", "RETURN normalize('caf\\u0065\\u0301') AS result");
     assertThat(rs.hasNext()).isTrue();
     final String result = rs.next().getProperty("result");
@@ -325,7 +327,7 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void testNormalizeWithForm() {
+  void normalizeWithForm() {
     final ResultSet rs = database.query("opencypher", "RETURN normalize('caf\\u00e9', 'NFD') AS result");
     assertThat(rs.hasNext()).isTrue();
     final String result = rs.next().getProperty("result");
@@ -336,7 +338,7 @@ class CypherMissingFunctionsTest {
 
   // ========== vector (alias for vector_create) ==========
   @Test
-  void testVector() {
+  void vector() {
     final ResultSet rs = database.query("opencypher", "RETURN vector([1.0, 2.0, 3.0]) AS result");
     assertThat(rs.hasNext()).isTrue();
     final Object result = rs.next().getProperty("result");
@@ -346,7 +348,7 @@ class CypherMissingFunctionsTest {
 
   // ========== vector_dimension_count ==========
   @Test
-  void testVectorDimensionCount() {
+  void vectorDimensionCount() {
     final ResultSet rs = database.query("opencypher", "RETURN vector_dimension_count(vector([1.0, 2.0, 3.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(3L);
@@ -354,41 +356,41 @@ class CypherMissingFunctionsTest {
 
   // ========== vector_distance ==========
   @Test
-  void testVectorDistanceEuclidean() {
+  void vectorDistanceEuclidean() {
     final ResultSet rs = database.query("opencypher",
         "RETURN vector_distance(vector([0.0, 0.0]), vector([3.0, 4.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, org.assertj.core.data.Offset.offset(0.001));
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, Offset.offset(0.001));
   }
 
   @Test
-  void testVectorDistanceManhattan() {
+  void vectorDistanceManhattan() {
     final ResultSet rs = database.query("opencypher",
         "RETURN vector_distance(vector([0.0, 0.0]), vector([3.0, 4.0]), 'MANHATTAN') AS result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(7.0, org.assertj.core.data.Offset.offset(0.001));
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(7.0, Offset.offset(0.001));
   }
 
   // ========== vector.distance.euclidean ==========
   @Test
-  void testVectorDistanceEuclideanDot() {
+  void vectorDistanceEuclideanDot() {
     final ResultSet rs = database.query("opencypher",
         "RETURN vector.distance.euclidean(vector([1.0, 0.0]), vector([0.0, 1.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(Math.sqrt(2.0), org.assertj.core.data.Offset.offset(0.001));
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(Math.sqrt(2.0), Offset.offset(0.001));
   }
 
   // ========== vector.norm ==========
   @Test
-  void testVectorNorm() {
+  void vectorNorm() {
     final ResultSet rs = database.query("opencypher", "RETURN vector.norm(vector([3.0, 4.0])) AS result");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, org.assertj.core.data.Offset.offset(0.001));
+    assertThat(rs.next().<Number>getProperty("result").doubleValue()).isCloseTo(5.0, Offset.offset(0.001));
   }
 
   // ========== APOC-compatible access via apoc.coll.* ==========
   @Test
-  void testApocCollDistinct() {
+  void apocCollDistinct() {
     final ResultSet rs = database.query("opencypher", "RETURN apoc.coll.distinct([1, 1, 2]) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
@@ -400,21 +402,21 @@ class CypherMissingFunctionsTest {
 
   // ========== Null handling ==========
   @Test
-  void testToStringListNull() {
+  void toStringListNull() {
     final ResultSet rs = database.query("opencypher", "RETURN toStringList(null) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Object) rs.next().getProperty("result")).isNull();
   }
 
   @Test
-  void testNormalizeNull() {
+  void normalizeNull() {
     final ResultSet rs = database.query("opencypher", "RETURN normalize(null) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Object) rs.next().getProperty("result")).isNull();
   }
 
   @Test
-  void testVectorDimensionCountNull() {
+  void vectorDimensionCountNull() {
     final ResultSet rs = database.query("opencypher", "RETURN vector_dimension_count(null) AS result");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Object) rs.next().getProperty("result")).isNull();

@@ -411,8 +411,9 @@ public class GraphEngine {
           } catch (final RecordNotFoundException e) {
             // ALREADY DELETED, IGNORE THIS
             LogManager.instance()
-                .log(this, Level.FINE, "Error on deleting outgoing vertex %s connected from vertex %s (record not " +
-                        "found)", inV,
+                .log(this, Level.FINE, """
+                        Error on deleting outgoing vertex %s connected from vertex %s (record not \
+                        found)""", inV,
                     vertex.getIdentity());
           }
         }

@@ -371,7 +371,7 @@ class CypherExpressionBuilder {
       if (e1.existsExpression() != null)
         return parseExistsExpression(e1.existsExpression());
       if (e1.countStar() != null) {
-        final java.util.List<Expression> e1Args = new java.util.ArrayList<>();
+        final List<Expression> e1Args = new ArrayList<>();
         e1Args.add(new StarExpression());
         return new FunctionCallExpression("count", e1Args, false);
       }
@@ -1666,7 +1666,7 @@ class CypherExpressionBuilder {
     final String upper = subquery.toUpperCase();
     if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ") ||
         upper.contains("MERGE ") || upper.contains("REMOVE "))
-      throw new com.arcadedb.exception.CommandParsingException(
+      throw new CommandParsingException(
           "InvalidClauseComposition: Existential subquery cannot contain update clauses");
 
     // If it's a pattern without MATCH, add MATCH prefix

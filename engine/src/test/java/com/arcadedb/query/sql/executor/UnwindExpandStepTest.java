@@ -26,7 +26,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class UnwindExpandStepTest extends TestHelper {
+class UnwindExpandStepTest extends TestHelper {
 
   @Test
   void shouldUnwindArray() {

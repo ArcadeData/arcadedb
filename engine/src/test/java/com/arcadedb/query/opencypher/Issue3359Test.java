@@ -127,10 +127,11 @@ class Issue3359Test {
           startLatch.await();
           while (running.get() && error.get() == null) {
             try (final ResultSet rs = database.query("opencypher",
-                "MATCH (n) " +
-                    "WHERE NOT (n:PIPELINE_CONFIG OR n:USER_RIGHTS) " +
-                    "RETURN labels(n)[0] AS NodeType, COUNT(n) AS count " +
-                    "ORDER BY count DESC")) {
+                """
+                MATCH (n) \
+                WHERE NOT (n:PIPELINE_CONFIG OR n:USER_RIGHTS) \
+                RETURN labels(n)[0] AS NodeType, COUNT(n) AS count \
+                ORDER BY count DESC""")) {
               while (rs.hasNext())
                 rs.next();
             } catch (final ConcurrentModificationException e) {

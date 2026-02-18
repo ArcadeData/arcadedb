@@ -26,6 +26,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteException;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
@@ -122,7 +123,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("createRecord creates a document and returns its RID")
-  void testCreateRecordDocument() {
+  void createRecordDocument() {
     final Map<String, Object> props = Map.of("name", "doc1", "value", 42);
     final String rid = grpc.createRecord(DOC_TYPE, props, 30_000);
 
@@ -138,7 +139,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("createRecordTx auto-commits within a single-call transaction")
-  void testCreateRecordTxAutoCommits() {
+  void createRecordTxAutoCommits() {
     final Map<String, Object> props = Map.of("name", "txDoc", "value", 99);
     final String rid = grpc.createRecordTx(DOC_TYPE, props, 30_000);
 
@@ -151,28 +152,28 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("createRecord with null class throws IllegalArgumentException")
-  void testCreateRecordWithNullClassThrows() {
+  void createRecordWithNullClassThrows() {
     assertThatThrownBy(() -> grpc.createRecord(null, Map.of("name", "x"), 30_000))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
   @DisplayName("createRecord with blank class throws IllegalArgumentException")
-  void testCreateRecordWithBlankClassThrows() {
+  void createRecordWithBlankClassThrows() {
     assertThatThrownBy(() -> grpc.createRecord("  ", Map.of("name", "x"), 30_000))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
   @DisplayName("createRecord with null props throws IllegalArgumentException")
-  void testCreateRecordWithNullPropsThrows() {
+  void createRecordWithNullPropsThrows() {
     assertThatThrownBy(() -> grpc.createRecord(DOC_TYPE, null, 30_000))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
   @DisplayName("updateRecord by RID and props map")
-  void testUpdateRecordByRidAndProps() {
+  void updateRecordByRidAndProps() {
     final String rid = grpc.createRecordTx(DOC_TYPE, Map.of("name", "original", "value", 1), 30_000);
 
     final boolean updated = grpc.updateRecord(rid, Map.of("name", "updated", "value", 2), 30_000);
@@ -188,7 +189,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("deleteRecord by Record object")
-  void testDeleteRecordByObject() {
+  void deleteRecordByObject() {
     final String rid = insertDocViaSql("toDelete", 0);
     final RID ridObj = new RID(grpc, rid);
     final Record record = grpc.lookupByRID(ridObj);
@@ -207,7 +208,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("deleteRecord by RID string returns true for existing record")
-  void testDeleteRecordByRid() {
+  void deleteRecordByRid() {
     final String rid = insertDocViaSql("toDeleteByRid", 0);
 
     final boolean deleted = grpc.deleteRecord(rid, 30_000);
@@ -223,7 +224,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("deleteRecord with null identity throws IllegalArgumentException")
-  void testDeleteRecordNullIdentityThrows() {
+  void deleteRecordNullIdentityThrows() {
     assertThatThrownBy(() -> grpc.lookupByRID(null))
         .isInstanceOf(IllegalArgumentException.class);
   }
@@ -232,7 +233,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("lookupByRID returns the correct record")
-  void testLookupByRID() {
+  void lookupByRID() {
     final String rid = insertDocViaSql("lookup", 7);
     final RID ridObj = new RID(grpc, rid);
 
@@ -243,26 +244,26 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("lookupByRID throws for missing record")
-  void testLookupByRIDNotFoundThrows() {
+  void lookupByRIDNotFoundThrows() {
     // Insert and delete so we have a valid bucket but missing record
     final String rid = insertDocViaSql("willRemove", 0);
     grpc.deleteRecord(rid, 30_000);
     final RID ridObj = new RID(grpc, rid);
 
     assertThatThrownBy(() -> grpc.lookupByRID(ridObj))
-        .isInstanceOfAny(RecordNotFoundException.class, com.arcadedb.remote.RemoteException.class);
+        .isInstanceOfAny(RecordNotFoundException.class, RemoteException.class);
   }
 
   @Test
   @DisplayName("lookupByRID with null throws IllegalArgumentException")
-  void testLookupByRIDNullThrows() {
+  void lookupByRIDNullThrows() {
     assertThatThrownBy(() -> grpc.lookupByRID(null))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
   @DisplayName("existsRecord returns true for existing record")
-  void testExistsRecordTrue() {
+  void existsRecordTrue() {
     final String rid = insertDocViaSql("exists", 1);
     final RID ridObj = new RID(grpc, rid);
 
@@ -271,7 +272,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("existsRecord with null throws IllegalArgumentException")
-  void testExistsRecordNullThrows() {
+  void existsRecordNullThrows() {
     assertThatThrownBy(() -> grpc.existsRecord(null))
         .isInstanceOf(IllegalArgumentException.class);
   }
@@ -280,7 +281,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("countType returns correct count (polymorphic)")
-  void testCountType() {
+  void countType() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "c1", "value", 1), 30_000);
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "c2", "value", 2), 30_000);
 
@@ -290,7 +291,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("countType non-polymorphic returns only exact type matches")
-  void testCountTypeNonPolymorphic() {
+  void countTypeNonPolymorphic() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "np1", "value", 1), 30_000);
 
     final long count = grpc.countType(DOC_TYPE, false);
@@ -299,7 +300,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("countBucket returns correct count")
-  void testCountBucket() {
+  void countBucket() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "bucket1", "value", 1), 30_000);
 
     // Get the bucket name for DOC_TYPE
@@ -319,7 +320,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("iterateType returns all records (polymorphic)")
-  void testIterateType() {
+  void iterateType() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "it1", "value", 1), 30_000);
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "it2", "value", 2), 30_000);
 
@@ -335,7 +336,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("iterateType non-polymorphic only returns exact type")
-  void testIterateTypeNonPolymorphic() {
+  void iterateTypeNonPolymorphic() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "itnp1", "value", 1), 30_000);
 
     final Iterator<Record> it = grpc.iterateType(DOC_TYPE, false);
@@ -351,7 +352,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("begin() twice throws TransactionException")
-  void testBeginTwiceThrows() {
+  void beginTwiceThrows() {
     grpc.begin();
     assertThatThrownBy(() -> grpc.begin())
         .isInstanceOf(TransactionException.class)
@@ -360,7 +361,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("commit() without begin() throws TransactionException")
-  void testCommitWithoutBeginThrows() {
+  void commitWithoutBeginThrows() {
     assertThatThrownBy(() -> grpc.commit())
         .isInstanceOf(TransactionException.class)
         .hasMessageContaining("not begun");
@@ -368,7 +369,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("rollback() without begin() throws TransactionException")
-  void testRollbackWithoutBeginThrows() {
+  void rollbackWithoutBeginThrows() {
     assertThatThrownBy(() -> grpc.rollback())
         .isInstanceOf(TransactionException.class)
         .hasMessageContaining("not begun");
@@ -376,7 +377,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("close() with active transaction auto-rollbacks")
-  void testCloseWithActiveTxAutoRollback() {
+  void closeWithActiveTxAutoRollback() {
     grpc.begin();
     grpc.command("sql", "INSERT INTO `" + DOC_TYPE + "` SET name = 'autoRollback', value = 0", Map.of());
 
@@ -395,7 +396,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("queryStream with MATERIALIZE_ALL mode returns results")
-  void testQueryStreamMaterializeAllMode() {
+  void queryStreamMaterializeAllMode() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "matAll1", "value", 1), 30_000);
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "matAll2", "value", 2), 30_000);
 
@@ -413,7 +414,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("queryStream with PAGED mode returns results")
-  void testQueryStreamPagedMode() {
+  void queryStreamPagedMode() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "paged1", "value", 1), 30_000);
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "paged2", "value", 2), 30_000);
 
@@ -431,7 +432,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("queryStream with PROJECTION_AS_MAP encoding")
-  void testQueryStreamWithProjectionAsMap() {
+  void queryStreamWithProjectionAsMap() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "projMap", "value", 5), 30_000);
 
     final RemoteGrpcConfig config = new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_MAP, 0);
@@ -445,7 +446,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("queryStream with PROJECTION_AS_LINK encoding")
-  void testQueryStreamWithProjectionAsLink() {
+  void queryStreamWithProjectionAsLink() {
     grpc.createRecordTx(DOC_TYPE, Map.of("name", "projLink", "value", 6), 30_000);
 
     final RemoteGrpcConfig config = new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_LINK, 0);
@@ -461,7 +462,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("ingestStream inserts documents via client streaming")
-  void testIngestStreamDocuments() throws InterruptedException {
+  void ingestStreamDocuments() throws Exception {
     final List<Map<String, Object>> rows = new ArrayList<>();
     rows.add(Map.of("name", "stream1", "value", 10));
     rows.add(Map.of("name", "stream2", "value", 20));
@@ -491,7 +492,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("ingestStream with empty rows returns zero received")
-  void testIngestStreamEmptyRowsReturnsZero() throws InterruptedException {
+  void ingestStreamEmptyRowsReturnsZero() throws Exception {
     final InsertOptions opts = InsertOptions.newBuilder()
         .setDatabase(getDatabaseName())
         .setTargetClass(DOC_TYPE)
@@ -507,7 +508,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("acquireLock returns same instance on repeated calls")
-  void testAcquireLockReturnsSameInstance() {
+  void acquireLockReturnsSameInstance() {
     final RemoteTransactionExplicitLock lock1 = grpc.acquireLock();
     final RemoteTransactionExplicitLock lock2 = grpc.acquireLock();
 
@@ -519,7 +520,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("command with ContextConfiguration overload works correctly")
-  void testCommandWithContextConfiguration() {
+  void commandWithContextConfiguration() {
     final ContextConfiguration config = new ContextConfiguration();
 
     grpc.command("sql", "INSERT INTO `" + DOC_TYPE + "` SET name = 'ctxCfg', value = 100", config);
@@ -534,7 +535,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @Test
   @DisplayName("command with ContextConfiguration and Map params overload")
-  void testCommandWithContextConfigurationAndParams() {
+  void commandWithContextConfigurationAndParams() {
     final ContextConfiguration config = new ContextConfiguration();
 
     grpc.command("sql", "INSERT INTO `" + DOC_TYPE + "` SET name = :name, value = :value", config,

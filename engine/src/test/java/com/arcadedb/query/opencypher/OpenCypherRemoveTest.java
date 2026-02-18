@@ -61,12 +61,13 @@ class OpenCypherRemoveTest {
     // This is the exact query from issue #3257
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
-          "MERGE (n:Person {name: 'Charlie Sheen'}) " +
-              "ON CREATE SET n._temp_created = true " +
-              "ON MATCH SET n._temp_created = false " +
-              "WITH n, n._temp_created AS created " +
-              "REMOVE n._temp_created " +
-              "RETURN ID(n) AS id, created");
+          """
+          MERGE (n:Person {name: 'Charlie Sheen'}) \
+          ON CREATE SET n._temp_created = true \
+          ON MATCH SET n._temp_created = false \
+          WITH n, n._temp_created AS created \
+          REMOVE n._temp_created \
+          RETURN ID(n) AS id, created""");
 
       assertThat(result.hasNext()).isTrue();
       final Result row = result.next();
@@ -167,11 +168,12 @@ class OpenCypherRemoveTest {
     // SET then REMOVE in the same query
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
-          "MATCH (n:Person {name: 'David'}) " +
-              "SET n.temp = 'temporary' " +
-              "WITH n " +
-              "REMOVE n.temp " +
-              "RETURN n");
+          """
+          MATCH (n:Person {name: 'David'}) \
+          SET n.temp = 'temporary' \
+          WITH n \
+          REMOVE n.temp \
+          RETURN n""");
 
       assertThat(result.hasNext()).isTrue();
       final Vertex person = (Vertex) result.next().toElement();
@@ -257,10 +259,11 @@ class OpenCypherRemoveTest {
     // CREATE and REMOVE in the same query
     database.transaction(() -> {
       final ResultSet result = database.command("opencypher",
-          "CREATE (n:Person {name: 'Frank', temp: 'initial'}) " +
-              "WITH n " +
-              "REMOVE n.temp " +
-              "RETURN n");
+          """
+          CREATE (n:Person {name: 'Frank', temp: 'initial'}) \
+          WITH n \
+          REMOVE n.temp \
+          RETURN n""");
 
       assertThat(result.hasNext()).isTrue();
       final Vertex person = (Vertex) result.next().toElement();

@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
@@ -235,7 +236,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // Ensure all properties exist before creating indexes (ArcadeDB requires this)
     for (final String propName : propertyNames) {
       if (schema.getType(typeName).getPropertyIfExists(propName) == null)
-        schema.getType(typeName).createProperty(propName, com.arcadedb.schema.Type.STRING);
+        schema.getType(typeName).createProperty(propName, Type.STRING);
     }
 
     switch (ddl.getConstraintKind()) {

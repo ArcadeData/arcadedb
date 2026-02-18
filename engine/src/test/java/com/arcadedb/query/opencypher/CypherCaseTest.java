@@ -65,13 +65,14 @@ class CypherCaseTest {
   void simpleCaseWithMultipleConditions() {
     // Simple CASE: CASE WHEN condition THEN result
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person) RETURN p.name, " +
-            "CASE " +
-            "  WHEN p.age < 18 THEN 'minor' " +
-            "  WHEN p.age < 65 THEN 'adult' " +
-            "  ELSE 'senior' " +
-            "END as category " +
-            "ORDER BY p.name");
+        """
+        MATCH (p:Person) RETURN p.name, \
+        CASE \
+          WHEN p.age < 18 THEN 'minor' \
+          WHEN p.age < 65 THEN 'adult' \
+          ELSE 'senior' \
+        END as category \
+        ORDER BY p.name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -100,11 +101,12 @@ class CypherCaseTest {
   void simpleCaseWithoutElse() {
     // CASE without ELSE clause should return null for non-matching cases
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name, " +
-            "CASE " +
-            "  WHEN p.age < 10 THEN 'child' " +
-            "  WHEN p.age < 13 THEN 'preteen' " +
-            "END as category");
+        """
+        MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name, \
+        CASE \
+          WHEN p.age < 10 THEN 'child' \
+          WHEN p.age < 13 THEN 'preteen' \
+        END as category""");
 
     assertThat((boolean) results.hasNext()).isTrue();
     final Result result = results.next();
@@ -115,13 +117,14 @@ class CypherCaseTest {
   void extendedCaseExpression() {
     // Extended CASE: CASE expression WHEN value THEN result
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person) WHERE p.status IS NOT NULL RETURN p.name, " +
-            "CASE p.status " +
-            "  WHEN 'active' THEN 1 " +
-            "  WHEN 'inactive' THEN 0 " +
-            "  ELSE -1 " +
-            "END as statusCode " +
-            "ORDER BY p.name");
+        """
+        MATCH (p:Person) WHERE p.status IS NOT NULL RETURN p.name, \
+        CASE p.status \
+          WHEN 'active' THEN 1 \
+          WHEN 'inactive' THEN 0 \
+          ELSE -1 \
+        END as statusCode \
+        ORDER BY p.name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -144,9 +147,10 @@ class CypherCaseTest {
   void caseInWhereClause() {
     // Use CASE expression in WHERE clause
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person) " +
-            "WHERE CASE WHEN p.age < 18 THEN 'minor' ELSE 'adult' END = 'adult' " +
-            "RETURN p.name ORDER BY p.name");
+        """
+        MATCH (p:Person) \
+        WHERE CASE WHEN p.age < 18 THEN 'minor' ELSE 'adult' END = 'adult' \
+        RETURN p.name ORDER BY p.name""");
 
     int count = 0;
     while (results.hasNext()) {
@@ -167,12 +171,13 @@ class CypherCaseTest {
     });
 
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person) WHERE p.name = 'NoAge' RETURN p.name, " +
-            "CASE " +
-            "  WHEN p.age IS NULL THEN 'unknown' " +
-            "  WHEN p.age < 18 THEN 'minor' " +
-            "  ELSE 'adult' " +
-            "END as category");
+        """
+        MATCH (p:Person) WHERE p.name = 'NoAge' RETURN p.name, \
+        CASE \
+          WHEN p.age IS NULL THEN 'unknown' \
+          WHEN p.age < 18 THEN 'minor' \
+          ELSE 'adult' \
+        END as category""");
 
     assertThat((boolean) results.hasNext()).isTrue();
     final Result result = results.next();
@@ -183,15 +188,16 @@ class CypherCaseTest {
   void nestedCaseExpressions() {
     // Nested CASE expressions
     final ResultSet results = database.query("opencypher",
-        "MATCH (p:Person) WHERE p.name = 'Bob' RETURN p.name, " +
-            "CASE " +
-            "  WHEN p.age < 18 THEN 'minor' " +
-            "  ELSE CASE " +
-            "    WHEN p.age < 30 THEN 'young adult' " +
-            "    WHEN p.age < 65 THEN 'adult' " +
-            "    ELSE 'senior' " +
-            "  END " +
-            "END as category");
+        """
+        MATCH (p:Person) WHERE p.name = 'Bob' RETURN p.name, \
+        CASE \
+          WHEN p.age < 18 THEN 'minor' \
+          ELSE CASE \
+            WHEN p.age < 30 THEN 'young adult' \
+            WHEN p.age < 65 THEN 'adult' \
+            ELSE 'senior' \
+          END \
+        END as category""");
 
     assertThat((boolean) results.hasNext()).isTrue();
     final Result result = results.next();

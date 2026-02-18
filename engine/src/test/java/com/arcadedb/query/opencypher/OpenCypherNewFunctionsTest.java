@@ -51,7 +51,7 @@ class OpenCypherNewFunctionsTest {
   // ============ isNaN() tests ============
 
   @Test
-  void testIsNaNWithNaN() {
+  void isNaNWithNaN() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isNaN(0.0 / 0.0) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -60,7 +60,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsNaNWithRegularNumber() {
+  void isNaNWithRegularNumber() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isNaN(42) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -69,7 +69,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsNaNWithFloat() {
+  void isNaNWithFloat() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isNaN(3.14) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -78,7 +78,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsNaNWithNull() {
+  void isNaNWithNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isNaN(null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -89,7 +89,7 @@ class OpenCypherNewFunctionsTest {
   // ============ cosh() tests ============
 
   @Test
-  void testCoshZero() {
+  void coshZero() {
     try (final ResultSet rs = database.command("opencypher", "RETURN cosh(0) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -98,7 +98,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testCoshSymmetry() {
+  void coshSymmetry() {
     // cosh(x) = cosh(-x)
     try (final ResultSet rs = database.command("opencypher", "RETURN cosh(2.0) AS pos, cosh(-2.0) AS neg")) {
       assertThat(rs.hasNext()).isTrue();
@@ -109,7 +109,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testCoshNull() {
+  void coshNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN cosh(null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -119,7 +119,7 @@ class OpenCypherNewFunctionsTest {
   // ============ sinh() tests ============
 
   @Test
-  void testSinhZero() {
+  void sinhZero() {
     try (final ResultSet rs = database.command("opencypher", "RETURN sinh(0) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -128,7 +128,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testSinhAntisymmetry() {
+  void sinhAntisymmetry() {
     // sinh(-x) = -sinh(x)
     try (final ResultSet rs = database.command("opencypher", "RETURN sinh(2.0) AS pos, sinh(-2.0) AS neg")) {
       assertThat(rs.hasNext()).isTrue();
@@ -139,7 +139,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testSinhNull() {
+  void sinhNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN sinh(null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -149,7 +149,7 @@ class OpenCypherNewFunctionsTest {
   // ============ tanh() tests ============
 
   @Test
-  void testTanhZero() {
+  void tanhZero() {
     try (final ResultSet rs = database.command("opencypher", "RETURN tanh(0) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -158,7 +158,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testTanhApproachesOne() {
+  void tanhApproachesOne() {
     try (final ResultSet rs = database.command("opencypher", "RETURN tanh(10) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -167,7 +167,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testTanhNull() {
+  void tanhNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN tanh(null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -177,7 +177,7 @@ class OpenCypherNewFunctionsTest {
   // ============ cot() tests ============
 
   @Test
-  void testCotPiOver4() {
+  void cotPiOver4() {
     // cot(pi/4) = 1
     try (final ResultSet rs = database.command("opencypher", "RETURN cot(pi() / 4) AS result")) {
       assertThat(rs.hasNext()).isTrue();
@@ -187,7 +187,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testCotPiOver2() {
+  void cotPiOver2() {
     // cot(pi/2) ≈ 0
     try (final ResultSet rs = database.command("opencypher", "RETURN cot(pi() / 2) AS result")) {
       assertThat(rs.hasNext()).isTrue();
@@ -197,7 +197,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testCotNull() {
+  void cotNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN cot(null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -207,7 +207,7 @@ class OpenCypherNewFunctionsTest {
   // ============ coth() tests ============
 
   @Test
-  void testCothValue() {
+  void cothValue() {
     // coth(x) = cosh(x) / sinh(x)
     try (final ResultSet rs = database.command("opencypher", "RETURN coth(2.0) AS result")) {
       assertThat(rs.hasNext()).isTrue();
@@ -218,7 +218,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testCothNull() {
+  void cothNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN coth(null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -228,7 +228,7 @@ class OpenCypherNewFunctionsTest {
   // ============ isEmpty() tests ============
 
   @Test
-  void testIsEmptyWithEmptyList() {
+  void isEmptyWithEmptyList() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty([]) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -237,7 +237,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsEmptyWithNonEmptyList() {
+  void isEmptyWithNonEmptyList() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty([1, 2, 3]) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -246,7 +246,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsEmptyWithEmptyString() {
+  void isEmptyWithEmptyString() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty('') AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -255,7 +255,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsEmptyWithNonEmptyString() {
+  void isEmptyWithNonEmptyString() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty('hello') AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -264,7 +264,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsEmptyWithEmptyMap() {
+  void isEmptyWithEmptyMap() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty({}) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -273,7 +273,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsEmptyWithNonEmptyMap() {
+  void isEmptyWithNonEmptyMap() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty({key: 'value'}) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -282,7 +282,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testIsEmptyWithNull() {
+  void isEmptyWithNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN isEmpty(null) AS result")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Object) rs.next().getProperty("result")).isNull();
@@ -292,7 +292,7 @@ class OpenCypherNewFunctionsTest {
   // ============ Hyperbolic identity tests ============
 
   @Test
-  void testHyperbolicIdentity() {
+  void hyperbolicIdentity() {
     // cosh^2(x) - sinh^2(x) = 1
     try (final ResultSet rs = database.command("opencypher",
         "WITH 1.5 AS x RETURN cosh(x) * cosh(x) - sinh(x) * sinh(x) AS result")) {
@@ -303,7 +303,7 @@ class OpenCypherNewFunctionsTest {
   }
 
   @Test
-  void testTanhIdentity() {
+  void tanhIdentity() {
     // tanh(x) = sinh(x) / cosh(x)
     try (final ResultSet rs = database.command("opencypher",
         "WITH 1.5 AS x RETURN tanh(x) AS t, sinh(x) / cosh(x) AS ratio")) {

@@ -207,9 +207,10 @@ class CypherReduceAndShortestPathTest {
   void shortestPathDirect() {
     // Find shortest path from Alice to Bob (direct connection)
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), " +
-            "p = shortestPath((a)-[:KNOWS*]-(b)) " +
-            "RETURN p");
+        """
+        MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}), \
+        p = shortestPath((a)-[:KNOWS*]-(b)) \
+        RETURN p""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
@@ -229,9 +230,10 @@ class CypherReduceAndShortestPathTest {
   void shortestPathSameNode() {
     // Path from a node to itself
     final ResultSet resultSet = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Alice'}), " +
-            "p = shortestPath((a)-[:KNOWS*]-(b)) " +
-            "RETURN p");
+        """
+        MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Alice'}), \
+        p = shortestPath((a)-[:KNOWS*]-(b)) \
+        RETURN p""");
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();

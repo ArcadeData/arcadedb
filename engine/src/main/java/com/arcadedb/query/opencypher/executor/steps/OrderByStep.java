@@ -26,6 +26,7 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.temporal.*;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -34,8 +35,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
 
@@ -198,7 +202,7 @@ public class OrderByStep extends AbstractExecutionStep {
         }
 
         // Heap extracts in reverse order, so reverse the list to get correct order
-        java.util.Collections.reverse(results);
+        Collections.reverse(results);
 
         return results;
       }
@@ -254,8 +258,8 @@ public class OrderByStep extends AbstractExecutionStep {
        */
       private static Object convertFromStorage(final Object value) {
         // Handle collections (lists/arrays of temporal values)
-        if (value instanceof java.util.Collection<?> collection) {
-          final java.util.List<Object> converted = new java.util.ArrayList<>(collection.size());
+        if (value instanceof Collection<?> collection) {
+          final List<Object> converted = new ArrayList<>(collection.size());
           for (final Object item : collection) {
             converted.add(convertFromStorage(item));
           }
@@ -395,11 +399,11 @@ public class OrderByStep extends AbstractExecutionStep {
       }
 
       private int typeRank(final Object v) {
-        if (v instanceof java.util.Map) return 0;
+        if (v instanceof Map) return 0;
         if (v instanceof Vertex) return 1;
         if (v instanceof Edge) return 2;
         if (v instanceof List) return 3;
-        if (v instanceof com.arcadedb.query.opencypher.traversal.TraversalPath) return 4;
+        if (v instanceof TraversalPath) return 4;
         if (v instanceof String) return 5;
         if (v instanceof Boolean) return 6;
         if (v instanceof Number) return 7;

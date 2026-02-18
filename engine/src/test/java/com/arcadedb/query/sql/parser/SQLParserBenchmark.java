@@ -40,34 +40,37 @@ class SQLParserBenchmark {
       "SELECT name, age, email FROM Person WHERE active = true ORDER BY name LIMIT 10";
 
   private static final String COMPLEX_SELECT =
-      "SELECT name, age, total, status " +
-          "FROM Person " +
-          "WHERE (age > 18 AND age < 65) " +
-          "AND (country = 'USA' OR country = 'Canada' OR country = 'Mexico') " +
-          "AND ((status = 'pending' AND total > 100) OR (status = 'completed' AND total > 500)) " +
-          "AND (verified = true OR (score > 80 AND level >= 5)) " +
-          "AND NOT (banned = true OR suspended = true) " +
-          "AND (createdDate > '2024-01-01' AND createdDate < '2024-12-31') " +
-          "ORDER BY total DESC, name ASC " +
-          "SKIP 20 LIMIT 50";
+      """
+      SELECT name, age, total, status \
+      FROM Person \
+      WHERE (age > 18 AND age < 65) \
+      AND (country = 'USA' OR country = 'Canada' OR country = 'Mexico') \
+      AND ((status = 'pending' AND total > 100) OR (status = 'completed' AND total > 500)) \
+      AND (verified = true OR (score > 80 AND level >= 5)) \
+      AND NOT (banned = true OR suspended = true) \
+      AND (createdDate > '2024-01-01' AND createdDate < '2024-12-31') \
+      ORDER BY total DESC, name ASC \
+      SKIP 20 LIMIT 50""";
 
   private static final String MATCH_QUERY_1 =
-      "MATCH {type: Person, as: p, where: (name = 'John' AND age > 25)} " +
-          ".out('Follows'){as: followed, where: (verified = true)} " +
-          ".out('Likes'){as: liked, maxDepth: 3} " +
-          "RETURN p.name, followed.name, liked.title " +
-          "ORDER BY p.name " +
-          "LIMIT 100";
+      """
+      MATCH {type: Person, as: p, where: (name = 'John' AND age > 25)} \
+      .out('Follows'){as: followed, where: (verified = true)} \
+      .out('Likes'){as: liked, maxDepth: 3} \
+      RETURN p.name, followed.name, liked.title \
+      ORDER BY p.name \
+      LIMIT 100""";
 
   private static final String MATCH_QUERY_2 =
-      "MATCH {type: Employee, as: emp, where: (department = 'Engineering')} " +
-          ".out('WorksOn'){as: project, where: (status = 'active')} " +
-          ".in('ManagedBy'){as: manager} " +
-          ".out('ReportsTo'){as: director, optional: true} " +
-          ", {as: emp}.out('HasSkill'){as: skill, where: (level >= 3)} " +
-          "RETURN emp.name, project.name, manager.name, director.name, skill.name " +
-          "GROUP BY emp.name " +
-          "ORDER BY emp.name";
+      """
+      MATCH {type: Employee, as: emp, where: (department = 'Engineering')} \
+      .out('WorksOn'){as: project, where: (status = 'active')} \
+      .in('ManagedBy'){as: manager} \
+      .out('ReportsTo'){as: director, optional: true} \
+      , {as: emp}.out('HasSkill'){as: skill, where: (level >= 3)} \
+      RETURN emp.name, project.name, manager.name, director.name, skill.name \
+      GROUP BY emp.name \
+      ORDER BY emp.name""";
 
   // Individual statements that are parsed separately to measure parsing time
   private static final String[] SQL_STATEMENTS = {

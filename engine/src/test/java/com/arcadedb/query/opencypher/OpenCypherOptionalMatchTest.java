@@ -52,8 +52,9 @@ class OpenCypherOptionalMatchTest {
       database.command("opencypher", "CREATE (c:Person {name: 'Charlie', age: 35})");
 
       // Alice knows Bob
-      database.command("opencypher", "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) " +
-          "CREATE (a)-[:KNOWS]->(b)");
+      database.command("opencypher", """
+          MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) \
+          CREATE (a)-[:KNOWS]->(b)""");
 
       // Charlie has no KNOWS relationships
     });
@@ -71,9 +72,10 @@ class OpenCypherOptionalMatchTest {
   void optionalMatchWithExistingRelationship() {
     // Alice has a KNOWS relationship, should return Alice and Bob
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Alice'}) " +
-            "OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person) " +
-            "RETURN a.name AS person, b.name AS knows");
+        """
+        MATCH (a:Person {name: 'Alice'}) \
+        OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person) \
+        RETURN a.name AS person, b.name AS knows""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -105,9 +107,10 @@ class OpenCypherOptionalMatchTest {
   void optionalMatchWithoutRelationship() {
     // Charlie has no KNOWS relationship, should return Charlie with NULL for b
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person {name: 'Charlie'}) " +
-            "OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person) " +
-            "RETURN a.name AS person, b.name AS knows");
+        """
+        MATCH (a:Person {name: 'Charlie'}) \
+        OPTIONAL MATCH (a)-[r:KNOWS]->(b:Person) \
+        RETURN a.name AS person, b.name AS knows""");
 
     // Debug: print all results
     final List<Result> allResults = new ArrayList<>();
@@ -129,8 +132,9 @@ class OpenCypherOptionalMatchTest {
     // OPTIONAL MATCH without preceding MATCH
     // Should return all Person nodes or NULL if no matches
     final ResultSet result = database.query("opencypher",
-        "OPTIONAL MATCH (n:Person {name: 'NonExistent'}) " +
-            "RETURN n.name AS name");
+        """
+        OPTIONAL MATCH (n:Person {name: 'NonExistent'}) \
+        RETURN n.name AS name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -143,10 +147,11 @@ class OpenCypherOptionalMatchTest {
   void multiplePeopleWithOptionalMatch() {
     // All people, with optional KNOWS relationships
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person) " +
-            "OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) " +
-            "RETURN a.name AS person, b.name AS knows " +
-            "ORDER BY a.name");
+        """
+        MATCH (a:Person) \
+        OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) \
+        RETURN a.name AS person, b.name AS knows \
+        ORDER BY a.name""");
 
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
@@ -236,16 +241,18 @@ class OpenCypherOptionalMatchTest {
 
       // Link only c1 to d
       database.command("opencypher",
-          "MATCH (d:DOCUMENT), (c1:CHUNK) " +
-              "WHERE d.name = 'MyTargetDoc' AND c1.name = 'LinkedChunk_1' " +
-              "CREATE (c1)-[:RELATED_TO]->(d)");
+          """
+          MATCH (d:DOCUMENT), (c1:CHUNK) \
+          WHERE d.name = 'MyTargetDoc' AND c1.name = 'LinkedChunk_1' \
+          CREATE (c1)-[:RELATED_TO]->(d)""");
     });
 
     // This query should return only LinkedChunk_1 because only it has a relationship to doc
     final ResultSet result = database.query("opencypher",
-        "MATCH (doc:DOCUMENT) WHERE doc.name = 'MyTargetDoc' " +
-            "OPTIONAL MATCH (c:CHUNK) WHERE (c)-->(doc) " +
-            "RETURN doc.name AS docName, c.name AS chunkName");
+        """
+        MATCH (doc:DOCUMENT) WHERE doc.name = 'MyTargetDoc' \
+        OPTIONAL MATCH (c:CHUNK) WHERE (c)-->(doc) \
+        RETURN doc.name AS docName, c.name AS chunkName""");
 
     final List<Result> results = new ArrayList<>();
     while (result.hasNext()) {
