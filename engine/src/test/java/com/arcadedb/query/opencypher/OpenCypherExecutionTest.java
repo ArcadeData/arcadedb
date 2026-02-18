@@ -182,6 +182,34 @@ public class OpenCypherExecutionTest {
     }
   }
 
+  /**
+   * Tests that RETURN clause preserves the column order specified in the query.
+   * Issue: https://github.com/ArcadeData/arcadedb/issues/3475
+   */
+  @Test
+  void returnColumnOrderPreserved() {
+    database.getSchema().createEdgeType("spouseOf");
+
+    database.transaction(() -> {
+      final MutableVertex joseph = database.newVertex("Person").set("name", "Joseph").set("nameFamily", "Smith").set("nameGiven", "Joseph").save();
+      final MutableVertex mary = database.newVertex("Person").set("name", "Mary").set("nameFamily", "Jones").set("nameGiven", "Mary").save();
+      joseph.newEdge("spouseOf", mary, true, new Object[] { "marriageDate", "1990-06-15", "divorceDate", "2000-01-01" }).save();
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "MATCH (n:Person)-[r:spouseOf]->(m:Person) WHERE n.nameFamily='Smith' AND n.nameGiven='Joseph' RETURN n, r.marriageDate, r.divorceDate, m");
+
+    assertThat((Object) result).isNotNull();
+    final List<Result> results = collectResults(result);
+    assertThat(results).hasSize(1);
+
+    final Result row = results.get(0);
+    final List<String> columnOrder = new ArrayList<>(row.getPropertyNames());
+
+    // The columns must match the order specified in the RETURN clause: n, r.marriageDate, r.divorceDate, m
+    assertThat(columnOrder).containsExactly("n", "r.marriageDate", "r.divorceDate", "m");
+  }
+
   private List<Result> collectResults(final ResultSet resultSet) {
     final List<Result> results = new ArrayList<>();
     while (resultSet.hasNext()) {
