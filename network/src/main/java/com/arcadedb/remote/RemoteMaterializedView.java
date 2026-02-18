@@ -47,7 +47,8 @@ public class RemoteMaterializedView implements MaterializedView {
     this.refreshInterval = result.getProperty("refreshInterval") != null ? ((Number) result.getProperty("refreshInterval")).longValue() : 0;
     this.lastRefreshTime = result.getProperty("lastRefreshTime") != null ? ((Number) result.getProperty("lastRefreshTime")).longValue() : 0;
     this.status = result.getProperty("status") != null ? result.getProperty("status") : "VALID";
-    this.sourceTypeNames = result.getProperty("sourceTypes");
+    final List<String> srcTypes = result.getProperty("sourceTypes");
+    this.sourceTypeNames = srcTypes != null ? srcTypes : List.of();
   }
 
   @Override

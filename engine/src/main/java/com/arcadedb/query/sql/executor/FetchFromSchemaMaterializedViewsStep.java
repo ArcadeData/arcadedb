@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.MaterializedView;
-import com.arcadedb.schema.MaterializedViewImpl;
 
 import java.util.*;
 import java.util.stream.*;
@@ -64,10 +63,7 @@ public class FetchFromSchemaMaterializedViewsStep extends AbstractExecutionStep 
           r.setProperty("status", view.getStatus());
           r.setProperty("sourceTypes", new ArrayList<>(view.getSourceTypeNames()));
 
-          if (view instanceof MaterializedViewImpl)
-            r.setProperty("refreshInterval", ((MaterializedViewImpl) view).getRefreshInterval());
-          else
-            r.setProperty("refreshInterval", 0L);
+          r.setProperty("refreshInterval", view.getRefreshInterval());
 
           context.setVariable("current", r);
         }

@@ -85,6 +85,8 @@ public class MaterializedViewBuilder {
   public MaterializedView create() {
     if (name == null || name.isEmpty())
       throw new IllegalArgumentException("Materialized view name is required");
+    if (name.contains("`"))
+      throw new IllegalArgumentException("Materialized view name must not contain backtick characters");
     if (query == null || query.isEmpty())
       throw new IllegalArgumentException("Materialized view query is required");
 
@@ -125,10 +127,13 @@ public class MaterializedViewBuilder {
         typeBuilder.withPageSize(pageSize);
       typeBuilder.create();
 
-      // Create and register the materialized view
+      // Create and register the materialized view; persist BUILDING status before the
+      // initial refresh so crash recovery in readConfiguration() can detect an incomplete
+      // population and mark the view STALE on restart
       final MaterializedViewImpl view = new MaterializedViewImpl(
           database, name, query, name, sourceTypeNames,
           refreshMode, simple, refreshInterval);
+      view.setStatus(MaterializedViewStatus.BUILDING);
       schema.materializedViews.put(name, view);
       schema.saveConfiguration();
 
