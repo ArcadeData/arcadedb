@@ -16,12 +16,12 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.mcp;
+package com.arcadedb.server.mcp;
 
-import com.arcadedb.mcp.tools.ExecuteCommandTool;
+import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
 import org.junit.jupiter.api.Test;
 
-import static com.arcadedb.mcp.tools.ExecuteCommandTool.OperationType;
+import static com.arcadedb.server.mcp.tools.ExecuteCommandTool.OperationType;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 

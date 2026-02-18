@@ -16,14 +16,14 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.mcp;
+package com.arcadedb.server.mcp;
 
 import com.arcadedb.log.LogManager;
-import com.arcadedb.mcp.tools.ExecuteCommandTool;
-import com.arcadedb.mcp.tools.GetSchemaTool;
-import com.arcadedb.mcp.tools.ListDatabasesTool;
-import com.arcadedb.mcp.tools.QueryTool;
-import com.arcadedb.mcp.tools.ServerStatusTool;
+import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
+import com.arcadedb.server.mcp.tools.GetSchemaTool;
+import com.arcadedb.server.mcp.tools.ListDatabasesTool;
+import com.arcadedb.server.mcp.tools.QueryTool;
+import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;

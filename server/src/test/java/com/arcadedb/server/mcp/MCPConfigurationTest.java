@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.mcp;
+package com.arcadedb.server.mcp;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -47,7 +47,7 @@ class MCPConfigurationTest {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();
 
-    assertThat(config.isEnabled()).isTrue();
+    assertThat(config.isEnabled()).isFalse();
     assertThat(config.isAllowReads()).isTrue();
     assertThat(config.isAllowInsert()).isFalse();
     assertThat(config.isAllowUpdate()).isFalse();
@@ -99,7 +99,7 @@ class MCPConfigurationTest {
     config.load();
 
     final JSONObject json = config.toJSON();
-    assertThat(json.getBoolean("enabled")).isTrue();
+    assertThat(json.getBoolean("enabled")).isFalse();
     assertThat(json.getBoolean("allowReads")).isTrue();
     assertThat(json.getBoolean("allowInsert")).isFalse();
     assertThat(json.getJSONArray("allowedUsers").length()).isEqualTo(1);
@@ -122,7 +122,7 @@ class MCPConfigurationTest {
     assertThat(config.isAllowDelete()).isTrue();
     assertThat(config.getAllowedUsers()).containsExactly("root", "editor");
     // Unchanged values should remain
-    assertThat(config.isEnabled()).isTrue();
+    assertThat(config.isEnabled()).isFalse();
     assertThat(config.isAllowUpdate()).isFalse();
   }
 

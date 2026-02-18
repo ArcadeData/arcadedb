@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.mcp;
+package com.arcadedb.server.mcp;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -34,7 +34,7 @@ import java.util.logging.Level;
 public class MCPConfiguration {
   private final String rootPath;
 
-  private volatile boolean      enabled          = true;
+  private volatile boolean      enabled          = false;
   private volatile boolean      allowReads       = true;
   private volatile boolean      allowInsert      = false;
   private volatile boolean      allowUpdate      = false;
@@ -57,7 +57,7 @@ public class MCPConfiguration {
       final String content = new String(Files.readAllBytes(configFile.toPath()));
       final JSONObject json = new JSONObject(content);
 
-      enabled = json.getBoolean("enabled", true);
+      enabled = json.getBoolean("enabled", false);
       allowReads = json.getBoolean("allowReads", true);
       allowInsert = json.getBoolean("allowInsert", false);
       allowUpdate = json.getBoolean("allowUpdate", false);

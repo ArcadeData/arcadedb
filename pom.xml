@@ -141,7 +141,6 @@
         <module>postgresw</module>
         <module>bolt</module>
     	<module>grpcw</module>
-        <module>mcp</module>
     	<module>grpc-client</module>
         <module>coverage</module>
         <module>studio</module>

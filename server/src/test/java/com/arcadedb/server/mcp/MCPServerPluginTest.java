@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.mcp;
+package com.arcadedb.server.mcp;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
@@ -42,7 +43,16 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("MCP:com.arcadedb.mcp.MCPServerPlugin");
+    GlobalConfiguration.SERVER_PLUGINS.setValue("MCP:com.arcadedb.server.mcp.MCPServerPlugin");
+  }
+
+  @BeforeEach
+  public void enableMCP() throws Exception {
+    // MCP is disabled by default, enable it for tests
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowedUsers", new JSONArray().put("root")));
   }
 
   @AfterEach
@@ -164,7 +174,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
 
   @Test
   void testExecuteCommand() throws Exception {
-    // First enable insert permission via config
+    // Enable insert permission
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
         .put("allowReads", true)

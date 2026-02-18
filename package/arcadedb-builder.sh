@@ -26,7 +26,7 @@ MAVEN_CENTRAL_BASE="https://repo1.maven.org/maven2/com/arcadedb"
 GITHUB_RELEASES_BASE="https://github.com/arcadedata/arcadedb/releases/download"
 
 # Module metadata
-SHADED_MODULES="gremlin redisw mongodbw postgresw grpcw metrics mcp"
+SHADED_MODULES="gremlin redisw mongodbw postgresw grpcw metrics"
 REGULAR_MODULES="console studio graphql"
 
 # Module descriptions for interactive menu
@@ -43,7 +43,6 @@ get_module_description() {
   grpcw) echo "gRPC wire protocol support" ;;
   graphql) echo "GraphQL API support" ;;
   metrics) echo "Prometheus metrics integration" ;;
-  mcp) echo "MCP (Model Context Protocol) server" ;;
   *) echo "Unknown module" ;;
   esac
 }
@@ -81,7 +80,7 @@ Build custom ArcadeDB distributions with only the modules you need.
 OPTIONS:
     --version=VERSION       ArcadeDB version to build (required for non-interactive mode)
     --modules=MODULES       Comma-separated list of modules. If not provided, will be asked interactively.
-                           Options: console,gremlin,studio,redisw,mongodbw,postgresw,grpcw,graphql,metrics,mcp
+                           Options: console,gremlin,studio,redisw,mongodbw,postgresw,grpcw,graphql,metrics
     --local-repo[=PATH]    Use local Maven repository or directory instead of downloading from Maven Central.
                            If PATH is not provided, defaults to ~/.m2/repository
     --local-base=FILE      Use local base distribution file instead of downloading from GitHub.
@@ -107,7 +106,6 @@ OPTIONAL MODULES:
     grpcw        gRPC wire protocol support
     graphql      GraphQL API support
     metrics      Prometheus metrics integration
-    mcp          MCP (Model Context Protocol) server
 
 EXAMPLES:
     # Build with Gremlin and Studio

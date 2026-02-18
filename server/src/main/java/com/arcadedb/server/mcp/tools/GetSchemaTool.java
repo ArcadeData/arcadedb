@@ -16,13 +16,14 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.mcp.tools;
+package com.arcadedb.server.mcp.tools;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
@@ -77,7 +78,7 @@ public class GetSchemaTool {
 
       // Properties
       final JSONArray properties = new JSONArray();
-      for (final com.arcadedb.schema.Property prop : type.getProperties()) {
+      for (final Property prop : type.getProperties()) {
         final JSONObject propJson = new JSONObject();
         propJson.put("name", prop.getName());
         propJson.put("type", prop.getType().name());
