@@ -28,6 +28,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MergeClause;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -735,6 +736,14 @@ public class MergeStep extends AbstractExecutionStep {
       // If the value is an Expression object, evaluate it in the current result context
       if (value instanceof Expression) {
         value = evaluator.evaluate((Expression) value, result, context);
+      }
+      // Resolve ParameterReference objects (e.g., {user_name: $username} -> actual value from context)
+      else if (value instanceof CypherASTBuilder.ParameterReference paramRef) {
+        if (context.getInputParameters() != null) {
+          final Object paramValue = context.getInputParameters().get(paramRef.getName());
+          if (paramValue != null)
+            value = paramValue;
+        }
       }
       // Legacy support: If the value looks like a property access (e.g., "BatchEntry.subtype"),
       // try to evaluate it against the current result context
