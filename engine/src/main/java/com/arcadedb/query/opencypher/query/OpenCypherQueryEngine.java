@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
@@ -113,7 +114,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         throw new CommandExecutionException("Query contains write operations. Use command() instead of query()");
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
-    } catch (final CommandExecutionException | CommandParsingException e) {
+    } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error executing Cypher query: " + query, e);
@@ -154,7 +155,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         return executeAdmin((CypherAdminStatement) statement);
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
-    } catch (final CommandExecutionException | CommandParsingException e) {
+    } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error executing Cypher command: " + query, e);
@@ -271,6 +272,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final SecurityManager security = database.getSecurity();
     if (security == null)
       throw new CommandExecutionException("User management commands require server mode");
+
+    // All admin commands except SHOW CURRENT USER require updateSecurity permission
+    if (admin.getKind() != CypherAdminStatement.Kind.SHOW_CURRENT_USER)
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
     final InternalResultSet resultSet = new InternalResultSet();
 
