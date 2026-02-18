@@ -36,8 +36,8 @@ public class MaterializedViewImpl implements MaterializedView {
   private final boolean simpleQuery;
   private final long refreshInterval;
   private volatile long lastRefreshTime;
-  private volatile String status;
-  private transient MaterializedViewChangeListener changeListener;
+  private volatile MaterializedViewStatus status;
+  private volatile MaterializedViewChangeListener changeListener;
 
   public MaterializedViewImpl(final Database database, final String name, final String query,
       final String backingTypeName, final List<String> sourceTypeNames,
@@ -52,7 +52,7 @@ public class MaterializedViewImpl implements MaterializedView {
     this.simpleQuery = simpleQuery;
     this.refreshInterval = refreshInterval;
     this.lastRefreshTime = 0;
-    this.status = "VALID";
+    this.status = MaterializedViewStatus.VALID;
   }
 
   @Override
@@ -91,7 +91,7 @@ public class MaterializedViewImpl implements MaterializedView {
 
   @Override
   public String getStatus() {
-    return status;
+    return status.name();
   }
 
   @Override
@@ -103,7 +103,7 @@ public class MaterializedViewImpl implements MaterializedView {
     return refreshInterval;
   }
 
-  public void setStatus(final String status) {
+  public void setStatus(final MaterializedViewStatus status) {
     this.status = status;
   }
 
@@ -153,7 +153,7 @@ public class MaterializedViewImpl implements MaterializedView {
     json.put("simpleQuery", simpleQuery);
     json.put("refreshInterval", refreshInterval);
     json.put("lastRefreshTime", lastRefreshTime);
-    json.put("status", status);
+    json.put("status", status.name());
     final JSONArray srcTypes = new JSONArray();
     for (final String src : sourceTypeNames)
       srcTypes.put(src);
@@ -177,7 +177,7 @@ public class MaterializedViewImpl implements MaterializedView {
         json.getBoolean("simpleQuery", false),
         json.getLong("refreshInterval", 0));
     view.lastRefreshTime = json.getLong("lastRefreshTime", 0);
-    view.status = json.getString("status", "VALID");
+    view.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
     return view;
   }
 

@@ -61,16 +61,16 @@ class MaterializedViewTest extends TestHelper {
 
     assertThat(view.getStatus()).isEqualTo("VALID");
 
-    view.setStatus("STALE");
+    view.setStatus(MaterializedViewStatus.STALE);
     assertThat(view.getStatus()).isEqualTo("STALE");
 
-    view.setStatus("BUILDING");
+    view.setStatus(MaterializedViewStatus.BUILDING);
     assertThat(view.getStatus()).isEqualTo("BUILDING");
 
-    view.setStatus("ERROR");
+    view.setStatus(MaterializedViewStatus.ERROR);
     assertThat(view.getStatus()).isEqualTo("ERROR");
 
-    view.setStatus("VALID");
+    view.setStatus(MaterializedViewStatus.VALID);
     view.updateLastRefreshTime();
     assertThat(view.getLastRefreshTime()).isGreaterThan(0);
   }

@@ -697,6 +697,7 @@ public class TransactionContext implements Transaction {
   }
 
   public void commit2ndPhase(final TransactionPhase1 changes) {
+    boolean committed = false;
     try {
       if (changes == null)
         return;
@@ -743,6 +744,8 @@ public class TransactionContext implements Transaction {
           file.onAfterCommit();
       }
 
+      committed = true;
+
     } catch (final ConcurrentModificationException e) {
       throw e;
     } catch (final Exception e) {
@@ -750,7 +753,10 @@ public class TransactionContext implements Transaction {
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
-      resetAndFireCallbacks();
+      if (committed)
+        resetAndFireCallbacks();
+      else
+        reset();
     }
   }
 

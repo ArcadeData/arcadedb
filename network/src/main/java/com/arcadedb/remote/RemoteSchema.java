@@ -129,14 +129,14 @@ public class RemoteSchema implements Schema {
   @Override
   public boolean existsMaterializedView(final String viewName) {
     final ResultSet result = remoteDatabase.command("sql",
-        "SELECT FROM schema:materializedViews WHERE name = `" + viewName + "`");
+        "SELECT FROM schema:materializedViews WHERE name = '" + viewName + "'");
     return result.hasNext();
   }
 
   @Override
   public MaterializedView getMaterializedView(final String viewName) {
     final ResultSet result = remoteDatabase.command("sql",
-        "SELECT FROM schema:materializedViews WHERE name = `" + viewName + "`");
+        "SELECT FROM schema:materializedViews WHERE name = '" + viewName + "'");
     if (result.hasNext())
       return new RemoteMaterializedView(result.next());
     throw new SchemaException("Materialized view '" + viewName + "' not found");

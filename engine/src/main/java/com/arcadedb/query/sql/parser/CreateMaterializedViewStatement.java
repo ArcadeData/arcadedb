@@ -88,7 +88,7 @@ public class CreateMaterializedViewStatement extends DDLStatement {
     sb.append(" AS ").append(selectStatement);
     if (refreshMode != null) {
       sb.append(" REFRESH ").append(refreshMode);
-      if ("PERIODIC".equalsIgnoreCase(refreshMode) || refreshInterval > 0)
+      if ("PERIODIC".equalsIgnoreCase(refreshMode) && refreshInterval > 0)
         sb.append(" EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
     }
     if (buckets > 0)

@@ -1513,8 +1513,8 @@ public class LocalSchema implements Schema {
             getMaterializedViewScheduler().schedule(database, view);
 
           // Crash recovery: if status is BUILDING, it was interrupted
-          if ("BUILDING".equals(view.getStatus()))
-            view.setStatus("STALE");
+          if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
+            view.setStatus(MaterializedViewStatus.STALE);
         }
       }
 

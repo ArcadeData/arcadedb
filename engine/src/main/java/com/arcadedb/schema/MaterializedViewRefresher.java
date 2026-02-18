@@ -29,13 +29,13 @@ import java.util.logging.Level;
 public class MaterializedViewRefresher {
 
   public static void fullRefresh(final Database database, final MaterializedViewImpl view) {
-    view.setStatus("BUILDING");
+    view.setStatus(MaterializedViewStatus.BUILDING);
     try {
-      database.transaction(() -> {
-        final String backingTypeName = view.getBackingTypeName();
+      final String backingTypeName = view.getBackingTypeName();
 
-        // Truncate existing data
-        database.command("sql", "DELETE FROM " + backingTypeName);
+      database.transaction(() -> {
+        // Delete existing data
+        database.command("sql", "DELETE FROM `" + backingTypeName + "`");
 
         // Execute the defining query and insert results
         try (final ResultSet rs = database.query("sql", view.getQuery())) {
@@ -52,10 +52,10 @@ public class MaterializedViewRefresher {
       });
 
       view.updateLastRefreshTime();
-      view.setStatus("VALID");
+      view.setStatus(MaterializedViewStatus.VALID);
 
     } catch (final Exception e) {
-      view.setStatus("ERROR");
+      view.setStatus(MaterializedViewStatus.ERROR);
       LogManager.instance().log(MaterializedViewRefresher.class, Level.SEVERE,
           "Error refreshing materialized view '%s': %s", e, view.getName(), e.getMessage());
       throw e;

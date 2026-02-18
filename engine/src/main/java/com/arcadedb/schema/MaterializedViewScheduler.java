@@ -57,7 +57,7 @@ public class MaterializedViewScheduler {
       try {
         MaterializedViewRefresher.fullRefresh(db, view);
       } catch (final Exception e) {
-        view.setStatus("ERROR");
+        view.setStatus(MaterializedViewStatus.ERROR);
         LogManager.instance().log(this, Level.SEVERE,
             "Error in periodic refresh for view '%s': %s", e, view.getName(), e.getMessage());
       }

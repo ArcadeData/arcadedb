@@ -18,7 +18,6 @@
  */
 package com.arcadedb.schema;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
@@ -33,10 +32,10 @@ public class MaterializedViewChangeListener
     implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
 
   private final MaterializedViewImpl view;
-  private final Database database;
+  private final DatabaseInternal database;
   private final String callbackKey;
 
-  public MaterializedViewChangeListener(final Database database, final MaterializedViewImpl view) {
+  public MaterializedViewChangeListener(final DatabaseInternal database, final MaterializedViewImpl view) {
     this.database = database;
     this.view = view;
     this.callbackKey = "mv-refresh:" + view.getName();
@@ -58,16 +57,18 @@ public class MaterializedViewChangeListener
   }
 
   private void schedulePostCommitRefresh() {
-    final DatabaseInternal db = (DatabaseInternal) database;
-    if (!db.isTransactionActive())
+    if (!database.isTransactionActive())
       return;
 
-    final TransactionContext tx = db.getTransaction();
+    final TransactionContext tx = database.getTransaction();
+    // NOTE: currently always performs a full refresh even for simple queries.
+    // Per-record incremental updates for simple queries (using _sourceRID tracking)
+    // is a future optimization — see MaterializedViewQueryClassifier.isSimple().
     tx.addAfterCommitCallbackIfAbsent(callbackKey, () -> {
       try {
         MaterializedViewRefresher.fullRefresh(database, view);
       } catch (final Exception e) {
-        view.setStatus("STALE");
+        view.setStatus(MaterializedViewStatus.STALE);
         LogManager.instance().log(this, Level.WARNING,
             "Error in incremental refresh for view '%s', marking as STALE: %s",
             e, view.getName(), e.getMessage());

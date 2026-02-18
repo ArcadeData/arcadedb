@@ -23,6 +23,7 @@ import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -30,6 +31,7 @@ import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Level;
 
 public class MaterializedViewBuilder {
   private final DatabaseInternal database;
@@ -130,8 +132,21 @@ public class MaterializedViewBuilder {
       schema.materializedViews.put(name, view);
       schema.saveConfiguration();
 
-      // Perform initial full refresh
-      MaterializedViewRefresher.fullRefresh(database, view);
+      // Perform initial full refresh; on failure clean up the orphaned view and backing type
+      try {
+        MaterializedViewRefresher.fullRefresh(database, view);
+      } catch (final Exception e) {
+        // Remove the MV entry first (so dropType's backing-type guard won't block)
+        schema.materializedViews.remove(name);
+        try {
+          schema.dropType(name);
+        } catch (final Exception dropEx) {
+          LogManager.instance().log(MaterializedViewBuilder.class, Level.WARNING,
+              "Failed to clean up backing type '%s' after materialized view creation failure: %s",
+              dropEx, name, dropEx.getMessage());
+        }
+        throw e;
+      }
       schema.saveConfiguration();
 
       // Register event listeners for INCREMENTAL mode
@@ -148,7 +163,7 @@ public class MaterializedViewBuilder {
   static void registerListeners(final LocalSchema schema, final MaterializedViewImpl view,
       final List<String> sourceTypeNames) {
     final MaterializedViewChangeListener listener =
-        new MaterializedViewChangeListener(schema.getDatabase(), view);
+        new MaterializedViewChangeListener((DatabaseInternal) schema.getDatabase(), view);
     view.setChangeListener(listener);
     for (final String srcType : sourceTypeNames) {
       final DocumentType type = schema.getType(srcType);
