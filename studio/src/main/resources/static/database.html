@@ -1,5 +1,5 @@
-<div class="tab-pane fade" id="tab-database" role="tabpanel">
-  <div class="d-flex align-items-center justify-content-between" style="padding: 10px 12px 6px;">
+<div class="tab-pane fade d-flex flex-column" id="tab-database" role="tabpanel">
+  <div class="d-flex align-items-center justify-content-between flex-shrink-0" style="padding: 10px 12px 6px;">
     <div class="d-flex align-items-center gap-2">
       <i class="fa fa-database" style="font-size: 1.2rem; color: #00aeee;"></i>
       <label>Connected as&nbsp;</label><label id="databaseUser"></label>@
@@ -13,16 +13,16 @@
     </div>
   </div>
 
-  <ul class="nav nav-tabs" id="tabs-database" style="padding: 0 12px;">
+  <ul class="nav nav-tabs flex-shrink-0" id="tabs-database" style="padding: 0 12px;">
     <li class="nav-item"><a data-toggle="tab" href="#tab-schema" class="active show nav-link" id="tab-schema-sel">Schema</a></li>
     <li class="nav-item"><a data-toggle="tab" href="#tab-db-settings" class="nav-link" id="tab-db-settings-sel">Settings</a></li>
     <li class="nav-item"><a data-toggle="tab" href="#tab-db-backup" class="nav-link" id="tab-db-backup-sel">Backup</a></li>
   </ul>
 
-  <div class="tab-content">
+  <div class="tab-content" style="flex: 1; min-height: 0; overflow: hidden;">
     <!-- Schema Tab -->
-    <div class="tab-pane fade show active" id="tab-schema" role="tabpanel">
-      <div class="d-flex" style="height: calc(100vh - 210px);">
+    <div class="tab-pane fade show active d-flex flex-column" id="tab-schema" role="tabpanel" style="height: 100%;">
+      <div class="d-flex" style="flex: 1; min-height: 0;">
         <!-- Type Badge Sidebar -->
         <div id="dbTypeSidebar">
           <div class="sidebar-header">

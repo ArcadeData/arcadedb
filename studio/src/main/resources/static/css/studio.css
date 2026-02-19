@@ -1,6 +1,61 @@
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
 body {
   font-family: Poppins, Verdana, sans-serif, Tahoma;
   background-color: white;
+}
+
+#studioPanel {
+  height: 100vh;
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+
+#studioPanel > .card-header-tab.card-header {
+  height: 100%;
+  padding: 0;
+}
+
+#studioPanel > .card-header > .row {
+  height: 100%;
+  margin: 0;
+}
+
+#studioPanel > .card-header > .row > .col-1 {
+  padding: 0;
+  height: 100%;
+}
+
+#studioPanel > .card-header > .row > .col-1 > #tabs {
+  height: 100%;
+}
+
+#studioPanel > .card-header > .row > .col-11 {
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+
+#studioPanel > .card-header > .row > .col-11 > .tab-content {
+  height: 100%;
+}
+
+#studioPanel > .card-header > .row > .col-11 > .tab-content > .tab-pane {
+  height: 100%;
+  overflow-y: auto;
+}
+
+#tab-query {
+  overflow-y: hidden !important;
+}
+
+#tab-database {
+  overflow-y: hidden !important;
 }
 
 a,
@@ -233,7 +288,7 @@ div.dt-search {
   width: 45px;
   min-width: 45px;
   flex-shrink: 0;
-  height: calc(100vh - 120px);
+  height: 100%;
   background-color: #f0f1f3;
   border-right: 1px solid #e0e0e0;
   display: flex;
@@ -277,7 +332,7 @@ div.dt-search {
   width: 210px;
   min-width: 210px;
   flex-shrink: 0;
-  height: calc(100vh - 120px);
+  height: 100%;
   overflow-y: auto;
   background-color: #f8f9fa;
   border-right: 1px solid #e0e0e0;
@@ -700,6 +755,7 @@ div.dt-search {
   width: 230px;
   min-width: 230px;
   flex-shrink: 0;
+  height: 100%;
   overflow-y: auto;
   background-color: #f8f9fa;
   border-right: 1px solid #e0e0e0;
