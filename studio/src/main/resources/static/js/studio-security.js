@@ -854,6 +854,16 @@ function deleteGroup(db, name) {
     });
 }
 
+function refreshCurrentSecurityTab() {
+  var activeTab = $("#tabs-security .nav-link.active").attr("id");
+  if (activeTab === "tab-security-groups-sel")
+    loadGroups();
+  else if (activeTab === "tab-security-tokens-sel")
+    loadApiTokens();
+  else
+    loadUsers();
+}
+
 // ==================== Tab Switching & Delegated Event Handlers ====================
 
 document.addEventListener("DOMContentLoaded", function () {
