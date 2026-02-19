@@ -91,7 +91,7 @@ function renderTable() {
 
         if (colName == "@rid") {
           //RID
-          value = "<a class='link' onclick=\"addNodeFromRecord('" + value + "')\">" + value + "</a>";
+          value = "<a class='link' onclick=\"openRecordEditorFromTable('" + value + "')\">" + value + "</a>";
         } else if (value != null && (typeof value === "string" || value instanceof String) && value.toString().length > 30) {
           if (tableTruncateColumns) value = value.toString().substr(0, 30) + "...";
         }
