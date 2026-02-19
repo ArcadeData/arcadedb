@@ -138,7 +138,7 @@
 <script>
 var apiEndpoints = {
   ready: {
-    method: "GET", path: "/api/v1/ready", auth: false,
+    method: "GET", path: "/api/v1/ready", auth: false, tryIt: false,
     docsAnchor: "http-checkready",
     title: "Server Readiness Check",
     description: "Returns the server status. If the server is running and ready to accept requests, it returns <code>204 No Content</code>. Useful for health checks, load balancers, and monitoring.",
@@ -149,7 +149,7 @@ var apiEndpoints = {
     notes: "This endpoint does not require authentication and can be used by external monitoring systems."
   },
   login: {
-    method: "POST", path: "/api/v1/login", auth: false,
+    method: "POST", path: "/api/v1/login", auth: false, tryIt: true,
     docsAnchor: "http-login",
     title: "Authenticate",
     description: "Authenticates a user with the server using HTTP Basic Authentication. Returns a session token for subsequent requests.",
@@ -163,7 +163,7 @@ var apiEndpoints = {
     notes: "Use the returned token as a Bearer token for all subsequent API calls."
   },
   logout: {
-    method: "POST", path: "/api/v1/logout", auth: true,
+    method: "POST", path: "/api/v1/logout", auth: true, tryIt: true,
     docsAnchor: "http-logout",
     title: "End Session",
     description: "Invalidates the current session token, logging the user out.",
@@ -174,7 +174,7 @@ var apiEndpoints = {
     notes: null
   },
   queryGet: {
-    method: "GET", path: "/api/v1/query/{database}/{language}/{command}", auth: true,
+    method: "GET", path: "/api/v1/query/{database}/{language}/{command}", auth: true, tryIt: true,
     docsAnchor: "http-executequery",
     title: "Execute Query (GET)",
     description: "Executes a read-only query against the specified database. The query is URL-encoded in the path. This is an idempotent operation intended for queries that do not modify data.",
@@ -189,20 +189,20 @@ var apiEndpoints = {
     notes: "Queries executed via GET are always read-only. For write operations, use the command endpoint."
   },
   queryPost: {
-    method: "POST", path: "/api/v1/query/{database}", auth: true,
+    method: "POST", path: "/api/v1/query/{database}", auth: true, tryIt: true,
     docsAnchor: "http-executequery",
     title: "Execute Query (POST)",
     description: "Executes a read-only query against the specified database. The query is passed in the request body as JSON. Preferred over GET for longer or complex queries.",
     params: [
       { name: "database", desc: "Database name" }
     ],
-    requestBody: '{\n  "language": "sql",\n  "command": "SELECT FROM V LIMIT 10"\n}',
+    requestBody: '{\n  "language": "sql",\n  "command": "SELECT FROM V"\n}',
     responseCode: "200 OK",
     responseBody: '{\n  "user": "root",\n  "version": "26.x",\n  "serverName": "ArcadeDB_0",\n  "result": [ { ... } ]\n}',
     notes: "Supports all query languages: sql, cypher, gremlin, graphql, mongo."
   },
   command: {
-    method: "POST", path: "/api/v1/command/{database}", auth: true,
+    method: "POST", path: "/api/v1/command/{database}", auth: true, tryIt: true,
     docsAnchor: "http-executecommand",
     title: "Execute Command",
     description: "Executes a database command that may modify data (DDL/DML). Use this for INSERT, UPDATE, DELETE, CREATE, ALTER, and other write operations.",
@@ -215,7 +215,7 @@ var apiEndpoints = {
     notes: "Commands run inside an implicit transaction unless a managed transaction is active."
   },
   begin: {
-    method: "POST", path: "/api/v1/begin/{database}", auth: true,
+    method: "POST", path: "/api/v1/begin/{database}", auth: true, tryIt: true,
     docsAnchor: "http-begin",
     title: "Begin Transaction",
     description: "Starts a new managed transaction on the specified database. Returns a transaction ID in the response header that must be included in subsequent operations.",
@@ -231,7 +231,7 @@ var apiEndpoints = {
     notes: "Include the <code>arcadedb-session-id</code> header in all subsequent command/query calls within the transaction."
   },
   commit: {
-    method: "POST", path: "/api/v1/commit/{database}", auth: true,
+    method: "POST", path: "/api/v1/commit/{database}", auth: true, tryIt: true,
     docsAnchor: "http-commit",
     title: "Commit Transaction",
     description: "Commits the current managed transaction, making all changes permanent.",
@@ -247,7 +247,7 @@ var apiEndpoints = {
     notes: null
   },
   rollback: {
-    method: "POST", path: "/api/v1/rollback/{database}", auth: true,
+    method: "POST", path: "/api/v1/rollback/{database}", auth: true, tryIt: true,
     docsAnchor: "http-rollback",
     title: "Rollback Transaction",
     description: "Rolls back the current managed transaction, discarding all uncommitted changes.",
@@ -263,7 +263,7 @@ var apiEndpoints = {
     notes: null
   },
   serverGet: {
-    method: "GET", path: "/api/v1/server", auth: true,
+    method: "GET", path: "/api/v1/server", auth: true, tryIt: true,
     docsAnchor: "http-serverinfo",
     title: "Get Server Information",
     description: "Returns detailed information about the server, including version, uptime, databases, metrics, and cluster status.",
@@ -274,7 +274,7 @@ var apiEndpoints = {
     notes: null
   },
   serverPost: {
-    method: "POST", path: "/api/v1/server", auth: true,
+    method: "POST", path: "/api/v1/server", auth: true, tryIt: true,
     docsAnchor: "http-servercommand",
     title: "Execute Server Command",
     description: "Executes a server-level command such as creating/dropping databases, managing users, or shutting down the server.",
@@ -285,7 +285,7 @@ var apiEndpoints = {
     notes: "Available commands: <code>create database</code>, <code>drop database</code>, <code>open database</code>, <code>close database</code>, <code>create user</code>, <code>drop user</code>, <code>shutdown</code>, <code>set server setting</code>, <code>get server events</code>, <code>align database</code>."
   },
   databases: {
-    method: "GET", path: "/api/v1/databases", auth: true,
+    method: "GET", path: "/api/v1/databases", auth: true, tryIt: true,
     docsAnchor: "http-listdatabases",
     title: "List Databases",
     description: "Returns a list of all databases available on the server that the current user has access to.",
@@ -296,7 +296,7 @@ var apiEndpoints = {
     notes: null
   },
   exists: {
-    method: "GET", path: "/api/v1/exists/{database}", auth: true,
+    method: "GET", path: "/api/v1/exists/{database}", auth: true, tryIt: true,
     docsAnchor: "http-databaseexists",
     title: "Check Database Exists",
     description: "Checks whether a specific database exists on the server.",
@@ -309,6 +309,8 @@ var apiEndpoints = {
     notes: null
   }
 };
+
+var _apiPlaygroundVisible = {};
 
 function showApiDetail(key) {
   var ep = apiEndpoints[key];
@@ -335,6 +337,8 @@ function showApiDetail(key) {
   html += ep.auth ? "<span class='api-detail-tag api-detail-tag-auth'><i class='fa fa-lock'></i> Auth required</span>"
                    : "<span class='api-detail-tag api-detail-tag-public'><i class='fa fa-lock-open'></i> No auth</span>";
   html += "<a href='https://docs.arcadedb.com/#" + ep.docsAnchor + "' target='_blank' class='api-detail-tag api-detail-tag-docs'><i class='fa fa-external-link-alt'></i> Full docs</a>";
+  if (ep.tryIt)
+    html += "<span class='api-detail-tag api-detail-tag-tryit' onclick='toggleApiPlayground(\"" + key + "\")'><i class='fa fa-play'></i> Try It</span>";
   html += "</div>";
   html += "</div>";
 
@@ -401,7 +405,217 @@ function showApiDetail(key) {
     html += "</div>";
   }
 
+  // Playground container (hidden by default)
+  if (ep.tryIt) {
+    var display = _apiPlaygroundVisible[key] ? 'block' : 'none';
+    html += "<div class='api-playground' id='apiPlayground_" + key + "' style='display:" + display + "'>";
+    html += renderApiPlayground(key, ep);
+    html += "</div>";
+  }
+
   html += "</div>";
   document.getElementById("apiDetailPanel").innerHTML = html;
+}
+
+function toggleApiPlayground(key) {
+  _apiPlaygroundVisible[key] = !_apiPlaygroundVisible[key];
+  var el = document.getElementById('apiPlayground_' + key);
+  if (el)
+    el.style.display = _apiPlaygroundVisible[key] ? 'block' : 'none';
+  else
+    showApiDetail(key);
+
+  if (_apiPlaygroundVisible[key]) {
+    setTimeout(function() {
+      var pg = document.getElementById('apiPlayground_' + key);
+      if (pg) pg.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }
+}
+
+function renderApiPlayground(key, ep) {
+  var html = "<div class='api-playground-title'><i class='fa fa-play-circle'></i> API Playground</div>";
+
+  // Auth section
+  html += "<div class='api-playground-section'>";
+  html += "<label>Authentication</label>";
+  html += "<select class='api-playground-auth-select' id='apiAuth_" + key + "' onchange='onApiAuthChange(\"" + key + "\")'>";
+  html += "<option value='session'>Current Session</option>";
+  html += "<option value='basic'>Basic Auth</option>";
+  html += "<option value='bearer'>Bearer Token</option>";
+  if (!ep.auth) html += "<option value='none'>No Auth</option>";
+  html += "</select>";
+  html += "<div class='api-playground-auth-fields' id='apiAuthFields_" + key + "'></div>";
+  html += "</div>";
+
+  // Path parameters
+  if (ep.params && ep.params.length > 0) {
+    html += "<div class='api-playground-section'>";
+    html += "<label>Path Parameters</label>";
+    for (var i = 0; i < ep.params.length; i++) {
+      var p = ep.params[i];
+      var defaultVal = '';
+      if (p.name === 'database') {
+        var db = typeof getCurrentDatabase === 'function' ? getCurrentDatabase() : '';
+        defaultVal = db || '';
+      } else if (p.name === 'language')
+        defaultVal = 'sql';
+      else if (p.name === 'command')
+        defaultVal = 'SELECT 1';
+
+      html += "<div class='api-playground-param-row'>";
+      html += "<code>" + escapeHtml(p.name) + "</code>";
+      html += "<input class='api-playground-input' id='apiParam_" + key + "_" + p.name + "' value='" + escapeHtml(defaultVal) + "' placeholder='" + escapeHtml(p.name) + "'>";
+      html += "</div>";
+    }
+    html += "</div>";
+  }
+
+  // Request body
+  if (ep.requestBody) {
+    html += "<div class='api-playground-section'>";
+    html += "<label>Request Body</label>";
+    html += "<textarea class='api-playground-body-editor' id='apiBody_" + key + "'>" + escapeHtml(ep.requestBody) + "</textarea>";
+    html += "</div>";
+  }
+
+  // Send button
+  html += "<div style='margin-bottom:16px'>";
+  html += "<button class='api-playground-send' id='apiSendBtn_" + key + "' onclick='sendApiRequest(\"" + key + "\")'><i class='fa fa-paper-plane'></i> Send Request</button>";
+  html += "</div>";
+
+  // Response area
+  html += "<div id='apiResponse_" + key + "'></div>";
+
+  return html;
+}
+
+function onApiAuthChange(key) {
+  var authType = document.getElementById('apiAuth_' + key).value;
+  var container = document.getElementById('apiAuthFields_' + key);
+
+  if (authType === 'basic') {
+    container.innerHTML =
+      "<div class='api-playground-param-row mt-2'><code>Username</code><input class='api-playground-input' id='apiAuthUser_" + key + "' placeholder='username'></div>" +
+      "<div class='api-playground-param-row'><code>Password</code><input class='api-playground-input' id='apiAuthPass_" + key + "' type='password' placeholder='password'></div>";
+  } else if (authType === 'bearer') {
+    container.innerHTML =
+      "<div class='api-playground-param-row mt-2'><code>Token</code><input class='api-playground-input' id='apiAuthToken_" + key + "' placeholder='Bearer token'></div>";
+  } else {
+    container.innerHTML = '';
+  }
+}
+
+function sendApiRequest(key) {
+  var ep = apiEndpoints[key];
+  if (!ep) return;
+
+  var sendBtn = document.getElementById('apiSendBtn_' + key);
+  sendBtn.disabled = true;
+  sendBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Sending...';
+
+  // Build URL
+  var url = ep.path;
+  if (ep.params) {
+    for (var i = 0; i < ep.params.length; i++) {
+      var p = ep.params[i];
+      var val = document.getElementById('apiParam_' + key + '_' + p.name);
+      var paramVal = val ? encodeURIComponent(val.value) : '';
+      url = url.replace('{' + p.name + '}', paramVal);
+    }
+  }
+
+  // Build auth header
+  var authType = document.getElementById('apiAuth_' + key).value;
+  var headers = {};
+
+  if (authType === 'session' && typeof globalCredentials !== 'undefined' && globalCredentials) {
+    headers['Authorization'] = globalCredentials;
+  } else if (authType === 'basic') {
+    var user = (document.getElementById('apiAuthUser_' + key) || {}).value || '';
+    var pass = (document.getElementById('apiAuthPass_' + key) || {}).value || '';
+    headers['Authorization'] = 'Basic ' + btoa(user + ':' + pass);
+  } else if (authType === 'bearer') {
+    var token = (document.getElementById('apiAuthToken_' + key) || {}).value || '';
+    headers['Authorization'] = 'Bearer ' + token;
+  }
+
+  // Build request body
+  var body = null;
+  var bodyEl = document.getElementById('apiBody_' + key);
+  if (bodyEl && bodyEl.value.trim())
+    body = bodyEl.value.trim();
+
+  var startTime = Date.now();
+
+  $.ajax({
+    type: ep.method,
+    url: url,
+    data: body,
+    contentType: body ? 'application/json' : undefined,
+    headers: headers,
+    timeout: 30000
+  })
+  .done(function(data, textStatus, jqXHR) {
+    var elapsed = Date.now() - startTime;
+    renderApiResponse(key, jqXHR.status, elapsed, data, jqXHR);
+  })
+  .fail(function(jqXHR) {
+    var elapsed = Date.now() - startTime;
+    var responseData = jqXHR.responseText;
+    try { responseData = JSON.parse(responseData); } catch(e) {}
+    renderApiResponse(key, jqXHR.status, elapsed, responseData, jqXHR);
+  })
+  .always(function() {
+    sendBtn.disabled = false;
+    sendBtn.innerHTML = '<i class="fa fa-paper-plane"></i> Send Request';
+  });
+}
+
+function renderApiResponse(key, status, elapsed, data, jqXHR) {
+  var container = document.getElementById('apiResponse_' + key);
+  var isOk = status >= 200 && status < 400;
+  var statusClass = isOk ? 'api-playground-status-ok' : 'api-playground-status-error';
+  var statusText = jqXHR ? (jqXHR.status + ' ' + jqXHR.statusText) : (status + '');
+
+  var responseText = '';
+  if (data !== null && data !== undefined) {
+    if (typeof data === 'object')
+      responseText = JSON.stringify(data, null, 2);
+    else
+      responseText = data.toString();
+  } else {
+    responseText = '(empty response)';
+  }
+
+  // Show response headers
+  var headersText = '';
+  if (jqXHR) {
+    var allHeaders = jqXHR.getAllResponseHeaders();
+    if (allHeaders) headersText = allHeaders.trim();
+  }
+
+  var html = "<div class='api-playground-response'>";
+  html += "<div class='api-playground-response-header'>";
+  html += "<span class='api-playground-status " + statusClass + "'>" + escapeHtml(statusText) + "</span>";
+  html += "<span class='api-playground-timing'>" + elapsed + "ms</span>";
+  html += "</div>";
+  html += "<div style='position:relative'>";
+  html += "<pre class='api-playground-response-body'>" + escapeHtml(responseText) + "</pre>";
+  html += "<button class='api-playground-copy' onclick='copyApiResponse(this)' title='Copy to clipboard'><i class='fa fa-copy'></i></button>";
+  html += "</div>";
+  html += "</div>";
+
+  container.innerHTML = html;
+}
+
+function copyApiResponse(btn) {
+  var pre = btn.parentNode.querySelector('.api-playground-response-body');
+  if (pre) {
+    navigator.clipboard.writeText(pre.textContent).then(function() {
+      btn.innerHTML = '<i class="fa fa-check"></i>';
+      setTimeout(function() { btn.innerHTML = '<i class="fa fa-copy"></i>'; }, 1500);
+    });
+  }
 }
 </script>

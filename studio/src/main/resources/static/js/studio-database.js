@@ -352,48 +352,34 @@ function updateDatabases(callback) {
 }
 
 function createDatabase() {
-  let html =
-    "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='inputCreateDatabaseName'>";
+  let html = "<label for='inputCreateDatabaseName'>Enter the database name:</label>" +
+    "<input class='form-control mt-2' id='inputCreateDatabaseName' onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
 
-  Swal.fire({
-    title: "Create a new database",
-    html: html,
-    inputAttributes: {
-      autocapitalize: "off",
-    },
-    confirmButtonColor: "#3ac47d",
-    cancelButtonColor: "red",
-    showCancelButton: true,
-    confirmButtonText: "Send",
-  }).then((result) => {
-    if (result.value) {
-      let database = encodeURI($("#inputCreateDatabaseName").val().trim());
-      if (database == "") {
-        globalNotify("Error", "Database name empty", "danger");
-        return;
-      }
-
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/server",
-          data: "{ 'command': 'create database " + database + "' }",
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          $(".inputDatabase").val(database);
-          $("#schemaInputDatabase").val(database);
-          updateDatabases();
-        })
-        .fail(function (jqXHR, textStatus, errorThrown) {
-          globalNotifyError(jqXHR.responseText);
-        });
+  globalPrompt("Create a new database", html, "Create", function() {
+    let database = encodeURI($("#inputCreateDatabaseName").val().trim());
+    if (database == "") {
+      globalNotify("Error", "Database name empty", "danger");
+      return;
     }
-  });
 
-  $("#inputCreateDatabaseName").focus();
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/server",
+        data: "{ 'command': 'create database " + database + "' }",
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        $(".inputDatabase").val(database);
+        $("#schemaInputDatabase").val(database);
+        updateDatabases();
+      })
+      .fail(function (jqXHR, textStatus, errorThrown) {
+        globalNotifyError(jqXHR.responseText);
+      });
+  });
 }
 
 function dropDatabase() {
@@ -705,24 +691,21 @@ function saveCurrentQuery() {
     return;
   }
 
-  Swal.fire({
-    title: "Save Query",
-    input: "text",
-    inputLabel: "Query name",
-    inputPlaceholder: "e.g. Get all users",
-    showCancelButton: true,
-    confirmButtonColor: "#3ac47d",
-    inputValidator: function (value) {
-      if (!value || value.trim() == "") return "Please enter a name";
+  let html = "<label>Query name</label>" +
+    "<input class='form-control mt-2' id='inputSaveQueryName' placeholder='e.g. Get all users' " +
+    "onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
+
+  globalPrompt("Save Query", html, "Save", function() {
+    let name = $("#inputSaveQueryName").val();
+    if (!name || name.trim() == "") {
+      globalNotify("Error", "Please enter a name", "warning");
+      return;
     }
-  }).then(function (result) {
-    if (result.value) {
-      let queries = getSavedQueries();
-      queries.unshift({ name: result.value.trim(), l: language, c: command, d: database });
-      storeSavedQueries(queries);
-      populateSavedQueriesPanel();
-      globalNotify("Saved", "Query saved as '" + escapeHtml(result.value.trim()) + "'", "success");
-    }
+    let queries = getSavedQueries();
+    queries.unshift({ name: name.trim(), l: language, c: command, d: database });
+    storeSavedQueries(queries);
+    populateSavedQueriesPanel();
+    globalNotify("Saved", "Query saved as '" + escapeHtml(name.trim()) + "'", "success");
   });
 }
 
@@ -883,7 +866,7 @@ function populateReferencePanel() {
     {
       title: "SQL", lang: "sql",
       examples: [
-        { label: "SELECT", code: "SELECT * FROM MyType LIMIT 30" },
+        { label: "SELECT", code: "SELECT * FROM MyType" },
         { label: "SELECT with WHERE", code: "SELECT * FROM MyType WHERE name = 'value'" },
         { label: "INSERT", code: "INSERT INTO MyType SET name = 'value', age = 25" },
         { label: "UPDATE", code: "UPDATE MyType SET name = 'new' WHERE name = 'old'" },
@@ -900,7 +883,7 @@ function populateReferencePanel() {
     {
       title: "Cypher", lang: "opencypher",
       examples: [
-        { label: "MATCH all", code: "MATCH (n) RETURN n LIMIT 30" },
+        { label: "MATCH all", code: "MATCH (n) RETURN n" },
         { label: "MATCH with label", code: "MATCH (n:Person) RETURN n" },
         { label: "MATCH relationship", code: "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b" },
         { label: "CREATE node", code: "CREATE (n:Person {name: 'John', age: 30}) RETURN n" },
@@ -910,8 +893,8 @@ function populateReferencePanel() {
     {
       title: "Gremlin", lang: "gremlin",
       examples: [
-        { label: "All vertices", code: "g.V().limit(30)" },
-        { label: "All edges", code: "g.E().limit(30)" },
+        { label: "All vertices", code: "g.V()" },
+        { label: "All edges", code: "g.E()" },
         { label: "Filter by property", code: "g.V().has('name', 'John')" },
         { label: "Outgoing edges", code: "g.V().has('name', 'John').out('knows')" },
         { label: "Incoming edges", code: "g.V().has('name', 'John').in('knows')" },
@@ -977,7 +960,7 @@ function populateSettingsPanel() {
   let fitSaved = globalStorageLoad("table.fitInPage");
   let fitChecked = (fitSaved == null || fitSaved == "true") ? "checked" : "";
 
-  let currentLimit = $("#inputLimit").val() || "25";
+  let currentLimit = $("#inputLimit").val() || "20";
 
   let html = "<div class='settings-section'>";
   html += "<div class='settings-section-header'>Table Settings</div>";
@@ -991,7 +974,7 @@ function populateSettingsPanel() {
   html += "<div class='settings-section-header'>Query Defaults</div>";
   html += "<div class='settings-row'><label>Default auto-limit</label>";
   html += "<select id='settingDefaultLimit' onchange='applyDefaultLimit(this.value)'>";
-  let limits = [{ v: "25", l: "25" }, { v: "100", l: "100" }, { v: "500", l: "500" }, { v: "-1", l: "No limit" }];
+  let limits = [{ v: "20", l: "20" }, { v: "100", l: "100" }, { v: "500", l: "500" }, { v: "-1", l: "No limit" }];
   for (let i = 0; i < limits.length; i++) {
     let sel = limits[i].v == currentLimit ? " selected" : "";
     html += "<option value='" + limits[i].v + "'" + sel + ">" + limits[i].l + "</option>";
@@ -1359,9 +1342,9 @@ function showTypeDetail(typeName) {
   html += "<div class='db-detail-section'>";
   html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
   html += "<div class='d-flex flex-wrap gap-2'>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\` limit 30\")'><i class='fa fa-table'></i> First 30 records</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\`\")'><i class='fa fa-table'></i> Browse records</button>";
   if (row.type == "vertex")
-    html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select *, bothE() as \\`@edges\\` from \\`" + row.name + "\\` limit 30\")'><i class='fa fa-project-diagram'></i> With connections</button>";
+    html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select *, bothE() as \\`@edges\\` from \\`" + row.name + "\\`\")'><i class='fa fa-project-diagram'></i> With connections</button>";
   html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select count(*) from \\`" + row.name + "\\`\")'><i class='fa fa-calculator'></i> Count records</button>";
   html += "</div>";
   html += "</div>";
@@ -1418,7 +1401,7 @@ function populateQuerySidebar() {
       let name = escapeHtml(row.name);
       let records = (row.records || 0).toLocaleString();
       html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\` limit 30\"); return false;' ";
+      html += "onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\`\"); return false;' ";
       html += "title='" + name + " (" + records + " records)'>";
       html += "<span class='sidebar-badge-name'>" + name + "</span>";
       html += "<span class='sidebar-badge-count'>" + records + "</span>";
@@ -1575,38 +1558,30 @@ function displayDatabaseSettings() {
 }
 
 function updateDatabaseSetting(key, value) {
-  let html = "<b>" + key + "</b> = <input id='updateSettingInput' value='" + value + "'>";
+  let html = "<b>" + escapeHtml(key) + "</b> = <input class='form-control mt-2' id='updateSettingInput' value='" + escapeHtml(value) + "' " +
+    "onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
   html += "<br><p><i>The setting will be saved in the database configuration.</i></p>";
 
-  Swal.fire({
-    title: "Update Database Setting",
-    html: html,
-    showCancelButton: true,
-    width: 600,
-    confirmButtonColor: "#3ac47d",
-    cancelButtonColor: "red",
-  }).then((result) => {
-    if (result.value) {
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/server",
-          data: JSON.stringify({
-            command: "set database setting " + getCurrentDatabase() + " " + key + " " + $("#updateSettingInput").val(),
-          }),
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          if (data.error) {
-            $("#authorizationCodeMessage").html(data.error);
-            return false;
-          }
-          displayDatabaseSettings();
-          return true;
-        });
-    }
+  globalPrompt("Update Database Setting", html, "Update", function() {
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/server",
+        data: JSON.stringify({
+          command: "set database setting " + getCurrentDatabase() + " " + key + " " + $("#updateSettingInput").val(),
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        if (data.error) {
+          $("#authorizationCodeMessage").html(data.error);
+          return false;
+        }
+        displayDatabaseSettings();
+        return true;
+      });
   });
 }
 

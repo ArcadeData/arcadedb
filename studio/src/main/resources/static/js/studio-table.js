@@ -172,7 +172,17 @@ function toggleExportMenu(btn) {
   $(".dt-export-menu").removeClass("open");
 
   if (!isOpen) {
+    // Position menu below the button using fixed positioning
+    let rect = btn.getBoundingClientRect();
+    menu.css({
+      top: rect.bottom + 4 + "px",
+      left: (rect.right - menu.outerWidth()) + "px"
+    });
     menu.addClass("open");
+    // Recalc left after menu is visible and has width
+    let menuWidth = menu.outerWidth();
+    menu.css("left", (rect.right - menuWidth) + "px");
+
     // Close on outside click
     $(document).one("click", function (e) {
       if (!$(e.target).closest(".dt-export-dropdown").length)
