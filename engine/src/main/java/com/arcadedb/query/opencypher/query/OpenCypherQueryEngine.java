@@ -86,7 +86,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
         @Override
         public boolean isDDL() {
-          return statement instanceof CypherDDLStatement || statement instanceof CypherAdminStatement;
+          return statement instanceof CypherDDLStatement;
         }
 
         @Override

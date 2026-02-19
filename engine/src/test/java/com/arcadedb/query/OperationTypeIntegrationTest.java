@@ -135,7 +135,7 @@ class OperationTypeIntegrationTest extends TestHelper {
   @Test
   void testOpenCypherAdminViaEngine() {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze("SHOW USERS");
-    assertThat(analyzed.isDDL()).isTrue();
+    assertThat(analyzed.isDDL()).isFalse();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.ADMIN);
   }
 
@@ -145,6 +145,33 @@ class OperationTypeIntegrationTest extends TestHelper {
         "MATCH (n:V) REMOVE n.name RETURN n");
     assertThat(analyzed.isIdempotent()).isFalse();
     assertThat(analyzed.getOperationTypes()).contains(OperationType.UPDATE);
+  }
+
+  // --- QueryTool semantic check: write queries must be detected as non-idempotent ---
+
+  @Test
+  void testSqlInsertIsNotIdempotent() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("INSERT INTO V SET name = 'test'");
+    assertThat(analyzed.isIdempotent()).isFalse();
+  }
+
+  @Test
+  void testSqlUpdateIsNotIdempotent() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("UPDATE V SET name = 'test'");
+    assertThat(analyzed.isIdempotent()).isFalse();
+  }
+
+  @Test
+  void testSqlDeleteIsNotIdempotent() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("DELETE FROM V");
+    assertThat(analyzed.isIdempotent()).isFalse();
+  }
+
+  @Test
+  void testOpenCypherCreateIsNotIdempotent() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("opencypher").analyze(
+        "CREATE (n:V {name: 'test'}) RETURN n");
+    assertThat(analyzed.isIdempotent()).isFalse();
   }
 
   @Override

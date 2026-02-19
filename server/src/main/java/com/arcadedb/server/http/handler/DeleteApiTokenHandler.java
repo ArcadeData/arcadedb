@@ -35,12 +35,17 @@ public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
       final JSONObject payload) {
     checkRootUser(user);
 
-    final String token = getQueryParameter(exchange, "token");
-    if (token == null || token.isBlank())
-      return new ExecutionResponse(400, new JSONObject().put("error", "Token parameter is required").toString());
+    final String tokenHash = getQueryParameter(exchange, "token");
+    if (tokenHash == null || tokenHash.isBlank())
+      return new ExecutionResponse(400, new JSONObject().put("error", "Token hash parameter is required").toString());
+
+    // Only accept token hashes, not plaintext tokens — plaintext tokens in query parameters could leak in server logs and URL history
+    if (ApiTokenConfiguration.isApiToken(tokenHash))
+      return new ExecutionResponse(400,
+          new JSONObject().put("error", "Use token hash (from list endpoint) instead of plaintext token for deletion").toString());
 
     final ApiTokenConfiguration tokenConfig = httpServer.getServer().getSecurity().getApiTokenConfiguration();
-    final boolean deleted = tokenConfig.deleteToken(token);
+    final boolean deleted = tokenConfig.deleteToken(tokenHash);
 
     final JSONObject response = new JSONObject();
     response.put("result", deleted ? "Token deleted" : "Token not found");

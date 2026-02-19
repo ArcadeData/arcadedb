@@ -96,8 +96,8 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
   }
 
   private ExecutionResponse handleNotification() {
-    // Notifications don't get a response in JSON-RPC, but HTTP needs a body
-    return new ExecutionResponse(200, "");
+    // Notifications don't get a response in JSON-RPC; return 204 No Content
+    return new ExecutionResponse(204, "");
   }
 
   private ExecutionResponse handleToolsList(final Object id) {

@@ -19,6 +19,8 @@
 package com.arcadedb.server.mcp.tools;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.OperationType;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -68,6 +70,13 @@ public class QueryTool {
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
     final Database database = server.getDatabase(databaseName);
+
+    // Verify the query is actually read-only using semantic analysis
+    final QueryEngine engine = database.getQueryEngine(language);
+    final QueryEngine.AnalyzedQuery analyzed = engine.analyze(query);
+    if (!analyzed.isIdempotent())
+      throw new SecurityException(
+          "Query contains write operations. Use execute_command tool instead of query tool");
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)

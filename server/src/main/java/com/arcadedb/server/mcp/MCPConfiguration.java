@@ -159,6 +159,10 @@ public class MCPConfiguration {
     this.allowedUsers = new CopyOnWriteArrayList<>(allowedUsers);
   }
 
+  /**
+   * Checks if a user is allowed to access MCP endpoints.
+   * The special value "*" in allowedUsers permits any authenticated user.
+   */
   public boolean isUserAllowed(final String username) {
     return allowedUsers.contains("*") || allowedUsers.contains(username);
   }

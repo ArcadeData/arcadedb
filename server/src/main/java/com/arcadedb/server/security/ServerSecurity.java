@@ -70,6 +70,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public static final  int                             SALT_SIZE            = 32;
   private              Timer                           reloadConfigurationTimer;
   private final        ApiTokenConfiguration           apiTokenConfig;
+  private static final int                             MAX_TOKEN_FAILURES   = 5;
+  private static final long                            TOKEN_LOCKOUT_MS     = 30_000;
+  private final        Map<String, long[]>             tokenFailures        = new HashMap<>();
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -538,9 +541,32 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   public ServerSecurityUser authenticateByApiToken(final String tokenValue) {
+    // Brute-force protection: track failed attempts by token hash prefix
+    final String attemptKey = ApiTokenConfiguration.hashToken(tokenValue).substring(0, 8);
+    synchronized (tokenFailures) {
+      final long[] entry = tokenFailures.get(attemptKey);
+      if (entry != null && entry[0] >= MAX_TOKEN_FAILURES && System.currentTimeMillis() - entry[1] < TOKEN_LOCKOUT_MS)
+        throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
+    }
+
     final JSONObject tokenJson = apiTokenConfig.getToken(tokenValue);
-    if (tokenJson == null)
+    if (tokenJson == null) {
+      synchronized (tokenFailures) {
+        final long now = System.currentTimeMillis();
+        final long[] entry = tokenFailures.computeIfAbsent(attemptKey, k -> new long[] { 0, now });
+        if (now - entry[1] > TOKEN_LOCKOUT_MS) {
+          entry[0] = 1;
+          entry[1] = now;
+        } else
+          entry[0]++;
+      }
       throw new ServerSecurityException("Invalid or expired API token");
+    }
+
+    // Clear failure count on successful authentication
+    synchronized (tokenFailures) {
+      tokenFailures.remove(attemptKey);
+    }
 
     final String database = tokenJson.getString("database");
     final String tokenName = tokenJson.getString("name");
@@ -581,33 +607,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   protected JSONObject getDatabaseGroupsConfiguration(final String databaseName) {
     final JSONObject groupDatabases = groupRepository.getGroups().getJSONObject("databases");
-
-    // GET WILDCARD (*) DATABASE GROUPS AS BASE
-    final JSONObject wildcardConfiguration = groupDatabases.has(SecurityManager.ANY) ? groupDatabases.getJSONObject("*") : null;
-    final JSONObject wildcardGroups = (wildcardConfiguration != null && wildcardConfiguration.has("groups"))
-        ? wildcardConfiguration.getJSONObject("groups")
-        : null;
-
-    // GET DATABASE-SPECIFIC GROUPS
-    final JSONObject databaseConfiguration = groupDatabases.has(databaseName) ? groupDatabases.getJSONObject(databaseName) : null;
-    final JSONObject databaseGroups = (databaseConfiguration != null && databaseConfiguration.has("groups"))
-        ? databaseConfiguration.getJSONObject("groups")
-        : null;
-
-    if (wildcardGroups == null && databaseGroups == null)
+    JSONObject databaseConfiguration = groupDatabases.has(databaseName) ? groupDatabases.getJSONObject(databaseName) : null;
+    if (databaseConfiguration == null)
+      // GET DEFAULT (*) DATABASE GROUPS
+      databaseConfiguration = groupDatabases.has(SecurityManager.ANY) ? groupDatabases.getJSONObject("*") : null;
+    if (databaseConfiguration == null || !databaseConfiguration.has("groups"))
       return null;
-
-    if (databaseGroups == null)
-      return wildcardGroups;
-
-    if (wildcardGroups == null)
-      return databaseGroups;
-
-    // MERGE: START WITH WILDCARD GROUPS, THEN OVERLAY DATABASE-SPECIFIC GROUPS (WHICH TAKE PRECEDENCE)
-    final JSONObject merged = wildcardGroups.copy();
-    for (final String groupName : databaseGroups.keySet())
-      merged.put(groupName, databaseGroups.getJSONObject(groupName));
-
-    return merged;
+    return databaseConfiguration.getJSONObject("groups");
   }
 }

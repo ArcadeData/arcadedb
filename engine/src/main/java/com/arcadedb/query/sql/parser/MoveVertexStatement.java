@@ -175,7 +175,7 @@ public class MoveVertexStatement extends Statement {
 
   @Override
   public Set<OperationType> getOperationTypes() {
-    return Set.of(OperationType.UPDATE, OperationType.DELETE);
+    return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
 }
 /* JavaCC - OriginalChecksum=5cb0b9d3644fd28813ff615fe59d577d (do not edit this line) */

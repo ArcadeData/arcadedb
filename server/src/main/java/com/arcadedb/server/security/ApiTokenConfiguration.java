@@ -34,6 +34,8 @@ import java.util.logging.*;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import java.util.HexFormat;
+
 public class ApiTokenConfiguration {
   public static final  String                                FILE_NAME    = "server-api-tokens.json";
   private static final String                                TOKEN_PREFIX = "at-";
@@ -126,10 +128,7 @@ public class ApiTokenConfiguration {
   public JSONObject createToken(final String name, final String database, final long expiresAt, final JSONObject permissions) {
     final byte[] randomBytes = new byte[TOKEN_BYTES];
     SECURE_RANDOM.nextBytes(randomBytes);
-    final StringBuilder tokenBuilder = new StringBuilder(TOKEN_PREFIX);
-    for (final byte b : randomBytes)
-      tokenBuilder.append(String.format("%02x", b));
-    final String tokenValue = tokenBuilder.toString();
+    final String tokenValue = TOKEN_PREFIX + HexFormat.of().formatHex(randomBytes);
     final String hash = hashToken(tokenValue);
     final String suffix = tokenValue.substring(tokenValue.length() - SUFFIX_LEN);
 
@@ -197,11 +196,8 @@ public class ApiTokenConfiguration {
   public static String hashToken(final String plaintext) {
     try {
       final MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      final byte[] hash = digest.digest(plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-      final StringBuilder hex = new StringBuilder(hash.length * 2);
-      for (final byte b : hash)
-        hex.append(String.format("%02x", b));
-      return hex.toString();
+      final byte[] hash = digest.digest(plaintext.getBytes(UTF_8));
+      return HexFormat.of().formatHex(hash);
     } catch (final NoSuchAlgorithmException e) {
       throw new RuntimeException("SHA-256 not available", e);
     }

@@ -159,10 +159,12 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   void testDeleteTokenViaApi() throws Exception {
     testEachServer((serverIndex) -> {
       final String tokenValue = createApiToken(serverIndex, "ToDelete", "graph", 0, new JSONObject());
+      final String tokenHash = com.arcadedb.server.security.ApiTokenConfiguration.hashToken(tokenValue);
 
+      // Delete using token hash (not plaintext)
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens?token=" +
-              URLEncoder.encode(tokenValue, "UTF-8")).openConnection();
+              URLEncoder.encode(tokenHash, "UTF-8")).openConnection();
       connection.setRequestMethod("DELETE");
       connection.setRequestProperty("Authorization", basicAuth());
       connection.connect();
@@ -184,6 +186,27 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
         assertThat(connection2.getResponseCode()).isEqualTo(401);
       } finally {
         connection2.disconnect();
+      }
+    });
+  }
+
+  @Test
+  void testDeleteTokenRejectsPlaintext() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String tokenValue = createApiToken(serverIndex, "NoPlaintext", "graph", 0, new JSONObject());
+
+      // Try to delete using plaintext token — should be rejected
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens?token=" +
+              URLEncoder.encode(tokenValue, "UTF-8")).openConnection();
+      connection.setRequestMethod("DELETE");
+      connection.setRequestProperty("Authorization", basicAuth());
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(400);
+      } finally {
+        connection.disconnect();
       }
     });
   }

@@ -233,6 +233,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return httpServer.getServer().getSecurity().authenticate(userName, userPassword, null);
   }
 
+  /**
+   * Ensures only the root user can execute server administration commands.
+   * API token-authenticated users have synthetic names like "apitoken:&lt;name&gt;" and will
+   * always fail this check — this is intentional, as token management requires root credentials.
+   */
   protected void checkRootUser(ServerSecurityUser user) {
     if (!"root".equals(user.getName()))
       throw new ServerSecurityException("Only root user is authorized to execute server commands");

@@ -160,8 +160,8 @@ class OperationTypeTest {
   }
 
   @Test
-  void testMoveVertexIsUpdateAndDelete() {
+  void testMoveVertexIsCreateUpdateAndDelete() {
     final Statement stmt = parse("MOVE VERTEX (SELECT FROM V LIMIT 1) TO TYPE:Person");
-    assertThat(stmt.getOperationTypes()).containsExactlyInAnyOrder(OperationType.UPDATE, OperationType.DELETE);
+    assertThat(stmt.getOperationTypes()).containsExactlyInAnyOrder(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
 }
