@@ -19,6 +19,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -154,6 +156,111 @@ class MaterializedViewIncrementalTest extends TestHelper {
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM PostRollbackView")) {
       assertThat(rs.stream().count()).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void updatePropagatesAfterCommit() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Staff");
+      database.getSchema().getType("Staff").createProperty("name", Type.STRING);
+      database.getSchema().getType("Staff").createProperty("dept", Type.STRING);
+    });
+
+    database.transaction(() -> {
+      database.newDocument("Staff").set("name", "Alice").set("dept", "Eng").save();
+      database.newDocument("Staff").set("name", "Bob").set("dept", "Sales").save();
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("StaffView")
+          .withQuery("SELECT name, dept FROM Staff")
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
+          .create();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM StaffView")) {
+      assertThat(rs.stream().count()).isEqualTo(2);
+    }
+
+    // Update a record — should trigger post-commit refresh
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Staff WHERE name = 'Alice'")) {
+        final MutableDocument doc = rs.next().toElement().modify();
+        doc.set("dept", "HR");
+        doc.save();
+      }
+    });
+
+    // View should reflect the updated dept
+    try (final ResultSet rs = database.query("sql", "SELECT FROM StaffView WHERE name = 'Alice'")) {
+      final Result result = rs.next();
+      assertThat((String) result.getProperty("dept")).isEqualTo("HR");
+    }
+  }
+
+  @Test
+  void deletePropagatesAfterCommit() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Ticket");
+      database.getSchema().getType("Ticket").createProperty("title", Type.STRING);
+    });
+
+    database.transaction(() -> {
+      database.newDocument("Ticket").set("title", "Bug 1").save();
+      database.newDocument("Ticket").set("title", "Bug 2").save();
+      database.newDocument("Ticket").set("title", "Bug 3").save();
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("TicketView")
+          .withQuery("SELECT title FROM Ticket")
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
+          .create();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM TicketView")) {
+      assertThat(rs.stream().count()).isEqualTo(3);
+    }
+
+    // Delete one record — should trigger post-commit refresh
+    database.transaction(() -> database.command("sql", "DELETE FROM Ticket WHERE title = 'Bug 2'"));
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM TicketView")) {
+      assertThat(rs.stream().count()).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void listenerNoOpWithoutActiveTransaction() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("NoTxSrc");
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("NoTxView")
+          .withQuery("SELECT FROM NoTxSrc")
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
+          .create();
+    });
+
+    final MaterializedViewImpl view = (MaterializedViewImpl)
+        database.getSchema().getMaterializedView("NoTxView");
+    final MaterializedViewChangeListener listener = view.getChangeListener();
+
+    // No transaction is active — all three callback methods must be no-ops (no exception)
+    assertThat(database.isTransactionActive()).isFalse();
+    listener.onAfterCreate(null);
+    listener.onAfterUpdate(null);
+    listener.onAfterDelete(null);
+
+    // Status and record count must be unchanged
+    assertThat(view.getStatus()).isEqualTo("VALID");
+    try (final ResultSet rs = database.query("sql", "SELECT FROM NoTxView")) {
+      assertThat(rs.stream().count()).isEqualTo(0);
     }
   }
 

@@ -29,6 +29,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 class MaterializedViewTest extends TestHelper {
 
@@ -202,6 +203,141 @@ class MaterializedViewTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT FROM PersistedView")) {
       assertThat(rs.stream().count()).isEqualTo(1);
     }
+  }
+
+  @Test
+  void copyWithRefreshMode() {
+    final MaterializedViewImpl view = new MaterializedViewImpl(
+        database, "CopyView",
+        "SELECT name FROM Foo",
+        "CopyView", List.of("Foo"),
+        MaterializedViewRefreshMode.MANUAL, true, 0);
+    view.setStatus(MaterializedViewStatus.STALE);
+    view.setLastRefreshTime(12345L);
+
+    final MaterializedViewImpl copy = view.copyWithRefreshMode(MaterializedViewRefreshMode.PERIODIC, 60_000L);
+    assertThat(copy.getName()).isEqualTo("CopyView");
+    assertThat(copy.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.PERIODIC);
+    assertThat(copy.getRefreshInterval()).isEqualTo(60_000L);
+    assertThat(copy.getLastRefreshTime()).isEqualTo(12345L);
+    assertThat(copy.getStatus()).isEqualTo("STALE");
+  }
+
+  @Test
+  void tryBeginRefreshGuardsConcurrentAccess() {
+    final MaterializedViewImpl view = new MaterializedViewImpl(
+        database, "GuardView",
+        "SELECT name FROM Foo",
+        "GuardView", List.of("Foo"),
+        MaterializedViewRefreshMode.MANUAL, true, 0);
+
+    assertThat(view.tryBeginRefresh()).isTrue();
+    // Second attempt while locked must fail
+    assertThat(view.tryBeginRefresh()).isFalse();
+    view.endRefresh();
+    // Now the lock is released — next attempt must succeed again
+    assertThat(view.tryBeginRefresh()).isTrue();
+    view.endRefresh();
+  }
+
+  @Test
+  void setLastRefreshTimeAndGetRefreshInterval() {
+    final MaterializedViewImpl view = new MaterializedViewImpl(
+        database, "TimingView",
+        "SELECT x FROM T",
+        "TimingView", List.of("T"),
+        MaterializedViewRefreshMode.PERIODIC, false, 30_000L);
+
+    assertThat(view.getRefreshInterval()).isEqualTo(30_000L);
+    assertThat(view.getLastRefreshTime()).isEqualTo(0L);
+
+    view.setLastRefreshTime(99999L);
+    assertThat(view.getLastRefreshTime()).isEqualTo(99999L);
+  }
+
+  @Test
+  void getChangeListenerAndSetChangeListener() {
+    final MaterializedViewImpl view = new MaterializedViewImpl(
+        database, "ListenerView",
+        "SELECT x FROM T",
+        "ListenerView", List.of("T"),
+        MaterializedViewRefreshMode.INCREMENTAL, true, 0);
+
+    assertThat(view.getChangeListener()).isNull();
+
+    final MaterializedViewChangeListener listener = new MaterializedViewChangeListener(
+        (com.arcadedb.database.DatabaseInternal) database, view);
+    view.setChangeListener(listener);
+    assertThat(view.getChangeListener()).isSameAs(listener);
+    assertThat(view.getChangeListener().getView()).isSameAs(view);
+
+    view.setChangeListener(null);
+    assertThat(view.getChangeListener()).isNull();
+  }
+
+  @Test
+  void getBackingTypeReturnsSchemaType() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("BackingSource");
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("BackingView")
+          .withQuery("SELECT FROM BackingSource")
+          .create();
+    });
+
+    final MaterializedView view = database.getSchema().getMaterializedView("BackingView");
+    assertThat(view.getBackingType()).isNotNull();
+    assertThat(view.getBackingType().getName()).isEqualTo("BackingView");
+  }
+
+  @Test
+  void concurrentRefreshSkipped() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("ConcSource");
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("ConcView")
+          .withQuery("SELECT FROM ConcSource")
+          .create();
+    });
+
+    final MaterializedViewImpl view = (MaterializedViewImpl)
+        database.getSchema().getMaterializedView("ConcView");
+
+    // Simulate an in-progress refresh by locking the flag
+    assertThat(view.tryBeginRefresh()).isTrue();
+    try {
+      // fullRefresh should detect the lock and return without changing state
+      assertThatCode(() -> MaterializedViewRefresher.fullRefresh(database, view))
+          .doesNotThrowAnyException();
+      // Status should still be VALID (skipped, not reset to BUILDING)
+      assertThat(view.getStatus()).isEqualTo("VALID");
+    } finally {
+      view.endRefresh();
+    }
+  }
+
+  @Test
+  void builderWithPageSize() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("PagedSource");
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("PagedView")
+          .withQuery("SELECT FROM PagedSource")
+          .withTotalBuckets(2)
+          .withPageSize(65536)
+          .create();
+    });
+
+    assertThat(database.getSchema().existsMaterializedView("PagedView")).isTrue();
   }
 
   @Test

@@ -107,13 +107,14 @@ class RemoteMaterializedViewIT extends BaseGraphServerTest {
   }
 
   @Test
-  void buildMaterializedViewReturnsNull() throws Exception {
+  void buildMaterializedViewThrowsUnsupported() throws Exception {
     testEachServer((serverIndex) -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       // buildMaterializedView is not supported remotely — use SQL instead
-      assertThat(database.getSchema().buildMaterializedView()).isNull();
+      assertThatThrownBy(() -> database.getSchema().buildMaterializedView())
+          .isInstanceOf(UnsupportedOperationException.class);
     });
   }
 }

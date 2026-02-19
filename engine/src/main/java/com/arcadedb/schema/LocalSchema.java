@@ -989,12 +989,16 @@ public class LocalSchema implements Schema {
   public void dropType(final String typeName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    // Prevent dropping a type that is a backing type for a materialized view
+    // Prevent dropping a type that is a backing type or source type for a materialized view
     synchronized (this) {
       for (final MaterializedViewImpl view : materializedViews.values()) {
         if (view.getBackingTypeName().equals(typeName))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
+                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
+        if (view.getSourceTypeNames().contains(typeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + view.getName() + "'. " +
                   "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
       }
     }

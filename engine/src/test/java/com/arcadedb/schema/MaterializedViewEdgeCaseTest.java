@@ -233,6 +233,43 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
   }
 
   @Test
+  void periodicRefreshUpdatesView() throws InterruptedException {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("PeriodicSrc");
+      database.getSchema().getType("PeriodicSrc").createProperty("val", Type.INTEGER);
+    });
+
+    database.transaction(() -> {
+      database.newDocument("PeriodicSrc").set("val", 1).save();
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("PeriodicView")
+          .withQuery("SELECT val FROM PeriodicSrc")
+          .withRefreshMode(MaterializedViewRefreshMode.PERIODIC)
+          .withRefreshInterval(200)
+          .create();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM PeriodicView")) {
+      assertThat(rs.stream().count()).isEqualTo(1);
+    }
+
+    // Add data after view creation
+    database.transaction(() -> {
+      database.newDocument("PeriodicSrc").set("val", 2).save();
+    });
+
+    // Wait for the scheduler to trigger a refresh (interval = 200ms, wait 1s)
+    Thread.sleep(1_000);
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM PeriodicView")) {
+      assertThat(rs.stream().count()).isEqualTo(2);
+    }
+  }
+
+  @Test
   void queryClassifierDetectsComplexQueries() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("Transaction");
@@ -265,6 +302,75 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
 
     final MaterializedView simpleView = database.getSchema().getMaterializedView("TransactionFiltered");
     assertThat(simpleView.isSimpleQuery()).isTrue();
+  }
+
+  @Test
+  void cannotDropSourceTypeWhileViewExists() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Order");
+      database.getSchema().getType("Order").createProperty("amount", Type.INTEGER);
+    });
+
+    database.transaction(() -> {
+      database.newDocument("Order").set("amount", 100).save();
+    });
+
+    database.transaction(() -> {
+      database.getSchema().buildMaterializedView()
+          .withName("OrderSummary")
+          .withQuery("SELECT amount FROM Order")
+          .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
+          .create();
+    });
+
+    // Dropping the source type must be blocked while the materialized view exists
+    assertThatThrownBy(() -> database.transaction(() ->
+        database.getSchema().dropType("Order")
+    )).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Order")
+        .hasMessageContaining("OrderSummary");
+
+    // After dropping the view, the source type can be dropped
+    database.transaction(() -> database.getSchema().dropMaterializedView("OrderSummary"));
+    database.transaction(() -> database.getSchema().dropType("Order"));
+    assertThat(database.getSchema().existsType("Order")).isFalse();
+  }
+
+  @Test
+  void queryClassifierHandlesAllComplexBranches() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("ClassifierTest");
+    });
+
+    // GROUP BY → complex
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "SELECT category, count(*) FROM ClassifierTest GROUP BY category", database)).isFalse();
+
+    // Aggregate function in projection → complex
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "SELECT sum(amount) FROM ClassifierTest", database)).isFalse();
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "SELECT count(*) FROM ClassifierTest", database)).isFalse();
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "SELECT avg(score) FROM ClassifierTest", database)).isFalse();
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "SELECT min(val) FROM ClassifierTest", database)).isFalse();
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "SELECT max(val) FROM ClassifierTest", database)).isFalse();
+
+    // Non-SELECT statement → complex
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "UPDATE ClassifierTest SET x = 1", database)).isFalse();
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "INSERT INTO ClassifierTest SET x = 1", database)).isFalse();
+
+    // Simple WHERE → simple
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "SELECT name FROM ClassifierTest WHERE active = true", database)).isTrue();
+
+    // No WHERE → simple
+    assertThat(MaterializedViewQueryClassifier.isSimple(
+        "SELECT name FROM ClassifierTest", database)).isTrue();
   }
 
   @Test

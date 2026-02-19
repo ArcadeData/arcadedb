@@ -29,7 +29,7 @@ import java.util.logging.Level;
 public class MaterializedViewRefresher {
 
   public static void fullRefresh(final Database database, final MaterializedViewImpl view) {
-    if (!view.refreshInProgress.compareAndSet(false, true)) {
+    if (!view.tryBeginRefresh()) {
       LogManager.instance().log(MaterializedViewRefresher.class, Level.FINE,
           "Skipping concurrent refresh for materialized view '%s' — already in progress", null, view.getName());
       return;
@@ -65,7 +65,7 @@ public class MaterializedViewRefresher {
           "Error refreshing materialized view '%s': %s", e, view.getName(), e.getMessage());
       throw e;
     } finally {
-      view.refreshInProgress.set(false);
+      view.endRefresh();
     }
   }
 }

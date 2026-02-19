@@ -39,7 +39,7 @@ public class MaterializedViewImpl implements MaterializedView {
   private volatile long lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private volatile MaterializedViewChangeListener changeListener;
-  final AtomicBoolean refreshInProgress = new AtomicBoolean(false);
+  private final AtomicBoolean refreshInProgress = new AtomicBoolean(false);
 
   public MaterializedViewImpl(final Database database, final String name, final String query,
       final String backingTypeName, final List<String> sourceTypeNames,
@@ -123,6 +123,15 @@ public class MaterializedViewImpl implements MaterializedView {
 
   public void setLastRefreshTime(final long lastRefreshTime) {
     this.lastRefreshTime = lastRefreshTime;
+  }
+
+  /** Atomically marks refresh as in-progress. Returns {@code true} if successful, {@code false} if already running. */
+  public boolean tryBeginRefresh() {
+    return refreshInProgress.compareAndSet(false, true);
+  }
+
+  public void endRefresh() {
+    refreshInProgress.set(false);
   }
 
   MaterializedViewImpl copyWithRefreshMode(final MaterializedViewRefreshMode newMode,

@@ -24,7 +24,7 @@ package com.arcadedb.schema;
 
 public enum MaterializedViewRefreshMode {
   MANUAL,
-  ON_COMMIT,
+  INCREMENTAL,
   PERIODIC
 }
 ```
@@ -126,7 +126,7 @@ class MaterializedViewImplTest {
     json.put("query", "SELECT name FROM User WHERE active = true");
     json.put("backingType", "ActiveUsers");
     json.put("sourceTypes", new com.arcadedb.serializer.json.JSONArray(List.of("User")));
-    json.put("refreshMode", "ON_COMMIT");
+    json.put("refreshMode", "INCREMENTAL");
     json.put("lastRefreshTime", 1738800000000L);
     json.put("status", "VALID");
     json.put("refreshInterval", 0);
@@ -137,7 +137,7 @@ class MaterializedViewImplTest {
     assertThat(view.getQuery()).isEqualTo("SELECT name FROM User WHERE active = true");
     assertThat(view.getBackingTypeName()).isEqualTo("ActiveUsers");
     assertThat(view.getSourceTypeNames()).containsExactly("User");
-    assertThat(view.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.ON_COMMIT);
+    assertThat(view.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.INCREMENTAL);
     assertThat(view.getLastRefreshTime()).isEqualTo(1738800000000L);
     assertThat(view.getStatus()).isEqualTo("VALID");
   }
@@ -330,7 +330,7 @@ public void dropMaterializedView(final String viewName) {
     if (view == null)
       throw new SchemaException("Materialized view '" + viewName + "' does not exist");
 
-    // Unregister any event listeners (ON_COMMIT mode)
+    // Unregister any event listeners (INCREMENTAL mode)
     unregisterMaterializedViewListeners(viewName);
 
     // Drop the backing type (which drops buckets and indexes)
@@ -909,8 +909,8 @@ public class CreateMaterializedViewStatement extends DDLStatement {
     // Determine refresh mode
     MaterializedViewRefreshMode mode = MaterializedViewRefreshMode.MANUAL;
     if (refreshMode != null) {
-      if ("ON_COMMIT".equalsIgnoreCase(refreshMode))
-        mode = MaterializedViewRefreshMode.ON_COMMIT;
+      if ("INCREMENTAL".equalsIgnoreCase(refreshMode))
+        mode = MaterializedViewRefreshMode.INCREMENTAL;
       else if ("PERIODIC".equalsIgnoreCase(refreshMode))
         mode = MaterializedViewRefreshMode.PERIODIC;
     }
@@ -1095,7 +1095,7 @@ public CreateMaterializedViewStatement visitCreateMaterializedViewStmt(
     if (rc.MANUAL() != null) {
       stmt.refreshMode = "MANUAL";
     } else if (rc.COMMIT() != null) {
-      stmt.refreshMode = "ON_COMMIT";
+      stmt.refreshMode = "INCREMENTAL";
     } else if (rc.EVERY() != null) {
       stmt.refreshMode = "PERIODIC";
       stmt.refreshInterval = Integer.parseInt(rc.POSITIVE_INTEGER().getText());
@@ -1139,7 +1139,7 @@ public AlterMaterializedViewStatement visitAlterMaterializedViewStmt(
   if (rc.MANUAL() != null) {
     stmt.refreshMode = "MANUAL";
   } else if (rc.COMMIT() != null) {
-    stmt.refreshMode = "ON_COMMIT";
+    stmt.refreshMode = "INCREMENTAL";
   } else if (rc.EVERY() != null) {
     stmt.refreshMode = "PERIODIC";
     stmt.refreshInterval = Integer.parseInt(rc.POSITIVE_INTEGER().getText());
@@ -1207,7 +1207,7 @@ class MaterializedViewSQLTest extends TestHelper {
         "CREATE MATERIALIZED VIEW EventView AS SELECT FROM Event REFRESH ON COMMIT");
 
     final MaterializedView view = database.getSchema().getMaterializedView("EventView");
-    assertThat(view.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.ON_COMMIT);
+    assertThat(view.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.INCREMENTAL);
   }
 
   @Test
@@ -1455,7 +1455,7 @@ private final Map<String, MaterializedViewChangeListener> viewListeners = new Ha
 
 ```java
 void registerMaterializedViewListeners(final MaterializedViewImpl view) {
-  if (view.getRefreshMode() != MaterializedViewRefreshMode.ON_COMMIT)
+  if (view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
     return;
 
   final boolean isSimple = isSimpleQuery(view.getQuery());
