@@ -1,81 +1,183 @@
 <div class="tab-pane fade" id="tab-resources" role="tabpanel">
-  <h4><i class="fa fa-info-circle"></i>&nbsp;Useful Resources</h4>
-  <hr />
-  <div class="row">
-    <div class="col-6">
-      <ul>
-        <li>
-          <p>Open Source project on <a class="link" href="https://github.com/ArcadeData/arcadedb">GitHub</a></p>
-        </li>
-        <li>
-          <p>ArcadeDB understands multiple languages:</p>
-          <div class="ulist">
-            <ul>
-              <li>
-                <p>
-                  <a class="link" href="https://docs.arcadedb.com#sql">SQL</a> (inspired from OrientDB SQL dialect that supports pattern matching on graphs)
-                </p>
-              </li>
-              <li>
-                <p><a class="link" href="https://docs.arcadedb.com#open-cypher">Cypher</a></p>
-              </li>
-              <li>
-                <p><a class="link" href="https://docs.arcadedb.com#gremlin-api">Apache Gremlin (Apache Tinkerpop v3.7.x)</a></p>
-              </li>
-              <li>
-                <p><a class="link" href="https://docs.arcadedb.com#mongodb-query-language">MongoDB Query Language</a></p>
-              </li>
-            </ul>
+  <div class="docs-panel">
+    <!-- Left: Table of Contents -->
+    <div class="docs-sidebar docs-sidebar-info">
+      <div class="docs-sidebar-header">
+        <span class="docs-sidebar-title"><i class="fa fa-book"></i> Documentation</span>
+        <a class="docs-open-external" href="https://docs.arcadedb.com" target="_blank" title="Open full docs">
+          <i class="fa fa-external-link-alt"></i>
+        </a>
+      </div>
+
+      <div class="docs-sidebar-body">
+        <!-- Getting Started -->
+        <div class="docs-toc-section">
+          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+            <span><i class="fa fa-rocket"></i> Getting Started</span>
+            <i class="fa fa-chevron-right open"></i>
           </div>
-        </li>
-        <li>
-          <p>Tutorials: <a class="link" href="https://docs.arcadedb.com#java-tutorial">Java Tutorial</a></p>
-        </li>
-        <li>
-          <p>Tools: <a class="link" href="https://docs.arcadedb.com#console-tutorial">Working with the Console Tutorial</a></p>
-        </li>
-      </ul>
+          <div class="docs-toc-body open">
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#what-is-arcadedb" target="_blank">What is ArcadeDB? <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#run-arcadedb" target="_blank">Run ArcadeDB <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#multi-model" target="_blank">Multi-Model <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#java-tutorial" target="_blank">Java Tutorial <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+          </div>
+        </div>
+
+        <!-- Query Languages -->
+        <div class="docs-toc-section">
+          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+            <span><i class="fa fa-terminal"></i> Query Languages</span>
+            <i class="fa fa-chevron-right open"></i>
+          </div>
+          <div class="docs-toc-body open">
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#sql" target="_blank">SQL <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#open-cypher" target="_blank">Cypher <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#gremlin-api" target="_blank">Gremlin <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#graphql" target="_blank">GraphQL <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#mongodb-query-language" target="_blank">MongoDB Query Language <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#redis-query-language" target="_blank">Redis Query Language <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+          </div>
+        </div>
+
+        <!-- Connectivity & Drivers -->
+        <div class="docs-toc-section">
+          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+            <span><i class="fa fa-plug"></i> Connectivity &amp; Drivers</span>
+            <i class="fa fa-chevron-right"></i>
+          </div>
+          <div class="docs-toc-body">
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#http-json-api" target="_blank">HTTP / JSON API <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#java-api-local" target="_blank">Java Embedded API <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#jdbc-driver" target="_blank">JDBC Driver <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#python" target="_blank">Python <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#postgres-driver" target="_blank">PostgreSQL Protocol <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#mongodb-protocol" target="_blank">MongoDB Protocol <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#redis-query-language" target="_blank">Redis Protocol <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+          </div>
+        </div>
+
+        <!-- Administration -->
+        <div class="docs-toc-section">
+          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+            <span><i class="fa fa-cogs"></i> Administration</span>
+            <i class="fa fa-chevron-right"></i>
+          </div>
+          <div class="docs-toc-body">
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#installation" target="_blank">Installation <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#docker" target="_blank">Docker <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#kubernetes" target="_blank">Kubernetes <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#backup-restore" target="_blank">Backup &amp; Restore <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#security" target="_blank">Security <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#high-availability" target="_blank">High Availability <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#settings" target="_blank">Settings <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+          </div>
+        </div>
+
+        <!-- Core Concepts -->
+        <div class="docs-toc-section">
+          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+            <span><i class="fa fa-lightbulb"></i> Core Concepts</span>
+            <i class="fa fa-chevron-right"></i>
+          </div>
+          <div class="docs-toc-body">
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#graph-model" target="_blank">Graph Database <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#schema" target="_blank">Schema <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#indexes" target="_blank">Indexes <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#transactions" target="_blank">Transactions <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+          </div>
+        </div>
+
+        <!-- Tools -->
+        <div class="docs-toc-section">
+          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+            <span><i class="fa fa-wrench"></i> Tools</span>
+            <i class="fa fa-chevron-right"></i>
+          </div>
+          <div class="docs-toc-body">
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#console-tutorial" target="_blank">Console <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://docs.arcadedb.com/#importer" target="_blank">Importer <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+          </div>
+        </div>
+
+        <!-- Community -->
+        <div class="docs-toc-section">
+          <div class="docs-toc-header" onclick="toggleTocSection(this)">
+            <span><i class="fa fa-users"></i> Community</span>
+            <i class="fa fa-chevron-right"></i>
+          </div>
+          <div class="docs-toc-body">
+            <a class="docs-toc-entry" href="https://github.com/ArcadeData/arcadedb" target="_blank"><i class="fab fa-github"></i> GitHub Repository <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://github.com/ArcadeData/arcadedb/issues" target="_blank"><i class="fa fa-bug"></i> Report an Issue <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+            <a class="docs-toc-entry" href="https://github.com/ArcadeData/arcadedb/discussions" target="_blank"><i class="fa fa-comments"></i> Discussions <i class="fa fa-external-link-alt docs-toc-ext"></i></a>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div class="col-6">
-      <ul>
-        <li>
-          <p>ArcadeDB can be used as:</p>
-          <div class="ulist">
-            <ul>
-              <li>
-                <p><a class="link" href="https://docs.arcadedb.com#java-api-local">Embedded</a> from any language on top of the Java Virtual Machine</p>
-              </li>
-              <li>
-                <p>Remotely by using <a class="link" href="https://docs.arcadedb.com#http-json-api">HTTP/JSON</a></p>
-              </li>
-              <li>
-                <p>
-                  Remotely by using a <a class="link" href="https://docs.arcadedb.com#postgres-driver">Postgres driver</a> (ArcadeDB implements Postgres Wire
-                  protocol)
-                </p>
-              </li>
-              <li>
-                <p>
-                  Remotely by using a <a class="link" href="https://docs.arcadedb.com#mongodb-protocol">MongoDB driver</a> (only a subset of the operations are
-                  implemented)
-                </p>
-              </li>
-              <li>
-                <p>
-                  Remotely by using a <a class="link" href="https://docs.arcadedb.com#redis-query-language">Redis driver</a> (only a subset of the operations are
-                  implemented)
-                </p>
-              </li>
-            </ul>
+    <!-- Right: Welcome / Overview -->
+    <div class="info-detail-container">
+      <div class="info-overview">
+        <div class="info-overview-header">
+          <img src="images/arcadedb-logo-small.png" style="height: 48px; margin-bottom: 16px;" />
+          <h4>ArcadeDB Documentation</h4>
+          <p>The Next Generation Multi-Model Database Management System. Click any topic in the sidebar to open its documentation page.</p>
+        </div>
+
+        <div class="info-cards">
+          <div class="info-card">
+            <div class="info-card-icon"><i class="fa fa-database"></i></div>
+            <h6>Multi-Model</h6>
+            <p>Graph, Document, Key/Value, Search, Time Series, and Vector in one engine.</p>
           </div>
-        </li>
-        <li>
-          <p>
-            Misc: <a class="link" href="https://docs.arcadedb.com#docker">Docker</a>, <a class="link" href="https://docs.arcadedb.com#kubernetes">Kubernetes</a>
-          </p>
-        </li>
-      </ul>
+          <div class="info-card">
+            <div class="info-card-icon"><i class="fa fa-terminal"></i></div>
+            <h6>Multi-Language</h6>
+            <p>SQL, Cypher, Gremlin, GraphQL, MongoDB QL, and Redis commands.</p>
+          </div>
+          <div class="info-card">
+            <div class="info-card-icon"><i class="fa fa-plug"></i></div>
+            <h6>Multi-Protocol</h6>
+            <p>HTTP/JSON, PostgreSQL, MongoDB, and Redis wire protocols.</p>
+          </div>
+          <div class="info-card">
+            <div class="info-card-icon"><i class="fa fa-bolt"></i></div>
+            <h6>Performance</h6>
+            <p>Built for speed with minimal GC pressure and efficient storage.</p>
+          </div>
+          <div class="info-card">
+            <div class="info-card-icon"><i class="fa fa-shield-halved"></i></div>
+            <h6>ACID Transactions</h6>
+            <p>Full transaction support with isolation and durability guarantees.</p>
+          </div>
+          <div class="info-card">
+            <div class="info-card-icon"><i class="fa fa-network-wired"></i></div>
+            <h6>High Availability</h6>
+            <p>Leader-follower replication with automatic failover.</p>
+          </div>
+        </div>
+
+        <div class="info-quick-links">
+          <a href="https://docs.arcadedb.com" target="_blank" class="info-quick-link">
+            <i class="fa fa-book"></i> Full Documentation
+          </a>
+          <a href="https://github.com/ArcadeData/arcadedb" target="_blank" class="info-quick-link">
+            <i class="fab fa-github"></i> GitHub
+          </a>
+          <a href="https://github.com/ArcadeData/arcadedb/discussions" target="_blank" class="info-quick-link">
+            <i class="fa fa-comments"></i> Community
+          </a>
+        </div>
+      </div>
     </div>
   </div>
 </div>
+
+<script>
+function toggleTocSection(header) {
+  var chevron = header.querySelector(".fa-chevron-right");
+  var body = header.nextElementSibling;
+  chevron.classList.toggle("open");
+  body.classList.toggle("open");
+}
+</script>
