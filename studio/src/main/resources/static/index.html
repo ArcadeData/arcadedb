@@ -139,6 +139,7 @@
     <script src="js/studio-utils.js"></script>
     <script src="js/studio-database.js"></script>
     <script src="js/studio-server.js"></script>
+    <script src="js/studio-security.js"></script>
     <script src="js/studio-cluster.js"></script>
     <script src="js/studio-table.js"></script>
     <script src="js/studio-graph.js"></script>
@@ -185,6 +186,14 @@
                   <center>
                     <i class="fa fa-server" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Server</div>
+                  </center>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-bs-toggle="tab" href="#tab-security" class="vertical-tab nav-link" id="tab-security-sel">
+                  <center>
+                    <i class="fa fa-shield-alt" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">Security</div>
                   </center>
                 </a>
               </li>
@@ -241,7 +250,7 @@
 
           <div class="col-11">
             <div class="tab-content">
-              ${include:query.html} ${include:database.html} ${include:server.html} ${include:cluster.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
+              ${include:query.html} ${include:database.html} ${include:server.html} ${include:security.html} ${include:cluster.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
             </div>
           </div>
         </div>
@@ -297,6 +306,9 @@
           } else if (activeTab == "tab-server-sel") {
             studioCurrentTab = "server";
             updateServer();
+          } else if (activeTab == "tab-security-sel") {
+            studioCurrentTab = "security";
+            initSecurity();
           } else if (activeTab == "tab-cluster-sel") {
             studioCurrentTab = "cluster";
             updateCluster();

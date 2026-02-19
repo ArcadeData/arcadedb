@@ -20,8 +20,15 @@ package com.arcadedb.graphql.query;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.graphql.parser.Definition;
+import com.arcadedb.graphql.parser.Document;
+import com.arcadedb.graphql.parser.GraphQLParser;
+import com.arcadedb.graphql.parser.OperationDefinition;
+import com.arcadedb.graphql.parser.ParseException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
@@ -42,17 +49,35 @@ public class GraphQLQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
+    final Set<OperationType> ops = detectGraphQLOperationTypes(query);
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
-        return false;
+        return ops.size() == 1 && ops.contains(OperationType.READ);
       }
 
       @Override
       public boolean isDDL() {
         return false;
       }
+
+      @Override
+      public Set<OperationType> getOperationTypes() {
+        return ops;
+      }
     };
+  }
+
+  private static Set<OperationType> detectGraphQLOperationTypes(final String query) {
+    try {
+      final Document doc = GraphQLParser.parse(query);
+      for (final Definition def : doc.getDefinitions())
+        if (def instanceof OperationDefinition op && !op.isQuery())
+          return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+    } catch (final ParseException e) {
+      // Fall through to default READ — execution will report the parse error
+    }
+    return CollectionUtils.singletonSet(OperationType.READ);
   }
 
   @Override

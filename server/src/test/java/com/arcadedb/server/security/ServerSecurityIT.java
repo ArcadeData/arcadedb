@@ -155,6 +155,49 @@ class ServerSecurityIT {
   }
 
   @Test
+  void dropUserIsThreadSafeUnderConcurrentAccess() throws Exception {
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
+
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
+    security.startService();
+    security.loadUsers();
+
+    final int threadCount = 10;
+    final int operationsPerThread = 20;
+    final ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+    final List<Future<?>> futures = new java.util.ArrayList<>();
+    final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    for (int t = 0; t < threadCount; t++) {
+      final int threadId = t;
+      futures.add(executor.submit(() -> {
+        for (int i = 0; i < operationsPerThread; i++) {
+          final String userName = "threaduser_" + threadId + "_" + i;
+          try {
+            security.createUser(new JSONObject()
+                .put("name", userName)
+                .put("password", security.encodePassword(PASSWORD))
+                .put("databases", new JSONObject()));
+            security.dropUser(userName);
+            // Verify user is gone
+            assertThat(security.existsUser(userName)).isFalse();
+          } catch (final Exception e) {
+            errors.incrementAndGet();
+          }
+        }
+      }));
+    }
+
+    executor.shutdown();
+    assertThat(executor.awaitTermination(30, SECONDS)).isTrue();
+
+    for (final Future<?> future : futures)
+      future.get(); // Propagate any assertion errors
+
+    assertThat(errors.get()).isEqualTo(0);
+  }
+
+  @Test
   void checkPasswordHash() {
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
