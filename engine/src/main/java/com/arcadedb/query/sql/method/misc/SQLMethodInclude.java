@@ -115,6 +115,9 @@ public class SQLMethodInclude extends AbstractSQLMethod {
   }
 
   private Object copy(final Document document, final Object[] iFieldNames) {
+    if (referencesMetadata(iFieldNames))
+      return copy(document.toMap(true), iFieldNames);
+
     final DocumentType type = document.getDatabase().getSchema().getType(document.getTypeName());
 
     final MutableDocument doc;
@@ -135,15 +138,11 @@ public class SQLMethodInclude extends AbstractSQLMethod {
 
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          final List<String> toInclude = new ArrayList<>();
           final Map<String, Object> map = document.toMap(false);
           for (final Map.Entry<String, Object> f : map.entrySet()) {
             if (f.getKey().startsWith(fieldPart))
-              toInclude.add(f.getKey());
+              doc.set(f.getKey(), f.getValue());
           }
-
-          for (final String f : toInclude)
-            doc.set(fieldName, map.get(f));
 
         } else
           doc.set(fieldName, document.get(fieldName));
@@ -160,19 +159,26 @@ public class SQLMethodInclude extends AbstractSQLMethod {
 
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          final List<String> toInclude = new ArrayList<>();
           for (final Object f : map.keySet()) {
             if (f.toString().startsWith(fieldPart))
-              toInclude.add(f.toString());
+              doc.put(f.toString(), map.get(f));
           }
-
-          for (final String f : toInclude)
-            doc.put(fieldName, map.get(f));
 
         } else
           doc.put(fieldName, map.get(fieldName));
       }
     }
     return doc;
+  }
+
+  private static boolean referencesMetadata(final Object[] fieldNames) {
+    for (final Object fn : fieldNames) {
+      if (fn != null) {
+        final String s = fn.toString();
+        if (s.startsWith("@"))
+          return true;
+      }
+    }
+    return false;
   }
 }

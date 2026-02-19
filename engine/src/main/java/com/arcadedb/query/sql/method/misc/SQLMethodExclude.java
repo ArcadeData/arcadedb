@@ -115,6 +115,9 @@ public class SQLMethodExclude extends AbstractSQLMethod {
   }
 
   private Object copy(final Document document, final Object[] iFieldNames) {
+    if (referencesMetadata(iFieldNames))
+      return copy(document.toMap(true), iFieldNames);
+
     final DocumentType type = document.getDatabase().getSchema().getType(document.getTypeName());
 
     final MutableDocument doc;
@@ -171,5 +174,16 @@ public class SQLMethodExclude extends AbstractSQLMethod {
       }
     }
     return doc;
+  }
+
+  private static boolean referencesMetadata(final Object[] fieldNames) {
+    for (final Object fn : fieldNames) {
+      if (fn != null) {
+        final String s = fn.toString();
+        if (s.startsWith("@"))
+          return true;
+      }
+    }
+    return false;
   }
 }
