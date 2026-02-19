@@ -395,10 +395,9 @@
   });
 
   var editor = null;
-  var historyNavIndex = -1; // -1 means not navigating history, 0 is most recent command
-  var historyNavBuffer = ""; // stores the current input before history navigation starts
+  var historyNavIndex = -1;
+  var historyNavBuffer = "";
 
-  // Get history entries filtered for current database
   function getFilteredHistory() {
     let queryHistory = getQueryHistory();
     let database = escapeHtml(getCurrentDatabase());
@@ -411,7 +410,6 @@
     return filtered;
   }
 
-  // Navigate to previous (older) command in history
   function historyPrevious() {
     let filtered = getFilteredHistory();
     if (filtered.length == 0) return;
@@ -419,7 +417,6 @@
     // Save current input when starting navigation
     if (historyNavIndex == -1)
       historyNavBuffer = editor.getValue();
-
     if (historyNavIndex < filtered.length - 1) {
       historyNavIndex++;
       let q = filtered[historyNavIndex];
@@ -430,12 +427,9 @@
     }
   }
 
-  // Navigate to next (newer) command in history
   function historyNext() {
-    if (historyNavIndex == -1) return; // not navigating
-
+    if (historyNavIndex == -1) return;
     let filtered = getFilteredHistory();
-
     if (historyNavIndex > 0) {
       historyNavIndex--;
       let q = filtered[historyNavIndex];
@@ -444,21 +438,18 @@
       editor.setValue(q.c);
       editor.setCursor(editor.lineCount(), 0);
     } else {
-      // Return to the original input
       historyNavIndex = -1;
       editor.setValue(historyNavBuffer);
       editor.setCursor(editor.lineCount(), 0);
     }
   }
 
-  // Reset history navigation (called when executing command or changing database)
   function resetHistoryNavigation() {
     historyNavIndex = -1;
     historyNavBuffer = "";
   }
 
   function initQuery() {
-    // Initialize Bootstrap 5 tooltips
     document.querySelectorAll('[data-toggle="tooltip"]').forEach(function(el) {
       new bootstrap.Tooltip(el);
     });
@@ -483,8 +474,6 @@
       e.preventDefault();
     });
 
-    // Native Clipboard API replacement for ClipboardJS
-    // Use .off() first to prevent multiple bindings if initQuery is called multiple times
     $("#jsonToClipboard").off("click").on("click", async function(e) {
       e.preventDefault();
       const text = $("#resultJson").val() || $("#resultJson").text();
@@ -501,7 +490,6 @@
     populateQuerySidebar();
     executeCommand();
 
-    // APPLY SETTINGS FROM URL
     var dbPar = getURLParameter("db");
     if (dbPar != null && dbPar != "null") setCurrentDatabase(dbPar);
 
@@ -546,23 +534,13 @@
         resetHistoryNavigation();
         executeCommand();
       },
-      "Ctrl-Up": function (cm) {
-        historyPrevious();
-      },
-      "Ctrl-Down": function (cm) {
-        historyNext();
-      },
-      "Cmd-Up": function (cm) {
-        historyPrevious();
-      },
-      "Cmd-Down": function (cm) {
-        historyNext();
-      },
+      "Ctrl-Up": function (cm) { historyPrevious(); },
+      "Ctrl-Down": function (cm) { historyNext(); },
+      "Cmd-Up": function (cm) { historyPrevious(); },
+      "Cmd-Down": function (cm) { historyNext(); },
     });
 
-    setTimeout(function () {
-      editor.refresh();
-    }, 1);
+    setTimeout(function () { editor.refresh(); }, 1);
   }
 
   function getEditorMode() {

@@ -63,7 +63,6 @@ a.nav-link.active.show {
   border-color: #b9d8f9;
 }
 
-/* Neo4j-style editor container */
 .query-editor-container {
   display: flex;
   align-items: stretch;
@@ -177,12 +176,10 @@ div.dt-search {
 }
 
 #graphPropertiesPanel {
-  /* for the animation */
   transition: margin 0.3s ease;
 }
 
 .collapsed {
-  /* hide it for small displays*/
   display: none;
 }
 
@@ -696,4 +693,122 @@ div.dt-search {
 .sidebar-action-btn:hover {
   color: #00aeee;
   background-color: #e8f4fd;
+}
+
+/* Database Panel */
+#dbTypeSidebar {
+  width: 230px;
+  min-width: 230px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background-color: #f8f9fa;
+  border-right: 1px solid #e0e0e0;
+}
+
+#dbTypeDetail {
+  background-color: #fff;
+}
+
+.db-type-empty {
+  padding: 60px 20px;
+  text-align: center;
+  color: #999;
+  font-size: 0.9rem;
+}
+
+.db-type-category-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.db-type-meta {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 6px;
+}
+
+.db-type-meta a {
+  color: #00aeee !important;
+  font-weight: 600;
+}
+
+.db-detail-section {
+  margin-bottom: 20px;
+}
+
+.db-detail-section h6 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: #555;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #eee;
+}
+
+.db-detail-section h6 i {
+  color: #00aeee !important;
+  margin-right: 4px;
+  font-size: 0.75rem;
+}
+
+.db-detail-table thead th {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.3px;
+  color: #777;
+  padding: 6px 8px;
+  border-bottom: 2px solid #dee2e6;
+  white-space: nowrap;
+}
+
+.db-detail-table tbody td {
+  font-size: 0.82rem;
+  padding: 5px 8px;
+  vertical-align: middle;
+}
+
+.db-detail-table tbody tr:hover {
+  background-color: #e8f4fd;
+}
+
+.db-action-btn {
+  background-color: #f0f1f3;
+  border: 1px solid #ddd;
+  color: #555;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.db-action-btn:hover {
+  background-color: #e8f4fd;
+  border-color: #00aeee;
+  color: #00aeee;
+}
+
+.db-action-btn i {
+  color: inherit !important;
+}
+
+.db-action-btn-danger:hover {
+  background-color: #fef2f2;
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.db-badge-active {
+  outline: 2px solid #333;
+  outline-offset: 1px;
+}
+
+#dbTypeBadges .sidebar-badge-name {
+  max-width: 130px;
 }

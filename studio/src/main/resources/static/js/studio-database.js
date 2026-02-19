@@ -1205,157 +1205,163 @@ function fetchSchemaTypes(callback) {
 
 function displaySchema() {
   fetchSchemaTypes(function (types) {
-    let tabVHtml = "";
-    let tabEHtml = "";
-    let tabDHtml = "";
-
-    let panelVHtml = "";
-    let panelEHtml = "";
-    let panelDHtml = "";
-
-    // BUILD SUB TYPES
+    // Build sub-types map
     let subTypes = {};
     for (let i in types) {
       let row = types[i];
-
-      for (ptidx in row.parentTypes) {
+      for (let ptidx in row.parentTypes) {
         let pt = row.parentTypes[ptidx];
-
-        let array = subTypes[pt];
-        if (array == null) {
-          array = [];
-          subTypes[pt] = array;
-        }
-        array.push(row.name);
+        if (subTypes[pt] == null) subTypes[pt] = [];
+        subTypes[pt].push(row.name);
       }
     }
 
+    // Store for later use by showTypeDetail
+    window._schemaSubTypes = subTypes;
+    window._schemaTypes = types;
+
+    // Group types by category
+    let groups = { vertex: [], edge: [], document: [] };
     for (let i in types) {
       let row = types[i];
-      let tabName = row.name.replaceAll(":", "-");
-
-      let tabHtml =
-        "<li class='nav-item' style='height: 32px; width: 240px'><a data-bs-toggle='tab' href='#tab-" +
-        tabName +
-        "' class='nav-link vertical-tab" +
-        (i == 0 ? " active show" : "");
-      tabHtml += "' id='tab-" + tabName + "-sel'>" + row.name + "</a></li>";
-
-      let panelHtml = "<div class='tab-pane fade" + (i == 0 ? " active show" : "") + "' id='tab-" + tabName + "' role='tabpanel'>";
-
-      panelHtml += "<h3>" + row.name + " <span style='font-size: 60%'>(" + row.records + " records)</span></h3>";
-      if (row.parentTypes != "") {
-        panelHtml += "Super Types: <b>";
-        for (ptidx in row.parentTypes) {
-          if (ptidx > 0) panelHtml += ", ";
-          let pt = row.parentTypes[ptidx];
-          let ptName = pt.replaceAll(":", "-");
-
-          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-" + ptName + "')\">" + pt + "</a></b>";
-        }
-        panelHtml += "</b>";
-      }
-
-      let typeSubTypes = subTypes[row.name];
-      if (typeSubTypes != null) {
-        panelHtml += "<br>Sub Types: <b>";
-        for (stidx in typeSubTypes) {
-          if (stidx > 0) panelHtml += ", ";
-          let st = typeSubTypes[stidx];
-          let stName = st.replaceAll(":", "-");
-
-          panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-" + stName + "')\">" + st + "</a></b>";
-        }
-        panelHtml += "</b>";
-      }
-
-      panelHtml += "<br>";
-
-      if (row.indexes != "") {
-        panelHtml += "<br><h6>Indexes</h6>";
-        panelHtml += "<div class='table-responsive'>";
-        panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-        panelHtml += "<thead><tr><th scope='col'>Name</th>";
-        panelHtml += "<th scope='col'>Defined In</th>";
-        panelHtml += "<th scope='col'>Properties</th>";
-        panelHtml += "<th scope='col'>Type</th>";
-        panelHtml += "<th scope='col'>Unique</th>";
-        panelHtml += "<th scope='col'>Automatic</th>";
-        panelHtml += "<th scope='col'>Actions</th>";
-        panelHtml += "<tbody>";
-
-        panelHtml += renderIndexes(row, types);
-
-        panelHtml += "</tbody></table></div>";
-      }
-
-      panelHtml += "<br><h6>Properties</h6>";
-      panelHtml += "<div class='table-responsive'>";
-      panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-      panelHtml += "<thead><tr><th scope='col'>Name</th>";
-      panelHtml += "<th scope='col'>Defined In</th>";
-      panelHtml += "<th scope='col'>Type</th>";
-      panelHtml += "<th scope='col'>Mandatory</th>";
-      panelHtml += "<th scope='col'>Not Null</th>";
-      panelHtml += "<th scope='col'>Hidden</th>";
-      panelHtml += "<th scope='col'>Read Only</th>";
-      panelHtml += "<th scope='col'>Default Value</th>";
-      panelHtml += "<th scope='col'>Min</th>";
-      panelHtml += "<th scope='col'>Max</th>";
-      panelHtml += "<th scope='col'>Regexp</th>";
-      panelHtml += "<th scope='col'>Indexes</th>";
-      panelHtml += "<th scope='col'>Actions</th>";
-      panelHtml += "<tbody>";
-
-      panelHtml += renderProperties(row, types);
-
-      panelHtml += "</tbody></table></div>";
-
-      panelHtml += "<br><h6>Actions</h6>";
-      panelHtml += "<ul>";
-      panelHtml +=
-        "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select from `" +
-        row.name +
-        "` limit 30\")'>Display the first 30 records of " +
-        row.name +
-        "</a>";
-      if (row.type == "vertex")
-        panelHtml +=
-          "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select *, bothE() as `@edges` from `" +
-          row.name +
-          "` limit 30\")'>Display the first 30 records of " +
-          row.name +
-          " together with all the vertices that are directly connected</a>";
-      panelHtml +=
-        "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select count(*) from `" +
-        row.name +
-        "`\")'>Count the records of type " +
-        row.name +
-        "</a>";
-      panelHtml += "</ul>";
-
-      panelHtml += "</div>";
-
-      if (row.type == "vertex") {
-        tabVHtml += tabHtml;
-        panelVHtml += panelHtml;
-      } else if (row.type == "edge") {
-        tabEHtml += tabHtml;
-        panelEHtml += panelHtml;
-      } else {
-        tabDHtml += tabHtml;
-        panelDHtml += panelHtml;
-      }
+      let cat = row.type == "vertex" ? "vertex" : (row.type == "edge" ? "edge" : "document");
+      groups[cat].push(row);
     }
 
-    $("#vTypesTabs").html(tabVHtml);
-    $("#eTypesTabs").html(tabEHtml);
-    $("#dTypesTabs").html(tabDHtml);
+    // Render badge sidebar
+    let sections = [
+      { key: "vertex",   label: "Vertices",  icon: "fa-circle-nodes" },
+      { key: "edge",     label: "Edges",     icon: "fa-right-left" },
+      { key: "document", label: "Documents", icon: "fa-file-lines" }
+    ];
 
-    $("#vTypesPanels").html(panelVHtml != "" ? panelVHtml : "Not defined.");
-    $("#eTypesPanels").html(panelEHtml != "" ? panelEHtml : "Not defined.");
-    $("#dTypesPanels").html(panelDHtml != "" ? panelDHtml : "Not defined.");
+    let html = "";
+    let palette = sidebarBadgeColors;
+
+    for (let s = 0; s < sections.length; s++) {
+      let sec = sections[s];
+      let items = groups[sec.key];
+      if (items.length == 0) continue;
+
+      let total = 0;
+      for (let j = 0; j < items.length; j++) total += (items[j].records || 0);
+
+      html += "<div class='sidebar-section'>";
+      html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + total.toLocaleString() + ")</span></div>";
+      html += "<div class='sidebar-badges'>";
+
+      let colors = palette[sec.key];
+      for (let j = 0; j < items.length; j++) {
+        let row = items[j];
+        let color = colors[j % colors.length];
+        let name = escapeHtml(row.name);
+        let records = (row.records || 0).toLocaleString();
+        html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+        html += "onclick='showTypeDetail(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;' ";
+        html += "title='" + name + " (" + records + " records)'>";
+        html += "<span class='sidebar-badge-name'>" + name + "</span>";
+        html += "<span class='sidebar-badge-count'>" + records + "</span>";
+        html += "</a>";
+      }
+
+      html += "</div></div>";
+    }
+
+    if (html == "")
+      html = "<div class='sidebar-empty'>No types defined.<br><small>Create vertex or document types to see them here.</small></div>";
+
+    $("#dbTypeBadges").html(html);
+
+    // Reset detail panel
+    $("#dbTypeDetail").html("<div class='db-type-empty'><i class='fa fa-database' style='font-size: 2rem; color: #ddd; margin-bottom: 12px; display: block;'></i>Select a type from the sidebar to view its schema.</div>");
   });
+}
+
+function showTypeDetail(typeName) {
+  let types = window._schemaTypes;
+  let subTypes = window._schemaSubTypes;
+  if (!types) return;
+
+  let row = null;
+  for (let i in types)
+    if (types[i].name == typeName) { row = types[i]; break; }
+  if (row == null) return;
+
+  // Mark active badge
+  $("#dbTypeBadges .sidebar-badge").removeClass("db-badge-active");
+  $("#dbTypeBadges .sidebar-badge").each(function () {
+    if ($(this).find(".sidebar-badge-name").text() == typeName)
+      $(this).addClass("db-badge-active");
+  });
+
+  let catLabel = row.type == "vertex" ? "Vertex" : (row.type == "edge" ? "Edge" : "Document");
+  let catColor = row.type == "vertex" ? "#3b82f6" : (row.type == "edge" ? "#f97316" : "#22c55e");
+
+  let html = "";
+  html += "<div class='d-flex align-items-center gap-3 mb-3'>";
+  html += "<h4 style='margin:0;'>" + escapeHtml(row.name) + "</h4>";
+  html += "<span class='db-type-category-badge' style='background-color:" + catColor + ";'>" + catLabel + "</span>";
+  html += "<span style='color:#888; font-size:0.9rem;'>" + (row.records || 0).toLocaleString() + " records</span>";
+  html += "</div>";
+
+  // Parent types
+  if (row.parentTypes && row.parentTypes.length > 0 && row.parentTypes[0] != "") {
+    html += "<div class='db-type-meta'>Super Types: ";
+    for (let ptidx in row.parentTypes) {
+      if (ptidx > 0) html += ", ";
+      html += "<a class='link' href='#' onclick='showTypeDetail(\"" + row.parentTypes[ptidx] + "\"); return false;'>" + escapeHtml(row.parentTypes[ptidx]) + "</a>";
+    }
+    html += "</div>";
+  }
+
+  // Sub types
+  let typeSubTypes = subTypes[row.name];
+  if (typeSubTypes != null && typeSubTypes.length > 0) {
+    html += "<div class='db-type-meta'>Sub Types: ";
+    for (let stidx in typeSubTypes) {
+      if (stidx > 0) html += ", ";
+      html += "<a class='link' href='#' onclick='showTypeDetail(\"" + typeSubTypes[stidx] + "\"); return false;'>" + escapeHtml(typeSubTypes[stidx]) + "</a>";
+    }
+    html += "</div>";
+  }
+
+  // Properties section
+  html += "<div class='db-detail-section'>";
+  html += "<h6><i class='fa fa-list'></i> Properties</h6>";
+  let propHtml = renderProperties(row, types);
+  if (propHtml == "") {
+    html += "<p class='text-muted' style='font-size:0.85rem;'>No properties defined.</p>";
+  } else {
+    html += "<div class='table-responsive'>";
+    html += "<table class='table table-sm db-detail-table'>";
+    html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
+    html += "<tbody>" + propHtml + "</tbody></table></div>";
+  }
+  html += "</div>";
+
+  // Indexes section
+  if (row.indexes && row.indexes.length > 0) {
+    html += "<div class='db-detail-section'>";
+    html += "<h6><i class='fa fa-bolt'></i> Indexes</h6>";
+    html += "<div class='table-responsive'>";
+    html += "<table class='table table-sm db-detail-table'>";
+    html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
+    html += "<tbody>" + renderIndexes(row, types) + "</tbody></table></div>";
+    html += "</div>";
+  }
+
+  // Actions section
+  html += "<div class='db-detail-section'>";
+  html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
+  html += "<div class='d-flex flex-wrap gap-2'>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\` limit 30\")'><i class='fa fa-table'></i> First 30 records</button>";
+  if (row.type == "vertex")
+    html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select *, bothE() as \\`@edges\\` from \\`" + row.name + "\\` limit 30\")'><i class='fa fa-project-diagram'></i> With connections</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select count(*) from \\`" + row.name + "\\`\")'><i class='fa fa-calculator'></i> Count records</button>";
+  html += "</div>";
+  html += "</div>";
+
+  $("#dbTypeDetail").html(html);
 }
 
 var sidebarBadgeColors = {
@@ -1455,7 +1461,7 @@ function renderProperties(row, results) {
 
     panelHtml += "<td>" + (totalIndexes > 0 ? totalIndexes : "None") + "</td>";
     panelHtml +=
-      "<td><button class='btn btn-pill' onclick='dropProperty(\"" +
+      "<td><button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropProperty(\"" +
       row.name +
       '", "' +
       property.name +
@@ -1493,7 +1499,7 @@ function renderIndexes(row, results) {
 
     panelHtml += "<td>" + (index.unique ? true : false) + "</td>";
     panelHtml += "<td>" + (index.automatic ? true : false) + "</td>";
-    panelHtml += "<td><button class='btn btn-pill' onclick='dropIndex(\"" + index.name + "\")'><i class='fa fa-minus'></i> Drop Index</button></td></tr>";
+    panelHtml += "<td><button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropIndex(\"" + index.name + "\")'><i class='fa fa-minus'></i> Drop Index</button></td></tr>";
   }
   return panelHtml;
 }
