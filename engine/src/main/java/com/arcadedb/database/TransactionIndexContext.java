@@ -294,9 +294,14 @@ public class TransactionIndexContext {
 
             // REPLACE EXISTENT WITH THIS
             v.operation = IndexKey.IndexKeyOperation.REPLACE;
-            if (entry != null && entry.operation == IndexKey.IndexKeyOperation.REMOVE)
-              // SAVE THE OLD RID SO IT CAN BE PROPERLY REMOVED FROM THE PERSISTED INDEX AT COMMIT TIME
-              v.oldRid = entry.rid;
+            if (entry != null) {
+              if (entry.operation == IndexKey.IndexKeyOperation.REMOVE)
+                // SAVE THE OLD RID SO IT CAN BE PROPERLY REMOVED FROM THE PERSISTED INDEX AT COMMIT TIME
+                v.oldRid = entry.rid;
+              else if (entry.operation == IndexKey.IndexKeyOperation.REPLACE)
+                // PROPAGATE THE OLD RID FROM THE PREVIOUS REPLACE OPERATION (e.g. REMOVE → ADD → ADD)
+                v.oldRid = entry.oldRid;
+            }
           }
         }
       }
