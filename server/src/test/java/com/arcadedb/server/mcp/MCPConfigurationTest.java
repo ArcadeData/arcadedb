@@ -127,6 +127,21 @@ class MCPConfigurationTest {
   }
 
   @Test
+  void testUpdateFromNullAllowedUsersResultsInEmptyList() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.load();
+
+    // Sending "allowedUsers": null should be treated as clearing the list, not a no-op
+    final JSONObject update = new JSONObject();
+    update.put("allowedUsers", (Object) null);
+
+    config.updateFrom(update);
+
+    assertThat(config.getAllowedUsers()).isEmpty();
+    assertThat(config.isUserAllowed("root")).isFalse();
+  }
+
+  @Test
   void testCreateDefaultFileOnFirstLoad() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();

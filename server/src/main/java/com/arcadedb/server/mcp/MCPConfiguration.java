@@ -34,6 +34,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class MCPConfiguration {
   private final String rootPath;
 
@@ -197,11 +200,11 @@ public class MCPConfiguration {
       allowAdmin = json.getBoolean("allowAdmin");
     if (json.has("allowedUsers")) {
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
-      if (usersArray == null)
-        return;
+      // Treat explicit null as an empty list (client intent to clear all users)
       final List<String> users = new ArrayList<>();
-      for (int i = 0; i < usersArray.length(); i++)
-        users.add(usersArray.getString(i));
+      if (usersArray != null)
+        for (int i = 0; i < usersArray.length(); i++)
+          users.add(usersArray.getString(i));
       allowedUsers = new CopyOnWriteArrayList<>(users);
     }
   }

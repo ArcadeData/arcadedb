@@ -35,8 +35,21 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.logging.Level;
 
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class MCPHttpHandler extends AbstractServerHttpHandler {
-  private static final String MCP_PROTOCOL_VERSION = "2025-03-26";
+  private static final String    MCP_PROTOCOL_VERSION = "2025-03-26";
+  private static final JSONArray TOOLS_LIST;
+
+  static {
+    TOOLS_LIST = new JSONArray();
+    TOOLS_LIST.put(ListDatabasesTool.getDefinition());
+    TOOLS_LIST.put(GetSchemaTool.getDefinition());
+    TOOLS_LIST.put(QueryTool.getDefinition());
+    TOOLS_LIST.put(ExecuteCommandTool.getDefinition());
+    TOOLS_LIST.put(ServerStatusTool.getDefinition());
+  }
 
   private final ArcadeDBServer  server;
   private final MCPConfiguration config;
@@ -110,15 +123,8 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
   }
 
   private ExecutionResponse handleToolsList(final Object id) {
-    final JSONArray tools = new JSONArray();
-    tools.put(ListDatabasesTool.getDefinition());
-    tools.put(GetSchemaTool.getDefinition());
-    tools.put(QueryTool.getDefinition());
-    tools.put(ExecuteCommandTool.getDefinition());
-    tools.put(ServerStatusTool.getDefinition());
-
     final JSONObject result = new JSONObject();
-    result.put("tools", tools);
+    result.put("tools", TOOLS_LIST);
     return jsonRpcResult(id, result);
   }
 

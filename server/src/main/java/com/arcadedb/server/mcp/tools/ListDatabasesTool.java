@@ -27,6 +27,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import java.util.HashSet;
 import java.util.Set;
 
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class ListDatabasesTool {
 
   public static JSONObject getDefinition() {

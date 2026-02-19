@@ -33,6 +33,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import java.util.Collections;
 import java.util.Set;
 
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class ExecuteCommandTool {
 
   public static JSONObject getDefinition() {

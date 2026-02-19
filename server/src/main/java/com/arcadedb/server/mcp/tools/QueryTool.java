@@ -31,6 +31,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.Collections;
 
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class QueryTool {
 
   private static final int DEFAULT_LIMIT = 1000;

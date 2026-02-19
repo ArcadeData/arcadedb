@@ -26,6 +26,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Methods;
 
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class MCPConfigHandler extends AbstractServerHttpHandler {
   private final MCPConfiguration config;
 

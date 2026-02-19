@@ -31,6 +31,9 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class GetSchemaTool {
 
   public static JSONObject getDefinition() {

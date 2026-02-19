@@ -172,6 +172,63 @@ class UserManagementIT extends BaseGraphServerTest {
   }
 
   @Test
+  void testUpdateUserWithShortPasswordReturns400() throws Exception {
+    testEachServer((serverIndex) -> {
+      createUser(serverIndex, "shortpwduser", "validpassword1",
+          new JSONObject().put("*", new JSONArray().put("admin")));
+
+      final JSONObject updatePayload = new JSONObject().put("password", "short");
+
+      final HttpURLConnection putConn = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users?name=shortpwduser").openConnection();
+      putConn.setRequestMethod("PUT");
+      putConn.setRequestProperty("Authorization", basicAuth());
+      putConn.setDoOutput(true);
+      putConn.setRequestProperty("Content-Type", "application/json");
+      putConn.getOutputStream().write(updatePayload.toString().getBytes());
+      putConn.connect();
+
+      try {
+        assertThat(putConn.getResponseCode()).isEqualTo(400);
+      } finally {
+        putConn.disconnect();
+      }
+
+      // Cleanup
+      deleteUser(serverIndex, "shortpwduser");
+    });
+  }
+
+  @Test
+  void testUpdateUserWithTooLongPasswordReturns400() throws Exception {
+    testEachServer((serverIndex) -> {
+      createUser(serverIndex, "longpwduser", "validpassword1",
+          new JSONObject().put("*", new JSONArray().put("admin")));
+
+      final String tooLongPassword = "a".repeat(257);
+      final JSONObject updatePayload = new JSONObject().put("password", tooLongPassword);
+
+      final HttpURLConnection putConn = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users?name=longpwduser").openConnection();
+      putConn.setRequestMethod("PUT");
+      putConn.setRequestProperty("Authorization", basicAuth());
+      putConn.setDoOutput(true);
+      putConn.setRequestProperty("Content-Type", "application/json");
+      putConn.getOutputStream().write(updatePayload.toString().getBytes());
+      putConn.connect();
+
+      try {
+        assertThat(putConn.getResponseCode()).isEqualTo(400);
+      } finally {
+        putConn.disconnect();
+      }
+
+      // Cleanup
+      deleteUser(serverIndex, "longpwduser");
+    });
+  }
+
+  @Test
   void testUpdateNonExistentUserReturns404() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject updatePayload = new JSONObject();

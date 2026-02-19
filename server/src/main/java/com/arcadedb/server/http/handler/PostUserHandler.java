@@ -24,6 +24,9 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+/**
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class PostUserHandler extends AbstractServerHttpHandler {
 
   public PostUserHandler(final HttpServer httpServer) {
