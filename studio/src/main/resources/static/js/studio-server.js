@@ -31,15 +31,26 @@ function updateServer(callback) {
     })
     .done(function (data) {
       let version = data.version;
+      let buildInfo = '';
       let pos = data.version.indexOf("(build");
       if (pos > -1) {
-        version = version.substring(0, pos) + " <span style='font-size: 70%'>" + version.substring(pos) + "</span>";
+        buildInfo = version.substring(pos);
+        version = version.substring(0, pos).trim();
       }
 
-      let serverInfo = "Connected to <b>" + data.user + "@" + data.serverName + "</b> - v." + version;
-      if (data.metrics.profiler.configuration.description) serverInfo += "<br>Runs on " + data.metrics.profiler.configuration.description;
+      // Compact header label
+      let compactLabel = "Connected to <b>" + escapeHtml(data.user) + "@" + escapeHtml(data.serverName) + "</b> - v." + escapeHtml(version);
+      $("#serverConnectionLabel").html(compactLabel);
 
-      $("#serverConnection").html(serverInfo);
+      // Popover details
+      let popoverHtml = "<div style='margin-bottom:8px;font-weight:600;color:var(--text-primary);'>Server Details</div>";
+      popoverHtml += "<div style='margin-bottom:6px;'><b>Server:</b> " + escapeHtml(data.user) + "@" + escapeHtml(data.serverName) + "</div>";
+      popoverHtml += "<div style='margin-bottom:6px;'><b>Version:</b> " + escapeHtml(version) + "</div>";
+      if (buildInfo)
+        popoverHtml += "<div style='margin-bottom:6px;font-size:0.78rem;color:var(--text-muted);word-break:break-all;'><b>Build:</b> " + escapeHtml(buildInfo) + "</div>";
+      if (data.metrics && data.metrics.profiler && data.metrics.profiler.configuration && data.metrics.profiler.configuration.description)
+        popoverHtml += "<div style='font-size:0.78rem;color:var(--text-muted);'><b>Platform:</b> " + escapeHtml(data.metrics.profiler.configuration.description) + "</div>";
+      $("#serverInfoPopoverBody").html(popoverHtml);
 
       serverData = data;
 
@@ -146,9 +157,9 @@ function displayServerSummary() {
       dataLabels: { enabled: true },
       stroke: { curve: "smooth" },
       grid: {
-        borderColor: "#e7e7e7",
+        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border-ddd').trim() || "#e7e7e7",
         row: {
-          colors: ["#f3f3f3", "transparent"], // takes an array which will be repeated on columns
+          colors: [getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim() || "#f3f3f3", "transparent"],
           opacity: 0.5,
         },
       },
@@ -390,50 +401,62 @@ function displayMetrics() {
     tableRecords.push(record);
   }
 
+  // Sort alphabetically by metric name
+  tableRecords.sort(function(a, b) { return a[0].localeCompare(b[0]); });
+
   $("#serverMetrics").DataTable({
     paging: false,
-    ordering: false,
+    ordering: true,
+    order: [[0, "asc"]],
     columns: [{ title: "Metric Name" }, { title: "Value" }, { title: "Req/Sec" }],
     data: tableRecords,
   });
 }
 
 function updateServerSetting(key, value) {
-  let html = "<b>" + key + "</b> = <input id='updateSettingInput' value='" + value + "'>";
+  let html = "<b>" + escapeHtml(key) + "</b> = <input class='form-control mt-2' id='updateSettingInput' value='" + escapeHtml(value) + "' " +
+    "onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
   html += "<br><p><i>The update will not be persistent and will be reset at the next restart of the server.</i></p>";
 
-  Swal.fire({
-    title: "Update Server Setting",
-    html: html,
-    showCancelButton: true,
-    width: 600,
-    confirmButtonColor: "#3ac47d",
-    cancelButtonColor: "red",
-  }).then((result) => {
-    if (result.value) {
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/server",
-          data: JSON.stringify({
-            language: "sql",
-            command: "set server setting " + key + " " + $("#updateSettingInput").val(),
-          }),
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          if (data.error) {
-            $("#authorizationCodeMessage").html(data.error);
-            return false;
-          }
-          displayServerSettings();
-          return true;
-        });
-    }
+  globalPrompt("Update Server Setting", html, "Update", function() {
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/server",
+        data: JSON.stringify({
+          language: "sql",
+          command: "set server setting " + key + " " + $("#updateSettingInput").val(),
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        if (data.error) {
+          $("#authorizationCodeMessage").html(data.error);
+          return false;
+        }
+        displayServerSettings();
+        return true;
+      });
   });
 }
+
+function toggleServerInfoPopover() {
+  var el = document.getElementById('serverInfoPopover');
+  if (el.style.display === 'none')
+    el.style.display = 'block';
+  else
+    el.style.display = 'none';
+}
+
+// Close popover when clicking outside
+document.addEventListener('click', function(e) {
+  var popover = document.getElementById('serverInfoPopover');
+  var trigger = document.getElementById('serverConnectionCompact');
+  if (popover && trigger && !trigger.contains(e.target) && !popover.contains(e.target))
+    popover.style.display = 'none';
+});
 
 function loadServerSessions() {
   jQuery

@@ -3,6 +3,7 @@ var globalResultset = null;
 var globalGraphMaxResult = 1000;
 var globalCredentials = null;
 var globalUsername = null;
+var globalSchemaTypes = null;
 
 var SESSION_STORAGE_KEY = "arcadedb-session";
 var USERNAME_STORAGE_KEY = "arcadedb-username";
@@ -262,7 +263,16 @@ function updateDatabases(callback) {
       console.log("Set user to:", username);
 
       // CRITICAL: Always hide login and show studio, even if other operations fail
-      $("#loginPopup").modal("hide");
+      var loginModal = bootstrap.Modal.getInstance(document.getElementById("loginPopup"));
+      if (loginModal)
+        loginModal.hide();
+      // Ensure no stale backdrop remains (Bootstrap 5 can leave orphaned backdrops)
+      setTimeout(function() {
+        document.querySelectorAll(".modal-backdrop").forEach(function(el) { el.remove(); });
+        document.body.classList.remove("modal-open");
+        document.body.style.removeProperty("overflow");
+        document.body.style.removeProperty("padding-right");
+      }, 300);
       $("#welcomePanel").hide();
       $("#studioPanel").show();
       console.log("UI updated - login popup hidden, studio panel shown");
@@ -306,14 +316,10 @@ function updateDatabases(callback) {
         globalCredentials = null;
         globalUsername = null;
 
-        // Show login popup
+        // Silently redirect to login - no error popup needed
         $("#studioPanel").hide();
         $("#welcomePanel").show();
-        $("#loginPopup").modal("show");
-
-        if (typeof globalNotify === 'function') {
-          globalNotify("Session Expired", "Your session has expired. Please log in again.", "danger");
-        }
+        showLoginPopup();
         return;
       }
 
@@ -346,48 +352,34 @@ function updateDatabases(callback) {
 }
 
 function createDatabase() {
-  let html =
-    "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='inputCreateDatabaseName'>";
+  let html = "<label for='inputCreateDatabaseName'>Enter the database name:</label>" +
+    "<input class='form-control mt-2' id='inputCreateDatabaseName' onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
 
-  Swal.fire({
-    title: "Create a new database",
-    html: html,
-    inputAttributes: {
-      autocapitalize: "off",
-    },
-    confirmButtonColor: "#3ac47d",
-    cancelButtonColor: "red",
-    showCancelButton: true,
-    confirmButtonText: "Send",
-  }).then((result) => {
-    if (result.value) {
-      let database = encodeURI($("#inputCreateDatabaseName").val().trim());
-      if (database == "") {
-        globalNotify("Error", "Database name empty", "danger");
-        return;
-      }
-
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/server",
-          data: "{ 'command': 'create database " + database + "' }",
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          $(".inputDatabase").val(database);
-          $("#schemaInputDatabase").val(database);
-          updateDatabases();
-        })
-        .fail(function (jqXHR, textStatus, errorThrown) {
-          globalNotifyError(jqXHR.responseText);
-        });
+  globalPrompt("Create a new database", html, "Create", function() {
+    let database = encodeURI($("#inputCreateDatabaseName").val().trim());
+    if (database == "") {
+      globalNotify("Error", "Database name empty", "danger");
+      return;
     }
-  });
 
-  $("#inputCreateDatabaseName").focus();
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/server",
+        data: "{ 'command': 'create database " + database + "' }",
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        $(".inputDatabase").val(database);
+        $("#schemaInputDatabase").val(database);
+        updateDatabases();
+      })
+      .fail(function (jqXHR, textStatus, errorThrown) {
+        globalNotifyError(jqXHR.responseText);
+      });
+  });
 }
 
 function dropDatabase() {
@@ -601,36 +593,415 @@ function getQueryHistory() {
   return queryHistory;
 }
 
-function loadQueryHistory() {
-  $("#inputHistory").html("");
-  $("#inputHistory").append("<option value='-1'>History</option>");
+// Sidebar panel state
+var sidebarPanelsLoaded = {};
+var activeSidebarPanel = "overview";
 
-  let queryHistory = getQueryHistory();
-  if (queryHistory != null && queryHistory.length > 0) {
-    let database = escapeHtml(getCurrentDatabase());
-    for (let index = 0; index < queryHistory.length; ++index) {
-      let q = queryHistory[index];
-      if (q != null && q.d == database && q.l != null && q.c != null)
-        $("#inputHistory").append("<option value='" + index + "'>(" + q.l + ") " + q.c + "</option>");
-    }
+function initSidebarPanels() {
+  sidebarPanelsLoaded = { overview: true };
+  activeSidebarPanel = "overview";
+}
+
+function switchSidebarPanel(panelName) {
+  $(".sidebar-panel").removeClass("active");
+  $(".icon-sidebar-btn").removeClass("active");
+
+  $("#sidebarPanel" + panelName.charAt(0).toUpperCase() + panelName.slice(1)).addClass("active");
+  $(".icon-sidebar-btn[data-panel='" + panelName + "']").addClass("active");
+
+  activeSidebarPanel = panelName;
+
+  // Update header title and refresh button
+  var titles = { overview: "Database Info", saved: "Saved Queries", history: "History", reference: "Reference", settings: "Settings" };
+  $("#sidebarPanelTitle").text(titles[panelName] || panelName);
+
+  // Show refresh button only for overview
+  if (panelName == "overview")
+    $("#sidebarRefreshBtn").show();
+  else
+    $("#sidebarRefreshBtn").hide();
+
+  // Lazy-load panel content
+  if (!sidebarPanelsLoaded[panelName]) {
+    sidebarPanelsLoaded[panelName] = true;
+    if (panelName == "saved") populateSavedQueriesPanel();
+    else if (panelName == "history") populateHistoryPanel();
+    else if (panelName == "reference") populateReferencePanel();
+    else if (panelName == "settings") populateSettingsPanel();
   }
 }
 
-function copyQueryFromHistory() {
-  let index = $("#inputHistory").val();
-  if (index == -1) return;
+function refreshActiveSidebarPanel() {
+  if (activeSidebarPanel == "overview") {
+    populateQuerySidebar();
+  } else if (activeSidebarPanel == "history") {
+    sidebarPanelsLoaded.history = true;
+    populateHistoryPanel();
+  }
+}
 
-  if (index != "") {
-    let queryHistory = getQueryHistory();
-    let q = queryHistory[index];
-    if (q != null) {
-      setCurrentDatabase(q.d);
-      $("#inputLanguage").val(q.l);
-      editor.setValue(q.c);
-    }
+// --- Saved Queries ---
+
+function getSavedQueries() {
+  let raw = globalStorageLoad("database.saved.queries");
+  if (raw == null) return [];
+  try { return JSON.parse(raw); } catch (e) { return []; }
+}
+
+function storeSavedQueries(arr) {
+  globalStorageSave("database.saved.queries", JSON.stringify(arr));
+}
+
+function populateSavedQueriesPanel() {
+  let container = $("#sidebarPanelSaved");
+  let queries = getSavedQueries();
+
+  let html = "<div class='sidebar-action-bar'>";
+  html += "<span style='font-size:0.75rem;color:#777;'>" + queries.length + " saved</span>";
+  html += "</div>";
+
+  if (queries.length == 0) {
+    html += "<div class='sidebar-empty'><i class='fa fa-bookmark' style='font-size:1.5rem;color:#ccc !important;margin-bottom:8px;display:block'></i>No saved queries yet.<br><small>Use the <i class='fa fa-bookmark'></i> button in the editor to save a query.</small></div>";
+    container.html(html);
+    return;
   }
 
-  $("#inputHistory").val(-1);
+  for (let i = 0; i < queries.length; i++) {
+    let q = queries[i];
+    let name = escapeHtml(q.name);
+    let cmd = escapeHtml(q.c || "");
+    let lang = escapeHtml(q.l || "sql");
+    html += "<div class='saved-query-entry' onclick='executeSavedQuery(" + i + ")'>";
+    html += "<div class='saved-query-name'><span>" + name + "<span class='saved-query-lang'>" + lang + "</span></span>";
+    html += "<span class='saved-query-delete' onclick='event.stopPropagation(); deleteSavedQuery(" + i + ")' title='Delete'><i class='fa fa-times'></i></span></div>";
+    html += "<div class='saved-query-preview'>" + cmd + "</div>";
+    html += "</div>";
+  }
+
+  container.html(html);
+}
+
+function saveCurrentQuery() {
+  let command = editor.getValue();
+  let language = $("#inputLanguage").val();
+  let database = getCurrentDatabase();
+
+  if (!command || command.trim() == "") {
+    globalNotify("Save Query", "Editor is empty - write a query first.", "warning");
+    return;
+  }
+
+  let html = "<label>Query name</label>" +
+    "<input class='form-control mt-2' id='inputSaveQueryName' placeholder='e.g. Get all users' " +
+    "onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
+
+  globalPrompt("Save Query", html, "Save", function() {
+    let name = $("#inputSaveQueryName").val();
+    if (!name || name.trim() == "") {
+      globalNotify("Error", "Please enter a name", "warning");
+      return;
+    }
+    let queries = getSavedQueries();
+    queries.unshift({ name: name.trim(), l: language, c: command, d: database });
+    storeSavedQueries(queries);
+    populateSavedQueriesPanel();
+    globalNotify("Saved", "Query saved as '" + escapeHtml(name.trim()) + "'", "success");
+  });
+}
+
+function executeSavedQuery(index) {
+  let queries = getSavedQueries();
+  let q = queries[index];
+  if (q) executeCommand(q.l, q.c);
+}
+
+function deleteSavedQuery(index) {
+  let queries = getSavedQueries();
+  let name = queries[index] ? queries[index].name : "";
+  queries.splice(index, 1);
+  storeSavedQueries(queries);
+  populateSavedQueriesPanel();
+}
+
+// --- History Panel ---
+
+function populateHistoryPanel() {
+  let container = $("#sidebarPanelHistory");
+  let queryHistory = getQueryHistory();
+  let database = escapeHtml(getCurrentDatabase());
+
+  // Filter for current database
+  let filtered = [];
+  for (let i = 0; i < queryHistory.length; i++) {
+    let q = queryHistory[i];
+    if (q != null && q.d == database && q.l != null && q.c != null)
+      filtered.push({ index: i, q: q });
+  }
+
+  let html = "<div class='history-toolbar'>";
+  html += "<div class='form-check'><input class='form-check-input history-checkbox' type='checkbox' id='historySelectAll' onchange='toggleSelectAllHistory()'>";
+  html += "<label class='form-check-label' for='historySelectAll' style='font-size:0.72rem;'>All</label></div>";
+  html += "<button class='sidebar-action-btn' onclick='deleteSelectedHistory()' title='Delete selected'><i class='fa fa-trash'></i></button>";
+  html += "</div>";
+  html += "<input type='text' class='history-search' id='historySearchInput' placeholder='Search history...' oninput='filterHistoryEntries()'>";
+
+  if (filtered.length == 0) {
+    html += "<div class='sidebar-empty'><i class='fa fa-clock' style='font-size:1.5rem;color:#ccc !important;margin-bottom:8px;display:block'></i>No history yet.<br><small>Run a query to see it here.</small></div>";
+    container.html(html);
+    return;
+  }
+
+  // Group by date
+  let groups = {};
+  let noDateEntries = [];
+  for (let i = 0; i < filtered.length; i++) {
+    let entry = filtered[i];
+    if (entry.q.t) {
+      let d = new Date(entry.q.t);
+      let dateKey = d.toDateString();
+      if (!groups[dateKey]) groups[dateKey] = [];
+      groups[dateKey].push(entry);
+    } else
+      noDateEntries.push(entry);
+  }
+
+  let today = new Date().toDateString();
+  let yesterday = new Date(Date.now() - 86400000).toDateString();
+
+  // Render grouped entries
+  let dateKeys = Object.keys(groups);
+  for (let di = 0; di < dateKeys.length; di++) {
+    let dateKey = dateKeys[di];
+    let label = dateKey;
+    if (dateKey == today) label = "Today";
+    else if (dateKey == yesterday) label = "Yesterday";
+    html += "<div class='history-date-group'>" + escapeHtml(label) + "</div>";
+    html += renderHistoryEntries(groups[dateKey]);
+  }
+
+  if (noDateEntries.length > 0) {
+    if (dateKeys.length > 0)
+      html += "<div class='history-date-group'>Older</div>";
+    html += renderHistoryEntries(noDateEntries);
+  }
+
+  container.html(html);
+}
+
+function renderHistoryEntries(entries) {
+  let html = "";
+  for (let i = 0; i < entries.length; i++) {
+    let entry = entries[i];
+    let q = entry.q;
+    let idx = entry.index;
+    let lang = escapeHtml(q.l || "sql");
+    let cmd = escapeHtml(q.c || "");
+    let time = "";
+    if (q.t) {
+      let d = new Date(q.t);
+      time = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+    }
+
+    html += "<div class='history-entry' data-index='" + idx + "' data-cmd='" + cmd.toLowerCase() + "'>";
+    html += "<input type='checkbox' class='history-checkbox history-item-check' data-index='" + idx + "' onclick='event.stopPropagation()'>";
+    html += "<div class='history-entry-content' onclick='executeHistoryEntry(" + idx + ")'>";
+    html += "<div class='history-meta'>";
+    if (time) html += "<span class='history-time'>" + time + "</span>";
+    html += "<span class='history-lang'>" + lang + "</span>";
+    html += "</div>";
+    html += "<div class='history-cmd'>" + cmd + "</div>";
+    html += "</div></div>";
+  }
+  return html;
+}
+
+function executeHistoryEntry(index) {
+  let queryHistory = getQueryHistory();
+  let q = queryHistory[index];
+  if (q) executeCommand(q.l, q.c);
+}
+
+function filterHistoryEntries() {
+  let search = ($("#historySearchInput").val() || "").toLowerCase();
+  $("#sidebarPanelHistory .history-entry").each(function () {
+    let cmd = $(this).attr("data-cmd") || "";
+    if (search == "" || cmd.indexOf(search) >= 0)
+      $(this).show();
+    else
+      $(this).hide();
+  });
+}
+
+function toggleSelectAllHistory() {
+  let checked = $("#historySelectAll").prop("checked");
+  $(".history-item-check:visible").prop("checked", checked);
+}
+
+function deleteSelectedHistory() {
+  let indices = [];
+  $(".history-item-check:checked").each(function () {
+    indices.push(parseInt($(this).attr("data-index")));
+  });
+  if (indices.length == 0) {
+    globalNotify("History", "No entries selected.", "warning");
+    return;
+  }
+
+  // Sort descending so splicing doesn't shift indices
+  indices.sort(function (a, b) { return b - a; });
+
+  let queryHistory = getQueryHistory();
+  for (let i = 0; i < indices.length; i++)
+    queryHistory.splice(indices[i], 1);
+
+  globalStorageSave("database.query.history", JSON.stringify(queryHistory));
+  populateHistoryPanel();
+}
+
+// --- Reference Panel ---
+
+function populateReferencePanel() {
+  let container = $("#sidebarPanelReference");
+  let sections = [
+    {
+      title: "SQL", lang: "sql",
+      examples: [
+        { label: "SELECT", code: "SELECT * FROM MyType" },
+        { label: "SELECT with WHERE", code: "SELECT * FROM MyType WHERE name = 'value'" },
+        { label: "INSERT", code: "INSERT INTO MyType SET name = 'value', age = 25" },
+        { label: "UPDATE", code: "UPDATE MyType SET name = 'new' WHERE name = 'old'" },
+        { label: "DELETE", code: "DELETE FROM MyType WHERE name = 'value'" },
+        { label: "CREATE TYPE (Vertex)", code: "CREATE VERTEX TYPE MyVertex" },
+        { label: "CREATE TYPE (Edge)", code: "CREATE EDGE TYPE MyEdge" },
+        { label: "CREATE TYPE (Document)", code: "CREATE DOCUMENT TYPE MyDoc" },
+        { label: "CREATE PROPERTY", code: "CREATE PROPERTY MyType.name STRING" },
+        { label: "CREATE INDEX", code: "CREATE INDEX ON MyType (name) UNIQUE" },
+        { label: "CREATE EDGE", code: "CREATE EDGE MyEdge FROM #1:0 TO #2:0 SET weight = 1.0" },
+        { label: "MATCH", code: "MATCH {type: Person, as: p} -FriendOf-> {as: f} RETURN p, f" }
+      ]
+    },
+    {
+      title: "Cypher", lang: "opencypher",
+      examples: [
+        { label: "MATCH all", code: "MATCH (n) RETURN n" },
+        { label: "MATCH with label", code: "MATCH (n:Person) RETURN n" },
+        { label: "MATCH relationship", code: "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b" },
+        { label: "CREATE node", code: "CREATE (n:Person {name: 'John', age: 30}) RETURN n" },
+        { label: "WHERE clause", code: "MATCH (n:Person) WHERE n.age > 25 RETURN n.name" }
+      ]
+    },
+    {
+      title: "Gremlin", lang: "gremlin",
+      examples: [
+        { label: "All vertices", code: "g.V()" },
+        { label: "All edges", code: "g.E()" },
+        { label: "Filter by property", code: "g.V().has('name', 'John')" },
+        { label: "Outgoing edges", code: "g.V().has('name', 'John').out('knows')" },
+        { label: "Incoming edges", code: "g.V().has('name', 'John').in('knows')" },
+        { label: "Path traversal", code: "g.V().has('name', 'John').out().out().path()" }
+      ]
+    },
+    {
+      title: "GraphQL", lang: "graphql",
+      examples: [
+        { label: "Query type", code: "{ bookByName(name: \"Harry\") { name, author } }" }
+      ]
+    }
+  ];
+
+  let html = "";
+  for (let s = 0; s < sections.length; s++) {
+    let sec = sections[s];
+    html += "<div class='reference-section'>";
+    html += "<div class='reference-section-header' onclick='toggleReferenceSection(this)'><span>" + sec.title + "</span><i class='fa fa-chevron-right'></i></div>";
+    html += "<div class='reference-section-body'>";
+    for (let e = 0; e < sec.examples.length; e++) {
+      let ex = sec.examples[e];
+      let escapedCode = escapeHtml(ex.code).replace(/'/g, "&#39;");
+      html += "<div class='reference-example' title='" + escapeHtml(ex.label) + "' onclick='pasteReferenceExample(\"" + escapedCode.replace(/"/g, "&quot;") + "\", \"" + sec.lang + "\")'>";
+      html += "<small style='color:#999;font-family:inherit;'>" + escapeHtml(ex.label) + "</small><br>";
+      html += escapeHtml(ex.code);
+      html += "</div>";
+    }
+    html += "</div></div>";
+  }
+
+  container.html(html);
+}
+
+function toggleReferenceSection(header) {
+  let body = $(header).next(".reference-section-body");
+  let icon = $(header).find("i.fa-chevron-right");
+  body.toggleClass("open");
+  icon.toggleClass("open");
+}
+
+function pasteReferenceExample(code, lang) {
+  // Decode HTML entities back to plain text
+  let tmp = document.createElement("textarea");
+  tmp.innerHTML = code;
+  let decoded = tmp.value;
+  if (lang) {
+    $("#inputLanguage").val(lang);
+    editor.setOption("mode", getEditorMode());
+  }
+  editor.setValue(decoded);
+  editor.focus();
+}
+
+// --- Settings Panel ---
+
+function populateSettingsPanel() {
+  let container = $("#sidebarPanelSettings");
+
+  let truncateSaved = globalStorageLoad("table.truncateColumns");
+  let truncateChecked = (truncateSaved == null || truncateSaved == "true") ? "checked" : "";
+
+  let fitSaved = globalStorageLoad("table.fitInPage");
+  let fitChecked = (fitSaved == null || fitSaved == "true") ? "checked" : "";
+
+  let currentLimit = $("#inputLimit").val() || "20";
+
+  let html = "<div class='settings-section'>";
+  html += "<div class='settings-section-header'>Table Settings</div>";
+  html += "<div class='settings-row'><label>Truncate long values</label>";
+  html += "<input type='checkbox' class='form-check-input' id='settingTruncate' " + truncateChecked + " onchange='applySidebarSetting(\"table.truncateColumns\", this.checked)'></div>";
+  html += "<div class='settings-row'><label>Fit table in page</label>";
+  html += "<input type='checkbox' class='form-check-input' id='settingFitPage' " + fitChecked + " onchange='applySidebarSetting(\"table.fitInPage\", this.checked)'></div>";
+  html += "</div>";
+
+  html += "<div class='settings-section'>";
+  html += "<div class='settings-section-header'>Query Defaults</div>";
+  html += "<div class='settings-row'><label>Default auto-limit</label>";
+  html += "<select id='settingDefaultLimit' onchange='applyDefaultLimit(this.value)'>";
+  let limits = [{ v: "20", l: "20" }, { v: "100", l: "100" }, { v: "500", l: "500" }, { v: "-1", l: "No limit" }];
+  for (let i = 0; i < limits.length; i++) {
+    let sel = limits[i].v == currentLimit ? " selected" : "";
+    html += "<option value='" + limits[i].v + "'" + sel + ">" + limits[i].l + "</option>";
+  }
+  html += "</select></div>";
+  html += "</div>";
+
+  html += "<div class='settings-section'>";
+  html += "<div class='settings-section-header'>Keyboard Shortcuts</div>";
+  html += "<div style='font-size:0.75rem;color:#666;padding:0 2px;'>";
+  html += "<div style='margin-bottom:4px;'><kbd>Ctrl+Enter</kbd> Execute query</div>";
+  html += "<div style='margin-bottom:4px;'><kbd>Ctrl+Up</kbd> Previous history</div>";
+  html += "<div><kbd>Ctrl+Down</kbd> Next history</div>";
+  html += "</div></div>";
+
+  container.html(html);
+}
+
+function applySidebarSetting(key, value) {
+  globalStorageSave(key, value.toString());
+  // Re-render table if it's currently visible
+  let activeTab = $("#tabs-command .active").attr("id");
+  if (activeTab == "tab-table-sel") renderTable();
+}
+
+function applyDefaultLimit(value) {
+  $("#inputLimit").val(value);
 }
 
 function executeCommand(language, query) {
@@ -670,10 +1041,11 @@ function executeCommand(language, query) {
   // REMOVE OLD QUERIES
   while (queryHistory.length > 25) queryHistory.pop();
 
-  queryHistory = [{ d: database, l: language, c: query }].concat(queryHistory);
+  queryHistory = [{ d: database, l: language, c: query, t: Date.now() }].concat(queryHistory);
   globalStorageSave("database.query.history", JSON.stringify(queryHistory));
 
-  loadQueryHistory();
+  // Refresh history panel if visible
+  if (activeSidebarPanel == "history") populateHistoryPanel();
 }
 
 function executeCommandTable() {
@@ -789,7 +1161,7 @@ function executeCommandGraph() {
     });
 }
 
-function displaySchema() {
+function fetchSchemaTypes(callback) {
   let database = getCurrentDatabase();
   if (database == null || database == "") return;
 
@@ -806,157 +1178,10 @@ function displaySchema() {
       },
     })
     .done(function (data) {
-      let tabVHtml = "";
-      let tabEHtml = "";
-      let tabDHtml = "";
-
-      let panelVHtml = "";
-      let panelEHtml = "";
-      let panelDHtml = "";
-
-      // BUILD SUB TYPES
-      let subTypes = {};
-      for (let i in data.result) {
-        let row = data.result[i];
-
-        for (ptidx in row.parentTypes) {
-          let pt = row.parentTypes[ptidx];
-
-          let array = subTypes[pt];
-          if (array == null) {
-            array = [];
-            subTypes[pt] = array;
-          }
-          array.push(row.name);
-        }
-      }
-
-      for (let i in data.result) {
-        let row = data.result[i];
-        let tabName = row.name.replaceAll(":", "-");
-
-        let tabHtml =
-          "<li class='nav-item' style='height: 32px; width: 240px'><a data-bs-toggle='tab' href='#tab-" +
-          tabName +
-          "' class='nav-link vertical-tab" +
-          (i == 0 ? " active show" : "");
-        tabHtml += "' id='tab-" + tabName + "-sel'>" + row.name + "</a></li>";
-
-        let panelHtml = "<div class='tab-pane fade" + (i == 0 ? " active show" : "") + "' id='tab-" + tabName + "' role='tabpanel'>";
-
-        panelHtml += "<h3>" + row.name + " <span style='font-size: 60%'>(" + row.records + " records)</span></h3>";
-        if (row.parentTypes != "") {
-          panelHtml += "Super Types: <b>";
-          for (ptidx in row.parentTypes) {
-            if (ptidx > 0) panelHtml += ", ";
-            let pt = row.parentTypes[ptidx];
-            let ptName = pt.replaceAll(":", "-");
-
-            panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-" + ptName + "')\">" + pt + "</a></b>";
-          }
-          panelHtml += "</b>";
-        }
-
-        let typeSubTypes = subTypes[row.name];
-        if (typeSubTypes != null) {
-          panelHtml += "<br>Sub Types: <b>";
-          for (stidx in typeSubTypes) {
-            if (stidx > 0) panelHtml += ", ";
-            let st = typeSubTypes[stidx];
-            let stName = st.replaceAll(":", "-");
-
-            panelHtml += "<b><a href='#' onclick=\"globalActivateTab('tab-" + stName + "')\">" + st + "</a></b>";
-          }
-          panelHtml += "</b>";
-        }
-
-        panelHtml += "<br>";
-
-        if (row.indexes != "") {
-          panelHtml += "<br><h6>Indexes</h6>";
-          panelHtml += "<div class='table-responsive'>";
-          panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-          panelHtml += "<thead><tr><th scope='col'>Name</th>";
-          panelHtml += "<th scope='col'>Defined In</th>";
-          panelHtml += "<th scope='col'>Properties</th>";
-          panelHtml += "<th scope='col'>Type</th>";
-          panelHtml += "<th scope='col'>Unique</th>";
-          panelHtml += "<th scope='col'>Automatic</th>";
-          panelHtml += "<th scope='col'>Actions</th>";
-          panelHtml += "<tbody>";
-
-          panelHtml += renderIndexes(row, data.result);
-
-          panelHtml += "</tbody></table></div>";
-        }
-
-        panelHtml += "<br><h6>Properties</h6>";
-        //panelHtml += "<button class='btn btn-pill' onclick='createProperty()'><i class='fa fa-plus'></i> Create Property</button>";
-        panelHtml += "<div class='table-responsive'>";
-        panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-        panelHtml += "<thead><tr><th scope='col'>Name</th>";
-        panelHtml += "<th scope='col'>Defined In</th>";
-        panelHtml += "<th scope='col'>Type</th>";
-        panelHtml += "<th scope='col'>Mandatory</th>";
-        panelHtml += "<th scope='col'>Not Null</th>";
-        panelHtml += "<th scope='col'>Hidden</th>";
-        panelHtml += "<th scope='col'>Read Only</th>";
-        panelHtml += "<th scope='col'>Default Value</th>";
-        panelHtml += "<th scope='col'>Min</th>";
-        panelHtml += "<th scope='col'>Max</th>";
-        panelHtml += "<th scope='col'>Regexp</th>";
-        panelHtml += "<th scope='col'>Indexes</th>";
-        panelHtml += "<th scope='col'>Actions</th>";
-        panelHtml += "<tbody>";
-
-        panelHtml += renderProperties(row, data.result);
-
-        panelHtml += "</tbody></table></div>";
-
-        panelHtml += "<br><h6>Actions</h6>";
-        panelHtml += "<ul>";
-        panelHtml +=
-          "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select from `" +
-          row.name +
-          "` limit 30\")'>Display the first 30 records of " +
-          row.name +
-          "</a>";
-        if (row.type == "vertex")
-          panelHtml +=
-            "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select *, bothE() as `@edges` from `" +
-            row.name +
-            "` limit 30\")'>Display the first 30 records of " +
-            row.name +
-            " together with all the vertices that are directly connected</a>";
-        panelHtml +=
-          "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select count(*) from `" +
-          row.name +
-          "`\")'>Count the records of type " +
-          row.name +
-          "</a>";
-        panelHtml += "</ul>";
-
-        panelHtml += "</div>";
-
-        if (row.type == "vertex") {
-          tabVHtml += tabHtml;
-          panelVHtml += panelHtml;
-        } else if (row.type == "edge") {
-          tabEHtml += tabHtml;
-          panelEHtml += panelHtml;
-        } else {
-          tabDHtml += tabHtml;
-          panelDHtml += panelHtml;
-        }
-      }
-
-      $("#vTypesTabs").html(tabVHtml);
-      $("#eTypesTabs").html(tabEHtml);
-      $("#dTypesTabs").html(tabDHtml);
-
-      $("#vTypesPanels").html(panelVHtml != "" ? panelVHtml : "Not defined.");
-      $("#eTypesPanels").html(panelEHtml != "" ? panelEHtml : "Not defined.");
-      $("#dTypesPanels").html(panelDHtml != "" ? panelDHtml : "Not defined.");
+      globalSchemaTypes = data.result;
+      if (callback)
+        callback(data.result);
+      populateQuerySidebar();
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
       globalNotifyError(jqXHR.responseText);
@@ -964,6 +1189,234 @@ function displaySchema() {
     .always(function (data) {
       $("#executeSpinner").hide();
     });
+}
+
+function displaySchema() {
+  fetchSchemaTypes(function (types) {
+    // Build sub-types map
+    let subTypes = {};
+    for (let i in types) {
+      let row = types[i];
+      for (let ptidx in row.parentTypes) {
+        let pt = row.parentTypes[ptidx];
+        if (subTypes[pt] == null) subTypes[pt] = [];
+        subTypes[pt].push(row.name);
+      }
+    }
+
+    // Store for later use by showTypeDetail
+    window._schemaSubTypes = subTypes;
+    window._schemaTypes = types;
+
+    // Group types by category
+    let groups = { vertex: [], edge: [], document: [] };
+    for (let i in types) {
+      let row = types[i];
+      let cat = row.type == "vertex" ? "vertex" : (row.type == "edge" ? "edge" : "document");
+      groups[cat].push(row);
+    }
+
+    // Render badge sidebar
+    let sections = [
+      { key: "vertex",   label: "Vertices",  icon: "fa-circle-nodes" },
+      { key: "edge",     label: "Edges",     icon: "fa-right-left" },
+      { key: "document", label: "Documents", icon: "fa-file-lines" }
+    ];
+
+    let html = "";
+    let palette = sidebarBadgeColors;
+
+    for (let s = 0; s < sections.length; s++) {
+      let sec = sections[s];
+      let items = groups[sec.key];
+      if (items.length == 0) continue;
+
+      let total = 0;
+      for (let j = 0; j < items.length; j++) total += (items[j].records || 0);
+
+      html += "<div class='sidebar-section'>";
+      html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + total.toLocaleString() + ")</span></div>";
+      html += "<div class='sidebar-badges'>";
+
+      let colors = palette[sec.key];
+      for (let j = 0; j < items.length; j++) {
+        let row = items[j];
+        let color = colors[j % colors.length];
+        let name = escapeHtml(row.name);
+        let records = (row.records || 0).toLocaleString();
+        html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+        html += "onclick='showTypeDetail(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;' ";
+        html += "title='" + name + " (" + records + " records)'>";
+        html += "<span class='sidebar-badge-name'>" + name + "</span>";
+        html += "<span class='sidebar-badge-count'>" + records + "</span>";
+        html += "</a>";
+      }
+
+      html += "</div></div>";
+    }
+
+    if (html == "")
+      html = "<div class='sidebar-empty'>No types defined.<br><small>Create vertex or document types to see them here.</small></div>";
+
+    $("#dbTypeBadges").html(html);
+
+    // Reset detail panel
+    $("#dbTypeDetail").html("<div class='db-type-empty'><i class='fa fa-database' style='font-size: 2rem; color: #ddd; margin-bottom: 12px; display: block;'></i>Select a type from the sidebar to view its schema.</div>");
+  });
+}
+
+function showTypeDetail(typeName) {
+  let types = window._schemaTypes;
+  let subTypes = window._schemaSubTypes;
+  if (!types) return;
+
+  let row = null;
+  for (let i in types)
+    if (types[i].name == typeName) { row = types[i]; break; }
+  if (row == null) return;
+
+  // Mark active badge
+  $("#dbTypeBadges .sidebar-badge").removeClass("db-badge-active");
+  $("#dbTypeBadges .sidebar-badge").each(function () {
+    if ($(this).find(".sidebar-badge-name").text() == typeName)
+      $(this).addClass("db-badge-active");
+  });
+
+  let catLabel = row.type == "vertex" ? "Vertex" : (row.type == "edge" ? "Edge" : "Document");
+  let catColor = row.type == "vertex" ? "#3b82f6" : (row.type == "edge" ? "#f97316" : "#22c55e");
+
+  let html = "";
+  html += "<div class='d-flex align-items-center gap-3 mb-3'>";
+  html += "<h4 style='margin:0;'>" + escapeHtml(row.name) + "</h4>";
+  html += "<span class='db-type-category-badge' style='background-color:" + catColor + ";'>" + catLabel + "</span>";
+  html += "<span style='color:#888; font-size:0.9rem;'>" + (row.records || 0).toLocaleString() + " records</span>";
+  html += "</div>";
+
+  // Parent types
+  if (row.parentTypes && row.parentTypes.length > 0 && row.parentTypes[0] != "") {
+    html += "<div class='db-type-meta'>Super Types: ";
+    for (let ptidx in row.parentTypes) {
+      if (ptidx > 0) html += ", ";
+      html += "<a class='link' href='#' onclick='showTypeDetail(\"" + row.parentTypes[ptidx] + "\"); return false;'>" + escapeHtml(row.parentTypes[ptidx]) + "</a>";
+    }
+    html += "</div>";
+  }
+
+  // Sub types
+  let typeSubTypes = subTypes[row.name];
+  if (typeSubTypes != null && typeSubTypes.length > 0) {
+    html += "<div class='db-type-meta'>Sub Types: ";
+    for (let stidx in typeSubTypes) {
+      if (stidx > 0) html += ", ";
+      html += "<a class='link' href='#' onclick='showTypeDetail(\"" + typeSubTypes[stidx] + "\"); return false;'>" + escapeHtml(typeSubTypes[stidx]) + "</a>";
+    }
+    html += "</div>";
+  }
+
+  // Properties section
+  html += "<div class='db-detail-section'>";
+  html += "<h6><i class='fa fa-list'></i> Properties</h6>";
+  let propHtml = renderProperties(row, types);
+  if (propHtml == "") {
+    html += "<p class='text-muted' style='font-size:0.85rem;'>No properties defined.</p>";
+  } else {
+    html += "<div class='table-responsive'>";
+    html += "<table class='table table-sm db-detail-table'>";
+    html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
+    html += "<tbody>" + propHtml + "</tbody></table></div>";
+  }
+  html += "</div>";
+
+  // Indexes section
+  if (row.indexes && row.indexes.length > 0) {
+    html += "<div class='db-detail-section'>";
+    html += "<h6><i class='fa fa-bolt'></i> Indexes</h6>";
+    html += "<div class='table-responsive'>";
+    html += "<table class='table table-sm db-detail-table'>";
+    html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
+    html += "<tbody>" + renderIndexes(row, types) + "</tbody></table></div>";
+    html += "</div>";
+  }
+
+  // Actions section
+  html += "<div class='db-detail-section'>";
+  html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
+  html += "<div class='d-flex flex-wrap gap-2'>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\`\")'><i class='fa fa-table'></i> Browse records</button>";
+  if (row.type == "vertex")
+    html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select *, bothE() as \\`@edges\\` from \\`" + row.name + "\\`\")'><i class='fa fa-project-diagram'></i> With connections</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select count(*) from \\`" + row.name + "\\`\")'><i class='fa fa-calculator'></i> Count records</button>";
+  html += "</div>";
+  html += "</div>";
+
+  $("#dbTypeDetail").html(html);
+}
+
+var sidebarBadgeColors = {
+  vertex:   ["#3b82f6", "#0ea5e9", "#6366f1", "#8b5cf6", "#06b6d4", "#2563eb", "#4f46e5", "#0284c7"],
+  edge:     ["#f97316", "#f59e0b", "#ef4444", "#e11d48", "#ea580c", "#d97706", "#dc2626", "#be123c"],
+  document: ["#22c55e", "#10b981", "#14b8a6", "#059669", "#16a34a", "#0d9488", "#15803d", "#047857"]
+};
+
+function populateQuerySidebar() {
+  let container = $("#sidebarPanelOverview");
+  if (container.length == 0) return;
+
+  if (globalSchemaTypes == null || globalSchemaTypes.length == 0) {
+    container.html("<div class='sidebar-empty'>No types defined.<br><small>Create vertex or document types to see them here.</small></div>");
+    return;
+  }
+
+  let groups = { vertex: [], edge: [], document: [] };
+  let totals = { vertex: 0, edge: 0, document: 0 };
+
+  for (let i in globalSchemaTypes) {
+    let row = globalSchemaTypes[i];
+    let cat = row.type == "vertex" ? "vertex" : (row.type == "edge" ? "edge" : "document");
+    groups[cat].push(row);
+    totals[cat] += (row.records || 0);
+  }
+
+  let html = "";
+  let sections = [
+    { key: "vertex",   label: "Vertices",  icon: "fa-circle-nodes" },
+    { key: "edge",     label: "Edges",     icon: "fa-right-left" },
+    { key: "document", label: "Documents", icon: "fa-file-lines" }
+  ];
+
+  for (let s = 0; s < sections.length; s++) {
+    let sec = sections[s];
+    let items = groups[sec.key];
+    if (items.length == 0) continue;
+
+    let totalFormatted = totals[sec.key].toLocaleString();
+    html += "<div class='sidebar-section'>";
+    html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + totalFormatted + ")</span></div>";
+    html += "<div class='sidebar-badges'>";
+
+    let palette = sidebarBadgeColors[sec.key];
+    for (let j = 0; j < items.length; j++) {
+      let row = items[j];
+      let color = palette[j % palette.length];
+      let name = escapeHtml(row.name);
+      let records = (row.records || 0).toLocaleString();
+      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+      html += "onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\`\"); return false;' ";
+      html += "title='" + name + " (" + records + " records)'>";
+      html += "<span class='sidebar-badge-name'>" + name + "</span>";
+      html += "<span class='sidebar-badge-count'>" + records + "</span>";
+      html += "</a>";
+    }
+
+    html += "</div></div>";
+  }
+
+  container.html(html);
+}
+
+function refreshQuerySidebar() {
+  globalSchemaTypes = null;
+  fetchSchemaTypes();
 }
 
 function findTypeInResult(name, results) {
@@ -996,7 +1449,7 @@ function renderProperties(row, results) {
 
     panelHtml += "<td>" + (totalIndexes > 0 ? totalIndexes : "None") + "</td>";
     panelHtml +=
-      "<td><button class='btn btn-pill' onclick='dropProperty(\"" +
+      "<td><button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropProperty(\"" +
       row.name +
       '", "' +
       property.name +
@@ -1034,7 +1487,7 @@ function renderIndexes(row, results) {
 
     panelHtml += "<td>" + (index.unique ? true : false) + "</td>";
     panelHtml += "<td>" + (index.automatic ? true : false) + "</td>";
-    panelHtml += "<td><button class='btn btn-pill' onclick='dropIndex(\"" + index.name + "\")'><i class='fa fa-minus'></i> Drop Index</button></td></tr>";
+    panelHtml += "<td><button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropIndex(\"" + index.name + "\")'><i class='fa fa-minus'></i> Drop Index</button></td></tr>";
   }
   return panelHtml;
 }
@@ -1105,38 +1558,30 @@ function displayDatabaseSettings() {
 }
 
 function updateDatabaseSetting(key, value) {
-  let html = "<b>" + key + "</b> = <input id='updateSettingInput' value='" + value + "'>";
+  let html = "<b>" + escapeHtml(key) + "</b> = <input class='form-control mt-2' id='updateSettingInput' value='" + escapeHtml(value) + "' " +
+    "onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
   html += "<br><p><i>The setting will be saved in the database configuration.</i></p>";
 
-  Swal.fire({
-    title: "Update Database Setting",
-    html: html,
-    showCancelButton: true,
-    width: 600,
-    confirmButtonColor: "#3ac47d",
-    cancelButtonColor: "red",
-  }).then((result) => {
-    if (result.value) {
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/server",
-          data: JSON.stringify({
-            command: "set database setting " + getCurrentDatabase() + " " + key + " " + $("#updateSettingInput").val(),
-          }),
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          if (data.error) {
-            $("#authorizationCodeMessage").html(data.error);
-            return false;
-          }
-          displayDatabaseSettings();
-          return true;
-        });
-    }
+  globalPrompt("Update Database Setting", html, "Update", function() {
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/server",
+        data: JSON.stringify({
+          command: "set database setting " + getCurrentDatabase() + " " + key + " " + $("#updateSettingInput").val(),
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        if (data.error) {
+          $("#authorizationCodeMessage").html(data.error);
+          return false;
+        }
+        displayDatabaseSettings();
+        return true;
+      });
   });
 }
 

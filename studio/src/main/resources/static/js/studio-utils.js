@@ -1,32 +1,119 @@
 var globalWidgetExpanded = {};
 
+function _globalModalIcon(icon) {
+  if (icon === "error" || icon === "danger")
+    return '<i class="fa fa-circle-exclamation" style="color:#dc3545;font-size:1.2rem"></i>';
+  if (icon === "warning")
+    return '<i class="fa fa-triangle-exclamation" style="color:#ffc107;font-size:1.2rem"></i>';
+  if (icon === "info")
+    return '<i class="fa fa-circle-info" style="color:#0dcaf0;font-size:1.2rem"></i>';
+  if (icon === "success")
+    return '<i class="fa fa-circle-check" style="color:#28a745;font-size:1.2rem"></i>';
+  return '';
+}
+
 function globalAlert(title, text, icon, callback) {
   if (!icon) icon = "error";
 
-  let swal = Swal.fire({
-    title: title,
-    html: text,
-    icon: icon,
-  }).then((result) => {
+  var el = document.getElementById('globalModal');
+  var label = document.getElementById('globalModalLabel');
+  var iconEl = document.getElementById('globalModalIcon');
+  var body = document.getElementById('globalModalBody');
+  var footer = document.getElementById('globalModalFooter');
+
+  label.textContent = title || '';
+  iconEl.innerHTML = _globalModalIcon(icon);
+  body.innerHTML = text || '';
+  footer.innerHTML = '<button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button>';
+
+  var modal = bootstrap.Modal.getOrCreateInstance(el);
+
+  function onHidden() {
+    el.removeEventListener('hidden.bs.modal', onHidden);
     if (callback) callback();
-  });
+  }
+  el.addEventListener('hidden.bs.modal', onHidden);
+
+  modal.show();
 }
 
 function globalConfirm(title, text, icon, yes, no) {
-  let swal = Swal.fire({
-    title: title,
-    html: text,
-    icon: icon,
-    showCancelButton: true,
-    confirmButtonColor: "#3ac47d",
-    cancelButtonColor: "red",
-  }).then((result) => {
-    if (result.value) {
+  var el = document.getElementById('globalModal');
+  var label = document.getElementById('globalModalLabel');
+  var iconEl = document.getElementById('globalModalIcon');
+  var body = document.getElementById('globalModalBody');
+  var footer = document.getElementById('globalModalFooter');
+
+  label.textContent = title || '';
+  iconEl.innerHTML = _globalModalIcon(icon);
+  body.innerHTML = text || '';
+
+  var confirmed = false;
+  footer.innerHTML =
+    '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>' +
+    '<button type="button" class="btn btn-primary" id="globalModalConfirmBtn">Yes</button>';
+
+  var modal = bootstrap.Modal.getOrCreateInstance(el);
+
+  var confirmBtn = document.getElementById('globalModalConfirmBtn');
+  function onConfirm() {
+    confirmed = true;
+    modal.hide();
+  }
+  confirmBtn.addEventListener('click', onConfirm);
+
+  function onHidden() {
+    el.removeEventListener('hidden.bs.modal', onHidden);
+    confirmBtn.removeEventListener('click', onConfirm);
+    if (confirmed) {
       if (yes) yes();
     } else {
       if (no) no();
     }
-  });
+  }
+  el.addEventListener('hidden.bs.modal', onHidden);
+
+  modal.show();
+}
+
+function globalPrompt(title, bodyHtml, confirmText, callback) {
+  var el = document.getElementById('globalModal');
+  var label = document.getElementById('globalModalLabel');
+  var iconEl = document.getElementById('globalModalIcon');
+  var body = document.getElementById('globalModalBody');
+  var footer = document.getElementById('globalModalFooter');
+
+  label.textContent = title || '';
+  iconEl.innerHTML = '';
+  body.innerHTML = bodyHtml || '';
+
+  var confirmed = false;
+  footer.innerHTML =
+    '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>' +
+    '<button type="button" class="btn btn-primary" id="globalModalConfirmBtn">' + (confirmText || 'OK') + '</button>';
+
+  var modal = bootstrap.Modal.getOrCreateInstance(el);
+
+  var confirmBtn = document.getElementById('globalModalConfirmBtn');
+  function onConfirm() {
+    confirmed = true;
+    modal.hide();
+  }
+  confirmBtn.addEventListener('click', onConfirm);
+
+  function onHidden() {
+    el.removeEventListener('hidden.bs.modal', onHidden);
+    confirmBtn.removeEventListener('click', onConfirm);
+    if (confirmed && callback) callback();
+  }
+  el.addEventListener('hidden.bs.modal', onHidden);
+
+  modal.show();
+
+  // Focus first input in body if present
+  var firstInput = body.querySelector('input, textarea');
+  if (firstInput)
+    setTimeout(function() { firstInput.focus(); }, 200);
 }
 
 function globalNotifyError(response) {
@@ -36,9 +123,9 @@ function globalNotifyError(response) {
     let title = json.error ? json.error : "Error";
     let message = json.detail ? json.detail : "Error on execution of the command";
 
-    globalNotify(title, escapeHtml(message), "danger");
+    globalNotify(title, message, "danger");
   } catch (e) {
-    globalNotify("Error", escapeHtml(response), "danger");
+    globalNotify("Error", response, "danger");
   }
 }
 
@@ -156,24 +243,13 @@ function saveAs(blob, filename) {
 }
 
 function base64ToBlob(base64Image) {
-  // Split into two parts
   const parts = base64Image.split(";base64,");
-
-  // Hold the content type
   const imageType = parts[0].split(":")[1];
-
-  // Decode Base64 string
   const decodedData = window.atob(parts[1]);
-
-  // Create UNIT8ARRAY of size same as row data length
   const uInt8Array = new Uint8Array(decodedData.length);
-
-  // Insert all character code into uInt8Array
   for (let i = 0; i < decodedData.length; ++i) {
     uInt8Array[i] = decodedData.charCodeAt(i);
   }
-
-  // Return BLOB image after conversion
   return new Blob([uInt8Array], { type: imageType });
 }
 
