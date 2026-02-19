@@ -37,7 +37,7 @@ public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
 
     final String token = getQueryParameter(exchange, "token");
     if (token == null || token.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"Token parameter is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Token parameter is required").toString());
 
     final ApiTokenConfiguration tokenConfig = httpServer.getServer().getSecurity().getApiTokenConfiguration();
     final boolean deleted = tokenConfig.deleteToken(token);

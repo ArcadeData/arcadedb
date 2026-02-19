@@ -147,8 +147,8 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       connection.connect();
 
       try {
-        // Security error — may be 403 or 500 depending on where the exception is caught
-        assertThat(connection.getResponseCode()).isNotEqualTo(200);
+        // Security error — 403 for permission denied, 500 if caught at a higher level
+        assertThat(connection.getResponseCode()).isIn(403, 500);
       } finally {
         connection.disconnect();
       }

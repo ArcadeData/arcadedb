@@ -26,15 +26,20 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.nio.file.*;
+import java.nio.file.attribute.*;
 import java.security.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 public class ApiTokenConfiguration {
   public static final  String                                FILE_NAME    = "server-api-tokens.json";
   private static final String                                TOKEN_PREFIX = "at-";
   private static final int                                   SUFFIX_LEN   = 4;
+  private static final int                                   TOKEN_BYTES  = 32;
+  private static final SecureRandom                          SECURE_RANDOM = new SecureRandom();
   private final        String                                filePath;
   private final        ConcurrentHashMap<String, JSONObject> tokens       = new ConcurrentHashMap<>();
 
@@ -107,10 +112,24 @@ public class ApiTokenConfiguration {
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error saving API tokens to '%s'", e, filePath);
     }
+
+    // Set file permissions to owner-only (mode 600) on POSIX systems
+    try {
+      final PosixFileAttributeView posixView = Files.getFileAttributeView(file.toPath(), PosixFileAttributeView.class);
+      if (posixView != null)
+        posixView.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+    } catch (final IOException | UnsupportedOperationException e) {
+      // Non-POSIX system (e.g., Windows) — skip
+    }
   }
 
   public JSONObject createToken(final String name, final String database, final long expiresAt, final JSONObject permissions) {
-    final String tokenValue = TOKEN_PREFIX + UUID.randomUUID();
+    final byte[] randomBytes = new byte[TOKEN_BYTES];
+    SECURE_RANDOM.nextBytes(randomBytes);
+    final StringBuilder tokenBuilder = new StringBuilder(TOKEN_PREFIX);
+    for (final byte b : randomBytes)
+      tokenBuilder.append(String.format("%02x", b));
+    final String tokenValue = tokenBuilder.toString();
     final String hash = hashToken(tokenValue);
     final String suffix = tokenValue.substring(tokenValue.length() - SUFFIX_LEN);
 
@@ -151,7 +170,6 @@ public class ApiTokenConfiguration {
     final long expiresAt = tokenJson.getLong("expiresAt", 0);
     if (expiresAt > 0 && expiresAt < System.currentTimeMillis()) {
       tokens.remove(hash);
-      save();
       return null;
     }
 

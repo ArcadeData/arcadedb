@@ -22,8 +22,10 @@ import com.arcadedb.query.OperationType;
 import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -142,5 +144,40 @@ class MCPPermissionsTest {
     configNoDelete.setAllowDelete(false);
     assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(moveOps, configNoDelete))
         .isInstanceOf(SecurityException.class);
+  }
+
+  @Test
+  void testMcpDisabledReturnsError() {
+    final MCPConfiguration config = new MCPConfiguration("./target/test");
+    config.setEnabled(false);
+
+    assertThat(config.isEnabled()).isFalse();
+  }
+
+  @Test
+  void testMcpUserAllowedCheck() {
+    final MCPConfiguration config = new MCPConfiguration("./target/test");
+    config.setAllowedUsers(List.of("root", "admin"));
+
+    assertThat(config.isUserAllowed("root")).isTrue();
+    assertThat(config.isUserAllowed("admin")).isTrue();
+    assertThat(config.isUserAllowed("unknown")).isFalse();
+  }
+
+  @Test
+  void testMcpWildcardUserAllowed() {
+    final MCPConfiguration config = new MCPConfiguration("./target/test");
+    config.setAllowedUsers(List.of("*"));
+
+    assertThat(config.isUserAllowed("anyuser")).isTrue();
+    assertThat(config.isUserAllowed("root")).isTrue();
+  }
+
+  @Test
+  void testMcpNullUserNotAllowed() {
+    final MCPConfiguration config = new MCPConfiguration("./target/test");
+    config.setAllowedUsers(List.of("root"));
+
+    assertThat(config.isUserAllowed(null)).isFalse();
   }
 }

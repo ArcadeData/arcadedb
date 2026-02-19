@@ -36,11 +36,11 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
     checkRootUser(user);
 
     if (payload == null)
-      return new ExecutionResponse(400, "{\"error\":\"Request body is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
 
     final String name = payload.getString("name", "");
     if (name.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"Token name is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Token name is required").toString());
 
     final String database = payload.getString("database", "*");
     final long expiresAt = payload.getLong("expiresAt", 0);

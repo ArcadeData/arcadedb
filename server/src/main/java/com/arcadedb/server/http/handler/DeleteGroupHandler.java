@@ -41,14 +41,15 @@ public class DeleteGroupHandler extends AbstractServerHttpHandler {
 
     final String database = getQueryParameter(exchange, "database");
     if (database == null || database.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"Database parameter is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Database parameter is required").toString());
 
     final String name = getQueryParameter(exchange, "name");
     if (name == null || name.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"Group name parameter is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Group name parameter is required").toString());
 
     if ("admin".equals(name) && "*".equals(database))
-      return new ExecutionResponse(400, "{\"error\":\"Cannot delete the admin group from the default (*) database\"}");
+      return new ExecutionResponse(400,
+          new JSONObject().put("error", "Cannot delete the admin group from the default (*) database").toString());
 
     final ServerSecurity security = httpServer.getServer().getSecurity();
     final boolean deleted = security.deleteGroup(database, name);

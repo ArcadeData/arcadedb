@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
 public class MCPConfiguration {
@@ -43,7 +44,7 @@ public class MCPConfiguration {
   private volatile boolean      allowDelete      = false;
   private volatile boolean      allowSchemaChange = false;
   private volatile boolean      allowAdmin        = false;
-  private volatile List<String> allowedUsers     = new ArrayList<>(List.of("root"));
+  private volatile List<String> allowedUsers     = new CopyOnWriteArrayList<>(List.of("root"));
 
   public MCPConfiguration(final String rootPath) {
     this.rootPath = rootPath;
@@ -73,10 +74,12 @@ public class MCPConfiguration {
         final List<String> users = new ArrayList<>();
         for (int i = 0; i < usersArray.length(); i++)
           users.add(usersArray.getString(i));
-        allowedUsers = users;
+        allowedUsers = new CopyOnWriteArrayList<>(users);
       }
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error loading MCP configuration: %s", e.getMessage());
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Corrupt MCP configuration file, using defaults: %s", e.getMessage());
     }
   }
 
@@ -153,7 +156,7 @@ public class MCPConfiguration {
   }
 
   public void setAllowedUsers(final List<String> allowedUsers) {
-    this.allowedUsers = new ArrayList<>(allowedUsers);
+    this.allowedUsers = new CopyOnWriteArrayList<>(allowedUsers);
   }
 
   public boolean isUserAllowed(final String username) {
@@ -193,7 +196,7 @@ public class MCPConfiguration {
       final List<String> users = new ArrayList<>();
       for (int i = 0; i < usersArray.length(); i++)
         users.add(usersArray.getString(i));
-      allowedUsers = users;
+      allowedUsers = new CopyOnWriteArrayList<>(users);
     }
   }
 

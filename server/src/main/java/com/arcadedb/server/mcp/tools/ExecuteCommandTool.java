@@ -72,12 +72,14 @@ public class ExecuteCommandTool {
         .setUseCollectionSizeForEdges(false);
 
     final JSONArray records = new JSONArray();
-    try (final ResultSet resultSet = database.command(language, command)) {
-      while (resultSet.hasNext()) {
-        final Result row = resultSet.next();
-        records.put(serializer.serializeResult(database, row));
+    database.transaction(() -> {
+      try (final ResultSet resultSet = database.command(language, command)) {
+        while (resultSet.hasNext()) {
+          final Result row = resultSet.next();
+          records.put(serializer.serializeResult(database, row));
+        }
       }
-    }
+    });
 
     final JSONObject result = new JSONObject();
     result.put("records", records);

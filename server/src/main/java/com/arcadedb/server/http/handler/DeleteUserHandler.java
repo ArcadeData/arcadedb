@@ -36,10 +36,10 @@ public class DeleteUserHandler extends AbstractServerHttpHandler {
 
     final String name = getQueryParameter(exchange, "name");
     if (name == null || name.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"User name parameter is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "User name parameter is required").toString());
 
     if ("root".equals(name))
-      return new ExecutionResponse(400, "{\"error\":\"Cannot delete the root user\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Cannot delete the root user").toString());
 
     final boolean deleted = httpServer.getServer().getSecurity().dropUser(name);
 

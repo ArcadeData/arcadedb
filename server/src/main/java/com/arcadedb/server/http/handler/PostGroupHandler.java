@@ -41,15 +41,15 @@ public class PostGroupHandler extends AbstractServerHttpHandler {
     checkRootUser(user);
 
     if (payload == null)
-      return new ExecutionResponse(400, "{\"error\":\"Request body is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
 
     final String database = payload.getString("database", "");
     if (database.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"Database name is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Database name is required").toString());
 
     final String name = payload.getString("name", "");
     if (name.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"Group name is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Group name is required").toString());
 
     // Build group config
     final JSONObject groupConfig = new JSONObject();

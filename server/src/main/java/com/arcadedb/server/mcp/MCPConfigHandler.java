@@ -48,7 +48,7 @@ public class MCPConfigHandler extends AbstractServerHttpHandler {
 
     // POST - update configuration
     if (payload == null)
-      return new ExecutionResponse(400, "{\"error\":\"Request body is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
 
     config.updateFrom(payload);
     config.save();

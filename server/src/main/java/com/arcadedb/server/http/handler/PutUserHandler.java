@@ -37,20 +37,20 @@ public class PutUserHandler extends AbstractServerHttpHandler {
     checkRootUser(user);
 
     if (payload == null)
-      return new ExecutionResponse(400, "{\"error\":\"Request body is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
 
     String name = getQueryParameter(exchange, "name");
     if (name == null || name.isBlank())
       name = payload.getString("name", "");
     if (name.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"User name is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "User name is required").toString());
 
     final ServerSecurity security = httpServer.getServer().getSecurity();
 
     synchronized (security) {
       final ServerSecurityUser existingUser = security.getUser(name);
       if (existingUser == null)
-        return new ExecutionResponse(404, "{\"error\":\"User '" + name + "' not found\"}");
+        return new ExecutionResponse(404, new JSONObject().put("error", "User '" + name + "' not found").toString());
 
       // Update password if provided
       if (payload.has("password")) {

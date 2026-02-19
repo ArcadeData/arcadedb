@@ -60,7 +60,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     if (payload == null)
       return jsonRpcError(null, -32700, "Parse error: empty request body");
 
-    if (!config.isUserAllowed(user.getName()))
+    if (user == null || !config.isUserAllowed(user.getName()))
       return jsonRpcError(payload.opt("id"), -32600, "User not authorized for MCP access");
 
     final String method = payload.getString("method", "");
@@ -159,12 +159,20 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
         sb.append(", ");
       first = false;
       final Object value = args.get(key);
-      if (value instanceof String s && s.length() > 100)
-        sb.append(key).append("=\"").append(s, 0, 100).append("...\"");
-      else
+      if (value instanceof String s) {
+        final String sanitized = sanitizeForLog(s);
+        if (sanitized.length() > 100)
+          sb.append(key).append("=\"").append(sanitized, 0, 100).append("...\"");
+        else
+          sb.append(key).append("=\"").append(sanitized).append("\"");
+      } else
         sb.append(key).append("=").append(value);
     }
     return sb.append("}").toString();
+  }
+
+  private static String sanitizeForLog(final String value) {
+    return value.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
   }
 
   private static String formatResult(final String toolName, final JSONObject result) {

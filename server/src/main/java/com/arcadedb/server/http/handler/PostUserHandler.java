@@ -21,7 +21,6 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
-import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -37,17 +36,18 @@ public class PostUserHandler extends AbstractServerHttpHandler {
     checkRootUser(user);
 
     if (payload == null)
-      return new ExecutionResponse(400, "{\"error\":\"Request body is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
 
     final String name = payload.getString("name", "");
     if (name.isBlank())
-      return new ExecutionResponse(400, "{\"error\":\"User name is required\"}");
+      return new ExecutionResponse(400, new JSONObject().put("error", "User name is required").toString());
 
     final String password = payload.getString("password", "");
     if (password.length() < 4)
-      throw new ServerSecurityException("User password must be at least 4 characters");
+      return new ExecutionResponse(400, new JSONObject().put("error", "User password must be at least 4 characters").toString());
     if (password.length() > 256)
-      throw new ServerSecurityException("User password cannot be longer than 256 characters");
+      return new ExecutionResponse(400,
+          new JSONObject().put("error", "User password cannot be longer than 256 characters").toString());
 
     final ServerSecurity security = httpServer.getServer().getSecurity();
 
