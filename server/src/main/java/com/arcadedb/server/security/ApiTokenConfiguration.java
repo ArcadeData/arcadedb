@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
@@ -36,10 +37,7 @@ public class ApiTokenConfiguration {
   private final        ConcurrentHashMap<String, JSONObject> tokens = new ConcurrentHashMap<>();
 
   public ApiTokenConfiguration(final String configPath) {
-    String path = configPath;
-    if (!path.endsWith(File.separator))
-      path += File.separator;
-    this.filePath = path + FILE_NAME;
+    this.filePath = Paths.get(configPath, FILE_NAME).toString();
   }
 
   public synchronized void load() {
@@ -141,14 +139,10 @@ public class ApiTokenConfiguration {
 
   public void cleanupExpired() {
     final long now = System.currentTimeMillis();
-    boolean removed = false;
-    for (final Map.Entry<String, JSONObject> entry : tokens.entrySet()) {
+    final boolean removed = tokens.entrySet().removeIf(entry -> {
       final long expiresAt = entry.getValue().getLong("expiresAt", 0);
-      if (expiresAt > 0 && expiresAt < now) {
-        tokens.remove(entry.getKey());
-        removed = true;
-      }
-    }
+      return expiresAt > 0 && expiresAt < now;
+    });
     if (removed)
       save();
   }

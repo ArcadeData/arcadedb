@@ -29,8 +29,19 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 public class ExecuteCommandTool {
+
+  private static final Pattern CYPHER_CREATE_INDEX      = Pattern.compile("\\bCREATE\\s+INDEX\\b");
+  private static final Pattern CYPHER_CREATE_CONSTRAINT = Pattern.compile("\\bCREATE\\s+CONSTRAINT\\b");
+  private static final Pattern CYPHER_DROP_INDEX        = Pattern.compile("\\bDROP\\s+INDEX\\b");
+  private static final Pattern CYPHER_DROP_CONSTRAINT   = Pattern.compile("\\bDROP\\s+CONSTRAINT\\b");
+  private static final Pattern CYPHER_CREATE            = Pattern.compile("\\bCREATE\\b");
+  private static final Pattern CYPHER_MERGE             = Pattern.compile("\\bMERGE\\b");
+  private static final Pattern CYPHER_SET               = Pattern.compile("\\bSET\\b");
+  private static final Pattern CYPHER_DELETE            = Pattern.compile("\\bDELETE\\b");
+  private static final Pattern CYPHER_REMOVE            = Pattern.compile("\\bREMOVE\\b");
 
   public static JSONObject getDefinition() {
     return new JSONObject()
@@ -148,20 +159,21 @@ public class ExecuteCommandTool {
 
   private static OperationType detectCypherOperation(final String upper) {
     // Schema operations in Cypher
-    if (upper.contains("CREATE INDEX") || upper.contains("CREATE CONSTRAINT") || upper.contains("DROP INDEX")
-        || upper.contains("DROP CONSTRAINT"))
+    if (CYPHER_CREATE_INDEX.matcher(upper).find() || CYPHER_CREATE_CONSTRAINT.matcher(upper).find()
+        || CYPHER_DROP_INDEX.matcher(upper).find() || CYPHER_DROP_CONSTRAINT.matcher(upper).find())
       return OperationType.SCHEMA;
 
-    // Check for write clauses
-    final boolean hasCreate = upper.contains("CREATE") && !upper.contains("CREATE INDEX") && !upper.contains("CREATE CONSTRAINT");
-    final boolean hasMerge = upper.contains("MERGE");
-    final boolean hasSet = upper.contains(" SET ");
-    final boolean hasDelete = upper.contains("DELETE");
-    final boolean hasRemove = upper.contains("REMOVE");
+    // Check for write clauses using word boundaries to avoid matching keywords inside string literals
+    final boolean hasCreate = CYPHER_CREATE.matcher(upper).find()
+        && !CYPHER_CREATE_INDEX.matcher(upper).find() && !CYPHER_CREATE_CONSTRAINT.matcher(upper).find();
+    final boolean hasMerge = CYPHER_MERGE.matcher(upper).find();
+    final boolean hasSet = CYPHER_SET.matcher(upper).find();
+    final boolean hasDelete = CYPHER_DELETE.matcher(upper).find();
+    final boolean hasRemove = CYPHER_REMOVE.matcher(upper).find();
 
     if (hasDelete)
       return OperationType.DELETE;
-    if (hasSet || hasMerge)
+    if (hasSet || hasMerge || hasRemove)
       return OperationType.UPDATE;
     if (hasCreate)
       return OperationType.INSERT;

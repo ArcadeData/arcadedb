@@ -153,4 +153,17 @@ class MCPPermissionsTest {
     assertThat(ExecuteCommandTool.detectOperationType("  insert into Person set name='John'", "sql"))
         .isEqualTo(OperationType.INSERT);
   }
+
+  @Test
+  void testCypherRemoveDetection() {
+    assertThat(ExecuteCommandTool.detectOperationType("MATCH (n:Person) REMOVE n.age", "cypher"))
+        .isEqualTo(OperationType.UPDATE);
+  }
+
+  @Test
+  void testCypherKeywordInStringLiteral() {
+    // Keywords inside string literals should not trigger false positives with word-boundary matching
+    assertThat(ExecuteCommandTool.detectOperationType("MATCH (n) WHERE n.name = 'DELETED' RETURN n", "cypher"))
+        .isEqualTo(OperationType.UNKNOWN);
+  }
 }

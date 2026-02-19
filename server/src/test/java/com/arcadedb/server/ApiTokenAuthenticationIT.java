@@ -94,7 +94,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void testExpiredTokenReturns403() throws Exception {
+  void testExpiredTokenReturns401() throws Exception {
     testEachServer((serverIndex) -> {
       final long pastTime = System.currentTimeMillis() - 10000;
       final String tokenValue = createApiToken(serverIndex, "Expired", "graph", pastTime, new JSONObject());
@@ -106,7 +106,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       connection.connect();
 
       try {
-        assertThat(connection.getResponseCode()).isEqualTo(403);
+        assertThat(connection.getResponseCode()).isEqualTo(401);
       } finally {
         connection.disconnect();
       }
@@ -172,7 +172,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       connection2.connect();
 
       try {
-        assertThat(connection2.getResponseCode()).isEqualTo(403);
+        assertThat(connection2.getResponseCode()).isEqualTo(401);
       } finally {
         connection2.disconnect();
       }
@@ -225,6 +225,23 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       try {
         assertThat(connection.getResponseCode()).isEqualTo(200);
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
+  void testApiTokenInvalidReturns401() throws Exception {
+    testEachServer((serverIndex) -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization", "Bearer at-invalid-nonexistent-token");
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(401);
       } finally {
         connection.disconnect();
       }

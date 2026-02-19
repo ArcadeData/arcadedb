@@ -35,8 +35,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class MCPServerPluginTest extends BaseGraphServerTest {
 
-  private static final String MCP_URL        = "http://127.0.0.1:2480/api/v1/mcp";
-  private static final String MCP_CONFIG_URL = "http://127.0.0.1:2480/api/v1/mcp/config";
+  private String getMcpUrl() {
+    return "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/mcp";
+  }
+
+  private String getMcpConfigUrl() {
+    return "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/mcp/config";
+  }
 
   @BeforeEach
   public void enableMCP() throws Exception {
@@ -254,7 +259,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
 
   @Test
   void testGetConfig() throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URI(MCP_CONFIG_URL).toURL().openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpConfigUrl()).toURL().openConnection();
     connection.setRequestMethod("GET");
     connection.setRequestProperty("Authorization", getBasicAuth());
     connection.connect();
@@ -280,7 +285,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URI(MCP_URL).toURL().openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", getBasicAuth());
     connection.setRequestProperty("Content-Type", "application/json");
@@ -315,7 +320,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   private void saveMCPConfig(final JSONObject config) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URI(MCP_CONFIG_URL).toURL().openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpConfigUrl()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", getBasicAuth());
     connection.setRequestProperty("Content-Type", "application/json");

@@ -909,12 +909,17 @@ function renderMCPUserList(users) {
     html +=
       '<span class="badge bg-secondary me-1 mb-1">' +
       escapeHtml(users[i]) +
-      ' <a href="#" onclick="removeMCPUser(\'' +
+      ' <a href="#" class="mcp-remove-user text-white ms-1" data-username="' +
       escapeHtml(users[i]) +
-      "')\" class=\"text-white ms-1\"><i class=\"fa fa-times\"></i></a></span>";
+      '"><i class="fa fa-times"></i></a></span>';
   }
   $("#mcpUserList").html(html);
 }
+
+$(document).on("click", ".mcp-remove-user", function (e) {
+  e.preventDefault();
+  removeMCPUser($(this).data("username"));
+});
 
 function addMCPUser() {
   var username = $("#mcpNewUser").val().trim();

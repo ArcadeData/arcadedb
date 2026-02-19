@@ -23,8 +23,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -54,7 +56,7 @@ public class MCPConfiguration {
     }
 
     try {
-      final String content = new String(Files.readAllBytes(configFile.toPath()));
+      final String content = new String(Files.readAllBytes(configFile.toPath()), StandardCharsets.UTF_8);
       final JSONObject json = new JSONObject(content);
 
       enabled = json.getBoolean("enabled", false);
@@ -81,7 +83,7 @@ public class MCPConfiguration {
     if (!configDir.exists())
       configDir.mkdirs();
 
-    try (final FileWriter writer = new FileWriter(getConfigFile())) {
+    try (final OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(getConfigFile()), StandardCharsets.UTF_8)) {
       writer.write(toJSON().toString(2));
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error saving MCP configuration: %s", e.getMessage());
@@ -160,7 +162,7 @@ public class MCPConfiguration {
     return json;
   }
 
-  public void updateFrom(final JSONObject json) {
+  public synchronized void updateFrom(final JSONObject json) {
     if (json.has("enabled"))
       enabled = json.getBoolean("enabled");
     if (json.has("allowReads"))

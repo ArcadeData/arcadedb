@@ -65,8 +65,7 @@ public class PutUserHandler extends AbstractServerHttpHandler {
     if (payload.has("databases")) {
       final JSONObject databases = payload.getJSONObject("databases");
       existingUser.toJSON().put("databases", databases);
-      // Clear the database user cache so new permissions take effect
-      existingUser.toJSON().remove("_databaseCacheCleared");
+      existingUser.refreshDatabaseNames();
     }
 
     security.saveUsers();

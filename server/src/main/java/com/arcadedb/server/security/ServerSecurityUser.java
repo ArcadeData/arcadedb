@@ -128,6 +128,14 @@ public class ServerSecurityUser implements SecurityUser {
     return this;
   }
 
+  public void refreshDatabaseNames() {
+    if (userConfiguration.has("databases"))
+      databasesNames = Collections.unmodifiableSet(userConfiguration.getJSONObject("databases").keySet());
+    else
+      databasesNames = Collections.emptySet();
+    databaseCache.clear();
+  }
+
   @Override
   public Set<String> getAuthorizedDatabases() {
     return databasesNames;

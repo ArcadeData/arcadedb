@@ -27,6 +27,9 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
+import java.util.HashSet;
+import java.util.Set;
+
 public class ServerStatusTool {
 
   public static JSONObject getDefinition() {
@@ -48,7 +51,11 @@ public class ServerStatusTool {
     result.put("version", Constants.getVersion());
     result.put("serverName", server.getServerName());
     result.put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
-    result.put("databases", new JSONArray(server.getDatabaseNames()));
+    final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
+    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
+    if (!allowedDatabases.contains("*"))
+      installedDatabases.retainAll(allowedDatabases);
+    result.put("databases", new JSONArray(installedDatabases));
 
     final HAServer ha = server.getHA();
     if (ha != null) {

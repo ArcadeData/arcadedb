@@ -196,7 +196,8 @@ public class HttpServer implements ServerPlugin {
         .delete("/server/groups", new DeleteGroupHandler(this))
     );
 
-    // Register MCP routes (always available, MCP config controls enabled/disabled)
+    // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling.
+    // The null check is a safety guard (mcpConfig is always initialized), not an enable/disable gate.
     final var mcpConfig = server.getMCPConfiguration();
     if (mcpConfig != null) {
       routes.addExactPath("/api/v1/mcp", new MCPHttpHandler(this, server, mcpConfig));

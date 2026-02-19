@@ -26,6 +26,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpHandler;
@@ -101,9 +102,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             // Bearer token authentication
             final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
 
-            if (com.arcadedb.server.security.ApiTokenConfiguration.isApiToken(token)) {
+            if (ApiTokenConfiguration.isApiToken(token)) {
               // API token authentication (at- prefix)
-              user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
+              try {
+                user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
+              } catch (final ServerSecurityException ex) {
+                exchange.setStatusCode(401);
+                sendErrorResponse(exchange, 401, "Invalid or expired API token", null, null);
+                return;
+              }
             } else {
               // Session token authentication (AU- prefix)
               final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);

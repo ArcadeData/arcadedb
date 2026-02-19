@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -235,7 +236,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final JSONObject config = new JSONObject();
     config.put("name", name);
     config.put("password", encodedPassword);
-    config.put("databases", new JSONObject().put("*", new com.arcadedb.serializer.json.JSONArray().put("admin")));
+    config.put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
     createUser(config);
   }
 
@@ -553,13 +554,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (permissions.has("types"))
       groupDef.put("types", permissions.getJSONObject("types"));
     else
-      groupDef.put("types", new JSONObject().put("*", new JSONObject().put("access", new com.arcadedb.serializer.json.JSONArray())));
+      groupDef.put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray())));
 
     // Database-level access
     if (permissions.has("database"))
       groupDef.put("access", permissions.getJSONArray("database"));
     else
-      groupDef.put("access", new com.arcadedb.serializer.json.JSONArray());
+      groupDef.put("access", new JSONArray());
 
     groupDef.put("resultSetLimit", -1L);
     groupDef.put("readTimeout", -1L);
@@ -570,7 +571,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // Build synthetic user configuration
     final JSONObject userConfig = new JSONObject();
     userConfig.put("name", "apitoken:" + tokenName);
-    userConfig.put("databases", new JSONObject().put(database, new com.arcadedb.serializer.json.JSONArray().put(syntheticGroupName)));
+    userConfig.put("databases", new JSONObject().put(database, new JSONArray().put(syntheticGroupName)));
 
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfig);
     user.withSyntheticGroupConfig(syntheticGroupConfig);
