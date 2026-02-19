@@ -127,32 +127,35 @@ function renderTable() {
         { extend: "print", text: "<i class='fas fa-print'></i> Print", orientation: "landscape" },
       ],
       initComplete: function () {
-        $(this.api().table().container()).find("input").attr("autocomplete", "off");
+        let api = this.api();
+        $(api.table().container()).find("input").attr("autocomplete", "off");
 
-        let wrapper = $(this.api().table().container());
+        let wrapper = $(api.table().container());
 
-        // Build custom export dropdown
-        let exportHtml = "<div class='dt-export-dropdown'>";
-        exportHtml += "<button class='dt-export-btn' onclick='toggleExportMenu(this)' title='Export'><i class='fa fa-arrow-up-from-bracket'></i></button>";
-        exportHtml += "<div class='dt-export-menu'></div>";
-        exportHtml += "</div>";
+        // Build custom export dropdown (defer to ensure buttons are in DOM)
+        setTimeout(function () {
+          let exportHtml = "<div class='dt-export-dropdown'>";
+          exportHtml += "<button class='dt-export-btn' onclick='toggleExportMenu(this)' title='Export'><i class='fa fa-arrow-up-from-bracket'></i></button>";
+          exportHtml += "<div class='dt-export-menu'></div>";
+          exportHtml += "</div>";
 
-        let exportEl = $(exportHtml);
-        let menu = exportEl.find(".dt-export-menu");
+          let exportEl = $(exportHtml);
+          let menu = exportEl.find(".dt-export-menu");
 
-        // Move DataTables buttons into the dropdown menu
-        wrapper.find(".dt-buttons .dt-button").each(function () {
-          $(this).removeClass("dt-button btn-secondary").addClass("dt-export-menu-item");
-          menu.append($(this));
-        });
-        wrapper.find(".dt-buttons").remove();
+          // Move DataTables buttons into the dropdown menu
+          wrapper.find(".dt-buttons button, .dt-buttons a").each(function () {
+            $(this).removeClass("dt-button btn-secondary").addClass("dt-export-menu-item");
+            menu.append($(this));
+          });
+          wrapper.find(".dt-buttons").remove();
 
-        // Insert export dropdown after search
-        let searchBox = wrapper.find(".dt-search");
-        if (searchBox.length)
-          searchBox.after(exportEl);
-        else
-          wrapper.prepend(exportEl);
+          // Insert export dropdown after search
+          let searchBox = wrapper.find(".dt-search");
+          if (searchBox.length)
+            searchBox.after(exportEl);
+          else
+            wrapper.prepend(exportEl);
+        }, 50);
       },
     });
 

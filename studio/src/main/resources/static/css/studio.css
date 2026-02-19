@@ -711,10 +711,15 @@ div.dt-search {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
 }
 
 .dt-layout-row .dt-layout-cell {
   flex: none;
+}
+
+.dt-layout-cell.dt-layout-end {
+  margin-left: auto;
 }
 
 .dt-info {
@@ -736,6 +741,7 @@ div.dt-search {
 
 /* Ensure footer stretches to table width when table overflows */
 #tab-table .dataTables_wrapper > .dt-layout-row:last-child {
+  width: 100%;
   min-width: fit-content;
 }
 
