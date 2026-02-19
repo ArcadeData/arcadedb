@@ -1,139 +1,621 @@
 <div class="tab-pane fade" id="tab-api" role="tabpanel">
-  <div class="row">
-    <div class="col-12">
-      <h4><i class="fa fa-plug"></i> HTTP API</h4>
+  <div class="docs-panel">
+    <!-- Left: Endpoint List -->
+    <div class="docs-sidebar docs-sidebar-api">
+      <div class="docs-sidebar-header">
+        <span class="docs-sidebar-title"><i class="fa fa-plug"></i> HTTP API Reference</span>
+        <a class="docs-open-external" href="https://docs.arcadedb.com/#http-json-api" target="_blank" title="Open full docs">
+          <i class="fa fa-external-link-alt"></i>
+        </a>
+      </div>
+
+      <div class="docs-sidebar-body">
+        <!-- Health & Status -->
+        <div class="api-section">
+          <div class="api-section-label">Health &amp; Status</div>
+          <div class="api-endpoint" onclick="showApiDetail('ready')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/ready</span>
+            <span class="api-desc">Server readiness check</span>
+          </div>
+        </div>
+
+        <!-- Authentication -->
+        <div class="api-section">
+          <div class="api-section-label">Authentication</div>
+          <div class="api-endpoint" onclick="showApiDetail('login')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/login</span>
+            <span class="api-desc">Authenticate with credentials</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('logout')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/logout</span>
+            <span class="api-desc">End current session</span>
+          </div>
+        </div>
+
+        <!-- Query Execution -->
+        <div class="api-section">
+          <div class="api-section-label">Query Execution</div>
+          <div class="api-endpoint" onclick="showApiDetail('queryGet')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/query/{db}/{lang}/{cmd}</span>
+            <span class="api-desc">Execute a query via GET</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('queryPost')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/query/{db}</span>
+            <span class="api-desc">Execute a query via POST</span>
+          </div>
+        </div>
+
+        <!-- Commands -->
+        <div class="api-section">
+          <div class="api-section-label">Commands</div>
+          <div class="api-endpoint" onclick="showApiDetail('command')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/command/{db}</span>
+            <span class="api-desc">Execute a database command</span>
+          </div>
+        </div>
+
+        <!-- Transactions -->
+        <div class="api-section">
+          <div class="api-section-label">Transactions</div>
+          <div class="api-endpoint" onclick="showApiDetail('begin')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/begin/{db}</span>
+            <span class="api-desc">Begin a new transaction</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('commit')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/commit/{db}</span>
+            <span class="api-desc">Commit current transaction</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('rollback')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/rollback/{db}</span>
+            <span class="api-desc">Rollback current transaction</span>
+          </div>
+        </div>
+
+        <!-- Server Management -->
+        <div class="api-section">
+          <div class="api-section-label">Server Management</div>
+          <div class="api-endpoint" onclick="showApiDetail('serverGet')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/server</span>
+            <span class="api-desc">Get server information</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('serverPost')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/server</span>
+            <span class="api-desc">Execute server command</span>
+          </div>
+        </div>
+
+        <!-- Database Management -->
+        <div class="api-section">
+          <div class="api-section-label">Database Management</div>
+          <div class="api-endpoint" onclick="showApiDetail('databases')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/databases</span>
+            <span class="api-desc">List all databases</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('exists')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/exists/{db}</span>
+            <span class="api-desc">Check if database exists</span>
+          </div>
+        </div>
+
+        <!-- Documentation -->
+        <div class="api-section">
+          <div class="api-section-label">Documentation</div>
+          <div class="api-endpoint" onclick="window.open('/docs', '_blank')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/docs</span>
+            <span class="api-desc">Swagger UI (interactive)</span>
+          </div>
+        </div>
+      </div>
     </div>
-  </div>
 
-  <hr />
-
-  <div class="row">
-    <div class="col-12">
-      <div class="row py-2">
-        <div class="col-1">
-          <b>Method</b>
-        </div>
-        <div class="col-4">
-          <b>URL</b>
-        </div>
-        <div class="col-7">
-          <b>Documentation</b>
-        </div>
+    <!-- Right: Endpoint Detail -->
+    <div class="api-detail-container" id="apiDetailPanel">
+      <div class="api-detail-welcome">
+        <div class="api-detail-welcome-icon"><i class="fa fa-plug"></i></div>
+        <h5>HTTP API Reference</h5>
+        <p>Select an endpoint from the sidebar to view its documentation, including request format, parameters, and response examples.</p>
+        <p class="api-detail-welcome-hint">All endpoints use JSON for request and response bodies. Authentication is via <code>Authorization: Bearer {token}</code> header after login.</p>
+        <a href="https://docs.arcadedb.com/#http-json-api" target="_blank" class="api-detail-docs-link"><i class="fa fa-external-link-alt"></i> Full HTTP API Documentation</a>
       </div>
-
-      <div class="row">
-        <div class="col-1">GET</div>
-        <div class="col-4">
-          <pre>/api/v1/ready</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-checkready">Get server status</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">GET</div>
-        <div class="col-4">
-          <pre>/api/v1/server</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-serverinfo">Get server information</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">GET</div>
-        <div class="col-4">
-          <pre>/api/v1/server</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-servercommand"
-            >Send server command (create/drop/open/close database, create/drop user, shutdown)</a
-          >
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">GET</div>
-        <div class="col-4">
-          <pre>/api/v1/databases</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-listdatabases">List databases</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">GET</div>
-        <div class="col-4">
-          <pre>/api/v1/exists/{database}</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-databaseexists">Does database exist?</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">GET</div>
-        <div class="col-4">
-          <pre>/api/v1/query/{database}/{language}/{query}</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-executequery">Execute a query (GET)</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">POST</div>
-        <div class="col-4">
-          <pre>/api/v1/query/{database}</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-executequery">Execute a query (POST)</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">POST</div>
-        <div class="col-4">
-          <pre>/api/v1/command/{database}</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-executecommand">Execute a command</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">POST</div>
-        <div class="col-4">
-          <pre>/api/v1/begin/{database}</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-begin">Begin a new transaction</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">POST</div>
-        <div class="col-4">
-          <pre>/api/v1/commit/{database}</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-commit">Commit a transaction</a>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">POST</div>
-        <div class="col-4">
-          <pre>/api/v1/rollback/{database}</pre>
-        </div>
-        <div class="col-7">
-          <a class="link" href="https://docs.arcadedb.com/#http-rollback">Rollback a transaction</a>
-        </div>
-      </div>
-
-      <hr />
     </div>
   </div>
 </div>
+
+<script>
+var apiEndpoints = {
+  ready: {
+    method: "GET", path: "/api/v1/ready", auth: false, tryIt: false,
+    docsAnchor: "http-checkready",
+    title: "Server Readiness Check",
+    description: "Returns the server status. If the server is running and ready to accept requests, it returns <code>204 No Content</code>. Useful for health checks, load balancers, and monitoring.",
+    params: [],
+    requestBody: null,
+    responseCode: "204 No Content",
+    responseBody: null,
+    notes: "This endpoint does not require authentication and can be used by external monitoring systems."
+  },
+  login: {
+    method: "POST", path: "/api/v1/login", auth: false, tryIt: true,
+    docsAnchor: "http-login",
+    title: "Authenticate",
+    description: "Authenticates a user with the server using HTTP Basic Authentication. Returns a session token for subsequent requests.",
+    params: [],
+    requestBody: null,
+    requestHeaders: [
+      { name: "Authorization", value: "Basic base64(username:password)", desc: "HTTP Basic credentials" }
+    ],
+    responseCode: "200 OK",
+    responseBody: '{\n  "token": "abc123..."\n}',
+    notes: "Use the returned token as a Bearer token for all subsequent API calls."
+  },
+  logout: {
+    method: "POST", path: "/api/v1/logout", auth: true, tryIt: true,
+    docsAnchor: "http-logout",
+    title: "End Session",
+    description: "Invalidates the current session token, logging the user out.",
+    params: [],
+    requestBody: null,
+    responseCode: "204 No Content",
+    responseBody: null,
+    notes: null
+  },
+  queryGet: {
+    method: "GET", path: "/api/v1/query/{database}/{language}/{command}", auth: true, tryIt: true,
+    docsAnchor: "http-executequery",
+    title: "Execute Query (GET)",
+    description: "Executes a read-only query against the specified database. The query is URL-encoded in the path. This is an idempotent operation intended for queries that do not modify data.",
+    params: [
+      { name: "database", desc: "Database name" },
+      { name: "language", desc: "Query language: <code>sql</code>, <code>cypher</code>, <code>gremlin</code>, <code>graphql</code>, <code>mongo</code>" },
+      { name: "command", desc: "URL-encoded query text" }
+    ],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "user": "root",\n  "version": "26.x",\n  "serverName": "ArcadeDB_0",\n  "result": [ { ... } ]\n}',
+    notes: "Queries executed via GET are always read-only. For write operations, use the command endpoint."
+  },
+  queryPost: {
+    method: "POST", path: "/api/v1/query/{database}", auth: true, tryIt: true,
+    docsAnchor: "http-executequery",
+    title: "Execute Query (POST)",
+    description: "Executes a read-only query against the specified database. The query is passed in the request body as JSON. Preferred over GET for longer or complex queries.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: '{\n  "language": "sql",\n  "command": "SELECT FROM V"\n}',
+    responseCode: "200 OK",
+    responseBody: '{\n  "user": "root",\n  "version": "26.x",\n  "serverName": "ArcadeDB_0",\n  "result": [ { ... } ]\n}',
+    notes: "Supports all query languages: sql, cypher, gremlin, graphql, mongo."
+  },
+  command: {
+    method: "POST", path: "/api/v1/command/{database}", auth: true, tryIt: true,
+    docsAnchor: "http-executecommand",
+    title: "Execute Command",
+    description: "Executes a database command that may modify data (DDL/DML). Use this for INSERT, UPDATE, DELETE, CREATE, ALTER, and other write operations.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: '{\n  "language": "sql",\n  "command": "CREATE VERTEX TYPE Product"\n}',
+    responseCode: "200 OK",
+    responseBody: '{\n  "user": "root",\n  "version": "26.x",\n  "serverName": "ArcadeDB_0",\n  "result": [ { ... } ]\n}',
+    notes: "Commands run inside an implicit transaction unless a managed transaction is active."
+  },
+  begin: {
+    method: "POST", path: "/api/v1/begin/{database}", auth: true, tryIt: true,
+    docsAnchor: "http-begin",
+    title: "Begin Transaction",
+    description: "Starts a new managed transaction on the specified database. Returns a transaction ID in the response header that must be included in subsequent operations.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: null,
+    responseCode: "204 No Content",
+    responseBody: null,
+    responseHeaders: [
+      { name: "arcadedb-session-id", desc: "Transaction session ID to include in subsequent requests" }
+    ],
+    notes: "Include the <code>arcadedb-session-id</code> header in all subsequent command/query calls within the transaction."
+  },
+  commit: {
+    method: "POST", path: "/api/v1/commit/{database}", auth: true, tryIt: true,
+    docsAnchor: "http-commit",
+    title: "Commit Transaction",
+    description: "Commits the current managed transaction, making all changes permanent.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: null,
+    requestHeaders: [
+      { name: "arcadedb-session-id", value: "{session-id}", desc: "Transaction session ID from begin" }
+    ],
+    responseCode: "204 No Content",
+    responseBody: null,
+    notes: null
+  },
+  rollback: {
+    method: "POST", path: "/api/v1/rollback/{database}", auth: true, tryIt: true,
+    docsAnchor: "http-rollback",
+    title: "Rollback Transaction",
+    description: "Rolls back the current managed transaction, discarding all uncommitted changes.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: null,
+    requestHeaders: [
+      { name: "arcadedb-session-id", value: "{session-id}", desc: "Transaction session ID from begin" }
+    ],
+    responseCode: "204 No Content",
+    responseBody: null,
+    notes: null
+  },
+  serverGet: {
+    method: "GET", path: "/api/v1/server", auth: true, tryIt: true,
+    docsAnchor: "http-serverinfo",
+    title: "Get Server Information",
+    description: "Returns detailed information about the server, including version, uptime, databases, metrics, and cluster status.",
+    params: [],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "user": "root",\n  "version": "26.x",\n  "serverName": "ArcadeDB_0",\n  "databases": [ "mydb" ],\n  "metrics": { ... }\n}',
+    notes: null
+  },
+  serverPost: {
+    method: "POST", path: "/api/v1/server", auth: true, tryIt: true,
+    docsAnchor: "http-servercommand",
+    title: "Execute Server Command",
+    description: "Executes a server-level command such as creating/dropping databases, managing users, or shutting down the server.",
+    params: [],
+    requestBody: '{\n  "command": "create database newdb"\n}',
+    responseCode: "200 OK",
+    responseBody: '{\n  "result": "ok"\n}',
+    notes: "Available commands: <code>create database</code>, <code>drop database</code>, <code>open database</code>, <code>close database</code>, <code>create user</code>, <code>drop user</code>, <code>shutdown</code>, <code>set server setting</code>, <code>get server events</code>, <code>align database</code>."
+  },
+  databases: {
+    method: "GET", path: "/api/v1/databases", auth: true, tryIt: true,
+    docsAnchor: "http-listdatabases",
+    title: "List Databases",
+    description: "Returns a list of all databases available on the server that the current user has access to.",
+    params: [],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "result": [\n    "mydb",\n    "testdb"\n  ]\n}',
+    notes: null
+  },
+  exists: {
+    method: "GET", path: "/api/v1/exists/{database}", auth: true, tryIt: true,
+    docsAnchor: "http-databaseexists",
+    title: "Check Database Exists",
+    description: "Checks whether a specific database exists on the server.",
+    params: [
+      { name: "database", desc: "Database name to check" }
+    ],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "result": true\n}',
+    notes: null
+  }
+};
+
+var _apiPlaygroundVisible = {};
+
+function showApiDetail(key) {
+  var ep = apiEndpoints[key];
+  if (!ep) return;
+
+  // Highlight active endpoint
+  var endpoints = document.querySelectorAll("#tab-api .api-endpoint");
+  for (var i = 0; i < endpoints.length; i++)
+    endpoints[i].classList.remove("active");
+  if (event && event.currentTarget)
+    event.currentTarget.classList.add("active");
+
+  var methodClass = "api-method-" + ep.method.toLowerCase();
+  var html = "<div class='api-detail-content'>";
+
+  // Header
+  html += "<div class='api-detail-header'>";
+  html += "<div class='api-detail-title-row'>";
+  html += "<span class='api-method " + methodClass + "' style='font-size:0.72rem;padding:3px 10px'>" + ep.method + "</span>";
+  html += "<span class='api-detail-path'>" + escapeHtml(ep.path) + "</span>";
+  html += "</div>";
+  html += "<h5 class='api-detail-title'>" + ep.title + "</h5>";
+  html += "<div class='api-detail-meta'>";
+  html += ep.auth ? "<span class='api-detail-tag api-detail-tag-auth'><i class='fa fa-lock'></i> Auth required</span>"
+                   : "<span class='api-detail-tag api-detail-tag-public'><i class='fa fa-lock-open'></i> No auth</span>";
+  html += "<a href='https://docs.arcadedb.com/#" + ep.docsAnchor + "' target='_blank' class='api-detail-tag api-detail-tag-docs'><i class='fa fa-external-link-alt'></i> Full docs</a>";
+  if (ep.tryIt)
+    html += "<span class='api-detail-tag api-detail-tag-tryit' onclick='toggleApiPlayground(\"" + key + "\")'><i class='fa fa-play'></i> Try It</span>";
+  html += "</div>";
+  html += "</div>";
+
+  // Description
+  html += "<div class='api-detail-section'>";
+  html += "<p>" + ep.description + "</p>";
+  html += "</div>";
+
+  // Path Parameters
+  if (ep.params && ep.params.length > 0) {
+    html += "<div class='api-detail-section'>";
+    html += "<h6>Path Parameters</h6>";
+    html += "<table class='api-detail-table'><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody>";
+    for (var i = 0; i < ep.params.length; i++)
+      html += "<tr><td><code>" + ep.params[i].name + "</code></td><td>" + ep.params[i].desc + "</td></tr>";
+    html += "</tbody></table>";
+    html += "</div>";
+  }
+
+  // Request Headers
+  if (ep.requestHeaders && ep.requestHeaders.length > 0) {
+    html += "<div class='api-detail-section'>";
+    html += "<h6>Request Headers</h6>";
+    html += "<table class='api-detail-table'><thead><tr><th>Header</th><th>Value</th><th>Description</th></tr></thead><tbody>";
+    for (var i = 0; i < ep.requestHeaders.length; i++) {
+      var h = ep.requestHeaders[i];
+      html += "<tr><td><code>" + h.name + "</code></td><td><code>" + escapeHtml(h.value) + "</code></td><td>" + h.desc + "</td></tr>";
+    }
+    html += "</tbody></table>";
+    html += "</div>";
+  }
+
+  // Request Body
+  if (ep.requestBody) {
+    html += "<div class='api-detail-section'>";
+    html += "<h6>Request Body</h6>";
+    html += "<pre class='api-detail-code'>" + escapeHtml(ep.requestBody) + "</pre>";
+    html += "</div>";
+  }
+
+  // Response
+  html += "<div class='api-detail-section'>";
+  html += "<h6>Response</h6>";
+  html += "<div class='api-detail-response-code'>" + ep.responseCode + "</div>";
+  if (ep.responseBody)
+    html += "<pre class='api-detail-code'>" + escapeHtml(ep.responseBody) + "</pre>";
+  html += "</div>";
+
+  // Response Headers
+  if (ep.responseHeaders && ep.responseHeaders.length > 0) {
+    html += "<div class='api-detail-section'>";
+    html += "<h6>Response Headers</h6>";
+    html += "<table class='api-detail-table'><thead><tr><th>Header</th><th>Description</th></tr></thead><tbody>";
+    for (var i = 0; i < ep.responseHeaders.length; i++)
+      html += "<tr><td><code>" + ep.responseHeaders[i].name + "</code></td><td>" + ep.responseHeaders[i].desc + "</td></tr>";
+    html += "</tbody></table>";
+    html += "</div>";
+  }
+
+  // Notes
+  if (ep.notes) {
+    html += "<div class='api-detail-section api-detail-note'>";
+    html += "<i class='fa fa-info-circle'></i> " + ep.notes;
+    html += "</div>";
+  }
+
+  // Playground container (hidden by default)
+  if (ep.tryIt) {
+    var display = _apiPlaygroundVisible[key] ? 'block' : 'none';
+    html += "<div class='api-playground' id='apiPlayground_" + key + "' style='display:" + display + "'>";
+    html += renderApiPlayground(key, ep);
+    html += "</div>";
+  }
+
+  html += "</div>";
+  document.getElementById("apiDetailPanel").innerHTML = html;
+}
+
+function toggleApiPlayground(key) {
+  _apiPlaygroundVisible[key] = !_apiPlaygroundVisible[key];
+  var el = document.getElementById('apiPlayground_' + key);
+  if (el)
+    el.style.display = _apiPlaygroundVisible[key] ? 'block' : 'none';
+  else
+    showApiDetail(key);
+
+  if (_apiPlaygroundVisible[key]) {
+    setTimeout(function() {
+      var pg = document.getElementById('apiPlayground_' + key);
+      if (pg) pg.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }
+}
+
+function renderApiPlayground(key, ep) {
+  var html = "<div class='api-playground-title'><i class='fa fa-play-circle'></i> API Playground</div>";
+
+  // Auth section
+  html += "<div class='api-playground-section'>";
+  html += "<label>Authentication</label>";
+  html += "<select class='api-playground-auth-select' id='apiAuth_" + key + "' onchange='onApiAuthChange(\"" + key + "\")'>";
+  html += "<option value='session'>Current Session</option>";
+  html += "<option value='basic'>Basic Auth</option>";
+  html += "<option value='bearer'>Bearer Token</option>";
+  if (!ep.auth) html += "<option value='none'>No Auth</option>";
+  html += "</select>";
+  html += "<div class='api-playground-auth-fields' id='apiAuthFields_" + key + "'></div>";
+  html += "</div>";
+
+  // Path parameters
+  if (ep.params && ep.params.length > 0) {
+    html += "<div class='api-playground-section'>";
+    html += "<label>Path Parameters</label>";
+    for (var i = 0; i < ep.params.length; i++) {
+      var p = ep.params[i];
+      var defaultVal = '';
+      if (p.name === 'database') {
+        var db = typeof getCurrentDatabase === 'function' ? getCurrentDatabase() : '';
+        defaultVal = db || '';
+      } else if (p.name === 'language')
+        defaultVal = 'sql';
+      else if (p.name === 'command')
+        defaultVal = 'SELECT 1';
+
+      html += "<div class='api-playground-param-row'>";
+      html += "<code>" + escapeHtml(p.name) + "</code>";
+      html += "<input class='api-playground-input' id='apiParam_" + key + "_" + p.name + "' value='" + escapeHtml(defaultVal) + "' placeholder='" + escapeHtml(p.name) + "'>";
+      html += "</div>";
+    }
+    html += "</div>";
+  }
+
+  // Request body
+  if (ep.requestBody) {
+    html += "<div class='api-playground-section'>";
+    html += "<label>Request Body</label>";
+    html += "<textarea class='api-playground-body-editor' id='apiBody_" + key + "'>" + escapeHtml(ep.requestBody) + "</textarea>";
+    html += "</div>";
+  }
+
+  // Send button
+  html += "<div style='margin-bottom:16px'>";
+  html += "<button class='api-playground-send' id='apiSendBtn_" + key + "' onclick='sendApiRequest(\"" + key + "\")'><i class='fa fa-paper-plane'></i> Send Request</button>";
+  html += "</div>";
+
+  // Response area
+  html += "<div id='apiResponse_" + key + "'></div>";
+
+  return html;
+}
+
+function onApiAuthChange(key) {
+  var authType = document.getElementById('apiAuth_' + key).value;
+  var container = document.getElementById('apiAuthFields_' + key);
+
+  if (authType === 'basic') {
+    container.innerHTML =
+      "<div class='api-playground-param-row mt-2'><code>Username</code><input class='api-playground-input' id='apiAuthUser_" + key + "' placeholder='username'></div>" +
+      "<div class='api-playground-param-row'><code>Password</code><input class='api-playground-input' id='apiAuthPass_" + key + "' type='password' placeholder='password'></div>";
+  } else if (authType === 'bearer') {
+    container.innerHTML =
+      "<div class='api-playground-param-row mt-2'><code>Token</code><input class='api-playground-input' id='apiAuthToken_" + key + "' placeholder='Bearer token'></div>";
+  } else {
+    container.innerHTML = '';
+  }
+}
+
+function sendApiRequest(key) {
+  var ep = apiEndpoints[key];
+  if (!ep) return;
+
+  var sendBtn = document.getElementById('apiSendBtn_' + key);
+  sendBtn.disabled = true;
+  sendBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Sending...';
+
+  // Build URL
+  var url = ep.path;
+  if (ep.params) {
+    for (var i = 0; i < ep.params.length; i++) {
+      var p = ep.params[i];
+      var val = document.getElementById('apiParam_' + key + '_' + p.name);
+      var paramVal = val ? encodeURIComponent(val.value) : '';
+      url = url.replace('{' + p.name + '}', paramVal);
+    }
+  }
+
+  // Build auth header
+  var authType = document.getElementById('apiAuth_' + key).value;
+  var headers = {};
+
+  if (authType === 'session' && typeof globalCredentials !== 'undefined' && globalCredentials) {
+    headers['Authorization'] = globalCredentials;
+  } else if (authType === 'basic') {
+    var user = (document.getElementById('apiAuthUser_' + key) || {}).value || '';
+    var pass = (document.getElementById('apiAuthPass_' + key) || {}).value || '';
+    headers['Authorization'] = 'Basic ' + btoa(user + ':' + pass);
+  } else if (authType === 'bearer') {
+    var token = (document.getElementById('apiAuthToken_' + key) || {}).value || '';
+    headers['Authorization'] = 'Bearer ' + token;
+  }
+
+  // Build request body
+  var body = null;
+  var bodyEl = document.getElementById('apiBody_' + key);
+  if (bodyEl && bodyEl.value.trim())
+    body = bodyEl.value.trim();
+
+  var startTime = Date.now();
+
+  $.ajax({
+    type: ep.method,
+    url: url,
+    data: body,
+    contentType: body ? 'application/json' : undefined,
+    headers: headers,
+    timeout: 30000
+  })
+  .done(function(data, textStatus, jqXHR) {
+    var elapsed = Date.now() - startTime;
+    renderApiResponse(key, jqXHR.status, elapsed, data, jqXHR);
+  })
+  .fail(function(jqXHR) {
+    var elapsed = Date.now() - startTime;
+    var responseData = jqXHR.responseText;
+    try { responseData = JSON.parse(responseData); } catch(e) {}
+    renderApiResponse(key, jqXHR.status, elapsed, responseData, jqXHR);
+  })
+  .always(function() {
+    sendBtn.disabled = false;
+    sendBtn.innerHTML = '<i class="fa fa-paper-plane"></i> Send Request';
+  });
+}
+
+function renderApiResponse(key, status, elapsed, data, jqXHR) {
+  var container = document.getElementById('apiResponse_' + key);
+  var isOk = status >= 200 && status < 400;
+  var statusClass = isOk ? 'api-playground-status-ok' : 'api-playground-status-error';
+  var statusText = jqXHR ? (jqXHR.status + ' ' + jqXHR.statusText) : (status + '');
+
+  var responseText = '';
+  if (data !== null && data !== undefined) {
+    if (typeof data === 'object')
+      responseText = JSON.stringify(data, null, 2);
+    else
+      responseText = data.toString();
+  } else {
+    responseText = '(empty response)';
+  }
+
+  // Show response headers
+  var headersText = '';
+  if (jqXHR) {
+    var allHeaders = jqXHR.getAllResponseHeaders();
+    if (allHeaders) headersText = allHeaders.trim();
+  }
+
+  var html = "<div class='api-playground-response'>";
+  html += "<div class='api-playground-response-header'>";
+  html += "<span class='api-playground-status " + statusClass + "'>" + escapeHtml(statusText) + "</span>";
+  html += "<span class='api-playground-timing'>" + elapsed + "ms</span>";
+  html += "</div>";
+  html += "<div style='position:relative'>";
+  html += "<pre class='api-playground-response-body'>" + escapeHtml(responseText) + "</pre>";
+  html += "<button class='api-playground-copy' onclick='copyApiResponse(this)' title='Copy to clipboard'><i class='fa fa-copy'></i></button>";
+  html += "</div>";
+  html += "</div>";
+
+  container.innerHTML = html;
+}
+
+function copyApiResponse(btn) {
+  var pre = btn.parentNode.querySelector('.api-playground-response-body');
+  if (pre) {
+    navigator.clipboard.writeText(pre.textContent).then(function() {
+      btn.innerHTML = '<i class="fa fa-check"></i>';
+      setTimeout(function() { btn.innerHTML = '<i class="fa fa-copy"></i>'; }, 1500);
+    });
+  }
+}
+</script>
