@@ -682,6 +682,8 @@ function refreshCurrentServerTab() {
     getServerEvents();
   else if (activeTab === "tab-server-backup-sel")
     loadBackupConfig();
+  else if (activeTab === "tab-server-mcp-sel")
+    loadMCPConfig();
   else
     updateServer();
 }
