@@ -34,6 +34,8 @@ import static org.assertj.core.api.Assertions.within;
 
 /**
  * Tests for Cypher function support.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class OpenCypherFunctionTest {
   private Database database;
