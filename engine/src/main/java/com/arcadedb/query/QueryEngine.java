@@ -21,6 +21,7 @@ package com.arcadedb.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
@@ -31,6 +32,22 @@ public interface QueryEngine {
     boolean isIdempotent();
 
     boolean isDDL();
+
+    /**
+     * Returns the set of operation types this query performs.
+     * Provides semantic, parser-based classification of query operations
+     * for fine-grained permission checking.
+     *
+     * @return a non-empty set of {@link OperationType} values
+     */
+    default Set<OperationType> getOperationTypes() {
+      if (isDDL())
+        return CollectionUtils.singletonSet(OperationType.SCHEMA);
+      if (isIdempotent())
+        return CollectionUtils.singletonSet(OperationType.READ);
+      // Fallback: non-idempotent, non-DDL commands that don't override this method
+      return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+    }
   }
 
   @ExcludeFromJacocoGeneratedReport

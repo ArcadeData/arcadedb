@@ -21,7 +21,9 @@ package com.arcadedb.graphql.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
@@ -42,17 +44,32 @@ public class GraphQLQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
+    final Set<OperationType> ops = detectGraphQLOperationTypes(query);
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
-        return false;
+        return ops.size() == 1 && ops.contains(OperationType.READ);
       }
 
       @Override
       public boolean isDDL() {
         return false;
       }
+
+      @Override
+      public Set<OperationType> getOperationTypes() {
+        return ops;
+      }
     };
+  }
+
+  private static Set<OperationType> detectGraphQLOperationTypes(final String query) {
+    final String trimmed = query.trim();
+    // GraphQL queries starting with "query" or "{" are reads; "mutation" is a write
+    if (trimmed.startsWith("mutation") || trimmed.startsWith("mutation "))
+      return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+    // Default to READ for queries (GraphQL queries are read-only by convention)
+    return CollectionUtils.singletonSet(OperationType.READ);
   }
 
   @Override

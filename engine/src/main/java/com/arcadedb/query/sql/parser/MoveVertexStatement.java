@@ -10,6 +10,8 @@ import com.arcadedb.query.sql.executor.MoveVertexExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
+import com.arcadedb.query.OperationType;
+
 import java.util.*;
 
 public class MoveVertexStatement extends Statement {
@@ -169,6 +171,11 @@ public class MoveVertexStatement extends Statement {
 
   public void setBatch(Batch batch) {
     this.batch = batch;
+  }
+
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    return Set.of(OperationType.UPDATE, OperationType.DELETE);
   }
 }
 /* JavaCC - OriginalChecksum=5cb0b9d3644fd28813ff615fe59d577d (do not edit this line) */

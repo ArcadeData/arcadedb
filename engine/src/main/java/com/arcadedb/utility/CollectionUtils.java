@@ -198,6 +198,16 @@ public class CollectionUtils {
   }
 
   /**
+   * Creates an immutable single-element set using lightweight SingletonSet.
+   *
+   * @param element the set element
+   * @return a lightweight immutable single-element set
+   */
+  public static <E> Set<E> singletonSet(final E element) {
+    return new SingletonSet<>(element);
+  }
+
+  /**
    * Converts any array (including primitive arrays) to a List.
    * Handles the special case of primitive arrays which cannot be cast to Object[].
    */

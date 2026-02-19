@@ -18,105 +18,25 @@
  */
 package com.arcadedb.server.mcp;
 
+import com.arcadedb.query.OperationType;
 import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
 import org.junit.jupiter.api.Test;
 
-import static com.arcadedb.server.mcp.tools.ExecuteCommandTool.OperationType;
-import static org.assertj.core.api.Assertions.assertThat;
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Tests MCP permission checking using semantic operation types.
+ */
 class MCPPermissionsTest {
-
-  @Test
-  void testSqlInsertDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("INSERT INTO Person SET name='John'", "sql"))
-        .isEqualTo(OperationType.INSERT);
-  }
-
-  @Test
-  void testSqlUpdateDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("UPDATE Person SET name='Jane' WHERE name='John'", "sql"))
-        .isEqualTo(OperationType.UPDATE);
-  }
-
-  @Test
-  void testSqlDeleteDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("DELETE FROM Person WHERE name='John'", "sql"))
-        .isEqualTo(OperationType.DELETE);
-  }
-
-  @Test
-  void testSqlCreateTypeDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("CREATE VERTEX TYPE MyVertex", "sql"))
-        .isEqualTo(OperationType.SCHEMA);
-  }
-
-  @Test
-  void testSqlCreateEdgeTypeDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("CREATE EDGE TYPE MyEdge", "sql"))
-        .isEqualTo(OperationType.SCHEMA);
-  }
-
-  @Test
-  void testSqlAlterTypeDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("ALTER TYPE Person", "sql"))
-        .isEqualTo(OperationType.SCHEMA);
-  }
-
-  @Test
-  void testSqlDropTypeDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("DROP TYPE Person", "sql"))
-        .isEqualTo(OperationType.SCHEMA);
-  }
-
-  @Test
-  void testSqlCreateIndexDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("CREATE INDEX ON Person (name) UNIQUE", "sql"))
-        .isEqualTo(OperationType.SCHEMA);
-  }
-
-  @Test
-  void testSqlCreatePropertyDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("CREATE PROPERTY Person.age INTEGER", "sql"))
-        .isEqualTo(OperationType.SCHEMA);
-  }
-
-  @Test
-  void testCypherCreateNodeDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("CREATE (n:Person {name: 'John'})", "cypher"))
-        .isEqualTo(OperationType.INSERT);
-  }
-
-  @Test
-  void testCypherDeleteDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("MATCH (n:Person) DELETE n", "cypher"))
-        .isEqualTo(OperationType.DELETE);
-  }
-
-  @Test
-  void testCypherSetDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("MATCH (n:Person) SET n.name = 'Jane'", "cypher"))
-        .isEqualTo(OperationType.UPDATE);
-  }
-
-  @Test
-  void testCypherMergeDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("MERGE (n:Person {name: 'John'})", "cypher"))
-        .isEqualTo(OperationType.UPDATE);
-  }
-
-  @Test
-  void testCypherCreateIndexDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("CREATE INDEX FOR (n:Person) ON (n.name)", "cypher"))
-        .isEqualTo(OperationType.SCHEMA);
-  }
 
   @Test
   void testPermissionCheckDeniesInsert() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowInsert(false);
 
-    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission("INSERT INTO Person SET name='John'", "sql", config))
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(Set.of(OperationType.CREATE), config))
         .isInstanceOf(SecurityException.class)
         .hasMessageContaining("not allowed");
   }
@@ -127,7 +47,17 @@ class MCPPermissionsTest {
     config.setAllowInsert(true);
 
     // Should not throw
-    ExecuteCommandTool.checkPermission("INSERT INTO Person SET name='John'", "sql", config);
+    ExecuteCommandTool.checkPermission(Set.of(OperationType.CREATE), config);
+  }
+
+  @Test
+  void testPermissionCheckDeniesUpdate() {
+    final MCPConfiguration config = new MCPConfiguration("./target/test");
+    config.setAllowUpdate(false);
+
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(Set.of(OperationType.UPDATE), config))
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("not allowed");
   }
 
   @Test
@@ -135,7 +65,7 @@ class MCPPermissionsTest {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowDelete(false);
 
-    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission("DELETE FROM Person", "sql", config))
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(Set.of(OperationType.DELETE), config))
         .isInstanceOf(SecurityException.class);
   }
 
@@ -144,26 +74,73 @@ class MCPPermissionsTest {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowSchemaChange(false);
 
-    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission("CREATE VERTEX TYPE NewType", "sql", config))
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(Set.of(OperationType.SCHEMA), config))
         .isInstanceOf(SecurityException.class);
   }
 
   @Test
-  void testCaseSensitivity() {
-    assertThat(ExecuteCommandTool.detectOperationType("  insert into Person set name='John'", "sql"))
-        .isEqualTo(OperationType.INSERT);
+  void testPermissionCheckDeniesRead() {
+    final MCPConfiguration config = new MCPConfiguration("./target/test");
+    config.setAllowReads(false);
+
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(Set.of(OperationType.READ), config))
+        .isInstanceOf(SecurityException.class);
   }
 
   @Test
-  void testCypherRemoveDetection() {
-    assertThat(ExecuteCommandTool.detectOperationType("MATCH (n:Person) REMOVE n.age", "cypher"))
-        .isEqualTo(OperationType.UPDATE);
+  void testUpsertRequiresBothCreateAndUpdate() {
+    // UPSERT produces both CREATE and UPDATE operations
+    final Set<OperationType> upsertOps = Set.of(OperationType.CREATE, OperationType.UPDATE);
+
+    // Should fail if insert is denied
+    final MCPConfiguration configNoInsert = new MCPConfiguration("./target/test");
+    configNoInsert.setAllowInsert(false);
+    configNoInsert.setAllowUpdate(true);
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(upsertOps, configNoInsert))
+        .isInstanceOf(SecurityException.class);
+
+    // Should fail if update is denied
+    final MCPConfiguration configNoUpdate = new MCPConfiguration("./target/test");
+    configNoUpdate.setAllowInsert(true);
+    configNoUpdate.setAllowUpdate(false);
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(upsertOps, configNoUpdate))
+        .isInstanceOf(SecurityException.class);
+
+    // Should pass if both are allowed
+    final MCPConfiguration configBothAllowed = new MCPConfiguration("./target/test");
+    configBothAllowed.setAllowInsert(true);
+    configBothAllowed.setAllowUpdate(true);
+    ExecuteCommandTool.checkPermission(upsertOps, configBothAllowed);
   }
 
   @Test
-  void testCypherKeywordInStringLiteral() {
-    // Keywords inside string literals should not trigger false positives with word-boundary matching
-    assertThat(ExecuteCommandTool.detectOperationType("MATCH (n) WHERE n.name = 'DELETED' RETURN n", "cypher"))
-        .isEqualTo(OperationType.UNKNOWN);
+  void testPermissionCheckDeniesAdmin() {
+    final MCPConfiguration config = new MCPConfiguration("./target/test");
+    config.setAllowAdmin(false);
+
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(Set.of(OperationType.ADMIN), config))
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("not allowed");
+  }
+
+  @Test
+  void testPermissionCheckAllowsAdmin() {
+    final MCPConfiguration config = new MCPConfiguration("./target/test");
+    config.setAllowAdmin(true);
+
+    // Should not throw
+    ExecuteCommandTool.checkPermission(Set.of(OperationType.ADMIN), config);
+  }
+
+  @Test
+  void testMultipleOperationTypesAllChecked() {
+    // A command that does both DELETE and UPDATE (like MOVE VERTEX)
+    final Set<OperationType> moveOps = Set.of(OperationType.UPDATE, OperationType.DELETE);
+
+    final MCPConfiguration configNoDelete = new MCPConfiguration("./target/test");
+    configNoDelete.setAllowUpdate(true);
+    configNoDelete.setAllowDelete(false);
+    assertThatThrownBy(() -> ExecuteCommandTool.checkPermission(moveOps, configNoDelete))
+        .isInstanceOf(SecurityException.class);
   }
 }

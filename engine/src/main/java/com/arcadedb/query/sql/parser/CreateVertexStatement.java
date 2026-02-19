@@ -30,6 +30,9 @@ import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import com.arcadedb.query.OperationType;
+import com.arcadedb.utility.CollectionUtils;
+
 import java.util.*;
 
 public class CreateVertexStatement extends Statement {
@@ -181,6 +184,11 @@ public class CreateVertexStatement extends Statement {
 
   public InsertBody getInsertBody() {
     return insertBody;
+  }
+
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    return CollectionUtils.singletonSet(OperationType.CREATE);
   }
 }
 /* JavaCC - OriginalChecksum=0ac3d3f09a76b9924a17fd05bc293863 (do not edit this line) */

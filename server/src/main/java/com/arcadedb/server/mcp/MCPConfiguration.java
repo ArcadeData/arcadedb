@@ -42,6 +42,7 @@ public class MCPConfiguration {
   private volatile boolean      allowUpdate      = false;
   private volatile boolean      allowDelete      = false;
   private volatile boolean      allowSchemaChange = false;
+  private volatile boolean      allowAdmin        = false;
   private volatile List<String> allowedUsers     = new ArrayList<>(List.of("root"));
 
   public MCPConfiguration(final String rootPath) {
@@ -65,6 +66,7 @@ public class MCPConfiguration {
       allowUpdate = json.getBoolean("allowUpdate", false);
       allowDelete = json.getBoolean("allowDelete", false);
       allowSchemaChange = json.getBoolean("allowSchemaChange", false);
+      allowAdmin = json.getBoolean("allowAdmin", false);
 
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
       if (usersArray != null) {
@@ -138,6 +140,14 @@ public class MCPConfiguration {
     this.allowSchemaChange = allowSchemaChange;
   }
 
+  public boolean isAllowAdmin() {
+    return allowAdmin;
+  }
+
+  public void setAllowAdmin(final boolean allowAdmin) {
+    this.allowAdmin = allowAdmin;
+  }
+
   public List<String> getAllowedUsers() {
     return Collections.unmodifiableList(allowedUsers);
   }
@@ -158,6 +168,7 @@ public class MCPConfiguration {
     json.put("allowUpdate", allowUpdate);
     json.put("allowDelete", allowDelete);
     json.put("allowSchemaChange", allowSchemaChange);
+    json.put("allowAdmin", allowAdmin);
     json.put("allowedUsers", new JSONArray(allowedUsers));
     return json;
   }
@@ -175,6 +186,8 @@ public class MCPConfiguration {
       allowDelete = json.getBoolean("allowDelete");
     if (json.has("allowSchemaChange"))
       allowSchemaChange = json.getBoolean("allowSchemaChange");
+    if (json.has("allowAdmin"))
+      allowAdmin = json.getBoolean("allowAdmin");
     if (json.has("allowedUsers")) {
       final JSONArray usersArray = json.getJSONArray("allowedUsers");
       final List<String> users = new ArrayList<>();

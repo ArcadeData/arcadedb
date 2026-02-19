@@ -19,6 +19,8 @@
 package com.arcadedb.server.mcp.tools;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.OperationType;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -28,20 +30,9 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
-import java.util.Locale;
-import java.util.regex.Pattern;
+import java.util.Set;
 
 public class ExecuteCommandTool {
-
-  private static final Pattern CYPHER_CREATE_INDEX      = Pattern.compile("\\bCREATE\\s+INDEX\\b");
-  private static final Pattern CYPHER_CREATE_CONSTRAINT = Pattern.compile("\\bCREATE\\s+CONSTRAINT\\b");
-  private static final Pattern CYPHER_DROP_INDEX        = Pattern.compile("\\bDROP\\s+INDEX\\b");
-  private static final Pattern CYPHER_DROP_CONSTRAINT   = Pattern.compile("\\bDROP\\s+CONSTRAINT\\b");
-  private static final Pattern CYPHER_CREATE            = Pattern.compile("\\bCREATE\\b");
-  private static final Pattern CYPHER_MERGE             = Pattern.compile("\\bMERGE\\b");
-  private static final Pattern CYPHER_SET               = Pattern.compile("\\bSET\\b");
-  private static final Pattern CYPHER_DELETE            = Pattern.compile("\\bDELETE\\b");
-  private static final Pattern CYPHER_REMOVE            = Pattern.compile("\\bREMOVE\\b");
 
   public static JSONObject getDefinition() {
     return new JSONObject()
@@ -71,9 +62,9 @@ public class ExecuteCommandTool {
     final String language = args.getString("language", "cypher");
     final String command = args.getString("command");
 
-    checkPermission(command, language, config);
-
     final Database database = server.getDatabase(databaseName);
+
+    checkPermission(database, command, language, config);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
@@ -94,90 +85,68 @@ public class ExecuteCommandTool {
     return result;
   }
 
-  public static void checkPermission(final String command, final String language, final MCPConfiguration config) {
-    final OperationType opType = detectOperationType(command, language);
+  /**
+   * Checks MCP permissions using semantic, parser-based operation type detection.
+   * Uses the query engine's analyze() method to determine the actual operation types
+   * from the parsed AST, avoiding text-based pattern matching vulnerabilities.
+   *
+   * @param database the database to use for query analysis
+   * @param command  the command text
+   * @param language the query language
+   * @param config   MCP configuration with permission settings
+   */
+  public static void checkPermission(final Database database, final String command, final String language,
+      final MCPConfiguration config) {
+    final Set<OperationType> operationTypes = getOperationTypes(database, command, language);
+    checkPermission(operationTypes, config);
+  }
 
-    switch (opType) {
-    case INSERT:
-      if (!config.isAllowInsert())
-        throw new SecurityException("Insert operations are not allowed by MCP configuration");
-      break;
-    case UPDATE:
-      if (!config.isAllowUpdate())
-        throw new SecurityException("Update operations are not allowed by MCP configuration");
-      break;
-    case DELETE:
-      if (!config.isAllowDelete())
-        throw new SecurityException("Delete operations are not allowed by MCP configuration");
-      break;
-    case SCHEMA:
-      if (!config.isAllowSchemaChange())
-        throw new SecurityException("Schema change operations are not allowed by MCP configuration");
-      break;
-    case UNKNOWN:
-      // If we can't classify it, require all write permissions
-      if (!config.isAllowInsert() || !config.isAllowUpdate() || !config.isAllowDelete() || !config.isAllowSchemaChange())
-        throw new SecurityException("Unclassified command requires all write permissions to be enabled in MCP configuration");
-      break;
+  /**
+   * Checks MCP permissions against a set of operation types.
+   */
+  public static void checkPermission(final Set<OperationType> operationTypes, final MCPConfiguration config) {
+    for (final OperationType op : operationTypes) {
+      switch (op) {
+      case CREATE:
+        if (!config.isAllowInsert())
+          throw new SecurityException("Insert operations are not allowed by MCP configuration");
+        break;
+      case UPDATE:
+        if (!config.isAllowUpdate())
+          throw new SecurityException("Update operations are not allowed by MCP configuration");
+        break;
+      case DELETE:
+        if (!config.isAllowDelete())
+          throw new SecurityException("Delete operations are not allowed by MCP configuration");
+        break;
+      case SCHEMA:
+        if (!config.isAllowSchemaChange())
+          throw new SecurityException("Schema change operations are not allowed by MCP configuration");
+        break;
+      case ADMIN:
+        if (!config.isAllowAdmin())
+          throw new SecurityException("Admin operations are not allowed by MCP configuration");
+        break;
+      case READ:
+        if (!config.isAllowReads())
+          throw new SecurityException("Read operations are not allowed by MCP configuration");
+        break;
+      }
     }
   }
 
-  public enum OperationType {
-    INSERT, UPDATE, DELETE, SCHEMA, UNKNOWN
-  }
-
-  public static OperationType detectOperationType(final String command, final String language) {
-    final String trimmed = command.trim();
-    final String upper = trimmed.toUpperCase(Locale.ENGLISH);
-
-    if ("sql".equalsIgnoreCase(language) || "sqlScript".equalsIgnoreCase(language))
-      return detectSqlOperation(upper);
-    else if ("cypher".equalsIgnoreCase(language))
-      return detectCypherOperation(upper);
-
-    return OperationType.UNKNOWN;
-  }
-
-  private static OperationType detectSqlOperation(final String upper) {
-    // Schema operations
-    if (upper.startsWith("CREATE TYPE") || upper.startsWith("CREATE VERTEX TYPE") || upper.startsWith("CREATE EDGE TYPE")
-        || upper.startsWith("CREATE DOCUMENT TYPE") || upper.startsWith("ALTER TYPE") || upper.startsWith("DROP TYPE")
-        || upper.startsWith("CREATE INDEX") || upper.startsWith("DROP INDEX") || upper.startsWith("CREATE PROPERTY")
-        || upper.startsWith("ALTER PROPERTY") || upper.startsWith("DROP PROPERTY") || upper.startsWith("CREATE BUCKET")
-        || upper.startsWith("ALTER BUCKET") || upper.startsWith("DROP BUCKET"))
-      return OperationType.SCHEMA;
-
-    if (upper.startsWith("INSERT"))
-      return OperationType.INSERT;
-    if (upper.startsWith("UPDATE"))
-      return OperationType.UPDATE;
-    if (upper.startsWith("DELETE"))
-      return OperationType.DELETE;
-
-    return OperationType.UNKNOWN;
-  }
-
-  private static OperationType detectCypherOperation(final String upper) {
-    // Schema operations in Cypher
-    if (CYPHER_CREATE_INDEX.matcher(upper).find() || CYPHER_CREATE_CONSTRAINT.matcher(upper).find()
-        || CYPHER_DROP_INDEX.matcher(upper).find() || CYPHER_DROP_CONSTRAINT.matcher(upper).find())
-      return OperationType.SCHEMA;
-
-    // Check for write clauses using word boundaries to avoid matching keywords inside string literals
-    final boolean hasCreate = CYPHER_CREATE.matcher(upper).find()
-        && !CYPHER_CREATE_INDEX.matcher(upper).find() && !CYPHER_CREATE_CONSTRAINT.matcher(upper).find();
-    final boolean hasMerge = CYPHER_MERGE.matcher(upper).find();
-    final boolean hasSet = CYPHER_SET.matcher(upper).find();
-    final boolean hasDelete = CYPHER_DELETE.matcher(upper).find();
-    final boolean hasRemove = CYPHER_REMOVE.matcher(upper).find();
-
-    if (hasDelete)
-      return OperationType.DELETE;
-    if (hasSet || hasMerge || hasRemove)
-      return OperationType.UPDATE;
-    if (hasCreate)
-      return OperationType.INSERT;
-
-    return OperationType.UNKNOWN;
+  /**
+   * Returns the set of operation types for a command using semantic analysis.
+   * Delegates to the query engine's parser/AST for accurate classification.
+   *
+   * @param database the database to use for query analysis
+   * @param command  the command text
+   * @param language the query language
+   * @return the set of operation types
+   */
+  public static Set<OperationType> getOperationTypes(final Database database, final String command, final String language) {
+    final QueryEngine engine = database.getQueryEngine(language);
+    final QueryEngine.AnalyzedQuery analyzed = engine.analyze(command);
+    return analyzed.getOperationTypes();
   }
 }

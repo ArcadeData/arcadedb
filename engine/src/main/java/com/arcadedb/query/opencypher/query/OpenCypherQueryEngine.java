@@ -31,7 +31,9 @@ import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -42,6 +44,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -84,6 +87,31 @@ public class OpenCypherQueryEngine implements QueryEngine {
         @Override
         public boolean isDDL() {
           return statement instanceof CypherDDLStatement || statement instanceof CypherAdminStatement;
+        }
+
+        @Override
+        public Set<OperationType> getOperationTypes() {
+          if (statement instanceof CypherAdminStatement)
+            return CollectionUtils.singletonSet(OperationType.ADMIN);
+          if (statement instanceof CypherDDLStatement)
+            return CollectionUtils.singletonSet(OperationType.SCHEMA);
+          if (statement.isReadOnly())
+            return CollectionUtils.singletonSet(OperationType.READ);
+
+          final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
+          if (statement.hasCreate())
+            ops.add(OperationType.CREATE);
+          if (statement.hasMerge()) {
+            ops.add(OperationType.CREATE);
+            ops.add(OperationType.UPDATE);
+          }
+          if (statement.hasDelete())
+            ops.add(OperationType.DELETE);
+          if (statement.getSetClause() != null && !statement.getSetClause().isEmpty())
+            ops.add(OperationType.UPDATE);
+          if (!statement.getRemoveClauses().isEmpty())
+            ops.add(OperationType.UPDATE);
+          return ops.isEmpty() ? Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE) : Set.copyOf(ops);
         }
       };
     } catch (final Exception e) {
