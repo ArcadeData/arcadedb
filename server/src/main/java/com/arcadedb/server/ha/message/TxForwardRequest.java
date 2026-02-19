@@ -160,6 +160,15 @@ public class TxForwardRequest extends TxRequestAbstract {
           uniqueKeysBuffer.putByte((byte) key.operation.ordinal());
           uniqueKeysBuffer.putUnsignedNumber(key.rid.getBucketId());
           uniqueKeysBuffer.putUnsignedNumber(key.rid.getPosition());
+          if (key.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REPLACE) {
+            // Serialize oldRid for REPLACE entries (introduced to fix same-bucket REMOVE→ADD merge)
+            final boolean hasOldRid = key.oldRid != null;
+            uniqueKeysBuffer.putByte((byte) (hasOldRid ? 1 : 0));
+            if (hasOldRid) {
+              uniqueKeysBuffer.putUnsignedNumber(key.oldRid.getBucketId());
+              uniqueKeysBuffer.putUnsignedNumber(key.oldRid.getPosition());
+            }
+          }
         }
       }
     }
@@ -211,6 +220,11 @@ public class TxForwardRequest extends TxRequestAbstract {
 
           final TransactionIndexContext.IndexKey v = new TransactionIndexContext.IndexKey(index.isUnique(), operation, keyValues,
               rid);
+          if (operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REPLACE) {
+            final byte hasOldRidFlag = uniqueKeysBuffer.getByte();
+            if (hasOldRidFlag == 1)
+              v.oldRid = new RID(database, (int) uniqueKeysBuffer.getUnsignedNumber(), uniqueKeysBuffer.getUnsignedNumber());
+          }
           values.put(v, v);
         }
       }
