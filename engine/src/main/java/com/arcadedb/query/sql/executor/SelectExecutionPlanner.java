@@ -419,7 +419,16 @@ public class SelectExecutionPlanner {
   private boolean handleHardwiredMaxMinOnIndex(final SelectExecutionPlan result, final QueryPlanningInfo info,
       final CommandContext context) {
     // Must have a type target
-    final Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
+    Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
+    if (targetClass == null && info.target != null) {
+      // Check if the target is specified via a positional/named parameter (e.g., SELECT max(p) FROM ?)
+      final InputParameter inputParam = info.target.getItem().getInputParam();
+      if (inputParam != null) {
+        final Object paramValue = inputParam.getValue(context.getInputParameters());
+        if (paramValue instanceof String string)
+          targetClass = new Identifier(string);
+      }
+    }
     if (targetClass == null)
       return false;
 
