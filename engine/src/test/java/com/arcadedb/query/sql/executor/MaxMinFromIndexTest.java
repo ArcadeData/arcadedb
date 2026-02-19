@@ -349,6 +349,67 @@ class MaxMinFromIndexTest {
   }
 
   /**
+   * Regression test for issue #3304: MAX/MIN optimization must also work when the type name
+   * is provided as a positional parameter (e.g., SELECT max(p2) FROM ?).
+   */
+  @Test
+  void maxUsesIndexWithPositionalParameter() throws Exception {
+    TestHelper.executeInNewDatabase("maxPositionalParamTest", (db) -> {
+      final DocumentType type = db.getSchema().createDocumentType("example");
+      type.createProperty("p2", Long.class);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "p2");
+
+      db.transaction(() -> {
+        for (long i = 0; i < 100; i++)
+          db.newDocument("example").set("p2", i).save();
+      });
+
+      // Test with positional parameter - should still use the index
+      final ResultSet rs = db.command("sql", "select max(p2) as mp2 from ?", "example");
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.<Long>getProperty("mp2")).isEqualTo(99L);
+      assertThat(rs.hasNext()).isFalse();
+
+      // Verify execution plan uses index (not full scan) even with parameter
+      final ExplainResultSet explain = (ExplainResultSet) db.command("sql", "explain select max(p2) as mp2 from ?", "example");
+      final String plan = explain.getExecutionPlan().get().prettyPrint(0, 2);
+
+      assertThat(plan).contains("MAX FROM INDEX");
+      assertThat(plan).doesNotContain("FETCH FROM TYPE");
+    });
+  }
+
+  /**
+   * Regression test for issue #3304: MIN optimization with positional parameter.
+   */
+  @Test
+  void minUsesIndexWithPositionalParameter() throws Exception {
+    TestHelper.executeInNewDatabase("minPositionalParamTest", (db) -> {
+      final DocumentType type = db.getSchema().createDocumentType("example");
+      type.createProperty("p2", Long.class);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "p2");
+
+      db.transaction(() -> {
+        for (long i = 10; i < 110; i++)
+          db.newDocument("example").set("p2", i).save();
+      });
+
+      final ResultSet rs = db.command("sql", "select min(p2) as mp2 from ?", "example");
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.<Long>getProperty("mp2")).isEqualTo(10L);
+      assertThat(rs.hasNext()).isFalse();
+
+      final ExplainResultSet explain = (ExplainResultSet) db.command("sql", "explain select min(p2) as mp2 from ?", "example");
+      final String plan = explain.getExecutionPlan().get().prettyPrint(0, 2);
+
+      assertThat(plan).contains("MIN FROM INDEX");
+      assertThat(plan).doesNotContain("FETCH FROM TYPE");
+    });
+  }
+
+  /**
    * Test that matches the exact scenario from the original issue #3304:
    * A Long Property used as a 'High Water Mark' for tracking the processing of data.
    * The query "SELECT max(property) FROM type" should use the index, not a full scan.
