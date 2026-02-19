@@ -19,7 +19,10 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test for issue #3097: Edge indexes become invalid in certain scenario #2
@@ -86,6 +89,10 @@ class EdgeIndexDuplicateKeyTest extends TestHelper {
             SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1""");
       });
     }
-    // If we got here without exception, the test passes
+
+    Result result = database.query("sql",
+            "SELECT COUNT(*) AS edgeCount FROM trs_duct WHERE from_id='trs_1' AND to_id='duct_1' AND swap='N' AND order_number=1")
+        .next();
+    assertThat(result.<Long>getProperty("edgeCount")).isEqualTo(1);
   }
 }
