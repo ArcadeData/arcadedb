@@ -1,0 +1,59 @@
+<div class="tab-pane fade" id="tab-settings" role="tabpanel">
+  <div class="studio-settings-panel">
+    <h5><i class="fa fa-gear"></i> Settings</h5>
+
+    <div class="studio-settings-section">
+      <h6>Appearance</h6>
+      <div style="margin-bottom: 8px; font-size: 0.82rem; color: var(--text-secondary);">Theme</div>
+      <div class="theme-option-group" id="themeOptionGroup">
+        <div class="theme-option" data-theme-value="light" onclick="applyTheme('light')">
+          <i class="fa fa-sun"></i> Light
+        </div>
+        <div class="theme-option" data-theme-value="dark" onclick="applyTheme('dark')">
+          <i class="fa fa-moon"></i> Dark
+        </div>
+        <div class="theme-option" data-theme-value="system" onclick="applyTheme('system')">
+          <i class="fa fa-desktop"></i> System
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function applyTheme(pref) {
+  globalStorageSave('studio-theme', pref);
+
+  var resolved = pref;
+  if (pref === 'system')
+    resolved = window.matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light';
+
+  document.documentElement.setAttribute('data-theme', resolved);
+  updateThemeButtons(pref);
+}
+
+function updateThemeButtons(pref) {
+  var group = document.getElementById('themeOptionGroup');
+  if (!group) return;
+  var btns = group.querySelectorAll('.theme-option');
+  for (var i = 0; i < btns.length; i++) {
+    if (btns[i].getAttribute('data-theme-value') === pref)
+      btns[i].classList.add('active');
+    else
+      btns[i].classList.remove('active');
+  }
+}
+
+// Initialize theme buttons on load
+document.addEventListener('DOMContentLoaded', function() {
+  var saved = localStorage.getItem('studio-theme') || 'light';
+  updateThemeButtons(saved);
+
+  // Listen for system theme changes
+  window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change', function() {
+    var current = localStorage.getItem('studio-theme') || 'light';
+    if (current === 'system')
+      applyTheme('system');
+  });
+});
+</script>

@@ -554,32 +554,16 @@ function displaySelectedNode() {
 
   globalSelected = globalCy.elements("node:selected");
   if (globalSelected.length < 1) {
-    $("#customToolbar").empty();
-    $("#graphPropertiesTable").empty();
-    $("#graphPropertiesType").html("Select an element to see its properties");
+    $("#recordEditorBody").html("<span id='graphPropertiesType'>Select an element to see its properties</span>");
+    $("#graphActions").empty();
+    $("#graphLayout").empty();
     return;
   }
 
   let data = null;
   if (globalSelected.length == 1) {
     data = globalSelected[0].data();
-
-    let summary = "<label class='form-label'>Node&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
-    summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type + "</b></label><br>";
-    summary += "<br><h5>Properties</h5>";
-
-    $("#graphPropertiesType").html(summary);
-
-    let table = "<thead><tr><th scope='col'>Name</th><th scope='col'>Value</th></tr>";
-    table += "<tbody>";
-
-    for (let p in data.properties) {
-      let value = data.properties[p];
-      if (Array.isArray(value) || typeof value === "object") value = JSON.stringify(value);
-      table += "<tr><td>" + escapeHtml(p) + "</td><td>" + escapeHtml(value) + "</td>";
-    }
-
-    $("#graphPropertiesTable").html(table);
+    openRecordEditor(data.id, data.type, data.properties, "graph");
   }
 
   let selectedElementTypes = {};
@@ -794,14 +778,13 @@ function displaySelectedNode() {
   }
 
   if (globalSelected.length == 1) {
-    let actions = "<br><h5>Actions</h5>";
-    actions += "<ul>";
-    actions += "<li>Load adjacent <button class='btn btn-outline-primary btn-sm' onclick='loadNodeNeighbors(\"out\", \"" + data.id + "\")'>outgoing</button>, ";
+    let actions = "<ul class='list-unstyled mt-2' style='font-size: 0.84rem;'>";
+    actions += "<li class='mb-1'>Load adjacent <button class='btn btn-outline-primary btn-sm' onclick='loadNodeNeighbors(\"out\", \"" + data.id + "\")'>outgoing</button>, ";
     actions += "<button class='btn btn-outline-primary btn-sm' href='#' onclick='loadNodeNeighbors(\"in\", \"" + data.id + "\")'>incoming</button> or ";
     actions += "<button class='btn btn-outline-primary btn-sm' href='#' onclick='loadNodeNeighbors(\"both\", \"" + data.id + "\")'>both</button></li>";
-    actions += "<li><button class='btn btn-outline-primary btn-sm' href='#' onclick='removeGraphElement(globalSelected)'>Hide</button> selected elements</li>";
+    actions += "<li class='mb-1'><button class='btn btn-outline-primary btn-sm' href='#' onclick='removeGraphElement(globalSelected)'>Hide</button> selected elements</li>";
     actions +=
-      "<li>Select all the element of type <button class='btn btn-outline-primary btn-sm' href='#' onclick='selectGraphElementByType(\"" +
+      "<li class='mb-1'>Select all <button class='btn btn-outline-primary btn-sm' href='#' onclick='selectGraphElementByType(\"" +
       type +
       "\")'>" +
       type +
@@ -815,33 +798,16 @@ function displaySelectedNode() {
 function displaySelectedEdge() {
   globalSelected = globalCy.elements("edge:selected");
   if (globalSelected.length < 1) {
-    $("#customToolbar").empty();
-    $("#graphPropertiesTable").empty();
-    $("#graphPropertiesType").html("Select an element to see its properties");
+    $("#recordEditorBody").html("<span id='graphPropertiesType'>Select an element to see its properties</span>");
+    $("#graphActions").empty();
+    $("#graphLayout").empty();
     return;
   }
 
   let data = null;
   if (globalSelected.length == 1) {
     data = globalSelected[0].data();
-
-    let summary = "<label class='form-label'>Edge&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
-    summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type + "</b></label><br>";
-    summary += "<br><h5>Properties</h5>";
-
-    $("#graphPropertiesType").html(summary);
-
-    let table = "<thead><tr><th scope='col'>Name</th><th scope='col'>Value</th></tr>";
-    table += "<tbody>";
-
-    for (let p in data.properties) {
-      let value = data.properties[p];
-      if (Array.isArray(value) || typeof value === "object") value = JSON.stringify(value);
-      table += "<tr><td>" + escapeHtml(p) + "</td><td>" + escapeHtml(value) + "</td>";
-    }
-    table += "</tbody>";
-
-    $("#graphPropertiesTable").html(table);
+    openRecordEditor(data.id, data.type, data.properties, "graph");
   }
 
   let selectedElementTypes = {};
