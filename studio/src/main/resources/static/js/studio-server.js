@@ -674,6 +674,18 @@ function filterServerEvents() {
   });
 }
 
+function refreshCurrentServerTab() {
+  var activeTab = $("#tabs-database .nav-link.active").attr("id");
+  if (activeTab === "tab-server-sessions-sel")
+    loadServerSessions();
+  else if (activeTab === "tab-server-events-sel")
+    getServerEvents();
+  else if (activeTab === "tab-server-backup-sel")
+    loadBackupConfig();
+  else
+    updateServer();
+}
+
 function startServerRefreshTimer(userChange) {
   if (serverRefreshTimer != null) clearTimeout(serverRefreshTimer);
 
