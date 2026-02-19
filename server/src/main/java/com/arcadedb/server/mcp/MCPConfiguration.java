@@ -28,6 +28,8 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -87,7 +89,7 @@ public class MCPConfiguration {
   }
 
   public synchronized void save() {
-    final File configDir = new File(rootPath + File.separator + "config");
+    final File configDir = Paths.get(rootPath, "config").toFile();
     if (!configDir.exists())
       configDir.mkdirs();
 
@@ -210,6 +212,6 @@ public class MCPConfiguration {
   }
 
   private File getConfigFile() {
-    return new File(rootPath + File.separator + "config" + File.separator + "mcp-config.json");
+    return Paths.get(rootPath, "config", "mcp-config.json").toFile();
   }
 }

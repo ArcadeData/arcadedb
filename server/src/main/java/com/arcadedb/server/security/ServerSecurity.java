@@ -174,8 +174,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public void stopService() {
     if (reloadConfigurationTimer != null)
       reloadConfigurationTimer.cancel();
-    if (tokenFailureCleanupTimer != null)
+    if (tokenFailureCleanupTimer != null) {
       tokenFailureCleanupTimer.cancel();
+      tokenFailureCleanupTimer = null;
+    }
 
     users.clear();
     if (groupRepository != null)

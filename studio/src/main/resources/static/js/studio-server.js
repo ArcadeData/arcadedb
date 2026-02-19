@@ -930,11 +930,11 @@ function renderMCPUserList(users) {
   var html = "";
   for (var i = 0; i < users.length; i++) {
     html +=
-      '<span class="badge bg-secondary me-1 mb-1">' +
+      '<span class="badge me-1 mb-1" style="background-color: var(--color-brand);">' +
       escapeHtml(users[i]) +
       ' <a href="#" class="mcp-remove-user text-white ms-1" data-username="' +
       escapeHtml(users[i]) +
-      '"><i class="fa fa-times"></i></a></span>';
+      '"><i class="fa fa-times" style="font-size: 0.7rem;"></i></a></span>';
   }
   $("#mcpUserList").html(html);
 }
@@ -1093,7 +1093,7 @@ function copyMCPConfig(elementId) {
 }
 
 document.addEventListener("DOMContentLoaded", function (event) {
-  $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
+  $('a[data-toggle="tab"], a[data-bs-toggle="tab"]').on("shown.bs.tab", function (e) {
     var activeTab = this.id;
     if (activeTab == "tab-server-sessions-sel") {
       loadServerSessions();

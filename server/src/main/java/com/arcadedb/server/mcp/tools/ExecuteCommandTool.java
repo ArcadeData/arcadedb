@@ -38,6 +38,8 @@ import java.util.Set;
  */
 public class ExecuteCommandTool {
 
+  private static final int DEFAULT_LIMIT = 1000;
+
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "execute_command")
@@ -56,7 +58,10 @@ public class ExecuteCommandTool {
                     .put("default", "cypher"))
                 .put("command", new JSONObject()
                     .put("type", "string")
-                    .put("description", "The command to execute")))
+                    .put("description", "The command to execute"))
+                .put("limit", new JSONObject()
+                    .put("type", "integer")
+                    .put("description", "Maximum number of results to return (default: 1000)")))
             .put("required", new JSONArray().put("database").put("command")));
   }
 
@@ -65,6 +70,7 @@ public class ExecuteCommandTool {
     final String databaseName = args.getString("database");
     final String language = args.getString("language", "cypher");
     final String command = args.getString("command");
+    final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
     if (!user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
@@ -87,9 +93,11 @@ public class ExecuteCommandTool {
     database.transaction(() -> {
       final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());
       try (final ResultSet resultSet = analyzedResultSet != null ? analyzedResultSet : database.command(language, command)) {
-        while (resultSet.hasNext()) {
+        int count = 0;
+        while (resultSet.hasNext() && count < limit) {
           final Result row = resultSet.next();
           records.put(serializer.serializeResult(database, row));
+          count++;
         }
       }
     });
