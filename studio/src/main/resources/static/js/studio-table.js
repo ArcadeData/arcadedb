@@ -120,51 +120,63 @@ function renderTable() {
         ["10", "20", "50", "100", "all"],
       ],
       buttons: [
-        { extend: "copy", text: "<i class='fas fa-copy'></i> Copy", className: "btn btn-secondary" },
-        { extend: "excel", text: "<i class='fas fa-file-excel'></i> Excel", className: "btn btn-secondary" },
-        { extend: "csv", text: "<i class='fas fa-file-csv'></i> CSV", className: "btn btn-secondary" },
-        { extend: "pdf", text: "<i class='fas fa-file-pdf'></i> PDF", className: "btn btn-secondary", orientation: "landscape" },
-        { extend: "print", text: "<i class='fas fa-print'></i> Print", className: "btn btn-secondary", orientation: "landscape" },
-        {
-          text:
-            "<a class='btn btn-secondary dropdown-toggle' href='#' role='button' aria-haspopup='true' aria-expanded='false' data-bs-toggle='dropdown'>" +
-            "    <i class='fa fa-sliders-h'></i> Settings" +
-            "  </a>" +
-            "  <ul class='dropdown-menu dropdown-menu-end' style='width: 300px'>" +
-            "    <li class='dropdown-item'>" +
-            "      <div class='form-check'>" +
-            "        <input id='tableTruncateColumns' class='form-check-input' type='checkbox' " +
-            tableTruncateColumnsChecked +
-            ' onclick=\'globalCheckboxAndSave("#tableTruncateColumns", "table.truncateColumns");renderTable()\'>' +
-            "        <label for='tableTruncateColumns' class='form-check-label' onclick='globalToggleCheckboxAndSave(\"#tableTruncateColumns\", \"table.truncateColumns\");renderTable()'>Truncate long values</label>" +
-            "      </div>" +
-            "    </li>" +
-            "    <li class='dropdown-item'>" +
-            "      <div class='form-check'>" +
-            "        <input id='tableFitInPage' class='form-check-input' type='checkbox' " +
-            tableFitInPageChecked +
-            ' onclick=\'globalCheckboxAndSave("#tableFitInPage", "table.fitInPage");renderTable()\'>' +
-            "        <label for='tableFitInPage' class='form-check-label' onclick='globalToggleCheckboxAndSave(\"#tableFitInPage\", \"table.fitInPage\");renderTable()'>Fit table in page</label>" +
-            "      </div>" +
-            "    </li>" +
-            "  </ul>",
-        },
+        { extend: "copy", text: "<i class='fas fa-copy'></i> Copy" },
+        { extend: "excel", text: "<i class='fas fa-file-excel'></i> Excel" },
+        { extend: "csv", text: "<i class='fas fa-file-csv'></i> CSV" },
+        { extend: "pdf", text: "<i class='fas fa-file-pdf'></i> PDF", orientation: "landscape" },
+        { extend: "print", text: "<i class='fas fa-print'></i> Print", orientation: "landscape" },
       ],
       initComplete: function () {
         $(this.api().table().container()).find("input").attr("autocomplete", "off");
+
+        let wrapper = $(this.api().table().container());
+
+        // Build custom export dropdown
+        let exportHtml = "<div class='dt-export-dropdown'>";
+        exportHtml += "<button class='dt-export-btn' onclick='toggleExportMenu(this)' title='Export'><i class='fa fa-arrow-up-from-bracket'></i></button>";
+        exportHtml += "<div class='dt-export-menu'></div>";
+        exportHtml += "</div>";
+
+        let exportEl = $(exportHtml);
+        let menu = exportEl.find(".dt-export-menu");
+
+        // Move DataTables buttons into the dropdown menu
+        wrapper.find(".dt-buttons .dt-button").each(function () {
+          $(this).removeClass("dt-button btn-secondary").addClass("dt-export-menu-item");
+          menu.append($(this));
+        });
+        wrapper.find(".dt-buttons").remove();
+
+        // Insert export dropdown after search
+        let searchBox = wrapper.find(".dt-search");
+        if (searchBox.length)
+          searchBox.after(exportEl);
+        else
+          wrapper.prepend(exportEl);
       },
     });
 
-    $(".dt-buttons").css("padding", "7px");
     $(".dt-length").css("padding", "7px");
     $(".dt-search").css("padding", "7px");
-    $(".buttons-copy").removeClass("buttons-copy").removeClass("buttons-html5");
-    $(".buttons-excel").removeClass("buttons-excel").removeClass("buttons-html5");
-    $(".buttons-csv").removeClass("buttons-csv").removeClass("buttons-html5");
-    $(".buttons-pdf").removeClass("buttons-pdf").removeClass("buttons-html5");
-    $(".buttons-print").removeClass("buttons-print").removeClass("buttons-html5");
   }
 
   // FORCE RESET OF THE SEARCH FIELD
   $("#result_filter>label>input").val("");
+}
+
+function toggleExportMenu(btn) {
+  let menu = $(btn).siblings(".dt-export-menu");
+  let isOpen = menu.hasClass("open");
+
+  // Close any open export menus
+  $(".dt-export-menu").removeClass("open");
+
+  if (!isOpen) {
+    menu.addClass("open");
+    // Close on outside click
+    $(document).one("click", function (e) {
+      if (!$(e.target).closest(".dt-export-dropdown").length)
+        $(".dt-export-menu").removeClass("open");
+    });
+  }
 }

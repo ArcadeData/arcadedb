@@ -263,7 +263,16 @@ function updateDatabases(callback) {
       console.log("Set user to:", username);
 
       // CRITICAL: Always hide login and show studio, even if other operations fail
-      $("#loginPopup").modal("hide");
+      var loginModal = bootstrap.Modal.getInstance(document.getElementById("loginPopup"));
+      if (loginModal)
+        loginModal.hide();
+      // Ensure no stale backdrop remains (Bootstrap 5 can leave orphaned backdrops)
+      setTimeout(function() {
+        document.querySelectorAll(".modal-backdrop").forEach(function(el) { el.remove(); });
+        document.body.classList.remove("modal-open");
+        document.body.style.removeProperty("overflow");
+        document.body.style.removeProperty("padding-right");
+      }, 300);
       $("#welcomePanel").hide();
       $("#studioPanel").show();
       console.log("UI updated - login popup hidden, studio panel shown");
@@ -307,14 +316,10 @@ function updateDatabases(callback) {
         globalCredentials = null;
         globalUsername = null;
 
-        // Show login popup
+        // Silently redirect to login - no error popup needed
         $("#studioPanel").hide();
         $("#welcomePanel").show();
-        $("#loginPopup").modal("show");
-
-        if (typeof globalNotify === 'function') {
-          globalNotify("Session Expired", "Your session has expired. Please log in again.", "danger");
-        }
+        showLoginPopup();
         return;
       }
 
