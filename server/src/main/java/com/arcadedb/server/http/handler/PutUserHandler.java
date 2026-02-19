@@ -52,24 +52,22 @@ public class PutUserHandler extends AbstractServerHttpHandler {
       if (existingUser == null)
         return new ExecutionResponse(404, new JSONObject().put("error", "User '" + name + "' not found").toString());
 
-      // Update password if provided
+      // Build updated config from a copy to avoid mutating the live user object
+      final JSONObject updatedConfig = existingUser.toJSON().copy();
+
       if (payload.has("password")) {
         final String password = payload.getString("password");
-        if (password.length() < 4)
-          throw new ServerSecurityException("User password must be at least 4 characters");
+        if (password.length() < 8)
+          throw new ServerSecurityException("User password must be at least 8 characters");
         if (password.length() > 256)
           throw new ServerSecurityException("User password cannot be longer than 256 characters");
-        existingUser.setPassword(security.encodePassword(password));
+        updatedConfig.put("password", security.encodePassword(password));
       }
 
-      // Update databases/groups if provided
-      if (payload.has("databases")) {
-        final JSONObject databases = payload.getJSONObject("databases");
-        existingUser.toJSON().put("databases", databases);
-        existingUser.refreshDatabaseNames();
-      }
+      if (payload.has("databases"))
+        updatedConfig.put("databases", payload.getJSONObject("databases"));
 
-      security.saveUsers();
+      security.updateUser(updatedConfig);
     }
 
     final JSONObject response = new JSONObject();

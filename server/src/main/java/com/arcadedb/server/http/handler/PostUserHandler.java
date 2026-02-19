@@ -43,8 +43,8 @@ public class PostUserHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "User name is required").toString());
 
     final String password = payload.getString("password", "");
-    if (password.length() < 4)
-      return new ExecutionResponse(400, new JSONObject().put("error", "User password must be at least 4 characters").toString());
+    if (password.length() < 8)
+      return new ExecutionResponse(400, new JSONObject().put("error", "User password must be at least 8 characters").toString());
     if (password.length() > 256)
       return new ExecutionResponse(400,
           new JSONObject().put("error", "User password cannot be longer than 256 characters").toString());

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ApiTokenConfiguration;
@@ -46,6 +47,11 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
     final long expiresAt = payload.getLong("expiresAt", 0);
     final JSONObject permissions = payload.getJSONObject("permissions", new JSONObject());
 
+    // Validate permissions structure
+    final String validationError = validatePermissions(permissions);
+    if (validationError != null)
+      return new ExecutionResponse(400, new JSONObject().put("error", validationError).toString());
+
     final ApiTokenConfiguration tokenConfig = httpServer.getServer().getSecurity().getApiTokenConfiguration();
     final JSONObject tokenJson = tokenConfig.createToken(name, database, expiresAt, permissions);
 
@@ -57,5 +63,46 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
   @Override
   protected boolean mustExecuteOnWorkerThread() {
     return true;
+  }
+
+  private static final java.util.Set<String> VALID_ACCESS_VALUES = java.util.Set.of(
+      "createRecord", "readRecord", "updateRecord", "deleteRecord");
+
+  private static String validatePermissions(final JSONObject permissions) {
+    if (permissions.has("types")) {
+      final Object typesObj = permissions.get("types");
+      if (!(typesObj instanceof JSONObject))
+        return "'permissions.types' must be a JSON object";
+
+      final JSONObject types = (JSONObject) typesObj;
+      for (final String typeName : types.keySet()) {
+        final Object typeDef = types.get(typeName);
+        if (!(typeDef instanceof JSONObject))
+          return "'permissions.types." + typeName + "' must be a JSON object";
+
+        final JSONObject typeObj = (JSONObject) typeDef;
+        if (typeObj.has("access")) {
+          final Object accessObj = typeObj.get("access");
+          if (!(accessObj instanceof JSONArray))
+            return "'permissions.types." + typeName + ".access' must be a JSON array";
+
+          final JSONArray access = (JSONArray) accessObj;
+          for (int i = 0; i < access.length(); i++) {
+            final String value = access.getString(i);
+            if (!VALID_ACCESS_VALUES.contains(value))
+              return "Invalid access value '" + value + "' in permissions.types." + typeName
+                  + ". Valid values: " + VALID_ACCESS_VALUES;
+          }
+        }
+      }
+    }
+
+    if (permissions.has("database")) {
+      final Object dbObj = permissions.get("database");
+      if (!(dbObj instanceof JSONArray))
+        return "'permissions.database' must be a JSON array";
+    }
+
+    return null;
   }
 }

@@ -193,6 +193,9 @@ public class ApiTokenConfiguration {
     return token != null && token.startsWith(TOKEN_PREFIX);
   }
 
+  // Salt is not needed here because API tokens are generated with 32 bytes of SecureRandom entropy
+  // (256 bits), making rainbow tables and precomputation attacks infeasible. Salting is essential
+  // for user-chosen passwords (low entropy) but unnecessary for high-entropy random tokens.
   public static String hashToken(final String plaintext) {
     try {
       final MessageDigest digest = MessageDigest.getInstance("SHA-256");

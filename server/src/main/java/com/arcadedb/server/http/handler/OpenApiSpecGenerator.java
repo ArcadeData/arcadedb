@@ -119,6 +119,12 @@ public class OpenApiSpecGenerator {
 
     components.addSecuritySchemes("basicAuth", basicAuth);
 
+    final SecurityScheme bearerAuth = new SecurityScheme();
+    bearerAuth.setType(SecurityScheme.Type.HTTP);
+    bearerAuth.setScheme("bearer");
+    bearerAuth.setDescription("API token authentication (Bearer token starting with 'at-')");
+    components.addSecuritySchemes("bearerAuth", bearerAuth);
+
     // Add common schemas
     components.addSchemas("QueryRequest", createQueryRequestSchema());
     components.addSchemas("QueryResponse", createQueryResponseSchema());
@@ -152,6 +158,15 @@ public class OpenApiSpecGenerator {
     paths.addPathItem("/api/v1/begin/{database}", createBeginPath());
     paths.addPathItem("/api/v1/commit/{database}", createCommitPath());
     paths.addPathItem("/api/v1/rollback/{database}", createRollbackPath());
+
+    // User management endpoints
+    paths.addPathItem("/api/v1/server/users", createUsersPath());
+
+    // Group management endpoints
+    paths.addPathItem("/api/v1/server/groups", createGroupsPath());
+
+    // API token management endpoints
+    paths.addPathItem("/api/v1/server/api-tokens", createApiTokensPath());
 
     return paths;
   }
@@ -328,6 +343,123 @@ public class OpenApiSpecGenerator {
     return pathItem;
   }
 
+  private PathItem createUsersPath() {
+    final PathItem pathItem = new PathItem();
+
+    final Operation getOp = new Operation();
+    getOp.setSummary("List users");
+    getOp.setDescription("Lists all server users with their database/group assignments (root only)");
+    getOp.setOperationId("listUsers");
+    getOp.addTagsItem("Security");
+    getOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    getOp.setResponses(createAdminResponses("List of users retrieved successfully"));
+    pathItem.setGet(getOp);
+
+    final Operation postOp = new Operation();
+    postOp.setSummary("Create user");
+    postOp.setDescription("Creates a new server user (root only). Requires name (string) and password (min 8 chars).");
+    postOp.setOperationId("createUser");
+    postOp.addTagsItem("Security");
+    postOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    postOp.setRequestBody(createJsonRequestBody("User creation request with name, password, and optional databases"));
+    postOp.setResponses(createAdminResponses("User created", "201"));
+    pathItem.setPost(postOp);
+
+    final Operation putOp = new Operation();
+    putOp.setSummary("Update user");
+    putOp.setDescription("Updates an existing user's password and/or database assignments (root only)");
+    putOp.setOperationId("updateUser");
+    putOp.addTagsItem("Security");
+    putOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    putOp.addParametersItem(createQueryParameter("name", "User name"));
+    putOp.setRequestBody(createJsonRequestBody("User update request with optional password and databases"));
+    putOp.setResponses(createAdminResponses("User updated"));
+    pathItem.setPut(putOp);
+
+    final Operation deleteOp = new Operation();
+    deleteOp.setSummary("Delete user");
+    deleteOp.setDescription("Deletes a server user (root only)");
+    deleteOp.setOperationId("deleteUser");
+    deleteOp.addTagsItem("Security");
+    deleteOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    deleteOp.addParametersItem(createQueryParameter("name", "User name to delete"));
+    deleteOp.setResponses(createAdminResponses("User deleted"));
+    pathItem.setDelete(deleteOp);
+
+    return pathItem;
+  }
+
+  private PathItem createGroupsPath() {
+    final PathItem pathItem = new PathItem();
+
+    final Operation getOp = new Operation();
+    getOp.setSummary("List groups");
+    getOp.setDescription("Lists all security groups and their configurations (root only)");
+    getOp.setOperationId("listGroups");
+    getOp.addTagsItem("Security");
+    getOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    getOp.setResponses(createAdminResponses("List of groups retrieved successfully"));
+    pathItem.setGet(getOp);
+
+    final Operation postOp = new Operation();
+    postOp.setSummary("Create or update group");
+    postOp.setDescription("Creates or updates a security group (root only)");
+    postOp.setOperationId("createOrUpdateGroup");
+    postOp.addTagsItem("Security");
+    postOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    postOp.setRequestBody(createJsonRequestBody("Group configuration with database, name, and access permissions"));
+    postOp.setResponses(createAdminResponses("Group created or updated"));
+    pathItem.setPost(postOp);
+
+    final Operation deleteOp = new Operation();
+    deleteOp.setSummary("Delete group");
+    deleteOp.setDescription("Deletes a security group (root only)");
+    deleteOp.setOperationId("deleteGroup");
+    deleteOp.addTagsItem("Security");
+    deleteOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    deleteOp.addParametersItem(createQueryParameter("database", "Database name"));
+    deleteOp.addParametersItem(createQueryParameter("group", "Group name to delete"));
+    deleteOp.setResponses(createAdminResponses("Group deleted"));
+    pathItem.setDelete(deleteOp);
+
+    return pathItem;
+  }
+
+  private PathItem createApiTokensPath() {
+    final PathItem pathItem = new PathItem();
+
+    final Operation getOp = new Operation();
+    getOp.setSummary("List API tokens");
+    getOp.setDescription("Lists all API tokens with metadata (root only). Token values are never returned.");
+    getOp.setOperationId("listApiTokens");
+    getOp.addTagsItem("Security");
+    getOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    getOp.setResponses(createAdminResponses("List of API tokens retrieved successfully"));
+    pathItem.setGet(getOp);
+
+    final Operation postOp = new Operation();
+    postOp.setSummary("Create API token");
+    postOp.setDescription("Creates a new API token (root only). The plaintext token is returned only once in the response.");
+    postOp.setOperationId("createApiToken");
+    postOp.addTagsItem("Security");
+    postOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    postOp.setRequestBody(createJsonRequestBody("Token creation with name, database, expiresAt, and permissions"));
+    postOp.setResponses(createAdminResponses("API token created", "201"));
+    pathItem.setPost(postOp);
+
+    final Operation deleteOp = new Operation();
+    deleteOp.setSummary("Delete API token");
+    deleteOp.setDescription("Deletes an API token by its hash (root only). Plaintext tokens are rejected.");
+    deleteOp.setOperationId("deleteApiToken");
+    deleteOp.addTagsItem("Security");
+    deleteOp.setSecurity(Arrays.asList(createSecurityRequirement()));
+    deleteOp.addParametersItem(createQueryParameter("token", "Token hash (SHA-256 hex)"));
+    deleteOp.setResponses(createAdminResponses("API token deleted"));
+    pathItem.setDelete(deleteOp);
+
+    return pathItem;
+  }
+
   private SecurityRequirement createSecurityRequirement() {
     final SecurityRequirement security = new SecurityRequirement();
     security.addList("basicAuth");
@@ -365,6 +497,49 @@ public class OpenApiSpecGenerator {
     param.setDescription("Query or command to execute");
     param.setSchema(new Schema<>().type("string"));
     return param;
+  }
+
+  private Parameter createQueryParameter(final String name, final String description) {
+    final Parameter param = new Parameter();
+    param.setName(name);
+    param.setIn("query");
+    param.setRequired(true);
+    param.setDescription(description);
+    param.setSchema(new Schema<>().type("string"));
+    return param;
+  }
+
+  private RequestBody createJsonRequestBody(final String description) {
+    final RequestBody requestBody = new RequestBody();
+    requestBody.setDescription(description);
+    requestBody.setRequired(true);
+    final Content content = new Content();
+    final MediaType mediaType = new MediaType();
+    mediaType.setSchema(new Schema<>().type("object"));
+    content.addMediaType("application/json", mediaType);
+    requestBody.setContent(content);
+    return requestBody;
+  }
+
+  private ApiResponses createAdminResponses(final String successDescription) {
+    return createAdminResponses(successDescription, "200");
+  }
+
+  private ApiResponses createAdminResponses(final String successDescription, final String successCode) {
+    final ApiResponses responses = new ApiResponses();
+    final ApiResponse successResponse = new ApiResponse();
+    successResponse.setDescription(successDescription);
+    final Content content = new Content();
+    final MediaType mediaType = new MediaType();
+    mediaType.setSchema(new Schema<>().type("object"));
+    content.addMediaType("application/json", mediaType);
+    successResponse.setContent(content);
+    responses.addApiResponse(successCode, successResponse);
+    responses.addApiResponse("400", createErrorResponse("Bad request"));
+    responses.addApiResponse("401", createErrorResponse("Unauthorized"));
+    responses.addApiResponse("403", createErrorResponse("Forbidden - root user required"));
+    responses.addApiResponse("500", createErrorResponse("Internal server error"));
+    return responses;
   }
 
   private RequestBody createQueryRequestBody() {

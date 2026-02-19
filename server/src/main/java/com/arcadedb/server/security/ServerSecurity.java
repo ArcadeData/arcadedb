@@ -72,7 +72,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private final        ApiTokenConfiguration           apiTokenConfig;
   private static final int                             MAX_TOKEN_FAILURES   = 5;
   private static final long                            TOKEN_LOCKOUT_MS     = 30_000;
-  private final        Map<String, long[]>             tokenFailures        = new HashMap<>();
+  private static final int                             MAX_TRACKED_FAILURES = 1000;
+  private final        Map<String, long[]>             tokenFailures        = new LinkedHashMap<>() {
+    @Override
+    protected boolean removeEldestEntry(final Map.Entry<String, long[]> eldest) {
+      return size() > MAX_TRACKED_FAILURES;
+    }
+  };
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -207,6 +213,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final String name = userConfiguration.getString("name");
     if (users.containsKey(name))
       throw new SecurityException("User '" + name + "' already exists");
+
+    final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
+    users.put(name, user);
+    saveUsers();
+    return user;
+  }
+
+  public ServerSecurityUser updateUser(final JSONObject userConfiguration) {
+    final String name = userConfiguration.getString("name");
+    if (!users.containsKey(name))
+      throw new ServerSecurityException("User '" + name + "' not found");
 
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
     users.put(name, user);
