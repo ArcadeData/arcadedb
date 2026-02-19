@@ -46,6 +46,7 @@ import java.nio.charset.*;
 import java.security.*;
 import java.security.spec.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.*;
 
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
@@ -70,15 +71,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public static final  int                             SALT_SIZE            = 32;
   private              Timer                           reloadConfigurationTimer;
   private final        ApiTokenConfiguration           apiTokenConfig;
-  private static final int                             MAX_TOKEN_FAILURES   = 5;
-  private static final long                            TOKEN_LOCKOUT_MS     = 30_000;
-  private static final int                             MAX_TRACKED_FAILURES = 1000;
-  private final        Map<String, long[]>             tokenFailures        = new LinkedHashMap<>() {
-    @Override
-    protected boolean removeEldestEntry(final Map.Entry<String, long[]> eldest) {
-      return size() > MAX_TRACKED_FAILURES;
-    }
-  };
+  private static final int                                MAX_TOKEN_FAILURES   = 5;
+  private static final long                               TOKEN_LOCKOUT_MS     = 30_000;
+  private final        ConcurrentHashMap<String, long[]>  tokenFailures        = new ConcurrentHashMap<>();
+  private              Timer                               tokenFailureCleanupTimer;
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -143,6 +139,18 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       apiTokenConfig.load();
 
+      // Schedule periodic cleanup of stale token failure entries
+      if (tokenFailureCleanupTimer == null) {
+        tokenFailureCleanupTimer = new Timer(true);
+        tokenFailureCleanupTimer.schedule(new TimerTask() {
+          @Override
+          public void run() {
+            final long now = System.currentTimeMillis();
+            tokenFailures.entrySet().removeIf(e -> now - e.getValue()[1] > TOKEN_LOCKOUT_MS);
+          }
+        }, TOKEN_LOCKOUT_MS, TOKEN_LOCKOUT_MS);
+      }
+
       final long fileLastModified = usersRepository.getFileLastModified();
       if (fileLastModified > -1 && reloadConfigurationTimer == null) {
         reloadConfigurationTimer = new Timer();
@@ -166,6 +174,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public void stopService() {
     if (reloadConfigurationTimer != null)
       reloadConfigurationTimer.cancel();
+    if (tokenFailureCleanupTimer != null)
+      tokenFailureCleanupTimer.cancel();
 
     users.clear();
     if (groupRepository != null)
@@ -560,30 +570,28 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public ServerSecurityUser authenticateByApiToken(final String tokenValue) {
     // Brute-force protection: track failed attempts by token hash prefix
     final String attemptKey = ApiTokenConfiguration.hashToken(tokenValue).substring(0, 8);
-    synchronized (tokenFailures) {
-      final long[] entry = tokenFailures.get(attemptKey);
-      if (entry != null && entry[0] >= MAX_TOKEN_FAILURES && System.currentTimeMillis() - entry[1] < TOKEN_LOCKOUT_MS)
-        throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
-    }
+    final long[] existing = tokenFailures.get(attemptKey);
+    if (existing != null && existing[0] >= MAX_TOKEN_FAILURES && System.currentTimeMillis() - existing[1] < TOKEN_LOCKOUT_MS)
+      throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
 
     final JSONObject tokenJson = apiTokenConfig.getToken(tokenValue);
     if (tokenJson == null) {
-      synchronized (tokenFailures) {
-        final long now = System.currentTimeMillis();
-        final long[] entry = tokenFailures.computeIfAbsent(attemptKey, k -> new long[] { 0, now });
+      final long now = System.currentTimeMillis();
+      tokenFailures.compute(attemptKey, (k, entry) -> {
+        if (entry == null)
+          return new long[] { 1, now };
         if (now - entry[1] > TOKEN_LOCKOUT_MS) {
           entry[0] = 1;
           entry[1] = now;
         } else
           entry[0]++;
-      }
+        return entry;
+      });
       throw new ServerSecurityException("Invalid or expired API token");
     }
 
     // Clear failure count on successful authentication
-    synchronized (tokenFailures) {
-      tokenFailures.remove(attemptKey);
-    }
+    tokenFailures.remove(attemptKey);
 
     final String database = tokenJson.getString("database");
     final String tokenName = tokenJson.getString("name");

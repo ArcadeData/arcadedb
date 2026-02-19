@@ -53,6 +53,10 @@ public class GetSchemaTool {
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
     final String databaseName = args.getString("database");
+
+    if (!user.canAccessToDatabase(databaseName))
+      throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
+
     final Database database = server.getDatabase(databaseName);
 
     final Schema schema = database.getSchema();

@@ -142,13 +142,12 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       final JSONObject payload = new JSONObject();
       payload.put("language", "sql");
-      payload.put("command", "INSERT INTO V SET name = 'test'");
+      payload.put("command", "INSERT INTO V1 SET id = 9999, name = 'test'");
       connection.getOutputStream().write(payload.toString().getBytes());
       connection.connect();
 
       try {
-        // Security error — 403 for permission denied, 500 if caught at a higher level
-        assertThat(connection.getResponseCode()).isIn(403, 500);
+        assertThat(connection.getResponseCode()).isEqualTo(403);
       } finally {
         connection.disconnect();
       }

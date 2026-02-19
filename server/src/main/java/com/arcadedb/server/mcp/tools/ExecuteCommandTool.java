@@ -63,6 +63,9 @@ public class ExecuteCommandTool {
     final String language = args.getString("language", "cypher");
     final String command = args.getString("command");
 
+    if (!user.canAccessToDatabase(databaseName))
+      throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
+
     final Database database = server.getDatabase(databaseName);
 
     // Analyze once for both permission checking and execution (avoids double parsing)

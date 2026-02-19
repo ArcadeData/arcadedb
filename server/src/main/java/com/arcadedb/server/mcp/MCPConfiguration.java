@@ -196,7 +196,9 @@ public class MCPConfiguration {
     if (json.has("allowAdmin"))
       allowAdmin = json.getBoolean("allowAdmin");
     if (json.has("allowedUsers")) {
-      final JSONArray usersArray = json.getJSONArray("allowedUsers");
+      final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
+      if (usersArray == null)
+        return;
       final List<String> users = new ArrayList<>();
       for (int i = 0; i < usersArray.length(); i++)
         users.add(usersArray.getString(i));

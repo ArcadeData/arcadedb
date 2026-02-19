@@ -56,16 +56,16 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     // Auth check first to avoid leaking server state to unauthenticated requests
     if (user == null)
-      return jsonRpcError(null, -32600, "Authentication required");
+      return jsonRpcError(null, -32600, "Authentication required", 401);
 
     if (!config.isEnabled())
-      return jsonRpcError(null, -32600, "MCP server is disabled");
+      return jsonRpcError(null, -32600, "MCP server is disabled", 503);
 
     if (payload == null)
       return jsonRpcError(null, -32700, "Parse error: empty request body");
 
     if (!config.isUserAllowed(user.getName()))
-      return jsonRpcError(payload.opt("id"), -32600, "User not authorized for MCP access");
+      return jsonRpcError(payload.opt("id"), -32600, "User not authorized for MCP access", 403);
 
     final String method = payload.getString("method", "");
     final JSONObject params = payload.getJSONObject("params", new JSONObject());
@@ -209,10 +209,14 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
   }
 
   private ExecutionResponse jsonRpcError(final Object id, final int code, final String message) {
+    return jsonRpcError(id, code, message, 200);
+  }
+
+  private ExecutionResponse jsonRpcError(final Object id, final int code, final String message, final int httpStatus) {
     final JSONObject response = new JSONObject();
     response.put("jsonrpc", "2.0");
     response.put("id", id);
     response.put("error", new JSONObject().put("code", code).put("message", message));
-    return new ExecutionResponse(200, response.toString());
+    return new ExecutionResponse(httpStatus, response.toString());
   }
 }

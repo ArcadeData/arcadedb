@@ -242,13 +242,27 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
         .put("enabled", false)
         .put("allowedUsers", new JSONArray().put("root")));
 
-    final JSONObject response = mcpRequest(new JSONObject()
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject()
         .put("jsonrpc", "2.0")
         .put("id", 101)
         .put("method", "initialize")
-        .put("params", new JSONObject()));
+        .put("params", new JSONObject());
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
 
-    assertThat(response.has("error")).isTrue();
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(503);
+    } finally {
+      connection.disconnect();
+    }
 
     // Re-enable for other tests
     saveMCPConfig(new JSONObject()
@@ -350,11 +364,7 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
     connection.connect();
 
     try {
-      assertThat(connection.getResponseCode()).isEqualTo(200);
-      final String body = FileUtils.readStreamAsString(connection.getInputStream(), "utf8");
-      final JSONObject response = new JSONObject(body);
-      assertThat(response.has("error")).isTrue();
-      assertThat(response.getJSONObject("error").getString("message")).contains("not authorized");
+      assertThat(connection.getResponseCode()).isEqualTo(403);
     } finally {
       connection.disconnect();
     }
@@ -372,6 +382,61 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
     final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
     final JSONObject result = new JSONObject(text);
     assertThat(result.getInt("count")).isEqualTo(1);
+  }
+
+  @Test
+  void testDatabaseAuthorizationDenied() throws Exception {
+    // Configure MCP to allow "restricteduser"
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowedUsers", new JSONArray().put("root").put("restricteduser")));
+
+    // Create a user with access only to a non-existent database "otherdb"
+    if (!getServer(0).getSecurity().existsUser("restricteduser"))
+      getServer(0).getSecurity().createUser(new com.arcadedb.serializer.json.JSONObject()
+          .put("name", "restricteduser")
+          .put("password", getServer(0).getSecurity().encodePassword("restrictedpass"))
+          .put("databases", new com.arcadedb.serializer.json.JSONObject()
+              .put("otherdb", new JSONArray().put("admin"))));
+
+    final String restrictedAuth = "Basic " + Base64.getEncoder()
+        .encodeToString("restricteduser:restrictedpass".getBytes(StandardCharsets.UTF_8));
+
+    // Try to query "graph" database — user should be denied
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", restrictedAuth);
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 300)
+        .put("method", "tools/call")
+        .put("params", new JSONObject()
+            .put("name", "query")
+            .put("arguments", new JSONObject()
+                .put("database", "graph")
+                .put("language", "sql")
+                .put("query", "SELECT FROM V1")));
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
+
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      final String body = FileUtils.readStreamAsString(connection.getInputStream(), "utf8");
+      final JSONObject response = new JSONObject(body);
+      assertThat(response.has("result")).isTrue();
+      final JSONObject result = response.getJSONObject("result");
+      assertThat(result.getBoolean("isError")).isTrue();
+      final String text = result.getJSONArray("content").getJSONObject(0).getString("text");
+      assertThat(text).contains("not authorized");
+    } finally {
+      connection.disconnect();
+    }
   }
 
   // ---- Helper methods ----

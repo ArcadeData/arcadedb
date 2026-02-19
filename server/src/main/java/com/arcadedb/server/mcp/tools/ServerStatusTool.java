@@ -58,7 +58,7 @@ public class ServerStatusTool {
     result.put("databases", new JSONArray(installedDatabases));
 
     final HAServer ha = server.getHA();
-    if (ha != null) {
+    if (ha != null && config.isAllowAdmin()) {
       final JSONObject haInfo = new JSONObject();
       haInfo.put("clusterName", ha.getClusterName());
       haInfo.put("leader", ha.getLeaderName());

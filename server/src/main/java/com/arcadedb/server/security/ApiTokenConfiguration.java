@@ -149,10 +149,10 @@ public class ApiTokenConfiguration {
     return response;
   }
 
-  public boolean deleteToken(final String identifier) {
-    // Accept both plaintext token (starts with at-) and hash
-    final String key = identifier.startsWith(TOKEN_PREFIX) ? hashToken(identifier) : identifier;
-    if (tokens.remove(key) != null) {
+  public boolean deleteToken(final String tokenHash) {
+    if (tokenHash.startsWith(TOKEN_PREFIX))
+      throw new IllegalArgumentException("Use token hash instead of plaintext token for deletion");
+    if (tokens.remove(tokenHash) != null) {
       save();
       return true;
     }

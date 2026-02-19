@@ -170,6 +170,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
               SecurityException.class.getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 403, "Security error", e, null);
+    } catch (final SecurityException e) {
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+              SecurityException.class.getSimpleName(), e.getMessage());
+      sendErrorResponse(exchange, 403, "Security error", e, null);
     } catch (final ServerIsNotTheLeaderException e) {
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
@@ -200,20 +204,44 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
+      // If the root cause is a SecurityException, return 403 instead of 500
+      if (realException instanceof SecurityException) {
+        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+                SecurityException.class.getSimpleName(), realException.getMessage());
+        sendErrorResponse(exchange, 403, "Security error", realException, null);
+      } else {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        e.getMessage());
+        sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
+      }
     } catch (final TransactionException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
+      if (realException instanceof SecurityException) {
+        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
+                SecurityException.class.getSimpleName(), realException.getMessage());
+        sendErrorResponse(exchange, 403, "Security error", realException, null);
+      } else {
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
+                        e.getMessage());
+        sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
+      }
     } catch (final Throwable e) {
+      // Check if a SecurityException is wrapped at any depth
+      Throwable cause = e;
+      while (cause != null) {
+        if (cause instanceof SecurityException) {
+          LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+                  SecurityException.class.getSimpleName(), cause.getMessage());
+          sendErrorResponse(exchange, 403, "Security error", cause, null);
+          return;
+        }
+        cause = cause.getCause();
+      }
       LogManager.instance()
               .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);

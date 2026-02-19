@@ -70,6 +70,9 @@ public class QueryTool {
     final String query = args.getString("query");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
+    if (!user.canAccessToDatabase(databaseName))
+      throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
+
     final Database database = server.getDatabase(databaseName);
 
     // Verify the query is actually read-only using semantic analysis
