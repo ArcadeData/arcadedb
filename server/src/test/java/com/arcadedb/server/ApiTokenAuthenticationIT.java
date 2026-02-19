@@ -65,7 +65,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
         for (int i = 0; i < result.length(); i++) {
           final JSONObject token = result.getJSONObject(i);
           assertThat(token.has("tokenHash")).isTrue();
-          assertThat(token.has("tokenPrefix")).isTrue();
+          assertThat(token.has("tokenSuffix")).isTrue();
           assertThat(token.has("token")).isFalse();
         }
       } finally {
@@ -235,7 +235,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       final String content = new String(java.nio.file.Files.readAllBytes(tokenFile.toPath()));
       assertThat(content).doesNotContain(tokenValue);
       assertThat(content).contains("tokenHash");
-      assertThat(content).contains("tokenPrefix");
+      assertThat(content).contains("tokenSuffix");
       assertThat(content).doesNotContain("\"token\"");
     });
   }

@@ -50,7 +50,7 @@ public class GetApiTokensHandler extends AbstractServerHttpHandler {
       entry.put("createdAt", token.getLong("createdAt", 0));
       entry.put("permissions", token.getJSONObject("permissions"));
       entry.put("tokenHash", token.getString("tokenHash"));
-      entry.put("tokenPrefix", token.getString("tokenPrefix", "") + "...");
+      entry.put("tokenSuffix", token.getString("tokenSuffix", ""));
       result.put(entry);
     }
 

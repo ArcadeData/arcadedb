@@ -329,7 +329,8 @@ function renderApiTokensTable(tokens) {
     var t = tokens[i];
     var expiration = t.expiresAt > 0 ? new Date(t.expiresAt).toLocaleString() : "Never";
     var created = t.createdAt > 0 ? new Date(t.createdAt).toLocaleString() : "-";
-    tableData.push([t.name, t.database, created, expiration, '<code>' + escapeHtml(t.tokenPrefix) + '</code>', t.tokenHash]);
+    var tokenDisplay = 'at-...' + (t.tokenSuffix ? escapeHtml(t.tokenSuffix) : '');
+    tableData.push([t.name, t.database, created, expiration, '<code>' + tokenDisplay + '</code>', t.tokenHash]);
   }
 
   apiTokensDataTable = $("#apiTokensTable").DataTable({

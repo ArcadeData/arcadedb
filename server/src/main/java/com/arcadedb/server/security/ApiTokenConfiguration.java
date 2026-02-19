@@ -34,7 +34,7 @@ import java.util.logging.*;
 public class ApiTokenConfiguration {
   public static final  String                                FILE_NAME    = "server-api-tokens.json";
   private static final String                                TOKEN_PREFIX = "at-";
-  private static final int                                   PREFIX_LEN   = 10;
+  private static final int                                   SUFFIX_LEN   = 4;
   private final        String                                filePath;
   private final        ConcurrentHashMap<String, JSONObject> tokens       = new ConcurrentHashMap<>();
 
@@ -70,8 +70,10 @@ public class ApiTokenConfiguration {
           final String plaintext = tokenJson.getString("token");
           final String hash = hashToken(plaintext);
           tokenJson.put("tokenHash", hash);
-          tokenJson.put("tokenPrefix", plaintext.substring(0, Math.min(PREFIX_LEN, plaintext.length())));
+          tokenJson.put("tokenSuffix", plaintext.length() > SUFFIX_LEN
+              ? plaintext.substring(plaintext.length() - SUFFIX_LEN) : plaintext);
           tokenJson.remove("token");
+          tokenJson.remove("tokenPrefix");
           needsSave = true;
         }
 
@@ -110,11 +112,11 @@ public class ApiTokenConfiguration {
   public JSONObject createToken(final String name, final String database, final long expiresAt, final JSONObject permissions) {
     final String tokenValue = TOKEN_PREFIX + UUID.randomUUID();
     final String hash = hashToken(tokenValue);
-    final String prefix = tokenValue.substring(0, Math.min(PREFIX_LEN, tokenValue.length()));
+    final String suffix = tokenValue.substring(tokenValue.length() - SUFFIX_LEN);
 
     final JSONObject tokenJson = new JSONObject();
     tokenJson.put("tokenHash", hash);
-    tokenJson.put("tokenPrefix", prefix);
+    tokenJson.put("tokenSuffix", suffix);
     tokenJson.put("name", name);
     tokenJson.put("database", database);
     tokenJson.put("expiresAt", expiresAt);
