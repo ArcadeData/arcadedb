@@ -2584,6 +2584,33 @@ div.dt-search {
   border-left: 1px solid var(--border-main);
 }
 
+/* ===== MCP Tab ===== */
+
+.mcp-config-code {
+  background-color: var(--bg-code);
+  color: var(--text-code);
+  padding: 14px 16px;
+  border-radius: 6px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre;
+  margin-bottom: 4px;
+  border: 1px solid var(--border-ddd);
+}
+
+#tab-server-mcp .db-detail-section {
+  margin-bottom: 24px;
+}
+
+#tab-server-mcp .badge {
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 4px 10px;
+}
+
 #graphPropertiesPanel.col-12 #recordEditorContainer {
   max-width: 800px;
   margin: 0 auto;

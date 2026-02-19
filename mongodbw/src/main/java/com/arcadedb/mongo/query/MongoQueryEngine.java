@@ -22,7 +22,9 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
@@ -43,17 +45,47 @@ public class MongoQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
+    final Set<OperationType> ops = detectMongoOperationTypes(query);
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
-        return false;
+        return ops.size() == 1 && ops.contains(OperationType.READ);
       }
 
       @Override
       public boolean isDDL() {
-        return false;
+        return ops.contains(OperationType.SCHEMA);
+      }
+
+      @Override
+      public Set<OperationType> getOperationTypes() {
+        return ops;
       }
     };
+  }
+
+  private static Set<OperationType> detectMongoOperationTypes(final String query) {
+    final String trimmed = query.trim();
+    // MongoDB commands are JSON with a collection.method pattern or JSON with command keys
+    final String upper = trimmed.toUpperCase(Locale.ENGLISH);
+
+    if (upper.contains("\"INSERT\"") || upper.contains("\"INSERTONE\"") || upper.contains("\"INSERTMANY\""))
+      return CollectionUtils.singletonSet(OperationType.CREATE);
+    if (upper.contains("\"UPDATE\"") || upper.contains("\"UPDATEONE\"") || upper.contains("\"UPDATEMANY\"")
+        || upper.contains("\"REPLACEONE\""))
+      return CollectionUtils.singletonSet(OperationType.UPDATE);
+    if (upper.contains("\"DELETE\"") || upper.contains("\"DELETEONE\"") || upper.contains("\"DELETEMANY\"")
+        || upper.contains("\"REMOVE\""))
+      return CollectionUtils.singletonSet(OperationType.DELETE);
+    if (upper.contains("\"FIND\"") || upper.contains("\"AGGREGATE\"") || upper.contains("\"COUNT\"")
+        || upper.contains("\"DISTINCT\""))
+      return CollectionUtils.singletonSet(OperationType.READ);
+    if (upper.contains("\"CREATEINDEX\"") || upper.contains("\"CREATECOLLECTION\"") || upper.contains("\"DROP\"")
+        || upper.contains("\"DROPCOLLECTION\"") || upper.contains("\"DROPINDEX\""))
+      return CollectionUtils.singletonSet(OperationType.SCHEMA);
+
+    // Cannot classify: assume all write types for safety
+    return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
 
   @Override

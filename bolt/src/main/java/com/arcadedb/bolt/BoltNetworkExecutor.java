@@ -167,7 +167,7 @@ public class BoltNetworkExecutor extends Thread {
 
           final BoltMessage message = BoltMessage.parse(structure);
           if (debug) {
-            LogManager.instance().log(this, Level.INFO, "BOLT << %s (state=%s)", message, state);
+            LogManager.instance().log(this, Level.FINE, "BOLT << %s (state=%s)", message, state);
           }
 
           processMessage(message);
@@ -175,7 +175,7 @@ public class BoltNetworkExecutor extends Thread {
         } catch (final EOFException | SocketException e) {
           // Client disconnected
           if (debug) {
-            LogManager.instance().log(this, Level.INFO, "BOLT client disconnected: %s", e.getMessage());
+            LogManager.instance().log(this, Level.FINE, "BOLT client disconnected: %s", e.getMessage());
           }
           break;
         } catch (final Exception e) {
@@ -220,7 +220,7 @@ public class BoltNetworkExecutor extends Thread {
         } catch (final EOFException e) {
           // Client closed WebSocket without sending Bolt data (e.g. Neo4j Desktop health/SSO probe)
           if (debug)
-            LogManager.instance().log(this, Level.INFO, "BOLT WebSocket closed without Bolt handshake from %s",
+            LogManager.instance().log(this, Level.FINE, "BOLT WebSocket closed without Bolt handshake from %s",
                 socket.getRemoteSocketAddress());
           return false;
         }
@@ -255,7 +255,7 @@ public class BoltNetworkExecutor extends Thread {
       clientVersions[i] = input.readRawInt();
 
     if (debug)
-      LogManager.instance().log(this, Level.INFO, "BOLT client versions: %s",
+      LogManager.instance().log(this, Level.FINE, "BOLT client versions: %s",
           Arrays.toString(Arrays.stream(clientVersions).mapToObj(v -> String.format("0x%08X", v)).toArray()));
 
     // Select best matching version using Bolt version negotiation with range support.
@@ -291,8 +291,9 @@ public class BoltNetworkExecutor extends Thread {
       return false;
     }
 
-    LogManager.instance().log(this, Level.INFO, "BOLT connection from %s, negotiated version %d.%d",
-        socket.getRemoteSocketAddress(), getMajorVersion(protocolVersion), getMinorVersion(protocolVersion));
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "BOLT connection from %s, negotiated version %d.%d",
+          socket.getRemoteSocketAddress(), getMajorVersion(protocolVersion), getMinorVersion(protocolVersion));
 
     return true;
   }
@@ -494,7 +495,7 @@ public class BoltNetworkExecutor extends Thread {
     final Map<String, Object> params = message.getParameters();
 
     if (debug)
-      LogManager.instance().log(this, Level.INFO, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
+      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     // Start timing for performance metrics
     queryStartTime = System.nanoTime();
@@ -534,7 +535,7 @@ public class BoltNetworkExecutor extends Thread {
       recordsStreamed = 0;
 
       if (debug) {
-        LogManager.instance().log(this, Level.INFO, "BOLT query fields=%s firstResult=%s", currentFields,
+        LogManager.instance().log(this, Level.FINE, "BOLT query fields=%s firstResult=%s", currentFields,
             firstResult != null ? firstResult.toJSON() : "null");
       }
 
@@ -1231,7 +1232,7 @@ public class BoltNetworkExecutor extends Thread {
    */
   private void sendMessage(final BoltMessage message) throws IOException {
     if (debug) {
-      LogManager.instance().log(this, Level.INFO, "BOLT >> %s", message);
+      LogManager.instance().log(this, Level.FINE, "BOLT >> %s", message);
     }
 
     final PackStreamWriter writer = new PackStreamWriter();
@@ -1314,8 +1315,9 @@ public class BoltNetworkExecutor extends Thread {
     rawOut.write(response.toString().getBytes(StandardCharsets.UTF_8));
     rawOut.flush();
 
-    LogManager.instance().log(this, Level.INFO, "BOLT WebSocket upgrade completed for %s (protocol=%s)",
-        socket.getRemoteSocketAddress(), protocol != null ? protocol : "none");
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "BOLT WebSocket upgrade completed for %s (protocol=%s)",
+          socket.getRemoteSocketAddress(), protocol != null ? protocol : "none");
   }
 
   /**
@@ -1351,9 +1353,10 @@ public class BoltNetworkExecutor extends Thread {
 
     output.writeRaw(httpResponse.getBytes(StandardCharsets.UTF_8));
 
-    LogManager.instance().log(this, Level.INFO,
-        "HTTP request on BOLT port from %s, responded with Bolt endpoint info for %s",
-        socket.getRemoteSocketAddress(), address);
+    if (debug)
+      LogManager.instance().log(this, Level.FINE,
+          "HTTP request on BOLT port from %s, responded with Bolt endpoint info for %s",
+          socket.getRemoteSocketAddress(), address);
   }
 
   /**
@@ -1407,7 +1410,7 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     if (debug) {
-      LogManager.instance().log(this, Level.INFO, "BOLT connection closed");
+      LogManager.instance().log(this, Level.FINE, "BOLT connection closed");
     }
   }
 

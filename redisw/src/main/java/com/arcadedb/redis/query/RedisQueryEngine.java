@@ -29,7 +29,9 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -97,6 +99,11 @@ public class RedisQueryEngine implements QueryEngine {
         public boolean isDDL() {
           return false;
         }
+
+        @Override
+        public Set<OperationType> getOperationTypes() {
+          return CollectionUtils.singletonSet(OperationType.READ);
+        }
       };
     }
 
@@ -105,6 +112,7 @@ public class RedisQueryEngine implements QueryEngine {
       case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> true;
       default -> false;
     };
+    final Set<OperationType> ops = detectRedisOperationTypes(cmd);
 
     return new AnalyzedQuery() {
       @Override
@@ -116,6 +124,21 @@ public class RedisQueryEngine implements QueryEngine {
       public boolean isDDL() {
         return false;
       }
+
+      @Override
+      public Set<OperationType> getOperationTypes() {
+        return ops;
+      }
+    };
+  }
+
+  private static Set<OperationType> detectRedisOperationTypes(final String cmd) {
+    return switch (cmd) {
+      case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> CollectionUtils.singletonSet(OperationType.READ);
+      case "SET", "HSET", "HMSET" -> Set.of(OperationType.CREATE, OperationType.UPDATE);
+      case "INCR", "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY" -> CollectionUtils.singletonSet(OperationType.UPDATE);
+      case "GETDEL", "HDEL" -> CollectionUtils.singletonSet(OperationType.DELETE);
+      default -> Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
     };
   }
 

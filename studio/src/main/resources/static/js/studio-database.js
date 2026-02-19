@@ -2,6 +2,7 @@ var editor = null;
 var globalResultset = null;
 var globalGraphMaxResult = 1000;
 var globalCredentials = null;
+var globalBasicAuth = null;
 var globalUsername = null;
 var globalSchemaTypes = null;
 
@@ -81,6 +82,7 @@ function login() {
 
       // Set global credentials to use Bearer token
       globalCredentials = "Bearer " + token;
+      globalBasicAuth = basicAuth;
       globalUsername = username;
 
       console.log("Session stored, calling updateDatabases");

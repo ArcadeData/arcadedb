@@ -28,6 +28,9 @@ import com.arcadedb.query.sql.executor.CreateEdgeExecutionPlanner;
 import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import com.arcadedb.query.OperationType;
+import com.arcadedb.utility.CollectionUtils;
+
 import java.util.*;
 
 public class CreateEdgeStatement extends Statement {
@@ -173,6 +176,11 @@ public class CreateEdgeStatement extends Statement {
 
   public InsertBody getBody() {
     return body;
+  }
+
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    return CollectionUtils.singletonSet(OperationType.CREATE);
   }
 }
 /* JavaCC - OriginalChecksum=2d3dc5693940ffa520146f8f7f505128 (do not edit this line) */

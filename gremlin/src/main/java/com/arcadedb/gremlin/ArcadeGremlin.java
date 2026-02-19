@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
@@ -39,6 +40,12 @@ import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
+import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DropStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeStartStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStartStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStep;
 
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
@@ -154,14 +161,31 @@ public class ArcadeGremlin extends ArcadeQuery {
       final DefaultGraphTraversal<?,?> resultSet = (DefaultGraphTraversal<?,?>) executeStatement();
 
       boolean idempotent = true;
+      final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
       for (final Object step : resultSet.getSteps()) {
         if (step instanceof Mutating) {
           idempotent = false;
-          break;
+          if (step instanceof AddVertexStep || step instanceof AddVertexStartStep
+              || step instanceof AddEdgeStep || step instanceof AddEdgeStartStep)
+            ops.add(OperationType.CREATE);
+          else if (step instanceof DropStep)
+            ops.add(OperationType.DELETE);
+          else if (step instanceof AddPropertyStep)
+            ops.add(OperationType.UPDATE);
+          else {
+            // Unknown mutating step: assume all write types
+            ops.add(OperationType.CREATE);
+            ops.add(OperationType.UPDATE);
+            ops.add(OperationType.DELETE);
+          }
         }
       }
 
+      if (idempotent)
+        ops.add(OperationType.READ);
+
       final boolean isIdempotent = idempotent;
+      final Set<OperationType> operationTypes = Set.copyOf(ops);
 
       return new QueryEngine.AnalyzedQuery() {
         @Override
@@ -172,6 +196,11 @@ public class ArcadeGremlin extends ArcadeQuery {
         @Override
         public boolean isDDL() {
           return false;
+        }
+
+        @Override
+        public Set<OperationType> getOperationTypes() {
+          return operationTypes;
         }
       };
     } catch (Exception e) {

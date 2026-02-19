@@ -27,6 +27,9 @@ import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
 import com.arcadedb.query.sql.executor.DeleteExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import com.arcadedb.query.OperationType;
+import com.arcadedb.utility.CollectionUtils;
+
 import java.util.*;
 
 public class DeleteStatement extends Statement {
@@ -119,6 +122,11 @@ public class DeleteStatement extends Statement {
 
   public boolean isUnsafe() {
     return unsafe;
+  }
+
+  @Override
+  public Set<OperationType> getOperationTypes() {
+    return CollectionUtils.singletonSet(OperationType.DELETE);
   }
 }
 /* JavaCC - OriginalChecksum=5fb4ca5ba648e6c9110f41d806206a6f (do not edit this line) */

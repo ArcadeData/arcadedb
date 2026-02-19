@@ -40,6 +40,8 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.MultiIterator;
 
+import com.arcadedb.query.OperationType;
+
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
@@ -131,6 +133,19 @@ public class SQLQueryEngine implements QueryEngine {
       @Override
       public boolean isDDL() {
         return statement.isDDL();
+      }
+
+      @Override
+      public Set<OperationType> getOperationTypes() {
+        return statement.getOperationTypes();
+      }
+
+      @Override
+      public ResultSet execute(final Map<String, Object> parameters) {
+        final long resultSetLimit = database.getResultSetLimit();
+        if (resultSetLimit > 0)
+          statement.setLimit(new Limit(JJTLIMIT).setValue((int) resultSetLimit));
+        return statement.execute(database, parameters);
       }
     };
   }
