@@ -149,11 +149,12 @@ class OpenCypherUnwindMatchTypeIssue1948Test {
     final List<Map<String, Object>> resultsWithType = new ArrayList<>();
     database.transaction(() -> {
       final String queryWithType =
-          "UNWIND $batch as row " +
-          "MATCH (a:CHUNK) WHERE ID(a) = row.source_id " +
-          "MATCH (b) WHERE ID(b) = row.target_id " +
-          "MERGE (a)-[r:TEST_EDGE]->(b) " +
-          "RETURN a, b, r";
+          """
+          UNWIND $batch as row \
+          MATCH (a:CHUNK) WHERE ID(a) = row.source_id \
+          MATCH (b) WHERE ID(b) = row.target_id \
+          MERGE (a)-[r:TEST_EDGE]->(b) \
+          RETURN a, b, r""";
 
       try (ResultSet rs = database.command("opencypher", queryWithType, Map.of("batch", batch))) {
         while (rs.hasNext()) {
@@ -218,11 +219,12 @@ class OpenCypherUnwindMatchTypeIssue1948Test {
     final List<Map<String, Object>> resultsWithoutType = new ArrayList<>();
     database.transaction(() -> {
       final String queryWithoutType =
-          "UNWIND $batch as row " +
-          "MATCH (a) WHERE ID(a) = row.source_id " +
-          "MATCH (b) WHERE ID(b) = row.target_id " +
-          "MERGE (a)-[r:TEST_EDGE]->(b) " +
-          "RETURN a, b, r";
+          """
+          UNWIND $batch as row \
+          MATCH (a) WHERE ID(a) = row.source_id \
+          MATCH (b) WHERE ID(b) = row.target_id \
+          MERGE (a)-[r:TEST_EDGE]->(b) \
+          RETURN a, b, r""";
 
       try (ResultSet rs = database.command("opencypher", queryWithoutType, Map.of("batch", batch))) {
         while (rs.hasNext()) {
@@ -263,9 +265,10 @@ class OpenCypherUnwindMatchTypeIssue1948Test {
 
     // Simple query: UNWIND + MATCH with type constraint + RETURN
     final String query =
-        "UNWIND $batch as row " +
-        "MATCH (a:CHUNK) WHERE ID(a) = row.id " +
-        "RETURN a, row";
+        """
+        UNWIND $batch as row \
+        MATCH (a:CHUNK) WHERE ID(a) = row.id \
+        RETURN a, row""";
 
     final List<Object> results = new ArrayList<>();
     try (ResultSet rs = database.query("opencypher", query, Map.of("batch", batch))) {
@@ -309,9 +312,10 @@ class OpenCypherUnwindMatchTypeIssue1948Test {
     batch.add(Map.of("id", chunk2Rid.toString()));
 
     final String query =
-        "UNWIND $batch as row " +
-        "MATCH (a:CHUNK) WHERE ID(a) = row.id " +
-        "RETURN a";
+        """
+        UNWIND $batch as row \
+        MATCH (a:CHUNK) WHERE ID(a) = row.id \
+        RETURN a""";
 
     final List<Object> results = new ArrayList<>();
     try (ResultSet rs = database.query("opencypher", query, Map.of("batch", batch))) {

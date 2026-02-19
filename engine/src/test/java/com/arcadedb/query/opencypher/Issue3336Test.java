@@ -56,7 +56,7 @@ class Issue3336Test {
   }
 
   @Test
-  void testTernaryAndWithNull() {
+  void ternaryAndWithNull() {
     try (final ResultSet rs = database.query("opencypher",
         "RETURN (true AND null) AS r1, (false AND null) AS r2")) {
       assertThat(rs.hasNext()).isTrue();
@@ -69,7 +69,7 @@ class Issue3336Test {
   }
 
   @Test
-  void testTernaryOrWithNull() {
+  void ternaryOrWithNull() {
     try (final ResultSet rs = database.query("opencypher",
         "RETURN (true OR null) AS r3, (false OR null) AS r4")) {
       assertThat(rs.hasNext()).isTrue();
@@ -82,7 +82,7 @@ class Issue3336Test {
   }
 
   @Test
-  void testTernaryNotNull() {
+  void ternaryNotNull() {
     try (final ResultSet rs = database.query("opencypher",
         "RETURN (NOT null) AS r5")) {
       assertThat(rs.hasNext()).isTrue();
@@ -93,7 +93,7 @@ class Issue3336Test {
   }
 
   @Test
-  void testTernaryNullAndNull() {
+  void ternaryNullAndNull() {
     try (final ResultSet rs = database.query("opencypher",
         "RETURN (null AND null) AS r6, (null OR null) AS r7")) {
       assertThat(rs.hasNext()).isTrue();
@@ -106,7 +106,7 @@ class Issue3336Test {
   }
 
   @Test
-  void testOriginalIssueQuery() {
+  void originalIssueQuery() {
     // Exact query from the issue
     try (final ResultSet rs = database.query("opencypher",
         "RETURN (true AND null) AS r1, (false AND null) AS r2, (true OR null) AS r3, (NOT null) AS r4")) {
@@ -120,7 +120,7 @@ class Issue3336Test {
   }
 
   @Test
-  void testNonNullLogicStillWorks() {
+  void nonNullLogicStillWorks() {
     // Ensure regular boolean logic still works
     try (final ResultSet rs = database.query("opencypher",
         "RETURN (true AND true) AS r1, (true AND false) AS r2, (true OR false) AS r3, (NOT true) AS r4, (NOT false) AS r5")) {

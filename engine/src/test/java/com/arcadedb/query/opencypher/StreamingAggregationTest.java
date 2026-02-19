@@ -19,12 +19,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that queries with OPTIONAL MATCH + aggregation can handle large
  * cartesian products without OOM by processing rows in batches.
  */
-public class StreamingAggregationTest {
+class StreamingAggregationTest {
   private static final String DB_PATH = "target/databases/StreamingAggregationTest";
   private Database db;
 
   @BeforeEach
-  public void setup() {
+  void setup() {
     final File dbDir = new File(DB_PATH);
     if (dbDir.exists()) {
       deleteDirectory(dbDir);
@@ -83,7 +83,7 @@ public class StreamingAggregationTest {
   }
 
   @AfterEach
-  public void teardown() {
+  void teardown() {
     if (db != null) {
       db.drop();
       db = null;
@@ -91,7 +91,7 @@ public class StreamingAggregationTest {
   }
 
   @Test
-  public void testStreamingAggregationWithCartesianProduct() {
+  void streamingAggregationWithCartesianProduct() {
     // This query creates a cartesian product before the second aggregation:
     // 100 questions × 10 answers × 5 comments = 5,000 intermediate rows
     // With streaming, this should complete without buffering all 5K rows
@@ -128,7 +128,7 @@ public class StreamingAggregationTest {
   }
 
   @Test
-  public void testGroupByAggregationStreaming() {
+  void groupByAggregationStreaming() {
     // Test GROUP BY with large result set
     // This groups 100 questions by (Id % 10), creating 10 groups
     // Each group aggregates over multiple answers and comments
@@ -160,7 +160,7 @@ public class StreamingAggregationTest {
   }
 
   @Test
-  public void testSimpleAggregationStreaming() {
+  void simpleAggregationStreaming() {
     // Test simple aggregation (no GROUP BY) with cartesian product
     final String query = """
         MATCH (q:Question)
@@ -183,7 +183,7 @@ public class StreamingAggregationTest {
   }
 
   @Test
-  public void testMultipleAggregationsStreaming() {
+  void multipleAggregationsStreaming() {
     // Test multiple aggregations in same query
     final String query = """
         MATCH (q:Question)

@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ParserUtilsTest {
 
   @Test
-  void testStripBackticks() {
+  void stripBackticks() {
     // Simple backticked identifier
     assertThat(ParserUtils.stripBackticks("`name`")).isEqualTo("name");
 
@@ -51,7 +51,7 @@ class ParserUtilsTest {
   }
 
   @Test
-  void testExtractPropertyParts() {
+  void extractPropertyParts() {
     // Valid property expression
     final String[] parts = ParserUtils.extractPropertyParts("n.name");
     assertThat(parts).containsExactly("n", "name");
@@ -68,7 +68,7 @@ class ParserUtilsTest {
   }
 
   @Test
-  void testParseValueString() {
+  void parseValueString() {
     // String with single quotes
     assertThat(ParserUtils.parseValueString("'hello'")).isEqualTo("hello");
 
@@ -95,7 +95,7 @@ class ParserUtilsTest {
   }
 
   @Test
-  void testDecodeStringLiteral() {
+  void decodeStringLiteral() {
     // No escape sequences
     assertThat(ParserUtils.decodeStringLiteral("hello")).isEqualTo("hello");
 
@@ -128,7 +128,7 @@ class ParserUtilsTest {
   }
 
   @Test
-  void testFindOperatorOutsideParentheses() {
+  void findOperatorOutsideParentheses() {
     // Operator at top level
     assertThat(ParserUtils.findOperatorOutsideParentheses("a = b", "=")).isEqualTo(2);
 
@@ -155,7 +155,7 @@ class ParserUtilsTest {
   }
 
   @Test
-  void testFindOperatorWithNestedParentheses() {
+  void findOperatorWithNestedParentheses() {
     // Nested parentheses
     assertThat(ParserUtils.findOperatorOutsideParentheses("func(a, func2(b)) = c", "=")).isEqualTo(18);
 
@@ -167,7 +167,7 @@ class ParserUtilsTest {
   }
 
   @Test
-  void testFindOperatorWithEscapedStrings() {
+  void findOperatorWithEscapedStrings() {
     // String with escaped quote
     assertThat(ParserUtils.findOperatorOutsideParentheses("'it\\'s' = x", "=")).isEqualTo(8);
 

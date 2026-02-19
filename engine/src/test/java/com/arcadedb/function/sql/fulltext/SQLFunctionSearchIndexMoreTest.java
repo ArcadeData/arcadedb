@@ -46,27 +46,31 @@ class SQLFunctionSearchIndexMoreTest extends TestHelper {
     database.transaction(() -> {
       database.newDocument("Article")
         .set("title", "Java Programming")
-        .set("body", "Java is a programming language and computing platform. "
-            + "Java programming requires understanding of object oriented programming concepts. "
-            + "Modern Java development uses frameworks and libraries for enterprise applications.")
+        .set("body", """
+            Java is a programming language and computing platform. \
+            Java programming requires understanding of object oriented programming concepts. \
+            Modern Java development uses frameworks and libraries for enterprise applications.""")
         .save();
       database.newDocument("Article")
         .set("title", "Python Guide")
-        .set("body", "Python is a programming language that emphasizes readability. "
-            + "Python programming is widely used for web development and data science. "
-            + "Learning Python helps developers build applications quickly.")
+        .set("body", """
+            Python is a programming language that emphasizes readability. \
+            Python programming is widely used for web development and data science. \
+            Learning Python helps developers build applications quickly.""")
         .save();
       database.newDocument("Article")
         .set("title", "Database Systems")
-        .set("body", "Database systems store and manage data efficiently. "
-            + "Modern databases support transactions and provide high availability. "
-            + "Database optimization improves query performance and scalability.")
+        .set("body", """
+            Database systems store and manage data efficiently. \
+            Modern databases support transactions and provide high availability. \
+            Database optimization improves query performance and scalability.""")
         .save();
       database.newDocument("Article")
         .set("title", "Web Development")
-        .set("body", "Web development involves building applications for the internet. "
-            + "Modern web frameworks make development faster and more reliable. "
-            + "Full stack development requires knowledge of frontend and backend technologies.")
+        .set("body", """
+            Web development involves building applications for the internet. \
+            Modern web frameworks make development faster and more reliable. \
+            Full stack development requires knowledge of frontend and backend technologies.""")
         .save();
     });
   }

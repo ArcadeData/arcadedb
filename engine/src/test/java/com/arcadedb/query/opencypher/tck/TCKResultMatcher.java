@@ -29,12 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -85,7 +80,7 @@ public class TCKResultMatcher {
    * Converts a Result row to a map of column->value for comparison.
    */
   public static Map<String, Object> resultToMap(final Result result, final List<String> columns) {
-    final Map<String, Object> map = new java.util.LinkedHashMap<>();
+    final Map<String, Object> map = new LinkedHashMap<>();
     for (final String col : columns) {
       final Object val = result.getProperty(col);
       map.put(col, normalizeValue(val));
@@ -394,7 +389,7 @@ public class TCKResultMatcher {
     }
     if (value instanceof Map) {
       final Map<String, Object> map = (Map<String, Object>) value;
-      final Map<String, Object> normalized = new java.util.LinkedHashMap<>();
+      final Map<String, Object> normalized = new LinkedHashMap<>();
       for (final Map.Entry<String, Object> entry : map.entrySet())
         normalized.put(entry.getKey(), normalizeValue(entry.getValue()));
       return normalized;

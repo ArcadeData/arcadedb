@@ -53,7 +53,7 @@ class Issue3417Test {
   }
 
   @Test
-  void testRoundWithPrecision() {
+  void roundWithPrecision() {
     // Exact query from the issue
     try (final ResultSet rs = database.command("opencypher", "RETURN round(3.141592, 2) as result")) {
       assertThat(rs.hasNext()).isTrue();
@@ -63,7 +63,7 @@ class Issue3417Test {
   }
 
   @Test
-  void testRoundWithoutPrecision() {
+  void roundWithoutPrecision() {
     try (final ResultSet rs = database.command("opencypher", "RETURN round(3.141592) as result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -73,7 +73,7 @@ class Issue3417Test {
   }
 
   @Test
-  void testRoundWithZeroPrecision() {
+  void roundWithZeroPrecision() {
     try (final ResultSet rs = database.command("opencypher", "RETURN round(3.7, 0) as result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -82,7 +82,7 @@ class Issue3417Test {
   }
 
   @Test
-  void testRoundWithHighPrecision() {
+  void roundWithHighPrecision() {
     try (final ResultSet rs = database.command("opencypher", "RETURN round(3.141592, 4) as result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -91,7 +91,7 @@ class Issue3417Test {
   }
 
   @Test
-  void testRoundNegativeNumber() {
+  void roundNegativeNumber() {
     try (final ResultSet rs = database.command("opencypher", "RETURN round(-2.555, 2) as result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();
@@ -100,7 +100,7 @@ class Issue3417Test {
   }
 
   @Test
-  void testRoundNull() {
+  void roundNull() {
     try (final ResultSet rs = database.command("opencypher", "RETURN round(null) as result")) {
       assertThat(rs.hasNext()).isTrue();
       final Result row = rs.next();

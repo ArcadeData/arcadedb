@@ -81,8 +81,7 @@ import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
-  public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server" +
-      "-configuration.json";
+  public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
   private final       ContextConfiguration                  configuration;
   private final       String                                serverName;
   private             String                                hostAddress;
@@ -680,8 +679,9 @@ public class ArcadeDBServer {
 
               } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException |
                              InstantiationException e) {
-                throw new CommandExecutionException("Error on restoring database, restore libs not found in " +
-                    "classpath", e);
+                throw new CommandExecutionException("""
+                    Error on restoring database, restore libs not found in \
+                    classpath""", e);
               } catch (final InvocationTargetException e) {
                 throw new CommandExecutionException("Error on restoring database", e.getTargetException());
               }
@@ -723,8 +723,9 @@ public class ArcadeDBServer {
       if (credentialParts.length < 2) {
         if (!security.existsUser(credential)) {
           LogManager.instance()
-              .log(this, Level.WARNING, "Cannot create user '%s' to access database '%s' because the user does not " +
-                      "exist", null,
+              .log(this, Level.WARNING, """
+                      Cannot create user '%s' to access database '%s' because the user does not \
+                      exist""", null,
                   credential, dbName);
         }
         //FIXME: else if user exists, should we give him access to the dbName?
@@ -815,8 +816,9 @@ public class ArcadeDBServer {
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
       if (hostNameEnvVariable == null) {
         LogManager.instance().log(this, Level.SEVERE,
-            "Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server " +
-                "will be halted");
+            """
+                Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server \
+                will be halted""");
         stop();
         System.exit(1);
         return null;

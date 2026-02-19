@@ -121,9 +121,10 @@ class Issue3128BasicTest {
 
     // Test matching both nodes in a single query
     result = database.query("opencypher",
-        "MATCH (a) WHERE ID(a) = $sourceId " +
-        "MATCH (b) WHERE ID(b) = $targetId " +
-        "RETURN a, b",
+        """
+        MATCH (a) WHERE ID(a) = $sourceId \
+        MATCH (b) WHERE ID(b) = $targetId \
+        RETURN a, b""",
         Map.of("sourceId", sourceId, "targetId", targetId));
 
     assertThat(result.hasNext()).isTrue();

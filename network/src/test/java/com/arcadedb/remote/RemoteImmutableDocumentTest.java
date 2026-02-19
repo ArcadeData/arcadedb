@@ -22,6 +22,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 
 import java.util.*;
 
@@ -46,7 +47,7 @@ class RemoteImmutableDocumentTest {
     when(mockDatabase.getSchema()).thenReturn(mockSchema);
     when(mockSchema.getType("TestDoc")).thenReturn(mockType);
     when(mockType.getName()).thenReturn("TestDoc");
-    when(mockType.getPolymorphicPropertyIfExists(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
+    when(mockType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
 
     final Map<String, Object> attributes = new HashMap<>();
     attributes.put(Property.TYPE_PROPERTY, "TestDoc");

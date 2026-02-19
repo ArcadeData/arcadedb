@@ -63,8 +63,10 @@ class LSMVectorIndexPersistenceTest {
 
       // Create vector index using SQL command
       database.command("sql",
-          "CREATE INDEX ON Word (vector) LSM_VECTOR METADATA " +
-              "{dimensions: 100, similarity: 'COSINE', maxConnections: 16, beamWidth: 100, idPropertyName: 'name'}");
+          """
+          CREATE INDEX ON Word (vector) LSM_VECTOR METADATA \
+          {dimensions: 100, similarity: 'COSINE', maxConnections: 16, beamWidth: 100, idPropertyName: 'name'}\
+          """);
 
       // Verify index exists
       Index index = database.getSchema().getIndexByName("Word[vector]");

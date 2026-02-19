@@ -28,10 +28,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Comprehensive tests for ByteArrayComparator implementations.
  * Tests correctness, edge cases, and consistency across all comparator types.
  */
-public class ByteArrayComparatorTest {
+class ByteArrayComparatorTest {
 
   @Test
-  void testBestComparatorIsVarHandle() {
+  void bestComparatorIsVarHandle() {
     // Verify that VarHandleComparator is selected as BEST_COMPARATOR on Java 9+
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
     assertThat(comparator).isInstanceOf(UnsignedBytesComparator.VarHandleComparator.class);
@@ -39,7 +39,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testEmptyArrays() {
+  void emptyArrays() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
     final byte[] empty1 = new byte[0];
     final byte[] empty2 = new byte[0];
@@ -49,7 +49,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testSingleByte() {
+  void singleByte() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     assertThat(comparator.compare(new byte[]{1}, new byte[]{1})).isEqualTo(0);
@@ -58,7 +58,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testUnsignedComparison() {
+  void unsignedComparison() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Test unsigned semantics: 0xFF (255) > 0x7F (127)
@@ -70,7 +70,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testDifferentLengths() {
+  void differentLengths() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Shorter array is less if common prefix is equal
@@ -83,7 +83,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testEightByteAlignment() {
+  void eightByteAlignment() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Test arrays that are exactly 8 bytes (one full stride)
@@ -97,7 +97,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testMultipleStrides() {
+  void multipleStrides() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Test arrays larger than 8 bytes (multiple strides)
@@ -118,7 +118,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testNonAlignedArrays() {
+  void nonAlignedArrays() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Test arrays that are not multiples of 8
@@ -131,7 +131,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testAllByteValues() {
+  void allByteValues() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Test all possible byte values (0-255) in unsigned order
@@ -152,7 +152,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testEqualsMethod() {
+  void equalsMethod() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     final byte[] a = new byte[]{1, 2, 3, 4, 5, 6, 7, 8};
@@ -168,7 +168,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testReflexivity() {
+  void reflexivity() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
     final Random random = new Random(42);
 
@@ -182,7 +182,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testSymmetry() {
+  void symmetry() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
     final Random random = new Random(42);
 
@@ -201,7 +201,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testTransitivity() {
+  void transitivity() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     final byte[] a = new byte[]{1, 2, 3};
@@ -215,7 +215,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testConsistencyAcrossImplementations() {
+  void consistencyAcrossImplementations() {
     final ByteArrayComparator unsafe = UnsignedBytesComparator.BEST_COMPARATOR;
     final ByteArrayComparator pureJava = UnsignedBytesComparator.PURE_JAVA_COMPARATOR;
     final Random random = new Random(42);
@@ -242,7 +242,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testLargeArrays() {
+  void largeArrays() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
     final Random random = new Random(42);
 
@@ -259,7 +259,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testDifferenceInFirstStride() {
+  void differenceInFirstStride() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Difference in first 8 bytes
@@ -275,7 +275,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testDifferenceInSecondStride() {
+  void differenceInSecondStride() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Difference after first 8 bytes
@@ -291,7 +291,7 @@ public class ByteArrayComparatorTest {
   }
 
   @Test
-  void testDifferenceInEpilogue() {
+  void differenceInEpilogue() {
     final ByteArrayComparator comparator = UnsignedBytesComparator.BEST_COMPARATOR;
 
     // Difference in non-stride-aligned bytes

@@ -63,6 +63,7 @@ import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
+import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.DefaultSearchScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
@@ -149,7 +150,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Graph file for persistent storage of graph topology
   // Allows lazy-loading graph from disk and avoiding expensive rebuilds
-  private final LSMVectorIndexGraphFile graphFile;
+  private       LSMVectorIndexGraphFile graphFile;
   private final AtomicInteger           mutationsSinceSerialize;
 
   // Product Quantization (PQ) for zero-disk-I/O approximate search
@@ -201,9 +202,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     private final String fileBreakdown;
 
     private GraphBuildDiagnosticsSnapshot(final long heapUsedBytes, final long heapMaxBytes, final long offHeapBytes,
-                                          final long vectorIndexBytes, final long graphFileBytes,
-                                          final long pqFileBytes, final long compactedFileBytes,
-                                          final String fileBreakdown) {
+        final long vectorIndexBytes, final long graphFileBytes,
+        final long pqFileBytes, final long compactedFileBytes,
+        final String fileBreakdown) {
       this.heapUsedBytes = heapUsedBytes;
       this.heapMaxBytes = heapMaxBytes;
       this.offHeapBytes = offHeapBytes;
@@ -297,7 +298,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final long    absoluteFileOffset;
 
     VectorEntryForGraphBuild(final int vectorId, final RID rid, final boolean isCompacted,
-                             final long absoluteFileOffset) {
+        final long absoluteFileOffset) {
       this.vectorId = vectorId;
       this.rid = rid;
       this.isCompacted = isCompacted;
@@ -315,19 +316,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
           builder.getPageSize(), vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(),
           vectorBuilder.dimensions,
           vectorBuilder.similarityFunction, vectorBuilder.maxConnections, vectorBuilder.beamWidth,
- vectorBuilder.idPropertyName,
+          vectorBuilder.idPropertyName,
           vectorBuilder.quantizationType, vectorBuilder.locationCacheSize, vectorBuilder.graphBuildCacheSize,
           vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph, vectorBuilder.addHierarchy,
           vectorBuilder.pqSubspaces, vectorBuilder.pqClusters, vectorBuilder.pqCenterGlobally,
-vectorBuilder.pqTrainingLimit);
+          vectorBuilder.pqTrainingLimit);
     }
   }
 
   public static class PaginatedComponentFactoryHandlerUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public Component createOnLoad(final DatabaseInternal database, final String name, final String filePath,
-                                  final int id,
-                                  final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+        final int id,
+        final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
       // Check if this is a compacted index file (created during compaction)
       if (filePath.endsWith(LSMVectorIndexCompacted.FILE_EXT))
         return new LSMVectorIndexCompacted(null, database, name, filePath, id, mode, pageSize, version);
@@ -341,15 +342,15 @@ vectorBuilder.pqTrainingLimit);
    * Constructor for creating a new index
    */
   public LSMVectorIndex(final DatabaseInternal database, final String name, final String filePath,
- final ComponentFile.MODE mode,
-                        final int pageSize, final String typeName, final String[] propertyNames, final int dimensions,
-                        final VectorSimilarityFunction similarityFunction, final int maxConnections,
-                         final int beamWidth, final String idPropertyName,
-                        final VectorQuantizationType quantizationType, final int locationCacheSize,
-                        final int graphBuildCacheSize,
-                        final int mutationsBeforeRebuild, final boolean storeVectorsInGraph, final boolean addHierarchy,
-                        final int pqSubspaces, final int pqClusters, final boolean pqCenterGlobally,
-                        final int pqTrainingLimit) {
+      final ComponentFile.MODE mode,
+      final int pageSize, final String typeName, final String[] propertyNames, final int dimensions,
+      final VectorSimilarityFunction similarityFunction, final int maxConnections,
+      final int beamWidth, final String idPropertyName,
+      final VectorQuantizationType quantizationType, final int locationCacheSize,
+      final int graphBuildCacheSize,
+      final int mutationsBeforeRebuild, final boolean storeVectorsInGraph, final boolean addHierarchy,
+      final int pqSubspaces, final int pqClusters, final boolean pqCenterGlobally,
+      final int pqTrainingLimit) {
     try {
       this.indexName = name;
 
@@ -415,7 +416,7 @@ vectorBuilder.pqTrainingLimit);
    * Constructor for loading an existing index
    */
   protected LSMVectorIndex(final DatabaseInternal database, final String name, final String filePath, final int id,
-                           final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     this.indexName = name;
 
     this.metadata = new LSMVectorIndexMetadata(null, new String[0], -1);
@@ -433,11 +434,12 @@ vectorBuilder.pqTrainingLimit);
     this.mutable = new LSMVectorIndexMutable(database, name, filePath, id, mode, pageSize, version);
     this.mutable.setMainIndex(this);
 
-    // Discover and load graph file if it exists
+    // Discover and load graph file if it exists on disk.
+    // If no graph file exists yet, graphFile stays null and will be created lazily
+    // by getOrCreateGraphFile() when buildGraphFromScratch() first needs to persist.
     this.graphFile = discoverAndLoadGraphFile();
-    if (this.graphFile != null) {
+    if (this.graphFile != null)
       this.graphFile.setMainIndex(this);
-    }
 
     // Create PQ file handler (for zero-disk-I/O search)
     // PQ data will be loaded after schema loads metadata (see loadVectorsAfterSchemaLoad)
@@ -454,7 +456,7 @@ vectorBuilder.pqTrainingLimit);
     if (this.compactedSubIndex != null) {
       LogManager.instance()
           .log(this, Level.WARNING, "Successfully loaded compacted sub-index: %s (fileId=%d)",
-           this.compactedSubIndex.getName(),
+              this.compactedSubIndex.getName(),
               this.compactedSubIndex.getFileId());
     } else {
       LogManager.instance().log(this, Level.FINE, "No compacted sub-index found for index: %s", null, name);
@@ -490,7 +492,7 @@ vectorBuilder.pqTrainingLimit);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
               "Failed to migrate PQ file from legacy path %s to canonical %s: %s", legacyPQ.getFilePath(),
-               pq.getFilePath(),
+              pq.getFilePath(),
               e.getMessage());
         }
       }
@@ -505,8 +507,7 @@ vectorBuilder.pqTrainingLimit);
    */
   public void loadVectorsAfterSchemaLoad() {
     LogManager.instance()
-        .log(this, Level.SEVERE, "loadVectorsAfterSchemaLoad called for index %s: dimensions=%d, mutablePages=%d, " +
-                "hasGraphFile=%s",
+        .log(this, Level.SEVERE, "loadVectorsAfterSchemaLoad called for index %s: dimensions=%d, mutablePages=%d, hasGraphFile=%s",
             indexName, metadata.dimensions, mutable.getTotalPages(), graphFile != null);
 
     // CRASH RECOVERY: Check if index was BUILDING when database crashed/shutdown
@@ -515,8 +516,8 @@ vectorBuilder.pqTrainingLimit);
       if (loadedState == BUILD_STATE.BUILDING) {
         // Index was being built when database crashed/shutdown
         LogManager.instance().log(this, Level.WARNING,
-            "Vector index '%s' was BUILDING during last shutdown. Marking as INVALID. " +
-                "Run 'REBUILD INDEX %s' to recover.", indexName, indexName);
+            "Vector index '%s' was BUILDING during last shutdown. Marking as INVALID. Run 'REBUILD INDEX %s' to recover.",
+            indexName, indexName);
 
         this.buildState = BUILD_STATE.INVALID;
         this.metadata.buildState = BUILD_STATE.INVALID.name();
@@ -541,8 +542,7 @@ vectorBuilder.pqTrainingLimit);
     if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
       try {
         LogManager.instance()
-            .log(this, Level.SEVERE, "Loading vectors for index %s after schema load (dimensions=%d, pages=%d, " +
-             "fileId=%d)",
+            .log(this, Level.SEVERE, "Loading vectors for index %s after schema load (dimensions=%d, pages=%d, fileId=%d)",
                 indexName, metadata.dimensions, mutable.getTotalPages(), mutable.getFileId());
 
         loadVectorsFromPages();
@@ -551,7 +551,7 @@ vectorBuilder.pqTrainingLimit);
         // Don't build it here - causes deadlock during database load when PageManager isn't fully ready
         LogManager.instance().log(this, Level.SEVERE,
             "Successfully loaded %d vector locations for index %s (graph will be lazy-loaded on first search)",
-             vectorIndex.size(),
+            vectorIndex.size(),
             indexName);
 
         // Load PQ data if PRODUCT quantization is enabled
@@ -622,8 +622,7 @@ vectorBuilder.pqTrainingLimit);
       ComponentFile compactedComponentFile = null;
       long highestTimestamp = -1;
 
-      LogManager.instance().log(this, Level.FINE, "Searching FileManager for compacted files with prefix: %s", null,
-       namePrefix);
+      LogManager.instance().log(this, Level.FINE, "Searching FileManager for compacted files with prefix: %s", null, namePrefix);
 
       for (final ComponentFile file : database.getFileManager().getFiles()) {
         final String fileName = file.getComponentName();
@@ -665,7 +664,7 @@ vectorBuilder.pqTrainingLimit);
 
       // Create the compacted index component from the ComponentFile
       final LSMVectorIndexCompacted compactedIndex = new LSMVectorIndexCompacted(this, database, compactedName,
- compactedPath,
+          compactedPath,
           compactedFileId, database.getMode(), pageSize, version);
 
       // NOTE: Do NOT register with schema here - the file is already registered by LocalSchema.load()
@@ -673,14 +672,14 @@ vectorBuilder.pqTrainingLimit);
 
       LogManager.instance()
           .log(this, Level.WARNING, "Discovered and loaded compacted sub-index: %s (fileId=%d, pages=%d)",
-           compactedName,
+              compactedName,
               compactedIndex.getFileId(), compactedIndex.getTotalPages());
 
       return compactedIndex;
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error discovering compacted sub-index for %s: %s", indexName,
-       e.getMessage());
+          e.getMessage());
       return null;
     }
   }
@@ -715,7 +714,7 @@ vectorBuilder.pqTrainingLimit);
           database.getSchema().getEmbedded().registerFile(graphFile);
 
           LogManager.instance().log(this, Level.INFO, "Discovered and loaded graph file: %s (fileId=%d)",
-           graphFile.getName(),
+              graphFile.getName(),
               graphFile.getFileId());
 
           return graphFile;
@@ -723,13 +722,38 @@ vectorBuilder.pqTrainingLimit);
       }
 
       LogManager.instance()
-          .log(this, Level.FINE, "No graph file found in FileManager for index %s. Graph will be built on first " +
-                  "search.",
+          .log(this, Level.FINE, "No graph file found in FileManager for index %s. Graph will be built on first search.",
               indexName);
       return null;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error discovering graph file for %s: %s", indexName,
-       e.getMessage());
+          e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Returns the existing graphFile or lazily creates one on disk when needed (e.g. first graph build
+   * on an index that was loaded without a persisted .vecgraph file). This avoids creating empty files
+   * eagerly in the loading constructor.
+   */
+  private LSMVectorIndexGraphFile getOrCreateGraphFile() {
+    if (graphFile != null)
+      return graphFile;
+
+    try {
+      final DatabaseInternal db = getDatabase();
+      final String graphFileName = indexName + "_" + LSMVectorIndexGraphFile.FILE_EXT;
+      final String graphFilePath = mutable.getFilePath() + "_" + LSMVectorIndexGraphFile.FILE_EXT;
+      this.graphFile = new LSMVectorIndexGraphFile(db, graphFileName, graphFilePath,
+          db.getMode(), mutable.getPageSize());
+      this.graphFile.setMainIndex(this);
+      db.getSchema().getEmbedded().registerFile(this.graphFile);
+      LogManager.instance().log(this, Level.INFO, "Created graph file on demand for index: %s", indexName);
+      return graphFile;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Could not create graph file for index %s: %s",
+          indexName, e.getMessage());
       return null;
     }
   }
@@ -781,8 +805,9 @@ vectorBuilder.pqTrainingLimit);
           pqFile != null && !pqFile.exists();
       if (needsGraphRebuildForPQ) {
         LogManager.instance().log(this, Level.INFO,
-            "PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal " +
-             "consistency: %s",
+            """
+                PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal \
+                consistency: %s""",
             indexName);
       }
 
@@ -798,8 +823,9 @@ vectorBuilder.pqTrainingLimit);
       });
       if (hasDeletedVectors) {
         LogManager.instance().log(this, Level.INFO,
-            "Deleted vectors detected in index %s - rebuilding graph from scratch to ensure ordinal consistency " +
-                "(fixes issue #3135: stale ordinal mappings after vector updates)",
+            """
+                Deleted vectors detected in index %s - rebuilding graph from scratch to ensure ordinal consistency \
+                (fixes issue #3135: stale ordinal mappings after vector updates)""",
             indexName);
       }
 
@@ -812,7 +838,7 @@ vectorBuilder.pqTrainingLimit);
           // IMPORTANT: Must match the validation logic used during graph building
           final String vectorProp =
               metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-               metadata.propertyNames.getFirst() : "vector";
+                  metadata.propertyNames.getFirst() : "vector";
 
           this.ordinalToVectorId = vectorIndex.getAllVectorIds().filter(id -> {
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
@@ -869,7 +895,7 @@ vectorBuilder.pqTrainingLimit);
 
           LogManager.instance().log(this, Level.INFO,
               "Loaded graph from disk for index: %s, graphSize=%d, ordinalToVectorIdLength=%d, vectorIndexSize=%d",
-               indexName,
+              indexName,
               graphIndex != null ? graphIndex.size() : 0, ordinalToVectorId.length, vectorIndex.size());
 
           // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
@@ -887,7 +913,7 @@ vectorBuilder.pqTrainingLimit);
                 }
               }
               final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
-               vectorProp,
+                  vectorProp,
                   vectorLocationSnapshot, ordinalToVectorId, this, getGraphBuildCacheSize());
               buildAndPersistPQ(vectors);
             } catch (final Exception e) {
@@ -972,8 +998,8 @@ vectorBuilder.pqTrainingLimit);
     if (graphCallback != null) {
       effectiveGraphCallback = graphCallback;
     } else {
-      final long[] lastLogTimeMs = {System.currentTimeMillis()};
-      final int[] lastLoggedProcessed = {-1};
+      final long[] lastLogTimeMs = { System.currentTimeMillis() };
+      final int[] lastLoggedProcessed = { -1 };
       effectiveGraphCallback = (phase, processedNodes, totalNodes, vectorAccesses) -> {
         if (totalNodes <= 0)
           return;
@@ -1005,8 +1031,8 @@ vectorBuilder.pqTrainingLimit);
     // This avoids race conditions where concurrent replication adds entries to vectorIndex
     // that don't yet exist on disk pages. We iterate pages and read what's actually persisted.
     final Map<RID, VectorEntryForGraphBuild> ridToLatestVector = new HashMap<>();
-    final int[] totalEntriesRead = {0};
-    final int[] filteredDeletedVectors = {0};
+    final int[] totalEntriesRead = { 0 };
+    final int[] filteredDeletedVectors = { 0 };
 
     final DatabaseInternal database = getDatabase();
 
@@ -1068,8 +1094,7 @@ vectorBuilder.pqTrainingLimit);
         vectorIds = activeVectorIds; // Use vector IDs from pages
       } else {
         LogManager.instance().log(this, Level.SEVERE,
-            "FALLBACK: Could not read vectors from pages (database closing), using existing vectorIndex with %d " +
-             "entries",
+            "FALLBACK: Could not read vectors from pages (database closing), using existing vectorIndex with %d entries",
             vectorIndex.size());
         // Build vector IDs from existing vectorIndex
         vectorIds = vectorIndex.getAllVectorIds().filter(id -> {
@@ -1078,13 +1103,13 @@ vectorBuilder.pqTrainingLimit);
         }).sorted().toArray();
         LogManager.instance()
             .log(this, Level.SEVERE, "FALLBACK: Built %d active vector IDs from in-memory vectorIndex",
-             vectorIds.length);
+                vectorIds.length);
       }
 
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
       final String vectorProp =
           metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
-          "vector";
+              "vector";
 
       // CRITICAL FIX: Validate vectors before building graph to filter out deleted documents
       // When a document is deleted, getVector() returns null which breaks JVector index building
@@ -1203,7 +1228,7 @@ vectorBuilder.pqTrainingLimit);
       if (skippedDeletedDocs > 0) {
         LogManager.instance()
             .log(this, Level.INFO, "Filtered out %d vectors with deleted/invalid documents during graph build",
-             skippedDeletedDocs);
+                skippedDeletedDocs);
       }
 
       // Use validated vector IDs instead of unfiltered ones
@@ -1220,8 +1245,7 @@ vectorBuilder.pqTrainingLimit);
       }
 
       final int graphBuildCacheSize = getGraphBuildCacheSize();
-      LogManager.instance().log(this, Level.INFO, "Building graph with %d vectors using property '%s' (cache enabled:" +
-       " size=%d)",
+      LogManager.instance().log(this, Level.INFO, "Building graph with %d vectors using property '%s' (cache enabled: size=%d)",
           filteredVectorIds.length, vectorProp, graphBuildCacheSize);
 
       // Create lazy-loading vector values that reads vectors from documents or index pages (if quantized)
@@ -1250,11 +1274,11 @@ vectorBuilder.pqTrainingLimit);
       // Build the graph index using JVector 4.0 API (WITHOUT holding our lock - JVector uses parallel threads)
       LogManager.instance()
           .log(this, Level.INFO,
-           "Building JVector graph index with " + vectors.size() + " vectors for index: " + indexName);
+              "Building JVector graph index with " + vectors.size() + " vectors for index: " + indexName);
 
       // Create BuildScoreProvider for index construction
       final BuildScoreProvider scoreProvider = BuildScoreProvider.randomAccessScoreProvider(vectors,
- metadata.similarityFunction);
+          metadata.similarityFunction);
 
       // Build the graph index (parallel operation - no lock held)
       final ImmutableGraphIndex builtGraph;
@@ -1282,7 +1306,7 @@ vectorBuilder.pqTrainingLimit);
 
                 // Report progress
                 effectiveGraphCallback.onGraphBuildProgress("building", nodesAdded, totalNodes,
-                 nodesAdded + insertsInProgress);
+                    nodesAdded + insertsInProgress);
 
                 // Sleep briefly before next poll
                 Thread.sleep(100); // Poll every 100ms
@@ -1291,7 +1315,7 @@ vectorBuilder.pqTrainingLimit);
               Thread.currentThread().interrupt();
             } catch (final Exception e) {
               LogManager.instance().log(this, Level.WARNING,
-               "Error in graph build progress monitor: " + e.getMessage());
+                  "Error in graph build progress monitor: " + e.getMessage());
             }
           }, "JVector-Progress-Monitor-" + indexName);
           progressMonitor.setDaemon(true);
@@ -1316,8 +1340,7 @@ vectorBuilder.pqTrainingLimit);
 
         LogManager.instance().log(this, Level.INFO, "JVector graph index built successfully");
       } catch (final AssertionError e) {
-        LogManager.instance().log(this, Level.SEVERE, "JVector assertion failed during graph build (dimensions=%d, " +
-         "vectors=%d): %s",
+        LogManager.instance().log(this, Level.SEVERE, "JVector assertion failed during graph build (dimensions=%d, vectors=%d): %s",
             metadata.dimensions, vectors.size(), e.getMessage());
         throw e;
       }
@@ -1337,10 +1360,11 @@ vectorBuilder.pqTrainingLimit);
 
       // Persist graph to disk IMMEDIATELY in its own transaction
       // This ensures the graph is available on next database open (fast restart)
-      if (graphFile != null) {
+      final LSMVectorIndexGraphFile gf = getOrCreateGraphFile();
+      if (gf != null) {
         final int totalNodes = graphIndex.getIdUpperBound();
         LogManager.instance().log(this, Level.FINE, "Writing vector graph to disk for index: %s (nodes=%d)",
-         indexName, totalNodes);
+            indexName, totalNodes);
 
         // Report persistence phase start
         if (effectiveGraphCallback != null)
@@ -1370,7 +1394,7 @@ vectorBuilder.pqTrainingLimit);
         };
 
         try {
-          graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
+          gf.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
 
           // Report persistence completion
           if (effectiveGraphCallback != null) {
@@ -1381,22 +1405,36 @@ vectorBuilder.pqTrainingLimit);
           if (startedTransaction) {
             database.commit();
             LogManager.instance().log(this, Level.FINE, "Vector graph persisted and committed for index: %s",
-             indexName);
+                indexName);
           } else {
             database.commit();
             LogManager.instance()
                 .log(this, Level.FINE, "Vector graph persisted (transaction managed by caller) for index: %s",
-                 indexName);
+                    indexName);
           }
 
-          // Phase 2: Note - we don't reload the graph immediately as OnDiskGraphIndex here because:
-          // 1. The in-memory OnHeapGraphIndex works perfectly for searches
-          // 2. Page visibility issues after commit make immediate reload unreliable
-          // 3. On next database restart, ensureGraphAvailable() will load it as OnDiskGraphIndex
-          // 4. The inline vectors will be available when loaded from disk on restart
+          // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so the
+          // current session benefits from inline vector storage immediately. This is safe because
+          // the transaction has been committed above, so all graph pages are flushed and visible.
           if (metadata.storeVectorsInGraph) {
-            LogManager.instance().log(this, Level.INFO,
-                "Graph persisted with inline vectors - will use OnDiskGraphIndex on next database open");
+            try {
+              final OnDiskGraphIndex diskGraph = gf.loadGraph();
+              if (diskGraph != null) {
+                lock.writeLock().lock();
+                try {
+                  this.graphIndex = diskGraph;
+                  this.graphState = GraphState.IMMUTABLE;
+                } finally {
+                  lock.writeLock().unlock();
+                }
+                LogManager.instance().log(this, Level.INFO,
+                    "Graph reloaded as OnDiskGraphIndex with inline vectors for index: %s", indexName);
+              }
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "Could not reload graph as OnDiskGraphIndex (will use in-memory graph): %s: %s",
+                  e.getClass().getSimpleName(), e.getMessage());
+            }
           }
 
           // Build and persist Product Quantization if PRODUCT quantization is enabled
@@ -1426,8 +1464,7 @@ vectorBuilder.pqTrainingLimit);
           // Don't throw - allow the index to continue working, just won't have persisted graph
         }
       } else {
-        LogManager.instance().log(this, Level.SEVERE, "PERSIST: graphFile is NULL, cannot persist graph for index: " +
-         "%s", indexName);
+        LogManager.instance().log(this, Level.SEVERE, "PERSIST: graphFile is NULL, cannot persist graph for index: %s", indexName);
       }
       this.mutationsSinceSerialize.set(0);
 
@@ -1445,8 +1482,7 @@ vectorBuilder.pqTrainingLimit);
       final long configuredChunkSize = chunkSizeMB;
       chunkSizeMB = 50;
       LogManager.instance()
-          .log(this, Level.WARNING, "arcadedb.index.buildChunkSizeMB was %dMB during graph persistence; forcing " +
-                  "fallback to 50MB",
+          .log(this, Level.WARNING, "arcadedb.index.buildChunkSizeMB was %dMB during graph persistence; forcing fallback to 50MB",
               configuredChunkSize);
     }
     return chunkSizeMB;
@@ -1595,7 +1631,7 @@ vectorBuilder.pqTrainingLimit);
 
       LogManager.instance()
           .log(this, Level.FINE, "loadVectorsFromPages START: index=%s, totalPages=%d, vectorIndexSizeBefore=%d",
-           null, indexName,
+              null, indexName,
               getTotalPages(), vectorIndex.size());
 
       int entriesRead = 0;
@@ -1604,7 +1640,7 @@ vectorBuilder.pqTrainingLimit);
       // Load from compacted sub-index first (if it exists)
       if (compactedSubIndex != null) {
         final int compactedEntries = loadVectorsFromFile(compactedSubIndex.getFileId(),
-         compactedSubIndex.getTotalPages(), true);
+            compactedSubIndex.getTotalPages(), true);
         entriesRead += compactedEntries;
         LogManager.instance()
             .log(this, Level.INFO, "Loaded %d entries from compacted sub-index (fileId=%d)", null, compactedEntries,
@@ -1647,6 +1683,7 @@ vectorBuilder.pqTrainingLimit);
    * @param fileId      The file ID to load from
    * @param totalPages  The number of pages in that file
    * @param isCompacted True if loading from compacted file, false if from mutable file
+   *
    * @return Number of entries read
    */
   private int loadVectorsFromFile(final int fileId, final int totalPages, final boolean isCompacted) {
@@ -1654,9 +1691,9 @@ vectorBuilder.pqTrainingLimit);
         "loadVectorsFromFile: fileId=%d, totalPages=%d, isCompacted=%s", fileId, totalPages, isCompacted);
 
     final int entriesRead = LSMVectorIndexPageParser.parsePages(getDatabase(), fileId, totalPages, getPageSize(),
-     isCompacted,
+        isCompacted,
         entry -> vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid,
-         entry.deleted));
+            entry.deleted));
 
     LogManager.instance().log(this, Level.FINE,
         "loadVectorsFromFile DONE: fileId=%d, entriesRead=%d", fileId, entriesRead);
@@ -1684,13 +1721,13 @@ vectorBuilder.pqTrainingLimit);
       if (qmeta != null) {
         if (qmeta.getType() == VectorQuantizationType.INT8) {
           final VectorQuantizationMetadata.Int8QuantizationMetadata int8meta =
-          (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
+              (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
           entrySize += 4; // vector length (int)
           entrySize += int8meta.quantized.length; // quantized bytes
           entrySize += 8; // min + max (2 floats)
         } else if (qmeta.getType() == VectorQuantizationType.BINARY) {
           final VectorQuantizationMetadata.BinaryQuantizationMetadata binmeta =
-           (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta;
+              (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta;
           entrySize += 4; // original length (int)
           entrySize += binmeta.packed.length; // packed bytes
           entrySize += 4; // median (float)
@@ -1722,8 +1759,7 @@ vectorBuilder.pqTrainingLimit);
       if (offsetFreeContent < HEADER_BASE_SIZE || offsetFreeContent > currentPage.getMaxContentSize()) {
         // Old format page or corrupted, create new page
         LogManager.instance()
-            .log(this, Level.WARNING, "Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating new " +
-             "page",
+            .log(this, Level.WARNING, "Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating new page",
                 offsetFreeContent, lastPageNum, HEADER_BASE_SIZE, currentPage.getMaxContentSize());
         currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
         lastPageNum++;
@@ -1769,7 +1805,7 @@ vectorBuilder.pqTrainingLimit);
 
         if (qmeta.getType() == VectorQuantizationType.INT8) {
           final VectorQuantizationMetadata.Int8QuantizationMetadata int8meta =
-           (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
+              (VectorQuantizationMetadata.Int8QuantizationMetadata) qmeta;
 
           // Write vector length
           bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, int8meta.quantized.length);
@@ -1785,7 +1821,7 @@ vectorBuilder.pqTrainingLimit);
 
         } else if (qmeta.getType() == VectorQuantizationType.BINARY) {
           final VectorQuantizationMetadata.BinaryQuantizationMetadata binmeta =
-           (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta;
+              (VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta;
 
           // Write original length
           bytesWritten += currentPage.writeInt(offsetFreeContent + bytesWritten, binmeta.originalLength);
@@ -1860,8 +1896,7 @@ vectorBuilder.pqTrainingLimit);
         if (offsetFreeContent < HEADER_BASE_SIZE || offsetFreeContent > currentPage.getMaxContentSize()) {
           // Old format page or corrupted, create new page
           LogManager.instance()
-              .log(this, Level.WARNING, "Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating " +
-               "new page",
+              .log(this, Level.WARNING, "Invalid offsetFreeContent=%d in page %d (expected range: %d-%d), creating new page",
                   offsetFreeContent, lastPageNum, HEADER_BASE_SIZE, currentPage.getMaxContentSize());
           currentPage.writeByte(OFFSET_MUTABLE, (byte) 0);
           lastPageNum++;
@@ -1913,6 +1948,7 @@ vectorBuilder.pqTrainingLimit);
    * Returns a QuantizationResult containing the quantized data and metadata needed for dequantization.
    *
    * @param vector The float vector to quantize
+   *
    * @return Quantization result with quantized bytes and metadata, or null if quantization is NONE
    */
   private Object quantizeVector(final float[] vector) {
@@ -1936,6 +1972,7 @@ vectorBuilder.pqTrainingLimit);
    * Algorithm extracted from SQLFunctionVectorQuantizeInt8.
    *
    * @param vector The float vector to quantize
+   *
    * @return Int8QuantizationMetadata containing quantized bytes and min/max values
    */
   private VectorQuantizationMetadata.Int8QuantizationMetadata quantizeToInt8(final float[] vector) {
@@ -1974,6 +2011,7 @@ vectorBuilder.pqTrainingLimit);
    * Algorithm extracted from SQLFunctionVectorQuantizeBinary.
    *
    * @param vector The float vector to quantize
+   *
    * @return BinaryQuantizationMetadata containing packed bits and median value
    */
   private VectorQuantizationMetadata.BinaryQuantizationMetadata quantizeToBinary(final float[] vector) {
@@ -2016,6 +2054,7 @@ vectorBuilder.pqTrainingLimit);
    *
    * @param quantized The quantized byte array
    * @param qmeta     The quantization metadata containing min/max or median
+   *
    * @return The dequantized float vector
    */
   private float[] dequantizeVector(final byte[] quantized, final VectorQuantizationMetadata qmeta) {
@@ -2037,10 +2076,11 @@ vectorBuilder.pqTrainingLimit);
    *
    * @param quantized The quantized byte array
    * @param qmeta     The INT8 quantization metadata with min/max
+   *
    * @return The dequantized float vector
    */
   private float[] dequantizeFromInt8(final byte[] quantized,
-                                     final VectorQuantizationMetadata.Int8QuantizationMetadata qmeta) {
+      final VectorQuantizationMetadata.Int8QuantizationMetadata qmeta) {
     final float[] result = new float[quantized.length];
     final float range = qmeta.max - qmeta.min;
 
@@ -2068,10 +2108,11 @@ vectorBuilder.pqTrainingLimit);
    *
    * @param packed The packed binary data
    * @param qmeta  The BINARY quantization metadata with median
+   *
    * @return The dequantized float vector
    */
   private float[] dequantizeFromBinary(final byte[] packed,
-   final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta) {
+      final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta) {
     final float[] result = new float[qmeta.originalLength];
 
     for (int i = 0; i < qmeta.originalLength; i++) {
@@ -2093,6 +2134,7 @@ vectorBuilder.pqTrainingLimit);
    *
    * @param fileOffset  The absolute file offset where the vector entry starts
    * @param isCompacted Whether to read from compacted or mutable file
+   *
    * @return The dequantized float vector, or null if quantization is disabled or vector not found
    */
   protected float[] readVectorFromOffset(final long fileOffset, final boolean isCompacted) {
@@ -2165,8 +2207,8 @@ vectorBuilder.pqTrainingLimit);
 
           // Dequantize
           final VectorQuantizationMetadata.Int8QuantizationMetadata qmeta =
-           new VectorQuantizationMetadata.Int8QuantizationMetadata(
-              quantized, min, max);
+              new VectorQuantizationMetadata.Int8QuantizationMetadata(
+                  quantized, min, max);
           return dequantizeFromInt8(quantized, qmeta);
 
         } else if (quantType == VectorQuantizationType.BINARY) {
@@ -2187,8 +2229,8 @@ vectorBuilder.pqTrainingLimit);
 
           // Dequantize
           final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta =
-           new VectorQuantizationMetadata.BinaryQuantizationMetadata(
-              packed, median, originalLength);
+              new VectorQuantizationMetadata.BinaryQuantizationMetadata(
+                  packed, median, originalLength);
           return dequantizeFromBinary(packed, qmeta);
         }
 
@@ -2201,7 +2243,7 @@ vectorBuilder.pqTrainingLimit);
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error reading vector from offset %d: %s", fileOffset,
-       e.getMessage());
+          e.getMessage());
       return null;
     }
   }
@@ -2235,6 +2277,7 @@ vectorBuilder.pqTrainingLimit);
    *
    * @param queryVector The query vector to search for
    * @param k           The number of neighbors to return
+   *
    * @return List of pairs containing RID and similarity score
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k) {
@@ -2249,10 +2292,11 @@ vectorBuilder.pqTrainingLimit);
    * @param queryVector The query vector to search for
    * @param k           The number of neighbors to return
    * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
+   *
    * @return List of pairs containing RID and similarity score
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k,
- final Set<RID> allowedRIDs) {
+      final Set<RID> allowedRIDs) {
     // Track search metrics
     final long startTime = System.currentTimeMillis();
     metrics.incrementSearchOperations();
@@ -2318,10 +2362,10 @@ vectorBuilder.pqTrainingLimit);
         // Vector property name is the first property in the index
         final String vectorProp =
             metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
-             "vector";
+                "vector";
 
         final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
-         vectorProp,
+            vectorProp,
             vectorIndex, ordinalToVectorId, this  // Pass LSM index reference for quantization support
         );
 
@@ -2333,13 +2377,12 @@ vectorBuilder.pqTrainingLimit);
         // TODO: Use instance GraphSearcher method with metadata.efSearch parameter for better recall control
         // Current static method uses default efSearch behavior
         final SearchResult searchResult = GraphSearcher.search(queryVectorFloat, k, vectors,
-         metadata.similarityFunction,
+            metadata.similarityFunction,
             graphIndex,
             bitsFilter);
 
         LogManager.instance()
-            .log(this, Level.INFO, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, " +
-             "ordinalToVectorIdLength=%d",
+            .log(this, Level.INFO, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
                 searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
 
         // Extract RIDs and scores from search results using ordinal mapping
@@ -2377,7 +2420,7 @@ vectorBuilder.pqTrainingLimit);
 
         LogManager.instance()
             .log(this, Level.INFO, "Vector search returned %d results (skipped: %d out of bounds, %d deleted/null)",
-             results.size(),
+                results.size(),
                 skippedOutOfBounds, skippedDeletedOrNull);
         return results;
 
@@ -2411,6 +2454,7 @@ vectorBuilder.pqTrainingLimit);
    *
    * @param queryVector The query vector to search for
    * @param k           The number of neighbors to return
+   *
    * @return List of pairs containing RID and approximate similarity score
    */
   public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int k) {
@@ -2428,10 +2472,11 @@ vectorBuilder.pqTrainingLimit);
    * @param queryVector The query vector to search for
    * @param k           The number of neighbors to return
    * @param allowedRIDs Optional set of RIDs to restrict search to (null means no filtering)
+   *
    * @return List of pairs containing RID and approximate similarity score
    */
   public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int k,
-                                                                   final Set<RID> allowedRIDs) {
+      final Set<RID> allowedRIDs) {
     // Check if PQ is available
     if (pqVectors == null || productQuantization == null) {
       // Fall back to exact search
@@ -2672,16 +2717,16 @@ vectorBuilder.pqTrainingLimit);
         // Vector property name is the first property in the index
         final String vectorProp =
             metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
-            "vector";
+                "vector";
 
         final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
-         vectorProp,
+            vectorProp,
             vectorIndex, ordinalToVectorId, this  // Pass LSM index reference for quantization support
         );
 
         // Perform search
         final SearchResult searchResult = GraphSearcher.search(queryVectorFloat, k, vectors,
-         metadata.similarityFunction,
+            metadata.similarityFunction,
             graphIndex, Bits.ALL);
 
         // Extract RIDs from search results using ordinal mapping
@@ -2723,7 +2768,7 @@ vectorBuilder.pqTrainingLimit);
 
         @Override
         public Object[] getKeys() {
-          return new Object[]{queryVector};
+          return new Object[] { queryVector };
         }
 
         @Override
@@ -2800,7 +2845,7 @@ vectorBuilder.pqTrainingLimit);
         // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
         getDatabase().getTransaction()
             .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
-                new Object[]{new ComparableVector(vector)}, rid);
+                new Object[] { new ComparableVector(vector) }, rid);
 
       } else {
         // No transaction OR during commit replay: apply immediately
@@ -2859,7 +2904,7 @@ vectorBuilder.pqTrainingLimit);
       // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
-              new Object[]{new ComparableVector(new float[metadata.dimensions])}, rid);
+              new Object[] { new ComparableVector(new float[metadata.dimensions]) }, rid);
 
     } else {
       // No transaction OR during commit replay: apply immediately
@@ -3118,11 +3163,11 @@ vectorBuilder.pqTrainingLimit);
 
     LogManager.instance().log(this, Level.INFO,
         "compact() current status: %s, attempting compareAndSet from COMPACTION_SCHEDULED to COMPACTION_IN_PROGRESS",
-         status.get());
+        status.get());
     if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS)) {
       LogManager.instance()
           .log(this, Level.INFO, "compact() returning false: status compareAndSet failed (current status: %s)",
-          status.get());
+              status.get());
       // COMPACTION NOT SCHEDULED
       return false;
     }
@@ -3213,7 +3258,7 @@ vectorBuilder.pqTrainingLimit);
     metadata.fromJSON(indexJSON);
 
     LogManager.instance().log(this, Level.FINE, "Applied metadata from schema to vector index: %s (dimensions=%d)",
-     indexName,
+        indexName,
         this.metadata.dimensions);
   }
 
@@ -3227,8 +3272,7 @@ vectorBuilder.pqTrainingLimit);
       if (vectorIndex.size() > 0 && (graphState == GraphState.LOADING || graphState == GraphState.MUTABLE)) {
         try {
           LogManager.instance()
-              .log(this, Level.FINE, "Building graph before close for index: %s (this may take 1-2 minutes for large " +
-              "datasets)",
+              .log(this, Level.FINE, "Building graph before close for index: %s (this may take 1-2 minutes for large datasets)",
                   indexName);
           final long startTime = System.currentTimeMillis();
           buildGraphFromScratch();
@@ -3241,7 +3285,7 @@ vectorBuilder.pqTrainingLimit);
       } else {
         LogManager.instance()
             .log(this, Level.FINE, "Skipping graph build on close: vectorIndexSize=%d, graphState=%s",
-             vectorIndex.size(),
+                vectorIndex.size(),
                 graphState);
       }
     }
@@ -3275,7 +3319,7 @@ vectorBuilder.pqTrainingLimit);
             final File compactedFile = compactedSubIndex.getOSFile();
             if (compactedFile != null && compactedFile.exists() && !compactedFile.delete()) {
               LogManager.instance().log(this, Level.WARNING, "Error deleting compacted index file '%s'",
-              compactedFile.getPath());
+                  compactedFile.getPath());
             }
           }
         } catch (final Exception e) {
@@ -3296,7 +3340,7 @@ vectorBuilder.pqTrainingLimit);
             final File mutableFile = mutable.getOSFile();
             if (mutableFile != null && mutableFile.exists() && !mutableFile.delete()) {
               LogManager.instance().log(this, Level.WARNING, "Error deleting mutable index file '%s'",
-              mutableFile.getPath());
+                  mutableFile.getPath());
             }
           }
         } catch (final Exception e) {
@@ -3395,6 +3439,7 @@ vectorBuilder.pqTrainingLimit);
    *
    * @param callback      Callback for document indexing progress
    * @param graphCallback Callback for graph building progress
+   *
    * @return Total number of records indexed
    */
   public long build(final BuildIndexCallback callback, final GraphBuildCallback graphCallback) {
@@ -3483,6 +3528,7 @@ vectorBuilder.pqTrainingLimit);
    * Called during index build with WAL disabled.
    *
    * @param callback Callback for document indexing progress
+   *
    * @return Total number of vectors loaded
    */
   private long bulkLoadVectorData(final BuildIndexCallback callback) {
@@ -3596,9 +3642,9 @@ vectorBuilder.pqTrainingLimit);
       // Create vector values accessor for graph serialization
       final String vectorProp =
           metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
-          "vector";
+              "vector";
       final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
-       vectorProp,
+          vectorProp,
           vectorIndex, ordinalToVectorId, this);
 
       graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
@@ -3624,7 +3670,7 @@ vectorBuilder.pqTrainingLimit);
 
   @Override
   public Type[] getKeyTypes() {
-    return new Type[]{Type.ARRAY_OF_FLOATS};
+    return new Type[] { Type.ARRAY_OF_FLOATS };
   }
 
   public int getDimensions() {
@@ -3674,6 +3720,7 @@ vectorBuilder.pqTrainingLimit);
    *
    * @param startingFromPage The first page to copy from current index
    * @param compactedIndex   The compacted sub-index to attach
+   *
    * @return The new index file ID
    */
   protected LSMVectorIndexMutable splitIndex(final int startingFromPage, final LSMVectorIndexCompacted compactedIndex)
@@ -3685,7 +3732,7 @@ vectorBuilder.pqTrainingLimit);
 
     final int fileId = getFileId();
     final LockManager.LOCK_STATUS locked = getDatabase().getTransactionManager().tryLockFile(fileId, 0,
-     Thread.currentThread());
+        Thread.currentThread());
 
     if (locked == LockManager.LOCK_STATUS.NO)
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
@@ -3701,7 +3748,7 @@ vectorBuilder.pqTrainingLimit);
 
         final LSMVectorIndexMutable newMutableIndex = new LSMVectorIndexMutable(database, newName,
             database.getDatabasePath() + File.separator + newName, mutable.getDatabase().getMode(),
-             mutable.getPageSize(),
+            mutable.getPageSize(),
             PaginatedComponent.TEMP_EXT + LSMVectorIndexMutable.FILE_EXT);
 
         database.getSchema().getEmbedded().registerFile(newMutableIndex);
@@ -3720,7 +3767,7 @@ vectorBuilder.pqTrainingLimit);
 
           // Copy the entire page content
           final MutablePage newPage = new MutablePage(new PageId(getDatabase(), newMutableIndex.getFileId(), i + 1),
-           getPageSize());
+              getPageSize());
 
           final ByteBuffer oldContent = currentPage.getContent();
           oldContent.rewind();
@@ -3790,8 +3837,7 @@ vectorBuilder.pqTrainingLimit);
       final int numberOfEntries = page.readInt(OFFSET_NUM_ENTRIES);
 
       LogManager.instance().log(this, Level.FINE,
-          "applyReplicatedPageUpdate: index=%s, pageNum=%d, fileId=%d, entries=%d, freeContent=%d, " +
-           "vectorIndexSizeBefore=%d",
+          "applyReplicatedPageUpdate: index=%s, pageNum=%d, fileId=%d, entries=%d, freeContent=%d, vectorIndexSizeBefore=%d",
           indexName, pageNum, fileId, numberOfEntries, offsetFreeContent, vectorIndex.size());
 
       if (numberOfEntries == 0)
@@ -3843,14 +3889,14 @@ vectorBuilder.pqTrainingLimit);
 
       LogManager.instance()
           .log(this, Level.FINE, "Applied replicated page update: pageNum=%d, fileId=%d, isCompacted=%b, entries=%d",
-pageNum,
+              pageNum,
               fileId, isCompacted, numberOfEntries);
 
     } catch (final Exception e) {
       // Log but don't fail replication - VectorLocationIndex will be rebuilt if needed
       LogManager.instance()
           .log(this, Level.WARNING, "Error applying replicated page update for index %s: %s", indexName,
-           e.getMessage());
+              e.getMessage());
     }
   }
 
@@ -3888,6 +3934,7 @@ pageNum,
    * Used when mutable is not yet initialized.
    *
    * @param database The database instance
+   *
    * @return Maximum number of vector locations to cache, or -1 for unlimited
    */
   private int getLocationCacheSize(final DatabaseInternal database) {
@@ -3928,6 +3975,7 @@ pageNum,
    * This method provides transparent cache miss handling for bounded location caches.
    *
    * @param vectorId The vector ID to look up
+   *
    * @return The vector location, or null if not found
    */
   private VectorLocationIndex.VectorLocation getVectorLocation(final int vectorId) {
@@ -3951,6 +3999,7 @@ pageNum,
    * Scans compacted index first (more likely for old vectors), then mutable index.
    *
    * @param vectorId The vector ID to find
+   *
    * @return The reconstructed location, or null if not found
    */
   private VectorLocationIndex.VectorLocation reconstructLocationFromPages(final int vectorId) {
@@ -3974,11 +4023,12 @@ pageNum,
    * @param totalPages  Number of pages in the file
    * @param vectorId    The vector ID to find
    * @param isCompacted True if scanning compacted file
+   *
    * @return The vector location if found, null otherwise
    */
   private VectorLocationIndex.VectorLocation scanPagesForVectorId(final int fileId, final int totalPages,
-   final int vectorId,
-                                                                  final boolean isCompacted) {
+      final int vectorId,
+      final boolean isCompacted) {
     for (int pageNum = 0; pageNum < totalPages; pageNum++) {
       try {
         final BasePage currentPage = mutable.getDatabase().getPageManager()
@@ -4043,7 +4093,7 @@ pageNum,
       } catch (final Exception e) {
         LogManager.instance()
             .log(this, Level.WARNING, "Error scanning page %d in file %d for vectorId %d: %s", pageNum, fileId,
-             vectorId,
+                vectorId,
                 e.getMessage());
       }
     }
@@ -4056,17 +4106,18 @@ pageNum,
    *
    * @param dimensions       Number of vector dimensions
    * @param quantizationType Type of quantization
+   *
    * @return Size in bytes
    */
   private int calculateQuantizedSize(final int dimensions, final VectorQuantizationType quantizationType) {
     switch (quantizationType) {
-      case INT8:
-        return dimensions; // 1 byte per dimension
-      case BINARY:
-        return (dimensions + 7) / 8; // 1 bit per dimension, rounded up to bytes
-      case NONE:
-      default:
-        return 0;
+    case INT8:
+      return dimensions; // 1 byte per dimension
+    case BINARY:
+      return (dimensions + 7) / 8; // 1 bit per dimension, rounded up to bytes
+    case NONE:
+    default:
+      return 0;
     }
   }
 

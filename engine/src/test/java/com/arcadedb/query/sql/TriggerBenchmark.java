@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -34,11 +35,12 @@ import java.util.Map;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("benchmark")
 class TriggerBenchmark {
 
-  private static Database database;
-  private static final int WARMUP_ITERATIONS = 10000;
-  private static final int BENCHMARK_ITERATIONS = 100000;
+  private static       Database database;
+  private static final int      WARMUP_ITERATIONS    = 10000;
+  private static final int      BENCHMARK_ITERATIONS = 100000;
 
   @BeforeAll
   static void setup() {
@@ -153,8 +155,9 @@ class TriggerBenchmark {
         database.getSchema().createDocumentType("SQLAudit");
       }
       database.command("sql",
-          "CREATE TRIGGER sql_benchmark_trigger BEFORE CREATE ON TYPE SQLTest " +
-              "EXECUTE SQL 'INSERT INTO SQLAudit SET triggered = true'");
+          """
+          CREATE TRIGGER sql_benchmark_trigger BEFORE CREATE ON TYPE SQLTest \
+          EXECUTE SQL 'INSERT INTO SQLAudit SET triggered = true'""");
     });
 
     // Warmup
@@ -209,8 +212,9 @@ class TriggerBenchmark {
         database.getSchema().createDocumentType("JSAudit");
       }
       database.command("sql",
-          "CREATE TRIGGER js_benchmark_trigger BEFORE CREATE ON TYPE JSTest " +
-              "EXECUTE JAVASCRIPT 'database.command(\"sql\", \"INSERT INTO JSAudit SET triggered = true\");'");
+          """
+          CREATE TRIGGER js_benchmark_trigger BEFORE CREATE ON TYPE JSTest \
+          EXECUTE JAVASCRIPT 'database.command("sql", "INSERT INTO JSAudit SET triggered = true");'""");
     });
 
     // Warmup
@@ -265,8 +269,9 @@ class TriggerBenchmark {
         database.getSchema().createDocumentType("JavaAudit");
       }
       database.command("sql",
-          "CREATE TRIGGER java_benchmark_trigger BEFORE CREATE ON TYPE JavaTest " +
-              "EXECUTE JAVA 'com.arcadedb.query.sql.BenchmarkTrigger'");
+          """
+          CREATE TRIGGER java_benchmark_trigger BEFORE CREATE ON TYPE JavaTest \
+          EXECUTE JAVA 'com.arcadedb.query.sql.BenchmarkTrigger'""");
     });
 
     // Warmup

@@ -41,8 +41,9 @@ class SQLMethodAdditionalCoverageTest extends TestHelper {
     database.getSchema().createDocumentType("MethDoc");
     database.transaction(() -> {
       database.command("sql",
-          "INSERT INTO MethDoc SET name = 'Hello World', idx = 42, amount = 123.456, tags = ['alpha', 'beta', 'gamma'], " +
-              "props = {'key1': 'val1', 'key2': 'val2'}, active = true, empty = ''");
+          """
+          INSERT INTO MethDoc SET name = 'Hello World', idx = 42, amount = 123.456, tags = ['alpha', 'beta', 'gamma'], \
+          props = {'key1': 'val1', 'key2': 'val2'}, active = true, empty = ''""");
     });
   }
 
@@ -494,6 +495,67 @@ class SQLMethodAdditionalCoverageTest extends TestHelper {
     final ResultSet rs = database.query("sql", "SELECT @this.include('name', 'idx') as result FROM MethDoc");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Object>getProperty("result")).isNotNull();
+    rs.close();
+  }
+
+  // --- Regression tests for https://github.com/ArcadeData/arcadedb/issues/3480 ---
+
+  @Test
+  void includeWithMetadataWildcard() {
+    // include('@r*') should only return properties matching '@r*', i.e. @rid
+    final ResultSet rs = database.query("sql", "SELECT @this.include('@r*') as result FROM MethDoc");
+    assertThat(rs.hasNext()).isTrue();
+    final Object result = rs.next().getProperty("result");
+    assertThat(result).isInstanceOf(Map.class);
+    final Map<?, ?> map = (Map<?, ?>) result;
+    assertThat(map.containsKey("@rid")).isTrue();
+    assertThat(map.containsKey("@type")).isFalse();
+    assertThat(map.containsKey("@cat")).isFalse();
+    assertThat(map.containsKey("name")).isFalse();
+    rs.close();
+  }
+
+  @Test
+  void excludeWithMetadataWildcard() {
+    // exclude('@*') should remove all @ metadata properties
+    final ResultSet rs = database.query("sql", "SELECT @this.exclude('@*') as result FROM MethDoc");
+    assertThat(rs.hasNext()).isTrue();
+    final Object result = rs.next().getProperty("result");
+    assertThat(result).isInstanceOf(Map.class);
+    final Map<?, ?> map = (Map<?, ?>) result;
+    assertThat(map.containsKey("@rid")).isFalse();
+    assertThat(map.containsKey("@type")).isFalse();
+    assertThat(map.containsKey("@cat")).isFalse();
+    assertThat(map.containsKey("name")).isTrue();
+    assertThat(map.containsKey("idx")).isTrue();
+    rs.close();
+  }
+
+  @Test
+  void includeWildcardMatchesCorrectFields() {
+    // include('na*') should only include 'name' (the only field starting with 'na')
+    final ResultSet rs = database.query("sql", "SELECT @this.include('na*') as result FROM MethDoc");
+    assertThat(rs.hasNext()).isTrue();
+    final Object result = rs.next().getProperty("result");
+    assertThat(result).isNotNull();
+    if (result instanceof Map<?, ?> map) {
+      assertThat(map.containsKey("name")).isTrue();
+      assertThat(map.containsKey("idx")).isFalse();
+    }
+    rs.close();
+  }
+
+  @Test
+  void excludeExplicitMetadataField() {
+    // exclude('@type') should remove @type but keep other metadata and properties
+    final ResultSet rs = database.query("sql", "SELECT @this.exclude('@type') as result FROM MethDoc");
+    assertThat(rs.hasNext()).isTrue();
+    final Object result = rs.next().getProperty("result");
+    assertThat(result).isInstanceOf(Map.class);
+    final Map<?, ?> map = (Map<?, ?>) result;
+    assertThat(map.containsKey("@type")).isFalse();
+    assertThat(map.containsKey("@rid")).isTrue();
+    assertThat(map.containsKey("name")).isTrue();
     rs.close();
   }
 

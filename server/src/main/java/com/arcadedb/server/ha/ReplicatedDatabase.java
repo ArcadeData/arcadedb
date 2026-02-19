@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -163,7 +164,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public com.arcadedb.security.SecurityManager getSecurity() {
+  public SecurityManager getSecurity() {
     return server.getSecurity();
   }
 

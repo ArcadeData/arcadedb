@@ -290,6 +290,9 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   private ResultSet createResultSet(final Object result) {
+    if (result == null)
+      return new IteratorResultSet(Collections.emptyIterator());
+
     if (result instanceof Record record) {
       // Return documents directly (consistent with SQL/OpenCypher result format)
       final ResultInternal resultInternal = new ResultInternal(record);

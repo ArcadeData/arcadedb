@@ -31,6 +31,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
@@ -51,6 +52,7 @@ import java.util.stream.Collectors;
  * (exact nearest neighbors via brute-force linear scan).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Tag("benchmark")
 class LSMVectorIndexStorageBenchmark {
   private static final String DB_PATH = "target/test-databases/LSMVectorIndexStorageBenchmark";
 

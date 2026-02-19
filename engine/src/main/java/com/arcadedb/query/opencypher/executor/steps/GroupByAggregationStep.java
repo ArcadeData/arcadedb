@@ -20,19 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
-import com.arcadedb.query.opencypher.ast.BooleanExpression;
-import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
-import com.arcadedb.query.opencypher.ast.CaseExpression;
-import com.arcadedb.query.opencypher.ast.ComparisonExpression;
-import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
-import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.ast.LogicalExpression;
-import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
-import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
-import com.arcadedb.query.opencypher.ast.ListExpression;
-import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
-import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -422,7 +410,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       collectAggregations(cew.getComparison().getRight(), innerAggs, innerFunctions);
     } else if (expr instanceof CaseExpression ce) {
       collectAggregations(ce.getCaseExpression(), innerAggs, innerFunctions);
-      for (final com.arcadedb.query.opencypher.ast.CaseAlternative alt : ce.getAlternatives()) {
+      for (final CaseAlternative alt : ce.getAlternatives()) {
         collectAggregations(alt.getWhenExpression(), innerAggs, innerFunctions);
         collectAggregations(alt.getThenExpression(), innerAggs, innerFunctions);
       }

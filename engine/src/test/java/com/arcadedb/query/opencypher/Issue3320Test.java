@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Regression test for https://github.com/ArcadeData/arcadedb/issues/3320
  * MATCH (n) WHERE RETURN n should error, not silently ignore the empty WHERE clause.
  */
-public class Issue3320Test {
+class Issue3320Test {
   private Database database;
 
   @BeforeEach

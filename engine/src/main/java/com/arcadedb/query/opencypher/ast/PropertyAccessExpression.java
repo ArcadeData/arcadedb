@@ -19,12 +19,17 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,7 +48,7 @@ public class PropertyAccessExpression implements Expression {
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
     final Object variable = result.getProperty(variableName);
-    com.arcadedb.query.opencypher.executor.DeletedEntityMarker.checkNotDeleted(variable);
+    DeletedEntityMarker.checkNotDeleted(variable);
 
     if (variable == null)
       return null;
@@ -70,7 +75,7 @@ public class PropertyAccessExpression implements Expression {
 
     // Type validation: property access only works on property-bearing types
     // Primitive types (Integer, String, Boolean, List, etc.) don't have properties
-    throw new com.arcadedb.exception.CommandExecutionException(
+    throw new CommandExecutionException(
         "TypeError: Cannot access property '" + propertyName + "' on " +
         variable.getClass().getSimpleName() + " value");
   }
@@ -100,8 +105,8 @@ public class PropertyAccessExpression implements Expression {
    */
   private static Object convertFromStorage(final Object value) {
     // Handle collections (lists/arrays of temporal values)
-    if (value instanceof java.util.Collection<?> collection) {
-      final java.util.List<Object> converted = new java.util.ArrayList<>(collection.size());
+    if (value instanceof Collection<?> collection) {
+      final List<Object> converted = new ArrayList<>(collection.size());
       for (final Object item : collection) {
         converted.add(convertFromStorage(item));
       }

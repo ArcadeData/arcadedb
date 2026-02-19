@@ -743,8 +743,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       try {
         onOkCallback.call();
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on invoking onOk() callback for asynchronous operation " +
-            "%s", e, this);
+        LogManager.instance().log(this, Level.SEVERE, """
+            Error on invoking onOk() callback for asynchronous operation \
+            %s""", e, this);
       }
     }
   }

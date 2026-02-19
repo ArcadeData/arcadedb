@@ -94,10 +94,11 @@ public class OpenCypherMergeActionsTest {
   void mergeOnCreateAndOnMatchSet() {
     // First MERGE creates, should set created property
     ResultSet result = database.command("opencypher",
-        "MERGE (n:Person {name: 'Charlie'}) " +
-            "ON CREATE SET n.created = true, n.count = 1 " +
-            "ON MATCH SET n.count = 2 " +
-            "RETURN n");
+        """
+        MERGE (n:Person {name: 'Charlie'}) \
+        ON CREATE SET n.created = true, n.count = 1 \
+        ON MATCH SET n.count = 2 \
+        RETURN n""");
 
     assertThat(result.hasNext()).isTrue();
     Vertex person = (Vertex) result.next().toElement();
@@ -107,10 +108,11 @@ public class OpenCypherMergeActionsTest {
 
     // Second MERGE matches, should set count property
     result = database.command("opencypher",
-        "MERGE (n:Person {name: 'Charlie'}) " +
-            "ON CREATE SET n.created = true, n.count = 1 " +
-            "ON MATCH SET n.count = 2 " +
-            "RETURN n");
+        """
+        MERGE (n:Person {name: 'Charlie'}) \
+        ON CREATE SET n.created = true, n.count = 1 \
+        ON MATCH SET n.count = 2 \
+        RETURN n""");
 
     assertThat(result.hasNext()).isTrue();
     person = (Vertex) result.next().toElement();
@@ -123,9 +125,10 @@ public class OpenCypherMergeActionsTest {
   void mergeOnCreateSetMultipleProperties() {
     // MERGE with ON CREATE SET can set multiple properties
     final ResultSet result = database.command("opencypher",
-        "MERGE (n:Person {name: 'David'}) " +
-            "ON CREATE SET n.age = 30, n.city = 'NYC', n.active = true " +
-            "RETURN n");
+        """
+        MERGE (n:Person {name: 'David'}) \
+        ON CREATE SET n.age = 30, n.city = 'NYC', n.active = true \
+        RETURN n""");
 
     assertThat(result.hasNext()).isTrue();
     final Vertex person = (Vertex) result.next().toElement();
@@ -142,9 +145,10 @@ public class OpenCypherMergeActionsTest {
 
     // MERGE with ON MATCH SET updates properties
     final ResultSet result = database.command("opencypher",
-        "MERGE (n:Person {name: 'Eve'}) " +
-            "ON MATCH SET n.age = 26, n.visits = 5 " +
-            "RETURN n");
+        """
+        MERGE (n:Person {name: 'Eve'}) \
+        ON MATCH SET n.age = 26, n.visits = 5 \
+        RETURN n""");
 
     assertThat(result.hasNext()).isTrue();
     final Vertex person = (Vertex) result.next().toElement();
@@ -157,9 +161,10 @@ public class OpenCypherMergeActionsTest {
   void mergeOnCreateSetWithLiterals() {
     // Test different literal types in ON CREATE SET
     final ResultSet result = database.command("opencypher",
-        "MERGE (n:Person {name: 'Frank'}) " +
-            "ON CREATE SET n.stringProp = 'hello', n.intProp = 42, n.floatProp = 3.14, n.boolProp = true, n.nullProp = null " +
-            "RETURN n");
+        """
+        MERGE (n:Person {name: 'Frank'}) \
+        ON CREATE SET n.stringProp = 'hello', n.intProp = 42, n.floatProp = 3.14, n.boolProp = true, n.nullProp = null \
+        RETURN n""");
 
     assertThat(result.hasNext()).isTrue();
     final Vertex person = (Vertex) result.next().toElement();
@@ -178,10 +183,11 @@ public class OpenCypherMergeActionsTest {
 
     // MERGE with ON CREATE SET can reference properties from matched pattern
     final ResultSet result = database.command("opencypher",
-        "MATCH (existing:Person {name: 'Grace'}) " +
-            "MERGE (n:Person {name: 'Henry'}) " +
-            "ON CREATE SET n.age = existing.age " +
-            "RETURN n, existing");
+        """
+        MATCH (existing:Person {name: 'Grace'}) \
+        MERGE (n:Person {name: 'Henry'}) \
+        ON CREATE SET n.age = existing.age \
+        RETURN n, existing""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -200,10 +206,11 @@ public class OpenCypherMergeActionsTest {
 
     // MERGE relationship with ON CREATE SET
     final ResultSet result = database.command("opencypher",
-        "MATCH (a:Person {name: 'Isaac'}), (b:Company {name: 'ArcadeDB'}) " +
-            "MERGE (a)-[r:WORKS_AT]->(b) " +
-            "ON CREATE SET r.since = 2020, r.role = 'Engineer' " +
-            "RETURN r");
+        """
+        MATCH (a:Person {name: 'Isaac'}), (b:Company {name: 'ArcadeDB'}) \
+        MERGE (a)-[r:WORKS_AT]->(b) \
+        ON CREATE SET r.since = 2020, r.role = 'Engineer' \
+        RETURN r""");
 
     assertThat(result.hasNext()).isTrue();
     final Edge edge = (Edge) result.next().toElement();
@@ -219,10 +226,11 @@ public class OpenCypherMergeActionsTest {
 
     // MERGE with ON MATCH SET on relationship
     final ResultSet result = database.command("opencypher",
-        "MATCH (a:Person {name: 'Julia'}), (b:Company {name: 'ArcadeDB'}) " +
-            "MERGE (a)-[r:WORKS_AT]->(b) " +
-            "ON MATCH SET r.since = 2021, r.promoted = true " +
-            "RETURN r");
+        """
+        MATCH (a:Person {name: 'Julia'}), (b:Company {name: 'ArcadeDB'}) \
+        MERGE (a)-[r:WORKS_AT]->(b) \
+        ON MATCH SET r.since = 2021, r.promoted = true \
+        RETURN r""");
 
     assertThat(result.hasNext()).isTrue();
     final Edge edge = (Edge) result.next().toElement();

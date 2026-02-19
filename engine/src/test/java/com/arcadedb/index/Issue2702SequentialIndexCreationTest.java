@@ -56,7 +56,7 @@ class Issue2702SequentialIndexCreationTest extends TestHelper {
   private static final String TYPE_NAME         = "Rating";
 
   @Test
-  void testSequentialIndexCreation() throws Exception {
+  void sequentialIndexCreation() throws Exception {
     final int originalCompactionRamMB = GlobalConfiguration.INDEX_COMPACTION_RAM_MB.getValueAsInteger();
     final int originalMinPages = GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.getValueAsInteger();
 
@@ -162,7 +162,7 @@ class Issue2702SequentialIndexCreationTest extends TestHelper {
   }
 
   @Test
-  void testIndexCreationWaitsForAsyncCompaction() throws Exception {
+  void indexCreationWaitsForAsyncCompaction() throws Exception {
     final int originalCompactionRamMB = GlobalConfiguration.INDEX_COMPACTION_RAM_MB.getValueAsInteger();
     final int originalMinPages = GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.getValueAsInteger();
 
