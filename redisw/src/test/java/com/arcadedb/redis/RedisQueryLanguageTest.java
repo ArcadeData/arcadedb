@@ -430,6 +430,28 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hGetNoResultReturnsEmptyArray() throws Exception {
+    // Issue #3470 comment: Redis HGET for non-existing key should return {"result":[]}
+    // consistent with SQL/OpenCypher, not {"result":[{"value":null}]}
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    database.command("sql", "CREATE VERTEX TYPE doc2");
+    database.command("sql", "CREATE PROPERTY doc2.id LONG");
+    database.command("sql", "CREATE INDEX ON doc2 (id) UNIQUE");
+    database.command("sql", "INSERT INTO doc2 SET id = 1");
+
+    // Query for a non-existing key via Redis HGET
+    final JSONObject redisResponse = executeQuery(0, "redis", "HGET doc2[id] 999");
+    final JSONArray redisResults = redisResponse.getJSONArray("result");
+    assertThat(redisResults.length()).isEqualTo(0);
+
+    // Compare with SQL for a non-existing record
+    final JSONObject sqlResponse = executeQuery(0, "sql", "SELECT FROM doc2 WHERE id = 999");
+    final JSONArray sqlResults = sqlResponse.getJSONArray("result");
+    assertThat(sqlResults.length()).isEqualTo(0);
+  }
+
+  @Test
   void nonIdempotentCommandsRejectedOnQueryEndpoint() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
 
