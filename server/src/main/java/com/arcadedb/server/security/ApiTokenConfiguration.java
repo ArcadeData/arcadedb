@@ -124,7 +124,12 @@ public class ApiTokenConfiguration {
     }
   }
 
-  public JSONObject createToken(final String name, final String database, final long expiresAt, final JSONObject permissions) {
+  public synchronized JSONObject createToken(final String name, final String database, final long expiresAt, final JSONObject permissions) {
+    for (final JSONObject existing : tokens.values()) {
+      if (name.equals(existing.getString("name", "")))
+        throw new IllegalArgumentException("A token with name '" + name + "' already exists");
+    }
+
     final byte[] randomBytes = new byte[TOKEN_BYTES];
     SECURE_RANDOM.nextBytes(randomBytes);
     final String tokenValue = TOKEN_PREFIX + HexFormat.of().formatHex(randomBytes);
@@ -177,16 +182,6 @@ public class ApiTokenConfiguration {
 
   public List<JSONObject> listTokens() {
     return new ArrayList<>(tokens.values());
-  }
-
-  public synchronized void cleanupExpired() {
-    final long now = System.currentTimeMillis();
-    final boolean removed = tokens.entrySet().removeIf(entry -> {
-      final long expiresAt = entry.getValue().getLong("expiresAt", 0);
-      return expiresAt > 0 && expiresAt < now;
-    });
-    if (removed)
-      save();
   }
 
   public static boolean isApiToken(final String token) {

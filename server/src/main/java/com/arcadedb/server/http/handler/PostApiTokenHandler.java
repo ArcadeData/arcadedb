@@ -55,7 +55,12 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", validationError).toString());
 
     final ApiTokenConfiguration tokenConfig = httpServer.getServer().getSecurity().getApiTokenConfiguration();
-    final JSONObject tokenJson = tokenConfig.createToken(name, database, expiresAt, permissions);
+    final JSONObject tokenJson;
+    try {
+      tokenJson = tokenConfig.createToken(name, database, expiresAt, permissions);
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
+    }
 
     final JSONObject response = new JSONObject();
     response.put("result", tokenJson);

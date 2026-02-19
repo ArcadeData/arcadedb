@@ -78,6 +78,8 @@ public class ExecuteCommandTool {
         .setUseCollectionSize(false)
         .setUseCollectionSizeForEdges(false);
 
+    // Reuse the already-parsed statement when possible (SQL). For other engines (Cypher, Gremlin,
+    // GraphQL) analyzed.execute() returns null and the command is re-parsed by database.command().
     final JSONArray records = new JSONArray();
     database.transaction(() -> {
       final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());

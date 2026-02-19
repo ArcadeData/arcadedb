@@ -45,28 +45,26 @@ public class PutUserHandler extends AbstractServerHttpHandler {
 
     final ServerSecurity security = httpServer.getServer().getSecurity();
 
-    synchronized (security) {
-      final ServerSecurityUser existingUser = security.getUser(name);
-      if (existingUser == null)
-        return new ExecutionResponse(404, new JSONObject().put("error", "User '" + name + "' not found").toString());
+    final ServerSecurityUser existingUser = security.getUser(name);
+    if (existingUser == null)
+      return new ExecutionResponse(404, new JSONObject().put("error", "User '" + name + "' not found").toString());
 
-      // Build updated config from a copy to avoid mutating the live user object
-      final JSONObject updatedConfig = existingUser.toJSON().copy();
+    // Build updated config from a copy to avoid mutating the live user object
+    final JSONObject updatedConfig = existingUser.toJSON().copy();
 
-      if (payload.has("password")) {
-        final String password = payload.getString("password");
-        if (password.length() < 8)
-          throw new ServerSecurityException("User password must be at least 8 characters");
-        if (password.length() > 256)
-          throw new ServerSecurityException("User password cannot be longer than 256 characters");
-        updatedConfig.put("password", security.encodePassword(password));
-      }
-
-      if (payload.has("databases"))
-        updatedConfig.put("databases", payload.getJSONObject("databases"));
-
-      security.updateUser(updatedConfig);
+    if (payload.has("password")) {
+      final String password = payload.getString("password");
+      if (password.length() < 8)
+        throw new ServerSecurityException("User password must be at least 8 characters");
+      if (password.length() > 256)
+        throw new ServerSecurityException("User password cannot be longer than 256 characters");
+      updatedConfig.put("password", security.encodePassword(password));
     }
+
+    if (payload.has("databases"))
+      updatedConfig.put("databases", payload.getJSONObject("databases"));
+
+    security.updateUser(updatedConfig);
 
     final JSONObject response = new JSONObject();
     response.put("result", "User '" + name + "' updated");

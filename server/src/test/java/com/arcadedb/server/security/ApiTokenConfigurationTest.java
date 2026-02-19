@@ -84,14 +84,24 @@ class ApiTokenConfigurationTest {
   void testDeleteToken() {
     final JSONObject created = config.createToken("Token1", "db1", 0, new JSONObject());
     final String tokenValue = created.getString("token");
+    final String tokenHash = ApiTokenConfiguration.hashToken(tokenValue);
 
-    assertThat(config.deleteToken(tokenValue)).isTrue();
+    assertThat(config.deleteToken(tokenHash)).isTrue();
     assertThat(config.getToken(tokenValue)).isNull();
   }
 
   @Test
+  void testDeleteTokenRejectsPlaintext() {
+    final JSONObject created = config.createToken("Token1", "db1", 0, new JSONObject());
+    final String tokenValue = created.getString("token");
+
+    org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+        () -> config.deleteToken(tokenValue));
+  }
+
+  @Test
   void testDeleteTokenNotFound() {
-    assertThat(config.deleteToken("at-nonexistent")).isFalse();
+    assertThat(config.deleteToken("nonexistent-hash-that-does-not-start-with-prefix")).isFalse();
   }
 
   @Test
@@ -144,15 +154,14 @@ class ApiTokenConfigurationTest {
   }
 
   @Test
-  void testCleanupExpired() {
-    final long pastTime = System.currentTimeMillis() - 1000;
-    config.createToken("Expired1", "db1", pastTime, new JSONObject());
-    config.createToken("Valid1", "db2", 0, new JSONObject());
+  void testDuplicateNameThrows() {
+    config.createToken("SameName", "db1", 0, new JSONObject());
 
-    config.cleanupExpired();
+    org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+        () -> config.createToken("SameName", "db2", 0, new JSONObject()));
 
+    // Only one token should exist
     assertThat(config.listTokens()).hasSize(1);
-    assertThat(config.listTokens().get(0).getString("name")).isEqualTo("Valid1");
   }
 
   @Test

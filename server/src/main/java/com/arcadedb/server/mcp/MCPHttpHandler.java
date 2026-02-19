@@ -53,6 +53,11 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  public boolean isRequireAuthentication() {
+    return true;
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     // Auth check first to avoid leaking server state to unauthenticated requests
     if (user == null)

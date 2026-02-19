@@ -87,7 +87,8 @@ public class QueryTool {
         .setUseCollectionSize(false)
         .setUseCollectionSizeForEdges(false);
 
-    // Reuse the already-parsed statement when possible to avoid double parsing
+    // Reuse the already-parsed statement when possible (SQL). For other engines (Cypher, Gremlin,
+    // GraphQL) analyzed.execute() returns null and the query is re-parsed by database.query().
     final JSONArray records = new JSONArray();
     final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());
     try (final ResultSet resultSet = analyzedResultSet != null ? analyzedResultSet : database.query(language, query)) {

@@ -219,7 +219,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return users.get(userName);
   }
 
-  public ServerSecurityUser createUser(final JSONObject userConfiguration) {
+  public synchronized ServerSecurityUser createUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
     if (users.containsKey(name))
       throw new SecurityException("User '" + name + "' already exists");
@@ -230,7 +230,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return user;
   }
 
-  public ServerSecurityUser updateUser(final JSONObject userConfiguration) {
+  public synchronized ServerSecurityUser updateUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
     if (!users.containsKey(name))
       throw new ServerSecurityException("User '" + name + "' not found");
@@ -568,16 +568,20 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   public ServerSecurityUser authenticateByApiToken(final String tokenValue) {
-    // Brute-force protection: track failed attempts by token hash prefix
+    // Brute-force protection: track failed attempts by token hash prefix.
+    // The lockout check and failure increment are both performed inside compute()
+    // to make the check-and-act atomic on the ConcurrentHashMap bucket.
     final String attemptKey = ApiTokenConfiguration.hashToken(tokenValue).substring(0, 8);
-    final long[] existing = tokenFailures.get(attemptKey);
-    if (existing != null && existing[0] >= MAX_TOKEN_FAILURES && System.currentTimeMillis() - existing[1] < TOKEN_LOCKOUT_MS)
-      throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
 
     final JSONObject tokenJson = apiTokenConfig.getToken(tokenValue);
     if (tokenJson == null) {
       final long now = System.currentTimeMillis();
+      final boolean[] lockedOut = { false };
       tokenFailures.compute(attemptKey, (k, entry) -> {
+        if (entry != null && entry[0] >= MAX_TOKEN_FAILURES && now - entry[1] < TOKEN_LOCKOUT_MS) {
+          lockedOut[0] = true;
+          return entry; // Keep existing entry without incrementing
+        }
         if (entry == null)
           return new long[] { 1, now };
         if (now - entry[1] > TOKEN_LOCKOUT_MS) {
@@ -587,6 +591,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           entry[0]++;
         return entry;
       });
+      if (lockedOut[0])
+        throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
       throw new ServerSecurityException("Invalid or expired API token");
     }
 

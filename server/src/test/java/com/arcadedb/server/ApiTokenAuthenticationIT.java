@@ -315,6 +315,36 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   }
 
   @Test
+  void testDuplicateTokenNameReturns409() throws Exception {
+    testEachServer((serverIndex) -> {
+      createApiToken(serverIndex, "Unique Name", "graph", 0, new JSONObject());
+
+      // Second token with the same name should return 409
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization", basicAuth());
+      connection.setDoOutput(true);
+      connection.setRequestProperty("Content-Type", "application/json");
+
+      final JSONObject payload = new JSONObject();
+      payload.put("name", "Unique Name");
+      payload.put("database", "graph");
+      payload.put("expiresAt", 0);
+      payload.put("permissions", new JSONObject());
+
+      connection.getOutputStream().write(payload.toString().getBytes());
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(409);
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
   void testApiTokenInvalidReturns401() throws Exception {
     testEachServer((serverIndex) -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -333,6 +363,13 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
   private String createApiToken(final int serverIndex, final String name, final String database, final long expiresAt,
       final JSONObject permissions) throws Exception {
+    // Delete any pre-existing token with the same name (e.g., left over from a previous test run)
+    final com.arcadedb.server.security.ApiTokenConfiguration tokenConfig =
+        getServer(serverIndex).getSecurity().getApiTokenConfiguration();
+    tokenConfig.listTokens().stream()
+        .filter(t -> name.equals(t.getString("name", "")))
+        .forEach(t -> tokenConfig.deleteToken(t.getString("tokenHash")));
+
     final HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens").openConnection();
     connection.setRequestMethod("POST");

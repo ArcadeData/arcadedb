@@ -46,12 +46,14 @@ public class MCPConfigHandler extends AbstractServerHttpHandler {
     if (Methods.GET.equals(exchange.getRequestMethod()))
       return new ExecutionResponse(200, config.toJSON().toString());
 
-    // POST - update configuration
-    if (payload == null)
-      return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
+    if (Methods.POST.equals(exchange.getRequestMethod())) {
+      if (payload == null)
+        return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
+      config.updateFrom(payload);
+      config.save();
+      return new ExecutionResponse(200, config.toJSON().toString());
+    }
 
-    config.updateFrom(payload);
-    config.save();
-    return new ExecutionResponse(200, config.toJSON().toString());
+    return new ExecutionResponse(405, new JSONObject().put("error", "Method not allowed").toString());
   }
 }

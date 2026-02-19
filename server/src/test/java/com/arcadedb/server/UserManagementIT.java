@@ -148,6 +148,30 @@ class UserManagementIT extends BaseGraphServerTest {
   }
 
   @Test
+  void testCreateUserWithApitokenPrefixReturns400() throws Exception {
+    testEachServer((serverIndex) -> {
+      final JSONObject payload = new JSONObject();
+      payload.put("name", "apitoken:hack");
+      payload.put("password", "password1234");
+
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization", basicAuth());
+      connection.setDoOutput(true);
+      connection.setRequestProperty("Content-Type", "application/json");
+      connection.getOutputStream().write(payload.toString().getBytes());
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(400);
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
   void testUpdateNonExistentUserReturns404() throws Exception {
     testEachServer((serverIndex) -> {
       final JSONObject updatePayload = new JSONObject();

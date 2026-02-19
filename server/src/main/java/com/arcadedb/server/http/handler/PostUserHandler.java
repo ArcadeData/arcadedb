@@ -41,6 +41,8 @@ public class PostUserHandler extends AbstractServerHttpHandler {
     final String name = payload.getString("name", "");
     if (name.isBlank())
       return new ExecutionResponse(400, new JSONObject().put("error", "User name is required").toString());
+    if (name.startsWith("apitoken:"))
+      return new ExecutionResponse(400, new JSONObject().put("error", "User name cannot start with 'apitoken:'").toString());
 
     final String password = payload.getString("password", "");
     if (password.length() < 8)
