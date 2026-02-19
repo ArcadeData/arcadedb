@@ -544,10 +544,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     final String database = tokenJson.getString("database");
     final String tokenName = tokenJson.getString("name");
+    final String tokenHash = tokenJson.getString("tokenHash");
     final JSONObject permissions = tokenJson.getJSONObject("permissions");
 
-    // Build synthetic group config from token permissions
-    final String syntheticGroupName = "_apitoken_" + tokenName;
+    // Build synthetic group config from token permissions (use hash prefix for collision resistance)
+    final String syntheticGroupName = "_apitoken_" + tokenHash.substring(0, 16);
     final JSONObject groupDef = new JSONObject();
 
     // Types permissions

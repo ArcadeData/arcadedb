@@ -43,21 +43,15 @@ public class GetApiTokensHandler extends AbstractServerHttpHandler {
 
     final JSONArray result = new JSONArray();
     for (final JSONObject token : tokens) {
-      final JSONObject masked = new JSONObject();
-      masked.put("name", token.getString("name"));
-      masked.put("database", token.getString("database"));
-      masked.put("expiresAt", token.getLong("expiresAt", 0));
-      masked.put("createdAt", token.getLong("createdAt", 0));
-      masked.put("permissions", token.getJSONObject("permissions"));
-
-      // Mask the token value: show first 6 + last 4 chars
-      final String tokenValue = token.getString("token");
-      if (tokenValue.length() > 10)
-        masked.put("token", tokenValue.substring(0, 6) + "..." + tokenValue.substring(tokenValue.length() - 4));
-      else
-        masked.put("token", "***");
-
-      result.put(masked);
+      final JSONObject entry = new JSONObject();
+      entry.put("name", token.getString("name"));
+      entry.put("database", token.getString("database"));
+      entry.put("expiresAt", token.getLong("expiresAt", 0));
+      entry.put("createdAt", token.getLong("createdAt", 0));
+      entry.put("permissions", token.getJSONObject("permissions"));
+      entry.put("tokenHash", token.getString("tokenHash"));
+      entry.put("tokenPrefix", token.getString("tokenPrefix", "") + "...");
+      result.put(entry);
     }
 
     final JSONObject response = new JSONObject();

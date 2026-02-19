@@ -26,15 +26,17 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.nio.file.*;
+import java.security.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
 public class ApiTokenConfiguration {
-  public static final  String                          FILE_NAME = "server-api-tokens.json";
-  private static final String                          TOKEN_PREFIX = "at-";
-  private final        String                          filePath;
-  private final        ConcurrentHashMap<String, JSONObject> tokens = new ConcurrentHashMap<>();
+  public static final  String                                FILE_NAME    = "server-api-tokens.json";
+  private static final String                                TOKEN_PREFIX = "at-";
+  private static final int                                   PREFIX_LEN   = 10;
+  private final        String                                filePath;
+  private final        ConcurrentHashMap<String, JSONObject> tokens       = new ConcurrentHashMap<>();
 
   public ApiTokenConfiguration(final String configPath) {
     this.filePath = Paths.get(configPath, FILE_NAME).toString();
@@ -62,7 +64,18 @@ public class ApiTokenConfiguration {
           needsSave = true;
           continue;
         }
-        tokens.put(tokenJson.getString("token"), tokenJson);
+
+        // Backward compatibility: migrate plaintext tokens to hashed
+        if (tokenJson.has("token") && !tokenJson.has("tokenHash")) {
+          final String plaintext = tokenJson.getString("token");
+          final String hash = hashToken(plaintext);
+          tokenJson.put("tokenHash", hash);
+          tokenJson.put("tokenPrefix", plaintext.substring(0, Math.min(PREFIX_LEN, plaintext.length())));
+          tokenJson.remove("token");
+          needsSave = true;
+        }
+
+        tokens.put(tokenJson.getString("tokenHash"), tokenJson);
       }
 
       if (needsSave)
@@ -96,36 +109,46 @@ public class ApiTokenConfiguration {
 
   public JSONObject createToken(final String name, final String database, final long expiresAt, final JSONObject permissions) {
     final String tokenValue = TOKEN_PREFIX + UUID.randomUUID();
+    final String hash = hashToken(tokenValue);
+    final String prefix = tokenValue.substring(0, Math.min(PREFIX_LEN, tokenValue.length()));
 
     final JSONObject tokenJson = new JSONObject();
-    tokenJson.put("token", tokenValue);
+    tokenJson.put("tokenHash", hash);
+    tokenJson.put("tokenPrefix", prefix);
     tokenJson.put("name", name);
     tokenJson.put("database", database);
     tokenJson.put("expiresAt", expiresAt);
     tokenJson.put("createdAt", System.currentTimeMillis());
     tokenJson.put("permissions", permissions);
 
-    tokens.put(tokenValue, tokenJson);
+    tokens.put(hash, tokenJson);
     save();
-    return tokenJson;
+
+    // Return a response that includes the plaintext token (one-time display)
+    final JSONObject response = tokenJson.copy();
+    response.put("token", tokenValue);
+    return response;
   }
 
-  public boolean deleteToken(final String tokenValue) {
-    if (tokens.remove(tokenValue) != null) {
+  public boolean deleteToken(final String identifier) {
+    // Accept both plaintext token (starts with at-) and hash
+    final String key = identifier.startsWith(TOKEN_PREFIX) ? hashToken(identifier) : identifier;
+    if (tokens.remove(key) != null) {
       save();
       return true;
     }
     return false;
   }
 
-  public JSONObject getToken(final String tokenValue) {
-    final JSONObject tokenJson = tokens.get(tokenValue);
+  public JSONObject getToken(final String plaintextToken) {
+    final String hash = hashToken(plaintextToken);
+    final JSONObject tokenJson = tokens.get(hash);
     if (tokenJson == null)
       return null;
 
     final long expiresAt = tokenJson.getLong("expiresAt", 0);
     if (expiresAt > 0 && expiresAt < System.currentTimeMillis()) {
-      tokens.remove(tokenValue);
+      tokens.remove(hash);
       save();
       return null;
     }
@@ -137,7 +160,7 @@ public class ApiTokenConfiguration {
     return new ArrayList<>(tokens.values());
   }
 
-  public void cleanupExpired() {
+  public synchronized void cleanupExpired() {
     final long now = System.currentTimeMillis();
     final boolean removed = tokens.entrySet().removeIf(entry -> {
       final long expiresAt = entry.getValue().getLong("expiresAt", 0);
@@ -149,5 +172,18 @@ public class ApiTokenConfiguration {
 
   public static boolean isApiToken(final String token) {
     return token != null && token.startsWith(TOKEN_PREFIX);
+  }
+
+  public static String hashToken(final String plaintext) {
+    try {
+      final MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      final byte[] hash = digest.digest(plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      final StringBuilder hex = new StringBuilder(hash.length * 2);
+      for (final byte b : hash)
+        hex.append(String.format("%02x", b));
+      return hex.toString();
+    } catch (final NoSuchAlgorithmException e) {
+      throw new RuntimeException("SHA-256 not available", e);
+    }
   }
 }

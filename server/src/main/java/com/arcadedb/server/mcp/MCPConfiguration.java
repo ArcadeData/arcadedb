@@ -23,9 +23,9 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
-import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -150,7 +150,7 @@ public class MCPConfiguration {
     return allowedUsers.contains("*") || allowedUsers.contains(username);
   }
 
-  public JSONObject toJSON() {
+  public synchronized JSONObject toJSON() {
     final JSONObject json = new JSONObject();
     json.put("enabled", enabled);
     json.put("allowReads", allowReads);

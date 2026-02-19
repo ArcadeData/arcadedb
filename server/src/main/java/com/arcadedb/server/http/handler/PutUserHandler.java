@@ -25,8 +25,6 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Deque;
-
 public class PutUserHandler extends AbstractServerHttpHandler {
 
   public PutUserHandler(final HttpServer httpServer) {
@@ -41,34 +39,38 @@ public class PutUserHandler extends AbstractServerHttpHandler {
     if (payload == null)
       return new ExecutionResponse(400, "{\"error\":\"Request body is required\"}");
 
-    final Deque<String> nameParam = exchange.getQueryParameters().get("name");
-    final String name = nameParam != null && !nameParam.isEmpty() ? nameParam.getFirst() : payload.getString("name", "");
+    String name = getQueryParameter(exchange, "name");
+    if (name == null || name.isBlank())
+      name = payload.getString("name", "");
     if (name.isBlank())
       return new ExecutionResponse(400, "{\"error\":\"User name is required\"}");
 
     final ServerSecurity security = httpServer.getServer().getSecurity();
-    final ServerSecurityUser existingUser = security.getUser(name);
-    if (existingUser == null)
-      return new ExecutionResponse(404, "{\"error\":\"User '" + name + "' not found\"}");
 
-    // Update password if provided
-    if (payload.has("password")) {
-      final String password = payload.getString("password");
-      if (password.length() < 4)
-        throw new ServerSecurityException("User password must be at least 4 characters");
-      if (password.length() > 256)
-        throw new ServerSecurityException("User password cannot be longer than 256 characters");
-      existingUser.setPassword(security.encodePassword(password));
+    synchronized (security) {
+      final ServerSecurityUser existingUser = security.getUser(name);
+      if (existingUser == null)
+        return new ExecutionResponse(404, "{\"error\":\"User '" + name + "' not found\"}");
+
+      // Update password if provided
+      if (payload.has("password")) {
+        final String password = payload.getString("password");
+        if (password.length() < 4)
+          throw new ServerSecurityException("User password must be at least 4 characters");
+        if (password.length() > 256)
+          throw new ServerSecurityException("User password cannot be longer than 256 characters");
+        existingUser.setPassword(security.encodePassword(password));
+      }
+
+      // Update databases/groups if provided
+      if (payload.has("databases")) {
+        final JSONObject databases = payload.getJSONObject("databases");
+        existingUser.toJSON().put("databases", databases);
+        existingUser.refreshDatabaseNames();
+      }
+
+      security.saveUsers();
     }
-
-    // Update databases/groups if provided
-    if (payload.has("databases")) {
-      final JSONObject databases = payload.getJSONObject("databases");
-      existingUser.toJSON().put("databases", databases);
-      existingUser.refreshDatabaseNames();
-    }
-
-    security.saveUsers();
 
     final JSONObject response = new JSONObject();
     response.put("result", "User '" + name + "' updated");

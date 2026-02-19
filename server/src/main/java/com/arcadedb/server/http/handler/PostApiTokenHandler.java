@@ -51,7 +51,7 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
 
     final JSONObject response = new JSONObject();
     response.put("result", tokenJson);
-    return new ExecutionResponse(200, response.toString());
+    return new ExecutionResponse(201, response.toString());
   }
 
   @Override

@@ -59,6 +59,15 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
         assertThat(connection.getResponseCode()).isEqualTo(200);
         final JSONObject response = new JSONObject(readResponse(connection));
         assertThat(response.getInt("count")).isGreaterThanOrEqualTo(2);
+
+        // Verify hashed fields are present and plaintext is not
+        final JSONArray result = response.getJSONArray("result");
+        for (int i = 0; i < result.length(); i++) {
+          final JSONObject token = result.getJSONObject(i);
+          assertThat(token.has("tokenHash")).isTrue();
+          assertThat(token.has("tokenPrefix")).isTrue();
+          assertThat(token.has("token")).isFalse();
+        }
       } finally {
         connection.disconnect();
       }
@@ -138,7 +147,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       connection.connect();
 
       try {
-        // Should fail with security error (403 or 500 depending on how it's handled)
+        // Security error — may be 403 or 500 depending on where the exception is caught
         assertThat(connection.getResponseCode()).isNotEqualTo(200);
       } finally {
         connection.disconnect();
@@ -176,6 +185,58 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       } finally {
         connection2.disconnect();
       }
+    });
+  }
+
+  @Test
+  void testDeleteTokenByHash() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String tokenValue = createApiToken(serverIndex, "ToDeleteByHash", "graph", 0, new JSONObject());
+      final String tokenHash = com.arcadedb.server.security.ApiTokenConfiguration.hashToken(tokenValue);
+
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens?token=" +
+              URLEncoder.encode(tokenHash, "UTF-8")).openConnection();
+      connection.setRequestMethod("DELETE");
+      connection.setRequestProperty("Authorization", basicAuth());
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+      } finally {
+        connection.disconnect();
+      }
+
+      // Verify token no longer works
+      final HttpURLConnection connection2 = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201").openConnection();
+      connection2.setRequestMethod("GET");
+      connection2.setRequestProperty("Authorization", "Bearer " + tokenValue);
+      connection2.connect();
+
+      try {
+        assertThat(connection2.getResponseCode()).isEqualTo(401);
+      } finally {
+        connection2.disconnect();
+      }
+    });
+  }
+
+  @Test
+  void testPlaintextNotPersistedOnDisk() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String tokenValue = createApiToken(serverIndex, "PersistTest", "graph", 0, new JSONObject());
+
+      // Read the token file and verify no plaintext token is stored
+      final String configPath = getServer(serverIndex).getRootPath() + "/config";
+      final java.io.File tokenFile = new java.io.File(configPath, "server-api-tokens.json");
+      assertThat(tokenFile.exists()).isTrue();
+
+      final String content = new String(java.nio.file.Files.readAllBytes(tokenFile.toPath()));
+      assertThat(content).doesNotContain(tokenValue);
+      assertThat(content).contains("tokenHash");
+      assertThat(content).contains("tokenPrefix");
+      assertThat(content).doesNotContain("\"token\"");
     });
   }
 
@@ -267,7 +328,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
     connection.connect();
 
     try {
-      assertThat(connection.getResponseCode()).isEqualTo(200);
+      assertThat(connection.getResponseCode()).isEqualTo(201);
       final JSONObject response = new JSONObject(readResponse(connection));
       return response.getJSONObject("result").getString("token");
     } finally {

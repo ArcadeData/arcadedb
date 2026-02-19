@@ -81,9 +81,9 @@ function renderUsersTable(users) {
         orderable: false,
         render: function (data, type, row) {
           var name = data;
-          var html = '<button class="btn btn-sm btn-outline-primary me-1" onclick="editUser(\'' + escapeHtml(name) + '\')"><i class="fa fa-edit"></i></button>';
+          var html = '<button class="btn btn-sm btn-outline-primary me-1" data-action="edit-user" data-name="' + escapeHtml(name) + '"><i class="fa fa-edit"></i></button>';
           if (name !== "root")
-            html += '<button class="btn btn-sm btn-outline-danger" onclick="deleteUser(\'' + escapeHtml(name) + '\')"><i class="fa fa-trash"></i></button>';
+            html += '<button class="btn btn-sm btn-outline-danger" data-action="delete-user" data-name="' + escapeHtml(name) + '"><i class="fa fa-trash"></i></button>';
           return html;
         },
       },
@@ -187,7 +187,7 @@ function appendDatabaseRow(dbName, selectedGroup) {
     '<option value="admin"' + (selectedGroup === "admin" ? " selected" : "") + '>admin</option>' +
     '<option value="*"' + (selectedGroup === "*" ? " selected" : "") + '>* (default)</option>' +
     "</select></div></td>" +
-    '<td><button class="btn btn-sm btn-outline-danger" onclick="removeUserDatabaseRow(this)"><i class="fa fa-times"></i></button></td>' +
+    '<td><button class="btn btn-sm btn-outline-danger remove-db-row"><i class="fa fa-times"></i></button></td>' +
     "</tr>";
   $("#userDatabasesTable tbody").append(row);
 }
@@ -329,7 +329,7 @@ function renderApiTokensTable(tokens) {
     var t = tokens[i];
     var expiration = t.expiresAt > 0 ? new Date(t.expiresAt).toLocaleString() : "Never";
     var created = t.createdAt > 0 ? new Date(t.createdAt).toLocaleString() : "-";
-    tableData.push([t.name, t.database, created, expiration, '<code>' + escapeHtml(t.token) + '</code>', t.token]);
+    tableData.push([t.name, t.database, created, expiration, '<code>' + escapeHtml(t.tokenPrefix) + '</code>', t.tokenHash]);
   }
 
   apiTokensDataTable = $("#apiTokensTable").DataTable({
@@ -346,7 +346,7 @@ function renderApiTokensTable(tokens) {
         title: "Actions",
         orderable: false,
         render: function (data) {
-          return '<button class="btn btn-sm btn-outline-danger" onclick="deleteApiToken(\'' + escapeHtml(data) + '\')"><i class="fa fa-trash"></i></button>';
+          return '<button class="btn btn-sm btn-outline-danger" data-action="delete-token" data-hash="' + escapeHtml(data) + '"><i class="fa fa-trash"></i></button>';
         },
       },
     ],
@@ -417,7 +417,7 @@ function addTokenTypeRow() {
     '<td class="text-center"><input type="checkbox" class="form-check-input perm-read" checked></td>' +
     '<td class="text-center"><input type="checkbox" class="form-check-input perm-update"></td>' +
     '<td class="text-center"><input type="checkbox" class="form-check-input perm-delete"></td>' +
-    '<td><button class="btn btn-sm btn-outline-danger" onclick="removeTokenTypeRow(this)"><i class="fa fa-times"></i></button></td>' +
+    '<td><button class="btn btn-sm btn-outline-danger remove-token-type"><i class="fa fa-times"></i></button></td>' +
     "</tr>";
   $("#tokenPermissionsTable tbody").append(row);
   $("#tokenNewType").val("");
@@ -487,13 +487,13 @@ function copyCreatedToken() {
   });
 }
 
-function deleteApiToken(maskedToken) {
+function deleteApiToken(tokenHash) {
   if (!confirm("Are you sure you want to delete this API token?")) return;
 
   jQuery
     .ajax({
       type: "DELETE",
-      url: "api/v1/server/api-tokens?token=" + encodeURIComponent(maskedToken),
+      url: "api/v1/server/api-tokens?token=" + encodeURIComponent(tokenHash),
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
       },
@@ -614,9 +614,9 @@ function renderGroupsTable() {
           var parts = data.split("|");
           var db = parts[0];
           var name = parts[1];
-          var html = '<button class="btn btn-sm btn-outline-primary me-1" onclick="editGroup(\'' + escapeHtml(db) + '\',\'' + escapeHtml(name) + '\')"><i class="fa fa-edit"></i></button>';
+          var html = '<button class="btn btn-sm btn-outline-primary me-1" data-action="edit-group" data-db="' + escapeHtml(db) + '" data-name="' + escapeHtml(name) + '"><i class="fa fa-edit"></i></button>';
           if (!(name === "admin" && db === "*"))
-            html += '<button class="btn btn-sm btn-outline-danger" onclick="deleteGroup(\'' + escapeHtml(db) + '\',\'' + escapeHtml(name) + '\')"><i class="fa fa-trash"></i></button>';
+            html += '<button class="btn btn-sm btn-outline-danger" data-action="delete-group" data-db="' + escapeHtml(db) + '" data-name="' + escapeHtml(name) + '"><i class="fa fa-trash"></i></button>';
           return html;
         },
       },
@@ -735,7 +735,7 @@ function appendGroupTypeRow(typeName, accessArray) {
     '<td class="text-center"><input type="checkbox" class="form-check-input grp-perm-read"' + (accessArray.indexOf("readRecord") >= 0 ? " checked" : "") + '></td>' +
     '<td class="text-center"><input type="checkbox" class="form-check-input grp-perm-update"' + (accessArray.indexOf("updateRecord") >= 0 ? " checked" : "") + '></td>' +
     '<td class="text-center"><input type="checkbox" class="form-check-input grp-perm-delete"' + (accessArray.indexOf("deleteRecord") >= 0 ? " checked" : "") + '></td>' +
-    '<td><button class="btn btn-sm btn-outline-danger" onclick="removeGroupTypeRow(this)"><i class="fa fa-times"></i></button></td>' +
+    '<td><button class="btn btn-sm btn-outline-danger remove-group-type"><i class="fa fa-times"></i></button></td>' +
     '</tr>';
   $("#groupPermissionsTable tbody").append(row);
 }
@@ -853,7 +853,7 @@ function deleteGroup(db, name) {
     });
 }
 
-// ==================== Tab Switching ====================
+// ==================== Tab Switching & Delegated Event Handlers ====================
 
 document.addEventListener("DOMContentLoaded", function () {
   $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
@@ -865,5 +865,31 @@ document.addEventListener("DOMContentLoaded", function () {
     } else if (activeTab == "tab-security-groups-sel") {
       if (!groupsLoaded) loadGroups();
     }
+  });
+
+  // Delegated handlers for dynamically-rendered buttons (replaces inline onclick)
+  $(document).on("click", "[data-action='edit-user']", function () {
+    editUser($(this).data("name"));
+  });
+  $(document).on("click", "[data-action='delete-user']", function () {
+    deleteUser($(this).data("name"));
+  });
+  $(document).on("click", "[data-action='delete-token']", function () {
+    deleteApiToken($(this).data("hash"));
+  });
+  $(document).on("click", "[data-action='edit-group']", function () {
+    editGroup($(this).data("db"), $(this).data("name"));
+  });
+  $(document).on("click", "[data-action='delete-group']", function () {
+    deleteGroup($(this).data("db"), $(this).data("name"));
+  });
+  $(document).on("click", ".remove-db-row", function () {
+    removeUserDatabaseRow(this);
+  });
+  $(document).on("click", ".remove-token-type", function () {
+    removeTokenTypeRow(this);
+  });
+  $(document).on("click", ".remove-group-type", function () {
+    removeGroupTypeRow(this);
   });
 });
