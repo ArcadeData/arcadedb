@@ -20,6 +20,11 @@ package com.arcadedb.graphql.query;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.graphql.parser.Definition;
+import com.arcadedb.graphql.parser.Document;
+import com.arcadedb.graphql.parser.GraphQLParser;
+import com.arcadedb.graphql.parser.OperationDefinition;
+import com.arcadedb.graphql.parser.ParseException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
@@ -64,11 +69,14 @@ public class GraphQLQueryEngine implements QueryEngine {
   }
 
   private static Set<OperationType> detectGraphQLOperationTypes(final String query) {
-    final String trimmed = query.trim();
-    // GraphQL queries starting with "query" or "{" are reads; "mutation" is a write
-    if (trimmed.startsWith("mutation") || trimmed.startsWith("mutation "))
-      return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
-    // Default to READ for queries (GraphQL queries are read-only by convention)
+    try {
+      final Document doc = GraphQLParser.parse(query);
+      for (final Definition def : doc.getDefinitions())
+        if (def instanceof OperationDefinition op && !op.isQuery())
+          return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+    } catch (final ParseException e) {
+      // Fall through to default READ — execution will report the parse error
+    }
     return CollectionUtils.singletonSet(OperationType.READ);
   }
 

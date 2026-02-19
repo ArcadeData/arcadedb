@@ -54,13 +54,17 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
+    // Auth check first to avoid leaking server state to unauthenticated requests
+    if (user == null)
+      return jsonRpcError(null, -32600, "Authentication required");
+
     if (!config.isEnabled())
       return jsonRpcError(null, -32600, "MCP server is disabled");
 
     if (payload == null)
       return jsonRpcError(null, -32700, "Parse error: empty request body");
 
-    if (user == null || !config.isUserAllowed(user.getName()))
+    if (!config.isUserAllowed(user.getName()))
       return jsonRpcError(payload.opt("id"), -32600, "User not authorized for MCP access");
 
     final String method = payload.getString("method", "");

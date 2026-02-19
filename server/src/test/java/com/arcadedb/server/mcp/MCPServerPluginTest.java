@@ -282,6 +282,98 @@ public class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(response.getBoolean("isError")).isTrue();
   }
 
+  @Test
+  void testNotificationReturns204() throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("method", "notifications/initialized")
+        .put("params", new JSONObject());
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
+
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(204);
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  @Test
+  void testQueryToolRejectsWriteQuery() throws Exception {
+    final JSONObject response = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "sql")
+        .put("query", "INSERT INTO V1 SET id = 9999, name = 'shouldFail'"));
+
+    assertThat(response.getBoolean("isError")).isTrue();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("write operations");
+  }
+
+  @Test
+  void testUnauthorizedUserDenied() throws Exception {
+    // Configure only "root" as allowed user
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    // Create a non-root user
+    if (!getServer(0).getSecurity().existsUser("mcpuser"))
+      getServer(0).getSecurity().createUser("mcpuser", "mcppassword");
+
+    final String nonRootAuth = "Basic " + Base64.getEncoder()
+        .encodeToString("mcpuser:mcppassword".getBytes(StandardCharsets.UTF_8));
+
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", nonRootAuth);
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 200)
+        .put("method", "tools/list")
+        .put("params", new JSONObject());
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
+
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      final String body = FileUtils.readStreamAsString(connection.getInputStream(), "utf8");
+      final JSONObject response = new JSONObject(body);
+      assertThat(response.has("error")).isTrue();
+      assertThat(response.getJSONObject("error").getString("message")).contains("not authorized");
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  @Test
+  void testQueryWithLimit() throws Exception {
+    final JSONObject response = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "sql")
+        .put("query", "SELECT FROM V1")
+        .put("limit", 1));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    final JSONObject result = new JSONObject(text);
+    assertThat(result.getInt("count")).isEqualTo(1);
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {

@@ -48,6 +48,15 @@ public interface QueryEngine {
       // Fallback: non-idempotent, non-DDL commands that don't override this method
       return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
     }
+
+    /**
+     * Executes this analyzed query, reusing the already-parsed AST to avoid double parsing.
+     * Returns null if direct execution is not supported, in which case the caller should
+     * fall back to the standard query/command methods.
+     */
+    default ResultSet execute(final Map<String, Object> parameters) {
+      return null;
+    }
   }
 
   @ExcludeFromJacocoGeneratedReport

@@ -418,7 +418,7 @@ public class OpenApiSpecGenerator {
     deleteOp.addTagsItem("Security");
     deleteOp.setSecurity(Arrays.asList(createSecurityRequirement()));
     deleteOp.addParametersItem(createQueryParameter("database", "Database name"));
-    deleteOp.addParametersItem(createQueryParameter("group", "Group name to delete"));
+    deleteOp.addParametersItem(createQueryParameter("name", "Group name to delete"));
     deleteOp.setResponses(createAdminResponses("Group deleted"));
     pathItem.setDelete(deleteOp);
 

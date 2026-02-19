@@ -30,6 +30,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
+import java.util.Collections;
 import java.util.Set;
 
 public class ExecuteCommandTool {
@@ -64,7 +65,10 @@ public class ExecuteCommandTool {
 
     final Database database = server.getDatabase(databaseName);
 
-    checkPermission(database, command, language, config);
+    // Analyze once for both permission checking and execution (avoids double parsing)
+    final QueryEngine engine = database.getQueryEngine(language);
+    final QueryEngine.AnalyzedQuery analyzed = engine.analyze(command);
+    checkPermission(analyzed.getOperationTypes(), config);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
@@ -73,7 +77,8 @@ public class ExecuteCommandTool {
 
     final JSONArray records = new JSONArray();
     database.transaction(() -> {
-      try (final ResultSet resultSet = database.command(language, command)) {
+      final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());
+      try (final ResultSet resultSet = analyzedResultSet != null ? analyzedResultSet : database.command(language, command)) {
         while (resultSet.hasNext()) {
           final Result row = resultSet.next();
           records.put(serializer.serializeResult(database, row));

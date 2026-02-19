@@ -139,6 +139,14 @@ public class SQLQueryEngine implements QueryEngine {
       public Set<OperationType> getOperationTypes() {
         return statement.getOperationTypes();
       }
+
+      @Override
+      public ResultSet execute(final Map<String, Object> parameters) {
+        final long resultSetLimit = database.getResultSetLimit();
+        if (resultSetLimit > 0)
+          statement.setLimit(new Limit(JJTLIMIT).setValue((int) resultSetLimit));
+        return statement.execute(database, parameters);
+      }
     };
   }
 

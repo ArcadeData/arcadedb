@@ -19,7 +19,6 @@
 package com.arcadedb.server.mcp.tools;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.query.sql.executor.Result;
@@ -29,6 +28,8 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+
+import java.util.Collections;
 
 public class QueryTool {
 
@@ -83,8 +84,10 @@ public class QueryTool {
         .setUseCollectionSize(false)
         .setUseCollectionSizeForEdges(false);
 
+    // Reuse the already-parsed statement when possible to avoid double parsing
     final JSONArray records = new JSONArray();
-    try (final ResultSet resultSet = database.query(language, query)) {
+    final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());
+    try (final ResultSet resultSet = analyzedResultSet != null ? analyzedResultSet : database.query(language, query)) {
       int count = 0;
       while (resultSet.hasNext() && count < limit) {
         final Result row = resultSet.next();

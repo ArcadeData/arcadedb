@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.security;
 
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -109,7 +108,7 @@ public class ApiTokenConfiguration {
 
     json.put("tokens", tokenArray);
 
-    try (final FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
+    try (final OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), UTF_8)) {
       writer.write(json.toString(2));
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error saving API tokens to '%s'", e, filePath);
@@ -169,6 +168,7 @@ public class ApiTokenConfiguration {
     final long expiresAt = tokenJson.getLong("expiresAt", 0);
     if (expiresAt > 0 && expiresAt < System.currentTimeMillis()) {
       tokens.remove(hash);
+      save();
       return null;
     }
 

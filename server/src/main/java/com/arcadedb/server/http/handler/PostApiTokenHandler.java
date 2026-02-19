@@ -25,6 +25,8 @@ import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.util.Set;
+
 public class PostApiTokenHandler extends AbstractServerHttpHandler {
 
   public PostApiTokenHandler(final HttpServer httpServer) {
@@ -65,7 +67,7 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
     return true;
   }
 
-  private static final java.util.Set<String> VALID_ACCESS_VALUES = java.util.Set.of(
+  private static final Set<String> VALID_ACCESS_VALUES = Set.of(
       "createRecord", "readRecord", "updateRecord", "deleteRecord");
 
   private static String validatePermissions(final JSONObject permissions) {

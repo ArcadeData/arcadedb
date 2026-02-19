@@ -39,11 +39,9 @@ public class PutUserHandler extends AbstractServerHttpHandler {
     if (payload == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
 
-    String name = getQueryParameter(exchange, "name");
+    final String name = getQueryParameter(exchange, "name");
     if (name == null || name.isBlank())
-      name = payload.getString("name", "");
-    if (name.isBlank())
-      return new ExecutionResponse(400, new JSONObject().put("error", "User name is required").toString());
+      return new ExecutionResponse(400, new JSONObject().put("error", "Query parameter 'name' is required").toString());
 
     final ServerSecurity security = httpServer.getServer().getSecurity();
 
