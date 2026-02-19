@@ -30,6 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test CASE expressions in Cypher queries.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CypherCaseTest {
   private Database database;

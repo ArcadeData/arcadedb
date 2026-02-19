@@ -37,6 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for the OPTIONAL MATCH + count() → countEdges() optimization.
  * Verifies that the optimization produces correct results and falls back
  * to full materialization when the pattern is not optimizable.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CountEdgesOptimizationTest {
   private Database database;
@@ -84,7 +86,8 @@ class CountEdgesOptimizationTest {
   void basicOptionalMatchCount() {
     // Basic optimization: count comments per question
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WITH q, count(c) AS cnt RETURN q.name AS name, cnt ORDER BY name");
+        "MATCH (q:Question) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WITH q, count(c) AS cnt RETURN q.name AS " +
+            "name, cnt ORDER BY name");
 
     final Map<String, Long> results = collectNameCount(rs);
     assertThat(results).hasSize(3);
@@ -97,7 +100,8 @@ class CountEdgesOptimizationTest {
   void noEdgesReturnsZero() {
     // q3 has no comments — should return 0
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question {name: 'q3'}) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WITH q, count(c) AS cnt RETURN cnt");
+        "MATCH (q:Question {name: 'q3'}) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WITH q, count(c) AS cnt " +
+            "RETURN cnt");
 
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(0L);
@@ -109,7 +113,8 @@ class CountEdgesOptimizationTest {
   void typedEdgeFilter() {
     // Count only COMMENTED_ON edges (not ANSWERED)
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question {name: 'q1'}) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WITH q, count(c) AS cnt RETURN cnt");
+        "MATCH (q:Question {name: 'q1'}) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WITH q, count(c) AS cnt " +
+            "RETURN cnt");
 
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(3L);
@@ -121,7 +126,8 @@ class CountEdgesOptimizationTest {
   void multiTypePattern() {
     // Count both COMMENTED_ON and ANSWERED edges using pipe syntax
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question {name: 'q1'}) OPTIONAL MATCH (x)-[:COMMENTED_ON|ANSWERED]->(q) WITH q, count(x) AS cnt RETURN cnt");
+        "MATCH (q:Question {name: 'q1'}) OPTIONAL MATCH (x)-[:COMMENTED_ON|ANSWERED]->(q) WITH q, count(x) AS cnt " +
+            "RETURN cnt");
 
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(5L);
@@ -133,7 +139,8 @@ class CountEdgesOptimizationTest {
   void reverseDirection() {
     // OPTIONAL MATCH (q)<-[:COMMENTED_ON]-(c) — should produce same results as (c)-[:COMMENTED_ON]->(q)
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question) OPTIONAL MATCH (q)<-[:COMMENTED_ON]-(c:Comment) WITH q, count(c) AS cnt RETURN q.name AS name, cnt ORDER BY name");
+        "MATCH (q:Question) OPTIONAL MATCH (q)<-[:COMMENTED_ON]-(c:Comment) WITH q, count(c) AS cnt RETURN q.name AS " +
+            "name, cnt ORDER BY name");
 
     final Map<String, Long> results = collectNameCount(rs);
     assertThat(results).hasSize(3);
@@ -159,7 +166,8 @@ class CountEdgesOptimizationTest {
   void whereClausePreventsOptimization() {
     // WHERE clause should prevent optimization, but still produce correct results via fallback
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WHERE c.text = 'c0' WITH q, count(c) AS cnt RETURN q.name AS name, cnt ORDER BY name");
+        "MATCH (q:Question) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WHERE c.text = 'c0' WITH q, count(c) AS " +
+            "cnt RETURN q.name AS name, cnt ORDER BY name");
 
     final Map<String, Long> results = collectNameCount(rs);
     assertThat(results).hasSize(3);
@@ -172,7 +180,8 @@ class CountEdgesOptimizationTest {
   void distinctPreventsOptimization() {
     // count(DISTINCT c) should prevent optimization but still produce correct results
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WITH q, count(DISTINCT c) AS cnt RETURN q.name AS name, cnt ORDER BY name");
+        "MATCH (q:Question) OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) WITH q, count(DISTINCT c) AS cnt RETURN q" +
+            ".name AS name, cnt ORDER BY name");
 
     final Map<String, Long> results = collectNameCount(rs);
     assertThat(results).hasSize(3);
@@ -185,7 +194,8 @@ class CountEdgesOptimizationTest {
   void variableLengthPreventsOptimization() {
     // Variable-length path should prevent optimization but still produce correct results
     final ResultSet rs = database.query("opencypher",
-        "MATCH (q:Question {name: 'q1'}) OPTIONAL MATCH (c)-[:COMMENTED_ON*1..1]->(q) WITH q, count(c) AS cnt RETURN cnt");
+        "MATCH (q:Question {name: 'q1'}) OPTIONAL MATCH (c)-[:COMMENTED_ON*1..1]->(q) WITH q, count(c) AS cnt RETURN " +
+            "cnt");
 
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(3L);
