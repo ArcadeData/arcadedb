@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.test.performance;
+package com.arcadedb.test.load;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
@@ -42,13 +42,13 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
 
     createArcadeContainer("arcade", "none", "none", "any", false, network);
     ServerWrapper server = startContainers().getFirst();
-    DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, protocol);
+    DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, wordSupplier, protocol);
     db.createDatabase();
     db.createSchema();
 
     // Parameters for the test
     final int numOfThreads = 5; //number of threads to use to insert users and photos
-    final int numOfUsers = 10000; // Each thread will create 200000 users
+    final int numOfUsers = 2000; // Each thread will create 200000 users
     final int numOfPhotos = 10; // Each user will have 5 photos
     final int numOfFriendship = 1000; // Each thread will create 100000 friendships
     final int numOfLike = 1000; // Each thread will create 100000 likes
@@ -68,34 +68,29 @@ class SingleServerLoadTestIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, protocol);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier, protocol);
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });
     }
-
-    if (numOfFriendship > 0) {
-      // Each thread will create friendships
-      executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, protocol);
-        db1.createFriendships(numOfFriendship);
-        db1.close();
-      });
-    }
-
-    if (numOfLike > 0) {
-      // Each thread will create friendships
-      executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, protocol);
-        db1.createLike(numOfLike);
-        db1.close();
-      });
-    }
+    // Each thread will create friendships
+    executor.submit(() -> {
+      DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier, protocol);
+      db1.createFriendships(numOfFriendship);
+      db1.close();
+    });
+    // Each thread will create friendships
+    executor.submit(() -> {
+      DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier, protocol);
+      db1.createLike(numOfLike);
+      db1.close();
+    });
 
     executor.shutdown();
 
     while (!executor.isTerminated()) {
       try {
+        db.printUserStats();
         long users = db.countUsers();
         long friendships = db.countFriendships();
         long photos = db.countPhotos();
