@@ -54,6 +54,9 @@
     "webpack": "^5.105.2",
     "webpack-cli": "^6.0.1"
   },
+  "overrides": {
+    "ajv": "^8.18.0"
+  },
   "engines": {
     "node": ">=18.12.0",
     "npm": ">=8.0.0"

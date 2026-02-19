@@ -28,6 +28,7 @@
         <li class="nav-item"><a data-toggle="tab" href="#tab-metrics" class="nav-link" id="tab-metrics-sel">Metrics</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-settings" class="nav-link" id="tab-server-settings-sel">Server Settings</a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-server-backup" class="nav-link" id="tab-server-backup-sel">Backup</a></li>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-server-mcp" class="nav-link" id="tab-server-mcp-sel">MCP</a></li>
       </ul>
     </div>
   </div>
@@ -291,6 +292,83 @@
                     <label for="backupYearly" class="form-label small">Yearly</label>
                     <input type="number" class="form-control form-control-sm" id="backupYearly" value="3" min="0">
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-pane fade" id="tab-server-mcp" role="tabpanel">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <span style="font-size: 0.85rem; color: var(--text-muted);">MCP allows LLM clients (Claude Desktop, Cursor) to interact with ArcadeDB using natural language.</span>
+        <div class="d-flex gap-2">
+          <button class="btn btn-sm db-action-btn" onclick="loadMCPConfig()"><i class="fa fa-sync"></i> Refresh</button>
+          <button class="btn btn-sm btn-primary" onclick="saveMCPConfig()"><i class="fa fa-save"></i> Save</button>
+        </div>
+      </div>
+
+      <div id="mcpConfigForm">
+        <div class="row g-3">
+          <!-- Left column: Settings -->
+          <div class="col-md-5">
+            <div class="db-detail-section">
+              <h6><i class="fa fa-cog"></i> Settings</h6>
+              <div class="d-flex align-items-center mb-3">
+                <label for="mcpEnabled" class="form-label mb-0 me-2" style="font-size: 0.84rem;">MCP Server</label>
+                <select id="mcpEnabled" class="form-select form-select-sm" style="width: auto;">
+                  <option value="true">Enabled</option>
+                  <option value="false">Disabled</option>
+                </select>
+              </div>
+              <div style="font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px;">Permissions</div>
+              <div class="d-flex flex-wrap gap-3 mb-3">
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="mcpAllowReads" checked disabled><label class="form-check-label" style="font-size: 0.84rem;" for="mcpAllowReads">Reads</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="mcpAllowInsert"><label class="form-check-label" style="font-size: 0.84rem;" for="mcpAllowInsert">Insert</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="mcpAllowUpdate"><label class="form-check-label" style="font-size: 0.84rem;" for="mcpAllowUpdate">Update</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="mcpAllowDelete"><label class="form-check-label" style="font-size: 0.84rem;" for="mcpAllowDelete">Delete</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="mcpAllowSchemaChange"><label class="form-check-label" style="font-size: 0.84rem;" for="mcpAllowSchemaChange">Schema</label></div>
+              </div>
+            </div>
+            <div class="db-detail-section">
+              <h6><i class="fa fa-users"></i> Allowed Users</h6>
+              <div class="input-group input-group-sm mb-2" style="max-width: 300px;">
+                <input type="text" class="form-control" id="mcpNewUser" placeholder="Username" style="background-color: var(--bg-input); color: var(--text-primary); border-color: var(--border-ddd);">
+                <button class="btn btn-outline-secondary" onclick="addMCPUser()" style="color: var(--text-secondary); border-color: var(--border-ddd);">Add</button>
+              </div>
+              <div id="mcpUserList"></div>
+            </div>
+          </div>
+
+          <!-- Right column: Connection Info -->
+          <div class="col-md-7">
+            <div class="db-detail-section">
+              <h6><i class="fa fa-plug"></i> Connection Info</h6>
+              <div class="d-flex align-items-center mb-3">
+                <label for="mcpAuthMethod" class="form-label mb-0 me-2" style="font-size: 0.84rem;">Auth Method</label>
+                <select id="mcpAuthMethod" class="form-select form-select-sm" style="width: auto;" onchange="onMcpAuthMethodChange()">
+                  <option value="basic">Basic Auth (current user)</option>
+                  <option value="apitoken">API Token</option>
+                </select>
+                <select id="mcpTokenSelect" class="form-select form-select-sm ms-2" style="width: auto; display: none;" onchange="updateMCPConnectionInfo()">
+                  <option value="">Select token...</option>
+                </select>
+              </div>
+              <ul class="nav nav-tabs mb-2" role="tablist">
+                <li class="nav-item"><a class="nav-link active py-1" style="font-size: 0.82rem;" data-bs-toggle="tab" href="#mcp-config-claude-desktop">Claude Desktop</a></li>
+                <li class="nav-item"><a class="nav-link py-1" style="font-size: 0.82rem;" data-bs-toggle="tab" href="#mcp-config-claude-code">Claude Code / Cursor</a></li>
+              </ul>
+              <div class="tab-content">
+                <div class="tab-pane fade show active" id="mcp-config-claude-desktop" role="tabpanel">
+                  <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 6px;">Copy into <code style="background-color: var(--bg-reference); padding: 1px 5px; border-radius: 3px; font-size: 0.78rem;">claude_desktop_config.json</code> (requires <code style="background-color: var(--bg-reference); padding: 1px 5px; border-radius: 3px; font-size: 0.78rem;">npx</code> / Node.js):</p>
+                  <pre class="mcp-config-code" id="mcpConfigDesktop"></pre>
+                  <button class="btn btn-sm btn-primary mt-1" onclick="copyMCPConfig('mcpConfigDesktop')"><i class="fa fa-copy"></i> Copy</button>
+                </div>
+                <div class="tab-pane fade" id="mcp-config-claude-code" role="tabpanel">
+                  <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 6px;">Add with <code style="background-color: var(--bg-reference); padding: 1px 5px; border-radius: 3px; font-size: 0.78rem;">claude mcp add arcadedb</code> or copy into MCP settings:</p>
+                  <pre class="mcp-config-code" id="mcpConfigCode"></pre>
+                  <button class="btn btn-sm btn-primary mt-1" onclick="copyMCPConfig('mcpConfigCode')"><i class="fa fa-copy"></i> Copy</button>
                 </div>
               </div>
             </div>

@@ -25,8 +25,14 @@ import com.arcadedb.network.binary.SocketFactory;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
+import com.arcadedb.server.http.handler.DeleteGroupHandler;
+import com.arcadedb.server.http.handler.DeleteUserHandler;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
+import com.arcadedb.server.http.handler.GetApiTokensHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
+import com.arcadedb.server.http.handler.GetGroupsHandler;
+import com.arcadedb.server.http.handler.GetUsersHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
 import com.arcadedb.server.http.handler.GetOpenApiHandler;
@@ -34,7 +40,11 @@ import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.http.handler.GetServerHandler;
 import com.arcadedb.server.http.handler.GetSessionsHandler;
+import com.arcadedb.server.http.handler.PostApiTokenHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
+import com.arcadedb.server.http.handler.PostGroupHandler;
+import com.arcadedb.server.http.handler.PostUserHandler;
+import com.arcadedb.server.http.handler.PutUserHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostLoginHandler;
@@ -46,6 +56,8 @@ import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
+import com.arcadedb.server.mcp.MCPConfigHandler;
+import com.arcadedb.server.mcp.MCPHttpHandler;
 import com.arcadedb.server.security.ServerSecurityException;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
@@ -172,7 +184,22 @@ public class HttpServer implements ServerPlugin {
         .get("/ready", new GetReadyHandler(this))
         .get("/openapi.json", new GetOpenApiHandler(this))
         .get("/docs", new GetApiDocsHandler(this))
+        .get("/server/api-tokens", new GetApiTokensHandler(this))
+        .post("/server/api-tokens", new PostApiTokenHandler(this))
+        .delete("/server/api-tokens", new DeleteApiTokenHandler(this))
+        .get("/server/users", new GetUsersHandler(this))
+        .post("/server/users", new PostUserHandler(this))
+        .put("/server/users", new PutUserHandler(this))
+        .delete("/server/users", new DeleteUserHandler(this))
+        .get("/server/groups", new GetGroupsHandler(this))
+        .post("/server/groups", new PostGroupHandler(this))
+        .delete("/server/groups", new DeleteGroupHandler(this))
     );
+
+    // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling
+    final var mcpConfig = server.getMCPConfiguration();
+    routes.addExactPath("/api/v1/mcp", new MCPHttpHandler(this, server, mcpConfig));
+    routes.addExactPath("/api/v1/mcp/config", new MCPConfigHandler(this, mcpConfig));
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
