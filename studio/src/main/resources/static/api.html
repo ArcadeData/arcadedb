@@ -311,6 +311,7 @@ var apiEndpoints = {
 };
 
 var _apiPlaygroundVisible = {};
+var _apiSessionId = null;
 
 function showApiDetail(key) {
   var ep = apiEndpoints[key];
@@ -448,6 +449,22 @@ function renderApiPlayground(key, ep) {
   html += "<div class='api-playground-auth-fields' id='apiAuthFields_" + key + "'></div>";
   html += "</div>";
 
+  // Request headers (session ID + custom)
+  html += "<div class='api-playground-section'>";
+  html += "<label>Request Headers</label>";
+  if (_apiSessionId) {
+    html += "<div class='api-playground-param-row'>";
+    html += "<input type='checkbox' id='apiSessionCheck_" + key + "' checked>";
+    html += "<code>arcadedb-session-id</code>";
+    html += "<input class='api-playground-input' id='apiSessionVal_" + key + "' value='" + escapeHtml(_apiSessionId) + "'>";
+    html += "</div>";
+  }
+  html += "<div class='api-playground-param-row'>";
+  html += "<input class='api-playground-input' id='apiCustomHeaderName_" + key + "' placeholder='Header name' style='flex:0.4'>";
+  html += "<input class='api-playground-input' id='apiCustomHeaderVal_" + key + "' placeholder='Header value'>";
+  html += "</div>";
+  html += "</div>";
+
   // Path parameters
   if (ep.params && ep.params.length > 0) {
     html += "<div class='api-playground-section'>";
@@ -540,6 +557,18 @@ function sendApiRequest(key) {
     headers['Authorization'] = 'Bearer ' + token;
   }
 
+  // Include session ID header if checked
+  var sessionCheck = document.getElementById('apiSessionCheck_' + key);
+  var sessionVal = document.getElementById('apiSessionVal_' + key);
+  if (sessionCheck && sessionCheck.checked && sessionVal && sessionVal.value.trim())
+    headers['arcadedb-session-id'] = sessionVal.value.trim();
+
+  // Include custom header if provided
+  var customName = (document.getElementById('apiCustomHeaderName_' + key) || {}).value;
+  var customVal = (document.getElementById('apiCustomHeaderVal_' + key) || {}).value;
+  if (customName && customName.trim())
+    headers[customName.trim()] = customVal || '';
+
   // Build request body
   var body = null;
   var bodyEl = document.getElementById('apiBody_' + key);
@@ -588,11 +617,18 @@ function renderApiResponse(key, status, elapsed, data, jqXHR) {
     responseText = '(empty response)';
   }
 
-  // Show response headers
+  // Capture response headers
   var headersText = '';
   if (jqXHR) {
     var allHeaders = jqXHR.getAllResponseHeaders();
     if (allHeaders) headersText = allHeaders.trim();
+
+    // Auto-capture or clear session ID
+    var sessionId = jqXHR.getResponseHeader('arcadedb-session-id');
+    if (sessionId)
+      _apiSessionId = sessionId;
+    else if (key === 'commit' || key === 'rollback')
+      _apiSessionId = null;
   }
 
   var html = "<div class='api-playground-response'>";
@@ -600,6 +636,17 @@ function renderApiResponse(key, status, elapsed, data, jqXHR) {
   html += "<span class='api-playground-status " + statusClass + "'>" + escapeHtml(statusText) + "</span>";
   html += "<span class='api-playground-timing'>" + elapsed + "ms</span>";
   html += "</div>";
+
+  // Collapsible response headers
+  if (headersText) {
+    html += "<div class='api-playground-resp-headers'>";
+    html += "<div class='api-playground-resp-headers-toggle' onclick='this.parentNode.classList.toggle(\"open\")'>";
+    html += "<i class='fa fa-caret-right'></i> Response Headers";
+    html += "</div>";
+    html += "<pre class='api-playground-resp-headers-body'>" + escapeHtml(headersText) + "</pre>";
+    html += "</div>";
+  }
+
   html += "<div style='position:relative'>";
   html += "<pre class='api-playground-response-body'>" + escapeHtml(responseText) + "</pre>";
   html += "<button class='api-playground-copy' onclick='copyApiResponse(this)' title='Copy to clipboard'><i class='fa fa-copy'></i></button>";
