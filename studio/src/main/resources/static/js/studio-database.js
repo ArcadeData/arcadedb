@@ -568,6 +568,160 @@ function dropIndex(indexName) {
   );
 }
 
+function validateTypeName(name) {
+  if (name == null || name.trim() == "")
+    return "Type name is required";
+  if (name.indexOf(",") >= 0)
+    return "Type name cannot contain commas";
+  if (name.indexOf("`") >= 0)
+    return "Type name cannot contain backticks";
+  // Check uniqueness against existing types
+  if (window._schemaTypes) {
+    for (let i in window._schemaTypes)
+      if (window._schemaTypes[i].name == name)
+        return "A type named '" + name + "' already exists";
+  }
+  return null;
+}
+
+function createType(category) {
+  let catLabel = category == "vertex" ? "Vertex" : (category == "edge" ? "Edge" : "Document");
+  let sqlKeyword = category == "vertex" ? "VERTEX" : (category == "edge" ? "EDGE" : "DOCUMENT");
+
+  // Collect existing types of the same category for the "Extends" multi-select
+  let compatibleTypes = [];
+  if (window._schemaTypes) {
+    for (let i in window._schemaTypes) {
+      let t = window._schemaTypes[i];
+      if (t.type == category)
+        compatibleTypes.push(t.name);
+    }
+    compatibleTypes.sort(function (a, b) { return a.localeCompare(b); });
+  }
+
+  let html = "<label for='inputCreateTypeName'>Type name <span style='color:#dc3545'>*</span></label>";
+  html += "<input class='form-control mt-1' id='inputCreateTypeName' placeholder='e.g. My" + catLabel + "'>";
+  html += "<div id='createTypeNameFeedback' style='font-size:0.78rem;min-height:20px;margin-bottom:8px;'></div>";
+
+  // Extends multi-select
+  html += "<label>Extends (optional, multiple selection)</label>";
+  html += "<select class='form-select mt-1 mb-3' id='inputCreateTypeParents' multiple style='height:auto;min-height:38px;max-height:120px;'>";
+  for (let i = 0; i < compatibleTypes.length; i++)
+    html += "<option value='" + escapeHtml(compatibleTypes[i]) + "'>" + escapeHtml(compatibleTypes[i]) + "</option>";
+  html += "</select>";
+  if (compatibleTypes.length == 0)
+    html += "<small class='text-muted' style='display:block;margin-top:-10px;margin-bottom:10px;'>No existing " + escapeHtml(catLabel.toLowerCase()) + " types to extend from.</small>";
+
+  // Buckets + Page Size
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreateTypeBuckets'>Buckets (optional)</label>";
+  html += "<input class='form-control mt-1' id='inputCreateTypeBuckets' type='number' min='1' max='32' placeholder='default'>";
+  html += "</div>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreateTypePageSize'>Page Size (optional)</label>";
+  html += "<input class='form-control mt-1' id='inputCreateTypePageSize' type='number' min='1' placeholder='default'>";
+  html += "</div>";
+  html += "</div>";
+
+  // Options row
+  html += "<div class='d-flex flex-wrap gap-3'>";
+
+  // Unidirectional (edge only)
+  if (category == "edge") {
+    html += "<div class='form-check'>";
+    html += "<input class='form-check-input' type='checkbox' id='inputCreateTypeUnidirectional'>";
+    html += "<label class='form-check-label' for='inputCreateTypeUnidirectional'>Unidirectional</label>";
+    html += "</div>";
+  }
+
+  // If not exists
+  html += "<div class='form-check'>";
+  html += "<input class='form-check-input' type='checkbox' id='inputCreateTypeIfNotExists'>";
+  html += "<label class='form-check-label' for='inputCreateTypeIfNotExists'>If not exists</label>";
+  html += "</div>";
+
+  html += "</div>";
+
+  globalPrompt("Create " + catLabel + " Type", html, "Create", function () {
+    let name = $("#inputCreateTypeName").val().trim();
+    let error = validateTypeName(name);
+    if (error && !$("#inputCreateTypeIfNotExists").prop("checked")) {
+      globalNotify("Error", error, "danger");
+      return;
+    }
+
+    let command = "CREATE " + sqlKeyword + " TYPE `" + name + "`";
+
+    if ($("#inputCreateTypeIfNotExists").prop("checked"))
+      command += " IF NOT EXISTS";
+
+    // Multiple parents
+    let parents = $("#inputCreateTypeParents").val();
+    if (parents && parents.length > 0)
+      command += " EXTENDS " + parents.map(function (p) { return "`" + p + "`"; }).join(", ");
+
+    let buckets = $("#inputCreateTypeBuckets").val();
+    if (buckets && parseInt(buckets) > 0)
+      command += " BUCKETS " + parseInt(buckets);
+
+    let pageSize = $("#inputCreateTypePageSize").val();
+    if (pageSize && parseInt(pageSize) > 0)
+      command += " PAGESIZE " + parseInt(pageSize);
+
+    if (category == "edge" && $("#inputCreateTypeUnidirectional").prop("checked"))
+      command += " UNIDIRECTIONAL";
+
+    let database = getCurrentDatabase();
+    if (database == "") {
+      globalNotify("Error", "Database not selected", "danger");
+      return;
+    }
+
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/command/" + database,
+        data: JSON.stringify({
+          language: "sql",
+          command: command,
+          serializer: "record",
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        globalNotify("Success", catLabel + " type '" + escapeHtml(name) + "' created", "success");
+        displaySchema();
+      })
+      .fail(function (jqXHR, textStatus, errorThrown) {
+        globalNotifyError(jqXHR.responseText);
+      });
+  });
+
+  // Wire up live validation on the name field
+  setTimeout(function () {
+    $("#inputCreateTypeName").on("input", function () {
+      let name = $(this).val().trim();
+      let feedback = $("#createTypeNameFeedback");
+      if (name == "") {
+        feedback.html("");
+        $(this).removeClass("is-invalid is-valid");
+        return;
+      }
+      let error = validateTypeName(name);
+      if (error) {
+        feedback.html("<span style='color:#dc3545;'><i class='fa fa-circle-exclamation'></i> " + escapeHtml(error) + "</span>");
+        $(this).addClass("is-invalid").removeClass("is-valid");
+      } else {
+        feedback.html("<span style='color:#28a745;'><i class='fa fa-circle-check'></i> Name is available</span>");
+        $(this).addClass("is-valid").removeClass("is-invalid");
+      }
+    });
+  }, 200);
+}
+
 function getCurrentDatabase() {
   let db = $(".inputDatabase").val();
   return db != null ? db.trim() : null;
@@ -911,7 +1065,11 @@ function populateReferencePanel() {
         { label: "CREATE PROPERTY", code: "CREATE PROPERTY MyType.name STRING" },
         { label: "CREATE INDEX", code: "CREATE INDEX ON MyType (name) UNIQUE" },
         { label: "CREATE EDGE", code: "CREATE EDGE MyEdge FROM #1:0 TO #2:0 SET weight = 1.0" },
-        { label: "MATCH", code: "MATCH {type: Person, as: p} -FriendOf-> {as: f} RETURN p, f" }
+        { label: "MATCH", code: "MATCH {type: Person, as: p} -FriendOf-> {as: f} RETURN p, f" },
+        { label: "CREATE MATERIALIZED VIEW", code: "CREATE MATERIALIZED VIEW MyView REFRESH MANUAL AS SELECT name, count(*) AS cnt FROM MyType GROUP BY name" },
+        { label: "REFRESH MATERIALIZED VIEW", code: "REFRESH MATERIALIZED VIEW MyView" },
+        { label: "ALTER MATERIALIZED VIEW", code: "ALTER MATERIALIZED VIEW MyView REFRESH PERIODIC EVERY 5 MINUTE" },
+        { label: "DROP MATERIALIZED VIEW", code: "DROP MATERIALIZED VIEW MyView" }
       ]
     },
     {
@@ -1269,13 +1427,14 @@ function displaySchema() {
     for (let s = 0; s < sections.length; s++) {
       let sec = sections[s];
       let items = groups[sec.key];
-      if (items.length == 0) continue;
 
       let total = 0;
       for (let j = 0; j < items.length; j++) total += (items[j].records || 0);
 
       html += "<div class='sidebar-section'>";
-      html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + total.toLocaleString() + ")</span></div>";
+      html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + total.toLocaleString() + ")</span>";
+      html += "<span class='sidebar-section-header-actions'><button onclick='createType(\"" + sec.key + "\"); return false;' title='Create " + sec.key + " type'><i class='fa fa-plus'></i></button></span>";
+      html += "</div>";
       html += "<div class='sidebar-badges'>";
 
       let colors = palette[sec.key];
@@ -1295,10 +1454,11 @@ function displaySchema() {
       html += "</div></div>";
     }
 
-    if (html == "")
-      html = "<div class='sidebar-empty'>No types defined.<br><small>Create vertex or document types to see them here.</small></div>";
-
-    $("#dbTypeBadges").html(html);
+    // Fetch materialized views and append to sidebar
+    fetchMaterializedViews(function (views) {
+      html += renderMaterializedViewsSidebarSection(views || [], false);
+      $("#dbTypeBadges").html(html);
+    });
 
     // Reset detail panel
     $("#dbTypeDetail").html("<div class='db-type-empty'><i class='fa fa-database' style='font-size: 2rem; color: #ddd; margin-bottom: 12px; display: block;'></i>Select a type from the sidebar to view its schema.</div>");
@@ -1395,7 +1555,8 @@ function showTypeDetail(typeName) {
 var sidebarBadgeColors = {
   vertex:   ["#3b82f6", "#0ea5e9", "#6366f1", "#8b5cf6", "#06b6d4", "#2563eb", "#4f46e5", "#0284c7"],
   edge:     ["#f97316", "#f59e0b", "#ef4444", "#e11d48", "#ea580c", "#d97706", "#dc2626", "#be123c"],
-  document: ["#22c55e", "#10b981", "#14b8a6", "#059669", "#16a34a", "#0d9488", "#15803d", "#047857"]
+  document: ["#22c55e", "#10b981", "#14b8a6", "#059669", "#16a34a", "#0d9488", "#15803d", "#047857"],
+  materializedView: ["#a855f7", "#9333ea", "#7c3aed", "#8b5cf6", "#a78bfa", "#7c3aed", "#6d28d9", "#c084fc"]
 };
 
 function populateQuerySidebar() {
@@ -1450,6 +1611,11 @@ function populateQuerySidebar() {
 
     html += "</div></div>";
   }
+
+  // Add materialized views section
+  let views = window._schemaMaterializedViews;
+  if (views && views.length > 0)
+    html += renderMaterializedViewsSidebarSection(views, true);
 
   container.html(html);
 }
@@ -1828,17 +1994,508 @@ function triggerDatabaseBackup() {
   );
 }
 
-// Register tab change handler for database backup tab
+// Register tab change handler for database sub-tabs
 $(document).ready(function () {
   $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
     var activeTab = this.id;
     if (activeTab == "tab-db-backup-sel") {
-      if (!dbBackupsLoaded) {
+      if (!dbBackupsLoaded)
         loadDatabaseBackups();
-      }
+    } else if (activeTab == "tab-db-metrics-sel") {
+      loadDatabaseMetrics();
     }
   });
+
+  $("#dbMetricsAutoRefresh").on("change", function () {
+    if (this.checked)
+      startDbMetricsAutoRefresh();
+    else
+      stopDbMetricsAutoRefresh();
+  });
 });
+
+// ===== Materialized Views =====
+
+var _mvAutoRefreshInterval = null;
+
+function fetchMaterializedViews(callback) {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
+    if (callback) callback([]);
+    return;
+  }
+
+  jQuery
+    .ajax({
+      type: "POST",
+      url: "api/v1/query/" + database,
+      data: JSON.stringify({
+        language: "sql",
+        command: "select from schema:materializedViews",
+      }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      window._schemaMaterializedViews = data.result || [];
+      if (callback) callback(data.result || []);
+    })
+    .fail(function (jqXHR, textStatus, errorThrown) {
+      window._schemaMaterializedViews = [];
+      if (callback) callback([]);
+    });
+}
+
+function renderMaterializedViewsSidebarSection(views, isQuerySidebar) {
+  let html = "";
+  let palette = sidebarBadgeColors.materializedView;
+
+  html += "<div class='sidebar-section'>";
+  html += "<div class='sidebar-section-header'><i class='fa fa-layer-group'></i> Materialized Views <span class='sidebar-count'>(" + views.length + ")</span>";
+  if (!isQuerySidebar)
+    html += "<span class='sidebar-section-header-actions'><button onclick='createMaterializedView(); return false;' title='Create materialized view'><i class='fa fa-plus'></i></button></span>";
+  html += "</div>";
+  html += "<div class='sidebar-badges'>";
+
+  for (let j = 0; j < views.length; j++) {
+    let view = views[j];
+    let color = palette[j % palette.length];
+    let name = escapeHtml(view.name);
+    let statusClass = "mv-status-dot-" + (view.status || "valid").toLowerCase();
+
+    if (isQuerySidebar) {
+      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+      html += "onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\"); return false;' ";
+      html += "title='" + name + " (Materialized View)'>";
+      html += "<span class='mv-status-dot " + statusClass + "'></span>";
+      html += "<span class='sidebar-badge-name'>" + name + "</span>";
+      html += "</a>";
+    } else {
+      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+      html += "onclick='showMaterializedViewDetail(\"" + view.name.replace(/"/g, "&quot;") + "\"); return false;' ";
+      html += "title='" + name + " (Materialized View)'>";
+      html += "<span class='mv-status-dot " + statusClass + "'></span>";
+      html += "<span class='sidebar-badge-name'>" + name + "</span>";
+      html += "</a>";
+    }
+  }
+
+  html += "</div></div>";
+  return html;
+}
+
+function mvStatusDotClass(status) {
+  let s = (status || "VALID").toUpperCase();
+  if (s == "VALID") return "mv-status-dot-valid";
+  if (s == "BUILDING") return "mv-status-dot-building";
+  if (s == "STALE") return "mv-status-dot-stale";
+  if (s == "ERROR") return "mv-status-dot-error";
+  return "mv-status-dot-valid";
+}
+
+function mvStatusBadgeClass(status) {
+  let s = (status || "VALID").toUpperCase();
+  if (s == "VALID") return "mv-status-badge-valid";
+  if (s == "BUILDING") return "mv-status-badge-building";
+  if (s == "STALE") return "mv-status-badge-stale";
+  if (s == "ERROR") return "mv-status-badge-error";
+  return "mv-status-badge-valid";
+}
+
+function mvFormatRelativeTime(timestamp) {
+  if (!timestamp || timestamp <= 0) return "Never";
+  let diff = Date.now() - timestamp;
+  if (diff < 0) diff = 0;
+  let secs = Math.floor(diff / 1000);
+  if (secs < 60) return secs + "s ago";
+  let mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + "m ago";
+  let hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + "h ago";
+  let days = Math.floor(hours / 24);
+  return days + "d ago";
+}
+
+function mvFormatInterval(ms) {
+  if (!ms || ms <= 0) return "—";
+  let secs = Math.floor(ms / 1000);
+  if (secs < 60) return secs + " seconds";
+  let mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + " minutes";
+  let hours = Math.floor(mins / 60);
+  return hours + " hours";
+}
+
+function showMaterializedViewDetail(viewName) {
+  // Clear any existing auto-refresh
+  if (_mvAutoRefreshInterval) {
+    clearInterval(_mvAutoRefreshInterval);
+    _mvAutoRefreshInterval = null;
+  }
+
+  let views = window._schemaMaterializedViews;
+  if (!views) return;
+
+  let view = null;
+  for (let i = 0; i < views.length; i++)
+    if (views[i].name == viewName) { view = views[i]; break; }
+  if (view == null) return;
+
+  // Mark active badge
+  $("#dbTypeBadges .sidebar-badge").removeClass("db-badge-active");
+  $("#dbTypeBadges .sidebar-badge").each(function () {
+    if ($(this).find(".sidebar-badge-name").text() == viewName)
+      $(this).addClass("db-badge-active");
+  });
+
+  let status = (view.status || "VALID").toUpperCase();
+  let statusBadgeClass = mvStatusBadgeClass(status);
+  let statusDotClass = mvStatusDotClass(status);
+
+  let html = "";
+
+  // Header
+  html += "<div class='d-flex align-items-center gap-3 mb-3'>";
+  html += "<h4 style='margin:0;'>" + escapeHtml(view.name) + "</h4>";
+  html += "<span class='db-type-category-badge' style='background-color:#a855f7;'>Materialized View</span>";
+  html += "<span class='mv-status-badge " + statusBadgeClass + "'><span class='mv-status-dot " + statusDotClass + "'></span>" + escapeHtml(status) + "</span>";
+  html += "</div>";
+
+  // Defining Query
+  html += "<div class='db-detail-section'>";
+  html += "<h6><i class='fa fa-code'></i> Defining Query</h6>";
+  html += "<div class='mv-query-block'>" + escapeHtml(view.query || "") + "</div>";
+  html += "</div>";
+
+  // Source Types
+  if (view.sourceTypes && view.sourceTypes.length > 0) {
+    html += "<div class='db-detail-section'>";
+    html += "<h6><i class='fa fa-link'></i> Source Types</h6>";
+    html += "<div class='d-flex flex-wrap gap-2'>";
+    for (let i = 0; i < view.sourceTypes.length; i++) {
+      let st = view.sourceTypes[i];
+      html += "<a class='link' href='#' onclick='showTypeDetail(\"" + escapeHtml(st) + "\"); return false;' style='font-weight:600;'>" + escapeHtml(st) + "</a>";
+    }
+    html += "</div></div>";
+  }
+
+  // Refresh Info
+  html += "<div class='db-detail-section'>";
+  html += "<h6><i class='fa fa-sync'></i> Refresh Info</h6>";
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Mode:</span> " + escapeHtml(view.refreshMode || "MANUAL") + "</div>";
+  if ((view.refreshMode || "").toUpperCase() == "PERIODIC" && view.refreshInterval > 0)
+    html += "<div class='mv-info-row'><span class='mv-info-label'>Interval:</span> " + escapeHtml(mvFormatInterval(view.refreshInterval)) + "</div>";
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Last Refresh:</span> " + escapeHtml(mvFormatRelativeTime(view.lastRefreshTime)) + "</div>";
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Status:</span> <span class='mv-status-badge " + statusBadgeClass + "'><span class='mv-status-dot " + statusDotClass + "'></span>" + escapeHtml(status) + "</span></div>";
+  html += "<div class='mv-info-row'><span class='mv-info-label'>Backing Type:</span> " + escapeHtml(view.backingType || "") + "</div>";
+  html += "</div>";
+
+  // Properties & Indexes from backing type
+  let backingType = null;
+  if (view.backingType && window._schemaTypes) {
+    for (let i in window._schemaTypes)
+      if (window._schemaTypes[i].name == view.backingType) { backingType = window._schemaTypes[i]; break; }
+  }
+
+  if (backingType) {
+    html += "<div class='db-detail-section'>";
+    html += "<h6><i class='fa fa-list'></i> Properties</h6>";
+    let propHtml = renderProperties(backingType, window._schemaTypes);
+    if (propHtml == "")
+      html += "<p class='text-muted' style='font-size:0.85rem;'>No properties defined.</p>";
+    else {
+      html += "<div class='table-responsive'>";
+      html += "<table class='table table-sm db-detail-table'>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
+      html += "<tbody>" + propHtml + "</tbody></table></div>";
+    }
+    html += "</div>";
+
+    if (backingType.indexes && backingType.indexes.length > 0) {
+      html += "<div class='db-detail-section'>";
+      html += "<h6><i class='fa fa-bolt'></i> Indexes</h6>";
+      html += "<div class='table-responsive'>";
+      html += "<table class='table table-sm db-detail-table'>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
+      html += "<tbody>" + renderIndexes(backingType, window._schemaTypes) + "</tbody></table></div>";
+      html += "</div>";
+    }
+  }
+
+  // Quick Actions
+  html += "<div class='db-detail-section'>";
+  html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
+  html += "<div class='d-flex flex-wrap gap-2'>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='refreshMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-sync'></i> Refresh Now</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\")'><i class='fa fa-table'></i> Browse Records</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='alterMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-pen'></i> Alter Refresh Mode</button>";
+  html += "<button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-trash'></i> Drop View</button>";
+  html += "</div></div>";
+
+  $("#dbTypeDetail").html(html);
+
+  // Auto-refresh if status is BUILDING
+  if (status == "BUILDING") {
+    _mvAutoRefreshInterval = setInterval(function () {
+      fetchMaterializedViews(function (updatedViews) {
+        let updatedView = null;
+        for (let i = 0; i < updatedViews.length; i++)
+          if (updatedViews[i].name == viewName) { updatedView = updatedViews[i]; break; }
+        if (updatedView && (updatedView.status || "").toUpperCase() != "BUILDING") {
+          clearInterval(_mvAutoRefreshInterval);
+          _mvAutoRefreshInterval = null;
+          showMaterializedViewDetail(viewName);
+        } else if (updatedView) {
+          // Update status display inline
+          let newStatus = (updatedView.status || "VALID").toUpperCase();
+          let newDotClass = mvStatusDotClass(newStatus);
+          let newBadgeClass = mvStatusBadgeClass(newStatus);
+          $(".mv-status-badge").attr("class", "mv-status-badge " + newBadgeClass).html("<span class='mv-status-dot " + newDotClass + "'></span>" + escapeHtml(newStatus));
+        } else {
+          clearInterval(_mvAutoRefreshInterval);
+          _mvAutoRefreshInterval = null;
+        }
+      });
+    }, 3000);
+  }
+}
+
+function validateMaterializedViewName(name) {
+  if (name == null || name.trim() == "")
+    return "View name is required";
+  if (name.indexOf(",") >= 0)
+    return "View name cannot contain commas";
+  if (name.indexOf("`") >= 0)
+    return "View name cannot contain backticks";
+  // Check against existing types
+  if (window._schemaTypes) {
+    for (let i in window._schemaTypes)
+      if (window._schemaTypes[i].name == name)
+        return "A type named '" + name + "' already exists";
+  }
+  // Check against existing materialized views
+  if (window._schemaMaterializedViews) {
+    for (let i = 0; i < window._schemaMaterializedViews.length; i++)
+      if (window._schemaMaterializedViews[i].name == name)
+        return "A materialized view named '" + name + "' already exists";
+  }
+  return null;
+}
+
+function createMaterializedView() {
+  let html = "<label for='mvCreateName'>View Name <span style='color:#dc3545'>*</span></label>";
+  html += "<input class='form-control mt-1' id='mvCreateName' placeholder='e.g. my_view'>";
+  html += "<div id='mvCreateNameFeedback' style='font-size:0.78rem;min-height:20px;margin-bottom:8px;'></div>";
+  html += "<label for='mvCreateQuery'>SQL Query <span style='color:#dc3545'>*</span></label>";
+  html += "<textarea class='form-control mt-1 mb-2' id='mvCreateQuery' rows='3' placeholder='SELECT ... FROM ...' style='font-family:monospace;font-size:0.85rem;'></textarea>";
+  html += "<label>Refresh Mode</label>";
+  html += "<div class='d-flex gap-3 mt-1 mb-2'>";
+  html += "<div class='form-check'><input class='form-check-input' type='radio' name='mvRefreshMode' id='mvModeManual' value='MANUAL' checked><label class='form-check-label' for='mvModeManual'>Manual</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='radio' name='mvRefreshMode' id='mvModeIncremental' value='INCREMENTAL'><label class='form-check-label' for='mvModeIncremental'>Incremental</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='radio' name='mvRefreshMode' id='mvModePeriodic' value='PERIODIC'><label class='form-check-label' for='mvModePeriodic'>Periodic</label></div>";
+  html += "</div>";
+  html += "<div id='mvPeriodicOptions' style='display:none;'>";
+  html += "<label for='mvInterval'>Interval</label>";
+  html += "<div class='d-flex gap-2 mt-1'>";
+  html += "<input class='form-control' id='mvInterval' type='number' value='5' min='1' style='width:100px;'>";
+  html += "<select class='form-select' id='mvIntervalUnit' style='width:auto;'><option value='SECOND'>Seconds</option><option value='MINUTE' selected>Minutes</option><option value='HOUR'>Hours</option></select>";
+  html += "</div></div>";
+
+  globalPrompt("Create Materialized View", html, "Create", function () {
+    let name = $("#mvCreateName").val().trim();
+    let error = validateMaterializedViewName(name);
+    if (error) {
+      globalNotify("Error", error, "danger");
+      return;
+    }
+    let query = $("#mvCreateQuery").val().trim();
+    if (query == "") {
+      globalNotify("Error", "SQL query is required", "danger");
+      return;
+    }
+    let mode = $("input[name='mvRefreshMode']:checked").val();
+    let command = "CREATE MATERIALIZED VIEW `" + name + "` AS " + query;
+    if (mode != "MANUAL") {
+      command += " REFRESH";
+      if (mode == "PERIODIC") {
+        let interval = parseInt($("#mvInterval").val()) || 5;
+        let unit = $("#mvIntervalUnit").val() || "MINUTE";
+        command += " EVERY " + interval + " " + unit;
+      } else {
+        command += " " + mode;
+      }
+    }
+
+    let database = getCurrentDatabase();
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/command/" + database,
+        data: JSON.stringify({
+          language: "sql",
+          command: command,
+          serializer: "record",
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        globalNotify("Success", "Materialized view '" + escapeHtml(name) + "' created", "success");
+        displaySchema();
+      })
+      .fail(function (jqXHR, textStatus, errorThrown) {
+        globalNotifyError(jqXHR.responseText);
+      });
+  });
+
+  // Wire up live validation + periodic toggle
+  setTimeout(function () {
+    $("#mvCreateName").on("input", function () {
+      let name = $(this).val().trim();
+      let feedback = $("#mvCreateNameFeedback");
+      if (name == "") {
+        feedback.html("");
+        $(this).removeClass("is-invalid is-valid");
+        return;
+      }
+      let error = validateMaterializedViewName(name);
+      if (error) {
+        feedback.html("<span style='color:#dc3545;'><i class='fa fa-circle-exclamation'></i> " + escapeHtml(error) + "</span>");
+        $(this).addClass("is-invalid").removeClass("is-valid");
+      } else {
+        feedback.html("<span style='color:#28a745;'><i class='fa fa-circle-check'></i> Name is available</span>");
+        $(this).addClass("is-valid").removeClass("is-invalid");
+      }
+    });
+    $("input[name='mvRefreshMode']").on("change", function () {
+      if ($(this).val() == "PERIODIC")
+        $("#mvPeriodicOptions").show();
+      else
+        $("#mvPeriodicOptions").hide();
+    });
+  }, 200);
+}
+
+function refreshMaterializedView(name) {
+  globalConfirm(
+    "Refresh Materialized View",
+    "Are you sure you want to refresh the materialized view '" + escapeHtml(name) + "'?",
+    "info",
+    function () {
+      let database = getCurrentDatabase();
+      jQuery
+        .ajax({
+          type: "POST",
+          url: "api/v1/command/" + database,
+          data: JSON.stringify({
+            language: "sql",
+            command: "REFRESH MATERIALIZED VIEW `" + name + "`",
+            serializer: "record",
+          }),
+          beforeSend: function (xhr) {
+            xhr.setRequestHeader("Authorization", globalCredentials);
+          },
+        })
+        .done(function (data) {
+          globalNotify("Success", "Materialized view '" + escapeHtml(name) + "' refreshed", "success");
+          displaySchema();
+        })
+        .fail(function (jqXHR, textStatus, errorThrown) {
+          globalNotifyError(jqXHR.responseText);
+        });
+    }
+  );
+}
+
+function alterMaterializedView(name) {
+  let html = "<label>New Refresh Mode</label>";
+  html += "<div class='d-flex gap-3 mt-1 mb-2'>";
+  html += "<div class='form-check'><input class='form-check-input' type='radio' name='mvAlterMode' id='mvAlterManual' value='MANUAL' checked><label class='form-check-label' for='mvAlterManual'>Manual</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='radio' name='mvAlterMode' id='mvAlterIncremental' value='INCREMENTAL'><label class='form-check-label' for='mvAlterIncremental'>Incremental</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='radio' name='mvAlterMode' id='mvAlterPeriodic' value='PERIODIC'><label class='form-check-label' for='mvAlterPeriodic'>Periodic</label></div>";
+  html += "</div>";
+  html += "<div id='mvAlterPeriodicOptions' style='display:none;'>";
+  html += "<label for='mvAlterInterval'>Interval</label>";
+  html += "<div class='d-flex gap-2 mt-1'>";
+  html += "<input class='form-control' id='mvAlterInterval' type='number' value='5' min='1' style='width:100px;'>";
+  html += "<select class='form-select' id='mvAlterIntervalUnit' style='width:auto;'><option value='SECOND'>Seconds</option><option value='MINUTE' selected>Minutes</option><option value='HOUR'>Hours</option></select>";
+  html += "</div></div>";
+
+  globalPrompt("Alter Materialized View: " + escapeHtml(name), html, "Alter", function () {
+    let mode = $("input[name='mvAlterMode']:checked").val();
+    let command = "ALTER MATERIALIZED VIEW `" + name + "` REFRESH " + mode;
+    if (mode == "PERIODIC") {
+      let interval = parseInt($("#mvAlterInterval").val()) || 5;
+      let unit = $("#mvAlterIntervalUnit").val() || "MINUTE";
+      command += " EVERY " + interval + " " + unit;
+    }
+
+    let database = getCurrentDatabase();
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/command/" + database,
+        data: JSON.stringify({
+          language: "sql",
+          command: command,
+          serializer: "record",
+        }),
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        globalNotify("Success", "Materialized view '" + escapeHtml(name) + "' updated", "success");
+        displaySchema();
+      })
+      .fail(function (jqXHR, textStatus, errorThrown) {
+        globalNotifyError(jqXHR.responseText);
+      });
+  });
+
+  // Toggle periodic options visibility
+  setTimeout(function () {
+    $("input[name='mvAlterMode']").on("change", function () {
+      if ($(this).val() == "PERIODIC")
+        $("#mvAlterPeriodicOptions").show();
+      else
+        $("#mvAlterPeriodicOptions").hide();
+    });
+  }, 200);
+}
+
+function dropMaterializedView(name) {
+  globalConfirm(
+    "Drop Materialized View",
+    "Are you sure you want to drop the materialized view '" + escapeHtml(name) + "'?<br>WARNING: The operation cannot be undone.",
+    "warning",
+    function () {
+      let database = getCurrentDatabase();
+      jQuery
+        .ajax({
+          type: "POST",
+          url: "api/v1/command/" + database,
+          data: JSON.stringify({
+            language: "sql",
+            command: "DROP MATERIALIZED VIEW `" + name + "`",
+            serializer: "record",
+          }),
+          beforeSend: function (xhr) {
+            xhr.setRequestHeader("Authorization", globalCredentials);
+          },
+        })
+        .done(function (data) {
+          globalNotify("Success", "Materialized view '" + escapeHtml(name) + "' dropped", "success");
+          displaySchema();
+        })
+        .fail(function (jqXHR, textStatus, errorThrown) {
+          globalNotifyError(jqXHR.responseText);
+        });
+    }
+  );
+}
 
 // ===== Flame Graph Visualization =====
 
@@ -1968,4 +2625,157 @@ function formatCostNanos(ns) {
   if (ns < 1000000) return (ns / 1000).toFixed(1) + " \u00B5s";
   if (ns < 1000000000) return (ns / 1000000).toFixed(1) + " ms";
   return (ns / 1000000000).toFixed(2) + " s";
+}
+
+// ===== Database Metrics Tab =====
+
+var _dbMetricsAutoRefreshInterval = null;
+var _dbMetricsCrudChart = null;
+
+function startDbMetricsAutoRefresh() {
+  stopDbMetricsAutoRefresh();
+  _dbMetricsAutoRefreshInterval = setInterval(function () {
+    if ($("#tab-db-metrics").hasClass("active"))
+      loadDatabaseMetrics();
+  }, 5000);
+}
+
+function stopDbMetricsAutoRefresh() {
+  if (_dbMetricsAutoRefreshInterval) {
+    clearInterval(_dbMetricsAutoRefreshInterval);
+    _dbMetricsAutoRefreshInterval = null;
+  }
+}
+
+function loadDatabaseMetrics() {
+  let database = getCurrentDatabase();
+  if (!database) return;
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/query/" + database,
+    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:stats" }),
+    beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+  }).done(function (data) {
+    if (data.result && data.result.length > 0)
+      displayDatabaseStats(data.result[0]);
+  }).fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/query/" + database,
+    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:materializedViews" }),
+    beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+  }).done(function (data) {
+    displayMvHealth(data.result || []);
+  });
+}
+
+function formatNumber(n) {
+  if (n == null) return "-";
+  return Number(n).toLocaleString();
+}
+
+function displayDatabaseStats(stats) {
+  $("#dbStatTxCommits").text(formatNumber(stats.txCommits));
+  $("#dbStatTxRollbacks").text(formatNumber(stats.txRollbacks));
+  $("#dbStatQueries").text(formatNumber(stats.queries));
+  $("#dbStatCommands").text(formatNumber(stats.commands));
+  $("#dbStatScanType").text(formatNumber(stats.scanType));
+  $("#dbStatScanBucket").text(formatNumber(stats.scanBucket));
+  $("#dbStatIterateType").text(formatNumber(stats.iterateType));
+  $("#dbStatIterateBucket").text(formatNumber(stats.iterateBucket));
+  $("#dbStatCountType").text(formatNumber(stats.countType));
+  $("#dbStatCountBucket").text(formatNumber(stats.countBucket));
+
+  // CRUD pie chart
+  let crudData = [
+    stats.createRecord || 0,
+    stats.readRecord || 0,
+    stats.updateRecord || 0,
+    stats.deleteRecord || 0
+  ];
+
+  if (_dbMetricsCrudChart) {
+    _dbMetricsCrudChart.updateSeries(crudData);
+  } else {
+    _dbMetricsCrudChart = new ApexCharts(document.querySelector("#dbStatCrudChart"), {
+      chart: { type: "donut", height: 200 },
+      series: crudData,
+      labels: ["Create", "Read", "Update", "Delete"],
+      colors: ["#28a745", "#00aeee", "#ffc107", "#dc3545"],
+      legend: { position: "bottom", fontSize: "11px" },
+      plotOptions: { pie: { donut: { size: "50%" } } },
+      dataLabels: { enabled: true, formatter: function (val) { return val.toFixed(0) + "%"; } },
+      noData: { text: "No CRUD operations yet" }
+    });
+    _dbMetricsCrudChart.render();
+  }
+}
+
+function mvStatusBadge(status) {
+  let cls = "secondary";
+  if (status === "VALID") cls = "success";
+  else if (status === "BUILDING") cls = "info";
+  else if (status === "STALE") cls = "warning";
+  else if (status === "ERROR") cls = "danger";
+  return '<span class="badge bg-' + cls + '">' + escapeHtml(status) + '</span>';
+}
+
+function formatMs(ms) {
+  if (ms == null || ms === 0) return "-";
+  if (ms < 1000) return ms + " ms";
+  return (ms / 1000).toFixed(2) + " s";
+}
+
+function displayMvHealth(views) {
+  let container = $("#dbMetricsMvContainer");
+  if (!views || views.length === 0) {
+    container.html('<p class="text-muted">No materialized views found.</p>');
+    return;
+  }
+
+  let html = '<div class="table-responsive"><table class="table table-sm table-striped">';
+  html += "<thead><tr>";
+  html += "<th>Name</th><th>Status</th><th>Refreshes</th>";
+  html += "<th>Avg Time</th><th>Min</th><th>Max</th>";
+  html += "<th>Last Duration</th><th>Errors</th><th></th>";
+  html += "</tr></thead><tbody>";
+
+  for (let i = 0; i < views.length; i++) {
+    let v = views[i];
+    html += "<tr>";
+    html += "<td>" + escapeHtml(v.name) + "</td>";
+    html += "<td>" + mvStatusBadge(v.status) + "</td>";
+    html += "<td class='text-end'>" + formatNumber(v.refreshCount) + "</td>";
+    html += "<td class='text-end'>" + formatMs(v.refreshAvgTimeMs) + "</td>";
+    html += "<td class='text-end'>" + formatMs(v.refreshMinTimeMs) + "</td>";
+    html += "<td class='text-end'>" + formatMs(v.refreshMaxTimeMs) + "</td>";
+    html += "<td class='text-end'>" + formatMs(v.lastRefreshDurationMs) + "</td>";
+    html += "<td class='text-end'>" + (v.errorCount > 0 ? '<span class="text-danger">' + formatNumber(v.errorCount) + '</span>' : '0') + "</td>";
+    html += '<td><button class="btn btn-sm db-action-btn" onclick="refreshMvFromMetrics(\'' + escapeHtml(v.name).replace(/'/g, "\\'") + '\')"><i class="fa fa-sync"></i></button></td>';
+    html += "</tr>";
+  }
+
+  html += "</tbody></table></div>";
+  container.html(html);
+}
+
+function refreshMvFromMetrics(name) {
+  let database = getCurrentDatabase();
+  if (!database) return;
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/command/" + database,
+    data: JSON.stringify({ language: "sql", command: "REFRESH MATERIALIZED VIEW `" + name + "`" }),
+    beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+  }).done(function () {
+    globalNotify("Success", "Materialized view '" + escapeHtml(name) + "' refreshed", "success");
+    loadDatabaseMetrics();
+  }).fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
 }

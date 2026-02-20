@@ -65,6 +65,16 @@ public class FetchFromSchemaMaterializedViewsStep extends AbstractExecutionStep 
 
           r.setProperty("refreshInterval", view.getRefreshInterval());
 
+          // Runtime metrics
+          r.setProperty("refreshCount", view.getRefreshCount());
+          r.setProperty("refreshTotalTimeMs", view.getRefreshTotalTimeMs());
+          r.setProperty("refreshMinTimeMs", view.getRefreshMinTimeMs());
+          r.setProperty("refreshMaxTimeMs", view.getRefreshMaxTimeMs());
+          final long count = view.getRefreshCount();
+          r.setProperty("refreshAvgTimeMs", count > 0 ? view.getRefreshTotalTimeMs() / count : 0L);
+          r.setProperty("errorCount", view.getErrorCount());
+          r.setProperty("lastRefreshDurationMs", view.getLastRefreshDurationMs());
+
           context.setVariable("current", r);
         }
       } finally {

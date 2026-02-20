@@ -622,6 +622,8 @@ div.dt-search {
   letter-spacing: 0.5px;
   color: var(--text-faint);
   margin-bottom: 6px;
+  display: flex;
+  align-items: center;
 }
 
 .sidebar-section-header i {
@@ -2126,7 +2128,7 @@ div.dt-search {
   color: var(--text-secondary);
 }
 
-#globalModal .modal-body input,
+#globalModal .modal-body input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input),
 #globalModal .modal-body textarea {
   background-color: var(--bg-input);
   color: var(--text-primary);
@@ -2136,7 +2138,7 @@ div.dt-search {
   width: 100%;
 }
 
-#globalModal .modal-body input:focus,
+#globalModal .modal-body input:not([type="checkbox"]):not([type="radio"]):not(.form-check-input):focus,
 #globalModal .modal-body textarea:focus {
   border-color: var(--color-brand);
   outline: none;
@@ -2834,4 +2836,120 @@ div.dt-search {
 .flame-no-data i {
   color: var(--color-brand) !important;
   margin-right: 4px;
+}
+
+/* ===== Materialized Views ===== */
+
+.mv-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+
+.mv-status-dot-valid { background-color: #22c55e; }
+.mv-status-dot-building { background-color: #eab308; }
+.mv-status-dot-stale { background-color: #f97316; }
+.mv-status-dot-error { background-color: #ef4444; }
+
+.mv-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.mv-status-badge-valid {
+  background-color: #dcfce7;
+  color: #166534;
+}
+
+.mv-status-badge-building {
+  background-color: #fef9c3;
+  color: #854d0e;
+}
+
+.mv-status-badge-stale {
+  background-color: #ffedd5;
+  color: #9a3412;
+}
+
+.mv-status-badge-error {
+  background-color: #fef2f2;
+  color: #991b1b;
+}
+
+[data-theme="dark"] .mv-status-badge-valid {
+  background-color: #052e16;
+  color: #4ade80;
+}
+
+[data-theme="dark"] .mv-status-badge-building {
+  background-color: #422006;
+  color: #facc15;
+}
+
+[data-theme="dark"] .mv-status-badge-stale {
+  background-color: #431407;
+  color: #fb923c;
+}
+
+[data-theme="dark"] .mv-status-badge-error {
+  background-color: #450a0a;
+  color: #f87171;
+}
+
+.mv-query-block {
+  background-color: var(--bg-code);
+  color: var(--text-code);
+  padding: 12px 14px;
+  border-radius: 6px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mv-info-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.mv-info-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 110px;
+}
+
+.sidebar-section-header-actions {
+  margin-left: auto;
+}
+
+.sidebar-section-header-actions button {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 0.65rem;
+  padding: 0 3px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.sidebar-section-header-actions button:hover {
+  color: var(--color-brand);
+  background-color: var(--color-brand-light);
 }

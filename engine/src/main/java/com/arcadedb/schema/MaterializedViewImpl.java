@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class MaterializedViewImpl implements MaterializedView {
   private final Database database;
@@ -40,6 +41,14 @@ public class MaterializedViewImpl implements MaterializedView {
   private volatile MaterializedViewStatus status;
   private volatile MaterializedViewChangeListener changeListener;
   private final AtomicBoolean refreshInProgress = new AtomicBoolean(false);
+
+  // Runtime metrics (not persisted)
+  private final AtomicLong refreshCount         = new AtomicLong(0);
+  private final AtomicLong refreshTotalTimeMs   = new AtomicLong(0);
+  private final AtomicLong refreshMinTimeMs     = new AtomicLong(Long.MAX_VALUE);
+  private final AtomicLong refreshMaxTimeMs     = new AtomicLong(0);
+  private final AtomicLong errorCount           = new AtomicLong(0);
+  private final AtomicLong lastRefreshDurationMs = new AtomicLong(0);
 
   public MaterializedViewImpl(final Database database, final String name, final String query,
       final String backingTypeName, final List<String> sourceTypeNames,
@@ -132,6 +141,60 @@ public class MaterializedViewImpl implements MaterializedView {
 
   public void endRefresh() {
     refreshInProgress.set(false);
+  }
+
+  @Override
+  public long getRefreshCount() {
+    return refreshCount.get();
+  }
+
+  @Override
+  public long getRefreshTotalTimeMs() {
+    return refreshTotalTimeMs.get();
+  }
+
+  @Override
+  public long getRefreshMinTimeMs() {
+    final long v = refreshMinTimeMs.get();
+    return v == Long.MAX_VALUE ? 0 : v;
+  }
+
+  @Override
+  public long getRefreshMaxTimeMs() {
+    return refreshMaxTimeMs.get();
+  }
+
+  @Override
+  public long getErrorCount() {
+    return errorCount.get();
+  }
+
+  @Override
+  public long getLastRefreshDurationMs() {
+    return lastRefreshDurationMs.get();
+  }
+
+  public void recordRefreshSuccess(final long durationMs) {
+    refreshCount.incrementAndGet();
+    refreshTotalTimeMs.addAndGet(durationMs);
+    lastRefreshDurationMs.set(durationMs);
+    // Update min
+    long prev;
+    do {
+      prev = refreshMinTimeMs.get();
+      if (durationMs >= prev)
+        break;
+    } while (!refreshMinTimeMs.compareAndSet(prev, durationMs));
+    // Update max
+    do {
+      prev = refreshMaxTimeMs.get();
+      if (durationMs <= prev)
+        break;
+    } while (!refreshMaxTimeMs.compareAndSet(prev, durationMs));
+  }
+
+  public void recordRefreshError() {
+    errorCount.incrementAndGet();
   }
 
   MaterializedViewImpl copyWithRefreshMode(final MaterializedViewRefreshMode newMode,
