@@ -140,8 +140,13 @@ public class TimeSeriesShard implements AutoCloseable {
     };
   }
 
+  /** Maximum number of samples per sealed block. Keeps decompression cost bounded. */
+  static final int SEALED_BLOCK_SIZE = 65_536;
+
   /**
    * Compacts mutable data into sealed columnar storage.
+   * Data is written in chunks of {@link #SEALED_BLOCK_SIZE} rows to keep
+   * individual sealed blocks small for fast decompression during queries.
    * Crash-safe: uses a flag to detect incomplete compactions.
    */
   public void compact() throws IOException {
@@ -166,28 +171,44 @@ public class TimeSeriesShard implements AutoCloseable {
       }
 
       final long[] timestamps = (long[]) allData[0];
+      final int totalSamples = timestamps.length;
 
       // Sort by timestamp
       final int[] sortedIndices = sortIndices(timestamps);
       final long[] sortedTs = applyOrder(timestamps, sortedIndices);
 
-      // Phase 3: Compress per-column and write sealed block
-      final byte[][] compressedCols = new byte[columns.size()][];
-      int tsIdx = 0;
-      int colIdx = 0;
-      for (int c = 0; c < columns.size(); c++) {
-        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
-          compressedCols[c] = DeltaOfDeltaCodec.encode(sortedTs);
-          tsIdx = c;
-        } else {
-          final Object[] colValues = (Object[]) allData[colIdx + 1];
-          final Object[] sortedColValues = applyOrderObjects(colValues, sortedIndices);
-          compressedCols[c] = compressColumn(columns.get(c), sortedColValues);
-          colIdx++;
+      // Build sorted column arrays once
+      final int colCount = columns.size();
+      final Object[][] sortedColArrays = new Object[colCount][];
+      int nonTsIdx = 0;
+      for (int c = 0; c < colCount; c++) {
+        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          sortedColArrays[c] = null; // timestamps handled separately
+        else {
+          sortedColArrays[c] = applyOrderObjects((Object[]) allData[nonTsIdx + 1], sortedIndices);
+          nonTsIdx++;
         }
       }
 
-      sealedStore.appendBlock(sortedTs.length, sortedTs[0], sortedTs[sortedTs.length - 1], compressedCols);
+      // Phase 3: Write sealed blocks in chunks
+      for (int chunkStart = 0; chunkStart < totalSamples; chunkStart += SEALED_BLOCK_SIZE) {
+        final int chunkEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
+        final int chunkLen = chunkEnd - chunkStart;
+
+        final long[] chunkTs = Arrays.copyOfRange(sortedTs, chunkStart, chunkEnd);
+
+        final byte[][] compressedCols = new byte[colCount][];
+        for (int c = 0; c < colCount; c++) {
+          if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+            compressedCols[c] = DeltaOfDeltaCodec.encode(chunkTs);
+          else {
+            final Object[] chunkValues = Arrays.copyOfRange(sortedColArrays[c], chunkStart, chunkEnd);
+            compressedCols[c] = compressColumn(columns.get(c), chunkValues);
+          }
+        }
+
+        sealedStore.appendBlock(chunkLen, chunkTs[0], chunkTs[chunkLen - 1], compressedCols);
+      }
 
       // Phase 4: Clear mutable pages
       mutableBucket.clearDataPages();

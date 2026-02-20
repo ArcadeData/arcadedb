@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -160,6 +161,13 @@ public class TimeSeriesEmbeddedBenchmark {
       System.out.printf("Average throughput:    %,.0f points/second%n", finalRate);
       System.out.printf("Errors:                %d%n", errors.get());
       System.out.printf("Parallel level:        %d%n", PARALLEL_LEVEL);
+
+      // Compact mutable data into sealed columnar storage
+      System.out.println("\n--- Compaction ---");
+      final long compactStart = System.nanoTime();
+      ((LocalTimeSeriesType) database.getSchema().getType("SensorData")).getEngine().compactAll();
+      final long compactTime = (System.nanoTime() - compactStart) / 1_000_000;
+      System.out.printf("Compaction time:       %,d ms%n", compactTime);
 
       // Query performance test
       System.out.println("\n--- Query Performance ---");
