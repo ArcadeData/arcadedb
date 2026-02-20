@@ -602,9 +602,24 @@ var activeSidebarPanel = "overview";
 function initSidebarPanels() {
   sidebarPanelsLoaded = { overview: true };
   activeSidebarPanel = "overview";
+
+  // Restore collapsed state from localStorage
+  if (globalStorageLoad("querySidebarCollapsed", false))
+    toggleSidebarCollapsed(false);
 }
 
 function switchSidebarPanel(panelName) {
+  // Toggle collapse if clicking the already-active panel
+  if (panelName == activeSidebarPanel) {
+    toggleSidebarCollapsed();
+    return;
+  }
+
+  // Expand if collapsed
+  var sidebar = $("#querySidebar");
+  if (sidebar.hasClass("collapsed"))
+    toggleSidebarCollapsed(false);
+
   $(".sidebar-panel").removeClass("active");
   $(".icon-sidebar-btn").removeClass("active");
 
@@ -631,6 +646,22 @@ function switchSidebarPanel(panelName) {
     else if (panelName == "reference") populateReferencePanel();
     else if (panelName == "settings") populateSettingsPanel();
   }
+}
+
+function toggleSidebarCollapsed(forceState) {
+  var sidebar = $("#querySidebar");
+  var collapsed = (forceState !== undefined) ? forceState : !sidebar.hasClass("collapsed");
+
+  if (collapsed)
+    sidebar.addClass("collapsed");
+  else
+    sidebar.removeClass("collapsed");
+
+  globalStorageSave("querySidebarCollapsed", collapsed);
+
+  // Refresh CodeMirror after transition completes
+  if (typeof editor !== "undefined" && editor != null)
+    setTimeout(function() { editor.refresh(); }, 250);
 }
 
 function refreshActiveSidebarPanel() {
