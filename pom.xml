@@ -396,6 +396,15 @@
                                     implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
                                 <addHeader>false</addHeader>
                             </transformer>
+                            <transformer
+                                    implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                <manifestEntries>
+                                    <!-- Required for GraalVM/Truffle to initialize correctly when bundled in shaded JARs.
+                                         Without this, Truffle's CheckMultiReleaseSupport returns false (base class),
+                                         causing Engine$ImplHolder initialization failure. -->
+                                    <Multi-Release>true</Multi-Release>
+                                </manifestEntries>
+                            </transformer>
                         </transformers>
                         <filters>
                             <filter>
