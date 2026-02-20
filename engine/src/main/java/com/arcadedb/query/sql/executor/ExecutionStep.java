@@ -53,7 +53,30 @@ public interface ExecutionStep {
     result.setProperty("targetNode", getType());
     result.setProperty(InternalExecutionPlan.JAVA_TYPE, getClass().getName());
     result.setProperty("cost", getCost());
-    result.setProperty("subSteps", getSubSteps() == null ? null : getSubSteps().stream().map(x -> x.toResult()).collect(Collectors.toList()));
+
+    // Collect direct sub-steps
+    final List<Result> subStepResults = getSubSteps() == null ? null
+        : getSubSteps().stream().map(ExecutionStep::toResult).collect(Collectors.toList());
+
+    // Also include steps from sub-execution plans (e.g. SubQueryStep, GlobalLetQueryStep)
+    if (this instanceof ExecutionStepInternal stepInternal) {
+      final List<ExecutionPlan> subPlans = stepInternal.getSubExecutionPlans();
+      if (subPlans != null && !subPlans.isEmpty()) {
+        final List<Result> allSubSteps = subStepResults != null ? new ArrayList<>(subStepResults) : new ArrayList<>();
+        for (final ExecutionPlan plan : subPlans) {
+          final List<ExecutionStep> planSteps = plan.getSteps();
+          if (planSteps != null)
+            for (final ExecutionStep s : planSteps)
+              allSubSteps.add(s.toResult());
+        }
+        result.setProperty("subSteps", allSubSteps);
+      } else {
+        result.setProperty("subSteps", subStepResults);
+      }
+    } else {
+      result.setProperty("subSteps", subStepResults);
+    }
+
     result.setProperty("description", getDescription());
     return result;
   }
