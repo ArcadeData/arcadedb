@@ -66,10 +66,9 @@ public class RaftHAServer {
 
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
-    final int raftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
     final long lagWarningThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
 
-    final List<RaftPeer> peers = parsePeerList(serverList, raftPort);
+    final List<RaftPeer> peers = parsePeerList(serverList);
     final String serverName = arcadeServer.getServerName();
 
     this.localPeerId = findLocalPeerId(peers, serverName, arcadeServer);
@@ -88,19 +87,18 @@ public class RaftHAServer {
   }
 
   /**
-   * Parses a comma-separated server list (host:httpPort) into RaftPeer objects.
-   * Each peer is assigned a unique Raft port: peer-0 gets baseRaftPort, peer-1 gets baseRaftPort+1, etc.
+   * Parses a comma-separated server list (host:raftPort) into RaftPeer objects.
+   * Each entry specifies the Raft gRPC address directly.
    */
-  static List<RaftPeer> parsePeerList(final String serverList, final int baseRaftPort) {
+  static List<RaftPeer> parsePeerList(final String serverList) {
     final String[] entries = serverList.split(",");
     final List<RaftPeer> peers = new ArrayList<>(entries.length);
 
     for (int i = 0; i < entries.length; i++) {
       final String entry = entries[i].trim();
-      final String host = entry.substring(0, entry.indexOf(':'));
       final RaftPeer peer = RaftPeer.newBuilder()
           .setId("peer-" + i)
-          .setAddress(host + ":" + (baseRaftPort + i))
+          .setAddress(entry)
           .build();
       peers.add(peer);
     }
@@ -132,10 +130,9 @@ public class RaftHAServer {
   public void start() throws IOException {
     final RaftProperties properties = new RaftProperties();
 
-    // Use the port assigned to this specific peer (baseRaftPort + peerIndex)
-    final int localPeerIndex = Integer.parseInt(localPeerId.toString().substring("peer-".length()));
-    final int baseRaftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
-    final int localRaftPort = baseRaftPort + localPeerIndex;
+    // Extract the Raft port from this peer's address in the server list
+    final String localAddress = raftGroup.getPeer(localPeerId).getAddress();
+    final int localRaftPort = Integer.parseInt(localAddress.substring(localAddress.lastIndexOf(':') + 1));
     GrpcConfigKeys.Server.setPort(properties, localRaftPort);
 
     // Configure Raft RPC timeouts for cluster stability

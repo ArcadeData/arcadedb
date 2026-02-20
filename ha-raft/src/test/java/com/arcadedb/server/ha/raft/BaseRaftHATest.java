@@ -34,9 +34,23 @@ import java.util.logging.Level;
  */
 public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
+  private static final int BASE_RAFT_PORT = 2434;
+
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     config.setValue(GlobalConfiguration.HA_IMPLEMENTATION, "raft");
+  }
+
+  @Override
+  protected String getServerAddresses() {
+    // For Raft HA, the server list contains host:raftPort (not HTTP port)
+    final StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < getServerCount(); i++) {
+      if (i > 0)
+        sb.append(",");
+      sb.append("localhost:").append(BASE_RAFT_PORT + i);
+    }
+    return sb.toString();
   }
 
   @Override

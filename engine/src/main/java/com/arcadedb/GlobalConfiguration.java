@@ -555,9 +555,6 @@ public enum GlobalConfiguration {
       "HA implementation to use: 'legacy' for the existing custom protocol, 'raft' for the new Apache Ratis-based implementation",
       String.class, "legacy", Set.of("legacy", "raft")),
 
-  HA_RAFT_PORT("arcadedb.ha.raftPort", SCOPE.SERVER,
-      "TCP/IP port for Apache Ratis gRPC communication between cluster nodes", Integer.class, 2434),
-
   HA_REPLICATION_LAG_WARNING("arcadedb.ha.replicationLagWarning", SCOPE.SERVER,
       "Raft log index gap threshold for replication lag warnings. When a replica falls behind by more than this many entries, a warning is logged",
       Long.class, 1000L),
