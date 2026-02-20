@@ -170,6 +170,36 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
+  public boolean existsContinuousAggregate(final String name) {
+    final ResultSet result = remoteDatabase.command("sql",
+        "SELECT FROM schema:continuousaggregates WHERE name = :name", Map.of("name", name));
+    return result.hasNext();
+  }
+
+  @Override
+  public ContinuousAggregate getContinuousAggregate(final String name) {
+    throw new UnsupportedOperationException(
+        "getContinuousAggregate() is not supported remotely. Use SQL SELECT FROM schema:continuousaggregates instead.");
+  }
+
+  @Override
+  public ContinuousAggregate[] getContinuousAggregates() {
+    throw new UnsupportedOperationException(
+        "getContinuousAggregates() is not supported remotely. Use SQL SELECT FROM schema:continuousaggregates instead.");
+  }
+
+  @Override
+  public void dropContinuousAggregate(final String name) {
+    remoteDatabase.command("sql", "DROP CONTINUOUS AGGREGATE `" + name + "`");
+  }
+
+  @Override
+  public ContinuousAggregateBuilder buildContinuousAggregate() {
+    throw new UnsupportedOperationException(
+        "buildContinuousAggregate() is not supported remotely. Use SQL CREATE CONTINUOUS AGGREGATE instead.");
+  }
+
+  @Override
   public Bucket createBucket(final String bucketName) {
     final ResultSet result = remoteDatabase.command("sql", "create bucket `" + bucketName + "`");
     return new RemoteBucket(result.next().getProperty("bucketName"));
@@ -350,6 +380,11 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public TypeBuilder<EdgeType> buildEdgeType() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public TimeSeriesTypeBuilder buildTimeSeriesType() {
     throw new UnsupportedOperationException();
   }
 

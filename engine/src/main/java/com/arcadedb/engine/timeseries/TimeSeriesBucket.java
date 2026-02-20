@@ -1,0 +1,514 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.engine.timeseries;
+
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.schema.Type;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Mutable TimeSeries bucket backed by paginated storage.
+ * Stores samples in row-oriented format within pages for ACID compliance.
+ * <p>
+ * Header page (page 0) layout (offsets from PAGE_HEADER_SIZE):
+ * - [0..3]   magic "TSBC" (4 bytes)
+ * - [4..5]   column count (short)
+ * - [6..13]  total sample count (long)
+ * - [14..21] min timestamp (long)
+ * - [22..29] max timestamp (long)
+ * - [30]     compaction in progress flag (byte)
+ * - [31..38] compaction watermark (long) — sealed store offset
+ * - [39..42] active data page count (int)
+ * <p>
+ * Data pages layout (offsets from PAGE_HEADER_SIZE):
+ * - [0..1]   sample count in page (short)
+ * - [2..9]   min timestamp in page (long)
+ * - [10..17] max timestamp in page (long)
+ * - [18..]   row data: fixed-size rows [timestamp(8)|col1|col2|...]
+ *            For STRING columns: 2-byte dictionary index + dictionary at page end
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class TimeSeriesBucket extends PaginatedComponent {
+
+  public static final  String BUCKET_EXT  = "tstb";
+  private static final int    VERSION     = 0;
+  private static final int    MAGIC_VALUE = 0x54534243; // "TSBC"
+
+  // Header page offsets (from PAGE_HEADER_SIZE)
+  private static final int HEADER_MAGIC_OFFSET         = 0;
+  private static final int HEADER_COLUMN_COUNT_OFFSET  = 4;
+  private static final int HEADER_SAMPLE_COUNT_OFFSET  = 6;
+  private static final int HEADER_MIN_TS_OFFSET        = 14;
+  private static final int HEADER_MAX_TS_OFFSET        = 22;
+  private static final int HEADER_COMPACTION_FLAG       = 30;
+  private static final int HEADER_COMPACTION_WATERMARK = 31;
+  private static final int HEADER_DATA_PAGE_COUNT      = 39;
+  private static final int HEADER_SIZE                 = 43;
+
+  // Data page offsets (from PAGE_HEADER_SIZE)
+  private static final int DATA_SAMPLE_COUNT_OFFSET = 0;
+  private static final int DATA_MIN_TS_OFFSET       = 2;
+  private static final int DATA_MAX_TS_OFFSET       = 10;
+  private static final int DATA_ROWS_OFFSET         = 18;
+
+  private final List<ColumnDefinition> columns;
+  private final int                    rowSize; // fixed row size in bytes
+
+  /**
+   * Creates a new TimeSeries bucket.
+   */
+  public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath,
+      final List<ColumnDefinition> columns) throws IOException {
+    super(database, name, filePath, BUCKET_EXT, ComponentFile.MODE.READ_WRITE,
+        database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), VERSION);
+    this.columns = columns;
+    this.rowSize = calculateRowSize(columns);
+    initHeaderPage();
+  }
+
+  /**
+   * Opens an existing TimeSeries bucket.
+   */
+  public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
+      final List<ColumnDefinition> columns) throws IOException {
+    super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
+        database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), VERSION);
+    this.columns = columns;
+    this.rowSize = calculateRowSize(columns);
+  }
+
+  /**
+   * Appends samples to the mutable bucket within the current transaction.
+   *
+   * @param timestamps array of timestamps (nanosecond epoch)
+   * @param columnValues array of column value arrays, one per non-timestamp column
+   */
+  public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
+    final TransactionContext tx = database.getTransaction();
+
+    for (int i = 0; i < timestamps.length; i++) {
+      final MutablePage dataPage = getOrCreateActiveDataPage(tx);
+
+      final int sampleCountInPage = dataPage.readShort(DATA_SAMPLE_COUNT_OFFSET);
+      final int rowOffset = DATA_ROWS_OFFSET + sampleCountInPage * rowSize;
+
+      // Write timestamp
+      dataPage.writeLong(rowOffset, timestamps[i]);
+
+      // Write each non-timestamp column value
+      int colOffset = rowOffset + 8;
+      int colIdx = 0;
+      for (int c = 0; c < columns.size(); c++) {
+        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
+
+        final Object value = columnValues[colIdx][i];
+        colOffset += writeColumnValue(dataPage, colOffset, columns.get(c), value);
+        colIdx++;
+      }
+
+      // Update page sample count and min/max timestamps
+      dataPage.writeShort(DATA_SAMPLE_COUNT_OFFSET, (short) (sampleCountInPage + 1));
+
+      final long currentMinTs = dataPage.readLong(DATA_MIN_TS_OFFSET);
+      final long currentMaxTs = dataPage.readLong(DATA_MAX_TS_OFFSET);
+
+      if (sampleCountInPage == 0 || timestamps[i] < currentMinTs)
+        dataPage.writeLong(DATA_MIN_TS_OFFSET, timestamps[i]);
+      if (sampleCountInPage == 0 || timestamps[i] > currentMaxTs)
+        dataPage.writeLong(DATA_MAX_TS_OFFSET, timestamps[i]);
+
+      // Update header page stats
+      updateHeaderStats(tx, timestamps[i]);
+    }
+  }
+
+  /**
+   * Scans the mutable bucket for samples in the given time range.
+   *
+   * @param fromTs start timestamp (inclusive)
+   * @param toTs   end timestamp (inclusive)
+   * @param columnIndices which columns to return (null = all)
+   *
+   * @return list of sample rows: each row is Object[] { timestamp, col1, col2, ... }
+   */
+  public List<Object[]> scanRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
+    final List<Object[]> results = new ArrayList<>();
+    final int dataPageCount = getDataPageCount();
+
+    for (int pageNum = 1; pageNum <= dataPageCount; pageNum++) {
+      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
+
+      final short sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET);
+      if (sampleCount == 0)
+        continue;
+
+      final long pageMinTs = page.readLong(DATA_MIN_TS_OFFSET);
+      final long pageMaxTs = page.readLong(DATA_MAX_TS_OFFSET);
+
+      // Skip pages outside range
+      if (pageMaxTs < fromTs || pageMinTs > toTs)
+        continue;
+
+      for (int row = 0; row < sampleCount; row++) {
+        final int rowOffset = DATA_ROWS_OFFSET + row * rowSize;
+        final long ts = page.readLong(rowOffset);
+
+        if (ts < fromTs || ts > toTs)
+          continue;
+
+        final Object[] sample = readRow(page, rowOffset, columnIndices);
+        results.add(sample);
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Returns the total sample count stored in this bucket.
+   */
+  public long getSampleCount() throws IOException {
+    if (getTotalPages() == 0)
+      return 0;
+    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
+    return headerPage.readLong(HEADER_SAMPLE_COUNT_OFFSET);
+  }
+
+  /**
+   * Returns the minimum timestamp across all samples.
+   */
+  public long getMinTimestamp() throws IOException {
+    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
+    return headerPage.readLong(HEADER_MIN_TS_OFFSET);
+  }
+
+  /**
+   * Returns the maximum timestamp across all samples.
+   */
+  public long getMaxTimestamp() throws IOException {
+    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
+    return headerPage.readLong(HEADER_MAX_TS_OFFSET);
+  }
+
+  /**
+   * Returns the number of data pages (excluding header page).
+   */
+  public int getDataPageCount() throws IOException {
+    if (getTotalPages() == 0)
+      return 0;
+    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
+    return headerPage.readInt(HEADER_DATA_PAGE_COUNT);
+  }
+
+  /**
+   * Sets the compaction-in-progress flag. Used for crash-safe compaction.
+   */
+  public void setCompactionInProgress(final boolean inProgress) throws IOException {
+    final TransactionContext tx = database.getTransaction();
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+    headerPage.writeByte(HEADER_COMPACTION_FLAG, (byte) (inProgress ? 1 : 0));
+  }
+
+  /**
+   * Returns true if a compaction was in progress (crash recovery check).
+   */
+  public boolean isCompactionInProgress() throws IOException {
+    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
+    return headerPage.readByte(HEADER_COMPACTION_FLAG) == 1;
+  }
+
+  /**
+   * Gets the compaction watermark (sealed store file offset).
+   */
+  public long getCompactionWatermark() throws IOException {
+    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
+    return headerPage.readLong(HEADER_COMPACTION_WATERMARK);
+  }
+
+  /**
+   * Sets the compaction watermark.
+   */
+  public void setCompactionWatermark(final long watermark) throws IOException {
+    final TransactionContext tx = database.getTransaction();
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+    headerPage.writeLong(HEADER_COMPACTION_WATERMARK, watermark);
+  }
+
+  /**
+   * Returns all data from the bucket as parallel arrays for compaction.
+   * First array is timestamps (long[]), rest are column values.
+   */
+  public Object[] readAllForCompaction() throws IOException {
+    final List<Object[]> allRows = scanRange(Long.MIN_VALUE, Long.MAX_VALUE, null);
+    if (allRows.isEmpty())
+      return null;
+
+    final int size = allRows.size();
+    final int totalCols = columns.size();
+    final long[] timestamps = new long[size];
+    final Object[][] colArrays = new Object[totalCols - 1][];
+
+    // Initialize column arrays based on type
+    int colIdx = 0;
+    for (int c = 0; c < totalCols; c++) {
+      if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      colArrays[colIdx] = new Object[size];
+      colIdx++;
+    }
+
+    for (int i = 0; i < size; i++) {
+      final Object[] row = allRows.get(i);
+      timestamps[i] = (long) row[0];
+      for (int c = 1; c < row.length; c++)
+        colArrays[c - 1][i] = row[c];
+    }
+
+    final Object[] result = new Object[totalCols];
+    result[0] = timestamps;
+    int idx = 1;
+    for (final Object[] colArray : colArrays)
+      result[idx++] = colArray;
+
+    return result;
+  }
+
+  /**
+   * Clears all data pages after compaction.
+   */
+  public void clearDataPages() throws IOException {
+    final TransactionContext tx = database.getTransaction();
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, 0L);
+    headerPage.writeLong(HEADER_MIN_TS_OFFSET, Long.MAX_VALUE);
+    headerPage.writeLong(HEADER_MAX_TS_OFFSET, Long.MIN_VALUE);
+
+    // Reset existing data pages so they can be reused by next inserts
+    final int dataPages = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
+    for (int p = 1; p <= dataPages; p++) {
+      final MutablePage dataPage = tx.getPageToModify(new PageId(database, fileId, p), pageSize, false);
+      dataPage.writeShort(DATA_SAMPLE_COUNT_OFFSET, (short) 0);
+      dataPage.writeLong(DATA_MIN_TS_OFFSET, Long.MAX_VALUE);
+      dataPage.writeLong(DATA_MAX_TS_OFFSET, Long.MIN_VALUE);
+    }
+    // Keep data page count so physical pages can be reused; sample counts
+    // are reset to 0 so scanRange will skip empty pages
+  }
+
+  public List<ColumnDefinition> getColumns() {
+    return columns;
+  }
+
+  /**
+   * Returns the maximum number of samples that fit in one data page.
+   */
+  public int getMaxSamplesPerPage() {
+    return (pageSize - BasePage.PAGE_HEADER_SIZE - DATA_ROWS_OFFSET) / rowSize;
+  }
+
+  // --- Private helpers ---
+
+  private void initHeaderPage() throws IOException {
+    final TransactionContext tx = database.getTransaction();
+    final MutablePage headerPage = tx.addPage(new PageId(database, fileId, 0), pageSize);
+    headerPage.writeInt(HEADER_MAGIC_OFFSET, MAGIC_VALUE);
+    headerPage.writeShort(HEADER_COLUMN_COUNT_OFFSET, (short) columns.size());
+    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, 0L);
+    headerPage.writeLong(HEADER_MIN_TS_OFFSET, Long.MAX_VALUE);
+    headerPage.writeLong(HEADER_MAX_TS_OFFSET, Long.MIN_VALUE);
+    headerPage.writeByte(HEADER_COMPACTION_FLAG, (byte) 0);
+    headerPage.writeLong(HEADER_COMPACTION_WATERMARK, 0L);
+    headerPage.writeInt(HEADER_DATA_PAGE_COUNT, 0);
+    pageCount.set(1);
+  }
+
+  private MutablePage getOrCreateActiveDataPage(final TransactionContext tx) throws IOException {
+    final int totalPages = getTotalPages();
+    if (totalPages > 1) {
+      // Check if last data page has room
+      final MutablePage lastPage = tx.getPageToModify(new PageId(database, fileId, totalPages - 1), pageSize, false);
+      final int sampleCount = lastPage.readShort(DATA_SAMPLE_COUNT_OFFSET);
+      if (sampleCount < getMaxSamplesPerPage())
+        return lastPage;
+    }
+
+    // Need a new data page
+    final int newPageNum = totalPages > 0 ? totalPages : 1;
+    final MutablePage newPage = tx.addPage(new PageId(database, fileId, newPageNum), pageSize);
+    newPage.writeShort(DATA_SAMPLE_COUNT_OFFSET, (short) 0);
+    newPage.writeLong(DATA_MIN_TS_OFFSET, Long.MAX_VALUE);
+    newPage.writeLong(DATA_MAX_TS_OFFSET, Long.MIN_VALUE);
+    pageCount.incrementAndGet();
+
+    // Update data page count in header
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+    headerPage.writeInt(HEADER_DATA_PAGE_COUNT, newPageNum);
+
+    return newPage;
+  }
+
+  private void updateHeaderStats(final TransactionContext tx, final long timestamp) throws IOException {
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+    final long count = headerPage.readLong(HEADER_SAMPLE_COUNT_OFFSET);
+    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, count + 1);
+
+    final long currentMin = headerPage.readLong(HEADER_MIN_TS_OFFSET);
+    final long currentMax = headerPage.readLong(HEADER_MAX_TS_OFFSET);
+    if (timestamp < currentMin)
+      headerPage.writeLong(HEADER_MIN_TS_OFFSET, timestamp);
+    if (timestamp > currentMax)
+      headerPage.writeLong(HEADER_MAX_TS_OFFSET, timestamp);
+  }
+
+  private int writeColumnValue(final MutablePage page, final int offset, final ColumnDefinition col, final Object value) {
+    return switch (col.getDataType()) {
+      case DOUBLE -> {
+        page.writeLong(offset, Double.doubleToRawLongBits(value != null ? ((Number) value).doubleValue() : 0.0));
+        yield 8;
+      }
+      case LONG, DATETIME -> {
+        page.writeLong(offset, value != null ? ((Number) value).longValue() : 0L);
+        yield 8;
+      }
+      case INTEGER -> {
+        page.writeInt(offset, value != null ? ((Number) value).intValue() : 0);
+        yield 4;
+      }
+      case FLOAT -> {
+        page.writeInt(offset, Float.floatToRawIntBits(value != null ? ((Number) value).floatValue() : 0f));
+        yield 4;
+      }
+      case SHORT -> {
+        page.writeShort(offset, value != null ? ((Number) value).shortValue() : (short) 0);
+        yield 2;
+      }
+      case BOOLEAN -> {
+        page.writeByte(offset, (byte) (Boolean.TRUE.equals(value) ? 1 : 0));
+        yield 1;
+      }
+      case STRING -> {
+        // For strings in mutable layer, store length-prefixed UTF-8
+        final byte[] bytes = value != null ? ((String) value).getBytes(java.nio.charset.StandardCharsets.UTF_8) : new byte[0];
+        page.writeShort(offset, (short) bytes.length);
+        if (bytes.length > 0)
+          page.writeByteArray(offset + 2, bytes);
+        yield 2 + bytes.length;
+      }
+      default -> {
+        page.writeLong(offset, 0L);
+        yield 8;
+      }
+    };
+  }
+
+  private Object[] readRow(final BasePage page, final int rowOffset, final int[] columnIndices) {
+    // First element is always the timestamp
+    final int resultSize = columnIndices != null ? columnIndices.length + 1 : columns.size();
+    final Object[] result = new Object[resultSize];
+    result[0] = page.readLong(rowOffset);
+
+    if (columnIndices == null) {
+      // Read all columns
+      int colOffset = rowOffset + 8;
+      int colIdx = 0;
+      for (int c = 0; c < columns.size(); c++) {
+        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
+        result[colIdx + 1] = readColumnValue(page, colOffset, columns.get(c));
+        colOffset += getColumnStorageSize(page, colOffset, columns.get(c));
+        colIdx++;
+      }
+    } else {
+      // Read specific columns by index
+      int colOffset = rowOffset + 8;
+      int colIdx = 0;
+      int resultIdx = 1;
+      for (int c = 0; c < columns.size(); c++) {
+        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
+        if (isInArray(colIdx, columnIndices)) {
+          result[resultIdx++] = readColumnValue(page, colOffset, columns.get(c));
+        }
+        colOffset += getColumnStorageSize(page, colOffset, columns.get(c));
+        colIdx++;
+      }
+    }
+    return result;
+  }
+
+  private Object readColumnValue(final BasePage page, final int offset, final ColumnDefinition col) {
+    return switch (col.getDataType()) {
+      case DOUBLE -> Double.longBitsToDouble(page.readLong(offset));
+      case LONG, DATETIME -> page.readLong(offset);
+      case INTEGER -> page.readInt(offset);
+      case FLOAT -> Float.intBitsToFloat(page.readInt(offset));
+      case SHORT -> page.readShort(offset);
+      case BOOLEAN -> page.readByte(offset) == 1;
+      case STRING -> {
+        final int len = page.readShort(offset) & 0xFFFF;
+        if (len == 0)
+          yield "";
+        final byte[] bytes = new byte[len];
+        for (int i = 0; i < len; i++)
+          bytes[i] = (byte) page.readByte(offset + 2 + i);
+        yield new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+      }
+      default -> null;
+    };
+  }
+
+  private int getColumnStorageSize(final BasePage page, final int offset, final ColumnDefinition col) {
+    final int fixed = col.getFixedSize();
+    if (fixed > 0)
+      return fixed;
+    // STRING: 2-byte length prefix + data
+    return 2 + (page.readShort(offset) & 0xFFFF);
+  }
+
+  private static int calculateRowSize(final List<ColumnDefinition> columns) {
+    int size = 8; // timestamp (always 8 bytes)
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      final int fixed = col.getFixedSize();
+      if (fixed > 0)
+        size += fixed;
+      else
+        size += 258; // max STRING: 2 + 256 bytes (conservative estimate for fixed row calc)
+    }
+    return size;
+  }
+
+  private static boolean isInArray(final int value, final int[] array) {
+    for (final int v : array)
+      if (v == value)
+        return true;
+    return false;
+  }
+}

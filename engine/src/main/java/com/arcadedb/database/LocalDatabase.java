@@ -1239,7 +1239,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Type is null");
 
     final LocalDocumentType type = schema.getType(typeName);
-    if (!type.getClass().equals(LocalDocumentType.class))
+    if (!type.getClass().equals(LocalDocumentType.class) && !(type instanceof com.arcadedb.schema.LocalTimeSeriesType))
       throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a " +
           "document type");
 

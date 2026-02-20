@@ -1,0 +1,140 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.engine.timeseries.codec;
+
+import java.nio.ByteBuffer;
+
+/**
+ * Simple-8b encoding for non-negative integer arrays.
+ * Packs multiple small integers into 64-bit words using a selector scheme.
+ * The top 4 bits of each word are the selector (0-14), determining how many
+ * integers are packed and at what bit width.
+ * <p>
+ * Selector table (selector → count × bits):
+ * 0: 240×0 (all zeros), 1: 120×0 (all zeros, half), 2: 60×1, 3: 30×2,
+ * 4: 20×3, 5: 15×4, 6: 12×5, 7: 10×6, 8: 8×7, 9: 7×8, 10: 6×10,
+ * 11: 5×12, 12: 4×15, 13: 3×20, 14: 2×30, 15: 1×60
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public final class Simple8bCodec {
+
+  // selector → number of integers packed
+  private static final int[] SELECTOR_COUNT = { 240, 120, 60, 30, 20, 15, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1 };
+  // selector → bits per integer
+  private static final int[] SELECTOR_BITS  = { 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 30, 60 };
+
+  private Simple8bCodec() {
+  }
+
+  public static byte[] encode(final long[] values) {
+    if (values == null || values.length == 0)
+      return new byte[0];
+
+    // Worst case: each value needs its own word + header
+    final ByteBuffer buf = ByteBuffer.allocate(4 + (values.length + 1) * 8);
+    buf.putInt(values.length);
+
+    int pos = 0;
+    while (pos < values.length) {
+      final int remaining = values.length - pos;
+
+      // Find the best selector
+      int bestSelector = 15; // fallback: 1 value × 60 bits
+      for (int sel = 0; sel < 16; sel++) {
+        final int count = Math.min(SELECTOR_COUNT[sel], remaining);
+        final int bits = SELECTOR_BITS[sel];
+
+        if (count <= 0)
+          continue;
+
+        boolean fits = true;
+        if (bits == 0) {
+          // All must be zero
+          for (int j = 0; j < count; j++) {
+            if (values[pos + j] != 0) {
+              fits = false;
+              break;
+            }
+          }
+        } else {
+          final long maxVal = (1L << bits) - 1;
+          for (int j = 0; j < count; j++) {
+            if (values[pos + j] < 0 || values[pos + j] > maxVal) {
+              fits = false;
+              break;
+            }
+          }
+        }
+
+        if (fits && count >= Math.min(SELECTOR_COUNT[bestSelector], remaining)) {
+          bestSelector = sel;
+          break; // Take the first (most compact) selector that fits
+        }
+      }
+
+      // Encode the word
+      final int count = Math.min(SELECTOR_COUNT[bestSelector], remaining);
+      final int bits = SELECTOR_BITS[bestSelector];
+      long word = (long) bestSelector << 60;
+
+      if (bits > 0) {
+        for (int j = 0; j < count; j++)
+          word |= (values[pos + j] & ((1L << bits) - 1)) << (j * bits);
+      }
+
+      buf.putLong(word);
+      pos += count;
+    }
+
+    buf.flip();
+    final byte[] result = new byte[buf.remaining()];
+    buf.get(result);
+    return result;
+  }
+
+  public static long[] decode(final byte[] data) {
+    if (data == null || data.length == 0)
+      return new long[0];
+
+    final ByteBuffer buf = ByteBuffer.wrap(data);
+    final int totalCount = buf.getInt();
+    final long[] result = new long[totalCount];
+
+    int pos = 0;
+    while (pos < totalCount) {
+      final long word = buf.getLong();
+      final int selector = (int) (word >>> 60) & 0xF;
+      final int count = Math.min(SELECTOR_COUNT[selector], totalCount - pos);
+      final int bits = SELECTOR_BITS[selector];
+
+      if (bits == 0) {
+        // All zeros — result is already initialized to 0
+        pos += count;
+      } else {
+        final long mask = (1L << bits) - 1;
+        for (int j = 0; j < count; j++) {
+          result[pos + j] = (word >>> (j * bits)) & mask;
+        }
+        pos += count;
+      }
+    }
+    return result;
+  }
+}

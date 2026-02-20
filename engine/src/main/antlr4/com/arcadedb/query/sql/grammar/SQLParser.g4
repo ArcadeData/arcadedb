@@ -95,6 +95,8 @@ statement
     | CREATE EDGE createEdgeBody                     # createEdgeStmt
     | CREATE TRIGGER createTriggerBody               # createTriggerStmt
     | CREATE MATERIALIZED VIEW createMaterializedViewBody   # createMaterializedViewStmt
+    | CREATE TIMESERIES TYPE createTimeSeriesTypeBody       # createTimeSeriesTypeStmt
+    | CREATE CONTINUOUS AGGREGATE createContinuousAggregateBody  # createContinuousAggregateStmt
 
     // DDL Statements - ALTER variants
     | ALTER TYPE alterTypeBody                       # alterTypeStmt
@@ -110,6 +112,7 @@ statement
     | DROP BUCKET dropBucketBody                     # dropBucketStmt
     | DROP TRIGGER dropTriggerBody                   # dropTriggerStmt
     | DROP MATERIALIZED VIEW dropMaterializedViewBody       # dropMaterializedViewStmt
+    | DROP CONTINUOUS AGGREGATE dropContinuousAggregateBody # dropContinuousAggregateStmt
 
     // DDL Statements - TRUNCATE variants
     | TRUNCATE TYPE truncateTypeBody                 # truncateTypeStmt
@@ -118,6 +121,9 @@ statement
 
     // Materialized View Refresh
     | REFRESH MATERIALIZED VIEW refreshMaterializedViewBody # refreshMaterializedViewStmt
+
+    // Continuous Aggregate Refresh
+    | REFRESH CONTINUOUS AGGREGATE refreshContinuousAggregateBody # refreshContinuousAggregateStmt
 
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
@@ -426,6 +432,28 @@ createTypeBody
     ;
 
 /**
+ * CREATE TIMESERIES TYPE body
+ * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE) SHARDS 4 RETENTION 90 DAYS
+ */
+createTimeSeriesTypeBody
+    : identifier
+      (IF NOT EXISTS)?
+      (TIMESTAMP identifier)?
+      (TAGS LPAREN tsTagColumnDef (COMMA tsTagColumnDef)* RPAREN)?
+      (FIELDS LPAREN tsFieldColumnDef (COMMA tsFieldColumnDef)* RPAREN)?
+      (SHARDS INTEGER_LITERAL)?
+      (RETENTION INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
+    ;
+
+tsTagColumnDef
+    : identifier identifier
+    ;
+
+tsFieldColumnDef
+    : identifier identifier
+    ;
+
+/**
  * CREATE EDGE TYPE body (supports UNIDIRECTIONAL)
  */
 createEdgeTypeBody
@@ -683,6 +711,35 @@ refreshMaterializedViewBody
  */
 alterMaterializedViewBody
     : identifier materializedViewRefreshClause
+    ;
+
+// ============================================================================
+// DDL STATEMENTS - CONTINUOUS AGGREGATE
+// ============================================================================
+
+/**
+ * CREATE CONTINUOUS AGGREGATE statement
+ * Syntax: CREATE CONTINUOUS AGGREGATE [IF NOT EXISTS] name AS selectStatement
+ */
+createContinuousAggregateBody
+    : (IF NOT EXISTS)? identifier
+      AS selectStatement
+    ;
+
+/**
+ * DROP CONTINUOUS AGGREGATE statement
+ * Syntax: DROP CONTINUOUS AGGREGATE [IF EXISTS] name
+ */
+dropContinuousAggregateBody
+    : (IF EXISTS)? identifier
+    ;
+
+/**
+ * REFRESH CONTINUOUS AGGREGATE statement
+ * Syntax: REFRESH CONTINUOUS AGGREGATE name
+ */
+refreshContinuousAggregateBody
+    : identifier
     ;
 
 // ============================================================================
@@ -1315,4 +1372,14 @@ identifier
     | MANUAL
     | INCREMENTAL
     | MATERIALIZED
+    | CONTINUOUS
+    | AGGREGATE
+    | TIMESERIES
+    | TAGS
+    | FIELDS
+    | RETENTION
+    | SHARDS
+    | DAYS
+    | HOURS
+    | MINUTES
     ;

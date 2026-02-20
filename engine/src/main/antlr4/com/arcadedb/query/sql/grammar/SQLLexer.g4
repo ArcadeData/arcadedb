@@ -231,6 +231,16 @@ MINUTE: M I N U T E;
 HOUR: H O U R;
 MANUAL: M A N U A L;
 INCREMENTAL: I N C R E M E N T A L;
+TIMESERIES: T I M E S E R I E S;
+TAGS: T A G S;
+FIELDS: F I E L D S;
+RETENTION: R E T E N T I O N;
+SHARDS: S H A R D S;
+DAYS: D A Y S;
+HOURS: H O U R S;
+MINUTES: M I N U T E S;
+CONTINUOUS: C O N T I N U O U S;
+AGGREGATE: A G G R E G A T E;
 
 // ============================================================================
 // COMPARISON OPERATORS

@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
@@ -70,6 +71,7 @@ import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -1459,6 +1461,8 @@ public class SelectExecutionPlanner {
     case "database" -> plan.chain(new FetchFromSchemaDatabaseStep(context));
     case "buckets" -> plan.chain(new FetchFromSchemaBucketsStep(context));
     case "materializedviews" -> plan.chain(new FetchFromSchemaMaterializedViewsStep(context));
+    case "continuousaggregates" -> plan.chain(new FetchFromSchemaContinuousAggregatesStep(context));
+    case "stats" -> plan.chain(new FetchFromSchemaStatsStep(context));
     default -> throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
     }
   }
@@ -1611,6 +1615,30 @@ public class SelectExecutionPlanner {
   private void handleTypeAsTarget(final SelectExecutionPlan plan, final Set<String> filterClusters, final FromClause from,
       final QueryPlanningInfo info, final CommandContext context) {
     final Identifier identifier = from.getItem().getIdentifier();
+
+    // Check if this is a TimeSeries type — use the engine for range queries
+    final DocumentType docType = context.getDatabase().getSchema().getType(identifier.getStringValue());
+    if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
+      // Extract time range from WHERE clause (if available)
+      long fromTs = Long.MIN_VALUE;
+      long toTs = Long.MAX_VALUE;
+
+      if (info.flattenedWhereClause != null) {
+        for (final AndBlock andBlock : info.flattenedWhereClause) {
+          for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+            final long[] range = extractTimeRange(expr, tsType.getTimestampColumn(), context);
+            if (range != null) {
+              fromTs = range[0];
+              toTs = range[1];
+            }
+          }
+        }
+      }
+
+      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, context));
+      return;
+    }
+
     if (handleTypeAsTargetWithIndexedFunction(plan, filterClusters, identifier, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
@@ -1638,6 +1666,44 @@ public class SelectExecutionPlanner {
       info.orderApplied = true;
 
     plan.chain(fetcher);
+  }
+
+  /**
+   * Extracts a time range from a BETWEEN expression on the timestamp column.
+   * Returns [fromTs, toTs] or null if not a matching BETWEEN.
+   */
+  private long[] extractTimeRange(final BooleanExpression expr, final String timestampColumn, final CommandContext context) {
+    if (expr instanceof BetweenCondition between) {
+      final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
+      if (timestampColumn.equals(fieldName)) {
+        final Object fromVal = between.getSecond().execute((Identifiable) null, context);
+        final Object toVal = between.getThird().execute((Identifiable) null, context);
+        return new long[] { toEpochMs(fromVal), toEpochMs(toVal) };
+      }
+    }
+    return null;
+  }
+
+  private static long toEpochMs(final Object value) {
+    if (value instanceof Long l)
+      return l;
+    if (value instanceof java.util.Date d)
+      return d.getTime();
+    if (value instanceof Number n)
+      return n.longValue();
+    if (value instanceof String s) {
+      try {
+        return java.time.Instant.parse(s).toEpochMilli();
+      } catch (final Exception e) {
+        // Try parsing as ISO date without time
+        try {
+          return java.time.LocalDate.parse(s).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+        } catch (final Exception e2) {
+          throw new CommandExecutionException("Cannot parse timestamp: '" + s + "'", e);
+        }
+      }
+    }
+    return Long.MIN_VALUE;
   }
 
   private boolean handleTypeAsTargetWithIndexedFunction(final SelectExecutionPlan plan, final Set<String> filterClusters,
