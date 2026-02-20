@@ -13,11 +13,6 @@ class ConfigValidationTest {
   }
 
   @Test
-  void haRaftPortHasDefault() {
-    assertThat(GlobalConfiguration.HA_RAFT_PORT.getValueAsInteger()).isEqualTo(2434);
-  }
-
-  @Test
   void haReplicationLagWarningHasDefault() {
     assertThat(GlobalConfiguration.HA_REPLICATION_LAG_WARNING.getValueAsLong()).isEqualTo(1000L);
   }

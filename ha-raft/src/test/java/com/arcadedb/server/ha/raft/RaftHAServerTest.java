@@ -29,14 +29,14 @@ class RaftHAServerTest {
 
   @Test
   void parsePeerListSingleServer() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("localhost:2424", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("localhost:2434");
     assertThat(peers).hasSize(1);
     assertThat(peers.get(0).getAddress()).isEqualTo("localhost:2434");
   }
 
   @Test
   void parsePeerListMultipleServers() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("host1:2424,host2:2424,host3:2424", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("host1:2434,host2:2435,host3:2436");
     assertThat(peers).hasSize(3);
     assertThat(peers.get(0).getAddress()).isEqualTo("host1:2434");
     assertThat(peers.get(1).getAddress()).isEqualTo("host2:2435");
@@ -45,13 +45,13 @@ class RaftHAServerTest {
 
   @Test
   void parsePeerListAssignsUniqueIds() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("a:2424,b:2424", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("a:2434,b:2435");
     assertThat(peers.get(0).getId()).isNotEqualTo(peers.get(1).getId());
   }
 
   @Test
-  void parsePeerListWithCustomRaftPort() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("myhost:2424", 9999);
+  void parsePeerListPreservesExactPort() {
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("myhost:9999");
     assertThat(peers.get(0).getAddress()).isEqualTo("myhost:9999");
   }
 }
