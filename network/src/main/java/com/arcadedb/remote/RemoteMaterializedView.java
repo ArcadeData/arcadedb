@@ -37,6 +37,12 @@ public class RemoteMaterializedView implements MaterializedView {
   private final long lastRefreshTime;
   private final String status;
   private final List<String> sourceTypeNames;
+  private final long refreshCount;
+  private final long refreshTotalTimeMs;
+  private final long refreshMinTimeMs;
+  private final long refreshMaxTimeMs;
+  private final long errorCount;
+  private final long lastRefreshDurationMs;
 
   public RemoteMaterializedView(final Result result) {
     this.name = result.getProperty("name");
@@ -49,6 +55,12 @@ public class RemoteMaterializedView implements MaterializedView {
     this.status = result.getProperty("status") != null ? result.getProperty("status") : "VALID";
     final List<String> srcTypes = result.getProperty("sourceTypes");
     this.sourceTypeNames = srcTypes != null ? srcTypes : List.of();
+    this.refreshCount = result.getProperty("refreshCount") != null ? ((Number) result.getProperty("refreshCount")).longValue() : 0;
+    this.refreshTotalTimeMs = result.getProperty("refreshTotalTimeMs") != null ? ((Number) result.getProperty("refreshTotalTimeMs")).longValue() : 0;
+    this.refreshMinTimeMs = result.getProperty("refreshMinTimeMs") != null ? ((Number) result.getProperty("refreshMinTimeMs")).longValue() : 0;
+    this.refreshMaxTimeMs = result.getProperty("refreshMaxTimeMs") != null ? ((Number) result.getProperty("refreshMaxTimeMs")).longValue() : 0;
+    this.errorCount = result.getProperty("errorCount") != null ? ((Number) result.getProperty("errorCount")).longValue() : 0;
+    this.lastRefreshDurationMs = result.getProperty("lastRefreshDurationMs") != null ? ((Number) result.getProperty("lastRefreshDurationMs")).longValue() : 0;
   }
 
   @Override
@@ -94,6 +106,36 @@ public class RemoteMaterializedView implements MaterializedView {
   @Override
   public long getRefreshInterval() {
     return refreshInterval;
+  }
+
+  @Override
+  public long getRefreshCount() {
+    return refreshCount;
+  }
+
+  @Override
+  public long getRefreshTotalTimeMs() {
+    return refreshTotalTimeMs;
+  }
+
+  @Override
+  public long getRefreshMinTimeMs() {
+    return refreshMinTimeMs;
+  }
+
+  @Override
+  public long getRefreshMaxTimeMs() {
+    return refreshMaxTimeMs;
+  }
+
+  @Override
+  public long getErrorCount() {
+    return errorCount;
+  }
+
+  @Override
+  public long getLastRefreshDurationMs() {
+    return lastRefreshDurationMs;
   }
 
   @Override
