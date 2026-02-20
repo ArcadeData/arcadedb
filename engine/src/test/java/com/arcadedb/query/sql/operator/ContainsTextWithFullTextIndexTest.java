@@ -106,6 +106,39 @@ class ContainsTextWithFullTextIndexTest extends TestHelper {
     });
   }
 
+  /**
+   * Regression test for issue #3483: CONTAINSTEXT in compound OR conditions returned 0 results
+   * while a single CONTAINSTEXT condition on the same data returned the expected result.
+   * Root cause: handleTypeAsTargetWithIndexedFunction() was applying the original block as a
+   * post-filter (using String.contains()) instead of using only the remaining condition not
+   * covered by the full-text index.
+   */
+  @Test
+  void containsTextCompoundOrWithFullTextIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article3483");
+      database.command("sql", "CREATE PROPERTY Article3483.txt STRING");
+      database.command("sql", "CREATE INDEX ON Article3483(txt) FULL_TEXT");
+      database.command("sql", "INSERT INTO Article3483 SET txt = 'This is a test'");
+    });
+
+    database.transaction(() -> {
+      // Single condition must work
+      final ResultSet r1 = database.query("sql", "SELECT FROM Article3483 WHERE txt CONTAINSTEXT 'is'");
+      assertThat(r1.stream().count()).as("single CONTAINSTEXT must return 1").isEqualTo(1);
+
+      // OR of two identical conditions must also work (regression for #3483)
+      final ResultSet r2 = database.query("sql",
+          "SELECT FROM Article3483 WHERE (txt CONTAINSTEXT 'is') OR (txt CONTAINSTEXT 'is')");
+      assertThat(r2.stream().count()).as("OR CONTAINSTEXT must return 1").isEqualTo(1);
+
+      // OR of two different conditions that both match
+      final ResultSet r3 = database.query("sql",
+          "SELECT FROM Article3483 WHERE (txt CONTAINSTEXT 'this') OR (txt CONTAINSTEXT 'test')");
+      assertThat(r3.stream().count()).as("OR with two matching terms must return 1").isEqualTo(1);
+    });
+  }
+
   @Test
   void containsTextPreferIndexOverFullScan() {
     database.transaction(() -> {

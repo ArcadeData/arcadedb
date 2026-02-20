@@ -1680,11 +1680,15 @@ public class SelectExecutionPlanner {
           if (bestIndex.requiresDistinctStep()) {
             subPlan.chain(new DistinctExecutionStep(context));
           }
-          if (!block.getSubBlocks().isEmpty()) {
-            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+          // Use remaining condition (not covered by index) instead of the whole block, to avoid
+          // re-applying index conditions (e.g. CONTAINSTEXT) as plain string filters that use
+          // a different evaluation than the full-text index semantics.
+          final BooleanExpression remaining = bestIndex.getRemainingCondition();
+          if (remaining != null && !remaining.isEmpty()) {
+            if ((info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining)))) {
               handleLet(subPlan, info, context);
             }
-            subPlan.chain(new FilterStep(createWhereFrom(block), context));
+            subPlan.chain(new FilterStep(createWhereFrom(remaining), context));
           }
           resultSubPlans.add(subPlan);
         } else {
@@ -2064,7 +2068,7 @@ public class SelectExecutionPlanner {
       if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex()))
         info.orderApplied = true;
 
-      if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
+        if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
         if ((info.perRecordLetClause != null
             && refersToLet(Collections.singletonList(desc.getRemainingCondition())))) {
           SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
@@ -2466,27 +2470,27 @@ public class SelectExecutionPlanner {
         final BooleanExpression singleExp = blockIterator.next();
         if (singleExp instanceof ContainsTextCondition textCondition) {
           final Expression left = textCondition.getLeft();
-          if (left.isBaseIdentifier()) {
-            final String fieldName = left.getDefaultAlias().getStringValue();
-            // Strip modifiers to get base field name
-            String baseFieldName = indexField;
-            if (indexField.endsWith(" by key")) {
-              baseFieldName = indexField.substring(0, indexField.length() - 7);
-            } else if (indexField.endsWith(" by value")) {
-              baseFieldName = indexField.substring(0, indexField.length() - 9);
-            } else if (indexField.endsWith(" by item")) {
-              baseFieldName = indexField.substring(0, indexField.length() - 8);
-            }
-            if (baseFieldName.equals(fieldName)) {
-              found = true;
-              indexFieldFound = true;
-              final ContainsTextCondition condition = new ContainsTextCondition(-1);
-              condition.setLeft(left);
-              condition.setRight(textCondition.getRight().copy());
-              indexKeyValue.getSubBlocks().add(condition);
-              blockIterator.remove();
-              break;
-            }
+          // Get field name from expression - handle both simple identifiers (e.g. txt) and dotted
+          // path expressions (e.g. lst.txt) used with BY ITEM nested property indexes
+          final String fieldName = left.getDefaultAlias().getStringValue();
+          // Strip modifiers to get base field name
+          String baseFieldName = indexField;
+          if (indexField.endsWith(" by key")) {
+            baseFieldName = indexField.substring(0, indexField.length() - 7);
+          } else if (indexField.endsWith(" by value")) {
+            baseFieldName = indexField.substring(0, indexField.length() - 9);
+          } else if (indexField.endsWith(" by item")) {
+            baseFieldName = indexField.substring(0, indexField.length() - 8);
+          }
+          if (baseFieldName.equals(fieldName)) {
+            found = true;
+            indexFieldFound = true;
+            final ContainsTextCondition condition = new ContainsTextCondition(-1);
+            condition.setLeft(left);
+            condition.setRight(textCondition.getRight().copy());
+            indexKeyValue.getSubBlocks().add(condition);
+            blockIterator.remove();
+            break;
           }
         }
       }
