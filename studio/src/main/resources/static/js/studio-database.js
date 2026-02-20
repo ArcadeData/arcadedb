@@ -157,10 +157,9 @@ function logout() {
           globalCredentials = null;
           globalUsername = null;
 
-          // Show login popup and hide studio panel
+          // Show login page and hide studio panel
           $("#studioPanel").hide();
-          $("#welcomePanel").show();
-          $("#loginPopup").modal("show");
+          showLoginPopup();
 
           // Clear form fields
           $("#inputUserName").val("");
@@ -171,7 +170,15 @@ function logout() {
 }
 
 function showLoginPopup() {
-  $("#loginPopup").modal("show");
+  $("#studioPanel").hide();
+  $("#loginPage").show();
+  if (typeof loginNetworkInit === 'function') loginNetworkInit();
+  setTimeout(function() { $("#inputUserName").focus().select(); }, 400);
+}
+
+function hideLoginPage() {
+  if (typeof loginNetworkStop === 'function') loginNetworkStop();
+  $("#loginPage").hide();
 }
 
 function editorFocus() {
@@ -266,19 +273,10 @@ function updateDatabases(callback) {
       console.log("Set user to:", username);
 
       // CRITICAL: Always hide login and show studio, even if other operations fail
-      var loginModal = bootstrap.Modal.getInstance(document.getElementById("loginPopup"));
-      if (loginModal)
-        loginModal.hide();
-      // Ensure no stale backdrop remains (Bootstrap 5 can leave orphaned backdrops)
-      setTimeout(function() {
-        document.querySelectorAll(".modal-backdrop").forEach(function(el) { el.remove(); });
-        document.body.classList.remove("modal-open");
-        document.body.style.removeProperty("overflow");
-        document.body.style.removeProperty("padding-right");
-      }, 300);
+      hideLoginPage();
       $("#welcomePanel").hide();
       $("#studioPanel").show();
-      console.log("UI updated - login popup hidden, studio panel shown");
+      console.log("UI updated - login page hidden, studio panel shown");
 
       // These operations should not block login completion
       try {
