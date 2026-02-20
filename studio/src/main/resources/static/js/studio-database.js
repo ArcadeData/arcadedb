@@ -1610,12 +1610,13 @@ function populateQuerySidebar() {
     html += "</div></div>";
   }
 
-  // Add materialized views section
-  let views = window._schemaMaterializedViews;
-  if (views && views.length > 0)
-    html += renderMaterializedViewsSidebarSection(views, true);
-
-  container.html(html);
+  // Fetch materialized views and append section, then render
+  fetchMaterializedViews(function(views) {
+    let finalHtml = html;
+    if (views && views.length > 0)
+      finalHtml += renderMaterializedViewsSidebarSection(views, true);
+    container.html(finalHtml);
+  });
 }
 
 function refreshQuerySidebar() {
