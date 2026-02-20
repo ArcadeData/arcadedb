@@ -83,6 +83,53 @@ class PostCommandHandlerProfileIT extends BaseGraphServerTest {
   }
 
   @Test
+  void sqlProfileSubqueryIncludesSubSteps() throws Exception {
+    final JSONObject response = executeCommandWithProfile("sql", "SELECT FROM (SELECT 1)");
+
+    assertThat(response.has("explainPlan")).isTrue();
+
+    final JSONObject plan = response.getJSONObject("explainPlan");
+    final JSONArray steps = plan.getJSONArray("steps");
+    assertThat(steps.length()).isGreaterThan(0);
+
+    // Find the SubQueryStep — it should have subSteps from the inner query
+    boolean foundSubQueryWithSubSteps = false;
+    for (int i = 0; i < steps.length(); i++) {
+      final JSONObject step = steps.getJSONObject(i);
+      if (step.getString("name").contains("SubQuery")) {
+        final JSONArray subSteps = step.getJSONArray("subSteps");
+        assertThat(subSteps.length()).as("SubQueryStep should expose inner plan steps").isGreaterThan(0);
+        foundSubQueryWithSubSteps = true;
+      }
+    }
+    assertThat(foundSubQueryWithSubSteps).as("Expected a SubQueryStep with subSteps").isTrue();
+  }
+
+  @Test
+  void sqlProfileLetSubqueryIncludesSubSteps() throws Exception {
+    final JSONObject response = executeCommandWithProfile("sql",
+        "SELECT $x LET $x = (SELECT FROM " + VERTEX1_TYPE_NAME + " LIMIT 1)");
+
+    assertThat(response.has("explainPlan")).isTrue();
+
+    final JSONObject plan = response.getJSONObject("explainPlan");
+    final JSONArray steps = plan.getJSONArray("steps");
+    assertThat(steps.length()).isGreaterThan(0);
+
+    // Find the GlobalLetQueryStep — it should have subSteps from the LET subquery
+    boolean foundLetWithSubSteps = false;
+    for (int i = 0; i < steps.length(); i++) {
+      final JSONObject step = steps.getJSONObject(i);
+      if (step.getString("name").contains("GlobalLet") || step.getString("name").contains("LetQuery")) {
+        final JSONArray subSteps = step.getJSONArray("subSteps");
+        assertThat(subSteps.length()).as("GlobalLetQueryStep should expose inner plan steps").isGreaterThan(0);
+        foundLetWithSubSteps = true;
+      }
+    }
+    assertThat(foundLetWithSubSteps).as("Expected a GlobalLetQueryStep with subSteps").isTrue();
+  }
+
+  @Test
   void openCypherExplainQueryReturnsExplainPlan() throws Exception {
     final JSONObject response = executeCommandWithoutProfile("opencypher",
         "EXPLAIN MATCH (n:" + VERTEX1_TYPE_NAME + ") RETURN n LIMIT 10");
