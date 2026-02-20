@@ -35,6 +35,7 @@ public class MaterializedViewRefresher {
       return;
     }
     view.setStatus(MaterializedViewStatus.BUILDING);
+    final long startNs = System.nanoTime();
     try {
       final String backingTypeName = view.getBackingTypeName();
 
@@ -56,10 +57,13 @@ public class MaterializedViewRefresher {
         }
       });
 
+      final long durationMs = (System.nanoTime() - startNs) / 1_000_000;
+      view.recordRefreshSuccess(durationMs);
       view.updateLastRefreshTime();
       view.setStatus(MaterializedViewStatus.VALID);
 
     } catch (final Exception e) {
+      view.recordRefreshError();
       view.setStatus(MaterializedViewStatus.ERROR);
       LogManager.instance().log(MaterializedViewRefresher.class, Level.SEVERE,
           "Error refreshing materialized view '%s': %s", e, view.getName(), e.getMessage());

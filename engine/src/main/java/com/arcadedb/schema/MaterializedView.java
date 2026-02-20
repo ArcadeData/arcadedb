@@ -46,4 +46,17 @@ public interface MaterializedView {
   void drop();
 
   JSONObject toJSON();
+
+  // Runtime metrics (not persisted)
+  long getRefreshCount();
+
+  long getRefreshTotalTimeMs();
+
+  long getRefreshMinTimeMs();
+
+  long getRefreshMaxTimeMs();
+
+  long getErrorCount();
+
+  long getLastRefreshDurationMs();
 }
