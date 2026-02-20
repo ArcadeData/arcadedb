@@ -148,16 +148,7 @@
     <script src="js/studio-record-editor.js"></script>
   </head>
   <body>
-    <div class="container" id="welcomePanel">
-      <div class="row" style="height: 400px"></div>
-
-      <div class="row">
-        <div class="col-12 text-center">
-          <img src="images/arcadedb-logo-small.png" />
-          <br /><br />
-        </div>
-      </div>
-    </div>
+    <div id="welcomePanel" style="display: none;"></div>
 
     <div id="studioPanel" class="card-hover-shadow-2x card" style="display: none">
       <div class="card-header-tab card-header">
@@ -292,7 +283,7 @@
       var studioCurrentTab = "query";
 
       $(function () {
-        $("#loginForm").keypress(function (e) {
+        $("#loginForm").on("keypress", function (e) {
           if (e.which == 13) {
             login();
           }
@@ -321,10 +312,6 @@
           } else if (activeTab == "tab-settings-sel") {
             studioCurrentTab = "settings";
           }
-        });
-
-        $("#loginPopup").on("shown.bs.modal", function () {
-          $("#inputUserName").delay(1000).focus().select();
         });
 
         // Check for existing session in localStorage
