@@ -1,5 +1,6 @@
 var editor = null;
 var globalResultset = null;
+var globalExplainPlan = null;
 var globalGraphMaxResult = 1000;
 var globalCredentials = null;
 var globalBasicAuth = null;
@@ -1119,6 +1120,9 @@ function executeCommandTable() {
       $("#resultJson").val(JSON.stringify(data, null, 2));
       $("#resultExplain").val(data.explain != null ? data.explain : "No profiler data found");
 
+      globalExplainPlan = data.explainPlan || null;
+      renderFlameGraph(globalExplainPlan);
+
       globalResultset = data.result;
       globalCy = null;
       renderTable();
@@ -1168,7 +1172,10 @@ function executeCommandGraph() {
 
       $("#result-num").html(data.result.records.length);
       $("#resultJson").val(JSON.stringify(data, null, 2));
-      $("#resultExplain").val(data.explain != null ? data.explain : "'");
+      $("#resultExplain").val(data.explain != null ? data.explain : "No profiler data found");
+
+      globalExplainPlan = data.explainPlan || null;
+      renderFlameGraph(globalExplainPlan);
 
       globalResultset = data.result;
       globalCy = null;
@@ -1832,3 +1839,133 @@ $(document).ready(function () {
     }
   });
 });
+
+// ===== Flame Graph Visualization =====
+
+function renderFlameGraph(plan) {
+  var container = $("#flameGraphContainer");
+  if (!plan) {
+    container.html("");
+    return;
+  }
+
+  var steps = plan.steps;
+  if (!steps || steps.length == 0) {
+    container.html("");
+    return;
+  }
+
+  // Check if any step has cost data (cost != -1)
+  var hasCostData = stepsHaveCost(steps);
+
+  if (!hasCostData) {
+    container.html("<div class='flame-no-data'><i class='fa fa-info-circle'></i> Enable <b>Profile Execution</b> to see cost data in the flame graph.</div>");
+    return;
+  }
+
+  var totalCost = computeTotalCost(steps);
+  if (totalCost <= 0) {
+    container.html("<div class='flame-no-data'><i class='fa fa-info-circle'></i> No measurable cost recorded.</div>");
+    return;
+  }
+
+  var html = "<div class='flame-graph'>";
+  html += "<div class='flame-graph-header'><i class='fa fa-fire'></i> Execution Flame Graph</div>";
+  // Root bar spanning full width showing total cost
+  html += "<div class='flame-bar flame-depth-0' style='width:100%'";
+  html += " data-flame-tip='Total execution &mdash; " + escapeHtml(formatCostNanos(totalCost)) + "'>";
+  html += "<span class='flame-label'>Total <small>" + formatCostNanos(totalCost) + "</small></span>";
+  html += "</div>";
+  // Render top-level steps as children, all relative to totalCost
+  html += renderFlameRow(steps, totalCost, 1);
+  html += "</div>";
+  container.html(html);
+  initFlameTooltips();
+}
+
+/**
+ * Renders one level of the icicle chart. Each step bar's width is proportional
+ * to the rootCost (the total), so a 248µs step next to a 58ms step is visually
+ * tiny — which is correct. Sub-steps are rendered recursively below their parent,
+ * each nested inside a wrapper whose width matches the parent bar.
+ */
+function renderFlameRow(steps, rootCost, depth) {
+  if (!steps || steps.length == 0) return "";
+
+  var html = "<div class='flame-row'>";
+  for (var i = 0; i < steps.length; i++) {
+    var step = steps[i];
+    var cost = step.cost != null ? step.cost : -1;
+    var pctOfRoot = rootCost > 0 && cost > 0 ? (cost / rootCost * 100) : 0;
+    var widthPct = Math.max(pctOfRoot, 1.5); // minimum 1.5% for visibility
+    var depthClass = "flame-depth-" + (depth % 5);
+    var name = simplifyStepName(step.name || "Step");
+    var desc = step.description || "";
+    var costLabel = formatCostNanos(cost);
+
+    // Wrapper holds the bar + its children (so children sit below, constrained to parent width)
+    html += "<div class='flame-cell' style='width:" + widthPct + "%'>";
+    var tipHtml = escapeHtml(name) + " &mdash; " + escapeHtml(costLabel) + " (" + pctOfRoot.toFixed(1) + "% of total)";
+    if (desc) tipHtml += "<br>" + escapeHtml(desc);
+    html += "<div class='flame-bar " + depthClass + "'";
+    html += " data-flame-tip='" + tipHtml.replace(/'/g, "&#39;") + "'>";
+    html += "<span class='flame-label'>" + escapeHtml(name) + " <small>" + costLabel + "</small></span>";
+    html += "</div>";
+    // Recursively render sub-steps inside this cell (inherits parent width)
+    if (step.subSteps && step.subSteps.length > 0)
+      html += renderFlameRow(step.subSteps, rootCost, depth + 1);
+    html += "</div>";
+  }
+  html += "</div>";
+  return html;
+}
+
+function initFlameTooltips() {
+  var tip = $("#flameTooltip");
+  if (tip.length == 0) {
+    $("body").append("<div id='flameTooltip' class='flame-tooltip'></div>");
+    tip = $("#flameTooltip");
+  }
+  $(".flame-bar[data-flame-tip]").on("mouseenter", function(e) {
+    tip.html($(this).attr("data-flame-tip")).css({
+      left: e.pageX + 12,
+      top: e.pageY - 10
+    }).addClass("visible");
+  }).on("mousemove", function(e) {
+    tip.css({ left: e.pageX + 12, top: e.pageY - 10 });
+  }).on("mouseleave", function() {
+    tip.removeClass("visible");
+  });
+}
+
+function stepsHaveCost(steps) {
+  if (!steps) return false;
+  for (var i = 0; i < steps.length; i++) {
+    if (steps[i].cost != null && steps[i].cost > 0) return true;
+    if (steps[i].subSteps && stepsHaveCost(steps[i].subSteps)) return true;
+  }
+  return false;
+}
+
+function computeTotalCost(steps) {
+  var total = 0;
+  if (!steps) return 0;
+  for (var i = 0; i < steps.length; i++) {
+    var cost = steps[i].cost;
+    if (cost != null && cost > 0) total += cost;
+  }
+  return total;
+}
+
+function simplifyStepName(name) {
+  if (!name) return "Step";
+  return name.replace(/ExecutionStep$/, "").replace(/Step$/, "");
+}
+
+function formatCostNanos(ns) {
+  if (ns == null || ns < 0) return "n/a";
+  if (ns < 1000) return ns + " ns";
+  if (ns < 1000000) return (ns / 1000).toFixed(1) + " \u00B5s";
+  if (ns < 1000000000) return (ns / 1000000).toFixed(1) + " ms";
+  return (ns / 1000000000).toFixed(2) + " s";
+}

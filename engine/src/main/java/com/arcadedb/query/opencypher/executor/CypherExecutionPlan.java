@@ -86,6 +86,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -476,7 +477,18 @@ public class CypherExecutionPlan {
         profileOutput.append("No execution steps generated\n");
     }
 
-    results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString()));
+    // Collect execution steps for structured plan data
+    final List<ExecutionStep> executionSteps = new ArrayList<>();
+    if (rootStep != null) {
+      AbstractExecutionStep current = rootStep;
+      while (current != null) {
+        executionSteps.add(current);
+        current = (AbstractExecutionStep) current.getPrev();
+      }
+      Collections.reverse(executionSteps);
+    }
+
+    results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, endTime - startTime));
     return results;
   }
 

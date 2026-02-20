@@ -118,19 +118,24 @@ public class PostCommandHandler extends AbstractQueryHandler {
       if (qResult instanceof ExplainResultSet) {
         // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
         // so serializeResultSet produces an empty result structure
-        final String explainText = qResult.getExecutionPlan().get().prettyPrint(0, 2);
+        final var executionPlan = qResult.getExecutionPlan().get();
+        final String explainText = executionPlan.prettyPrint(0, 2);
         while (qResult.hasNext()) {
           qResult.next();
         }
         serializeResultSet(database, serializer, limit, response, qResult);
         response.put("explain", explainText);
+        response.put("explainPlan", executionPlan.toResult().toJSON());
       } else {
         serializeResultSet(database, serializer, limit, response, qResult);
 
         if (qResult != null && qResult.getExecutionPlan().isPresent() &&
             (profileExecution != null ||
-                command.toUpperCase(Locale.ENGLISH).startsWith("PROFILE ")))
-          response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2));
+                command.toUpperCase(Locale.ENGLISH).startsWith("PROFILE "))) {
+          final var executionPlan = qResult.getExecutionPlan().get();
+          response.put("explain", executionPlan.prettyPrint(0, 2));
+          response.put("explainPlan", executionPlan.toResult().toJSON());
+        }
       }
 
       Metrics.counter("http.command").increment();

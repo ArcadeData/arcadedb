@@ -25,22 +25,31 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Simple ExecutionPlan implementation for OpenCypher EXPLAIN/PROFILE output.
  * Wraps a pre-formatted text string so it can be returned via the standard
- * {@link ExplainResultSet} mechanism used by the server HTTP handler.
+ * {@link com.arcadedb.query.sql.parser.ExplainResultSet} mechanism used by the server HTTP handler.
  */
 public class OpenCypherExplainExecutionPlan implements ExecutionPlan {
   private final String planText;
+  private final List<ExecutionStep> steps;
+  private final long cost;
 
   public OpenCypherExplainExecutionPlan(final String planText) {
+    this(planText, Collections.emptyList(), -1);
+  }
+
+  public OpenCypherExplainExecutionPlan(final String planText, final List<ExecutionStep> steps, final long cost) {
     this.planText = planText;
+    this.steps = steps != null ? steps : Collections.emptyList();
+    this.cost = cost;
   }
 
   @Override
   public List<ExecutionStep> getSteps() {
-    return Collections.emptyList();
+    return steps;
   }
 
   @Override
@@ -53,6 +62,9 @@ public class OpenCypherExplainExecutionPlan implements ExecutionPlan {
     final ResultInternal result = new ResultInternal();
     result.setProperty("type", "OpenCypherExecutionPlan");
     result.setProperty("prettyPrint", planText);
+    result.setProperty("cost", cost);
+    result.setProperty("steps", steps.isEmpty() ? null :
+        steps.stream().map(ExecutionStep::toResult).collect(Collectors.toList()));
     return result;
   }
 }
