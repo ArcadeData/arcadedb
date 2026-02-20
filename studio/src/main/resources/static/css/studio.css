@@ -73,10 +73,10 @@
   --text-primary: #e2e8f0;
   --text-secondary: #cbd5e1;
   --text-muted: #94a3b8;
-  --text-faint: #8494a7;
+  --text-faint: #94a3b8;
   --text-nav: #cbd5e1;
-  --text-lighter: #94a3b8;
-  --text-lightest: #768699;
+  --text-lighter: #a0aec0;
+  --text-lightest: #8494a7;
   --text-placeholder: #475569;
   --text-code: #e2e8f0;
 
@@ -93,7 +93,7 @@
   --shadow-dropdown: rgba(0,0,0,0.4);
 
   --icon-color: #cbd5e1;
-  --icon-muted: #8494a7;
+  --icon-muted: #94a3b8;
   --icon-light: #475569;
   --icon-lighter: #374151;
 }
@@ -458,10 +458,6 @@ div.dt-search {
   transition: width 0.3s ease;
 }
 
-#graphPropertiesPanel {
-  transition: margin 0.3s ease;
-}
-
 .collapsed {
   display: none;
 }
@@ -603,7 +599,7 @@ div.dt-search {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .sidebar-refresh-btn {
@@ -611,6 +607,8 @@ div.dt-search {
   font-size: 0.75rem;
   line-height: 1;
   border: none;
+  background-color: var(--bg-reference);
+  color: var(--text-secondary);
 }
 
 .sidebar-section {
@@ -1954,6 +1952,59 @@ div.dt-search {
   margin-bottom: 6px;
 }
 
+.api-playground-param-row input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--color-brand);
+}
+
+.api-playground-resp-headers {
+  margin-bottom: 8px;
+}
+
+.api-playground-resp-headers-toggle {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+
+.api-playground-resp-headers-toggle:hover {
+  color: var(--text-primary);
+}
+
+.api-playground-resp-headers-toggle i {
+  display: inline-block;
+  width: 12px;
+  transition: transform 0.15s;
+}
+
+.api-playground-resp-headers.open .api-playground-resp-headers-toggle i {
+  transform: rotate(90deg);
+}
+
+.api-playground-resp-headers-body {
+  display: none;
+  background-color: var(--bg-code);
+  color: var(--text-code);
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  margin-top: 4px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.api-playground-resp-headers.open .api-playground-resp-headers-body {
+  display: block;
+}
+
 .api-playground-param-row code {
   font-size: 0.78rem;
   min-width: 80px;
@@ -2440,9 +2491,6 @@ div.dt-search {
   color: var(--text-primary);
 }
 
-[data-theme="dark"] span {
-  color: inherit;
-}
 
 [data-theme="dark"] .btn-outline-primary {
   color: var(--color-brand);
@@ -2592,6 +2640,67 @@ div.dt-search {
   border-left: 1px solid var(--border-main);
 }
 
+/* Record editor: graph appearance sections */
+.record-editor-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+}
+
+.record-editor-section-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.record-editor-section-header i {
+  color: var(--color-brand) !important;
+  margin-right: 4px;
+  font-size: 0.7rem;
+}
+
+.record-editor-section-header small {
+  text-transform: none;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.record-editor-appearance-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.record-editor-appearance-row > .form-label {
+  min-width: 80px;
+  margin-bottom: 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.record-editor-appearance-row .form-select,
+.record-editor-appearance-row .form-control {
+  font-size: 0.78rem;
+}
+
+.record-editor-color-select {
+  width: 90px;
+  flex-shrink: 0;
+}
+
+.record-editor-range-value {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  min-width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
 /* ===== MCP Tab ===== */
 
 .mcp-config-code {
@@ -2617,10 +2726,4 @@ div.dt-search {
   font-size: 0.78rem;
   font-weight: 500;
   padding: 4px 10px;
-}
-
-#graphPropertiesPanel.col-12 #recordEditorContainer {
-  max-width: 800px;
-  margin: 0 auto;
-  border-left: none;
 }
