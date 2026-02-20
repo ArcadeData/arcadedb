@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.test.performance;
+package com.arcadedb.test.load;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
@@ -43,7 +43,7 @@ class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
 
     List<ServerWrapper> serverWrappers = startContainers();
     ServerWrapper server = serverWrappers.getFirst();
-    DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, protocol);
+    DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, wordSupplier, protocol);
     db.createDatabase();
     db.createSchema();
 
@@ -60,7 +60,7 @@ class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, protocol);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier, protocol);
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });

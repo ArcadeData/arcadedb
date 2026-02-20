@@ -92,6 +92,7 @@ public class LocalSchema implements Schema {
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
   protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
+  protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
@@ -108,6 +109,7 @@ public class LocalSchema implements Schema {
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
+  private              MaterializedViewScheduler              materializedViewScheduler;
 
   public LocalSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -570,6 +572,89 @@ public class LocalSchema implements Schema {
     });
   }
 
+  // -- Materialized View management --
+
+  @Override
+  public synchronized boolean existsMaterializedView(final String viewName) {
+    return materializedViews.containsKey(viewName);
+  }
+
+  @Override
+  public synchronized MaterializedView getMaterializedView(final String viewName) {
+    final MaterializedViewImpl view = materializedViews.get(viewName);
+    if (view == null)
+      throw new SchemaException("Materialized view '" + viewName + "' not found");
+    return view;
+  }
+
+  @Override
+  public synchronized MaterializedView[] getMaterializedViews() {
+    return materializedViews.values().toArray(new MaterializedView[0]);
+  }
+
+  @Override
+  public synchronized void dropMaterializedView(final String viewName) {
+    final MaterializedViewImpl view = materializedViews.get(viewName);
+    if (view == null)
+      throw new SchemaException("Materialized view '" + viewName + "' not found");
+
+    // Cancel periodic scheduler if active
+    if (materializedViewScheduler != null)
+      materializedViewScheduler.cancel(viewName);
+
+    // Unregister incremental listeners from source types
+    if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+      MaterializedViewBuilder.unregisterListeners(this, view);
+
+    // Wrap in recordFileChanges so that the MV metadata removal and backing type
+    // drop are replicated atomically to HA replicas
+    recordFileChanges(() -> {
+      // Remove the view definition
+      materializedViews.remove(viewName);
+
+      // Drop the backing type (which drops buckets and indexes)
+      if (existsType(view.getBackingTypeName()))
+        dropType(view.getBackingTypeName());
+
+      saveConfiguration();
+      return null;
+    });
+  }
+
+  @Override
+  public synchronized void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
+      final long newIntervalMs) {
+    final MaterializedViewImpl oldView = materializedViews.get(viewName);
+    if (oldView == null)
+      throw new SchemaException("Materialized view '" + viewName + "' not found");
+
+    // Tear down old refresh infrastructure
+    if (oldView.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+      MaterializedViewBuilder.unregisterListeners(this, oldView);
+    if (materializedViewScheduler != null)
+      materializedViewScheduler.cancel(viewName);
+
+    recordFileChanges(() -> {
+      // Create new view instance with updated refresh mode
+      final MaterializedViewImpl newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
+      materializedViews.put(viewName, newView);
+      saveConfiguration();
+
+      // Set up new refresh infrastructure
+      if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
+        MaterializedViewBuilder.registerListeners(this, newView, newView.getSourceTypeNames());
+      if (newMode == MaterializedViewRefreshMode.PERIODIC && newIntervalMs > 0)
+        getMaterializedViewScheduler().schedule((DatabaseInternal) database, newView);
+
+      return null;
+    });
+  }
+
+  @Override
+  public MaterializedViewBuilder buildMaterializedView() {
+    return new MaterializedViewBuilder((DatabaseInternal) database);
+  }
+
   /**
    * Register a trigger as an event listener on the appropriate type.
    */
@@ -778,13 +863,25 @@ public class LocalSchema implements Schema {
       }
     }
 
+    if (materializedViewScheduler != null) {
+      materializedViewScheduler.shutdown();
+      materializedViewScheduler = null;
+    }
+
     writeStatisticsFile();
+    materializedViews.clear();
     files.clear();
     types.clear();
     bucketMap.clear();
     indexMap.clear();
     dictionary = null;
     bucketId2TypeMap.clear();
+  }
+
+  public synchronized MaterializedViewScheduler getMaterializedViewScheduler() {
+    if (materializedViewScheduler == null)
+      materializedViewScheduler = new MaterializedViewScheduler();
+    return materializedViewScheduler;
   }
 
   private void readStatisticsFile() {
@@ -891,6 +988,20 @@ public class LocalSchema implements Schema {
 
   public void dropType(final String typeName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    // Prevent dropping a type that is a backing type or source type for a materialized view
+    synchronized (this) {
+      for (final MaterializedViewImpl view : materializedViews.values()) {
+        if (view.getBackingTypeName().equals(typeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
+                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
+        if (view.getSourceTypeNames().contains(typeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + view.getName() + "'. " +
+                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
+      }
+    }
 
     recordFileChanges(() -> {
       boolean setMultipleUpdate = !multipleUpdate;
@@ -1390,6 +1501,29 @@ public class LocalSchema implements Schema {
         }
       }
 
+      // Load materialized views
+      // Always clear and re-populate from the schema file to keep in sync
+      materializedViews.clear();
+      if (root.has("materializedViews")) {
+        final JSONObject mvJSON = root.getJSONObject("materializedViews");
+        for (final String viewName : mvJSON.keySet()) {
+          final JSONObject viewDef = mvJSON.getJSONObject(viewName);
+          final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
+          materializedViews.put(viewName, view);
+
+          // Re-register listeners for INCREMENTAL views
+          if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+            MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
+
+          if (view.getRefreshMode() == MaterializedViewRefreshMode.PERIODIC)
+            getMaterializedViewScheduler().schedule(database, view);
+
+          // Crash recovery: if status is BUILDING, it was interrupted
+          if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
+            view.setStatus(MaterializedViewStatus.STALE);
+        }
+      }
+
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
     } finally {
@@ -1451,6 +1585,12 @@ public class LocalSchema implements Schema {
 
     for (final Trigger trigger : this.triggers.values())
       triggersJson.put(trigger.getName(), trigger.toJSON());
+
+    // Serialize materialized views
+    final JSONObject mvJSON = new JSONObject();
+    for (final Map.Entry<String, MaterializedViewImpl> entry : materializedViews.entrySet())
+      mvJSON.put(entry.getKey(), entry.getValue().toJSON());
+    root.put("materializedViews", mvJSON);
 
     return root;
   }

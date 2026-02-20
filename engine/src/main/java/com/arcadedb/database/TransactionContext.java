@@ -81,6 +81,8 @@ public class TransactionContext implements Transaction {
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   private       Object                               requester;
+  private       List<Runnable>                       afterCommitCallbacks  = null;
+  private       Set<String>                          registeredCallbackKeys = null;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -131,7 +133,7 @@ public class TransactionContext implements Transaction {
     if (phase1 != null)
       commit2ndPhase(phase1);
     else
-      reset();
+      resetAndFireCallbacks();
 
     if (database.getSchema().getEmbedded().isDirty())
       database.getSchema().getEmbedded().saveConfiguration();
@@ -254,6 +256,44 @@ public class TransactionContext implements Transaction {
         }
 
     reset();
+  }
+
+  /**
+   * Registers a callback to be executed after a successful commit. Callbacks fire in registration order.
+   * If the transaction is rolled back, callbacks are discarded without firing.
+   * Callback exceptions are logged but do not affect the commit or other callbacks.
+   */
+  public void addAfterCommitCallback(final Runnable callback) {
+    if (afterCommitCallbacks == null)
+      afterCommitCallbacks = new ArrayList<>();
+    afterCommitCallbacks.add(callback);
+  }
+
+  /**
+   * Registers a post-commit callback only if no callback with the given key has been registered yet
+   * in this transaction. Returns true if the callback was registered, false if skipped.
+   */
+  public boolean addAfterCommitCallbackIfAbsent(final String key, final Runnable callback) {
+    if (registeredCallbackKeys == null)
+      registeredCallbackKeys = new HashSet<>();
+    if (!registeredCallbackKeys.add(key))
+      return false;
+    addAfterCommitCallback(callback);
+    return true;
+  }
+
+  private void resetAndFireCallbacks() {
+    final List<Runnable> callbacks = afterCommitCallbacks;
+    reset();
+    if (callbacks != null) {
+      for (final Runnable callback : callbacks) {
+        try {
+          callback.run();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+        }
+      }
+    }
   }
 
   public void assureIsActive() {
@@ -657,6 +697,7 @@ public class TransactionContext implements Transaction {
   }
 
   public void commit2ndPhase(final TransactionPhase1 changes) {
+    boolean committed = false;
     try {
       if (changes == null)
         return;
@@ -703,6 +744,8 @@ public class TransactionContext implements Transaction {
           file.onAfterCommit();
       }
 
+      committed = true;
+
     } catch (final ConcurrentModificationException e) {
       throw e;
     } catch (final Exception e) {
@@ -710,7 +753,10 @@ public class TransactionContext implements Transaction {
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
-      reset();
+      if (committed)
+        resetAndFireCallbacks();
+      else
+        reset();
     }
   }
 
@@ -753,6 +799,8 @@ public class TransactionContext implements Transaction {
     immutablePages.clear();
     bucketRecordDelta.clear();
     deletedRecordsInTx.clear();
+    afterCommitCallbacks = null;
+    registeredCallbackKeys = null;
     txId = -1;
   }
 

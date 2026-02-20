@@ -25,6 +25,7 @@ import com.arcadedb.remote.RemoteSchema;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
 import com.arcadedb.remote.grpc.RemoteGrpcServer;
+import com.arcadedb.utility.TableFormatter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -33,6 +34,7 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
 import static com.arcadedb.test.support.ContainersTestTemplate.PASSWORD;
@@ -43,6 +45,7 @@ public class DatabaseWrapper {
   private final        ServerWrapper     server;
   private final        RemoteDatabase    db;
   private final        Supplier<Integer> idSupplier;
+  private final        Supplier<String>  wordSupplier;
   private final        Timer             photosTimer;
   private final        Timer             usersTimer;
   private final        Timer             friendshipTimer;
@@ -50,8 +53,9 @@ public class DatabaseWrapper {
 
   public enum Protocol {HTTP, GRPC}
 
-  public DatabaseWrapper(ServerWrapper server, Supplier<Integer> idSupplier, Protocol protocol) {
+  public DatabaseWrapper(ServerWrapper server, Supplier<Integer> idSupplier, Supplier<String> wordSupplier, Protocol protocol) {
     this.server = server;
+    this.wordSupplier = wordSupplier;
     this.db = connectToDatabase(protocol);
     this.idSupplier = idSupplier;
     usersTimer = Metrics.timer("arcadedb.test.inserted.users");
@@ -60,8 +64,8 @@ public class DatabaseWrapper {
     likeTimer = Metrics.timer("arcadedb.test.inserted.like");
   }
 
-  public DatabaseWrapper(ServerWrapper server, Supplier<Integer> idSupplier) {
-    this(server, idSupplier, Protocol.HTTP);
+  public DatabaseWrapper(ServerWrapper server, Supplier<Integer> idSupplier, Supplier<String> wordSupplier) {
+    this(server, idSupplier, wordSupplier, Protocol.HTTP);
   }
 
   private RemoteDatabase connectToDatabaseGrpc() {
@@ -125,15 +129,28 @@ public class DatabaseWrapper {
 
             CREATE VERTEX TYPE Photo;
             CREATE PROPERTY Photo.id INTEGER;
+            CREATE PROPERTY Photo.description STRING;
             CREATE PROPERTY Photo.tags LIST OF STRING;
+
             CREATE INDEX ON Photo (id) UNIQUE;
             CREATE INDEX ON Photo (tags BY ITEM) NOTUNIQUE;
+            CREATE INDEX ON Photo (description) FULL_TEXT METADATA {
+              "analyzer": "org.apache.lucene.analysis.en.EnglishAnalyzer"
+              };
 
             CREATE EDGE TYPE HasUploaded;
 
             CREATE EDGE TYPE FriendOf;
 
             CREATE EDGE TYPE Likes;
+
+            CREATE MATERIALIZED VIEW UserStats AS
+              SELECT id AS userId,
+                out('HasUploaded').in('Likes').size() AS totalLikes,
+                out('FriendOf').size() AS totalFriendships
+              FROM User
+              REFRESH INCREMENTAL;
+
             """);
   }
 
@@ -196,17 +213,18 @@ public class DatabaseWrapper {
       String photoName = String.format("download-%s.jpg", photoId);
       String tag1 = "tag" + i % numberOfPhotos;
       String tag2 = "tag" + (i % numberOfPhotos + 1);
+      String description = IntStream.range(0, 100).mapToObj(j -> wordSupplier.get()).reduce((a, b) -> a + " " + b).orElse("");
       String sqlScript = """
           BEGIN;
           LOCK TYPE User, Photo, HasUploaded;
-          LET photo = CREATE VERTEX Photo SET id = ?, name = ?, tags = ['?', '?'];
           LET user = SELECT FROM User WHERE id = ?;
+          LET photo = CREATE VERTEX Photo SET id = ?, name = ?, description = '?', tags = ['?', '?'];
           CREATE EDGE HasUploaded FROM $user TO $photo;
           COMMIT RETRY 30;
           """;
       try {
         photosTimer.record(() -> {
-              db.command("sqlscript", sqlScript, photoId, photoName, userId, tag1, tag2);
+              db.command("sqlscript", sqlScript, userId, photoId, photoName, description, tag1, tag2);
             }
         );
 
@@ -326,6 +344,23 @@ public class DatabaseWrapper {
     return resultSet.stream()
         .map(r -> r.<Integer>getProperty("id"))
         .toList();
+  }
+
+  public void printUserStats() {
+    ResultSet resultSet = db.query("sql",
+        "SELECT userId, totalLikes, totalFriendships FROM UserStats ORDER BY totalLikes DESC, totalFriendships DESC LIMIT 10");
+
+    StringBuilder table = new StringBuilder();
+    TableFormatter formatter = new TableFormatter((text, args) -> table.append(String.format(text, args)));
+    List<TableFormatter.TableRow> rows = resultSet.stream()
+        .map(r -> {
+          TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
+          r.getPropertyNames().forEach(name -> row.setField(name, r.getProperty(name)));
+          return (TableFormatter.TableRow) row;
+        })
+        .toList();
+    formatter.writeRows(rows, -1);
+    logger.info(table.toString());
   }
 
   public void assertThatFriendshipCountIs(int expectedCount) {

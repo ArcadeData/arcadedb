@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.test.performance;
+package com.arcadedb.test.load;
 
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
@@ -37,6 +37,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -67,6 +68,19 @@ class SingleLocalhostServerSimpleLoadTestIT {
     @Override
     public Integer get() {
       return id.getAndIncrement();
+    }
+  };
+
+  protected Supplier<String> wordSupplier = new Supplier<>() {
+    private final String[] words = new String[]{"lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing",
+        "elit", "sed", "do", "eiusmod", "tempor", "incididunt", "ut", "labore", "et", "dolore", "magna",
+        "aliqua"};
+
+    private final Random random = new Random();
+
+    @Override
+    public String get() {
+      return words[random.nextInt(words.length)];
     }
   };
 
@@ -104,7 +118,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
   void singleServerLoadTest() throws Exception {
 
     ServerWrapper server = new ServerWrapper("localhost", 2480, 50051);
-    DatabaseWrapper db = new DatabaseWrapper(server, idSupplier);
+    DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, wordSupplier);
     db.createDatabase();
     db.createSchema();
 
@@ -129,7 +143,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier);
         db1.addUserAndPhotos(numOfUsers, numOfPhotos);
         db1.close();
       });
@@ -138,7 +152,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
     if (numOfFriendship > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier);
         db1.createFriendships(numOfFriendship);
         db1.close();
       });
@@ -147,7 +161,7 @@ class SingleLocalhostServerSimpleLoadTestIT {
     if (numOfLike > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
-        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier);
+        DatabaseWrapper db1 = new DatabaseWrapper(server, idSupplier, wordSupplier);
         ;
         db1.createLike(numOfLike);
         db1.close();
