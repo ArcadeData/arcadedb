@@ -157,7 +157,7 @@ ha-raft/
 
 New settings:
 - `HA_IMPLEMENTATION` -- `legacy` or `raft` (default: `legacy`)
-- `HA_RAFT_PORT` -- Port for Ratis gRPC communication
+- `HA_RAFT_PORT` -- Port for Ratis gRPC communication (default: `2434`). Used as the default when `HA_SERVER_LIST` entries omit an explicit port, allowing entries to be plain hostnames (e.g. `node1,node2,node3`) instead of requiring `node1:2434,node2:2434,node3:2434`
 - `HA_REPLICATION_LAG_WARNING` -- Log index gap threshold for warnings
 
 Reused settings (same semantics): `HA_QUORUM`, `HA_SERVER_LIST`, `HA_CLUSTER_NAME`, `HA_SERVER_ROLE`, `HA_K8S`, `HA_K8S_DNS_SUFFIX`.

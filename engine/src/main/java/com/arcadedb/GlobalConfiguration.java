@@ -559,6 +559,10 @@ public enum GlobalConfiguration {
       "Raft log index gap threshold for replication lag warnings. When a replica falls behind by more than this many entries, a warning is logged",
       Long.class, 1000L),
 
+  HA_RAFT_PORT("arcadedb.ha.raftPort", SCOPE.SERVER,
+      "TCP/IP port for Raft gRPC communication. Used as the default port when HA_SERVER_LIST entries do not specify an explicit port",
+      Integer.class, 2434),
+
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
