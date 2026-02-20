@@ -127,6 +127,49 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
+  public boolean existsMaterializedView(final String viewName) {
+    final ResultSet result = remoteDatabase.command("sql",
+        "SELECT FROM schema:materializedViews WHERE name = :name", Map.of("name", viewName));
+    return result.hasNext();
+  }
+
+  @Override
+  public MaterializedView getMaterializedView(final String viewName) {
+    final ResultSet result = remoteDatabase.command("sql",
+        "SELECT FROM schema:materializedViews WHERE name = :name", Map.of("name", viewName));
+    if (result.hasNext())
+      return new RemoteMaterializedView(result.next());
+    throw new SchemaException("Materialized view '" + viewName + "' not found");
+  }
+
+  @Override
+  public MaterializedView[] getMaterializedViews() {
+    final ResultSet result = remoteDatabase.command("sql", "SELECT FROM schema:materializedViews");
+    final List<MaterializedView> views = new ArrayList<>();
+    while (result.hasNext())
+      views.add(new RemoteMaterializedView(result.next()));
+    return views.toArray(new MaterializedView[0]);
+  }
+
+  @Override
+  public void dropMaterializedView(final String viewName) {
+    remoteDatabase.command("sql", "DROP MATERIALIZED VIEW `" + viewName + "`");
+  }
+
+  @Override
+  public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
+      final long newIntervalMs) {
+    throw new UnsupportedOperationException(
+        "alterMaterializedView() is not supported remotely. Use SQL ALTER MATERIALIZED VIEW instead.");
+  }
+
+  @Override
+  public MaterializedViewBuilder buildMaterializedView() {
+    throw new UnsupportedOperationException(
+        "buildMaterializedView() is not supported remotely. Use SQL CREATE MATERIALIZED VIEW instead.");
+  }
+
+  @Override
   public Bucket createBucket(final String bucketName) {
     final ResultSet result = remoteDatabase.command("sql", "create bucket `" + bucketName + "`");
     return new RemoteBucket(result.next().getProperty("bucketName"));

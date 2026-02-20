@@ -222,6 +222,15 @@ STATUS: S T A T U S;
 DATE: D A T E;
 TIME: T I M E;
 TIMESTAMP: T I M E S T A M P;
+MATERIALIZED: M A T E R I A L I Z E D;
+VIEW: V I E W;
+REFRESH: R E F R E S H;
+EVERY: E V E R Y;
+SECOND: S E C O N D;
+MINUTE: M I N U T E;
+HOUR: H O U R;
+MANUAL: M A N U A L;
+INCREMENTAL: I N C R E M E N T A L;
 
 // ============================================================================
 // COMPARISON OPERATORS

@@ -94,12 +94,14 @@ statement
     | CREATE VERTEX createVertexBody                 # createVertexStmt
     | CREATE EDGE createEdgeBody                     # createEdgeStmt
     | CREATE TRIGGER createTriggerBody               # createTriggerStmt
+    | CREATE MATERIALIZED VIEW createMaterializedViewBody   # createMaterializedViewStmt
 
     // DDL Statements - ALTER variants
     | ALTER TYPE alterTypeBody                       # alterTypeStmt
     | ALTER PROPERTY alterPropertyBody               # alterPropertyStmt
     | ALTER BUCKET alterBucketBody                   # alterBucketStmt
     | ALTER DATABASE alterDatabaseBody               # alterDatabaseStmt
+    | ALTER MATERIALIZED VIEW alterMaterializedViewBody     # alterMaterializedViewStmt
 
     // DDL Statements - DROP variants
     | DROP TYPE dropTypeBody                         # dropTypeStmt
@@ -107,11 +109,15 @@ statement
     | DROP INDEX dropIndexBody                       # dropIndexStmt
     | DROP BUCKET dropBucketBody                     # dropBucketStmt
     | DROP TRIGGER dropTriggerBody                   # dropTriggerStmt
+    | DROP MATERIALIZED VIEW dropMaterializedViewBody       # dropMaterializedViewStmt
 
     // DDL Statements - TRUNCATE variants
     | TRUNCATE TYPE truncateTypeBody                 # truncateTypeStmt
     | TRUNCATE BUCKET truncateBucketBody             # truncateBucketStmt
     | TRUNCATE RECORD truncateRecordBody             # truncateRecordStmt
+
+    // Materialized View Refresh
+    | REFRESH MATERIALIZED VIEW refreshMaterializedViewBody # refreshMaterializedViewStmt
 
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
@@ -628,6 +634,55 @@ triggerAction
  */
 dropTriggerBody
     : (IF EXISTS)? identifier
+    ;
+
+// ============================================================================
+// DDL STATEMENTS - MATERIALIZED VIEW
+// ============================================================================
+
+/**
+ * CREATE MATERIALIZED VIEW statement
+ * Syntax: CREATE MATERIALIZED VIEW [IF NOT EXISTS] name AS selectStatement [REFRESH MANUAL|INCREMENTAL|EVERY n SECOND|MINUTE|HOUR] [BUCKETS n]
+ */
+createMaterializedViewBody
+    : (IF NOT EXISTS)? identifier
+      AS selectStatement
+      materializedViewRefreshClause?
+      (BUCKETS INTEGER_LITERAL)?
+    ;
+
+materializedViewRefreshClause
+    : REFRESH MANUAL
+    | REFRESH INCREMENTAL
+    | REFRESH EVERY INTEGER_LITERAL materializedViewTimeUnit
+    ;
+
+materializedViewTimeUnit
+    : SECOND | MINUTE | HOUR
+    ;
+
+/**
+ * DROP MATERIALIZED VIEW statement
+ * Syntax: DROP MATERIALIZED VIEW [IF EXISTS] name
+ */
+dropMaterializedViewBody
+    : (IF EXISTS)? identifier
+    ;
+
+/**
+ * REFRESH MATERIALIZED VIEW statement
+ * Syntax: REFRESH MATERIALIZED VIEW name
+ */
+refreshMaterializedViewBody
+    : identifier
+    ;
+
+/**
+ * ALTER MATERIALIZED VIEW statement
+ * Syntax: ALTER MATERIALIZED VIEW name REFRESH ...
+ */
+alterMaterializedViewBody
+    : identifier materializedViewRefreshClause
     ;
 
 // ============================================================================
@@ -1251,4 +1306,13 @@ identifier
     | INDEX
     | LANGUAGE
     | DOCUMENT
+    | VIEW
+    | REFRESH
+    | EVERY
+    | SECOND
+    | MINUTE
+    | HOUR
+    | MANUAL
+    | INCREMENTAL
+    | MATERIALIZED
     ;

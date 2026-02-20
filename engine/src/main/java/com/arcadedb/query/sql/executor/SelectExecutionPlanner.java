@@ -1458,6 +1458,7 @@ public class SelectExecutionPlanner {
     case "indexes" -> plan.chain(new FetchFromSchemaIndexesStep(context));
     case "database" -> plan.chain(new FetchFromSchemaDatabaseStep(context));
     case "buckets" -> plan.chain(new FetchFromSchemaBucketsStep(context));
+    case "materializedviews" -> plan.chain(new FetchFromSchemaMaterializedViewsStep(context));
     default -> throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
     }
   }

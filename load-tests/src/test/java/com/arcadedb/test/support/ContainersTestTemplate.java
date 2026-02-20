@@ -40,7 +40,9 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -65,6 +67,29 @@ public abstract class ContainersTestTemplate {
     @Override
     public Integer get() {
       return id.getAndIncrement();
+    }
+  };
+
+  protected Supplier<String> wordSupplier = new Supplier<>() {
+    {
+
+      try {
+        words = Arrays.stream(
+                FileUtils.readStreamAsString(ContainersTestTemplate.class.getResourceAsStream("/english_words.txt"), "UTF-8")
+                    .split("\n"))
+            .toList();
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    }
+
+    private final List<String> words;
+
+    private final Random random = new Random(words.size());
+
+    @Override
+    public String get() {
+      return words.get(random.nextInt(words.size()));
     }
   };
 
