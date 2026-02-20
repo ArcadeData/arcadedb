@@ -2727,3 +2727,111 @@ div.dt-search {
   font-weight: 500;
   padding: 4px 10px;
 }
+
+/* ===== Flame Graph (Icicle Chart) ===== */
+
+.flame-graph {
+  margin-bottom: 12px;
+  border: 1px solid var(--border-ddd);
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: var(--bg-card);
+}
+
+.flame-graph-header {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  background-color: var(--bg-reference);
+  border-bottom: 1px solid var(--border-ddd);
+  color: var(--text-secondary);
+}
+
+.flame-graph-header i {
+  color: #e65100 !important;
+  margin-right: 4px;
+}
+
+.flame-row {
+  display: flex;
+  align-items: stretch;
+}
+
+/* Each cell wraps a bar + its nested children, so children stay under their parent */
+.flame-cell {
+  flex-shrink: 0;
+  min-width: 0;
+  border-right: 1px solid rgba(255,255,255,0.2);
+}
+
+.flame-cell:last-child {
+  border-right: none;
+}
+
+.flame-bar {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 2px 8px;
+  cursor: default;
+  overflow: hidden;
+  transition: filter 0.1s;
+}
+
+.flame-bar:hover {
+  filter: brightness(1.12);
+}
+
+.flame-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 1px rgba(0,0,0,0.3);
+}
+
+.flame-label small {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+.flame-depth-0 { background-color: #e65100; }
+.flame-depth-1 { background-color: #ef6c00; }
+.flame-depth-2 { background-color: #f57c00; }
+.flame-depth-3 { background-color: #fb8c00; }
+.flame-depth-4 { background-color: #ff9800; }
+
+.flame-tooltip {
+  position: absolute;
+  z-index: 10100;
+  background: rgba(30, 30, 30, 0.95);
+  color: #fff;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  padding: 6px 10px;
+  border-radius: 5px;
+  pointer-events: none;
+  white-space: nowrap;
+  opacity: 0;
+  max-width: 400px;
+}
+
+.flame-tooltip.visible {
+  opacity: 1;
+}
+
+.flame-no-data {
+  padding: 10px 14px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  background-color: var(--bg-reference);
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.flame-no-data i {
+  color: var(--color-brand) !important;
+  margin-right: 4px;
+}

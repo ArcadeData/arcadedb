@@ -136,6 +136,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
         actualQuery = actualQuery.substring(8).trim();
       }
 
+      // Also check for $profileExecution parameter (set by HTTP handler when Studio sends profileExecution: "detailed")
+      if (!profile && parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution")))
+        profile = true;
+
       // Use statement cache to avoid re-parsing
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
 
@@ -171,6 +175,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
         profile = true;
         actualQuery = actualQuery.substring(8).trim();
       }
+
+      // Also check for $profileExecution parameter (set by HTTP handler when Studio sends profileExecution: "detailed")
+      if (!profile && parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution")))
+        profile = true;
 
       // Use statement cache to avoid re-parsing
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
