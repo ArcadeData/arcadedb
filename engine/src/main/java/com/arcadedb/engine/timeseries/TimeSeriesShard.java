@@ -30,7 +30,9 @@ import com.arcadedb.schema.Type;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 
 /**
  * Pairs a mutable TimeSeriesBucket with a sealed TimeSeriesSealedStore.
@@ -83,6 +85,59 @@ public class TimeSeriesShard implements AutoCloseable {
     addFiltered(results, mutableResults, tagFilter);
 
     return results;
+  }
+
+  /**
+   * Returns a lazy iterator over both sealed and mutable layers.
+   * Sealed data is iterated first, then mutable. Tag filter is applied inline.
+   * Memory usage: O(blockSize) for sealed, O(pageSize) for mutable.
+   */
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter) throws IOException {
+    final Iterator<Object[]> sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices);
+    final Iterator<Object[]> mutableIter = mutableBucket.iterateRange(fromTs, toTs, columnIndices);
+
+    // Chain sealed then mutable, with inline tag filtering
+    return new Iterator<>() {
+      private Iterator<Object[]> current = sealedIter;
+      private boolean            switchedToMutable = false;
+      private Object[]           nextRow = null;
+
+      {
+        advance();
+      }
+
+      private void advance() {
+        nextRow = null;
+        while (true) {
+          if (current.hasNext()) {
+            final Object[] row = current.next();
+            if (tagFilter == null || tagFilter.matches(row)) {
+              nextRow = row;
+              return;
+            }
+          } else if (!switchedToMutable) {
+            current = mutableIter;
+            switchedToMutable = true;
+          } else
+            return;
+        }
+      }
+
+      @Override
+      public boolean hasNext() {
+        return nextRow != null;
+      }
+
+      @Override
+      public Object[] next() {
+        if (nextRow == null)
+          throw new NoSuchElementException();
+        final Object[] result = nextRow;
+        advance();
+        return result;
+      }
+    };
   }
 
   /**

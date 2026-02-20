@@ -33,7 +33,9 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 
 /**
  * Immutable columnar storage for compacted TimeSeries data.
@@ -167,6 +169,89 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
     }
     return results;
+  }
+
+  /**
+   * Returns a lazy iterator over sealed blocks overlapping the given time range.
+   * Decompresses one block at a time, yielding rows on demand.
+   *
+   * @param fromTs        start timestamp (inclusive)
+   * @param toTs          end timestamp (inclusive)
+   * @param columnIndices which columns to return (null = all)
+   *
+   * @return iterator yielding Object[] { timestamp, col1, col2, ... }
+   */
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
+    final int tsColIdx = findTimestampColumnIndex();
+
+    return new Iterator<>() {
+      private int        blockIdx    = 0;
+      private long[]     timestamps  = null;
+      private Object[][] decompCols  = null;
+      private int        rowIdx      = 0;
+      private Object[]   nextRow     = null;
+
+      {
+        advance();
+      }
+
+      private void advance() {
+        nextRow = null;
+        try {
+          while (true) {
+            // Try to yield from current decompressed block
+            if (timestamps != null) {
+              while (rowIdx < timestamps.length) {
+                final long ts = timestamps[rowIdx];
+                if (ts >= fromTs && ts <= toTs) {
+                  final Object[] row = new Object[decompCols.length + 1];
+                  row[0] = ts;
+                  for (int c = 0; c < decompCols.length; c++)
+                    row[c + 1] = decompCols[c][rowIdx];
+                  rowIdx++;
+                  nextRow = row;
+                  return;
+                }
+                rowIdx++;
+              }
+              // Current block exhausted
+              timestamps = null;
+              decompCols = null;
+            }
+
+            // Find next matching block
+            if (blockIdx >= blockDirectory.size())
+              return;
+
+            final BlockEntry entry = blockDirectory.get(blockIdx);
+            blockIdx++;
+
+            if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
+              continue;
+
+            timestamps = decompressTimestamps(entry, tsColIdx);
+            decompCols = decompressColumns(entry, columnIndices, tsColIdx);
+            rowIdx = 0;
+          }
+        } catch (final IOException e) {
+          throw new RuntimeException("Error iterating sealed TimeSeries blocks", e);
+        }
+      }
+
+      @Override
+      public boolean hasNext() {
+        return nextRow != null;
+      }
+
+      @Override
+      public Object[] next() {
+        if (nextRow == null)
+          throw new NoSuchElementException();
+        final Object[] result = nextRow;
+        advance();
+        return result;
+      }
+    };
   }
 
   /**

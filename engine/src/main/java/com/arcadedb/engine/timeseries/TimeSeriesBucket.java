@@ -29,7 +29,9 @@ import com.arcadedb.schema.Type;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 
 /**
  * Mutable TimeSeries bucket backed by paginated storage.
@@ -188,6 +190,89 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
     }
     return results;
+  }
+
+  /**
+   * Returns a lazy iterator over samples in the given time range.
+   * Only one page is loaded at a time, keeping memory usage O(pageSize).
+   *
+   * @param fromTs        start timestamp (inclusive)
+   * @param toTs          end timestamp (inclusive)
+   * @param columnIndices which columns to return (null = all)
+   *
+   * @return iterator yielding Object[] { timestamp, col1, col2, ... }
+   */
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
+    final int dataPageCount = getDataPageCount();
+
+    return new Iterator<>() {
+      private int      pageNum          = 1;
+      private int      rowIdx           = 0;
+      private BasePage currentPage      = null;
+      private short    currentSampleCount = 0;
+      private Object[] nextRow          = null;
+
+      {
+        advance();
+      }
+
+      private void advance() {
+        nextRow = null;
+        try {
+          while (pageNum <= dataPageCount) {
+            if (currentPage == null) {
+              currentPage = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
+              currentSampleCount = currentPage.readShort(DATA_SAMPLE_COUNT_OFFSET);
+              rowIdx = 0;
+
+              if (currentSampleCount == 0) {
+                currentPage = null;
+                pageNum++;
+                continue;
+              }
+
+              final long pageMinTs = currentPage.readLong(DATA_MIN_TS_OFFSET);
+              final long pageMaxTs = currentPage.readLong(DATA_MAX_TS_OFFSET);
+              if (pageMaxTs < fromTs || pageMinTs > toTs) {
+                currentPage = null;
+                pageNum++;
+                continue;
+              }
+            }
+
+            while (rowIdx < currentSampleCount) {
+              final int rowOffset = DATA_ROWS_OFFSET + rowIdx * rowSize;
+              final long ts = currentPage.readLong(rowOffset);
+              rowIdx++;
+
+              if (ts >= fromTs && ts <= toTs) {
+                nextRow = readRow(currentPage, rowOffset, columnIndices);
+                return;
+              }
+            }
+
+            currentPage = null;
+            pageNum++;
+          }
+        } catch (final IOException e) {
+          throw new RuntimeException("Error iterating TimeSeries bucket pages", e);
+        }
+      }
+
+      @Override
+      public boolean hasNext() {
+        return nextRow != null;
+      }
+
+      @Override
+      public Object[] next() {
+        if (nextRow == null)
+          throw new NoSuchElementException();
+        final Object[] result = nextRow;
+        advance();
+        return result;
+      }
+    };
   }
 
   /**

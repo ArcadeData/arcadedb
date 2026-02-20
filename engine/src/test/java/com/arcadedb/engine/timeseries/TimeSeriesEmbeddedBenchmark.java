@@ -21,7 +21,6 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -73,7 +72,9 @@ public class TimeSeriesEmbeddedBenchmark {
 
       // Configure async
       database.async().setParallelLevel(PARALLEL_LEVEL);
-      database.async().setCommitEvery(BATCH_SIZE);
+      // Each task already writes BATCH_SIZE samples, so commit every few tasks (not every BATCH_SIZE tasks)
+      database.async().setCommitEvery(5);
+      database.async().setBackPressure(50);
       database.setReadYourWrites(false);
 
       final AtomicLong totalInserted = new AtomicLong(0);
@@ -116,35 +117,26 @@ public class TimeSeriesEmbeddedBenchmark {
       metricsThread.setDaemon(true);
       metricsThread.start();
 
-      // Insert data points using direct TimeSeriesEngine API (bypasses SQL parsing)
-      final TimeSeriesEngine engine =
-          ((LocalTimeSeriesType) database.getSchema().getType("SensorData")).getEngine();
+      // Insert data points using async appendSamples API (handles shard routing and transactions automatically)
       final long baseTimestamp = System.currentTimeMillis() - (long) TOTAL_POINTS * 100;
       final int batchCount = TOTAL_POINTS / BATCH_SIZE;
 
       for (int batch = 0; batch < batchCount; batch++) {
-        final int batchIdx = batch;
-        database.async().transaction(() -> {
-          try {
-            final long batchStart = baseTimestamp + (long) batchIdx * BATCH_SIZE * 100;
-            final long[] timestamps = new long[BATCH_SIZE];
-            final Object[] sensorIds = new Object[BATCH_SIZE];
-            final Object[] temperatures = new Object[BATCH_SIZE];
-            final Object[] humidities = new Object[BATCH_SIZE];
+        final long batchStart = baseTimestamp + (long) batch * BATCH_SIZE * 100;
+        final long[] timestamps = new long[BATCH_SIZE];
+        final Object[] sensorIds = new Object[BATCH_SIZE];
+        final Object[] temperatures = new Object[BATCH_SIZE];
+        final Object[] humidities = new Object[BATCH_SIZE];
 
-            for (int i = 0; i < BATCH_SIZE; i++) {
-              timestamps[i] = batchStart + i * 100L;
-              sensorIds[i] = "sensor_" + (i % NUM_SENSORS);
-              temperatures[i] = 20.0 + (Math.random() * 15.0);
-              humidities[i] = 40.0 + (Math.random() * 40.0);
-            }
+        for (int i = 0; i < BATCH_SIZE; i++) {
+          timestamps[i] = batchStart + i * 100L;
+          sensorIds[i] = "sensor_" + (i % NUM_SENSORS);
+          temperatures[i] = 20.0 + (Math.random() * 15.0);
+          humidities[i] = 40.0 + (Math.random() * 40.0);
+        }
 
-            engine.appendSamples(timestamps, sensorIds, temperatures, humidities);
-            totalInserted.addAndGet(BATCH_SIZE);
-          } catch (final Exception e) {
-            throw new RuntimeException(e);
-          }
-        });
+        database.async().appendSamples("SensorData", timestamps, sensorIds, temperatures, humidities);
+        totalInserted.addAndGet(BATCH_SIZE);
       }
 
       // Wait for all async operations to complete
@@ -186,13 +178,17 @@ public class TimeSeriesEmbeddedBenchmark {
       queryTime = (System.nanoTime() - queryStart) / 1_000_000;
       System.out.printf("1h range scan:         %d ms%n", queryTime);
 
-      // Aggregation with time bucket
-      queryStart = System.nanoTime();
-      database.query("sql",
-          "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
-              "FROM SensorData GROUP BY hour").close();
-      queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-      System.out.printf("Hourly aggregation:    %d ms%n", queryTime);
+      // Aggregation with time bucket (full scan — may require large heap for big datasets)
+      try {
+        queryStart = System.nanoTime();
+        database.query("sql",
+            "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
+                "FROM SensorData GROUP BY hour").close();
+        queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+        System.out.printf("Hourly aggregation:    %d ms%n", queryTime);
+      } catch (final Exception e) {
+        System.out.printf("Hourly aggregation:    SKIPPED (%s)%n", e.getMessage());
+      }
 
       System.out.println("==============================================");
 

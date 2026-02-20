@@ -55,8 +55,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
     if (!fetched) {
       try {
         final TimeSeriesEngine engine = tsType.getEngine();
-        final List<Object[]> rows = engine.query(fromTs, toTs, null, null);
-        resultIterator = rows.iterator();
+        resultIterator = engine.iterateQuery(fromTs, toTs, null, null);
         fetched = true;
       } catch (final IOException e) {
         throw new CommandExecutionException("Error querying TimeSeries engine", e);

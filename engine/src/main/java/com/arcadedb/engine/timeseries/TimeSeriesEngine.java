@@ -23,7 +23,10 @@ import com.arcadedb.database.DatabaseInternal;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.PriorityQueue;
 
 /**
  * Coordinates N shards for a TimeSeries type. Routes writes to shards
@@ -70,6 +73,41 @@ public class TimeSeriesEngine implements AutoCloseable {
 
     merged.sort(Comparator.comparingLong(row -> (long) row[0]));
     return merged;
+  }
+
+  /**
+   * Returns a lazy merge-sorted iterator across all shards.
+   * Uses a min-heap to merge shard iterators by timestamp.
+   * Memory usage: O(shardCount * max(blockSize, pageSize)) instead of O(totalRows).
+   */
+  public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter) throws IOException {
+    final PriorityQueue<PeekableIterator> heap = new PriorityQueue<>(
+        Math.max(1, shardCount), Comparator.comparingLong(it -> (long) it.peek()[0]));
+
+    for (final TimeSeriesShard shard : shards) {
+      final Iterator<Object[]> it = shard.iterateRange(fromTs, toTs, columnIndices, tagFilter);
+      if (it.hasNext())
+        heap.add(new PeekableIterator(it));
+    }
+
+    return new Iterator<>() {
+      @Override
+      public boolean hasNext() {
+        return !heap.isEmpty();
+      }
+
+      @Override
+      public Object[] next() {
+        if (heap.isEmpty())
+          throw new NoSuchElementException();
+        final PeekableIterator min = heap.poll();
+        final Object[] row = min.next();
+        if (min.hasNext())
+          heap.add(min);
+        return row;
+      }
+    };
   }
 
   /**
@@ -144,6 +182,34 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   // --- Private helpers ---
+
+  private static final class PeekableIterator implements Iterator<Object[]> {
+    private final Iterator<Object[]> delegate;
+    private       Object[]           peeked;
+
+    PeekableIterator(final Iterator<Object[]> delegate) {
+      this.delegate = delegate;
+      this.peeked = delegate.hasNext() ? delegate.next() : null;
+    }
+
+    Object[] peek() {
+      return peeked;
+    }
+
+    @Override
+    public boolean hasNext() {
+      return peeked != null;
+    }
+
+    @Override
+    public Object[] next() {
+      if (peeked == null)
+        throw new NoSuchElementException();
+      final Object[] result = peeked;
+      peeked = delegate.hasNext() ? delegate.next() : null;
+      return result;
+    }
+  }
 
   private void accumulateToBucket(final AggregationResult result, final long bucketTs, final double value,
       final AggregationType type) {
