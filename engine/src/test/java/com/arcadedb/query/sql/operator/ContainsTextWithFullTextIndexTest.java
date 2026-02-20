@@ -139,6 +139,37 @@ class ContainsTextWithFullTextIndexTest extends TestHelper {
     });
   }
 
+  /**
+   * Regression test for issue #3483 (follow-up comment): When combining a NOTUNIQUE index on a
+   * numeric property with a FULL_TEXT index on a text property in an AND condition, the optimizer
+   * picks the NOTUNIQUE index and evaluates CONTAINSTEXT as a post-filter using case-sensitive
+   * String.contains() instead of using the full-text index (which is case-insensitive).
+   */
+  @Test
+  void containsTextAndWithNotUniqueAndFullTextIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc3483b");
+      database.command("sql", "CREATE PROPERTY Doc3483b.num SHORT");
+      database.command("sql", "CREATE PROPERTY Doc3483b.txt STRING");
+      database.command("sql", "CREATE INDEX ON Doc3483b(num) NOTUNIQUE");
+      database.command("sql", "CREATE INDEX ON Doc3483b(txt) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc3483b SET num = 0, txt = 'a b c'");
+      database.command("sql", "INSERT INTO Doc3483b SET num = 3, txt = 'c d e'");
+    });
+
+    database.transaction(() -> {
+      // Lowercase match (works even without full-text index because exact case match)
+      final ResultSet r1 = database.query("sql",
+          "SELECT FROM Doc3483b WHERE (num >= 1) AND (txt CONTAINSTEXT 'd')");
+      assertThat(r1.stream().count()).as("lowercase CONTAINSTEXT with AND must return 1").isEqualTo(1);
+
+      // Uppercase match - requires full-text index for case-insensitive search
+      final ResultSet r2 = database.query("sql",
+          "SELECT FROM Doc3483b WHERE (num >= 1) AND (txt CONTAINSTEXT 'D')");
+      assertThat(r2.stream().count()).as("uppercase CONTAINSTEXT with AND must return 1 (case-insensitive via full-text index)").isEqualTo(1);
+    });
+  }
+
   @Test
   void containsTextPreferIndexOverFullScan() {
     database.transaction(() -> {

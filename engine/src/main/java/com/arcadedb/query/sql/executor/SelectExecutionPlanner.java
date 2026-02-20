@@ -2345,6 +2345,18 @@ public class SelectExecutionPlanner {
         .filter(x -> x.getSubBlocks().size() == maxSubBlocks)
         .toList();
 
+    // Prefer FULL_TEXT indexes when they cover CONTAINSTEXT conditions, because CONTAINSTEXT
+    // has different semantics via full-text index (case-insensitive, tokenized) vs post-filter
+    // (case-sensitive String.contains). If a standard index wins, the CONTAINSTEXT remaining
+    // condition would lose full-text semantics. (Issue #3483 follow-up)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> fullTextDescriptors = descriptors.stream()
+          .filter(d -> d.index.getType().equals(FULL_TEXT))
+          .toList();
+      if (!fullTextDescriptors.isEmpty() && fullTextDescriptors.size() < descriptors.size())
+        descriptors = fullTextDescriptors;
+    }
+
     // If there are multiple indexes covering the same number of conditions,
     // select based on cost (lower is better)
     if (descriptors.size() > 1) {
