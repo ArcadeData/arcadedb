@@ -19,7 +19,9 @@
 package com.arcadedb.engine.timeseries;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Holds time-bucketed aggregation results.
@@ -28,11 +30,13 @@ import java.util.List;
  */
 public final class AggregationResult {
 
-  private final List<Long>   bucketTimestamps = new ArrayList<>();
-  private final List<Double> values           = new ArrayList<>();
-  private final List<Long>   counts           = new ArrayList<>();
+  private final List<Long>         bucketTimestamps = new ArrayList<>();
+  private final List<Double>       values           = new ArrayList<>();
+  private final List<Long>         counts           = new ArrayList<>();
+  private final Map<Long, Integer> bucketIndex      = new HashMap<>();
 
   public void addBucket(final long timestamp, final double value, final long count) {
+    bucketIndex.put(timestamp, bucketTimestamps.size());
     bucketTimestamps.add(timestamp);
     values.add(value);
     counts.add(count);
@@ -54,38 +58,43 @@ public final class AggregationResult {
     return counts.get(index);
   }
 
+  public void updateValue(final int index, final double value) {
+    values.set(index, value);
+  }
+
+  public void updateCount(final int index, final long count) {
+    counts.set(index, count);
+  }
+
+  /**
+   * Finds the index of a bucket by timestamp. Returns -1 if not found.
+   */
+  public int findBucketIndex(final long timestamp) {
+    final Integer idx = bucketIndex.get(timestamp);
+    return idx != null ? idx : -1;
+  }
+
   /**
    * Merges another result into this one. Used for combining partial results from multiple shards.
-   * Assumes both results have matching bucket timestamps.
    */
   public void merge(final AggregationResult other, final AggregationType type) {
     if (bucketTimestamps.isEmpty()) {
-      bucketTimestamps.addAll(other.bucketTimestamps);
-      values.addAll(other.values);
-      counts.addAll(other.counts);
+      for (int i = 0; i < other.size(); i++)
+        addBucket(other.getBucketTimestamp(i), other.getValue(i), other.getCount(i));
       return;
     }
 
     for (int i = 0; i < other.size(); i++) {
       final long otherTs = other.getBucketTimestamp(i);
-      final int idx = findBucket(otherTs);
+      final int idx = findBucketIndex(otherTs);
       if (idx >= 0) {
         final double merged = mergeValue(values.get(idx), counts.get(idx), other.getValue(i), other.getCount(i), type);
         values.set(idx, merged);
         counts.set(idx, counts.get(idx) + other.getCount(i));
       } else {
-        bucketTimestamps.add(otherTs);
-        values.add(other.getValue(i));
-        counts.add(other.getCount(i));
+        addBucket(otherTs, other.getValue(i), other.getCount(i));
       }
     }
-  }
-
-  private int findBucket(final long timestamp) {
-    for (int i = 0; i < bucketTimestamps.size(); i++)
-      if (bucketTimestamps.get(i) == timestamp)
-        return i;
-    return -1;
   }
 
   private static double mergeValue(final double v1, final long c1, final double v2, final long c2,

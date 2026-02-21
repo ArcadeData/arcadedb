@@ -132,14 +132,44 @@ public class TimeSeriesEngine implements AutoCloseable {
       accumulateToBucket(result, bucketTs, value, aggType);
     }
 
-    // Finalize AVG
+    // Finalize AVG: divide accumulated sums by counts
     if (aggType == AggregationType.AVG) {
-      for (int i = 0; i < result.size(); i++) {
-        // AVG stored as sum; divide by count to get average
-        // AggregationResult doesn't support in-place update, so this is handled at query level
+      for (int i = 0; i < result.size(); i++)
+        result.updateValue(i, result.getValue(i) / result.getCount(i));
+    }
+
+    return result;
+  }
+
+  /**
+   * Aggregates multiple columns in a single pass, bucketed by time interval.
+   * Returns only the aggregated buckets instead of all raw rows.
+   */
+  public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
+      final TagFilter tagFilter) throws IOException {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult();
+    final Iterator<Object[]> it = iterateQuery(fromTs, toTs, null, tagFilter);
+
+    while (it.hasNext()) {
+      final Object[] row = it.next();
+      final long ts = (long) row[0];
+      final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+
+      for (final MultiColumnAggregationRequest req : requests) {
+        final double value;
+        if (req.type() == AggregationType.COUNT) {
+          value = 1.0;
+        } else if (req.columnIndex() < row.length && row[req.columnIndex()] instanceof Number n) {
+          value = n.doubleValue();
+        } else {
+          value = 0.0;
+        }
+        result.accumulate(bucketTs, req.alias(), value, req.type());
       }
     }
 
+    result.finalizeAvg();
     return result;
   }
 
@@ -226,14 +256,21 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   private void accumulateToBucket(final AggregationResult result, final long bucketTs, final double value,
       final AggregationType type) {
-    // Find existing bucket
-    for (int i = 0; i < result.size(); i++) {
-      if (result.getBucketTimestamp(i) == bucketTs) {
-        // Can't update in-place with current AggregationResult API
-        // For MVP: this creates duplicates that are merged at query time
-        return;
-      }
+    final int idx = result.findBucketIndex(bucketTs);
+    if (idx >= 0) {
+      final double existing = result.getValue(idx);
+      final long count = result.getCount(idx);
+      final double merged = switch (type) {
+        case SUM -> existing + value;
+        case COUNT -> existing + 1;
+        case AVG -> existing + value; // accumulate sum, divide by count later
+        case MIN -> Math.min(existing, value);
+        case MAX -> Math.max(existing, value);
+      };
+      result.updateValue(idx, merged);
+      result.updateCount(idx, count + 1);
+    } else {
+      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1.0 : value, 1);
     }
-    result.addBucket(bucketTs, type == AggregationType.COUNT ? 1.0 : value, 1);
   }
 }

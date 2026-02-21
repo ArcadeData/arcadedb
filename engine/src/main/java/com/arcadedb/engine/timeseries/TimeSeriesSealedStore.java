@@ -668,25 +668,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   private void accumulateSample(final AggregationResult result, final long bucketTs, final double value,
       final AggregationType type) {
-    // Find or create bucket in result
-    for (int i = 0; i < result.size(); i++) {
-      if (result.getBucketTimestamp(i) == bucketTs) {
-        // Merge into existing bucket
-        final double existing = result.getValue(i);
-        final long count = result.getCount(i);
-        final double merged = switch (type) {
-          case SUM -> existing + value;
-          case COUNT -> existing + 1;
-          case AVG -> existing + value; // Will divide by count later
-          case MIN -> Math.min(existing, value);
-          case MAX -> Math.max(existing, value);
-        };
-        // We can't easily update AggregationResult in place, so this is simplified for MVP
-        return;
-      }
+    final int idx = result.findBucketIndex(bucketTs);
+    if (idx >= 0) {
+      final double existing = result.getValue(idx);
+      final long count = result.getCount(idx);
+      final double merged = switch (type) {
+        case SUM -> existing + value;
+        case COUNT -> existing + 1;
+        case AVG -> existing + value; // accumulate sum, divide by count later
+        case MIN -> Math.min(existing, value);
+        case MAX -> Math.max(existing, value);
+      };
+      result.updateValue(idx, merged);
+      result.updateCount(idx, count + 1);
+    } else {
+      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1 : value, 1);
     }
-    // New bucket
-    result.addBucket(bucketTs, type == AggregationType.COUNT ? 1 : value, 1);
   }
 
   private static boolean isInArray(final int value, final int[] array) {

@@ -60,7 +60,7 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
     return new Date(bucketStart);
   }
 
-  private static long parseInterval(final String interval) {
+  public static long parseInterval(final String interval) {
     if (interval == null || interval.isEmpty())
       throw new IllegalArgumentException("Invalid time_bucket interval: empty");
 

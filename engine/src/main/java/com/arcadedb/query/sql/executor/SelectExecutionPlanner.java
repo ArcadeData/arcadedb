@@ -69,6 +69,12 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.engine.timeseries.AggregationType;
+import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
+import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
+import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -1644,6 +1650,10 @@ public class SelectExecutionPlanner {
         }
       }
 
+      // Try push-down aggregation before falling back to full row fetch
+      if (tryTimeSeriesAggregationPushDown(plan, tsType, fromTs, toTs, info, context))
+        return;
+
       plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, context));
       return;
     }
@@ -1713,6 +1723,153 @@ public class SelectExecutionPlanner {
       }
     }
     return Long.MIN_VALUE;
+  }
+
+  /**
+   * Attempts to push down aggregation into the TimeSeries engine.
+   * Eligible queries have: ts.timeBucket GROUP BY, simple aggregate functions (avg, max, min, sum, count),
+   * no DISTINCT, no HAVING, no UNWIND, no LET.
+   */
+  private boolean tryTimeSeriesAggregationPushDown(final SelectExecutionPlan plan, final LocalTimeSeriesType tsType,
+      final long fromTs, final long toTs, final QueryPlanningInfo info, final CommandContext context) {
+    // Must have aggregate projection (set by splitProjectionsForGroupBy)
+    if (info.aggregateProjection == null)
+      return false;
+
+    // No DISTINCT
+    if (info.distinct)
+      return false;
+
+    // Must have exactly one GROUP BY
+    if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().size() != 1)
+      return false;
+
+    // No unsupported clauses
+    if (info.unwind != null || info.perRecordLetClause != null || info.globalLetPresent)
+      return false;
+
+    // The original projection from the statement (before splitting)
+    final Projection originalProjection = statement.getProjection();
+    if (originalProjection == null || originalProjection.getItems() == null)
+      return false;
+
+    // Find the timeBucket item and aggregate items
+    String timeBucketAlias = null;
+    String intervalStr = null;
+    final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
+    final Map<String, String> requestAliasToOutputAlias = new HashMap<>();
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+    for (final ProjectionItem item : originalProjection.getItems()) {
+      final FunctionCall funcCall = extractFunctionCall(item.expression);
+      if (funcCall == null)
+        return false; // not a simple function call — bail out
+
+      final String funcName = funcCall.getName().getStringValue();
+
+      if ("ts.timeBucket".equalsIgnoreCase(funcName)) {
+        // This is the time bucket function
+        if (timeBucketAlias != null)
+          return false; // duplicate timeBucket
+        timeBucketAlias = item.getProjectionAliasAsString();
+        // Extract interval from first parameter
+        if (funcCall.getParams().size() < 2)
+          return false;
+        final Object intervalVal = funcCall.getParams().get(0).execute((Identifiable) null, context);
+        if (!(intervalVal instanceof String))
+          return false;
+        intervalStr = (String) intervalVal;
+      } else {
+        // Must be an aggregate function
+        final String aggFuncName = funcName.toLowerCase();
+        final AggregationType aggType = switch (aggFuncName) {
+          case "avg" -> AggregationType.AVG;
+          case "max" -> AggregationType.MAX;
+          case "min" -> AggregationType.MIN;
+          case "sum" -> AggregationType.SUM;
+          case "count" -> AggregationType.COUNT;
+          default -> null;
+        };
+        if (aggType == null)
+          return false; // unsupported aggregate
+
+        // For COUNT(*), columnIndex doesn't matter
+        int columnIndex = 0;
+        if (aggType != AggregationType.COUNT) {
+          // Extract field name from first parameter
+          if (funcCall.getParams().isEmpty())
+            return false;
+          final String fieldName = funcCall.getParams().get(0).toString().trim();
+          columnIndex = findColumnIndex(columns, fieldName);
+          if (columnIndex < 0)
+            return false; // field not found in timeseries columns
+        }
+
+        final String alias = item.getProjectionAliasAsString();
+        requests.add(new MultiColumnAggregationRequest(columnIndex, aggType, alias));
+        requestAliasToOutputAlias.put(alias, alias);
+      }
+    }
+
+    // Must have found both timeBucket and at least one aggregate
+    if (timeBucketAlias == null || intervalStr == null || requests.isEmpty())
+      return false;
+
+    // Verify GROUP BY references the timeBucket alias
+    final String groupByStr = info.groupBy.getItems().get(0).toString().trim();
+    if (!groupByStr.equals(timeBucketAlias))
+      return false;
+
+    // Parse interval
+    final long bucketIntervalMs;
+    try {
+      bucketIntervalMs = SQLFunctionTimeBucket.parseInterval(intervalStr);
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
+
+    // Chain the push-down step
+    plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs,
+        timeBucketAlias, requestAliasToOutputAlias, context));
+
+    // Null out the aggregate projections so handleProjections doesn't add duplicate steps
+    info.preAggregateProjection = null;
+    info.aggregateProjection = null;
+    info.groupBy = null;
+    info.projectionsCalculated = true;
+    // The time range is already consumed by the push-down step;
+    // null out the WHERE clause so FilterStep doesn't re-apply it on aggregated rows
+    info.whereClause = null;
+    info.flattenedWhereClause = null;
+
+    return true;
+  }
+
+  /**
+   * Extracts a FunctionCall from an Expression if it's a simple function call.
+   * Returns null if the expression is not a simple function call.
+   */
+  private static FunctionCall extractFunctionCall(final Expression expr) {
+    if (expr == null || expr.mathExpression == null)
+      return null;
+    if (!(expr.mathExpression instanceof BaseExpression base))
+      return null;
+    if (base.identifier == null)
+      return null;
+    if (base.identifier.levelZero != null && base.identifier.levelZero.functionCall != null)
+      return base.identifier.levelZero.functionCall;
+    return null;
+  }
+
+  /**
+   * Finds the index of a column by name in the timeseries column definitions.
+   * Returns -1 if not found.
+   */
+  private static int findColumnIndex(final List<ColumnDefinition> columns, final String fieldName) {
+    for (int i = 0; i < columns.size(); i++)
+      if (columns.get(i).getName().equals(fieldName))
+        return i;
+    return -1;
   }
 
   private boolean handleTypeAsTargetWithIndexedFunction(final SelectExecutionPlan plan, final Set<String> filterClusters,
