@@ -174,6 +174,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Returns a lazy iterator over sealed blocks overlapping the given time range.
    * Decompresses one block at a time, yielding rows on demand.
+   * <p>
+   * Optimizations:
+   * - Binary search on block directory to skip to first matching block
+   * - Early termination when blocks are past the time range (blocks are sorted)
+   * - Timestamps decompressed first; value columns only if the block has matches
+   * - Binary search within each block's sorted timestamps for the matching range
    *
    * @param fromTs        start timestamp (inclusive)
    * @param toTs          end timestamp (inclusive)
@@ -183,12 +189,31 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
     final int tsColIdx = findTimestampColumnIndex();
+    final int dirSize = blockDirectory.size();
+
+    // Binary search: find first block whose maxTimestamp >= fromTs
+    int startBlockIdx = 0;
+    if (dirSize > 0) {
+      int lo = 0, hi = dirSize - 1;
+      while (lo < hi) {
+        final int mid = (lo + hi) >>> 1;
+        if (blockDirectory.get(mid).maxTimestamp < fromTs)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      startBlockIdx = lo;
+    }
+
+    final int firstBlockIdx = startBlockIdx;
 
     return new Iterator<>() {
-      private int        blockIdx    = 0;
+      private int        blockIdx    = firstBlockIdx;
       private long[]     timestamps  = null;
       private Object[][] decompCols  = null;
       private int        rowIdx      = 0;
+      private int        rowEnd      = 0;  // exclusive upper bound within block
+      private int        resultCols  = 0;
       private Object[]   nextRow     = null;
 
       {
@@ -199,20 +224,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         nextRow = null;
         try {
           while (true) {
-            // Try to yield from current decompressed block
+            // Yield from current decompressed block
             if (timestamps != null) {
-              while (rowIdx < timestamps.length) {
-                final long ts = timestamps[rowIdx];
-                if (ts >= fromTs && ts <= toTs) {
-                  final Object[] row = new Object[decompCols.length + 1];
-                  row[0] = ts;
-                  for (int c = 0; c < decompCols.length; c++)
-                    row[c + 1] = decompCols[c][rowIdx];
-                  rowIdx++;
-                  nextRow = row;
-                  return;
-                }
+              if (rowIdx < rowEnd) {
+                final Object[] row = new Object[resultCols];
+                row[0] = timestamps[rowIdx];
+                for (int c = 0; c < decompCols.length; c++)
+                  row[c + 1] = decompCols[c][rowIdx];
                 rowIdx++;
+                nextRow = row;
+                return;
               }
               // Current block exhausted
               timestamps = null;
@@ -220,18 +241,36 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             }
 
             // Find next matching block
-            if (blockIdx >= blockDirectory.size())
+            if (blockIdx >= dirSize)
               return;
 
             final BlockEntry entry = blockDirectory.get(blockIdx);
+
+            // Early termination: blocks are sorted, so if minTs > toTs all remaining are past range
+            if (entry.minTimestamp > toTs)
+              return;
+
             blockIdx++;
 
-            if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
+            if (entry.maxTimestamp < fromTs)
               continue;
 
-            timestamps = decompressTimestamps(entry, tsColIdx);
+            // Decompress timestamps first
+            final long[] ts = decompressTimestamps(entry, tsColIdx);
+
+            // Binary search for the matching range within sorted timestamps
+            final int start = lowerBound(ts, fromTs);
+            final int end = upperBound(ts, toTs);
+
+            if (start >= end)
+              continue;
+
+            // Timestamps have matches — now decompress value columns
+            timestamps = ts;
             decompCols = decompressColumns(entry, columnIndices, tsColIdx);
-            rowIdx = 0;
+            rowIdx = start;
+            rowEnd = end;
+            resultCols = decompCols.length + 1;
           }
         } catch (final IOException e) {
           throw new RuntimeException("Error iterating sealed TimeSeries blocks", e);
@@ -252,6 +291,36 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         return result;
       }
     };
+  }
+
+  /**
+   * Finds the first index where ts[i] >= target (lower bound).
+   */
+  private static int lowerBound(final long[] ts, final long target) {
+    int lo = 0, hi = ts.length;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (ts[mid] < target)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  }
+
+  /**
+   * Finds the first index where ts[i] > target (upper bound).
+   */
+  private static int upperBound(final long[] ts, final long target) {
+    int lo = 0, hi = ts.length;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (ts[mid] <= target)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
   }
 
   /**

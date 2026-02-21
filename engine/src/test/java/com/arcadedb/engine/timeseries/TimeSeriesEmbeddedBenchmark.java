@@ -21,6 +21,8 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Tag;
@@ -174,28 +176,54 @@ public class TimeSeriesEmbeddedBenchmark {
 
       // Count query
       long queryStart = System.nanoTime();
-      database.query("sql", "SELECT count(*) AS cnt FROM SensorData").close();
-      long queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-      System.out.printf("COUNT(*):              %d ms%n", queryTime);
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM SensorData")) {
+        long count = 0;
+        if (rs.hasNext())
+          count = ((Number) rs.next().getProperty("cnt")).longValue();
+        long queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+        System.out.printf("COUNT(*):              %,d ms (result: %,d)%n", queryTime, count);
+      }
 
-      // Range scan
+      // Range scan with count
       queryStart = System.nanoTime();
       final long midTs = baseTimestamp + (long) (TOTAL_POINTS / 2) * 100;
-      database.query("sql", "SELECT FROM SensorData WHERE ts BETWEEN ? AND ?",
-          midTs, midTs + 3_600_000L).close();
-      queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-      System.out.printf("1h range scan:         %d ms%n", queryTime);
+      long rangeScanCount = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM SensorData WHERE ts BETWEEN ? AND ?",
+          midTs, midTs + 3_600_000L)) {
+        while (rs.hasNext()) {
+          rs.next();
+          rangeScanCount++;
+        }
+      }
+      long queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+      System.out.printf("1h range scan:         %,d ms (rows: %,d)%n", queryTime, rangeScanCount);
 
-      // Aggregation with time bucket (full scan — may require large heap for big datasets)
+      // Aggregation with time bucket
       try {
         queryStart = System.nanoTime();
-        database.query("sql",
+        long aggRows = 0;
+        try (final ResultSet rs = database.query("sql",
             "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
-                "FROM SensorData GROUP BY hour").close();
+                "FROM SensorData GROUP BY hour")) {
+          while (rs.hasNext()) {
+            rs.next();
+            aggRows++;
+          }
+        }
         queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-        System.out.printf("Hourly aggregation:    %d ms%n", queryTime);
+        System.out.printf("Hourly aggregation:    %,d ms (buckets: %,d)%n", queryTime, aggRows);
       } catch (final Exception e) {
         System.out.printf("Hourly aggregation:    SKIPPED (%s)%n", e.getMessage());
+      }
+
+      // Profiled range scan — shows cost breakdown per execution step
+      System.out.println("\n--- PROFILE: 1h range scan ---");
+      try (final ResultSet profileRs = database.command("sql",
+          "PROFILE SELECT FROM SensorData WHERE ts BETWEEN ? AND ?", midTs, midTs + 3_600_000L)) {
+        if (profileRs.hasNext()) {
+          final Result profile = profileRs.next();
+          System.out.println((String) profile.getProperty("executionPlanAsString"));
+        }
       }
 
       System.out.println("==============================================");

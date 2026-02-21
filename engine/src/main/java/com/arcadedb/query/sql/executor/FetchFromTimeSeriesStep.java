@@ -31,6 +31,7 @@ import java.util.List;
 
 /**
  * Execution step that fetches data from a TimeSeries engine.
+ * Supports profiling via the standard {@code context.isProfiling()} mechanism.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -52,59 +53,84 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (!fetched) {
-      try {
-        final TimeSeriesEngine engine = tsType.getEngine();
-        resultIterator = engine.iterateQuery(fromTs, toTs, null, null);
-        fetched = true;
-      } catch (final IOException e) {
-        throw new CommandExecutionException("Error querying TimeSeries engine", e);
-      }
-    }
-
-    return new ResultSet() {
-      private int count = 0;
-
-      @Override
-      public boolean hasNext() {
-        return count < nRecords && resultIterator.hasNext();
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      if (!fetched) {
+        try {
+          final TimeSeriesEngine engine = tsType.getEngine();
+          resultIterator = engine.iterateQuery(fromTs, toTs, null, null);
+          fetched = true;
+        } catch (final IOException e) {
+          throw new CommandExecutionException("Error querying TimeSeries engine", e);
+        }
       }
 
-      @Override
-      public Result next() {
-        if (!hasNext())
-          throw new IllegalStateException("No more results");
+      final List<ColumnDefinition> columns = tsType.getTsColumns();
 
-        count++;
-        final Object[] row = resultIterator.next();
-        final ResultInternal result = new ResultInternal(context.getDatabase());
+      return new ResultSet() {
+        private int count = 0;
 
-        final List<ColumnDefinition> columns = tsType.getTsColumns();
-        for (int i = 0; i < columns.size() && i < row.length; i++) {
-          final ColumnDefinition col = columns.get(i);
-          Object value = row[i];
-
-          // Convert timestamp long to Date for SQL compatibility
-          if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long)
-            value = new Date((Long) value);
-
-          result.setProperty(col.getName(), value);
+        @Override
+        public boolean hasNext() {
+          final long begin1 = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            return count < nRecords && resultIterator.hasNext();
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin1);
+          }
         }
 
-        return result;
-      }
+        @Override
+        public Result next() {
+          final long begin1 = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (!hasNext())
+              throw new IllegalStateException("No more results");
 
-      @Override
-      public void close() {
-        // no-op
-      }
-    };
+            count++;
+            final Object[] row = resultIterator.next();
+            final ResultInternal result = new ResultInternal(context.getDatabase());
+
+            for (int i = 0; i < columns.size() && i < row.length; i++) {
+              final ColumnDefinition col = columns.get(i);
+              Object value = row[i];
+
+              // Convert timestamp long to Date for SQL compatibility
+              if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long)
+                value = new Date((Long) value);
+
+              result.setProperty(col.getName(), value);
+            }
+
+            rowCount++;
+            return result;
+          } finally {
+            if (context.isProfiling())
+              cost += (System.nanoTime() - begin1);
+          }
+        }
+
+        @Override
+        public void close() {
+          // no-op
+        }
+      };
+    } finally {
+      if (context.isProfiling())
+        cost += (System.nanoTime() - begin);
+    }
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ FETCH FROM TIMESERIES " + tsType.getName() + " [" + fromTs + " - " + toTs + "]";
+    final StringBuilder sb = new StringBuilder();
+    sb.append(spaces).append("+ FETCH FROM TIMESERIES ").append(tsType.getName());
+    sb.append(" [").append(fromTs).append(" - ").append(toTs).append("]");
+    if (context.isProfiling())
+      sb.append(" (").append(getCostFormatted()).append(", ").append(getRowCountFormatted()).append(")");
+    return sb.toString();
   }
 
   @Override
