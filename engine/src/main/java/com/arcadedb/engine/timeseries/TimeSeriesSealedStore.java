@@ -23,8 +23,6 @@ import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
 import com.arcadedb.engine.timeseries.codec.Simple8bCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
-import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOps;
-import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.schema.Type;
 
 import java.io.File;
@@ -33,6 +31,7 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -47,11 +46,12 @@ import java.util.NoSuchElementException;
  * - [6..9]   block count (int)
  * - [10..17] global min timestamp (long)
  * - [18..25] global max timestamp (long)
- * - [26..]   block directory entries:
- *   - min_timestamp (8), max_timestamp (8), sample_count (4)
- *   - per column: offset (8) + size (4) = 12 bytes each
+ * - [26..]   block entries (inline metadata + compressed column data)
  * <p>
- * Data is stored inline after the directory, with compressed column blocks.
+ * Block entry layout:
+ * - magic "TSBL" (4), minTs (8), maxTs (8), sampleCount (4), colSizes (4*colCount)
+ * - numericColCount (4), [colIdx (4) + min (8) + max (8) + sum (8)] * numericColCount
+ * - compressed column data bytes
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -60,7 +60,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   private static final int BLOCK_MAGIC_VALUE = 0x5453424C; // "TSBL"
   private static final int HEADER_SIZE       = 26;
-  private static final int BLOCK_ENTRY_FIX   = 20; // minTs(8) + maxTs(8) + sampleCount(4)
 
   private final String               basePath;
   private final List<ColumnDefinition> columns;
@@ -73,18 +72,25 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private       long             globalMaxTs    = Long.MIN_VALUE;
 
   static final class BlockEntry {
-    final long   minTimestamp;
-    final long   maxTimestamp;
-    final int    sampleCount;
-    final long[] columnOffsets;
-    final int[]  columnSizes;
+    final long     minTimestamp;
+    final long     maxTimestamp;
+    final int      sampleCount;
+    final long[]   columnOffsets;
+    final int[]    columnSizes;
+    final double[] columnMins;   // per-column min (NaN for non-numeric)
+    final double[] columnMaxs;   // per-column max
+    final double[] columnSums;   // per-column sum
 
-    BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount) {
+    BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
+        final double[] mins, final double[] maxs, final double[] sums) {
       this.minTimestamp = minTs;
       this.maxTimestamp = maxTs;
       this.sampleCount = sampleCount;
       this.columnOffsets = new long[columnCount];
       this.columnSizes = new int[columnCount];
+      this.columnMins = mins;
+      this.columnMaxs = maxs;
+      this.columnSums = sums;
     }
   }
 
@@ -104,20 +110,32 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Appends a block of compressed column data from compaction.
+   * Appends a block of compressed column data with per-column statistics.
+   * Stats enable block-level aggregation without decompression.
    *
-   * @param sampleCount   number of samples in the block
-   * @param minTs         minimum timestamp
-   * @param maxTs         maximum timestamp
+   * @param sampleCount       number of samples in the block
+   * @param minTs             minimum timestamp
+   * @param maxTs             maximum timestamp
    * @param compressedColumns compressed byte arrays, one per column
+   * @param columnMins        per-column min (NaN for non-numeric columns)
+   * @param columnMaxs        per-column max (NaN for non-numeric columns)
+   * @param columnSums        per-column sum (NaN for non-numeric columns)
    */
   public synchronized void appendBlock(final int sampleCount, final long minTs, final long maxTs,
-      final byte[][] compressedColumns) throws IOException {
+      final byte[][] compressedColumns,
+      final double[] columnMins, final double[] columnMaxs, final double[] columnSums) throws IOException {
     final int colCount = columns.size();
-    final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount);
 
-    // Write block metadata header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4 * colCount)
-    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount;
+    // Count numeric columns (those with non-NaN stats)
+    int numericColCount = 0;
+    for (int c = 0; c < colCount; c++)
+      if (!Double.isNaN(columnMins[c]))
+        numericColCount++;
+
+    // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4*colCount)
+    //              + numericColCount(4) + [colIdx(4) + min(8) + max(8) + sum(8)] * numericColCount
+    final int statsSize = 4 + (4 + 8 + 8 + 8) * numericColCount;
+    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize;
     final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
     metaBuf.putInt(BLOCK_MAGIC_VALUE);
     metaBuf.putLong(minTs);
@@ -125,6 +143,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     metaBuf.putInt(sampleCount);
     for (final byte[] col : compressedColumns)
       metaBuf.putInt(col.length);
+
+    // Write stats section
+    metaBuf.putInt(numericColCount);
+    for (int c = 0; c < colCount; c++) {
+      if (!Double.isNaN(columnMins[c])) {
+        metaBuf.putInt(c);
+        metaBuf.putDouble(columnMins[c]);
+        metaBuf.putDouble(columnMaxs[c]);
+        metaBuf.putDouble(columnSums[c]);
+      }
+    }
     metaBuf.flip();
 
     long offset = indexFile.length();
@@ -132,6 +161,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     indexFile.write(metaBuf.array());
     offset += metaSize;
 
+    final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
     // Write compressed column data
     for (int c = 0; c < colCount; c++) {
       entry.columnOffsets[c] = offset;
@@ -147,7 +177,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (maxTs > globalMaxTs)
       globalMaxTs = maxTs;
 
-    // Rewrite header with updated block count and timestamps
     rewriteHeader();
   }
 
@@ -343,7 +372,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
       final AggregationType type, final long bucketIntervalNs) throws IOException {
     final AggregationResult result = new AggregationResult();
-    final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
     final int tsColIdx = findTimestampColumnIndex();
     final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
 
@@ -352,7 +380,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         continue;
 
       final long[] timestamps = decompressTimestamps(entry, tsColIdx);
-      final ColumnDefinition colDef = columns.get(targetColSchemaIdx);
       final double[] values = decompressDoubleColumn(entry, targetColSchemaIdx);
 
       for (int i = 0; i < timestamps.length; i++) {
@@ -361,8 +388,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         final long bucketTs = bucketIntervalNs > 0 ? (timestamps[i] / bucketIntervalNs) * bucketIntervalNs : fromTs;
 
-        // Simple accumulation: for MVP, iterate and accumulate
-        // SIMD push-down is applied on full blocks; per-sample filtering is scalar
         accumulateSample(result, bucketTs, values[i], type);
       }
     }
@@ -372,6 +397,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Push-down multi-column aggregation on sealed blocks.
    * Processes compressed blocks directly without creating Object[] row arrays.
+   * When a block fits entirely within a single time bucket, uses block-level
+   * statistics (min/max/sum/count) to skip decompression entirely.
    */
   public void aggregateMultiBlocks(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
@@ -396,7 +423,32 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
         continue;
 
-      // Decompress timestamp column
+      // Check if entire block falls within a single time bucket and is fully inside the query range
+      if (bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
+        final long blockMinBucket = (entry.minTimestamp / bucketIntervalMs) * bucketIntervalMs;
+        final long blockMaxBucket = (entry.maxTimestamp / bucketIntervalMs) * bucketIntervalMs;
+
+        if (blockMinBucket == blockMaxBucket) {
+          // FAST PATH: use block-level stats directly — no decompression needed
+          for (int r = 0; r < reqCount; r++) {
+            if (isCount[r])
+              rowValues[r] = entry.sampleCount;
+            else {
+              final int sci = schemaColIndices[r];
+              rowValues[r] = switch (requests.get(r).type()) {
+                case MIN -> entry.columnMins[sci];
+                case MAX -> entry.columnMaxs[sci];
+                case SUM, AVG -> entry.columnSums[sci];
+                case COUNT -> entry.sampleCount;
+              };
+            }
+          }
+          result.accumulateBlockStats(blockMinBucket, rowValues, entry.sampleCount);
+          continue;
+        }
+      }
+
+      // SLOW PATH: decompress and iterate (boundary blocks spanning multiple buckets)
       final long[] timestamps = decompressTimestamps(entry, tsColIdx);
 
       // Decompress only the columns needed by the requests (deduplicated)
@@ -458,8 +510,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         for (int c = 0; c < colCount; c++)
           compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
 
-        // Write block metadata header
-        final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount;
+        long dataOffset = tempFile.length();
+        tempFile.seek(dataOffset);
+
+        // Write block header with stats
+        int numericColCount = 0;
+        for (int c = 0; c < colCount; c++)
+          if (!Double.isNaN(oldEntry.columnMins[c]))
+            numericColCount++;
+
+        final int statsSize = 4 + (4 + 8 + 8 + 8) * numericColCount;
+        final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize;
         final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
         metaBuf.putInt(BLOCK_MAGIC_VALUE);
         metaBuf.putLong(oldEntry.minTimestamp);
@@ -467,16 +528,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         metaBuf.putInt(oldEntry.sampleCount);
         for (final byte[] col : compressedCols)
           metaBuf.putInt(col.length);
+        metaBuf.putInt(numericColCount);
+        for (int c = 0; c < colCount; c++) {
+          if (!Double.isNaN(oldEntry.columnMins[c])) {
+            metaBuf.putInt(c);
+            metaBuf.putDouble(oldEntry.columnMins[c]);
+            metaBuf.putDouble(oldEntry.columnMaxs[c]);
+            metaBuf.putDouble(oldEntry.columnSums[c]);
+          }
+        }
         metaBuf.flip();
-
-        long dataOffset = tempFile.length();
-        tempFile.seek(dataOffset);
         tempFile.write(metaBuf.array());
         dataOffset += metaSize;
 
         // Write compressed column data
         final BlockEntry newEntry = new BlockEntry(oldEntry.minTimestamp, oldEntry.maxTimestamp,
-            oldEntry.sampleCount, colCount);
+            oldEntry.sampleCount, colCount, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums);
         for (int c = 0; c < colCount; c++) {
           newEntry.columnOffsets[c] = dataOffset;
           newEntry.columnSizes[c] = compressedCols[c].length;
@@ -582,12 +649,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final long fileLength = indexFile.length();
     long pos = HEADER_SIZE;
 
-    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount; // magic + minTs + maxTs + sampleCount + colSizes
+    final int baseMetaSize = 4 + 8 + 8 + 4 + 4 * colCount; // magic + minTs + maxTs + sampleCount + colSizes
 
-    while (pos + metaSize <= fileLength) {
-      final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-      final int read = indexChannel.read(metaBuf, pos);
-      if (read < metaSize)
+    while (pos + baseMetaSize <= fileLength) {
+      final ByteBuffer metaBuf = ByteBuffer.allocate(baseMetaSize);
+      if (indexChannel.read(metaBuf, pos) < baseMetaSize)
         break;
       metaBuf.flip();
 
@@ -599,15 +665,47 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final long maxTs = metaBuf.getLong();
       final int sampleCount = metaBuf.getInt();
 
-      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount);
-      long dataPos = pos + metaSize;
-      for (int c = 0; c < colCount; c++) {
-        final int colSize = metaBuf.getInt();
-        entry.columnOffsets[c] = dataPos;
-        entry.columnSizes[c] = colSize;
-        dataPos += colSize;
+      final int[] colSizes = new int[colCount];
+      for (int c = 0; c < colCount; c++)
+        colSizes[c] = metaBuf.getInt();
+
+      // Read stats section: numericColCount(4) + [colIdx(4) + min(8) + max(8) + sum(8)] * numericColCount
+      long statsPos = pos + baseMetaSize;
+      final ByteBuffer numBuf = ByteBuffer.allocate(4);
+      if (indexChannel.read(numBuf, statsPos) < 4)
+        break;
+      numBuf.flip();
+      final int numericColCount = numBuf.getInt();
+      statsPos += 4;
+
+      final double[] mins = new double[colCount];
+      final double[] maxs = new double[colCount];
+      final double[] sums = new double[colCount];
+      Arrays.fill(mins, Double.NaN);
+      Arrays.fill(maxs, Double.NaN);
+
+      if (numericColCount > 0) {
+        final int tripletSize = (4 + 8 + 8 + 8) * numericColCount;
+        final ByteBuffer statsBuf = ByteBuffer.allocate(tripletSize);
+        if (indexChannel.read(statsBuf, statsPos) < tripletSize)
+          break;
+        statsBuf.flip();
+        for (int n = 0; n < numericColCount; n++) {
+          final int colIdx = statsBuf.getInt();
+          mins[colIdx] = statsBuf.getDouble();
+          maxs[colIdx] = statsBuf.getDouble();
+          sums[colIdx] = statsBuf.getDouble();
+        }
+        statsPos += tripletSize;
       }
 
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums);
+      long dataPos = statsPos;
+      for (int c = 0; c < colCount; c++) {
+        entry.columnOffsets[c] = dataPos;
+        entry.columnSizes[c] = colSizes[c];
+        dataPos += colSizes[c];
+      }
       blockDirectory.add(entry);
       pos = dataPos;
     }

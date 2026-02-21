@@ -40,6 +40,11 @@ class TimeSeriesSealedStoreTest {
   private static final String TEST_PATH = "target/databases/TimeSeriesSealedStoreTest/sealed";
   private List<ColumnDefinition> columns;
 
+  // Stats arrays: ts(NaN), sensor_id(NaN), temperature(has stats)
+  private static final double[] NO_MINS = { Double.NaN, Double.NaN, Double.NaN };
+  private static final double[] NO_MAXS = { Double.NaN, Double.NaN, Double.NaN };
+  private static final double[] NO_SUMS = { Double.NaN, Double.NaN, Double.NaN };
+
   @BeforeEach
   void setUp() {
     FileUtils.deleteRecursively(new File("target/databases/TimeSeriesSealedStoreTest"));
@@ -67,17 +72,20 @@ class TimeSeriesSealedStoreTest {
   @Test
   void testAppendAndReadBlock() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
-      // Compress test data
       final long[] timestamps = { 1000L, 2000L, 3000L, 4000L, 5000L };
       final String[] sensorIds = { "A", "B", "A", "C", "B" };
       final double[] temperatures = { 20.0, 21.5, 22.0, 19.5, 23.0 };
 
-      final byte[][] compressed = new byte[3][];
-      compressed[0] = DeltaOfDeltaCodec.encode(timestamps);
-      compressed[1] = DictionaryCodec.encode(sensorIds);
-      compressed[2] = GorillaXORCodec.encode(temperatures);
+      final byte[][] compressed = {
+          DeltaOfDeltaCodec.encode(timestamps),
+          DictionaryCodec.encode(sensorIds),
+          GorillaXORCodec.encode(temperatures)
+      };
 
-      store.appendBlock(5, 1000L, 5000L, compressed);
+      store.appendBlock(5, 1000L, 5000L, compressed,
+          new double[] { Double.NaN, Double.NaN, 19.5 },
+          new double[] { Double.NaN, Double.NaN, 23.0 },
+          new double[] { Double.NaN, Double.NaN, 106.0 });
 
       assertThat(store.getBlockCount()).isEqualTo(1);
       assertThat(store.getGlobalMinTimestamp()).isEqualTo(1000L);
@@ -109,7 +117,7 @@ class TimeSeriesSealedStoreTest {
           DictionaryCodec.encode(sensorIds),
           GorillaXORCodec.encode(temperatures)
       };
-      store.appendBlock(5, 1000L, 5000L, compressed);
+      store.appendBlock(5, 1000L, 5000L, compressed, NO_MINS, NO_MAXS, NO_SUMS);
 
       // Query subset
       final List<Object[]> results = store.scanRange(2000L, 4000L, null);
@@ -127,14 +135,14 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L, 3000L }),
           DictionaryCodec.encode(new String[] { "A", "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0, 12.0 })
-      });
+      }, NO_MINS, NO_MAXS, NO_SUMS);
 
       // Block 2: timestamps 4000-6000
       store.appendBlock(3, 4000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 4000L, 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0, 22.0 })
-      });
+      }, NO_MINS, NO_MAXS, NO_SUMS);
 
       assertThat(store.getBlockCount()).isEqualTo(2);
       assertThat(store.getGlobalMinTimestamp()).isEqualTo(1000L);
@@ -153,13 +161,13 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
           DictionaryCodec.encode(new String[] { "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0 })
-      });
+      }, NO_MINS, NO_MAXS, NO_SUMS);
 
       store.appendBlock(2, 5000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0 })
-      });
+      }, NO_MINS, NO_MAXS, NO_SUMS);
 
       // Query only block 2
       final List<Object[]> results = store.scanRange(5000L, 6000L, null);
@@ -175,13 +183,13 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
           DictionaryCodec.encode(new String[] { "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0 })
-      });
+      }, NO_MINS, NO_MAXS, NO_SUMS);
 
       store.appendBlock(2, 5000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0 })
-      });
+      }, NO_MINS, NO_MAXS, NO_SUMS);
 
       // Truncate old data
       store.truncateBefore(3000L);

@@ -107,6 +107,58 @@ public final class MultiColumnAggregationResult {
   }
 
   /**
+   * Accumulates block-level statistics for all requests in a single call.
+   * Unlike accumulateRow which adds count=1 per sample, this adds the block's full sampleCount.
+   * This is critical for correct AVG computation: accumulated sum / total count.
+   */
+  public void accumulateBlockStats(final long bucketTs, final double[] values, final int sampleCount) {
+    double[] vals = valuesByBucket.get(bucketTs);
+    long[] counts;
+    if (vals == null) {
+      vals = new double[requestCount];
+      counts = new long[requestCount];
+      for (int i = 0; i < requestCount; i++) {
+        switch (types[i]) {
+        case MIN:
+          vals[i] = Double.MAX_VALUE;
+          break;
+        case MAX:
+          vals[i] = -Double.MAX_VALUE;
+          break;
+        default:
+          vals[i] = 0.0;
+          break;
+        }
+      }
+      valuesByBucket.put(bucketTs, vals);
+      countsByBucket.put(bucketTs, counts);
+      orderedBuckets.add(bucketTs);
+    } else {
+      counts = countsByBucket.get(bucketTs);
+    }
+    for (int i = 0; i < requestCount; i++) {
+      switch (types[i]) {
+      case MIN:
+        if (values[i] < vals[i])
+          vals[i] = values[i];
+        break;
+      case MAX:
+        if (values[i] > vals[i])
+          vals[i] = values[i];
+        break;
+      case SUM:
+      case AVG:
+        vals[i] += values[i];
+        break;
+      case COUNT:
+        vals[i] += values[i];
+        break;
+      }
+      counts[i] += sampleCount;
+    }
+  }
+
+  /**
    * Finalizes AVG accumulators by dividing accumulated sums by their counts.
    */
   public void finalizeAvg() {

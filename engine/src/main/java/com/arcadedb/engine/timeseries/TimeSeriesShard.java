@@ -200,24 +200,48 @@ public class TimeSeriesShard implements AutoCloseable {
         }
       }
 
-      // Phase 3: Write sealed blocks in chunks
+      // Phase 3: Write sealed blocks in chunks with per-column stats
       for (int chunkStart = 0; chunkStart < totalSamples; chunkStart += SEALED_BLOCK_SIZE) {
         final int chunkEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
         final int chunkLen = chunkEnd - chunkStart;
 
         final long[] chunkTs = Arrays.copyOfRange(sortedTs, chunkStart, chunkEnd);
 
+        // Compute per-column stats for numeric columns
+        final double[] mins = new double[colCount];
+        final double[] maxs = new double[colCount];
+        final double[] sums = new double[colCount];
+        Arrays.fill(mins, Double.NaN);
+        Arrays.fill(maxs, Double.NaN);
+
         final byte[][] compressedCols = new byte[colCount][];
         for (int c = 0; c < colCount; c++) {
-          if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
             compressedCols[c] = DeltaOfDeltaCodec.encode(chunkTs);
-          else {
+          } else {
             final Object[] chunkValues = Arrays.copyOfRange(sortedColArrays[c], chunkStart, chunkEnd);
             compressedCols[c] = compressColumn(columns.get(c), chunkValues);
+
+            // Compute stats for numeric columns (GORILLA_XOR / SIMPLE8B)
+            final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
+            if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
+              double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
+              for (final Object v : chunkValues) {
+                final double d = v != null ? ((Number) v).doubleValue() : 0.0;
+                if (d < min)
+                  min = d;
+                if (d > max)
+                  max = d;
+                sum += d;
+              }
+              mins[c] = min;
+              maxs[c] = max;
+              sums[c] = sum;
+            }
           }
         }
 
-        sealedStore.appendBlock(chunkLen, chunkTs[0], chunkTs[chunkLen - 1], compressedCols);
+        sealedStore.appendBlock(chunkLen, chunkTs[0], chunkTs[chunkLen - 1], compressedCols, mins, maxs, sums);
       }
 
       // Phase 4: Clear mutable pages
