@@ -466,21 +466,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     });
   }
 
-  public void incrementStatsTxCommits() {
-    stats.txCommits.incrementAndGet();
+  public void incrementStatsWriteTx() {
+    stats.writeTx.incrementAndGet();
+  }
+
+  public void incrementStatsReadTx() {
+    stats.readTx.incrementAndGet();
   }
 
   @Override
   public void commit() {
-    stats.txCommits.incrementAndGet();
-
     executeInReadLock(() -> {
       checkTransactionIsActive(false);
 
       final DatabaseContext.DatabaseContextTL current =
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
-        current.getLastTransaction().commit();
+        final Binary result = current.getLastTransaction().commit();
+        if (result != null)
+          stats.writeTx.incrementAndGet();
+        else
+          stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
       }

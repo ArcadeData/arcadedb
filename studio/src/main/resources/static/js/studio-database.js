@@ -2708,7 +2708,7 @@ function formatNumber(n) {
 }
 
 function displayDatabaseStats(stats) {
-  $("#dbStatTxCommits").text(formatNumber(stats.txCommits));
+  $("#dbStatTxCommits").text(formatNumber((stats.writeTx || 0) + (stats.readTx || 0)));
   $("#dbStatTxRollbacks").text(formatNumber(stats.txRollbacks));
   $("#dbStatQueries").text(formatNumber(stats.queries));
   $("#dbStatCommands").text(formatNumber(stats.commands));

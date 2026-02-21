@@ -5,8 +5,6 @@ var serverData = null;
 var eventsData = {};
 var serverChartCommands = null;
 var opsPerSecHistory = {};
-var prevOpsCounts = null;
-var prevOpsTime = null;
 var serverRefreshTimer = null;
 
 function updateServer(callback) {
@@ -161,30 +159,23 @@ function displayServerSummary() {
   $("#summInfo").text(ev.info || 0);
   $("#summHints").text(ev.hints || 0);
 
-  // Transaction Operations summary and chart
-  var opsMetrics = {
-    "Queries":         (p.queries && p.queries.count) || 0,
-    "Tx Commits":      (p.txCommits && p.txCommits.count) || 0,
-    "Tx Rollbacks":    (p.txRollbacks && p.txRollbacks.count) || 0,
-    "MVCC Contention": (p.concurrentModificationExceptions && p.concurrentModificationExceptions.count) || 0
+  // Transaction Operations summary and chart - use server-side rate tracking
+  var opsRates = {
+    "Queries":         { count: (p.queries && p.queries.count) || 0, rate: (p.queries && p.queries.reqPerMinLastMinute) || 0 },
+    "Write Tx":        { count: (p.writeTx && p.writeTx.count) || 0, rate: (p.writeTx && p.writeTx.reqPerMinLastMinute) || 0 },
+    "Read Tx":         { count: (p.readTx && p.readTx.count) || 0, rate: (p.readTx && p.readTx.reqPerMinLastMinute) || 0 },
+    "Tx Rollbacks":    { count: (p.txRollbacks && p.txRollbacks.count) || 0, rate: (p.txRollbacks && p.txRollbacks.reqPerMinLastMinute) || 0 },
+    "MVCC Contention": { count: (p.concurrentModificationExceptions && p.concurrentModificationExceptions.count) || 0, rate: (p.concurrentModificationExceptions && p.concurrentModificationExceptions.reqPerMinLastMinute) || 0 }
   };
 
-  var now = Date.now();
-  var totalOpsPerSec = 0;
+  var totalOpsPerMin = 0;
   var totalOps = 0;
-  for (var k in opsMetrics)
-    totalOps += opsMetrics[k];
-
-  if (prevOpsCounts != null && prevOpsTime != null) {
-    var elapsedSec = (now - prevOpsTime) / 1000;
-    if (elapsedSec > 0) {
-      for (var k in opsMetrics)
-        totalOpsPerSec += Math.max(0, opsMetrics[k] - (prevOpsCounts[k] || 0));
-      totalOpsPerSec = totalOpsPerSec / elapsedSec;
-    }
+  for (var k in opsRates) {
+    totalOps += opsRates[k].count;
+    totalOpsPerMin += opsRates[k].rate;
   }
 
-  $("#summOpsPerSec").text(globalFormatDouble(totalOpsPerSec, 1));
+  $("#summOpsPerSec").text(globalFormatDouble(totalOpsPerMin, 1));
   $("#summOpsTotal").text(globalFormatDouble(totalOps, 0));
 
   // Database Operations line chart
@@ -192,31 +183,21 @@ function displayServerSummary() {
   var x = currentDate.getHours() + ":" + String(currentDate.getMinutes()).padStart(2, "0") + ":" + String(currentDate.getSeconds()).padStart(2, "0");
 
   var series = [];
-  for (var metricName in opsMetrics) {
-    var currentCount = opsMetrics[metricName];
-    var opsPerSec = 0;
-
-    if (prevOpsCounts != null && prevOpsTime != null) {
-      var elapsedSec = (now - prevOpsTime) / 1000;
-      if (elapsedSec > 0)
-        opsPerSec = Math.max(0, Math.round((currentCount - (prevOpsCounts[metricName] || 0)) / elapsedSec));
-    }
+  for (var metricName in opsRates) {
+    var opsPerMin = Math.round(opsRates[metricName].rate);
 
     var array = opsPerSecHistory[metricName];
     if (!array) {
       array = [];
       opsPerSecHistory[metricName] = array;
     }
-    array.unshift({ x: x, y: opsPerSec });
+    array.unshift({ x: x, y: opsPerMin });
 
     if (array.length > 50)
       array.pop();
 
     series.push({ name: metricName, data: array });
   }
-
-  prevOpsCounts = opsMetrics;
-  prevOpsTime = now;
 
   var serverCommandsOptions = {
     series: series,
@@ -234,7 +215,7 @@ function displayServerSummary() {
       },
     },
     markers: { size: 1 },
-    yaxis: { title: { text: "Ops/Sec" }, labels: { formatter: function(val) { return Math.round(val); } } },
+    yaxis: { title: { text: "Ops/Min" }, labels: { formatter: function(val) { return Math.round(val); } } },
   };
 
   if (serverChartCommands != null) serverChartCommands.destroy();
@@ -247,9 +228,28 @@ function displayMetrics() {
   var p = serverData.metrics.profiler || {};
   var m = serverData.metrics.meters || {};
 
-  // Profiler details table
+  // Database Operations table (metrics with rate tracking)
+  var rateTrackedMetrics = ["writeTx", "readTx", "txRollbacks", "queries", "concurrentModificationExceptions"];
+  var rateTrackedLabels = { writeTx: "Write Tx", readTx: "Read Tx", txRollbacks: "Tx Rollbacks", queries: "Queries", concurrentModificationExceptions: "MVCC Contention" };
+  var dbOpsHtml = "";
+  for (var i = 0; i < rateTrackedMetrics.length; i++) {
+    var name = rateTrackedMetrics[i];
+    var entry = p[name];
+    if (!entry) continue;
+    var count = entry.count || 0;
+    var reqPerMin = entry.reqPerMinLastMinute || 0;
+    dbOpsHtml += "<tr>";
+    dbOpsHtml += "<td>" + escapeHtml(rateTrackedLabels[name]) + "</td>";
+    dbOpsHtml += "<td class='text-end'>" + count.toLocaleString() + "</td>";
+    dbOpsHtml += "<td class='text-end'>" + globalFormatDouble(reqPerMin, 1) + "</td>";
+    dbOpsHtml += "</tr>";
+  }
+  $("#srvMetricDbOpsTable").html(dbOpsHtml || "<tr><td colspan='3' class='text-muted text-center'>No data.</td></tr>");
+
+  // Profiler details table (remaining metrics without rate tracking)
   var skipProfiler = { cpuLoad: 1, ramHeapUsed: 1, ramHeapMax: 1, ramOsUsed: 1, ramOsTotal: 1,
-    diskFreeSpace: 1, diskTotalSpace: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1 };
+    diskFreeSpace: 1, diskTotalSpace: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1,
+    writeTx: 1, readTx: 1, txRollbacks: 1, queries: 1, concurrentModificationExceptions: 1 };
   var profilerHtml = "";
   var profilerNames = Object.keys(p).sort();
   for (var i = 0; i < profilerNames.length; i++) {
@@ -272,15 +272,14 @@ function displayMetrics() {
   for (var i = 0; i < meterNames.length; i++) {
     var name = meterNames[i];
     var meter = m[name];
-    var reqLastMin = meter.reqPerSecSinceLastTime || 0;
+    var reqPerMin = meter.reqPerMinLastMinute || 0;
     metersHtml += "<tr>";
     metersHtml += "<td>" + escapeHtml(name) + "</td>";
-    metersHtml += "<td class='text-end'>" + (meter.count != null ? meter.count.toLocaleString() : "-") + "</td>";
-    metersHtml += "<td class='text-end'>" + Math.round(reqLastMin) + "</td>";
-    metersHtml += "<td class='text-end'>" + globalFormatDouble(reqLastMin / 60, 2) + "</td>";
+    metersHtml += "<td class='text-end'>" + (meter.count != null ? Math.round(meter.count).toLocaleString() : "-") + "</td>";
+    metersHtml += "<td class='text-end'>" + globalFormatDouble(reqPerMin, 1) + "</td>";
     metersHtml += "</tr>";
   }
-  $("#srvMetricMetersTable").html(metersHtml || "<tr><td colspan='4' class='text-muted text-center'>No HTTP meters available.</td></tr>");
+  $("#srvMetricMetersTable").html(metersHtml || "<tr><td colspan='3' class='text-muted text-center'>No HTTP meters available.</td></tr>");
 }
 
 function updateServerSetting(key, value) {

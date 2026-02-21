@@ -38,6 +38,13 @@ public class MetricMeter implements ServerMetrics.Meter {
   }
 
   @Override
+  public synchronized void hits(final long count) {
+    totalCounter += count;
+    updateCountersFromLastHit();
+    lastMinuteCounters[lastMinuteCountersIndex] += count;
+  }
+
+  @Override
   public synchronized float getRequestsPerSecondInLastMinute() {
     return getTotalRequestsInLastMinute() / 60F;
   }
