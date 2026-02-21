@@ -5,8 +5,6 @@ var serverData = null;
 var eventsData = {};
 var serverChartCommands = null;
 var opsPerSecHistory = {};
-var prevOpsCounts = null;
-var prevOpsTime = null;
 var serverRefreshTimer = null;
 
 function updateServer(callback) {
@@ -161,28 +159,20 @@ function displayServerSummary() {
   $("#summInfo").text(ev.info || 0);
   $("#summHints").text(ev.hints || 0);
 
-  // Transaction Operations summary and chart
-  var opsMetrics = {
-    "Queries":         (p.queries && p.queries.count) || 0,
-    "Write Tx":        (p.writeTx && p.writeTx.count) || 0,
-    "Read Tx":         (p.readTx && p.readTx.count) || 0,
-    "Tx Rollbacks":    (p.txRollbacks && p.txRollbacks.count) || 0,
-    "MVCC Contention": (p.concurrentModificationExceptions && p.concurrentModificationExceptions.count) || 0
+  // Transaction Operations summary and chart - use server-side rate tracking
+  var opsRates = {
+    "Queries":         { count: (p.queries && p.queries.count) || 0, rate: (p.queries && p.queries.reqPerMinLastMinute) || 0 },
+    "Write Tx":        { count: (p.writeTx && p.writeTx.count) || 0, rate: (p.writeTx && p.writeTx.reqPerMinLastMinute) || 0 },
+    "Read Tx":         { count: (p.readTx && p.readTx.count) || 0, rate: (p.readTx && p.readTx.reqPerMinLastMinute) || 0 },
+    "Tx Rollbacks":    { count: (p.txRollbacks && p.txRollbacks.count) || 0, rate: (p.txRollbacks && p.txRollbacks.reqPerMinLastMinute) || 0 },
+    "MVCC Contention": { count: (p.concurrentModificationExceptions && p.concurrentModificationExceptions.count) || 0, rate: (p.concurrentModificationExceptions && p.concurrentModificationExceptions.reqPerMinLastMinute) || 0 }
   };
 
-  var now = Date.now();
   var totalOpsPerMin = 0;
   var totalOps = 0;
-  for (var k in opsMetrics)
-    totalOps += opsMetrics[k];
-
-  if (prevOpsCounts != null && prevOpsTime != null) {
-    var elapsedSec = (now - prevOpsTime) / 1000;
-    if (elapsedSec > 0) {
-      for (var k in opsMetrics)
-        totalOpsPerMin += Math.max(0, opsMetrics[k] - (prevOpsCounts[k] || 0));
-      totalOpsPerMin = totalOpsPerMin / elapsedSec * 60;
-    }
+  for (var k in opsRates) {
+    totalOps += opsRates[k].count;
+    totalOpsPerMin += opsRates[k].rate;
   }
 
   $("#summOpsPerSec").text(globalFormatDouble(totalOpsPerMin, 1));
@@ -193,15 +183,8 @@ function displayServerSummary() {
   var x = currentDate.getHours() + ":" + String(currentDate.getMinutes()).padStart(2, "0") + ":" + String(currentDate.getSeconds()).padStart(2, "0");
 
   var series = [];
-  for (var metricName in opsMetrics) {
-    var currentCount = opsMetrics[metricName];
-    var opsPerMin = 0;
-
-    if (prevOpsCounts != null && prevOpsTime != null) {
-      var elapsedSec = (now - prevOpsTime) / 1000;
-      if (elapsedSec > 0)
-        opsPerMin = Math.max(0, Math.round((currentCount - (prevOpsCounts[metricName] || 0)) / elapsedSec * 60));
-    }
+  for (var metricName in opsRates) {
+    var opsPerMin = Math.round(opsRates[metricName].rate);
 
     var array = opsPerSecHistory[metricName];
     if (!array) {
@@ -215,9 +198,6 @@ function displayServerSummary() {
 
     series.push({ name: metricName, data: array });
   }
-
-  prevOpsCounts = opsMetrics;
-  prevOpsTime = now;
 
   var serverCommandsOptions = {
     series: series,
