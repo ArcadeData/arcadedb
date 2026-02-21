@@ -248,8 +248,71 @@ public class TimeSeriesEmbeddedBenchmark {
 
       System.out.println("==============================================");
 
-    } finally {
+      // Close database to flush everything from RAM
       database.close();
+
+      // Reopen database for cold queries
+      System.out.println("\n--- Cold Queries (after close/reopen) ---");
+      final Database coldDb = factory.open();
+      try {
+        // Count query
+        queryStart = System.nanoTime();
+        try (final ResultSet rs = coldDb.query("sql", "SELECT count(*) AS cnt FROM SensorData")) {
+          long count = 0;
+          if (rs.hasNext())
+            count = ((Number) rs.next().getProperty("cnt")).longValue();
+          queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+          System.out.printf("COUNT(*):              %,d ms (result: %,d)%n", queryTime, count);
+        }
+
+        // Range scan
+        queryStart = System.nanoTime();
+        long coldRangeCount = 0;
+        try (final ResultSet rs = coldDb.query("sql", "SELECT FROM SensorData WHERE ts BETWEEN ? AND ?",
+            midTs, midTs + 3_600_000L)) {
+          while (rs.hasNext()) {
+            rs.next();
+            coldRangeCount++;
+          }
+        }
+        queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+        System.out.printf("1h range scan:         %,d ms (rows: %,d)%n", queryTime, coldRangeCount);
+
+        // Aggregation
+        try {
+          queryStart = System.nanoTime();
+          long coldAggRows = 0;
+          try (final ResultSet rs = coldDb.query("sql",
+              "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
+                  "FROM SensorData GROUP BY hour")) {
+            while (rs.hasNext()) {
+              rs.next();
+              coldAggRows++;
+            }
+          }
+          queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+          System.out.printf("Hourly aggregation:    %,d ms (buckets: %,d)%n", queryTime, coldAggRows);
+        } catch (final Exception e) {
+          System.out.printf("Hourly aggregation:    SKIPPED (%s)%n", e.getMessage());
+        }
+
+        // Data distribution after cold open
+        final TimeSeriesEngine coldEngine = ((LocalTimeSeriesType) coldDb.getSchema().getType("SensorData")).getEngine();
+        System.out.println("\n--- Cold Data Distribution ---");
+        for (int s = 0; s < coldEngine.getShardCount(); s++) {
+          final TimeSeriesShard shard = coldEngine.getShard(s);
+          System.out.printf("Shard %d: sealed blocks=%d, mutable samples=%,d%n",
+              s, shard.getSealedStore().getBlockCount(), shard.getMutableBucket().getSampleCount());
+        }
+
+        System.out.println("==============================================");
+      } finally {
+        coldDb.close();
+      }
+
+    } finally {
+      if (database.isOpen())
+        database.close();
       factory.close();
       FileUtils.deleteRecursively(new File(DB_PATH));
     }

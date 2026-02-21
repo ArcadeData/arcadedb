@@ -57,9 +57,10 @@ import java.util.NoSuchElementException;
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
-  private static final int MAGIC_VALUE     = 0x54534958; // "TSIX"
-  private static final int HEADER_SIZE     = 26;
-  private static final int BLOCK_ENTRY_FIX = 20; // minTs(8) + maxTs(8) + sampleCount(4)
+  private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
+  private static final int BLOCK_MAGIC_VALUE = 0x5453424C; // "TSBL"
+  private static final int HEADER_SIZE       = 26;
+  private static final int BLOCK_ENTRY_FIX   = 20; // minTs(8) + maxTs(8) + sampleCount(4)
 
   private final String               basePath;
   private final List<ColumnDefinition> columns;
@@ -115,15 +116,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int colCount = columns.size();
     final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount);
 
-    // Write compressed data at end of file
-    long dataOffset = indexFile.length();
-    indexFile.seek(dataOffset);
+    // Write block metadata header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4 * colCount)
+    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount;
+    final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
+    metaBuf.putInt(BLOCK_MAGIC_VALUE);
+    metaBuf.putLong(minTs);
+    metaBuf.putLong(maxTs);
+    metaBuf.putInt(sampleCount);
+    for (final byte[] col : compressedColumns)
+      metaBuf.putInt(col.length);
+    metaBuf.flip();
 
+    long offset = indexFile.length();
+    indexFile.seek(offset);
+    indexFile.write(metaBuf.array());
+    offset += metaSize;
+
+    // Write compressed column data
     for (int c = 0; c < colCount; c++) {
-      entry.columnOffsets[c] = dataOffset;
+      entry.columnOffsets[c] = offset;
       entry.columnSizes[c] = compressedColumns[c].length;
       indexFile.write(compressedColumns[c]);
-      dataOffset += compressedColumns[c].length;
+      offset += compressedColumns[c].length;
     }
 
     blockDirectory.add(entry);
@@ -384,20 +398,33 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
 
+      final int colCount = columns.size();
       for (final BlockEntry oldEntry : retained) {
         // Read compressed data from old file
-        final byte[][] compressedCols = new byte[columns.size()][];
-        for (int c = 0; c < columns.size(); c++) {
+        final byte[][] compressedCols = new byte[colCount][];
+        for (int c = 0; c < colCount; c++)
           compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
-        }
 
-        // Write to temp file
-        final BlockEntry newEntry = new BlockEntry(oldEntry.minTimestamp, oldEntry.maxTimestamp,
-            oldEntry.sampleCount, columns.size());
+        // Write block metadata header
+        final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount;
+        final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
+        metaBuf.putInt(BLOCK_MAGIC_VALUE);
+        metaBuf.putLong(oldEntry.minTimestamp);
+        metaBuf.putLong(oldEntry.maxTimestamp);
+        metaBuf.putInt(oldEntry.sampleCount);
+        for (final byte[] col : compressedCols)
+          metaBuf.putInt(col.length);
+        metaBuf.flip();
+
         long dataOffset = tempFile.length();
         tempFile.seek(dataOffset);
+        tempFile.write(metaBuf.array());
+        dataOffset += metaSize;
 
-        for (int c = 0; c < columns.size(); c++) {
+        // Write compressed column data
+        final BlockEntry newEntry = new BlockEntry(oldEntry.minTimestamp, oldEntry.maxTimestamp,
+            oldEntry.sampleCount, colCount);
+        for (int c = 0; c < colCount; c++) {
           newEntry.columnOffsets[c] = dataOffset;
           newEntry.columnSizes[c] = compressedCols[c].length;
           tempFile.write(compressedCols[c]);
@@ -486,15 +513,40 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     globalMinTs = headerBuf.getLong();
     globalMaxTs = headerBuf.getLong();
 
-    // The block directory is stored at the beginning of the data section
-    // For simplicity in MVP, we rebuild the directory by parsing the file
-    // In a full implementation, the directory would be stored persistently
+    // Rebuild block directory by scanning block metadata records
     blockDirectory.clear();
+    final long fileLength = indexFile.length();
+    long pos = HEADER_SIZE;
 
-    // For MVP: directory not stored separately; blocks are appended with metadata inline
-    // The file is only built via appendBlock which tracks in memory
-    // On reload after close/reopen, we need to persist the directory
-    // For now, this is handled by the shard layer which recreates the sealed store
+    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount; // magic + minTs + maxTs + sampleCount + colSizes
+
+    while (pos + metaSize <= fileLength) {
+      final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
+      final int read = indexChannel.read(metaBuf, pos);
+      if (read < metaSize)
+        break;
+      metaBuf.flip();
+
+      final int blockMagic = metaBuf.getInt();
+      if (blockMagic != BLOCK_MAGIC_VALUE)
+        break; // not a valid block header — stop scanning
+
+      final long minTs = metaBuf.getLong();
+      final long maxTs = metaBuf.getLong();
+      final int sampleCount = metaBuf.getInt();
+
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount);
+      long dataPos = pos + metaSize;
+      for (int c = 0; c < colCount; c++) {
+        final int colSize = metaBuf.getInt();
+        entry.columnOffsets[c] = dataPos;
+        entry.columnSizes[c] = colSize;
+        dataPos += colSize;
+      }
+
+      blockDirectory.add(entry);
+      pos = dataPos;
+    }
   }
 
   private long[] decompressTimestamps(final BlockEntry entry, final int tsColIdx) throws IOException {
