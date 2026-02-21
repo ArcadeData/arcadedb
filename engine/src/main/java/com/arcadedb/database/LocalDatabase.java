@@ -36,6 +36,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.engine.WALFileFactoryEmbedded;
+import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -136,7 +137,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
       LSMVectorIndex.FILE_EXT,
-      LSMVectorIndexGraphFile.FILE_EXT);
+      LSMVectorIndexGraphFile.FILE_EXT,
+      TimeSeriesBucket.BUCKET_EXT);
   public final         AtomicLong                                indexCompactions                     =
       new AtomicLong();
   protected final      String                                    name;

@@ -35,6 +35,7 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.event.*;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -129,6 +130,7 @@ public class LocalSchema implements Schema {
     componentFactory.registerComponent(LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
         new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
+    componentFactory.registerComponent(TimeSeriesBucket.BUCKET_EXT, new TimeSeriesBucket.PaginatedComponentFactoryHandler());
     // Note: LSMVectorIndexGraphFile is NOT registered here - it's a sub-component discovered by its parent LSMVectorIndex
 
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.LSMTreeIndexFactoryHandler());
@@ -265,6 +267,13 @@ public class LocalSchema implements Schema {
       return null;
 
     return files.get(id);
+  }
+
+  public Component getFileByName(final String name) {
+    for (final Component f : files)
+      if (f != null && name.equals(f.getName()))
+        return f;
+    return null;
   }
 
   public void removeFile(final int fileId) {
@@ -1348,6 +1357,11 @@ public class LocalSchema implements Schema {
           case "t" -> {
             final LocalTimeSeriesType tsType = new LocalTimeSeriesType(this, typeName);
             tsType.fromJSON(schemaType);
+            try {
+              tsType.initEngine();
+            } catch (final IOException e) {
+              throw new ConfigurationException("Error initializing TimeSeries engine for type '" + typeName + "'", e);
+            }
             yield tsType;
           }
           case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");

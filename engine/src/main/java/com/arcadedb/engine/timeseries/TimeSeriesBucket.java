@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -79,8 +80,20 @@ public class TimeSeriesBucket extends PaginatedComponent {
   private static final int DATA_MAX_TS_OFFSET       = 10;
   private static final int DATA_ROWS_OFFSET         = 18;
 
-  private final List<ColumnDefinition> columns;
-  private final int                    rowSize; // fixed row size in bytes
+  private List<ColumnDefinition> columns;
+  private int                    rowSize; // fixed row size in bytes
+
+  /**
+   * Factory handler for loading existing .tstb files during schema load.
+   * Columns are set later via {@link #setColumns(List)} when the TimeSeries type is initialized.
+   */
+  public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
+    @Override
+    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
+        final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+      return new TimeSeriesBucket(database, name, filePath, id, new ArrayList<>());
+    }
+  }
 
   /**
    * Creates a new TimeSeries bucket.
@@ -101,6 +114,14 @@ public class TimeSeriesBucket extends PaginatedComponent {
       final List<ColumnDefinition> columns) throws IOException {
     super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
         database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), VERSION);
+    this.columns = columns;
+    this.rowSize = calculateRowSize(columns);
+  }
+
+  /**
+   * Sets column definitions (called during cold open after the factory handler creates a stub bucket).
+   */
+  public void setColumns(final List<ColumnDefinition> columns) {
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
   }

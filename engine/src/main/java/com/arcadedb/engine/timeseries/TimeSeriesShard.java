@@ -54,10 +54,20 @@ public class TimeSeriesShard implements AutoCloseable {
     this.database = database;
     this.columns = columns;
 
-    final String shardPath = database.getDatabasePath() + "/" + baseName + "_shard_" + shardIndex;
-    this.mutableBucket = new TimeSeriesBucket(database, baseName + "_shard_" + shardIndex,
-        shardPath, columns);
-    ((LocalSchema) database.getSchema()).registerFile(mutableBucket);
+    final String shardName = baseName + "_shard_" + shardIndex;
+    final String shardPath = database.getDatabasePath() + "/" + shardName;
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+
+    // Check if the bucket was already loaded by the component factory (cold open)
+    final com.arcadedb.engine.Component existing = schema.getFileByName(shardName);
+    if (existing instanceof TimeSeriesBucket tsb) {
+      this.mutableBucket = tsb;
+      this.mutableBucket.setColumns(columns);
+    } else {
+      // First-time creation
+      this.mutableBucket = new TimeSeriesBucket(database, shardName, shardPath, columns);
+      schema.registerFile(mutableBucket);
+    }
 
     this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
   }
