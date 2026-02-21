@@ -4,7 +4,9 @@ var lastUpdate = null;
 var serverData = null;
 var eventsData = {};
 var serverChartCommands = null;
-var reqPerSecLastMinute = {};
+var opsPerSecHistory = {};
+var prevOpsCounts = null;
+var prevOpsTime = null;
 var serverRefreshTimer = null;
 
 function updateServer(callback) {
@@ -159,66 +161,86 @@ function displayServerSummary() {
   $("#summInfo").text(ev.info || 0);
   $("#summHints").text(ev.hints || 0);
 
-  // HTTP Req/Sec total (reqPerSecSinceLastTime is actually req in last minute)
-  var totalReqLastMin = 0;
-  if (serverData.metrics.meters) {
-    for (var mName in serverData.metrics.meters) {
-      var meter = serverData.metrics.meters[mName];
-      if (meter.reqPerSecSinceLastTime != null)
-        totalReqLastMin += meter.reqPerSecSinceLastTime;
+  // Transaction Operations summary and chart
+  var opsMetrics = {
+    "Queries":         (p.queries && p.queries.count) || 0,
+    "Tx Commits":      (p.txCommits && p.txCommits.count) || 0,
+    "Tx Rollbacks":    (p.txRollbacks && p.txRollbacks.count) || 0,
+    "MVCC Contention": (p.concurrentModificationExceptions && p.concurrentModificationExceptions.count) || 0
+  };
+
+  var now = Date.now();
+  var totalOpsPerSec = 0;
+  var totalOps = 0;
+  for (var k in opsMetrics)
+    totalOps += opsMetrics[k];
+
+  if (prevOpsCounts != null && prevOpsTime != null) {
+    var elapsedSec = (now - prevOpsTime) / 1000;
+    if (elapsedSec > 0) {
+      for (var k in opsMetrics)
+        totalOpsPerSec += Math.max(0, opsMetrics[k] - (prevOpsCounts[k] || 0));
+      totalOpsPerSec = totalOpsPerSec / elapsedSec;
     }
   }
-  $("#summReqPerSec").text(globalFormatDouble(totalReqLastMin / 60, 1));
-  $("#summReqLastMin").text(Math.round(totalReqLastMin));
 
-  // HTTP Requests line chart
-  let currentDate = new Date();
-  let x = currentDate.getHours() + ":" + currentDate.getMinutes() + ":" + currentDate.getSeconds();
-  if (reqPerSecLastMinute.length > 0 && x == reqPerSecLastMinute[0].x)
-    return;
+  $("#summOpsPerSec").text(globalFormatDouble(totalOpsPerSec, 1));
+  $("#summOpsTotal").text(globalFormatDouble(totalOps, 0));
 
-  if (serverData.metrics.meters) {
-    let series = [];
-    for (let commandsMetricName in serverData.metrics.meters) {
-      let metric = serverData.metrics.meters[commandsMetricName];
-      let array = reqPerSecLastMinute[commandsMetricName];
-      if (!array) {
-        array = [];
-        reqPerSecLastMinute[commandsMetricName] = array;
-      }
-      array.unshift({ x: x, y: Math.round(metric.reqPerSecSinceLastTime / 60) });
+  // Database Operations line chart
+  var currentDate = new Date();
+  var x = currentDate.getHours() + ":" + String(currentDate.getMinutes()).padStart(2, "0") + ":" + String(currentDate.getSeconds()).padStart(2, "0");
 
-      if (array.length > 50)
-        array.pop();
+  var series = [];
+  for (var metricName in opsMetrics) {
+    var currentCount = opsMetrics[metricName];
+    var opsPerSec = 0;
 
-      series.push({ name: commandsMetricName, data: array });
+    if (prevOpsCounts != null && prevOpsTime != null) {
+      var elapsedSec = (now - prevOpsTime) / 1000;
+      if (elapsedSec > 0)
+        opsPerSec = Math.max(0, Math.round((currentCount - (prevOpsCounts[metricName] || 0)) / elapsedSec));
     }
 
-    var serverCommandsOptions = {
-      series: series,
-      labels: ["Used", "Available"],
-      chart: { type: "line", height: 300, animations: { enabled: false } },
-      legend: { show: true, position: "bottom", horizontalAlign: "center", fontSize: "11px" },
-      tooltip: { enabled: true },
-      fill: { opacity: [0.24, 1, 1] },
-      dataLabels: { enabled: true },
-      stroke: { curve: "smooth" },
-      grid: {
-        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border-ddd').trim() || "#e7e7e7",
-        row: {
-          colors: [getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim() || "#f3f3f3", "transparent"],
-          opacity: 0.5,
-        },
+    var array = opsPerSecHistory[metricName];
+    if (!array) {
+      array = [];
+      opsPerSecHistory[metricName] = array;
+    }
+    array.unshift({ x: x, y: opsPerSec });
+
+    if (array.length > 50)
+      array.pop();
+
+    series.push({ name: metricName, data: array });
+  }
+
+  prevOpsCounts = opsMetrics;
+  prevOpsTime = now;
+
+  var serverCommandsOptions = {
+    series: series,
+    chart: { type: "line", height: 300, animations: { enabled: false } },
+    legend: { show: true, position: "bottom", horizontalAlign: "center", fontSize: "11px" },
+    tooltip: { enabled: true },
+    fill: { opacity: [0.24, 1, 1] },
+    dataLabels: { enabled: false },
+    stroke: { curve: "smooth", width: 2 },
+    grid: {
+      borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border-ddd').trim() || "#e7e7e7",
+      row: {
+        colors: [getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim() || "#f3f3f3", "transparent"],
+        opacity: 0.5,
       },
-      markers: { size: 1 },
-      yaxis: { title: { text: "Req/Sec" }, labels: { formatter: function(val) { return Math.round(val); } } },
-    };
+    },
+    markers: { size: 1 },
+    yaxis: { title: { text: "Ops/Sec" }, labels: { formatter: function(val) { return Math.round(val); } } },
+  };
 
-    if (serverChartCommands != null) serverChartCommands.destroy();
+  if (serverChartCommands != null) serverChartCommands.destroy();
 
-    serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
-    serverChartCommands.render();
-  }
+  serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
+  serverChartCommands.render();
 }
 
 function displayMetrics() {
