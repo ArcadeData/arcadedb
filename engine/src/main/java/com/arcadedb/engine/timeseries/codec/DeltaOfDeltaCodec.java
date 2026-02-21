@@ -174,6 +174,7 @@ public final class DeltaOfDeltaCodec {
 
   /**
    * Bit-level reader over a byte array.
+   * Uses word-level reads for {@code readBits} to avoid per-bit loop overhead.
    */
   static final class BitReader {
     private final byte[] data;
@@ -191,9 +192,26 @@ public final class DeltaOfDeltaCodec {
     }
 
     long readBits(final int numBits) {
+      if (numBits == 0)
+        return 0;
+      if (numBits == 1)
+        return readBit();
+
       long result = 0;
-      for (int i = 0; i < numBits; i++) {
-        result = (result << 1) | readBit();
+      int remaining = numBits;
+
+      while (remaining > 0) {
+        final int byteIdx = bitPos >> 3;
+        final int bitOff = bitPos & 7;
+        final int available = 8 - bitOff; // bits available in current byte
+        final int toRead = Math.min(remaining, available);
+
+        // Extract 'toRead' bits from current byte starting at 'bitOff'
+        final int shift = available - toRead;
+        result = (result << toRead) | ((data[byteIdx] >> shift) & ((1 << toRead) - 1));
+
+        bitPos += toRead;
+        remaining -= toRead;
       }
       return result;
     }
