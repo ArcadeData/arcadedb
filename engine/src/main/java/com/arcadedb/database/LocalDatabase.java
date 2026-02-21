@@ -979,6 +979,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
         return;
 
+    stats.updateRecord.incrementAndGet();
+
     executeInReadLock(() -> {
       if (isTransactionActive()) {
         // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
@@ -1101,6 +1103,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         bucket.deleteRecord(record.getIdentity());
 
       success = true;
+      stats.deleteRecord.incrementAndGet();
 
       // INVOKE EVENT CALLBACKS
       events.onAfterDelete(record);
