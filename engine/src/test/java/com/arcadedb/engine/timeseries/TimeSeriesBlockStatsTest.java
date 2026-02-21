@@ -128,7 +128,7 @@ class TimeSeriesBlockStatsTest {
       );
 
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
-      store.aggregateMultiBlocks(0L, 4000L, requests, bucketInterval, result);
+      store.aggregateMultiBlocks(0L, 4000L, requests, bucketInterval, result, null);
       result.finalizeAvg();
 
       assertThat(result.size()).isEqualTo(1);
@@ -177,7 +177,7 @@ class TimeSeriesBlockStatsTest {
       );
 
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
-      store.aggregateMultiBlocks(500L, 1500L, requests, bucketInterval, result);
+      store.aggregateMultiBlocks(500L, 1500L, requests, bucketInterval, result, null);
       result.finalizeAvg();
 
       // Should have 2 buckets: 0 and 1000
@@ -227,7 +227,7 @@ class TimeSeriesBlockStatsTest {
       );
 
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
-      store.aggregateMultiBlocks(1000L, 4000L, requests, 3600000L, result);
+      store.aggregateMultiBlocks(1000L, 4000L, requests, 3600000L, result, null);
 
       // SUM = 10+20+30+40 = 100
       final long bucket = result.getBucketTimestamps().get(0);
@@ -274,7 +274,7 @@ class TimeSeriesBlockStatsTest {
       );
 
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
-      store.aggregateMultiBlocks(5000L, 6000L, requests, 3600000L, result);
+      store.aggregateMultiBlocks(5000L, 6000L, requests, 3600000L, result, null);
 
       final long bucket = result.getBucketTimestamps().get(0);
       assertThat(result.getValue(bucket, 0)).isCloseTo(110.0, within(0.01));

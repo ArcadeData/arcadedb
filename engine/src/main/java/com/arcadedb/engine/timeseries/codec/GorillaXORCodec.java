@@ -131,4 +131,45 @@ public final class GorillaXORCodec {
     }
     return result;
   }
+
+  /**
+   * Decodes into a pre-allocated output buffer, returning the number of decoded values.
+   * The output array must be at least as large as the encoded count.
+   */
+  public static int decode(final byte[] data, final double[] output) {
+    if (data == null || data.length == 0)
+      return 0;
+
+    final DeltaOfDeltaCodec.BitReader reader = new DeltaOfDeltaCodec.BitReader(data);
+    final int count = (int) reader.readBits(32);
+
+    long prevBits = reader.readBits(64);
+    output[0] = Double.longBitsToDouble(prevBits);
+
+    if (count == 1)
+      return count;
+
+    int prevLeading = 0;
+    int prevTrailing = 0;
+
+    for (int i = 1; i < count; i++) {
+      if (reader.readBit() == 0) {
+        output[i] = Double.longBitsToDouble(prevBits);
+      } else {
+        long xor;
+        if (reader.readBit() == 0) {
+          final int blockSize = 64 - prevLeading - prevTrailing;
+          xor = reader.readBits(blockSize) << prevTrailing;
+        } else {
+          prevLeading = (int) reader.readBits(6);
+          final int blockSize = (int) reader.readBits(6) + 1;
+          prevTrailing = 64 - prevLeading - blockSize;
+          xor = reader.readBits(blockSize) << prevTrailing;
+        }
+        prevBits = prevBits ^ xor;
+        output[i] = Double.longBitsToDouble(prevBits);
+      }
+    }
+    return count;
+  }
 }

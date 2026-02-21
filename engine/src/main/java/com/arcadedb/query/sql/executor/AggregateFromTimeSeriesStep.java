@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -48,6 +49,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   private final Map<String, String>                requestAliasToOutputAlias;
   private       Iterator<ResultInternal>           resultIterator;
   private       boolean                            fetched = false;
+  private       AggregationMetrics                 aggregationMetrics;
 
   public AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final String timeBucketAlias,
@@ -69,7 +71,9 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
       if (!fetched) {
         try {
           final TimeSeriesEngine engine = tsType.getEngine();
-          final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, null);
+          if (context.isProfiling())
+            aggregationMetrics = new AggregationMetrics();
+          final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, null, aggregationMetrics);
 
           final List<ResultInternal> rows = new ArrayList<>();
           for (final long bucketTs : aggResult.getBucketTimestamps()) {
@@ -130,8 +134,11 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
       final MultiColumnAggregationRequest req = requests.get(i);
       sb.append(req.type().name().toLowerCase()).append("(col").append(req.columnIndex()).append(")");
     }
-    if (context.isProfiling())
+    if (context.isProfiling()) {
       sb.append("\n").append(spaces).append("    (").append(getCostFormatted()).append(", ").append(getRowCountFormatted()).append(")");
+      if (aggregationMetrics != null)
+        sb.append("\n").append(spaces).append("    ").append(aggregationMetrics);
+    }
     return sb.toString();
   }
 

@@ -120,6 +120,43 @@ public final class DeltaOfDeltaCodec {
     return result;
   }
 
+  /**
+   * Decodes into a pre-allocated output buffer, returning the number of decoded values.
+   * The output array must be at least as large as the encoded count.
+   */
+  public static int decode(final byte[] data, final long[] output) {
+    if (data == null || data.length == 0)
+      return 0;
+
+    final BitReader reader = new BitReader(data);
+    final int count = (int) reader.readBits(32);
+    output[0] = reader.readBits(64);
+
+    if (count == 1)
+      return count;
+
+    long prevDelta = reader.readBits(64);
+    output[1] = output[0] + prevDelta;
+
+    for (int i = 2; i < count; i++) {
+      long dod;
+      if (reader.readBit() == 0) {
+        dod = 0;
+      } else if (reader.readBit() == 0) {
+        dod = zigZagDecode(reader.readBits(7));
+      } else if (reader.readBit() == 0) {
+        dod = zigZagDecode(reader.readBits(9));
+      } else if (reader.readBit() == 0) {
+        dod = zigZagDecode(reader.readBits(12));
+      } else {
+        dod = reader.readBits(64);
+      }
+      prevDelta = prevDelta + dod;
+      output[i] = output[i - 1] + prevDelta;
+    }
+    return count;
+  }
+
   static long zigZagEncode(final long value) {
     return (value << 1) ^ (value >> 63);
   }

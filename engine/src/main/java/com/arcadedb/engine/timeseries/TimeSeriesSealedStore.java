@@ -23,6 +23,8 @@ import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
 import com.arcadedb.engine.timeseries.codec.Simple8bCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOps;
+import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.schema.Type;
 
 import java.io.File;
@@ -60,6 +62,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   private static final int BLOCK_MAGIC_VALUE = 0x5453424C; // "TSBL"
   private static final int HEADER_SIZE       = 26;
+  private static final int MAX_BLOCK_SIZE    = 65536;
 
   private final String               basePath;
   private final List<ColumnDefinition> columns;
@@ -366,6 +369,30 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return lo;
   }
 
+  private static int lowerBound(final long[] ts, final int from, final int to, final long target) {
+    int lo = from, hi = to;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (ts[mid] < target)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  }
+
+  private static int upperBound(final long[] ts, final int from, final int to, final long target) {
+    int lo = from, hi = to;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (ts[mid] <= target)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  }
+
   /**
    * Push-down aggregation on sealed blocks.
    */
@@ -402,7 +429,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public void aggregateMultiBlocks(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
-      final MultiColumnAggregationResult result) throws IOException {
+      final MultiColumnAggregationResult result, final AggregationMetrics metrics) throws IOException {
     final int tsColIdx = findTimestampColumnIndex();
     final int reqCount = requests.size();
 
@@ -419,9 +446,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final double[] rowValues = new double[reqCount];
 
+    // Pre-allocate decode buffers reused across all blocks in this call
+    final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
+    final double[] reusableValBuf = new double[MAX_BLOCK_SIZE];
+
     for (final BlockEntry entry : blockDirectory) {
-      if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
+      if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
+        if (metrics != null)
+          metrics.addSkippedBlock();
         continue;
+      }
 
       // Check if entire block falls within a single time bucket and is fully inside the query range
       if (bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
@@ -430,6 +464,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         if (blockMinBucket == blockMaxBucket) {
           // FAST PATH: use block-level stats directly — no decompression needed
+          if (metrics != null)
+            metrics.addFastPathBlock();
           for (int r = 0; r < reqCount; r++) {
             if (isCount[r])
               rowValues[r] = entry.sampleCount;
@@ -449,28 +485,104 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       // SLOW PATH: decompress and iterate (boundary blocks spanning multiple buckets)
-      final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+      if (metrics != null)
+        metrics.addSlowPathBlock();
+
+      // Coalesced I/O: read all column data in one pread call
+      long t0 = metrics != null ? System.nanoTime() : 0;
+      final byte[] blockData = readBlockData(entry);
+      if (metrics != null)
+        metrics.addIo(System.nanoTime() - t0);
+
+      // Decode timestamps into reusable buffer
+      t0 = metrics != null ? System.nanoTime() : 0;
+      final int tsCount = DeltaOfDeltaCodec.decode(
+          sliceColumn(blockData, entry, tsColIdx), reusableTsBuf);
+      if (metrics != null)
+        metrics.addDecompTs(System.nanoTime() - t0);
 
       // Decompress only the columns needed by the requests (deduplicated)
+      // Use reusable buffer for the first column; allocate for additional distinct columns
       final double[][] decompressedCols = new double[columns.size()][];
+      boolean reusableValBufferUsed = false;
       for (int r = 0; r < reqCount; r++) {
-        if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null)
-          decompressedCols[schemaColIndices[r]] = decompressDoubleColumn(entry, schemaColIndices[r]);
+        if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null) {
+          t0 = metrics != null ? System.nanoTime() : 0;
+          final byte[] colBytes = sliceColumn(blockData, entry, schemaColIndices[r]);
+          final ColumnDefinition col = columns.get(schemaColIndices[r]);
+          if (!reusableValBufferUsed && col.getCompressionHint() == TimeSeriesCodec.GORILLA_XOR) {
+            // Decode into reusable buffer (only safe for one column at a time)
+            GorillaXORCodec.decode(colBytes, reusableValBuf);
+            decompressedCols[schemaColIndices[r]] = reusableValBuf;
+            reusableValBufferUsed = true;
+          } else {
+            decompressedCols[schemaColIndices[r]] = decompressDoubleColumnFromBytes(colBytes, schemaColIndices[r]);
+          }
+          if (metrics != null)
+            metrics.addDecompVal(System.nanoTime() - t0);
+        }
       }
 
-      // Aggregate directly on arrays — no Object[] boxing
-      for (int i = 0; i < timestamps.length; i++) {
-        final long ts = timestamps[i];
-        if (ts < fromTs || ts > toTs)
-          continue;
+      // Use tsCount (not array length) since reusableTsBuf may be larger than actual data
+      final long[] timestamps = reusableTsBuf;
 
-        final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+      // Aggregate using segment-based vectorized accumulation
+      t0 = metrics != null ? System.nanoTime() : 0;
 
-        for (int r = 0; r < reqCount; r++)
-          rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
+      if (bucketIntervalMs > 0) {
+        // Vectorized path: find contiguous segments within each bucket and use SIMD ops
+        final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
+        final int tsLen = timestamps.length;
 
-        result.accumulateRow(bucketTs, rowValues);
+        // Clip to query range using binary search on sorted timestamps
+        final int rangeStart = lowerBound(timestamps, 0, tsCount, fromTs);
+        final int rangeEnd = upperBound(timestamps, 0, tsCount, toTs);
+
+        int segStart = rangeStart;
+        while (segStart < rangeEnd) {
+          final long bucketTs = (timestamps[segStart] / bucketIntervalMs) * bucketIntervalMs;
+          final long nextBucketTs = bucketTs + bucketIntervalMs;
+
+          // Find end of this bucket's segment
+          int segEnd = segStart + 1;
+          while (segEnd < rangeEnd && timestamps[segEnd] < nextBucketTs)
+            segEnd++;
+
+          final int segLen = segEnd - segStart;
+
+          // Accumulate each request using vectorized ops on the segment
+          for (int r = 0; r < reqCount; r++) {
+            if (isCount[r]) {
+              result.accumulateSingleStat(bucketTs, r, segLen, segLen);
+            } else {
+              final double[] colData = decompressedCols[schemaColIndices[r]];
+              final double val = switch (requests.get(r).type()) {
+                case SUM, AVG -> ops.sum(colData, segStart, segLen);
+                case MIN -> ops.min(colData, segStart, segLen);
+                case MAX -> ops.max(colData, segStart, segLen);
+                case COUNT -> segLen;
+              };
+              result.accumulateSingleStat(bucketTs, r, val, segLen);
+            }
+          }
+
+          segStart = segEnd;
+        }
+      } else {
+        // No bucket interval — accumulate all into one bucket
+        for (int i = 0; i < tsCount; i++) {
+          final long ts = timestamps[i];
+          if (ts < fromTs || ts > toTs)
+            continue;
+
+          for (int r = 0; r < reqCount; r++)
+            rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
+
+          result.accumulateRow(fromTs, rowValues);
+        }
       }
+      if (metrics != null)
+        metrics.addAccum(System.nanoTime() - t0);
     }
   }
 
@@ -796,6 +908,46 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       totalRead += read;
     }
     return buf.array();
+  }
+
+  /**
+   * Reads all column data for a block in a single I/O call.
+   * Columns are contiguous on disk, so one pread covers all of them.
+   */
+  private byte[] readBlockData(final BlockEntry entry) throws IOException {
+    final long startOffset = entry.columnOffsets[0];
+    int totalSize = 0;
+    for (final int size : entry.columnSizes)
+      totalSize += size;
+    return readBytes(startOffset, totalSize);
+  }
+
+  /**
+   * Slices a single column's bytes from the coalesced block data.
+   */
+  private static byte[] sliceColumn(final byte[] blockData, final BlockEntry entry, final int colIdx) {
+    final int offset = (int) (entry.columnOffsets[colIdx] - entry.columnOffsets[0]);
+    return Arrays.copyOfRange(blockData, offset, offset + entry.columnSizes[colIdx]);
+  }
+
+  /**
+   * Decompresses a double column from pre-read bytes (no I/O).
+   */
+  private double[] decompressDoubleColumnFromBytes(final byte[] compressed, final int schemaColIdx) {
+    final ColumnDefinition col = columns.get(schemaColIdx);
+
+    if (col.getCompressionHint() == TimeSeriesCodec.GORILLA_XOR)
+      return GorillaXORCodec.decode(compressed);
+
+    if (col.getCompressionHint() == TimeSeriesCodec.SIMPLE8B) {
+      final long[] longs = Simple8bCodec.decode(compressed);
+      final double[] result = new double[longs.length];
+      for (int i = 0; i < longs.length; i++)
+        result[i] = longs[i];
+      return result;
+    }
+
+    return GorillaXORCodec.decode(compressed);
   }
 
   private int findTimestampColumnIndex() {

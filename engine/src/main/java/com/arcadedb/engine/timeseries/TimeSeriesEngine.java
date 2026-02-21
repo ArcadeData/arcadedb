@@ -27,6 +27,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /**
  * Coordinates N shards for a TimeSeries type. Routes writes to shards
@@ -150,8 +152,48 @@ public class TimeSeriesEngine implements AutoCloseable {
   public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
       final TagFilter tagFilter) throws IOException {
+    return aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter, null);
+  }
+
+  /**
+   * Aggregates multiple columns in a single pass, bucketed by time interval.
+   * Optionally populates an {@link AggregationMetrics} with timing breakdown.
+   */
+  public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
+      final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
     final int reqCount = requests.size();
-    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
+
+    // Determine actual data range to size flat arrays correctly
+    long actualMin = Long.MAX_VALUE;
+    long actualMax = Long.MIN_VALUE;
+    final boolean useFlatMode = bucketIntervalMs > 0;
+    if (useFlatMode) {
+      for (final TimeSeriesShard shard : shards) {
+        final TimeSeriesSealedStore ss = shard.getSealedStore();
+        if (ss.getBlockCount() > 0) {
+          if (ss.getGlobalMinTimestamp() < actualMin)
+            actualMin = ss.getGlobalMinTimestamp();
+          if (ss.getGlobalMaxTimestamp() > actualMax)
+            actualMax = ss.getGlobalMaxTimestamp();
+        }
+      }
+      // Clamp to query range
+      if (fromTs != Long.MIN_VALUE && fromTs > actualMin)
+        actualMin = fromTs;
+      if (toTs != Long.MAX_VALUE && toTs < actualMax)
+        actualMax = toTs;
+    }
+
+    final long firstBucket;
+    final int maxBuckets;
+    if (useFlatMode && actualMin <= actualMax) {
+      firstBucket = (actualMin / bucketIntervalMs) * bucketIntervalMs;
+      maxBuckets = (int) ((actualMax - firstBucket) / bucketIntervalMs) + 2;
+    } else {
+      firstBucket = 0;
+      maxBuckets = 0;
+    }
 
     // Pre-extract column indices and types for mutable bucket iteration
     final int[] columnIndices = new int[reqCount];
@@ -161,36 +203,104 @@ public class TimeSeriesEngine implements AutoCloseable {
       isCount[r] = requests.get(r).type() == AggregationType.COUNT;
     }
 
-    final double[] rowValues = new double[reqCount];
+    // Process sealed stores in parallel when there are multiple shards with data
+    if (shardCount > 1 && maxBuckets > 0) {
+      @SuppressWarnings("unchecked")
+      final CompletableFuture<MultiColumnAggregationResult>[] futures = new CompletableFuture[shardCount];
 
-    for (final TimeSeriesShard shard : shards) {
-      // Sealed store: block-level aggregation (decompresses arrays directly, no Object[] boxing)
-      shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, result);
+      for (int s = 0; s < shardCount; s++) {
+        final TimeSeriesShard shard = shards[s];
+        final AggregationMetrics shardMetrics = metrics != null ? new AggregationMetrics() : null;
+        futures[s] = CompletableFuture.supplyAsync(() -> {
+          try {
+            final MultiColumnAggregationResult shardResult =
+                new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets);
 
-      // Mutable bucket: row-level iteration (typically very few rows)
-      final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
-      while (mutableIter.hasNext()) {
-        final Object[] row = mutableIter.next();
-        final long ts = (long) row[0];
-        if (tagFilter != null && !tagFilter.matches(row))
-          continue;
-        final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+            shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, shardResult, shardMetrics);
 
-        for (int r = 0; r < reqCount; r++) {
-          if (isCount[r])
-            rowValues[r] = 1.0;
-          else if (columnIndices[r] < row.length && row[columnIndices[r]] instanceof Number n)
-            rowValues[r] = n.doubleValue();
-          else
-            rowValues[r] = 0.0;
-        }
+            if (metrics != null)
+              metrics.mergeFrom(shardMetrics);
 
-        result.accumulateRow(bucketTs, rowValues);
+            return shardResult;
+          } catch (final IOException e) {
+            throw new CompletionException(e);
+          }
+        });
       }
-    }
 
-    result.finalizeAvg();
-    return result;
+      // Wait for all sealed store results and merge
+      try {
+        CompletableFuture.allOf(futures).join();
+      } catch (final CompletionException e) {
+        if (e.getCause() instanceof IOException ioe)
+          throw ioe;
+        throw new IOException("Parallel shard aggregation failed", e.getCause());
+      }
+
+      final MultiColumnAggregationResult result = futures[0].join();
+      for (int s = 1; s < shardCount; s++)
+        result.mergeFrom(futures[s].join());
+
+      // Process mutable buckets on the calling thread (requires database context)
+      final double[] rowValues = new double[reqCount];
+      for (final TimeSeriesShard shard : shards) {
+        final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
+        while (mutableIter.hasNext()) {
+          final Object[] row = mutableIter.next();
+          final long ts = (long) row[0];
+          if (tagFilter != null && !tagFilter.matches(row))
+            continue;
+          final long bucketTs = (ts / bucketIntervalMs) * bucketIntervalMs;
+          for (int r = 0; r < reqCount; r++) {
+            if (isCount[r])
+              rowValues[r] = 1.0;
+            else if (columnIndices[r] < row.length && row[columnIndices[r]] instanceof Number n)
+              rowValues[r] = n.doubleValue();
+            else
+              rowValues[r] = 0.0;
+          }
+          result.accumulateRow(bucketTs, rowValues);
+        }
+      }
+
+      result.finalizeAvg();
+      return result;
+
+    } else {
+      // Sequential path: single shard or no flat mode
+      final MultiColumnAggregationResult result = maxBuckets > 0
+          ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets)
+          : new MultiColumnAggregationResult(requests);
+
+      final double[] rowValues = new double[reqCount];
+
+      for (final TimeSeriesShard shard : shards) {
+        shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, result, metrics);
+
+        final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
+        while (mutableIter.hasNext()) {
+          final Object[] row = mutableIter.next();
+          final long ts = (long) row[0];
+          if (tagFilter != null && !tagFilter.matches(row))
+            continue;
+          final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+
+          for (int r = 0; r < reqCount; r++) {
+            if (isCount[r])
+              rowValues[r] = 1.0;
+            else if (columnIndices[r] < row.length && row[columnIndices[r]] instanceof Number n)
+              rowValues[r] = n.doubleValue();
+            else
+              rowValues[r] = 0.0;
+          }
+
+          result.accumulateRow(bucketTs, rowValues);
+        }
+      }
+
+      result.finalizeAvg();
+      return result;
+    }
   }
 
   /**

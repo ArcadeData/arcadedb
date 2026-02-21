@@ -257,6 +257,7 @@ public class TimeSeriesEmbeddedBenchmark {
             queryTime, fullScanCount, scanRate);
 
         // Direct API aggregation — bypasses SQL layer entirely
+        final AggregationMetrics aggMetrics = new AggregationMetrics();
         queryStart = System.nanoTime();
         final MultiColumnAggregationResult directAgg = coldEngine.aggregateMulti(
             Long.MIN_VALUE, Long.MAX_VALUE,
@@ -264,9 +265,10 @@ public class TimeSeriesEmbeddedBenchmark {
                 new MultiColumnAggregationRequest(2, AggregationType.AVG, "avg_temp"),
                 new MultiColumnAggregationRequest(2, AggregationType.MAX, "max_temp")
             ),
-            3_600_000L, null);
+            3_600_000L, null, aggMetrics);
         queryTime = (System.nanoTime() - queryStart) / 1_000_000;
         System.out.printf("Direct API agg:        %,d ms (buckets: %,d)%n", queryTime, directAgg.size());
+        System.out.println("  " + aggMetrics);
 
         // Profiled hourly aggregation — shows execution plan with push-down
         System.out.println("\n--- PROFILE: Hourly aggregation ---");
