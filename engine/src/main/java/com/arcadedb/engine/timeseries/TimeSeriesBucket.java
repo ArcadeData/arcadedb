@@ -203,6 +203,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * @return iterator yielding Object[] { timestamp, col1, col2, ... }
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
+    if (getSampleCount() == 0)
+      return java.util.Collections.emptyIterator();
+
     final int dataPageCount = getDataPageCount();
 
     return new Iterator<>() {

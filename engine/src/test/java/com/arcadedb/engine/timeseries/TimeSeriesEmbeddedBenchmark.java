@@ -45,7 +45,7 @@ import java.util.logging.Level;
 public class TimeSeriesEmbeddedBenchmark {
 
   private static final String DB_PATH        = "target/databases/ts-benchmark-embedded";
-  private static final int    TOTAL_POINTS   = Integer.getInteger("benchmark.totalPoints", 50_000_000);
+  private static final int    TOTAL_POINTS   = Integer.getInteger("benchmark.totalPoints", 5_000_000);
   private static final int    BATCH_SIZE     = Integer.getInteger("benchmark.batchSize", 20_000);
   private static final int    PARALLEL_LEVEL = Integer.getInteger("benchmark.parallelLevel", 4);
   private static final int    NUM_SENSORS    = Integer.getInteger("benchmark.numSensors", 100);
@@ -215,6 +215,26 @@ public class TimeSeriesEmbeddedBenchmark {
       } catch (final Exception e) {
         System.out.printf("Hourly aggregation:    SKIPPED (%s)%n", e.getMessage());
       }
+
+      // Diagnostics: check where data lives after compaction
+      final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("SensorData")).getEngine();
+      System.out.println("\n--- Data Distribution ---");
+      for (int s = 0; s < engine.getShardCount(); s++) {
+        final TimeSeriesShard shard = engine.getShard(s);
+        System.out.printf("Shard %d: sealed blocks=%d, mutable samples=%,d%n",
+            s, shard.getSealedStore().getBlockCount(), shard.getMutableBucket().getSampleCount());
+      }
+
+      // Direct API test (bypasses SQL layer entirely)
+      queryStart = System.nanoTime();
+      int directCount = 0;
+      final java.util.Iterator<Object[]> iter = engine.iterateQuery(midTs, midTs + 3_600_000L, null, null);
+      while (iter.hasNext()) {
+        iter.next();
+        directCount++;
+      }
+      queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+      System.out.printf("Direct API 1h scan:    %,d ms (rows: %,d)%n", queryTime, directCount);
 
       // Profiled range scan — shows cost breakdown per execution step
       System.out.println("\n--- PROFILE: 1h range scan ---");
