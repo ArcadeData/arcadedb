@@ -15,16 +15,18 @@
 
   <ul class="nav nav-tabs flex-shrink-0" id="tabs-database" style="padding: 0 12px;">
     <li class="nav-item"><a data-toggle="tab" href="#tab-schema" class="active show nav-link" id="tab-schema-sel">Schema</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-db-buckets" class="nav-link" id="tab-db-buckets-sel">Buckets</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-db-indexes" class="nav-link" id="tab-db-indexes-sel">Indexes</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-db-dictionary" class="nav-link" id="tab-db-dictionary-sel">Dictionary</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-db-metrics" class="nav-link" id="tab-db-metrics-sel">Metrics</a></li>
     <li class="nav-item"><a data-toggle="tab" href="#tab-db-settings" class="nav-link" id="tab-db-settings-sel">Settings</a></li>
     <li class="nav-item"><a data-toggle="tab" href="#tab-db-backup" class="nav-link" id="tab-db-backup-sel">Backup</a></li>
-    <li class="nav-item"><a data-toggle="tab" href="#tab-db-metrics" class="nav-link" id="tab-db-metrics-sel">Metrics</a></li>
   </ul>
 
   <div class="tab-content" style="flex: 1; min-height: 0; position: relative;">
     <!-- Schema Tab -->
     <div class="tab-pane fade show active d-flex flex-column" id="tab-schema" role="tabpanel">
       <div class="d-flex" style="flex: 1; min-height: 0;">
-        <!-- Type Badge Sidebar -->
         <div id="dbTypeSidebar">
           <div class="sidebar-header">
             <span class="sidebar-title">Types</span>
@@ -36,13 +38,81 @@
             <div class="sidebar-empty">Loading...</div>
           </div>
         </div>
-        <!-- Type Detail Panel -->
         <div id="dbTypeDetail" style="flex: 1; min-width: 0; overflow-y: auto; padding: 16px 20px;">
           <div class="db-type-empty">
             <i class="fa fa-database" style="font-size: 2rem; color: #ddd; margin-bottom: 12px; display: block;"></i>
             Select a type from the sidebar to view its schema.
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Buckets Tab -->
+    <div class="tab-pane fade" id="tab-db-buckets" role="tabpanel" style="position: absolute; inset: 0;">
+      <div class="d-flex" style="height: 100%;">
+        <div style="flex: 1; min-width: 0; overflow-y: auto; padding: 12px 16px;">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa fa-archive"></i> Buckets</span>
+            <button class="btn btn-sm db-action-btn" onclick="loadStorageBuckets()"><i class="fa fa-sync"></i> Refresh</button>
+          </div>
+          <table id="dbStorageBuckets" class="table table-striped table-sm" style="width: 100%"></table>
+        </div>
+        <div id="dbBucketDetailPanel" style="width: 380px; min-width: 380px; border-left: 1px solid var(--border-ddd, #dee2e6); overflow-y: auto; padding: 12px; display: none;">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <strong id="dbBucketDetailTitle" style="font-size: 0.9rem;">Detail</strong>
+            <button class="btn btn-sm btn-light" onclick="$('#dbBucketDetailPanel').hide()"><i class="fa fa-times"></i></button>
+          </div>
+          <pre id="dbBucketDetailContent" style="margin: 0; font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Indexes Tab -->
+    <div class="tab-pane fade" id="tab-db-indexes" role="tabpanel" style="position: absolute; inset: 0;">
+      <div class="d-flex" style="height: 100%;">
+        <div style="flex: 1; min-width: 0; overflow-y: auto; padding: 12px 16px;">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa fa-list-ol"></i> Indexes</span>
+            <button class="btn btn-sm db-action-btn" onclick="loadStorageIndexes()"><i class="fa fa-sync"></i> Refresh</button>
+          </div>
+          <table id="dbStorageIndexes" class="table table-striped table-sm" style="width: 100%"></table>
+        </div>
+        <div id="dbIndexDetailPanel" style="width: 380px; min-width: 380px; border-left: 1px solid var(--border-ddd, #dee2e6); overflow-y: auto; padding: 12px; display: none;">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <strong id="dbIndexDetailTitle" style="font-size: 0.9rem;">Detail</strong>
+            <button class="btn btn-sm btn-light" onclick="$('#dbIndexDetailPanel').hide()"><i class="fa fa-times"></i></button>
+          </div>
+          <pre id="dbIndexDetailContent" style="margin: 0; font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dictionary Tab -->
+    <div class="tab-pane fade" id="tab-db-dictionary" role="tabpanel" style="position: absolute; inset: 0;">
+      <div style="height: 100%; overflow-y: auto; padding: 12px 16px;">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa fa-book"></i> Dictionary</span>
+          <button class="btn btn-sm db-action-btn" onclick="loadStorageDictionary()"><i class="fa fa-sync"></i> Refresh</button>
+        </div>
+        <div class="row mb-3">
+          <div class="col-md-3">
+            <div class="card">
+              <div class="card-body text-center">
+                <div class="text-muted small">Total Entries</div>
+                <div class="fs-4" id="dbStorageDictEntries">-</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <div class="card">
+              <div class="card-body text-center">
+                <div class="text-muted small">Total Pages</div>
+                <div class="fs-4" id="dbStorageDictPages">-</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <table id="dbStorageDictTable" class="table table-striped table-sm" style="width: 100%"></table>
       </div>
     </div>
 

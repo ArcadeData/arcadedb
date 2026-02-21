@@ -8,7 +8,8 @@ function renderGraph() {
   globalCy = null;
 
   loadGraphTypeStyles();
-  $("#graphSpacing").val(globalGraphSettings.graphSpacing);
+  $("#settingGraphSpacing").val(globalGraphSettings.graphSpacing);
+  $("#settingGraphSpacingVal").text(globalGraphSettings.graphSpacing);
 
   let elements = [];
   globalRenderedVerticesRID = {};
@@ -53,13 +54,20 @@ function renderGraph() {
     }
   }
 
+  let randomize = false;
+  if (globalGraphSettings._spacingChanged) {
+    randomize = true;
+    globalGraphSettings._spacingChanged = false;
+  }
+
   globalLayout = {
     name: "fcose",
     animate: true,
     animationDuration: 500,
     nodeSeparation: globalGraphSettings.graphSpacing * 3,
+    idealEdgeLength: globalGraphSettings.graphSpacing * 3,
     quality: "default",
-    randomize: false,
+    randomize: randomize,
     fit: true,
     padding: 30,
   };

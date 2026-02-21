@@ -3416,3 +3416,9 @@ div.dt-search {
     max-width: 380px;
   }
 }
+
+/* Storage tables - clickable rows */
+#dbStorageBuckets tbody tr,
+#dbStorageIndexes tbody tr {
+  cursor: pointer;
+}
