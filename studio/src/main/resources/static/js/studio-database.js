@@ -1172,6 +1172,17 @@ function populateSettingsPanel() {
   html += "</select></div>";
   html += "</div>";
 
+  let spacingVal = globalGraphSettings ? (globalGraphSettings.graphSpacing || 20) : 20;
+  let cumulativeChecked = (globalGraphSettings && globalGraphSettings.cumulativeSelection) ? "checked" : "";
+
+  html += "<div class='settings-section'>";
+  html += "<div class='settings-section-header'>Graph Settings</div>";
+  html += "<div class='settings-row'><label>Graph Spacing: <span id='settingGraphSpacingVal'>" + spacingVal + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingGraphSpacing' min='10' max='100' step='10' value='" + spacingVal + "' onchange='applyGraphSpacing(this.value)'></div>";
+  html += "<div class='settings-row'><label>Cumulative Selection</label>";
+  html += "<input type='checkbox' class='form-check-input' id='settingCumulativeSelection' " + cumulativeChecked + " onchange='applyCumulativeSelection(this.checked)'></div>";
+  html += "</div>";
+
   html += "<div class='settings-section'>";
   html += "<div class='settings-section-header'>Keyboard Shortcuts</div>";
   html += "<div style='font-size:0.75rem;color:#666;padding:0 2px;'>";
@@ -1192,6 +1203,19 @@ function applySidebarSetting(key, value) {
 
 function applyDefaultLimit(value) {
   $("#inputLimit").val(value);
+}
+
+function applyGraphSpacing(value) {
+  globalGraphSettings.graphSpacing = parseInt(value);
+  $("#settingGraphSpacingVal").text(value);
+  if (globalCy != null) {
+    globalGraphSettings._spacingChanged = true;
+    renderGraph();
+  }
+}
+
+function applyCumulativeSelection(checked) {
+  globalGraphSettings.cumulativeSelection = checked;
 }
 
 function executeCommand(language, query) {
@@ -2002,6 +2026,12 @@ $(document).ready(function () {
         loadDatabaseBackups();
     } else if (activeTab == "tab-db-metrics-sel") {
       loadDatabaseMetrics();
+    } else if (activeTab == "tab-db-buckets-sel") {
+      loadStorageBuckets();
+    } else if (activeTab == "tab-db-indexes-sel") {
+      loadStorageIndexes();
+    } else if (activeTab == "tab-db-dictionary-sel") {
+      loadStorageDictionary();
     }
   });
 
@@ -2774,6 +2804,258 @@ function refreshMvFromMetrics(name) {
   }).done(function () {
     globalNotify("Success", "Materialized view '" + escapeHtml(name) + "' refreshed", "success");
     loadDatabaseMetrics();
+  }).fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
+}
+
+// ===== Buckets Tab =====
+
+var _bucketDetails = {};
+
+function loadStorageBuckets() {
+  var database = getCurrentDatabase();
+  if (!database) return;
+
+  $("#dbBucketDetailPanel").hide();
+  _bucketDetails = {};
+
+  if ($.fn.dataTable.isDataTable("#dbStorageBuckets"))
+    try { $("#dbStorageBuckets").DataTable().destroy(); $("#dbStorageBuckets").empty(); } catch (e) {}
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/query/" + database,
+    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:buckets" }),
+    beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+  }).done(function (data) {
+    if (!data.result || data.result.length === 0) {
+      $("#dbStorageBuckets").DataTable({
+        paging: false, ordering: true, data: [],
+        columns: [{ title: "Name" }, { title: "File ID" }, { title: "Page Size" }, { title: "Pages" }, { title: "Active" }, { title: "Deleted" }, { title: "Errors" }]
+      });
+      return;
+    }
+
+    var buckets = data.result;
+    var pending = buckets.length;
+    var detailResults = {};
+
+    for (var i = 0; i < buckets.length; i++) {
+      (function (bucket) {
+        jQuery.ajax({
+          type: "POST",
+          url: "api/v1/query/" + database,
+          data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:bucket:" + bucket.name }),
+          beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+        }).done(function (detailData) {
+          if (detailData.result && detailData.result.length > 0)
+            detailResults[bucket.name] = detailData.result[0];
+        }).always(function () {
+          pending--;
+          if (pending === 0)
+            renderBucketsDataTable(buckets, detailResults);
+        });
+      })(buckets[i]);
+    }
+  }).fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
+}
+
+function renderBucketsDataTable(buckets, details) {
+  _bucketDetails = details;
+  var tableData = [];
+
+  for (var i = 0; i < buckets.length; i++) {
+    var b = buckets[i];
+    var d = details[b.name] || {};
+    tableData.push([
+      escapeHtml(b.name),
+      b.fileId != null ? b.fileId : 0,
+      d.pageSize != null ? d.pageSize : 0,
+      d.totalPages != null ? d.totalPages : 0,
+      d.totalActiveRecords != null ? d.totalActiveRecords : 0,
+      d.totalDeletedRecords != null ? d.totalDeletedRecords : 0,
+      d.totalErrors != null ? d.totalErrors : 0
+    ]);
+  }
+
+  if ($.fn.dataTable.isDataTable("#dbStorageBuckets"))
+    try { $("#dbStorageBuckets").DataTable().destroy(); $("#dbStorageBuckets").empty(); } catch (e) {}
+
+  var dt = $("#dbStorageBuckets").DataTable({
+    paging: false,
+    ordering: true,
+    order: [[0, "asc"]],
+    data: tableData,
+    columns: [
+      { title: "Name" },
+      { title: "File ID" },
+      { title: "Page Size", render: function (d) { return d != 0 ? Number(d).toLocaleString() : "-"; } },
+      { title: "Pages", render: function (d) { return d != 0 ? Number(d).toLocaleString() : "-"; } },
+      { title: "Active", render: function (d) { return Number(d).toLocaleString(); } },
+      { title: "Deleted", render: function (d) { return Number(d).toLocaleString(); } },
+      { title: "Errors" }
+    ]
+  });
+
+  $("#dbStorageBuckets tbody").on("click", "tr", function () {
+    $("#dbStorageBuckets tbody tr").removeClass("table-active");
+    $(this).addClass("table-active");
+    var rowData = dt.row(this).data();
+    if (!rowData) return;
+    var name = $("<div>").html(rowData[0]).text();
+    var detail = _bucketDetails[name] || {};
+    $("#dbBucketDetailTitle").text(name);
+    $("#dbBucketDetailContent").text(JSON.stringify(detail, null, 2));
+    $("#dbBucketDetailPanel").show();
+  });
+}
+
+// ===== Indexes Tab =====
+
+var _indexDetails = {};
+
+function loadStorageIndexes() {
+  var database = getCurrentDatabase();
+  if (!database) return;
+
+  $("#dbIndexDetailPanel").hide();
+  _indexDetails = {};
+
+  if ($.fn.dataTable.isDataTable("#dbStorageIndexes"))
+    try { $("#dbStorageIndexes").DataTable().destroy(); $("#dbStorageIndexes").empty(); } catch (e) {}
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/query/" + database,
+    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:indexes" }),
+    beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+  }).done(function (data) {
+    if (!data.result || data.result.length === 0) {
+      $("#dbStorageIndexes").DataTable({
+        paging: false, ordering: true, data: [],
+        columns: [{ title: "Name" }, { title: "Type" }, { title: "Type Name" }, { title: "File ID" }, { title: "Size" }, { title: "Unique" }, { title: "Compacting" }, { title: "Valid" }]
+      });
+      return;
+    }
+
+    var indexes = data.result;
+    var pending = indexes.length;
+    var detailResults = {};
+
+    for (var i = 0; i < indexes.length; i++) {
+      (function (index) {
+        jQuery.ajax({
+          type: "POST",
+          url: "api/v1/query/" + database,
+          data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:index:" + index.name }),
+          beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+        }).done(function (detailData) {
+          if (detailData.result && detailData.result.length > 0)
+            detailResults[index.name] = detailData.result[0];
+        }).always(function () {
+          pending--;
+          if (pending === 0)
+            renderIndexesDataTable(indexes, detailResults);
+        });
+      })(indexes[i]);
+    }
+  }).fail(function (jqXHR) {
+    globalNotifyError(jqXHR.responseText);
+  });
+}
+
+function renderIndexesDataTable(indexes, details) {
+  _indexDetails = details;
+  var tableData = [];
+
+  for (var i = 0; i < indexes.length; i++) {
+    var idx = indexes[i];
+    var d = details[idx.name] || {};
+    tableData.push([
+      escapeHtml(idx.name),
+      escapeHtml(idx.indexType || "-"),
+      escapeHtml(idx.typeName || "-"),
+      d.fileId != null ? d.fileId : "-",
+      escapeHtml(d.size || "-"),
+      idx.unique ? "Yes" : "No",
+      d.compacting ? "Yes" : "No",
+      d.valid != null ? (d.valid ? "Yes" : "No") : "-"
+    ]);
+  }
+
+  if ($.fn.dataTable.isDataTable("#dbStorageIndexes"))
+    try { $("#dbStorageIndexes").DataTable().destroy(); $("#dbStorageIndexes").empty(); } catch (e) {}
+
+  var dt = $("#dbStorageIndexes").DataTable({
+    paging: false,
+    ordering: true,
+    order: [[0, "asc"]],
+    data: tableData,
+    columns: [
+      { title: "Name" },
+      { title: "Type" },
+      { title: "Type Name" },
+      { title: "File ID" },
+      { title: "Size" },
+      { title: "Unique" },
+      { title: "Compacting" },
+      { title: "Valid" }
+    ]
+  });
+
+  $("#dbStorageIndexes tbody").on("click", "tr", function () {
+    $("#dbStorageIndexes tbody tr").removeClass("table-active");
+    $(this).addClass("table-active");
+    var rowData = dt.row(this).data();
+    if (!rowData) return;
+    var name = $("<div>").html(rowData[0]).text();
+    var detail = _indexDetails[name] || {};
+    $("#dbIndexDetailTitle").text(name);
+    $("#dbIndexDetailContent").text(JSON.stringify(detail, null, 2));
+    $("#dbIndexDetailPanel").show();
+  });
+}
+
+// ===== Dictionary Tab =====
+
+function loadStorageDictionary() {
+  var database = getCurrentDatabase();
+  if (!database) return;
+
+  if ($.fn.dataTable.isDataTable("#dbStorageDictTable"))
+    try { $("#dbStorageDictTable").DataTable().destroy(); $("#dbStorageDictTable").empty(); } catch (e) {}
+
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/query/" + database,
+    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:dictionary" }),
+    beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+  }).done(function (data) {
+    if (data.result && data.result.length > 0) {
+      var dict = data.result[0];
+      $("#dbStorageDictEntries").text(dict.totalEntries != null ? dict.totalEntries.toLocaleString() : "-");
+      $("#dbStorageDictPages").text(dict.totalPages != null ? dict.totalPages.toLocaleString() : "-");
+
+      var entries = dict.entries || {};
+      var tableData = [];
+      var keys = Object.keys(entries);
+      for (var i = 0; i < keys.length; i++)
+        tableData.push([escapeHtml(keys[i]), entries[keys[i]]]);
+
+      $("#dbStorageDictTable").DataTable({
+        paging: false,
+        ordering: true,
+        order: [[1, "asc"]],
+        data: tableData,
+        columns: [
+          { title: "Name" },
+          { title: "ID" }
+        ]
+      });
+    }
   }).fail(function (jqXHR) {
     globalNotifyError(jqXHR.responseText);
   });

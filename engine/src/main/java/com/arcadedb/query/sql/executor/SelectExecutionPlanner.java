@@ -1463,7 +1463,16 @@ public class SelectExecutionPlanner {
     case "materializedviews" -> plan.chain(new FetchFromSchemaMaterializedViewsStep(context));
     case "continuousaggregates" -> plan.chain(new FetchFromSchemaContinuousAggregatesStep(context));
     case "stats" -> plan.chain(new FetchFromSchemaStatsStep(context));
-    default -> throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
+    case "dictionary" -> plan.chain(new FetchFromSchemaDictionaryStep(context));
+    default -> {
+      final String name = metadata.getName().toLowerCase();
+      if (name.startsWith("bucket:"))
+        plan.chain(new FetchFromSchemaBucketDetailStep(metadata.getName().substring("bucket:".length()), context));
+      else if (name.startsWith("index:"))
+        plan.chain(new FetchFromSchemaIndexDetailStep(metadata.getName().substring("index:".length()), context));
+      else
+        throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
+    }
     }
   }
 
