@@ -494,6 +494,14 @@ public class ArcadeDBServer {
     return Collections.unmodifiableSet(databases.keySet());
   }
 
+  public ServerDatabase registerDatabase(final String databaseName, final DatabaseInternal database) {
+    final ServerDatabase serverDatabase = new ServerDatabase(database);
+    final ServerDatabase existing = databases.putIfAbsent(databaseName, serverDatabase);
+    if (existing != null)
+      throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
+    return serverDatabase;
+  }
+
   public void removeDatabase(final String databaseName) {
     databases.remove(databaseName);
   }
