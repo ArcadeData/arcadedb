@@ -45,11 +45,13 @@ import java.util.logging.Level;
 @Tag("benchmark")
 public class TimeSeriesEmbeddedBenchmark {
 
-  private static final String DB_PATH        = "target/databases/ts-benchmark-embedded";
-  private static final int    TOTAL_POINTS   = Integer.getInteger("benchmark.totalPoints", 50_000_000);
-  private static final int    BATCH_SIZE     = Integer.getInteger("benchmark.batchSize", 20_000);
-  private static final int    PARALLEL_LEVEL = Integer.getInteger("benchmark.parallelLevel", 4);
-  private static final int    NUM_SENSORS    = Integer.getInteger("benchmark.numSensors", 100);
+  private static final String DB_PATH              = "target/databases/ts-benchmark-embedded";
+  private static final int    TOTAL_POINTS         = Integer.getInteger("benchmark.totalPoints", 50_000_000);
+  private static final int    BATCH_SIZE           = Integer.getInteger("benchmark.batchSize", 20_000);
+  private static final int    PARALLEL_LEVEL       = Integer.getInteger("benchmark.parallelLevel", 4);
+  private static final int    NUM_SENSORS          = Integer.getInteger("benchmark.numSensors", 100);
+  public static final  int    ASYNCH_BACK_PRESSURE = 50;
+  public static final  int    ASYNC_COMMIT_EVERY   = 5;
 
   public static void main(final String[] args) throws Exception {
     new TimeSeriesEmbeddedBenchmark().run();
@@ -77,8 +79,8 @@ public class TimeSeriesEmbeddedBenchmark {
       // Configure async
       database.async().setParallelLevel(PARALLEL_LEVEL);
       // Each task already writes BATCH_SIZE samples, so commit every few tasks (not every BATCH_SIZE tasks)
-      database.async().setCommitEvery(5);
-      database.async().setBackPressure(50);
+      database.async().setCommitEvery(ASYNC_COMMIT_EVERY);
+      database.async().setBackPressure(ASYNCH_BACK_PRESSURE);
       database.setReadYourWrites(false);
 
       final AtomicLong totalInserted = new AtomicLong(0);
@@ -183,7 +185,8 @@ public class TimeSeriesEmbeddedBenchmark {
       final Database coldDb = factory.open();
       try {
         // Data distribution after cold open
-        final TimeSeriesEngine coldEngine = ((LocalTimeSeriesType) coldDb.getSchema().getType("SensorData")).getEngine();
+        final TimeSeriesEngine coldEngine =
+            ((LocalTimeSeriesType) coldDb.getSchema().getType("SensorData")).getEngine();
         System.out.println("\n--- Data Distribution ---");
         for (int s = 0; s < coldEngine.getShardCount(); s++) {
           final TimeSeriesShard shard = coldEngine.getShard(s);
@@ -246,7 +249,8 @@ public class TimeSeriesEmbeddedBenchmark {
         // Full scan — measure how long it takes to iterate ALL 50M points from disk
         queryStart = System.nanoTime();
         long fullScanCount = 0;
-        final java.util.Iterator<Object[]> fullIter = coldEngine.iterateQuery(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+        final java.util.Iterator<Object[]> fullIter = coldEngine.iterateQuery(Long.MIN_VALUE, Long.MAX_VALUE, null,
+            null);
         while (fullIter.hasNext()) {
           fullIter.next();
           fullScanCount++;
@@ -273,7 +277,8 @@ public class TimeSeriesEmbeddedBenchmark {
         // Profiled hourly aggregation — shows execution plan with push-down
         System.out.println("\n--- PROFILE: Hourly aggregation ---");
         try (final ResultSet profileRs = coldDb.command("sql",
-            "PROFILE SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
+            "PROFILE SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS " +
+                "max_temp " +
                 "FROM SensorData GROUP BY hour")) {
           if (profileRs.hasNext()) {
             final Result profile = profileRs.next();

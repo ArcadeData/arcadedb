@@ -42,6 +42,8 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   private int                          shardCount;
   private long                         retentionMs;
   private long                         compactionBucketIntervalMs;
+  private int                          sealedFormatVersion;
+  private int                          mutableFormatVersion;
   private final List<ColumnDefinition> tsColumns = new ArrayList<>();
   private TimeSeriesEngine             engine;
 
@@ -115,6 +117,8 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     json.put("retentionMs", retentionMs);
     if (compactionBucketIntervalMs > 0)
       json.put("compactionBucketIntervalMs", compactionBucketIntervalMs);
+    json.put("sealedFormatVersion", sealedFormatVersion);
+    json.put("mutableFormatVersion", mutableFormatVersion);
 
     final JSONArray colArray = new JSONArray();
     for (final ColumnDefinition col : tsColumns) {
@@ -137,6 +141,8 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     shardCount = json.getInt("shardCount", 1);
     retentionMs = json.getLong("retentionMs", 0L);
     compactionBucketIntervalMs = json.getLong("compactionBucketIntervalMs", 0L);
+    sealedFormatVersion = json.getInt("sealedFormatVersion", 0);
+    mutableFormatVersion = json.getInt("mutableFormatVersion", 0);
 
     tsColumns.clear();
     final JSONArray colArray = json.getJSONArray("tsColumns", null);

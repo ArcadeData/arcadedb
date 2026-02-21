@@ -37,31 +37,35 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.zip.CRC32;
 
 /**
  * Immutable columnar storage for compacted TimeSeries data.
  * Uses FileChannel positioned reads for zero-overhead access.
  * <p>
- * Index file (.ts.sealed) layout:
+ * Index file (.ts.sealed) layout — 27-byte header:
  * - [0..3]   magic "TSIX" (4 bytes)
- * - [4..5]   column count (short)
- * - [6..9]   block count (int)
- * - [10..17] global min timestamp (long)
- * - [18..25] global max timestamp (long)
- * - [26..]   block entries (inline metadata + compressed column data)
+ * - [4]      formatVersion (1 byte)
+ * - [5..6]   column count (short)
+ * - [7..10]  block count (int)
+ * - [11..18] global min timestamp (long)
+ * - [19..26] global max timestamp (long)
+ * - [27..]   block entries (inline metadata + compressed column data)
  * <p>
  * Block entry layout:
  * - magic "TSBL" (4), minTs (8), maxTs (8), sampleCount (4), colSizes (4*colCount)
- * - numericColCount (4), [colIdx (4) + min (8) + max (8) + sum (8)] * numericColCount
+ * - numericColCount (4), [min (8) + max (8) + sum (8)] * numericColCount (schema order, no colIdx)
  * - compressed column data bytes
+ * - blockCRC32 (4) — CRC32 of everything from blockMagic to end of compressed data
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
+  static final         int CURRENT_VERSION  = 0;
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   private static final int BLOCK_MAGIC_VALUE = 0x5453424C; // "TSBL"
-  private static final int HEADER_SIZE       = 26;
+  private static final int HEADER_SIZE       = 27;
   private static final int MAX_BLOCK_SIZE    = 65536;
 
   private final String               basePath;
@@ -83,6 +87,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final double[] columnMins;   // per-column min (NaN for non-numeric)
     final double[] columnMaxs;   // per-column max
     final double[] columnSums;   // per-column sum
+    long           blockStartOffset; // file offset where block meta begins (for lazy CRC)
+    int            storedCRC;        // CRC32 stored on disk (-1 if written inline, not yet flushed)
+    boolean        crcValidated;     // true after first successful CRC check
 
     BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
         final double[] mins, final double[] maxs, final double[] sums) {
@@ -94,6 +101,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       this.columnMins = mins;
       this.columnMaxs = maxs;
       this.columnSums = sums;
+      this.crcValidated = true; // newly created blocks don't need validation
     }
   }
 
@@ -136,8 +144,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         numericColCount++;
 
     // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4*colCount)
-    //              + numericColCount(4) + [colIdx(4) + min(8) + max(8) + sum(8)] * numericColCount
-    final int statsSize = 4 + (4 + 8 + 8 + 8) * numericColCount;
+    //              + numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount
+    final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
     final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize;
     final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
     metaBuf.putInt(BLOCK_MAGIC_VALUE);
@@ -147,17 +155,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     for (final byte[] col : compressedColumns)
       metaBuf.putInt(col.length);
 
-    // Write stats section
+    // Write stats section (schema order, no colIdx — iterate columns, skip non-numeric)
     metaBuf.putInt(numericColCount);
     for (int c = 0; c < colCount; c++) {
       if (!Double.isNaN(columnMins[c])) {
-        metaBuf.putInt(c);
         metaBuf.putDouble(columnMins[c]);
         metaBuf.putDouble(columnMaxs[c]);
         metaBuf.putDouble(columnSums[c]);
       }
     }
     metaBuf.flip();
+
+    // Compute CRC32 over meta + compressed data
+    final CRC32 crc = new CRC32();
+    crc.update(metaBuf.array());
 
     long offset = indexFile.length();
     indexFile.seek(offset);
@@ -169,9 +180,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     for (int c = 0; c < colCount; c++) {
       entry.columnOffsets[c] = offset;
       entry.columnSizes[c] = compressedColumns[c].length;
+      crc.update(compressedColumns[c]);
       indexFile.write(compressedColumns[c]);
       offset += compressedColumns[c].length;
     }
+
+    // Write block CRC32
+    final ByteBuffer crcBuf = ByteBuffer.allocate(4);
+    crcBuf.putInt((int) crc.getValue());
+    crcBuf.flip();
+    indexFile.write(crcBuf.array());
 
     blockDirectory.add(entry);
 
@@ -605,6 +623,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Write empty header first
       final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
       headerBuf.putInt(MAGIC_VALUE);
+      headerBuf.put((byte) CURRENT_VERSION);
       headerBuf.putShort((short) columns.size());
       headerBuf.putInt(0);
       headerBuf.putLong(Long.MAX_VALUE);
@@ -625,13 +644,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         long dataOffset = tempFile.length();
         tempFile.seek(dataOffset);
 
-        // Write block header with stats
+        // Write block header with stats (no colIdx)
         int numericColCount = 0;
         for (int c = 0; c < colCount; c++)
           if (!Double.isNaN(oldEntry.columnMins[c]))
             numericColCount++;
 
-        final int statsSize = 4 + (4 + 8 + 8 + 8) * numericColCount;
+        final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
         final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize;
         final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
         metaBuf.putInt(BLOCK_MAGIC_VALUE);
@@ -643,13 +662,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         metaBuf.putInt(numericColCount);
         for (int c = 0; c < colCount; c++) {
           if (!Double.isNaN(oldEntry.columnMins[c])) {
-            metaBuf.putInt(c);
             metaBuf.putDouble(oldEntry.columnMins[c]);
             metaBuf.putDouble(oldEntry.columnMaxs[c]);
             metaBuf.putDouble(oldEntry.columnSums[c]);
           }
         }
         metaBuf.flip();
+
+        // Compute CRC32 over meta + compressed data
+        final CRC32 crc = new CRC32();
+        crc.update(metaBuf.array());
+
         tempFile.write(metaBuf.array());
         dataOffset += metaSize;
 
@@ -659,9 +682,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         for (int c = 0; c < colCount; c++) {
           newEntry.columnOffsets[c] = dataOffset;
           newEntry.columnSizes[c] = compressedCols[c].length;
+          crc.update(compressedCols[c]);
           tempFile.write(compressedCols[c]);
           dataOffset += compressedCols[c].length;
         }
+
+        // Write block CRC32
+        final ByteBuffer crcBuf = ByteBuffer.allocate(4);
+        crcBuf.putInt((int) crc.getValue());
+        crcBuf.flip();
+        tempFile.write(crcBuf.array());
+
         blockDirectory.add(newEntry);
 
         if (oldEntry.minTimestamp < globalMinTs)
@@ -729,6 +760,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void writeEmptyHeader() throws IOException {
     final ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
     buf.putInt(MAGIC_VALUE);
+    buf.put((byte) CURRENT_VERSION);
     buf.putShort((short) columns.size());
     buf.putInt(0); // block count
     buf.putLong(Long.MAX_VALUE); // min ts
@@ -741,6 +773,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void rewriteHeader() throws IOException {
     final ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
     buf.putInt(MAGIC_VALUE);
+    buf.put((byte) CURRENT_VERSION);
     buf.putShort((short) columns.size());
     buf.putInt(blockDirectory.size());
     buf.putLong(globalMinTs);
@@ -758,6 +791,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int magic = headerBuf.getInt();
     if (magic != MAGIC_VALUE)
       throw new IOException("Invalid sealed store magic: " + Integer.toHexString(magic));
+
+    final int version = headerBuf.get() & 0xFF;
+    if (version > CURRENT_VERSION)
+      throw new IOException(
+          "Unsupported sealed store format version " + version + " (max supported: " + CURRENT_VERSION + ")");
 
     final int colCount = headerBuf.getShort();
     final int blockCount = headerBuf.getInt();
@@ -789,7 +827,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       for (int c = 0; c < colCount; c++)
         colSizes[c] = metaBuf.getInt();
 
-      // Read stats section: numericColCount(4) + [colIdx(4) + min(8) + max(8) + sum(8)] * numericColCount
+      // Read stats section: numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount (schema order)
       long statsPos = pos + baseMetaSize;
       final ByteBuffer numBuf = ByteBuffer.allocate(4);
       if (indexChannel.read(numBuf, statsPos) < 4)
@@ -805,33 +843,51 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       Arrays.fill(maxs, Double.NaN);
 
       if (numericColCount > 0) {
-        final int tripletSize = (4 + 8 + 8 + 8) * numericColCount;
+        final int tripletSize = (8 + 8 + 8) * numericColCount;
         final ByteBuffer statsBuf = ByteBuffer.allocate(tripletSize);
         if (indexChannel.read(statsBuf, statsPos) < tripletSize)
           break;
         statsBuf.flip();
-        for (int n = 0; n < numericColCount; n++) {
-          final int colIdx = statsBuf.getInt();
-          mins[colIdx] = statsBuf.getDouble();
-          maxs[colIdx] = statsBuf.getDouble();
-          sums[colIdx] = statsBuf.getDouble();
+        // Stats are in schema order — iterate columns, populate non-NaN entries
+        int numericIdx = 0;
+        for (int c = 0; c < colCount && numericIdx < numericColCount; c++) {
+          if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP
+              || columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG)
+            continue;
+          mins[c] = statsBuf.getDouble();
+          maxs[c] = statsBuf.getDouble();
+          sums[c] = statsBuf.getDouble();
+          numericIdx++;
         }
         statsPos += tripletSize;
       }
 
       final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums);
+      entry.blockStartOffset = pos;
       long dataPos = statsPos;
       for (int c = 0; c < colCount; c++) {
         entry.columnOffsets[c] = dataPos;
         entry.columnSizes[c] = colSizes[c];
         dataPos += colSizes[c];
       }
+
+      // Read stored CRC32 (validate lazily on first block read)
+      final ByteBuffer crcBuf = ByteBuffer.allocate(4);
+      if (indexChannel.read(crcBuf, dataPos) < 4)
+        throw new IOException("Unexpected end of sealed store: missing block CRC32");
+      crcBuf.flip();
+      entry.storedCRC = crcBuf.getInt();
+      entry.crcValidated = false;
+
+      dataPos += 4; // skip CRC
+
       blockDirectory.add(entry);
       pos = dataPos;
     }
   }
 
   private long[] decompressTimestamps(final BlockEntry entry, final int tsColIdx) throws IOException {
+    validateBlockCRC(entry);
     final byte[] compressed = readBytes(entry.columnOffsets[tsColIdx], entry.columnSizes[tsColIdx]);
     return DeltaOfDeltaCodec.decode(compressed);
   }
@@ -923,11 +979,44 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Columns are contiguous on disk, so one pread covers all of them.
    */
   private byte[] readBlockData(final BlockEntry entry) throws IOException {
-    final long startOffset = entry.columnOffsets[0];
-    int totalSize = 0;
-    for (final int size : entry.columnSizes)
-      totalSize += size;
-    return readBytes(startOffset, totalSize);
+    final long dataStart = entry.columnOffsets[0];
+    int totalDataSize = 0;
+    for (final int s : entry.columnSizes)
+      totalDataSize += s;
+    final byte[] data = readBytes(dataStart, totalDataSize);
+    if (!entry.crcValidated) {
+      final int metaSize = (int) (dataStart - entry.blockStartOffset);
+      final byte[] metaBytes = readBytes(entry.blockStartOffset, metaSize);
+      final CRC32 crc = new CRC32();
+      crc.update(metaBytes);
+      crc.update(data);
+      checkCRC(entry, crc);
+    }
+    return data;
+  }
+
+  /**
+   * Validates block CRC32 on first access (used by scanRange/iterateRange paths).
+   * Reads the entire block (meta + data) in one call to verify.
+   */
+  private void validateBlockCRC(final BlockEntry entry) throws IOException {
+    if (entry.crcValidated)
+      return;
+    final long endOfData = entry.columnOffsets[entry.columnSizes.length - 1]
+        + entry.columnSizes[entry.columnSizes.length - 1];
+    final int blockSize = (int) (endOfData - entry.blockStartOffset);
+    final byte[] blockBytes = readBytes(entry.blockStartOffset, blockSize);
+    final CRC32 crc = new CRC32();
+    crc.update(blockBytes);
+    checkCRC(entry, crc);
+  }
+
+  private void checkCRC(final BlockEntry entry, final CRC32 crc) throws IOException {
+    if ((int) crc.getValue() != entry.storedCRC)
+      throw new IOException("CRC mismatch in sealed store block at offset " + entry.blockStartOffset
+          + " (stored=0x" + Integer.toHexString(entry.storedCRC)
+          + ", computed=0x" + Integer.toHexString((int) crc.getValue()) + ")");
+    entry.crcValidated = true;
   }
 
   /**

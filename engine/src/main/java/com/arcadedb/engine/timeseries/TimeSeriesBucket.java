@@ -38,15 +38,16 @@ import java.util.NoSuchElementException;
  * Mutable TimeSeries bucket backed by paginated storage.
  * Stores samples in row-oriented format within pages for ACID compliance.
  * <p>
- * Header page (page 0) layout (offsets from PAGE_HEADER_SIZE):
+ * Header page (page 0) layout (offsets from PAGE_HEADER_SIZE) — 44 bytes:
  * - [0..3]   magic "TSBC" (4 bytes)
- * - [4..5]   column count (short)
- * - [6..13]  total sample count (long)
- * - [14..21] min timestamp (long)
- * - [22..29] max timestamp (long)
- * - [30]     compaction in progress flag (byte)
- * - [31..38] compaction watermark (long) — sealed store offset
- * - [39..42] active data page count (int)
+ * - [4]      formatVersion (1 byte)
+ * - [5..6]   column count (short)
+ * - [7..14]  total sample count (long)
+ * - [15..22] min timestamp (long)
+ * - [23..30] max timestamp (long)
+ * - [31]     compaction in progress flag (byte)
+ * - [32..39] compaction watermark (long) — sealed store offset
+ * - [40..43] active data page count (int)
  * <p>
  * Data pages layout (offsets from PAGE_HEADER_SIZE):
  * - [0..1]   sample count in page (short)
@@ -64,15 +65,16 @@ public class TimeSeriesBucket extends PaginatedComponent {
   private static final int    MAGIC_VALUE = 0x54534243; // "TSBC"
 
   // Header page offsets (from PAGE_HEADER_SIZE)
-  private static final int HEADER_MAGIC_OFFSET         = 0;
-  private static final int HEADER_COLUMN_COUNT_OFFSET  = 4;
-  private static final int HEADER_SAMPLE_COUNT_OFFSET  = 6;
-  private static final int HEADER_MIN_TS_OFFSET        = 14;
-  private static final int HEADER_MAX_TS_OFFSET        = 22;
-  private static final int HEADER_COMPACTION_FLAG       = 30;
-  private static final int HEADER_COMPACTION_WATERMARK = 31;
-  private static final int HEADER_DATA_PAGE_COUNT      = 39;
-  private static final int HEADER_SIZE                 = 43;
+  private static final int HEADER_MAGIC_OFFSET            = 0;
+  private static final int HEADER_FORMAT_VERSION_OFFSET   = 4;
+  private static final int HEADER_COLUMN_COUNT_OFFSET     = 5;
+  private static final int HEADER_SAMPLE_COUNT_OFFSET     = 7;
+  private static final int HEADER_MIN_TS_OFFSET           = 15;
+  private static final int HEADER_MAX_TS_OFFSET           = 23;
+  private static final int HEADER_COMPACTION_FLAG         = 31;
+  private static final int HEADER_COMPACTION_WATERMARK    = 32;
+  private static final int HEADER_DATA_PAGE_COUNT         = 40;
+  private static final int HEADER_SIZE                    = 44;
 
   // Data page offsets (from PAGE_HEADER_SIZE)
   private static final int DATA_SAMPLE_COUNT_OFFSET = 0;
@@ -447,6 +449,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final TransactionContext tx = database.getTransaction();
     final MutablePage headerPage = tx.addPage(new PageId(database, fileId, 0), pageSize);
     headerPage.writeInt(HEADER_MAGIC_OFFSET, MAGIC_VALUE);
+    headerPage.writeByte(HEADER_FORMAT_VERSION_OFFSET, (byte) VERSION);
     headerPage.writeShort(HEADER_COLUMN_COUNT_OFFSET, (short) columns.size());
     headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, 0L);
     headerPage.writeLong(HEADER_MIN_TS_OFFSET, Long.MAX_VALUE);
