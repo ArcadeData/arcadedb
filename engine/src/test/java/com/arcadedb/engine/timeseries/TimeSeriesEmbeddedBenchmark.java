@@ -171,138 +171,98 @@ public class TimeSeriesEmbeddedBenchmark {
       final long compactTime = (System.nanoTime() - compactStart) / 1_000_000;
       System.out.printf("Compaction time:       %,d ms%n", compactTime);
 
-      // Query performance test
-      System.out.println("\n--- Query Performance ---");
-
-      // Count query
-      long queryStart = System.nanoTime();
-      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM SensorData")) {
-        long count = 0;
-        if (rs.hasNext())
-          count = ((Number) rs.next().getProperty("cnt")).longValue();
-        long queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-        System.out.printf("COUNT(*):              %,d ms (result: %,d)%n", queryTime, count);
-      }
-
-      // Range scan with count
-      queryStart = System.nanoTime();
-      final long midTs = baseTimestamp + (long) (TOTAL_POINTS / 2) * 100;
-      long rangeScanCount = 0;
-      try (final ResultSet rs = database.query("sql", "SELECT FROM SensorData WHERE ts BETWEEN ? AND ?",
-          midTs, midTs + 3_600_000L)) {
-        while (rs.hasNext()) {
-          rs.next();
-          rangeScanCount++;
-        }
-      }
-      long queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-      System.out.printf("1h range scan:         %,d ms (rows: %,d)%n", queryTime, rangeScanCount);
-
-      // Aggregation with time bucket
-      try {
-        queryStart = System.nanoTime();
-        long aggRows = 0;
-        try (final ResultSet rs = database.query("sql",
-            "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
-                "FROM SensorData GROUP BY hour")) {
-          while (rs.hasNext()) {
-            rs.next();
-            aggRows++;
-          }
-        }
-        queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-        System.out.printf("Hourly aggregation:    %,d ms (buckets: %,d)%n", queryTime, aggRows);
-      } catch (final Exception e) {
-        System.out.printf("Hourly aggregation:    SKIPPED (%s)%n", e.getMessage());
-      }
-
-      // Diagnostics: check where data lives after compaction
-      final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("SensorData")).getEngine();
-      System.out.println("\n--- Data Distribution ---");
-      for (int s = 0; s < engine.getShardCount(); s++) {
-        final TimeSeriesShard shard = engine.getShard(s);
-        System.out.printf("Shard %d: sealed blocks=%d, mutable samples=%,d%n",
-            s, shard.getSealedStore().getBlockCount(), shard.getMutableBucket().getSampleCount());
-      }
-
-      // Direct API test (bypasses SQL layer entirely)
-      queryStart = System.nanoTime();
-      int directCount = 0;
-      final java.util.Iterator<Object[]> iter = engine.iterateQuery(midTs, midTs + 3_600_000L, null, null);
-      while (iter.hasNext()) {
-        iter.next();
-        directCount++;
-      }
-      queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-      System.out.printf("Direct API 1h scan:    %,d ms (rows: %,d)%n", queryTime, directCount);
-
-      // Profiled range scan — shows cost breakdown per execution step
-      System.out.println("\n--- PROFILE: 1h range scan ---");
-      try (final ResultSet profileRs = database.command("sql",
-          "PROFILE SELECT FROM SensorData WHERE ts BETWEEN ? AND ?", midTs, midTs + 3_600_000L)) {
-        if (profileRs.hasNext()) {
-          final Result profile = profileRs.next();
-          System.out.println((String) profile.getProperty("executionPlanAsString"));
-        }
-      }
-
       System.out.println("==============================================");
 
-      // Close database to flush everything from RAM
+      // Close database to flush everything from RAM — forces cold reads from disk
       database.close();
 
-      // Reopen database for cold queries
-      System.out.println("\n--- Cold Queries (after close/reopen) ---");
+      // Reopen database — all queries below are truly cold (no page cache, no JIT warmup on query paths)
+      System.out.println("\n--- Cold Queries (after close/reopen, all data from disk) ---");
+      final long midTs = baseTimestamp + (long) (TOTAL_POINTS / 2) * 100;
       final Database coldDb = factory.open();
       try {
+        // Data distribution after cold open
+        final TimeSeriesEngine coldEngine = ((LocalTimeSeriesType) coldDb.getSchema().getType("SensorData")).getEngine();
+        System.out.println("\n--- Data Distribution ---");
+        for (int s = 0; s < coldEngine.getShardCount(); s++) {
+          final TimeSeriesShard shard = coldEngine.getShard(s);
+          System.out.printf("Shard %d: sealed blocks=%d, mutable samples=%,d%n",
+              s, shard.getSealedStore().getBlockCount(), shard.getMutableBucket().getSampleCount());
+        }
+
         // Count query
-        queryStart = System.nanoTime();
+        long queryStart = System.nanoTime();
         try (final ResultSet rs = coldDb.query("sql", "SELECT count(*) AS cnt FROM SensorData")) {
           long count = 0;
           if (rs.hasNext())
             count = ((Number) rs.next().getProperty("cnt")).longValue();
-          queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+          long queryTime = (System.nanoTime() - queryStart) / 1_000_000;
           System.out.printf("COUNT(*):              %,d ms (result: %,d)%n", queryTime, count);
         }
 
-        // Range scan
+        // Range scan (1 hour window)
         queryStart = System.nanoTime();
-        long coldRangeCount = 0;
+        long rangeScanCount = 0;
         try (final ResultSet rs = coldDb.query("sql", "SELECT FROM SensorData WHERE ts BETWEEN ? AND ?",
             midTs, midTs + 3_600_000L)) {
           while (rs.hasNext()) {
             rs.next();
-            coldRangeCount++;
+            rangeScanCount++;
           }
         }
-        queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-        System.out.printf("1h range scan:         %,d ms (rows: %,d)%n", queryTime, coldRangeCount);
+        long queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+        System.out.printf("1h range scan:         %,d ms (rows: %,d)%n", queryTime, rangeScanCount);
 
-        // Aggregation
+        // Aggregation with time bucket
         try {
           queryStart = System.nanoTime();
-          long coldAggRows = 0;
+          long aggRows = 0;
           try (final ResultSet rs = coldDb.query("sql",
               "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
                   "FROM SensorData GROUP BY hour")) {
             while (rs.hasNext()) {
               rs.next();
-              coldAggRows++;
+              aggRows++;
             }
           }
           queryTime = (System.nanoTime() - queryStart) / 1_000_000;
-          System.out.printf("Hourly aggregation:    %,d ms (buckets: %,d)%n", queryTime, coldAggRows);
+          System.out.printf("Hourly aggregation:    %,d ms (buckets: %,d)%n", queryTime, aggRows);
         } catch (final Exception e) {
           System.out.printf("Hourly aggregation:    SKIPPED (%s)%n", e.getMessage());
         }
 
-        // Data distribution after cold open
-        final TimeSeriesEngine coldEngine = ((LocalTimeSeriesType) coldDb.getSchema().getType("SensorData")).getEngine();
-        System.out.println("\n--- Cold Data Distribution ---");
-        for (int s = 0; s < coldEngine.getShardCount(); s++) {
-          final TimeSeriesShard shard = coldEngine.getShard(s);
-          System.out.printf("Shard %d: sealed blocks=%d, mutable samples=%,d%n",
-              s, shard.getSealedStore().getBlockCount(), shard.getMutableBucket().getSampleCount());
+        // Direct API test (bypasses SQL layer entirely)
+        queryStart = System.nanoTime();
+        int directCount = 0;
+        final java.util.Iterator<Object[]> iter = coldEngine.iterateQuery(midTs, midTs + 3_600_000L, null, null);
+        while (iter.hasNext()) {
+          iter.next();
+          directCount++;
+        }
+        queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+        System.out.printf("Direct API 1h scan:    %,d ms (rows: %,d)%n", queryTime, directCount);
+
+        // Full scan — measure how long it takes to iterate ALL 50M points from disk
+        queryStart = System.nanoTime();
+        long fullScanCount = 0;
+        final java.util.Iterator<Object[]> fullIter = coldEngine.iterateQuery(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+        while (fullIter.hasNext()) {
+          fullIter.next();
+          fullScanCount++;
+        }
+        queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+        final double scanRate = fullScanCount / (queryTime / 1000.0);
+        System.out.printf("Full scan (all data):  %,d ms (rows: %,d, rate: %,.0f rows/s)%n",
+            queryTime, fullScanCount, scanRate);
+
+        // Profiled range scan — shows cost breakdown per execution step
+        System.out.println("\n--- PROFILE: 1h range scan ---");
+        try (final ResultSet profileRs = coldDb.command("sql",
+            "PROFILE SELECT FROM SensorData WHERE ts BETWEEN ? AND ?", midTs, midTs + 3_600_000L)) {
+          if (profileRs.hasNext()) {
+            final Result profile = profileRs.next();
+            System.out.println((String) profile.getProperty("executionPlanAsString"));
+          }
         }
 
         System.out.println("==============================================");

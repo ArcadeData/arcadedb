@@ -159,6 +159,19 @@ public class TimeSeriesEngine implements AutoCloseable {
       shard.getSealedStore().truncateBefore(cutoffTimestamp);
   }
 
+  /**
+   * Returns the total number of samples across all shards (sealed + mutable).
+   * O(shardCount * blockCount), all data already in memory.
+   */
+  public long countSamples() throws IOException {
+    long total = 0;
+    for (final TimeSeriesShard shard : shards) {
+      total += shard.getSealedStore().getTotalSampleCount();
+      total += shard.getMutableBucket().getSampleCount();
+    }
+    return total;
+  }
+
   public int getShardCount() {
     return shardCount;
   }

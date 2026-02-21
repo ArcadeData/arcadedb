@@ -457,6 +457,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return blockDirectory.size();
   }
 
+  /**
+   * Returns the total number of samples across all sealed blocks.
+   * O(blockCount), all data already in memory from the block directory.
+   */
+  public long getTotalSampleCount() {
+    long total = 0;
+    for (final BlockEntry entry : blockDirectory)
+      total += entry.sampleCount;
+    return total;
+  }
+
   public long getGlobalMinTimestamp() {
     return globalMinTs;
   }
