@@ -3,11 +3,6 @@ var GB_SIZE = 1024 * 1024 * 1024;
 var lastUpdate = null;
 var serverData = null;
 var eventsData = {};
-var serverChartOSCPU = null;
-var serverChartOSRAM = null;
-var serverChartOSDisk = null;
-var serverChartServerRAM = null;
-var serverChartCache = null;
 var serverChartCommands = null;
 var reqPerSecLastMinute = {};
 var serverRefreshTimer = null;
@@ -122,26 +117,78 @@ function displayServerSettings() {
 }
 
 function displayServerSummary() {
-  // COMMANDS
+  var p = serverData.metrics.profiler || {};
+  var ev = serverData.metrics.events || {};
+
+  // CPU
+  var cpuLoad = (p.cpuLoad && p.cpuLoad.perc != null) ? p.cpuLoad.perc : 0;
+  $("#summCpu").text(globalFormatDouble(cpuLoad, 1) + "%");
+
+  // JVM Heap
+  var heapUsed = (p.ramHeapUsed && p.ramHeapUsed.space) || 0;
+  var heapMax = (p.ramHeapMax && p.ramHeapMax.space) || 1;
+  $("#summHeapUsed").text(globalFormatSpace(heapUsed));
+  $("#summHeapMax").text(globalFormatSpace(heapMax));
+  $("#summHeapBar").css("width", Math.round(heapUsed / heapMax * 100) + "%");
+
+  // OS RAM
+  var ramUsed = (p.ramOsUsed && p.ramOsUsed.space) || 0;
+  var ramTotal = (p.ramOsTotal && p.ramOsTotal.space) || 1;
+  $("#summRamUsed").text(globalFormatSpace(ramUsed));
+  $("#summRamTotal").text(globalFormatSpace(ramTotal));
+  $("#summRamBar").css("width", Math.round(ramUsed / ramTotal * 100) + "%");
+
+  // Disk
+  var diskFree = (p.diskFreeSpace && p.diskFreeSpace.space) || 0;
+  var diskTotal = (p.diskTotalSpace && p.diskTotalSpace.space) || 1;
+  var diskUsed = diskTotal - diskFree;
+  $("#summDiskUsed").text(globalFormatSpace(diskUsed));
+  $("#summDiskTotal").text(globalFormatSpace(diskTotal));
+  $("#summDiskBar").css("width", Math.round(diskUsed / diskTotal * 100) + "%");
+
+  // Read Cache
+  var cacheUsed = (p.readCacheUsed && p.readCacheUsed.space) || 0;
+  var cacheMax = (p.cacheMax && p.cacheMax.space) || 1;
+  $("#summCacheUsed").text(globalFormatSpace(cacheUsed));
+  $("#summCacheMax").text(globalFormatSpace(cacheMax));
+  $("#summCacheBar").css("width", Math.round(cacheUsed / cacheMax * 100) + "%");
+
+  // Events
+  $("#summErrors").text(ev.errors || 0);
+  $("#summWarnings").text(ev.warnings || 0);
+  $("#summInfo").text(ev.info || 0);
+  $("#summHints").text(ev.hints || 0);
+
+  // HTTP Req/Sec total (reqPerSecSinceLastTime is actually req in last minute)
+  var totalReqLastMin = 0;
+  if (serverData.metrics.meters) {
+    for (var mName in serverData.metrics.meters) {
+      var meter = serverData.metrics.meters[mName];
+      if (meter.reqPerSecSinceLastTime != null)
+        totalReqLastMin += meter.reqPerSecSinceLastTime;
+    }
+  }
+  $("#summReqPerSec").text(globalFormatDouble(totalReqLastMin / 60, 1));
+  $("#summReqLastMin").text(Math.round(totalReqLastMin));
+
+  // HTTP Requests line chart
   let currentDate = new Date();
   let x = currentDate.getHours() + ":" + currentDate.getMinutes() + ":" + currentDate.getSeconds();
   if (reqPerSecLastMinute.length > 0 && x == reqPerSecLastMinute[0].x)
-    // SKIP SAME SECOND
     return;
 
   if (serverData.metrics.meters) {
     let series = [];
-    for (commandsMetricName in serverData.metrics.meters) {
+    for (let commandsMetricName in serverData.metrics.meters) {
       let metric = serverData.metrics.meters[commandsMetricName];
       let array = reqPerSecLastMinute[commandsMetricName];
       if (!array) {
         array = [];
         reqPerSecLastMinute[commandsMetricName] = array;
       }
-      array.unshift({ x: x, y: metric.reqPerSecSinceLastTime });
+      array.unshift({ x: x, y: Math.round(metric.reqPerSecSinceLastTime / 60) });
 
       if (array.length > 50)
-        // KEEP ONLY THE LATEST 50 VALUES
         array.pop();
 
       series.push({ name: commandsMetricName, data: array });
@@ -151,7 +198,7 @@ function displayServerSummary() {
       series: series,
       labels: ["Used", "Available"],
       chart: { type: "line", height: 300, animations: { enabled: false } },
-      legend: { show: false },
+      legend: { show: true, position: "bottom", horizontalAlign: "center", fontSize: "11px" },
       tooltip: { enabled: true },
       fill: { opacity: [0.24, 1, 1] },
       dataLabels: { enabled: true },
@@ -164,7 +211,7 @@ function displayServerSummary() {
         },
       },
       markers: { size: 1 },
-      yaxis: { title: { text: "Req/Sec" } },
+      yaxis: { title: { text: "Req/Sec" }, labels: { formatter: function(val) { return Math.round(val); } } },
     };
 
     if (serverChartCommands != null) serverChartCommands.destroy();
@@ -172,245 +219,46 @@ function displayServerSummary() {
     serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
     serverChartCommands.render();
   }
-
-  // CPU CHART
-  let cpuLoad = serverData.metrics.profiler.cpuLoad.perc;
-
-  var cpuOptions = {
-    series: [cpuLoad, 100 - cpuLoad],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: () => globalFormatDouble(cpuLoad, 0) + "%" },
-            total: { show: true, label: "OS CPU", formatter: () => globalFormatDouble(cpuLoad, 0) + "%" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartOSCPU != null) serverChartOSCPU.destroy();
-
-  serverChartOSCPU = new ApexCharts(document.querySelector("#serverChartOSCPU"), cpuOptions);
-  serverChartOSCPU.render();
-
-  // OS RAM
-  let ramOsUsed = serverData.metrics.profiler.ramOsUsed.space;
-  let ramOsTotal = serverData.metrics.profiler.ramOsTotal.space;
-
-  var serverRamOSOptions = {
-    series: [ramOsUsed, ramOsTotal - ramOsUsed],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: (val) => globalFormatDouble(val / GB_SIZE, 2) + "GB" },
-            total: { show: true, label: "OS RAM", formatter: () => globalFormatDouble(ramOsUsed / GB_SIZE, 2) + "GB" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartOSRAM != null) serverChartOSRAM.destroy();
-
-  serverChartOSRAM = new ApexCharts(document.querySelector("#serverChartOSRAM"), serverRamOSOptions);
-  serverChartOSRAM.render();
-
-  // OS DISK
-  let diskFreeSpace = serverData.metrics.profiler.diskFreeSpace.space;
-  let diskTotalSpace = serverData.metrics.profiler.diskTotalSpace.space;
-
-  var serverDiskOSOptions = {
-    series: [diskTotalSpace - diskFreeSpace, diskFreeSpace],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: (val) => globalFormatDouble(val / GB_SIZE, 2) + "GB" },
-            total: { show: true, label: "OS DISK", formatter: () => globalFormatDouble((diskTotalSpace - diskFreeSpace) / GB_SIZE, 2) + "GB" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartOSDisk != null) serverChartOSDisk.destroy();
-
-  serverChartOSDisk = new ApexCharts(document.querySelector("#serverChartOSDisk"), serverDiskOSOptions);
-  serverChartOSDisk.render();
-
-  // SERVER RAM
-  let ramHeapUsed = serverData.metrics.profiler.ramHeapUsed.space;
-  let ramHeapMax = serverData.metrics.profiler.ramHeapMax.space;
-
-  var serverRamOptions = {
-    series: [ramHeapUsed, ramHeapMax - ramHeapUsed],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: (val) => globalFormatDouble(val / GB_SIZE, 2) + "GB" },
-            total: { show: true, label: "Server RAM", formatter: () => globalFormatDouble(ramHeapUsed / GB_SIZE, 2) + "GB" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartServerRAM != null) serverChartServerRAM.destroy();
-
-  serverChartServerRAM = new ApexCharts(document.querySelector("#serverChartServerRAM"), serverRamOptions);
-  serverChartServerRAM.render();
-
-  // CACHE
-  let readCacheUsed = serverData.metrics.profiler.readCacheUsed.space;
-  let cacheMax = serverData.metrics.profiler.cacheMax.space;
-
-  var serverCacheOptions = {
-    series: [readCacheUsed, cacheMax - readCacheUsed],
-    labels: ["Used", "Available"],
-    fill: { colors: ["#FFA502", "#48C392"] },
-    chart: { type: "donut", selection: { enable: false }, height: 300, toolbar: { show: false }, animations: { enabled: false } },
-    legend: { show: false },
-    tooltip: { enabled: false },
-    dataLabels: {
-      enabled: false,
-      formatter: function (val) {
-        return globalFormatDouble(val, 0) + "%";
-      },
-    },
-    plotOptions: {
-      pie: {
-        expandOnClick: false,
-        donut: {
-          labels: {
-            show: true,
-            name: { show: true },
-            value: { formatter: (val) => globalFormatDouble(val / GB_SIZE, 2) + "GB" },
-            total: { show: true, label: "Server Cache", formatter: () => globalFormatDouble(readCacheUsed / GB_SIZE, 2) + "GB" },
-          },
-        },
-      },
-    },
-  };
-
-  if (serverChartCache != null) serverChartCache.destroy();
-
-  serverChartCache = new ApexCharts(document.querySelector("#serverChartCache"), serverCacheOptions);
-  serverChartCache.render();
-
-  if (serverData.metrics.events) {
-    $("#serverEventsSummaryErrors").html(serverData.metrics.events.errors);
-    $("#serverEventsSummaryWarnings").html(serverData.metrics.events.warnings);
-    $("#serverEventsSummaryInfo").html(serverData.metrics.events.info);
-    $("#serverEventsSummaryHints").html(serverData.metrics.events.hints);
-  }
 }
 
 function displayMetrics() {
-  if ($.fn.dataTable.isDataTable("#serverMetrics"))
-    try {
-      $("#serverMetrics").DataTable().destroy();
-      $("#serverMetrics").empty();
-    } catch (e) {}
+  var p = serverData.metrics.profiler || {};
+  var m = serverData.metrics.meters || {};
 
-  var tableRecords = [];
-
-  for (let name in serverData.metrics.meters) {
-    let meter = serverData.metrics.meters[name];
-
-    let record = [];
-    record.push(escapeHtml(name));
-    record.push(meter.count);
-    record.push(globalFormatDouble(meter.reqPerSecLastMinute));
-    tableRecords.push(record);
-  }
-
-  for (let name in serverData.metrics.profiler) {
-    let entry = serverData.metrics.profiler[name];
-
-    let record = [];
-    record.push(escapeHtml(name));
-
-    if (entry.perc != null) record.push(globalFormatDouble(entry.perc, 2) + "%");
-    else if (entry.count != null && entry.count != 0) record.push(globalFormatDouble(entry.count, 0));
-    else if (entry.space != null && entry.space != 0) record.push(globalFormatSpace(entry.space));
-    else if (entry.value != null) record.push(entry.value);
+  // Profiler details table
+  var skipProfiler = { cpuLoad: 1, ramHeapUsed: 1, ramHeapMax: 1, ramOsUsed: 1, ramOsTotal: 1,
+    diskFreeSpace: 1, diskTotalSpace: 1, readCacheUsed: 1, cacheMax: 1, configuration: 1 };
+  var profilerHtml = "";
+  var profilerNames = Object.keys(p).sort();
+  for (var i = 0; i < profilerNames.length; i++) {
+    var name = profilerNames[i];
+    if (skipProfiler[name]) continue;
+    var entry = p[name];
+    var val = "";
+    if (entry.perc != null) val = globalFormatDouble(entry.perc, 2) + "%";
+    else if (entry.count != null && entry.count != 0) val = globalFormatDouble(entry.count, 0);
+    else if (entry.space != null && entry.space != 0) val = globalFormatSpace(entry.space);
+    else if (entry.value != null) val = entry.value;
     else continue;
-
-    record.push("");
-
-    tableRecords.push(record);
+    profilerHtml += "<tr><td>" + escapeHtml(name) + "</td><td class='text-end'>" + escapeHtml(String(val)) + "</td></tr>";
   }
+  $("#srvMetricProfilerTable").html(profilerHtml || "<tr><td colspan='2' class='text-muted text-center'>No additional profiler data.</td></tr>");
 
-  // Sort alphabetically by metric name
-  tableRecords.sort(function(a, b) { return a[0].localeCompare(b[0]); });
-
-  $("#serverMetrics").DataTable({
-    paging: false,
-    ordering: true,
-    order: [[0, "asc"]],
-    columns: [{ title: "Metric Name" }, { title: "Value" }, { title: "Req/Sec" }],
-    data: tableRecords,
-  });
+  // HTTP Meters table
+  var meterNames = Object.keys(m).sort();
+  var metersHtml = "";
+  for (var i = 0; i < meterNames.length; i++) {
+    var name = meterNames[i];
+    var meter = m[name];
+    var reqLastMin = meter.reqPerSecSinceLastTime || 0;
+    metersHtml += "<tr>";
+    metersHtml += "<td>" + escapeHtml(name) + "</td>";
+    metersHtml += "<td class='text-end'>" + (meter.count != null ? meter.count.toLocaleString() : "-") + "</td>";
+    metersHtml += "<td class='text-end'>" + Math.round(reqLastMin) + "</td>";
+    metersHtml += "<td class='text-end'>" + globalFormatDouble(reqLastMin / 60, 2) + "</td>";
+    metersHtml += "</tr>";
+  }
+  $("#srvMetricMetersTable").html(metersHtml || "<tr><td colspan='4' class='text-muted text-center'>No HTTP meters available.</td></tr>");
 }
 
 function updateServerSetting(key, value) {
