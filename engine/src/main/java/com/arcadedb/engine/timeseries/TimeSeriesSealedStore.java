@@ -370,6 +370,59 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Push-down multi-column aggregation on sealed blocks.
+   * Processes compressed blocks directly without creating Object[] row arrays.
+   */
+  public void aggregateMultiBlocks(final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
+      final MultiColumnAggregationResult result) throws IOException {
+    final int tsColIdx = findTimestampColumnIndex();
+    final int reqCount = requests.size();
+
+    // Pre-compute schema column indices for each request
+    final int[] schemaColIndices = new int[reqCount];
+    final boolean[] isCount = new boolean[reqCount];
+    for (int r = 0; r < reqCount; r++) {
+      isCount[r] = requests.get(r).type() == AggregationType.COUNT;
+      if (!isCount[r])
+        schemaColIndices[r] = requests.get(r).columnIndex();
+      else
+        schemaColIndices[r] = -1;
+    }
+
+    final double[] rowValues = new double[reqCount];
+
+    for (final BlockEntry entry : blockDirectory) {
+      if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
+        continue;
+
+      // Decompress timestamp column
+      final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+
+      // Decompress only the columns needed by the requests (deduplicated)
+      final double[][] decompressedCols = new double[columns.size()][];
+      for (int r = 0; r < reqCount; r++) {
+        if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null)
+          decompressedCols[schemaColIndices[r]] = decompressDoubleColumn(entry, schemaColIndices[r]);
+      }
+
+      // Aggregate directly on arrays — no Object[] boxing
+      for (int i = 0; i < timestamps.length; i++) {
+        final long ts = timestamps[i];
+        if (ts < fromTs || ts > toTs)
+          continue;
+
+        final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+
+        for (int r = 0; r < reqCount; r++)
+          rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
+
+        result.accumulateRow(bucketTs, rowValues);
+      }
+    }
+  }
+
+  /**
    * Removes all blocks with maxTimestamp < threshold.
    */
   public synchronized void truncateBefore(final long timestamp) throws IOException {

@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -45,7 +46,7 @@ import java.util.logging.Level;
 public class TimeSeriesEmbeddedBenchmark {
 
   private static final String DB_PATH        = "target/databases/ts-benchmark-embedded";
-  private static final int    TOTAL_POINTS   = Integer.getInteger("benchmark.totalPoints", 5_000_000);
+  private static final int    TOTAL_POINTS   = Integer.getInteger("benchmark.totalPoints", 50_000_000);
   private static final int    BATCH_SIZE     = Integer.getInteger("benchmark.batchSize", 20_000);
   private static final int    PARALLEL_LEVEL = Integer.getInteger("benchmark.parallelLevel", 4);
   private static final int    NUM_SENSORS    = Integer.getInteger("benchmark.numSensors", 100);
@@ -254,6 +255,29 @@ public class TimeSeriesEmbeddedBenchmark {
         final double scanRate = fullScanCount / (queryTime / 1000.0);
         System.out.printf("Full scan (all data):  %,d ms (rows: %,d, rate: %,.0f rows/s)%n",
             queryTime, fullScanCount, scanRate);
+
+        // Direct API aggregation — bypasses SQL layer entirely
+        queryStart = System.nanoTime();
+        final MultiColumnAggregationResult directAgg = coldEngine.aggregateMulti(
+            Long.MIN_VALUE, Long.MAX_VALUE,
+            List.of(
+                new MultiColumnAggregationRequest(2, AggregationType.AVG, "avg_temp"),
+                new MultiColumnAggregationRequest(2, AggregationType.MAX, "max_temp")
+            ),
+            3_600_000L, null);
+        queryTime = (System.nanoTime() - queryStart) / 1_000_000;
+        System.out.printf("Direct API agg:        %,d ms (buckets: %,d)%n", queryTime, directAgg.size());
+
+        // Profiled hourly aggregation — shows execution plan with push-down
+        System.out.println("\n--- PROFILE: Hourly aggregation ---");
+        try (final ResultSet profileRs = coldDb.command("sql",
+            "PROFILE SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp " +
+                "FROM SensorData GROUP BY hour")) {
+          if (profileRs.hasNext()) {
+            final Result profile = profileRs.next();
+            System.out.println((String) profile.getProperty("executionPlanAsString"));
+          }
+        }
 
         // Profiled range scan — shows cost breakdown per execution step
         System.out.println("\n--- PROFILE: 1h range scan ---");

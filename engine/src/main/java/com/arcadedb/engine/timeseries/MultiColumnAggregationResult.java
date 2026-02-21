@@ -18,98 +18,148 @@
  */
 package com.arcadedb.engine.timeseries;
 
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
  * Holds multi-column aggregation results bucketed by timestamp.
- * Each bucket maps alias -> AccumulatorEntry which tracks value, count, and aggregation type.
+ * Uses flat arrays indexed by request position for minimal per-row overhead.
+ * Each bucket stores a double[] (values) and long[] (counts) with one slot per aggregation request.
  */
 public final class MultiColumnAggregationResult {
 
-  private final LinkedHashMap<Long, Map<String, AccumulatorEntry>> buckets = new LinkedHashMap<>();
+  private final int                          requestCount;
+  private final AggregationType[]            types;
+  private final Map<Long, double[]>          valuesByBucket = new HashMap<>();
+  private final Map<Long, long[]>            countsByBucket = new HashMap<>();
+  private final List<Long>                   orderedBuckets = new ArrayList<>();
+
+  public MultiColumnAggregationResult(final List<MultiColumnAggregationRequest> requests) {
+    this.requestCount = requests.size();
+    this.types = new AggregationType[requestCount];
+    for (int i = 0; i < requestCount; i++)
+      types[i] = requests.get(i).type();
+  }
 
   /**
-   * Accumulates a value into the given bucket for the given alias.
+   * Accumulates a value for request at the given index into the given bucket.
+   * Designed for hot-loop performance: single HashMap lookup per bucket per row.
    */
-  public void accumulate(final long bucketTs, final String alias, final double value, final AggregationType type) {
-    final Map<String, AccumulatorEntry> bucket = buckets.computeIfAbsent(bucketTs, k -> new LinkedHashMap<>());
-    final AccumulatorEntry entry = bucket.get(alias);
-    if (entry == null) {
-      bucket.put(alias, new AccumulatorEntry(type == AggregationType.COUNT ? 1.0 : value, 1, type));
-    } else {
-      entry.accumulate(value);
+  public void accumulate(final long bucketTs, final int requestIndex, final double value) {
+    double[] vals = valuesByBucket.get(bucketTs);
+    if (vals == null) {
+      vals = new double[requestCount];
+      final long[] counts = new long[requestCount];
+      // Initialize MIN to MAX_VALUE, MAX to -MAX_VALUE
+      for (int i = 0; i < requestCount; i++) {
+        switch (types[i]) {
+        case MIN:
+          vals[i] = Double.MAX_VALUE;
+          break;
+        case MAX:
+          vals[i] = -Double.MAX_VALUE;
+          break;
+        default:
+          vals[i] = 0.0;
+          break;
+        }
+      }
+      valuesByBucket.put(bucketTs, vals);
+      countsByBucket.put(bucketTs, counts);
+      orderedBuckets.add(bucketTs);
     }
+    accumulateInPlace(vals, countsByBucket.get(bucketTs), requestIndex, value);
+  }
+
+  /**
+   * Batch accumulate for all requests in a single row.
+   * Minimizes HashMap lookups: one lookup per row instead of one per request.
+   */
+  public void accumulateRow(final long bucketTs, final double[] values) {
+    double[] vals = valuesByBucket.get(bucketTs);
+    long[] counts;
+    if (vals == null) {
+      vals = new double[requestCount];
+      counts = new long[requestCount];
+      for (int i = 0; i < requestCount; i++) {
+        switch (types[i]) {
+        case MIN:
+          vals[i] = Double.MAX_VALUE;
+          break;
+        case MAX:
+          vals[i] = -Double.MAX_VALUE;
+          break;
+        default:
+          vals[i] = 0.0;
+          break;
+        }
+      }
+      valuesByBucket.put(bucketTs, vals);
+      countsByBucket.put(bucketTs, counts);
+      orderedBuckets.add(bucketTs);
+    } else {
+      counts = countsByBucket.get(bucketTs);
+    }
+    for (int i = 0; i < requestCount; i++)
+      accumulateInPlace(vals, counts, i, values[i]);
   }
 
   /**
    * Finalizes AVG accumulators by dividing accumulated sums by their counts.
    */
   public void finalizeAvg() {
-    for (final Map<String, AccumulatorEntry> bucket : buckets.values())
-      for (final AccumulatorEntry entry : bucket.values())
-        if (entry.type == AggregationType.AVG)
-          entry.value = entry.value / entry.count;
+    for (int i = 0; i < requestCount; i++) {
+      if (types[i] == AggregationType.AVG) {
+        for (final Map.Entry<Long, double[]> entry : valuesByBucket.entrySet()) {
+          final long[] counts = countsByBucket.get(entry.getKey());
+          if (counts[i] > 0)
+            entry.getValue()[i] = entry.getValue()[i] / counts[i];
+        }
+      }
+    }
   }
 
   /**
    * Returns bucket timestamps in insertion order.
    */
   public List<Long> getBucketTimestamps() {
-    return List.copyOf(buckets.keySet());
+    return orderedBuckets;
   }
 
-  public double getValue(final long bucketTs, final String alias) {
-    final Map<String, AccumulatorEntry> bucket = buckets.get(bucketTs);
-    if (bucket == null)
-      return 0.0;
-    final AccumulatorEntry entry = bucket.get(alias);
-    return entry != null ? entry.value : 0.0;
+  public double getValue(final long bucketTs, final int requestIndex) {
+    final double[] vals = valuesByBucket.get(bucketTs);
+    return vals != null ? vals[requestIndex] : 0.0;
   }
 
-  public long getCount(final long bucketTs, final String alias) {
-    final Map<String, AccumulatorEntry> bucket = buckets.get(bucketTs);
-    if (bucket == null)
-      return 0;
-    final AccumulatorEntry entry = bucket.get(alias);
-    return entry != null ? entry.count : 0;
+  public long getCount(final long bucketTs, final int requestIndex) {
+    final long[] counts = countsByBucket.get(bucketTs);
+    return counts != null ? counts[requestIndex] : 0;
   }
 
   public int size() {
-    return buckets.size();
+    return valuesByBucket.size();
   }
 
-  static final class AccumulatorEntry {
-    double              value;
-    long                count;
-    final AggregationType type;
-
-    AccumulatorEntry(final double value, final long count, final AggregationType type) {
-      this.value = value;
-      this.count = count;
-      this.type = type;
+  private void accumulateInPlace(final double[] vals, final long[] counts, final int idx, final double value) {
+    switch (types[idx]) {
+    case SUM:
+    case AVG:
+      vals[idx] += value;
+      break;
+    case COUNT:
+      vals[idx] += 1;
+      break;
+    case MIN:
+      if (value < vals[idx])
+        vals[idx] = value;
+      break;
+    case MAX:
+      if (value > vals[idx])
+        vals[idx] = value;
+      break;
     }
-
-    void accumulate(final double newValue) {
-      switch (type) {
-      case SUM:
-        value += newValue;
-        break;
-      case COUNT:
-        value += 1;
-        break;
-      case AVG:
-        value += newValue; // accumulate sum, finalize later
-        break;
-      case MIN:
-        value = Math.min(value, newValue);
-        break;
-      case MAX:
-        value = Math.max(value, newValue);
-        break;
-      }
-      count++;
-    }
+    counts[idx]++;
   }
 }

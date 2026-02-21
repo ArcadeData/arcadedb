@@ -144,28 +144,48 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * Aggregates multiple columns in a single pass, bucketed by time interval.
    * Returns only the aggregated buckets instead of all raw rows.
+   * Uses block-level aggregation on sealed stores (decompresses arrays directly, no Object[] boxing).
+   * Falls back to row iteration only for the small mutable bucket.
    */
   public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
       final TagFilter tagFilter) throws IOException {
-    final MultiColumnAggregationResult result = new MultiColumnAggregationResult();
-    final Iterator<Object[]> it = iterateQuery(fromTs, toTs, null, tagFilter);
+    final int reqCount = requests.size();
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
 
-    while (it.hasNext()) {
-      final Object[] row = it.next();
-      final long ts = (long) row[0];
-      final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+    // Pre-extract column indices and types for mutable bucket iteration
+    final int[] columnIndices = new int[reqCount];
+    final boolean[] isCount = new boolean[reqCount];
+    for (int r = 0; r < reqCount; r++) {
+      columnIndices[r] = requests.get(r).columnIndex();
+      isCount[r] = requests.get(r).type() == AggregationType.COUNT;
+    }
 
-      for (final MultiColumnAggregationRequest req : requests) {
-        final double value;
-        if (req.type() == AggregationType.COUNT) {
-          value = 1.0;
-        } else if (req.columnIndex() < row.length && row[req.columnIndex()] instanceof Number n) {
-          value = n.doubleValue();
-        } else {
-          value = 0.0;
+    final double[] rowValues = new double[reqCount];
+
+    for (final TimeSeriesShard shard : shards) {
+      // Sealed store: block-level aggregation (decompresses arrays directly, no Object[] boxing)
+      shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, result);
+
+      // Mutable bucket: row-level iteration (typically very few rows)
+      final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
+      while (mutableIter.hasNext()) {
+        final Object[] row = mutableIter.next();
+        final long ts = (long) row[0];
+        if (tagFilter != null && !tagFilter.matches(row))
+          continue;
+        final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+
+        for (int r = 0; r < reqCount; r++) {
+          if (isCount[r])
+            rowValues[r] = 1.0;
+          else if (columnIndices[r] < row.length && row[columnIndices[r]] instanceof Number n)
+            rowValues[r] = n.doubleValue();
+          else
+            rowValues[r] = 0.0;
         }
-        result.accumulate(bucketTs, req.alias(), value, req.type());
+
+        result.accumulateRow(bucketTs, rowValues);
       }
     }
 

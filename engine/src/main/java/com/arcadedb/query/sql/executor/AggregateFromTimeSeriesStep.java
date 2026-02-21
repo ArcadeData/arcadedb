@@ -75,9 +75,10 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
           for (final long bucketTs : aggResult.getBucketTimestamps()) {
             final ResultInternal row = new ResultInternal(context.getDatabase());
             row.setProperty(timeBucketAlias, new Date(bucketTs));
-            for (final MultiColumnAggregationRequest req : requests) {
+            for (int i = 0; i < requests.size(); i++) {
+              final MultiColumnAggregationRequest req = requests.get(i);
               final String outputAlias = requestAliasToOutputAlias.getOrDefault(req.alias(), req.alias());
-              row.setProperty(outputAlias, aggResult.getValue(bucketTs, req.alias()));
+              row.setProperty(outputAlias, aggResult.getValue(bucketTs, i));
             }
             rows.add(row);
             rowCount++;
