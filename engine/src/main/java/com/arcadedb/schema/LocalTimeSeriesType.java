@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -44,7 +45,8 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   private long                         compactionBucketIntervalMs;
   private int                          sealedFormatVersion;
   private int                          mutableFormatVersion;
-  private final List<ColumnDefinition> tsColumns = new ArrayList<>();
+  private final List<ColumnDefinition>  tsColumns         = new ArrayList<>();
+  private       List<DownsamplingTier> downsamplingTiers = new ArrayList<>();
   private TimeSeriesEngine             engine;
 
   public LocalTimeSeriesType(final LocalSchema schema, final String name) {
@@ -105,6 +107,14 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     tsColumns.add(column);
   }
 
+  public List<DownsamplingTier> getDownsamplingTiers() {
+    return downsamplingTiers;
+  }
+
+  public void setDownsamplingTiers(final List<DownsamplingTier> tiers) {
+    this.downsamplingTiers = tiers != null ? new ArrayList<>(tiers) : new ArrayList<>();
+  }
+
   @Override
   public JSONObject toJSON() {
     final JSONObject json = super.toJSON();
@@ -130,6 +140,17 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     }
     json.put("tsColumns", colArray);
 
+    if (!downsamplingTiers.isEmpty()) {
+      final JSONArray tierArray = new JSONArray();
+      for (final DownsamplingTier tier : downsamplingTiers) {
+        final JSONObject tierJson = new JSONObject();
+        tierJson.put("afterMs", tier.afterMs());
+        tierJson.put("granularityMs", tier.granularityMs());
+        tierArray.put(tierJson);
+      }
+      json.put("downsamplingTiers", tierArray);
+    }
+
     return json;
   }
 
@@ -153,6 +174,18 @@ public class LocalTimeSeriesType extends LocalDocumentType {
             colJson.getString("name"),
             Type.getTypeByName(colJson.getString("dataType")),
             ColumnDefinition.ColumnRole.valueOf(colJson.getString("role"))
+        ));
+      }
+    }
+
+    downsamplingTiers.clear();
+    final JSONArray tierArray = json.getJSONArray("downsamplingTiers", null);
+    if (tierArray != null) {
+      for (int i = 0; i < tierArray.length(); i++) {
+        final JSONObject tierJson = tierArray.getJSONObject(i);
+        downsamplingTiers.add(new DownsamplingTier(
+            tierJson.getLong("afterMs"),
+            tierJson.getLong("granularityMs")
         ));
       }
     }

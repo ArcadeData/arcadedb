@@ -34,8 +34,11 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.zip.CRC32;
 
@@ -714,6 +717,327 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();
     rewriteHeader();
+  }
+
+  /**
+   * Downsamples blocks older than cutoffTs to the given granularity.
+   * Blocks already at the target resolution or coarser are left untouched (idempotency).
+   * Numeric fields are averaged per (bucketTs, tagKey) group; tag columns preserved.
+   */
+  public synchronized void downsampleBlocks(final long cutoffTs, final long granularityMs,
+      final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
+
+    final List<BlockEntry> toDownsample = new ArrayList<>();
+    final List<BlockEntry> toKeep = new ArrayList<>();
+
+    for (final BlockEntry entry : blockDirectory) {
+      if (entry.maxTimestamp >= cutoffTs) {
+        toKeep.add(entry);
+        continue;
+      }
+      // Check if block is already at target resolution (density check)
+      if (entry.sampleCount <= 1 || (entry.sampleCount > 1
+          && (entry.maxTimestamp - entry.minTimestamp) / (entry.sampleCount - 1) >= granularityMs)) {
+        toKeep.add(entry);
+        continue;
+      }
+      toDownsample.add(entry);
+    }
+
+    if (toDownsample.isEmpty())
+      return;
+
+    // Decompress all qualifying blocks and aggregate per (bucketTs, tagKey)
+    final Map<String, Map<Long, double[]>> groupedData = new HashMap<>(); // tagKey -> (bucketTs -> [sum0, count0, sum1, count1, ...])
+    final int numFields = numericColIndices.size();
+    final int accSize = numFields * 2; // sum + count per numeric field
+
+    for (final BlockEntry entry : toDownsample) {
+      final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+
+      // Decompress tag columns
+      final Object[][] tagData = new Object[tagColIndices.size()][];
+      for (int t = 0; t < tagColIndices.size(); t++) {
+        final int ci = tagColIndices.get(t);
+        final byte[] compressed = readBytes(entry.columnOffsets[ci], entry.columnSizes[ci]);
+        tagData[t] = switch (columns.get(ci).getCompressionHint()) {
+          case DICTIONARY -> {
+            final String[] vals = DictionaryCodec.decode(compressed);
+            final Object[] boxed = new Object[vals.length];
+            System.arraycopy(vals, 0, boxed, 0, vals.length);
+            yield boxed;
+          }
+          default -> new Object[entry.sampleCount];
+        };
+      }
+
+      // Decompress numeric columns
+      final double[][] numData = new double[numFields][];
+      for (int n = 0; n < numFields; n++) {
+        final int ci = numericColIndices.get(n);
+        numData[n] = decompressDoubleColumn(entry, ci);
+      }
+
+      // Group samples by (tagKey, bucketTs)
+      for (int i = 0; i < timestamps.length; i++) {
+        final long bucketTs = (timestamps[i] / granularityMs) * granularityMs;
+
+        // Build tag key
+        final StringBuilder tagKeyBuilder = new StringBuilder();
+        for (int t = 0; t < tagData.length; t++) {
+          if (t > 0)
+            tagKeyBuilder.append('\0');
+          tagKeyBuilder.append(tagData[t][i] != null ? tagData[t][i].toString() : "");
+        }
+        final String tagKey = tagKeyBuilder.toString();
+
+        final Map<Long, double[]> buckets = groupedData.computeIfAbsent(tagKey, k -> new HashMap<>());
+        final double[] acc = buckets.computeIfAbsent(bucketTs, k -> new double[accSize]);
+        for (int n = 0; n < numFields; n++) {
+          acc[n * 2] += numData[n][i];       // sum
+          acc[n * 2 + 1] += 1.0;             // count
+        }
+      }
+    }
+
+    // Build new downsampled samples from grouped data
+    final List<Object[]> newSamples = new ArrayList<>();
+    for (final Map.Entry<String, Map<Long, double[]>> tagEntry : groupedData.entrySet()) {
+      final String[] tagParts = tagEntry.getKey().split("\0", -1);
+      for (final Map.Entry<Long, double[]> bucketEntry : tagEntry.getValue().entrySet()) {
+        final long bucketTs = bucketEntry.getKey();
+        final double[] acc = bucketEntry.getValue();
+
+        // Build a full row: [timestamp, tag0, tag1, ..., field0, field1, ...]
+        // ordered by column index
+        final Object[] row = new Object[columns.size()];
+        row[tsColIdx] = bucketTs;
+        for (int t = 0; t < tagColIndices.size(); t++)
+          row[tagColIndices.get(t)] = t < tagParts.length ? tagParts[t] : "";
+        for (int n = 0; n < numFields; n++) {
+          final double count = acc[n * 2 + 1];
+          row[numericColIndices.get(n)] = count > 0 ? acc[n * 2] / count : 0.0;
+        }
+        newSamples.add(row);
+      }
+    }
+
+    // Sort by timestamp
+    newSamples.sort(Comparator.comparingLong(row -> (long) row[tsColIdx]));
+
+    // Build new sealed blocks from downsampled data
+    final int colCount = columns.size();
+    final List<byte[][]> newBlocksCompressed = new ArrayList<>();
+    final List<long[]> newBlocksMeta = new ArrayList<>(); // [minTs, maxTs, sampleCount]
+    final List<double[]> newBlocksMins = new ArrayList<>();
+    final List<double[]> newBlocksMaxs = new ArrayList<>();
+    final List<double[]> newBlocksSums = new ArrayList<>();
+
+    int chunkStart = 0;
+    while (chunkStart < newSamples.size()) {
+      final int chunkEnd = Math.min(chunkStart + MAX_BLOCK_SIZE, newSamples.size());
+      final int chunkLen = chunkEnd - chunkStart;
+
+      // Extract timestamps for this chunk
+      final long[] chunkTs = new long[chunkLen];
+      for (int i = 0; i < chunkLen; i++)
+        chunkTs[i] = (long) newSamples.get(chunkStart + i)[tsColIdx];
+
+      // Per-column stats
+      final double[] mins = new double[colCount];
+      final double[] maxs = new double[colCount];
+      final double[] sums = new double[colCount];
+      Arrays.fill(mins, Double.NaN);
+      Arrays.fill(maxs, Double.NaN);
+
+      final byte[][] compressedCols = new byte[colCount][];
+      for (int c = 0; c < colCount; c++) {
+        if (c == tsColIdx) {
+          compressedCols[c] = DeltaOfDeltaCodec.encode(chunkTs);
+        } else {
+          final Object[] chunkValues = new Object[chunkLen];
+          for (int i = 0; i < chunkLen; i++)
+            chunkValues[i] = newSamples.get(chunkStart + i)[c];
+          compressedCols[c] = compressColumn(columns.get(c), chunkValues);
+
+          // Compute stats for numeric columns
+          final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
+          if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
+            double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
+            for (final Object v : chunkValues) {
+              final double d = v != null ? ((Number) v).doubleValue() : 0.0;
+              if (d < min)
+                min = d;
+              if (d > max)
+                max = d;
+              sum += d;
+            }
+            mins[c] = min;
+            maxs[c] = max;
+            sums[c] = sum;
+          }
+        }
+      }
+
+      newBlocksCompressed.add(compressedCols);
+      newBlocksMeta.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
+      newBlocksMins.add(mins);
+      newBlocksMaxs.add(maxs);
+      newBlocksSums.add(sums);
+      chunkStart = chunkEnd;
+    }
+
+    // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
+    rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksMins, newBlocksMaxs, newBlocksSums);
+  }
+
+  /**
+   * Rewrites the sealed file, copying retained blocks as raw bytes and appending new blocks.
+   * Sorts the combined result by minTimestamp. Uses atomic tmp-file rename.
+   */
+  private void rewriteWithBlocks(final List<BlockEntry> retained,
+      final List<byte[][]> newCompressed, final List<long[]> newMeta,
+      final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums) throws IOException {
+
+    final int colCount = columns.size();
+    final String tempPath = basePath + ".ts.sealed.tmp";
+
+    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+      // Write placeholder header
+      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+      headerBuf.putInt(MAGIC_VALUE);
+      headerBuf.put((byte) CURRENT_VERSION);
+      headerBuf.putShort((short) colCount);
+      headerBuf.putInt(0);
+      headerBuf.putLong(Long.MAX_VALUE);
+      headerBuf.putLong(Long.MIN_VALUE);
+      headerBuf.flip();
+      tempFile.getChannel().write(headerBuf);
+
+      blockDirectory.clear();
+      globalMinTs = Long.MAX_VALUE;
+      globalMaxTs = Long.MIN_VALUE;
+
+      // Write retained blocks (raw copy)
+      for (final BlockEntry oldEntry : retained)
+        copyBlockToFile(tempFile, oldEntry, colCount);
+
+      // Write new downsampled blocks
+      for (int b = 0; b < newCompressed.size(); b++) {
+        final long[] meta = newMeta.get(b);
+        writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
+            newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount);
+      }
+
+      // Sort block directory by minTimestamp
+      blockDirectory.sort(Comparator.comparingLong(e -> e.minTimestamp));
+    }
+
+    // Swap files
+    indexChannel.close();
+    indexFile.close();
+
+    final File oldFile = new File(basePath + ".ts.sealed");
+    final File tmpFile = new File(tempPath);
+    if (!oldFile.delete() || !tmpFile.renameTo(oldFile))
+      throw new IOException("Failed to swap sealed store files during downsampling");
+
+    indexFile = new RandomAccessFile(oldFile, "rw");
+    indexChannel = indexFile.getChannel();
+    rewriteHeader();
+  }
+
+  private void copyBlockToFile(final RandomAccessFile tempFile, final BlockEntry oldEntry, final int colCount) throws IOException {
+    final byte[][] compressedCols = new byte[colCount][];
+    for (int c = 0; c < colCount; c++)
+      compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
+
+    writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp, oldEntry.maxTimestamp,
+        compressedCols, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums, colCount);
+  }
+
+  private void writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
+      final long minTs, final long maxTs, final byte[][] compressedCols,
+      final double[] columnMins, final double[] columnMaxs, final double[] columnSums,
+      final int colCount) throws IOException {
+
+    int numericColCount = 0;
+    for (int c = 0; c < colCount; c++)
+      if (!Double.isNaN(columnMins[c]))
+        numericColCount++;
+
+    final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
+    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize;
+    final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
+    metaBuf.putInt(BLOCK_MAGIC_VALUE);
+    metaBuf.putLong(minTs);
+    metaBuf.putLong(maxTs);
+    metaBuf.putInt(sampleCount);
+    for (final byte[] col : compressedCols)
+      metaBuf.putInt(col.length);
+    metaBuf.putInt(numericColCount);
+    for (int c = 0; c < colCount; c++) {
+      if (!Double.isNaN(columnMins[c])) {
+        metaBuf.putDouble(columnMins[c]);
+        metaBuf.putDouble(columnMaxs[c]);
+        metaBuf.putDouble(columnSums[c]);
+      }
+    }
+    metaBuf.flip();
+
+    final CRC32 crc = new CRC32();
+    crc.update(metaBuf.array());
+
+    long dataOffset = tempFile.length();
+    tempFile.seek(dataOffset);
+    tempFile.write(metaBuf.array());
+    dataOffset += metaSize;
+
+    final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
+    for (int c = 0; c < colCount; c++) {
+      newEntry.columnOffsets[c] = dataOffset;
+      newEntry.columnSizes[c] = compressedCols[c].length;
+      crc.update(compressedCols[c]);
+      tempFile.write(compressedCols[c]);
+      dataOffset += compressedCols[c].length;
+    }
+
+    final ByteBuffer crcBuf = ByteBuffer.allocate(4);
+    crcBuf.putInt((int) crc.getValue());
+    crcBuf.flip();
+    tempFile.write(crcBuf.array());
+
+    blockDirectory.add(newEntry);
+
+    if (minTs < globalMinTs)
+      globalMinTs = minTs;
+    if (maxTs > globalMaxTs)
+      globalMaxTs = maxTs;
+  }
+
+  private static byte[] compressColumn(final ColumnDefinition col, final Object[] values) {
+    final TimeSeriesCodec codec = col.getCompressionHint();
+    return switch (codec) {
+      case GORILLA_XOR -> {
+        final double[] doubles = new double[values.length];
+        for (int i = 0; i < values.length; i++)
+          doubles[i] = values[i] != null ? ((Number) values[i]).doubleValue() : 0.0;
+        yield GorillaXORCodec.encode(doubles);
+      }
+      case SIMPLE8B -> {
+        final long[] longs = new long[values.length];
+        for (int i = 0; i < values.length; i++)
+          longs[i] = values[i] != null ? ((Number) values[i]).longValue() : 0L;
+        yield Simple8bCodec.encode(longs);
+      }
+      case DICTIONARY -> {
+        final String[] strings = new String[values.length];
+        for (int i = 0; i < values.length; i++)
+          strings[i] = values[i] != null ? values[i].toString() : "";
+        yield DictionaryCodec.encode(strings);
+      }
+      default -> new byte[0];
+    };
   }
 
   public int getBlockCount() {

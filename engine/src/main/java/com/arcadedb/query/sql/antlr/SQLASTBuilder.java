@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -5894,6 +5895,44 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return stmt;
+  }
+
+  @Override
+  public AlterTimeSeriesTypeStatement visitAlterTimeSeriesTypeStmt(
+      final SQLParser.AlterTimeSeriesTypeStmtContext ctx) {
+    final AlterTimeSeriesTypeStatement stmt = new AlterTimeSeriesTypeStatement(-1);
+    final SQLParser.AlterTimeSeriesTypeBodyContext bodyCtx = ctx.alterTimeSeriesTypeBody();
+
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+
+    if (bodyCtx.ADD() != null) {
+      stmt.addPolicy = true;
+      for (final SQLParser.DownsamplingTierClauseContext tierCtx : bodyCtx.downsamplingTierClause()) {
+        final long afterValue = Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText());
+        final long afterMs = afterValue * parseTimeUnitMs(tierCtx.tsTimeUnit(0));
+
+        final long granValue = Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText());
+        final long granMs = granValue * parseTimeUnitMs(tierCtx.tsTimeUnit(1));
+
+        stmt.tiers.add(new DownsamplingTier(afterMs, granMs));
+      }
+      // Sort tiers by afterMs ascending
+      stmt.tiers.sort((a, b) -> Long.compare(a.afterMs(), b.afterMs()));
+    } else {
+      stmt.addPolicy = false;
+    }
+
+    return stmt;
+  }
+
+  private static long parseTimeUnitMs(final SQLParser.TsTimeUnitContext unitCtx) {
+    if (unitCtx.DAYS() != null)
+      return 86400000L;
+    if (unitCtx.HOURS() != null || unitCtx.HOUR() != null)
+      return 3600000L;
+    if (unitCtx.MINUTES() != null || unitCtx.MINUTE() != null)
+      return 60000L;
+    return 86400000L; // default to days
   }
 
   @Override

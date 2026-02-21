@@ -104,6 +104,7 @@ statement
     | ALTER BUCKET alterBucketBody                   # alterBucketStmt
     | ALTER DATABASE alterDatabaseBody               # alterDatabaseStmt
     | ALTER MATERIALIZED VIEW alterMaterializedViewBody     # alterMaterializedViewStmt
+    | ALTER TIMESERIES TYPE alterTimeSeriesTypeBody        # alterTimeSeriesTypeStmt
 
     // DDL Statements - DROP variants
     | DROP TYPE dropTypeBody                         # dropTypeStmt
@@ -452,6 +453,28 @@ tsTagColumnDef
 
 tsFieldColumnDef
     : identifier identifier
+    ;
+
+/**
+ * ALTER TIMESERIES TYPE body - add or drop downsampling policy
+ * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS AFTER 30 DAYS GRANULARITY 1 DAYS
+ * Example: ALTER TIMESERIES TYPE SensorData DROP DOWNSAMPLING POLICY
+ */
+alterTimeSeriesTypeBody
+    : identifier ADD DOWNSAMPLING POLICY downsamplingTierClause+
+    | identifier DROP DOWNSAMPLING POLICY
+    ;
+
+downsamplingTierClause
+    : AFTER INTEGER_LITERAL tsTimeUnit GRANULARITY INTEGER_LITERAL tsTimeUnit
+    ;
+
+tsTimeUnit
+    : DAYS
+    | HOURS
+    | MINUTES
+    | HOUR
+    | MINUTE
     ;
 
 /**
@@ -1384,6 +1407,9 @@ identifier
     | DAYS
     | HOURS
     | MINUTES
+    | DOWNSAMPLING
+    | POLICY
+    | GRANULARITY
     // Additional keywords allowed as identifiers (matching JavaCC parser)
     | PROPERTY
     | BUCKETS

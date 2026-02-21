@@ -328,6 +328,44 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
+   * Applies downsampling tiers to sealed data. For each tier (sorted by afterMs ascending),
+   * blocks older than (nowMs - tier.afterMs) are reduced to tier.granularityMs resolution
+   * by averaging numeric fields per time bucket. Tag columns are preserved as group keys.
+   * The density check provides idempotency: blocks already at or coarser than the target
+   * resolution are left untouched.
+   */
+  public void applyDownsampling(final List<DownsamplingTier> tiers, final long nowMs) throws IOException {
+    if (tiers == null || tiers.isEmpty())
+      return;
+
+    // Identify column roles
+    final int tsColIdx = findTimestampColumnIndex();
+    final List<Integer> tagColIndices = new ArrayList<>();
+    final List<Integer> numericColIndices = new ArrayList<>();
+    for (int c = 0; c < columns.size(); c++) {
+      if (c == tsColIdx)
+        continue;
+      if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG)
+        tagColIndices.add(c);
+      else
+        numericColIndices.add(c);
+    }
+
+    for (final DownsamplingTier tier : tiers) {
+      final long cutoffTs = nowMs - tier.afterMs();
+      for (final TimeSeriesShard shard : shards)
+        shard.getSealedStore().downsampleBlocks(cutoffTs, tier.granularityMs(), tsColIdx, tagColIndices, numericColIndices);
+    }
+  }
+
+  private int findTimestampColumnIndex() {
+    for (int i = 0; i < columns.size(); i++)
+      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        return i;
+    return 0;
+  }
+
+  /**
    * Returns the total number of samples across all shards (sealed + mutable).
    * O(shardCount * blockCount), all data already in memory.
    */

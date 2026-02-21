@@ -57,10 +57,21 @@
   - Reusable decode buffers: `long[65536]` and `double[65536]` allocated once per `aggregateMultiBlocks()` call, reused across all blocks. Buffer-reuse `decode()` overloads added to `DeltaOfDeltaCodec` and `GorillaXORCodec`
   - `BitReader` sliding-window register: pre-loaded 64-bit MSB-aligned window with lazy refill — `readBits(n)` extracts top n bits via single shift, refill amortized every ~7-8 bytes consumed. Eliminates per-call byte-assembly loop (decompVal 1305ms → 1224ms, ~6% improvement — JIT already optimized the old loop effectively)
   - Bucket-aligned compaction: `COMPACTION_INTERVAL` DDL option splits sealed blocks at time bucket boundaries during compaction, ensuring each block fits entirely within one bucket for 100% fast-path aggregation. SQL syntax: `CREATE TIMESERIES TYPE ... COMPACTION_INTERVAL 1 HOURS`. Config persisted in schema JSON and threaded through `TimeSeriesEngine` → `TimeSeriesShard`
-  - 210 timeseries tests passing, zero regressions
+  - 228 timeseries tests passing, zero regressions
+
+- **Phase 4: Downsampling Policies** — Automatic resolution reduction for old data:
+  - `DownsamplingTier` record: `afterMs` (age threshold) + `granularityMs` (target resolution), with validation
+  - Schema persistence: `downsamplingTiers` field in `LocalTimeSeriesType` with JSON serialization/deserialization — backward-compatible with old schemas (null-safe `getJSONArray`)
+  - Builder API: `TimeSeriesTypeBuilder.withDownsamplingTiers(List<DownsamplingTier>)` for programmatic type creation
+  - DDL: `ALTER TIMESERIES TYPE <name> ADD DOWNSAMPLING POLICY AFTER <n> <unit> GRANULARITY <n> <unit> [AFTER ...]` and `ALTER TIMESERIES TYPE <name> DROP DOWNSAMPLING POLICY`
+  - Grammar: 3 new lexer tokens (`DOWNSAMPLING`, `POLICY`, `GRANULARITY`), parser rules (`alterTimeSeriesTypeBody`, `downsamplingTierClause`, `tsTimeUnit`), soft-keyword registration
+  - `AlterTimeSeriesTypeStatement` DDL statement with `SQLASTBuilder.visitAlterTimeSeriesTypeStmt()` visitor — time unit parsing reuses existing DAYS/HOURS/MINUTES tokens
+  - `TimeSeriesEngine.applyDownsampling(tiers, nowMs)`: iterates tiers sorted by afterMs, identifies timestamp/tag/numeric column roles, delegates to sealed store per shard
+  - `TimeSeriesSealedStore.downsampleBlocks()`: density-check idempotency (blocks already at target resolution are skipped), tag-grouped AVG aggregation per `(bucketTs, tagKey)`, atomic tmp-file rewrite with CRC32
+  - Multi-tier behavior: tiers applied independently; density check naturally handles hierarchy (1min blocks pass 1min check but fail 1hr check when tier 2 cutoff reached)
+  - 7 new tests: DDL add/drop with persistence across close/reopen, single-tier accuracy (AVG=30.5 for 1..60), multi-tier, idempotency, multi-tag grouping, retention interaction, empty engine no-op
 
 ### In Progress / Not Yet Started
-- **Phase 4: Downsampling & Tiered Storage** — Automatic resolution reduction for old data; hot/warm/cold tier migration
 - **Phase 6: PromQL / MetricsQL Compatibility** — Alternative query language support for monitoring use cases
 - **Phase 7: Grafana Integration** — Native data source plugin for Grafana dashboards
 - **Graph + TimeSeries Integration** — Cross-model queries (e.g., `MATCH {type: Device} -HAS_METRIC-> {type: Sensor} WHERE ts.rate(value, ts) > 100`)
