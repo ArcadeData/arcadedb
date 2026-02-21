@@ -330,7 +330,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     httpServer.getServer().getConfiguration().setValue(key, value);
   }
 
-  private String getServerEvents(final String fileName) {
+  private JSONObject getServerEvents(final String fileName) {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.get-server-events").increment();
 
@@ -339,7 +339,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         server.getEventLog().getEvents(fileName);
     final JSONArray files = server.getEventLog().getFiles();
 
-    return "{ \"events\": " + events + ", \"files\": " + files + " }";
+    return new JSONObject().put("events", events).put("files", files);
   }
 
   private void alignDatabase(final String databaseName) {
