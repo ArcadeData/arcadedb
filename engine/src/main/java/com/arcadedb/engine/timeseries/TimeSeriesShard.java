@@ -45,14 +45,21 @@ public class TimeSeriesShard implements AutoCloseable {
   private final int                    shardIndex;
   private final DatabaseInternal       database;
   private final List<ColumnDefinition> columns;
+  private final long                   compactionBucketIntervalMs;
   private final TimeSeriesBucket       mutableBucket;
   private final TimeSeriesSealedStore  sealedStore;
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
       final List<ColumnDefinition> columns) throws IOException {
+    this(database, baseName, shardIndex, columns, 0);
+  }
+
+  public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
+      final List<ColumnDefinition> columns, final long compactionBucketIntervalMs) throws IOException {
     this.shardIndex = shardIndex;
     this.database = database;
     this.columns = columns;
+    this.compactionBucketIntervalMs = compactionBucketIntervalMs;
 
     final String shardName = baseName + "_shard_" + shardIndex;
     final String shardPath = database.getDatabasePath() + "/" + shardName;
@@ -200,11 +207,31 @@ public class TimeSeriesShard implements AutoCloseable {
         }
       }
 
-      // Phase 3: Write sealed blocks in chunks with per-column stats
-      for (int chunkStart = 0; chunkStart < totalSamples; chunkStart += SEALED_BLOCK_SIZE) {
-        final int chunkEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
-        final int chunkLen = chunkEnd - chunkStart;
+      // Phase 3: Write sealed blocks in chunks with per-column stats.
+      // When bucket-aligned compaction is configured, split at bucket boundaries
+      // so each block fits entirely within one time bucket (enabling 100% fast-path aggregation).
+      int chunkStart = 0;
+      while (chunkStart < totalSamples) {
+        int chunkEnd;
+        if (compactionBucketIntervalMs > 0) {
+          // Find the bucket for the first sample in this chunk
+          final long bucketStart = (sortedTs[chunkStart] / compactionBucketIntervalMs) * compactionBucketIntervalMs;
+          final long bucketEnd = bucketStart + compactionBucketIntervalMs;
 
+          // Find where the bucket ends (first sample >= bucketEnd) or cap at SEALED_BLOCK_SIZE
+          chunkEnd = chunkStart;
+          final int maxEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
+          while (chunkEnd < maxEnd && sortedTs[chunkEnd] < bucketEnd)
+            chunkEnd++;
+
+          // Safety: ensure at least one sample per chunk to avoid infinite loop
+          if (chunkEnd == chunkStart)
+            chunkEnd = chunkStart + 1;
+        } else {
+          chunkEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
+        }
+
+        final int chunkLen = chunkEnd - chunkStart;
         final long[] chunkTs = Arrays.copyOfRange(sortedTs, chunkStart, chunkEnd);
 
         // Compute per-column stats for numeric columns
@@ -242,6 +269,7 @@ public class TimeSeriesShard implements AutoCloseable {
         }
 
         sealedStore.appendBlock(chunkLen, chunkTs[0], chunkTs[chunkLen - 1], compressedCols, mins, maxs, sums);
+        chunkStart = chunkEnd;
       }
 
       // Phase 4: Clear mutable pages

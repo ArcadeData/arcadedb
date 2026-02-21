@@ -210,47 +210,85 @@ public final class DeltaOfDeltaCodec {
   }
 
   /**
-   * Bit-level reader over a byte array.
-   * Uses word-level reads for {@code readBits} to avoid per-bit loop overhead.
+   * Sliding-window bit reader over a byte array.
+   * Maintains a pre-loaded 64-bit register ({@code window}) with bits MSB-aligned.
+   * Each {@code readBits(n)} extracts the top n bits via a single shift, avoiding
+   * the per-call byte-assembly loop of the previous implementation.
+   * <p>
+   * Refill happens when the window drops to ≤56 valid bits, loading up to 8 bytes
+   * in one pass. This amortizes array access across ~7-8 decoded values, converting
+   * the critical Gorilla XOR decode loop from ~10 array loads per value to ~1.
    */
   static final class BitReader {
     private final byte[] data;
-    private       int    bitPos = 0;
+    private final int    dataLen;
+    private long         window;       // up to 64 valid bits, MSB-aligned
+    private int          bitsInWindow; // number of valid bits in window
+    private int          bytePos;      // next byte to consume from data[]
 
     BitReader(final byte[] data) {
       this.data = data;
+      this.dataLen = data.length;
+      this.window = 0;
+      this.bitsInWindow = 0;
+      this.bytePos = 0;
+      refill();
     }
 
     int readBit() {
-      final int byteIndex = bitPos >> 3;
-      final int bitIndex = 7 - (bitPos & 7);
-      bitPos++;
-      return (data[byteIndex] >> bitIndex) & 1;
+      if (bitsInWindow == 0)
+        refill();
+      final int bit = (int) (window >>> 63);
+      window <<= 1;
+      bitsInWindow--;
+      return bit;
     }
 
     long readBits(final int numBits) {
       if (numBits == 0)
         return 0;
-      if (numBits == 1)
-        return readBit();
-
-      long result = 0;
-      int remaining = numBits;
-
-      while (remaining > 0) {
-        final int byteIdx = bitPos >> 3;
-        final int bitOff = bitPos & 7;
-        final int available = 8 - bitOff; // bits available in current byte
-        final int toRead = Math.min(remaining, available);
-
-        // Extract 'toRead' bits from current byte starting at 'bitOff'
-        final int shift = available - toRead;
-        result = (result << toRead) | ((data[byteIdx] >> shift) & ((1 << toRead) - 1));
-
-        bitPos += toRead;
-        remaining -= toRead;
+      if (numBits <= bitsInWindow) {
+        // Fast path: extract directly from window — no array access
+        final long result = window >>> (64 - numBits);
+        // Java shift: (long << 64) is a no-op (shift distance masked to 0..63), so special-case it
+        window = numBits < 64 ? window << numBits : 0;
+        bitsInWindow -= numBits;
+        if (bitsInWindow <= 56)
+          refill();
+        return result;
       }
+      // Slow path: numBits > bitsInWindow (only for 64-bit header reads)
+      if (bitsInWindow > 0) {
+        final int have = bitsInWindow;
+        long result = window >>> (64 - have);
+        window = 0;
+        bitsInWindow = 0;
+        refill();
+        final int remaining = numBits - have;
+        result = (result << remaining) | (window >>> (64 - remaining));
+        window <<= remaining;
+        bitsInWindow -= remaining;
+        if (bitsInWindow <= 56)
+          refill();
+        return result;
+      }
+      // bitsInWindow == 0
+      refill();
+      final long result = window >>> (64 - numBits);
+      window = numBits < 64 ? window << numBits : 0;
+      bitsInWindow -= numBits;
+      if (bitsInWindow <= 56)
+        refill();
       return result;
+    }
+
+    private void refill() {
+      // Pack bytes into the lower portion of the window until we have >56 bits or exhaust input.
+      // The threshold of 56 ensures adding 8 bits never overflows the 64-bit register.
+      while (bitsInWindow <= 56 && bytePos < dataLen) {
+        window |= (long) (data[bytePos++] & 0xFF) << (56 - bitsInWindow);
+        bitsInWindow += 8;
+      }
     }
   }
 }

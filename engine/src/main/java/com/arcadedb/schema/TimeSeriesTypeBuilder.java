@@ -36,8 +36,9 @@ public class TimeSeriesTypeBuilder {
   private       String                 typeName;
   private       String                 timestampColumn;
   private       int                    shards      = 0; // 0 = default (1 for now)
-  private       long                   retentionMs = 0;
-  private final List<ColumnDefinition> columns     = new ArrayList<>();
+  private       long                   retentionMs                = 0;
+  private       long                   compactionBucketIntervalMs = 0;
+  private final List<ColumnDefinition> columns                    = new ArrayList<>();
 
   public TimeSeriesTypeBuilder(final DatabaseInternal database) {
     this.database = database;
@@ -74,6 +75,11 @@ public class TimeSeriesTypeBuilder {
     return this;
   }
 
+  public TimeSeriesTypeBuilder withCompactionBucketInterval(final long compactionBucketIntervalMs) {
+    this.compactionBucketIntervalMs = compactionBucketIntervalMs;
+    return this;
+  }
+
   public LocalTimeSeriesType create() {
     if (typeName == null || typeName.isEmpty())
       throw new SchemaException("TimeSeries type name is required");
@@ -88,6 +94,7 @@ public class TimeSeriesTypeBuilder {
     type.setTimestampColumn(timestampColumn);
     type.setShardCount(shards > 0 ? shards : 1);
     type.setRetentionMs(retentionMs);
+    type.setCompactionBucketIntervalMs(compactionBucketIntervalMs);
 
     for (final ColumnDefinition col : columns)
       type.addTsColumn(col);

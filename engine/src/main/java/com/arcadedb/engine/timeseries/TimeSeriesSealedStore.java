@@ -708,6 +708,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return globalMaxTs;
   }
 
+  public long getBlockMinTimestamp(final int blockIndex) {
+    return blockDirectory.get(blockIndex).minTimestamp;
+  }
+
+  public long getBlockMaxTimestamp(final int blockIndex) {
+    return blockDirectory.get(blockIndex).maxTimestamp;
+  }
+
   @Override
   public void close() throws IOException {
     if (indexChannel != null && indexChannel.isOpen())

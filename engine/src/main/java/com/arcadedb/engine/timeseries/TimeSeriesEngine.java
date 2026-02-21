@@ -43,17 +43,25 @@ public class TimeSeriesEngine implements AutoCloseable {
   private final List<ColumnDefinition> columns;
   private final TimeSeriesShard[]      shards;
   private final int                    shardCount;
+  private final long                   compactionBucketIntervalMs;
 
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount) throws IOException {
+    this(database, typeName, columns, shardCount, 0);
+  }
+
+  public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
+      final List<ColumnDefinition> columns, final int shardCount,
+      final long compactionBucketIntervalMs) throws IOException {
     this.database = database;
     this.typeName = typeName;
     this.columns = columns;
     this.shardCount = shardCount;
+    this.compactionBucketIntervalMs = compactionBucketIntervalMs;
     this.shards = new TimeSeriesShard[shardCount];
 
     for (int i = 0; i < shardCount; i++)
-      shards[i] = new TimeSeriesShard(database, typeName, i, columns);
+      shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs);
   }
 
   /**

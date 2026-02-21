@@ -433,7 +433,7 @@ createTypeBody
 
 /**
  * CREATE TIMESERIES TYPE body
- * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE) SHARDS 4 RETENTION 90 DAYS
+ * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE) SHARDS 4 RETENTION 90 DAYS COMPACTION_INTERVAL 1 HOURS
  */
 createTimeSeriesTypeBody
     : identifier
@@ -443,6 +443,7 @@ createTimeSeriesTypeBody
       (FIELDS LPAREN tsFieldColumnDef (COMMA tsFieldColumnDef)* RPAREN)?
       (SHARDS INTEGER_LITERAL)?
       (RETENTION INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
+      (COMPACTION_INTERVAL INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
     ;
 
 tsTagColumnDef
@@ -1378,6 +1379,7 @@ identifier
     | TAGS
     | FIELDS
     | RETENTION
+    | COMPACTION_INTERVAL
     | SHARDS
     | DAYS
     | HOURS

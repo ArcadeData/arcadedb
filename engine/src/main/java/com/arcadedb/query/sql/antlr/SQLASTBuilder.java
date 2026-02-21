@@ -5827,14 +5827,70 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
 
-      // Determine time unit (default: DAYS)
-      long multiplier = 86400000L; // DAYS
-      if (bodyCtx.HOURS() != null)
-        multiplier = 3600000L;
-      else if (bodyCtx.MINUTES() != null)
-        multiplier = 60000L;
+      // Determine time unit by looking at tokens after RETENTION + INTEGER_LITERAL
+      long multiplier = 86400000L; // default: DAYS
+      boolean foundRetention = false;
+      boolean foundValue = false;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn) {
+          if (tn.getSymbol().getType() == SQLParser.RETENTION)
+            foundRetention = true;
+          else if (foundRetention && tn.getSymbol().getType() == SQLParser.INTEGER_LITERAL)
+            foundValue = true;
+          else if (foundRetention && foundValue) {
+            if (tn.getSymbol().getType() == SQLParser.HOURS)
+              multiplier = 3600000L;
+            else if (tn.getSymbol().getType() == SQLParser.MINUTES)
+              multiplier = 60000L;
+            break;
+          }
+        }
+      }
 
       stmt.retentionMs = retentionValue * multiplier;
+    }
+
+    // COMPACTION_INTERVAL value with optional time unit
+    if (bodyCtx.COMPACTION_INTERVAL() != null) {
+      long compactionValue = 0;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL) {
+          for (int j = i + 1; j < bodyCtx.children.size(); j++) {
+            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+                && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+              compactionValue = Long.parseLong(tn2.getText());
+              break;
+            }
+          }
+          break;
+        }
+      }
+
+      // Determine time unit (default: HOURS for compaction interval)
+      long multiplier = 3600000L; // HOURS
+      // Check for unit keywords AFTER the COMPACTION_INTERVAL token
+      // We need to look at the remaining children after the integer literal
+      boolean foundCompaction = false;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL)
+          foundCompaction = true;
+        else if (foundCompaction && bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn) {
+          if (tn.getSymbol().getType() == SQLParser.DAYS) {
+            multiplier = 86400000L;
+            break;
+          } else if (tn.getSymbol().getType() == SQLParser.HOURS) {
+            multiplier = 3600000L;
+            break;
+          } else if (tn.getSymbol().getType() == SQLParser.MINUTES) {
+            multiplier = 60000L;
+            break;
+          }
+        }
+      }
+
+      stmt.compactionIntervalMs = compactionValue * multiplier;
     }
 
     return stmt;

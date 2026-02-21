@@ -41,6 +41,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   private String                       timestampColumn;
   private int                          shardCount;
   private long                         retentionMs;
+  private long                         compactionBucketIntervalMs;
   private final List<ColumnDefinition> tsColumns = new ArrayList<>();
   private TimeSeriesEngine             engine;
 
@@ -54,7 +55,8 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   public void initEngine() throws IOException {
     if (engine != null)
       return;
-    engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns, shardCount > 0 ? shardCount : 1);
+    engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns, shardCount > 0 ? shardCount : 1,
+        compactionBucketIntervalMs);
   }
 
   public TimeSeriesEngine getEngine() {
@@ -85,6 +87,14 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     this.retentionMs = retentionMs;
   }
 
+  public long getCompactionBucketIntervalMs() {
+    return compactionBucketIntervalMs;
+  }
+
+  public void setCompactionBucketIntervalMs(final long compactionBucketIntervalMs) {
+    this.compactionBucketIntervalMs = compactionBucketIntervalMs;
+  }
+
   public List<ColumnDefinition> getTsColumns() {
     return tsColumns;
   }
@@ -103,6 +113,8 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     json.put("timestampColumn", timestampColumn);
     json.put("shardCount", shardCount);
     json.put("retentionMs", retentionMs);
+    if (compactionBucketIntervalMs > 0)
+      json.put("compactionBucketIntervalMs", compactionBucketIntervalMs);
 
     final JSONArray colArray = new JSONArray();
     for (final ColumnDefinition col : tsColumns) {
@@ -124,6 +136,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     timestampColumn = json.getString("timestampColumn", null);
     shardCount = json.getInt("shardCount", 1);
     retentionMs = json.getLong("retentionMs", 0L);
+    compactionBucketIntervalMs = json.getLong("compactionBucketIntervalMs", 0L);
 
     tsColumns.clear();
     final JSONArray colArray = json.getJSONArray("tsColumns", null);

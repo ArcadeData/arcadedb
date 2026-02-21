@@ -44,6 +44,7 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
   public Identifier timestampColumn;
   public PInteger   shards;
   public long       retentionMs;
+  public long       compactionIntervalMs;
 
   public List<ColumnDef> tags   = new ArrayList<>();
   public List<ColumnDef> fields = new ArrayList<>();
@@ -79,6 +80,9 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
 
     if (retentionMs > 0)
       builder = builder.withRetention(retentionMs);
+
+    if (compactionIntervalMs > 0)
+      builder = builder.withCompactionBucketInterval(compactionIntervalMs);
 
     builder.create();
 
@@ -134,6 +138,11 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
       builder.append(" RETENTION ");
       builder.append(retentionMs);
     }
+
+    if (compactionIntervalMs > 0) {
+      builder.append(" COMPACTION_INTERVAL ");
+      builder.append(compactionIntervalMs);
+    }
   }
 
   @Override
@@ -144,6 +153,7 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
     result.timestampColumn = timestampColumn == null ? null : timestampColumn.copy();
     result.shards = shards == null ? null : shards.copy();
     result.retentionMs = retentionMs;
+    result.compactionIntervalMs = compactionIntervalMs;
     result.tags = new ArrayList<>(tags);
     result.fields = new ArrayList<>(fields);
     return result;
@@ -156,14 +166,15 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
     if (o == null || getClass() != o.getClass())
       return false;
     final CreateTimeSeriesTypeStatement that = (CreateTimeSeriesTypeStatement) o;
-    return ifNotExists == that.ifNotExists && retentionMs == that.retentionMs && Objects.equals(name, that.name)
+    return ifNotExists == that.ifNotExists && retentionMs == that.retentionMs
+        && compactionIntervalMs == that.compactionIntervalMs && Objects.equals(name, that.name)
         && Objects.equals(timestampColumn, that.timestampColumn) && Objects.equals(shards, that.shards)
         && Objects.equals(tags, that.tags) && Objects.equals(fields, that.fields);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(name, ifNotExists, timestampColumn, shards, retentionMs, tags, fields);
+    return Objects.hash(name, ifNotExists, timestampColumn, shards, retentionMs, compactionIntervalMs, tags, fields);
   }
 
   public static class ColumnDef {
