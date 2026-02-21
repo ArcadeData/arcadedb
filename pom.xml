@@ -78,7 +78,7 @@
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.3</testcontainers.version>
-        <logback-classic.version>1.5.31</logback-classic.version>
+        <logback-classic.version>1.5.32</logback-classic.version>
         <micrometer.version>1.16.3</micrometer.version>
         <postgres.version>42.7.10</postgres.version>
 
