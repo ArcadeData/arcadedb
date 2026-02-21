@@ -161,14 +161,12 @@ function displayServerSummary() {
   $("#summInfo").text(ev.info || 0);
   $("#summHints").text(ev.hints || 0);
 
-  // Database Operations summary and chart
+  // Transaction Operations summary and chart
   var opsMetrics = {
-    "Create": (p.createRecord && p.createRecord.count) || 0,
-    "Read":   (p.readRecord && p.readRecord.count) || 0,
-    "Update": (p.updateRecord && p.updateRecord.count) || 0,
-    "Delete": (p.deleteRecord && p.deleteRecord.count) || 0,
-    "Tx Commits":   (p.txCommits && p.txCommits.count) || 0,
-    "Tx Rollbacks": (p.txRollbacks && p.txRollbacks.count) || 0
+    "Queries":         (p.queries && p.queries.count) || 0,
+    "Tx Commits":      (p.txCommits && p.txCommits.count) || 0,
+    "Tx Rollbacks":    (p.txRollbacks && p.txRollbacks.count) || 0,
+    "MVCC Contention": (p.concurrentModificationExceptions && p.concurrentModificationExceptions.count) || 0
   };
 
   var now = Date.now();
