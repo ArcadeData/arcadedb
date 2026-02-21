@@ -30,6 +30,8 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.DefaultServerMetrics;
+import com.arcadedb.server.monitor.ServerMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
@@ -38,9 +40,19 @@ import io.undertow.server.HttpServerExchange;
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.*;
 
 public class GetServerHandler extends AbstractServerHttpHandler {
+  private static final DefaultServerMetrics           profilerRateMetrics = new DefaultServerMetrics();
+  private static final DefaultServerMetrics           httpRateMetrics     = new DefaultServerMetrics();
+  private static final ConcurrentHashMap<String, Long>   prevProfilerCounts  = new ConcurrentHashMap<>();
+  private static final ConcurrentHashMap<String, Double> prevHttpCounts      = new ConcurrentHashMap<>();
+
+  private static final Set<String> RATE_TRACKED_PROFILER_METRICS = Set.of(
+      "writeTx", "readTx", "txRollbacks", "queries", "concurrentModificationExceptions"
+  );
+
   public GetServerHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -140,8 +152,30 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     final JSONObject metricsJSON = new JSONObject();
     response.put("metrics", metricsJSON);
 
-    metricsJSON.put("profiler", Profiler.INSTANCE.toJSON());
+    final JSONObject profilerJSON = Profiler.INSTANCE.toJSON();
+    metricsJSON.put("profiler", profilerJSON);
 
+    // UPDATE PROFILER RATE METRICS FOR THE 4 KEY METRICS
+    for (final String metricName : RATE_TRACKED_PROFILER_METRICS) {
+      if (!profilerJSON.has(metricName))
+        continue;
+
+      final JSONObject entry = profilerJSON.getJSONObject(metricName);
+      final long currentCount = entry.getLong("count", 0);
+      final Long prevCount = prevProfilerCounts.put(metricName, currentCount);
+
+      if (prevCount != null) {
+        final long delta = currentCount - prevCount;
+        if (delta > 0)
+          profilerRateMetrics.meter(metricName).hits(delta);
+      }
+
+      final ServerMetrics.Meter meter = profilerRateMetrics.meter(metricName);
+      entry.put("reqPerMinLastMinute", meter.getRequestsPerSecondInLastMinute() * 60F);
+      entry.put("reqPerMinSinceLastTime", meter.getRequestsPerSecondSinceLastAsked() * 60F);
+    }
+
+    // HTTP METERS WITH PROPER RATE TRACKING
     final JSONObject metersJSON = new JSONObject();
     metricsJSON.put("meters", metersJSON);
 
@@ -150,10 +184,21 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     registry.getMeters().stream()
         .filter(meter -> meter.getId().getName().startsWith("http."))
         .forEach(meter -> {
-          metersJSON.put(meter.getId().getName(),
-              new JSONObject().put("count", meter.measure().iterator().next().getValue())
-                  .put("reqPerSecLastMinute", meter.measure().iterator().next().getValue())
-                  .put("reqPerSecSinceLastTime", meter.measure().iterator().next().getValue())
+          final String name = meter.getId().getName();
+          final double currentCount = meter.measure().iterator().next().getValue();
+          final Double prevCount = prevHttpCounts.put(name, currentCount);
+
+          if (prevCount != null) {
+            final long delta = Math.round(currentCount - prevCount);
+            if (delta > 0)
+              httpRateMetrics.meter(name).hits(delta);
+          }
+
+          final ServerMetrics.Meter rateMeter = httpRateMetrics.meter(name);
+          metersJSON.put(name,
+              new JSONObject().put("count", currentCount)
+                  .put("reqPerMinLastMinute", rateMeter.getRequestsPerSecondInLastMinute() * 60F)
+                  .put("reqPerMinSinceLastTime", rateMeter.getRequestsPerSecondSinceLastAsked() * 60F)
           );
         });
 

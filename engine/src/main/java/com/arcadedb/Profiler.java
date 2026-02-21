@@ -69,7 +69,8 @@ public class Profiler {
     long walTotalFiles = 0;
     long concurrentModificationExceptions = 0;
 
-    long txCommits = 0;
+    long writeTx = 0;
+    long readTx = 0;
     long txRollbacks = 0;
     long createRecord = 0;
     long readRecord = 0;
@@ -91,7 +92,8 @@ public class Profiler {
 
     for (final DatabaseInternal db : databases) {
       final Map<String, Object> dbStats = db.getStats();
-      txCommits += (long) dbStats.get("txCommits");
+      writeTx += (long) dbStats.get("writeTx");
+      readTx += (long) dbStats.get("readTx");
       txRollbacks += (long) dbStats.get("txRollbacks");
       createRecord += (long) dbStats.get("createRecord");
       readRecord += (long) dbStats.get("readRecord");
@@ -154,7 +156,8 @@ public class Profiler {
     json.put("walTotalFiles", walTotalFiles);
     json.put("concurrentModificationExceptions", new JSONObject().put("count", concurrentModificationExceptions));
 
-    json.put("txCommits", new JSONObject().put("count", txCommits));
+    json.put("writeTx", new JSONObject().put("count", writeTx));
+    json.put("readTx", new JSONObject().put("count", readTx));
     json.put("txRollbacks", new JSONObject().put("count", txRollbacks));
     json.put("createRecord", new JSONObject().put("count", createRecord));
     json.put("readRecord", new JSONObject().put("count", readRecord));
@@ -258,7 +261,8 @@ public class Profiler {
     long walTotalFiles = 0;
     long concurrentModificationExceptions = 0;
 
-    long txCommits = 0;
+    long writeTx = 0;
+    long readTx = 0;
     long txRollbacks = 0;
     long createRecord = 0;
     long readRecord = 0;
@@ -280,7 +284,8 @@ public class Profiler {
     try {
       for (final DatabaseInternal db : databases) {
         final Map<String, Object> dbStats = db.getStats();
-        txCommits += (long) dbStats.get("txCommits");
+        writeTx += (long) dbStats.get("writeTx");
+      readTx += (long) dbStats.get("readTx");
         txRollbacks += (long) dbStats.get("txRollbacks");
         createRecord += (long) dbStats.get("createRecord");
         readRecord += (long) dbStats.get("readRecord");
@@ -362,9 +367,9 @@ public class Profiler {
         FileUtils.getSizeAsString(pagesWrittenSize)));
 
       buffer.append(
-        "%n DB databases=%d asyncParallelLevel=%d asyncQueue=%d txCommits=%d txRollbacks=%d queries=%d commands=%d".formatted(
+        "%n DB databases=%d asyncParallelLevel=%d asyncQueue=%d writeTx=%d readTx=%d txRollbacks=%d queries=%d commands=%d".formatted(
           databases.size(),
-          asyncParallelLevel, asyncQueueLength, txCommits, txRollbacks, queries, commands));
+          asyncParallelLevel, asyncQueueLength, writeTx, readTx, txRollbacks, queries, commands));
       buffer.append("%n    createRecord=%d readRecord=%d updateRecord=%d deleteRecord=%d".formatted(createRecord, readRecord,
         updateRecord, deleteRecord));
       buffer.append(

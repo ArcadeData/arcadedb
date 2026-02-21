@@ -22,7 +22,8 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 
 public class DatabaseStats {
-  public final AtomicLong txCommits     = new AtomicLong();
+  public final AtomicLong writeTx       = new AtomicLong();
+  public final AtomicLong readTx        = new AtomicLong();
   public final AtomicLong txRollbacks   = new AtomicLong();
   public final AtomicLong createRecord  = new AtomicLong();
   public final AtomicLong readRecord    = new AtomicLong();
@@ -40,7 +41,8 @@ public class DatabaseStats {
 
   public Map<String, Object> toMap() {
     final Map<String, Object> map = new HashMap<>();
-    map.put("txCommits", txCommits.get());
+    map.put("writeTx", writeTx.get());
+    map.put("readTx", readTx.get());
     map.put("txRollbacks", txRollbacks.get());
     map.put("createRecord", createRecord.get());
     map.put("readRecord", readRecord.get());

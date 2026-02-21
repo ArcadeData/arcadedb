@@ -44,7 +44,7 @@ class DatabaseStatsTest extends TestHelper {
     final long readBefore = (long) statsBefore.get("readRecord");
     final long updateBefore = (long) statsBefore.get("updateRecord");
     final long deleteBefore = (long) statsBefore.get("deleteRecord");
-    final long txCommitsBefore = (long) statsBefore.get("txCommits");
+    final long writeTxBefore = (long) statsBefore.get("writeTx");
 
     // CREATE
     database.begin();
@@ -55,7 +55,7 @@ class DatabaseStatsTest extends TestHelper {
 
     Map<String, Object> statsAfter = database.getStats();
     assertThat((long) statsAfter.get("createRecord")).isGreaterThan(createBefore);
-    assertThat((long) statsAfter.get("txCommits")).isGreaterThan(txCommitsBefore);
+    assertThat((long) statsAfter.get("writeTx")).isGreaterThan(writeTxBefore);
 
     final RID rid = doc.getIdentity();
 

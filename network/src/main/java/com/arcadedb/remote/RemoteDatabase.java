@@ -321,7 +321,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   public void commit() {
     checkDatabaseIsOpen();
-    stats.txCommits.incrementAndGet();
+    stats.writeTx.incrementAndGet();
 
     if (getSessionId() == null)
       throw new TransactionException("Transaction not begun");

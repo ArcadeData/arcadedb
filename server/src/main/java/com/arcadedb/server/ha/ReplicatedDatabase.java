@@ -88,8 +88,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public void commit() {
-    proxied.incrementStatsTxCommits();
-
     final boolean isLeader = isLeader();
 
     proxied.executeInReadLock(() -> {
@@ -103,6 +101,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
         try {
           if (phase1 != null) {
+            proxied.incrementStatsWriteTx();
             final Binary bufferChanges = phase1.result;
 
             if (isLeader)
@@ -115,6 +114,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
               tx.reset();
             }
           } else {
+            proxied.incrementStatsReadTx();
             tx.reset();
           }
         } catch (final NeedRetryException | TransactionException e) {

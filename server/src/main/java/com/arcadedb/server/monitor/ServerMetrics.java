@@ -24,6 +24,8 @@ public interface ServerMetrics {
   interface Meter {
     void hit();
 
+    void hits(long count);
+
     float getRequestsPerSecondInLastMinute();
 
     float getRequestsPerSecondSinceLastAsked();
