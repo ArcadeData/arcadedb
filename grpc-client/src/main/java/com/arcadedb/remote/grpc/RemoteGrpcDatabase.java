@@ -263,7 +263,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   public void commit() {
 
     checkDatabaseIsOpen();
-    stats.txCommits.incrementAndGet();
+    stats.writeTx.incrementAndGet();
 
     if (transactionId == null) {
       throw new TransactionException("Transaction not begun");

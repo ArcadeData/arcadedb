@@ -41,13 +41,13 @@ class SchemaStatsQueryTest extends TestHelper {
       final Result r = rs.next();
 
       assertThat((String) r.getProperty("databaseName")).isEqualTo(database.getName());
-      assertThat(r.getPropertyNames()).contains("txCommits", "txRollbacks",
+      assertThat(r.getPropertyNames()).contains("writeTx", "readTx", "txRollbacks",
           "createRecord", "readRecord", "updateRecord", "deleteRecord",
           "queries", "commands", "scanType", "scanBucket",
           "iterateType", "iterateBucket", "countType", "countBucket");
 
-      // We committed at least one transaction
-      assertThat((Long) r.getProperty("txCommits")).isGreaterThan(0);
+      // We committed at least one write transaction
+      assertThat((Long) r.getProperty("writeTx")).isGreaterThan(0);
       // We created at least one record
       assertThat((Long) r.getProperty("createRecord")).isGreaterThan(0);
 
