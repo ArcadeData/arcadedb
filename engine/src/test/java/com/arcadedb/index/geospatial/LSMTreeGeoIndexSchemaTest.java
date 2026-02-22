@@ -20,7 +20,10 @@ package com.arcadedb.index.geospatial;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeIndexBuilder;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,5 +41,41 @@ class LSMTreeGeoIndexSchemaTest extends TestHelper {
     final Index index = database.getSchema().getIndexByName("Location[coords]");
     assertThat(index).isNotNull();
     assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
+  }
+
+  @Test
+  void geospatialIndexSurvivesReopen() {
+    database.command("sql", "CREATE DOCUMENT TYPE Location");
+    database.command("sql", "CREATE PROPERTY Location.coords STRING");
+    database.command("sql", "CREATE INDEX ON Location (coords) GEOSPATIAL");
+
+    reopenDatabase();
+
+    final Index index = database.getSchema().getIndexByName("Location[coords]");
+    assertThat(index).isNotNull();
+    assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
+    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) ((TypeIndex) index).getSubIndexes().getFirst();
+    assertThat(geoIndex.getPrecision()).isEqualTo(GeoIndexMetadata.DEFAULT_PRECISION);
+  }
+
+  @Test
+  void geospatialIndexNonDefaultPrecisionSurvivesReopen() {
+    database.command("sql", "CREATE DOCUMENT TYPE Location2");
+    database.command("sql", "CREATE PROPERTY Location2.coords STRING");
+
+    final TypeIndexBuilder builder = database.getSchema().buildTypeIndex("Location2", new String[] { "coords" });
+    builder.withType(Schema.INDEX_TYPE.GEOSPATIAL);
+    final GeoIndexMetadata geoMeta = new GeoIndexMetadata("Location2", new String[] { "coords" }, -1);
+    geoMeta.setPrecision(7);
+    builder.metadata = geoMeta;
+    builder.create();
+
+    reopenDatabase();
+
+    final Index index = database.getSchema().getIndexByName("Location2[coords]");
+    assertThat(index).isNotNull();
+    assertThat(index.getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
+    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) ((TypeIndex) index).getSubIndexes().getFirst();
+    assertThat(geoIndex.getPrecision()).isEqualTo(7);
   }
 }
