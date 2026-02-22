@@ -439,6 +439,6 @@ public interface Schema {
   FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
 
   enum INDEX_TYPE {
-    LSM_TREE, FULL_TEXT, LSM_VECTOR
+    LSM_TREE, FULL_TEXT, LSM_VECTOR, GEOSPATIAL
   }
 }

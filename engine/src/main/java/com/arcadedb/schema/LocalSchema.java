@@ -51,6 +51,7 @@ import com.arcadedb.index.IndexFactory;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
+import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
@@ -138,6 +139,7 @@ public class LocalSchema implements Schema {
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.LSMTreeIndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.LSMTreeFullTextIndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.LSM_VECTOR.name(), new LSMVectorIndex.LSMVectorIndexFactoryHandler());
+    indexFactory.register(INDEX_TYPE.GEOSPATIAL.name(), new LSMTreeGeoIndex.GeoIndexFactoryHandler());
     configurationFile = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
   }
 
@@ -1489,6 +1491,10 @@ public class LocalSchema implements Schema {
                 if (!index.getType().toString().equals(configuredIndexType)) {
                   if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
                     index = new LSMTreeFullTextIndex((LSMTreeIndex) index);
+                    indexMap.put(indexName, index);
+                  } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
+                    final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
+                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision);
                     indexMap.put(indexName, index);
                   } else {
                     orphanIndexes.put(indexName, indexJSON);

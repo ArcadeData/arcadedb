@@ -436,7 +436,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
   @Override
   public Schema.INDEX_TYPE getType() {
-    throw new UnsupportedOperationException("GEOSPATIAL index type is not yet available");
+    return Schema.INDEX_TYPE.GEOSPATIAL;
   }
 
   @Override
