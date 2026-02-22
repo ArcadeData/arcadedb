@@ -154,9 +154,12 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 
   /**
    * Verifies ST_Disjoint returns the city outside the bounding box.
+   * ST_Disjoint always uses the inline full-scan fallback because the GeoHash index
+   * stores intersecting records — disjoint records are precisely those NOT returned
+   * by the index, so the index cannot serve as a valid candidate superset.
    */
   @Test
-  void stDisjointWithIndex() {
+  void stDisjointFallbackWithExistingIndex() {
     database.command("sql", "CREATE DOCUMENT TYPE Location5");
     database.command("sql", "CREATE PROPERTY Location5.name STRING");
     database.command("sql", "CREATE PROPERTY Location5.coords STRING");
@@ -176,5 +179,160 @@ class SQLGeoIndexedQueryTest extends TestHelper {
       names.add(result.next().getProperty("name"));
 
     assertThat(names).containsExactly("Milan");
+  }
+
+  /**
+   * Verifies ST_Contains with stored polygons using inline full-scan evaluation.
+   * ST_Contains(coords, point) finds which stored polygon contains Rome.
+   * No GEOSPATIAL index is created here because the index is optimised for searching
+   * stored points inside a query polygon (ST_Within direction); ST_Contains queries
+   * a small containee shape against large stored containers and the GeoHash detail
+   * level for a point query is too coarse to locate polygon tokens reliably.
+   */
+  @Test
+  void stContainsFallback() {
+    database.command("sql", "CREATE DOCUMENT TYPE Location6");
+    database.command("sql", "CREATE PROPERTY Location6.name STRING");
+    database.command("sql", "CREATE PROPERTY Location6.coords STRING");
+
+    database.transaction(() -> {
+      // A polygon that contains Rome (12.5, 41.9) but not Milan (9.2, 45.5)
+      database.command("sql", "INSERT INTO Location6 SET name = 'ItalyBox', coords = 'POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))'");
+      // A polygon that contains Milan but not Rome
+      database.command("sql", "INSERT INTO Location6 SET name = 'NorthBox', coords = 'POLYGON ((8 44, 11 44, 11 47, 8 47, 8 44))'");
+    });
+
+    // ST_Contains(coords, point) — find which stored polygon contains Rome
+    final ResultSet result = database.query("sql",
+        "SELECT name FROM Location6 WHERE ST_Contains(coords, ST_GeomFromText('POINT (12.5 41.9)')) = true");
+
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().getProperty("name"));
+
+    assertThat(names).hasSize(1);
+    assertThat(names).containsExactly("ItalyBox");
+  }
+
+  /**
+   * Verifies ST_Equals using inline full-scan evaluation.
+   * Only the record at exactly (12.5, 41.9) matches the equality query.
+   * No GEOSPATIAL index is created here because the GeoHash detail level for a point
+   * query shape is too coarse to retrieve the stored point token at full precision.
+   */
+  @Test
+  void stEqualsFallback() {
+    database.command("sql", "CREATE DOCUMENT TYPE Location7");
+    database.command("sql", "CREATE PROPERTY Location7.name STRING");
+    database.command("sql", "CREATE PROPERTY Location7.coords STRING");
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Location7 SET name = 'Rome', coords = 'POINT (12.5 41.9)'");
+      database.command("sql", "INSERT INTO Location7 SET name = 'Milan', coords = 'POINT (9.2 45.5)'");
+      database.command("sql", "INSERT INTO Location7 SET name = 'Naples', coords = 'POINT (14.3 40.8)'");
+    });
+
+    final ResultSet result = database.query("sql",
+        "SELECT name FROM Location7 WHERE ST_Equals(coords, ST_GeomFromText('POINT (12.5 41.9)')) = true");
+
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().getProperty("name"));
+
+    assertThat(names).hasSize(1);
+    assertThat(names).containsExactly("Rome");
+  }
+
+  /**
+   * Verifies ST_Crosses: a stored linestring that crosses a polygon boundary is returned.
+   * The line from (9, 38) to (16, 45) crosses the boundary of the polygon
+   * POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38)).
+   */
+  @Test
+  void stCrossesWithIndex() {
+    database.command("sql", "CREATE DOCUMENT TYPE Location8");
+    database.command("sql", "CREATE PROPERTY Location8.name STRING");
+    database.command("sql", "CREATE PROPERTY Location8.coords STRING");
+    database.command("sql", "CREATE INDEX ON Location8 (coords) GEOSPATIAL");
+
+    database.transaction(() -> {
+      // This line crosses the polygon boundary: starts outside (9,38), ends outside (16,45),
+      // but passes through the interior — it enters and exits the polygon
+      database.command("sql", "INSERT INTO Location8 SET name = 'CrossingLine', coords = 'LINESTRING (9 38, 16 45)'");
+      // This line is fully inside the polygon — does not cross the boundary, so crosses() = false
+      database.command("sql", "INSERT INTO Location8 SET name = 'InsideLine', coords = 'LINESTRING (11 39, 15 43)'");
+    });
+
+    final ResultSet result = database.query("sql",
+        "SELECT name FROM Location8 WHERE ST_Crosses(coords, ST_GeomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
+
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().getProperty("name"));
+
+    assertThat(names).hasSize(1);
+    assertThat(names).containsExactly("CrossingLine");
+  }
+
+  /**
+   * Verifies ST_Overlaps: two polygons with partial overlap are returned, but a fully-contained
+   * polygon is not (overlaps requires same-dimension partial intersection, not containment).
+   */
+  @Test
+  void stOverlapsWithIndex() {
+    database.command("sql", "CREATE DOCUMENT TYPE Location9");
+    database.command("sql", "CREATE PROPERTY Location9.name STRING");
+    database.command("sql", "CREATE PROPERTY Location9.coords STRING");
+    database.command("sql", "CREATE INDEX ON Location9 (coords) GEOSPATIAL");
+
+    database.transaction(() -> {
+      // Partially overlaps the query polygon (shares area but neither contains the other)
+      database.command("sql", "INSERT INTO Location9 SET name = 'WestBox', coords = 'POLYGON ((10 38, 14 38, 14 43, 10 43, 10 38))'");
+      // Fully contained inside the query polygon — overlaps() = false (containment, not overlap)
+      database.command("sql", "INSERT INTO Location9 SET name = 'TinyInner', coords = 'POLYGON ((13 41, 14 41, 14 42, 13 42, 13 41))'");
+      // Completely outside the query polygon — overlaps() = false
+      database.command("sql", "INSERT INTO Location9 SET name = 'FarBox', coords = 'POLYGON ((0 0, 5 0, 5 5, 0 5, 0 0))'");
+    });
+
+    // Query polygon: POLYGON ((12 40, 16 40, 16 45, 12 45, 12 40))
+    final ResultSet result = database.query("sql",
+        "SELECT name FROM Location9 WHERE ST_Overlaps(coords, ST_GeomFromText('POLYGON ((12 40, 16 40, 16 45, 12 45, 12 40))')) = true");
+
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().getProperty("name"));
+
+    assertThat(names).hasSize(1);
+    assertThat(names).containsExactly("WestBox");
+  }
+
+  /**
+   * Verifies ST_Touches: two polygons sharing exactly one edge touch each other.
+   * The left polygon ends at x=12, the right polygon starts at x=12 — they share the boundary.
+   */
+  @Test
+  void stTouchesWithIndex() {
+    database.command("sql", "CREATE DOCUMENT TYPE Location10");
+    database.command("sql", "CREATE PROPERTY Location10.name STRING");
+    database.command("sql", "CREATE PROPERTY Location10.coords STRING");
+    database.command("sql", "CREATE INDEX ON Location10 (coords) GEOSPATIAL");
+
+    database.transaction(() -> {
+      // Shares the edge at x=12 with the query polygon — interiors do not overlap
+      database.command("sql", "INSERT INTO Location10 SET name = 'LeftBox', coords = 'POLYGON ((10 38, 12 38, 12 42, 10 42, 10 38))'");
+      // Fully separate — does not touch
+      database.command("sql", "INSERT INTO Location10 SET name = 'FarBox', coords = 'POLYGON ((20 38, 25 38, 25 42, 20 42, 20 38))'");
+    });
+
+    // Right polygon starting at x=12 touches LeftBox at the shared edge
+    final ResultSet result = database.query("sql",
+        "SELECT name FROM Location10 WHERE ST_Touches(coords, ST_GeomFromText('POLYGON ((12 38, 16 38, 16 42, 12 42, 12 38))')) = true");
+
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().getProperty("name"));
+
+    assertThat(names).hasSize(1);
+    assertThat(names).containsExactly("LeftBox");
   }
 }

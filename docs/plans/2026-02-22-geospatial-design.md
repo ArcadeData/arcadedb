@@ -122,6 +122,19 @@ Wraps `LSMTreeIndex` (identical to how `LSMTreeFullTextIndex` wraps it).
 
 All predicates return `null` when either argument is null (SQL three-valued logic).
 
+**Implementation notes on `allowsIndexedExecution()`:**
+
+- `ST_Disjoint` — returns `false`. The GeoHash index stores records whose geometry intersects
+  the indexed cells. Disjoint records are precisely those *not* present in the intersection
+  result, so the index cannot produce a valid candidate superset. The predicate always falls
+  back to a full scan with inline evaluation.
+- `ST_DWithin` — returns `false`. The current implementation evaluates proximity as a
+  straight-line distance between geometry centers. The GeoHash index returns cells that
+  intersect the query shape, which does not correspond to a distance radius. Correct indexed
+  proximity would require first expanding the search geometry into a bounding circle before
+  GeoHash querying; this is a planned future enhancement. The predicate always falls back to
+  full scan.
+
 Each predicate's `IndexableSQLFunction` implementation:
 - `allowsIndexedExecution()` — returns `true` when first argument is a bare field reference AND a `GEOSPATIAL` index exists on that field in the target type
 - `canExecuteInline()` — always `true` (falls back to full-scan with exact Spatial4j predicate if no index)
