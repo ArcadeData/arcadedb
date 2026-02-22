@@ -92,6 +92,10 @@ import com.arcadedb.function.sql.time.SQLFunctionInterpolate;
 import com.arcadedb.function.sql.time.SQLFunctionMovingAvg;
 import com.arcadedb.function.sql.time.SQLFunctionRate;
 import com.arcadedb.function.sql.time.SQLFunctionTsPercentile;
+import com.arcadedb.function.sql.time.SQLFunctionLag;
+import com.arcadedb.function.sql.time.SQLFunctionLead;
+import com.arcadedb.function.sql.time.SQLFunctionRank;
+import com.arcadedb.function.sql.time.SQLFunctionRowNumber;
 import com.arcadedb.function.sql.time.SQLFunctionTsFirst;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
 import com.arcadedb.function.sql.vector.SQLFunctionDenseVectorToSparse;
@@ -237,6 +241,11 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionMovingAvg.NAME, SQLFunctionMovingAvg.class);
     register(SQLFunctionRate.NAME, SQLFunctionRate.class);
     register(SQLFunctionTsPercentile.NAME, SQLFunctionTsPercentile.class);
+    // Window functions
+    register(SQLFunctionLag.NAME, SQLFunctionLag.class);
+    register(SQLFunctionLead.NAME, SQLFunctionLead.class);
+    register(SQLFunctionRowNumber.NAME, SQLFunctionRowNumber.class);
+    register(SQLFunctionRank.NAME, SQLFunctionRank.class);
 
     // Vectors
     // Basic Operations

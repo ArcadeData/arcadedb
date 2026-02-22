@@ -13,6 +13,10 @@
   - `ts.correlate(a, b)` — Pearson correlation coefficient
   - `ts.timeBucket(interval, ts)` — time bucketing for GROUP BY aggregation
   - `ts.percentile(value, percentile)` — approximate percentile calculation (0.0-1.0, e.g. 0.95 for p95, 0.99 for p99) with sorted exact computation and linear rank interpolation
+  - `ts.lag(value, offset, timestamp [, default])` — previous row value (window function)
+  - `ts.lead(value, offset, timestamp [, default])` — next row value (window function)
+  - `ts.rowNumber(timestamp)` — sequential 1-based row numbering (window function)
+  - `ts.rank(value, timestamp)` — rank with ties, gaps after ties (window function)
 
 - **Phase 3: Continuous Aggregates** — Watermark-based incremental refresh for pre-computed timeseries rollups:
   - `ContinuousAggregate` interface and `ContinuousAggregateImpl` with watermark tracking, atomic refresh guard, JSON persistence, metrics
@@ -137,7 +141,7 @@ Gap analysis comparing ArcadeDB's TimeSeries against top 10 TSDBs: InfluxDB 3, T
 - ~~Approximate percentiles (p50/p95/p99)~~ — **DONE** (`ts.percentile` function)
 - ~~Linear interpolation in gap filling~~ — **DONE** (`ts.interpolate` 'linear' method)
 - **OpenTelemetry (OTLP) ingestion** — CNCF standard for observability. OTLP (gRPC + HTTP) becoming the universal ingest protocol (5/10 and growing)
-- **Window functions for TimeSeries queries** — `ROW_NUMBER`, `LAG`, `LEAD`, `RANK` etc. Essential for comparing current vs previous values, running totals. Not available via push-down aggregation path (6/10 TSDBs)
+- ~~Window functions for TimeSeries queries~~ — **DONE** (`ts.lag`, `ts.lead`, `ts.rowNumber`, `ts.rank`)
 - **Cardinality management & monitoring** — Tools to explore, limit, and alert on cardinality growth. The `DictionaryCodec` has a hard 65,535 limit per block that throws at runtime with no warning
 - **Streaming / real-time aggregation at ingestion** — Pre-aggregate data at ingestion time to reduce storage and query cost (e.g., reduce 1s samples to 1min before storage)
 - **ASOF JOIN / temporal joins** — Find closest timestamp match between two time series without exact alignment. Critical for correlating data from sensors with different sampling rates (3/10 TSDBs)
@@ -2330,6 +2334,7 @@ At 1M total samples with 5 columns:
 - ✅ Approximate percentiles via `ts.percentile()` (p50/p95/p99)
 - ✅ Continuous aggregates (watermark-based incremental refresh, automatic post-commit trigger, SQL DDL, schema metadata)
 - ✅ Downsampling policies with automatic scheduler
+- ✅ Window functions: `ts.lag()`, `ts.lead()`, `ts.rowNumber()`, `ts.rank()` — compare current/previous values, sequential numbering, ranking with ties
 
 ### v3 (Phase 3 — "Graph + TimeSeries, The Differentiator")
 **Goal**: World's first native graph + timeseries integration.
@@ -2372,7 +2377,7 @@ At 1M total samples with 5 columns:
 
 | Priority | Feature | Who has it | Effort |
 |----------|---------|-----------|--------|
-| P1 | SQL window functions (LAG, LEAD, RANK, etc.) | TimescaleDB, QuestDB, ClickHouse, TDengine, Kdb+ | High |
+| ~~P1~~ | ~~SQL window functions (LAG, LEAD, RANK, etc.)~~ | ~~TimescaleDB, QuestDB, ClickHouse, TDengine, Kdb+~~ | **DONE** |
 | P1 | ASOF JOIN / temporal joins | QuestDB, ClickHouse, Kdb+ | High |
 | P1 | Streaming aggregation at ingestion | TDengine, VictoriaMetrics, QuestDB | High |
 | P2 | TimeSeries via PostgreSQL wire protocol | TimescaleDB, QuestDB | Medium |
