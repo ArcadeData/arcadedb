@@ -19,33 +19,31 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
-import org.locationtech.spatial4j.context.SpatialContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * Returns a circle shape with the 3 coordinates received as parameters.
+ * SQL function ST_GeomFromText: parses a WKT string and returns a Shape object.
  *
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * <p>Usage: {@code ST_GeomFromText(<wkt>)}</p>
  */
-public class SQLFunctionCircle extends SQLFunctionAbstract {
-  public static final String NAME = "circle";
+public class SQLFunctionST_GeomFromText extends SQLFunctionAbstract {
+  public static final String NAME = "ST_GeomFromText";
 
-  public SQLFunctionCircle() {
+  public SQLFunctionST_GeomFromText() {
     super(NAME);
   }
 
-  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
-      final CommandContext context) {
-    if (params.length != 3)
-      throw new IllegalArgumentException("circle() requires 3 parameters");
-
-    final SpatialContext spatialContext = GeoUtils.getSpatialContext();
-    return spatialContext.getShapeFactory()
-        .circle(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]), GeoUtils.getDoubleValue(params[2]));
+  @Override
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParams, final CommandContext iContext) {
+    if (iParams == null || iParams.length < 1 || iParams[0] == null)
+      return null;
+    return GeoUtils.parseGeometry(iParams[0]);
   }
 
+  @Override
   public String getSyntax() {
-    return "circle(<center-x>,<center-y>,<distance>)";
+    return "ST_GeomFromText(<wkt>)";
   }
 }

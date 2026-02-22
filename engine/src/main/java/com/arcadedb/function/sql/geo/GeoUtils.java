@@ -18,10 +18,18 @@
  */
 package com.arcadedb.function.sql.geo;
 
+import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.io.ParseException;
+import org.locationtech.jts.io.WKTReader;
+import org.locationtech.jts.io.WKTWriter;
 import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.context.SpatialContextFactory;
 import org.locationtech.spatial4j.context.jts.JtsSpatialContext;
 import org.locationtech.spatial4j.context.jts.JtsSpatialContextFactory;
+import org.locationtech.spatial4j.io.ShapeIO;
+import org.locationtech.spatial4j.shape.Shape;
+
+import java.util.Locale;
 
 /**
  * Geospatial utility class.
@@ -42,5 +50,77 @@ public class GeoUtils {
 
   public static double getDoubleValue(final Object param) {
     return ((Number) param).doubleValue();
+  }
+
+  /**
+   * Parse a value that can be either a Spatial4j Shape or a WKT string into a Shape.
+   * Returns null if the value is null.
+   */
+  public static Shape parseGeometry(final Object value) {
+    if (value == null)
+      return null;
+    if (value instanceof Shape shape)
+      return shape;
+    final String wkt = value.toString().trim();
+    if (wkt.isEmpty())
+      return null;
+    try {
+      return SPATIAL_CONTEXT.getFormats().getReader(ShapeIO.WKT).read(wkt);
+    } catch (Exception e) {
+      throw new IllegalArgumentException("Cannot parse geometry from: " + wkt, e);
+    }
+  }
+
+  /**
+   * Convert a Shape to WKT string using the Spatial4j WKT writer.
+   * Returns null if the shape is null.
+   */
+  public static String toWKT(final Shape shape) {
+    if (shape == null)
+      return null;
+    return SPATIAL_CONTEXT.getFormats().getWriter(ShapeIO.WKT).toString(shape);
+  }
+
+  /**
+   * Parse a WKT string or Shape into a JTS Geometry for advanced operations (buffer, envelope, etc.).
+   * Returns null if the value is null.
+   */
+  public static Geometry parseJtsGeometry(final Object value) {
+    if (value == null)
+      return null;
+    final String wkt;
+    if (value instanceof Shape shape)
+      wkt = toWKT(shape);
+    else
+      wkt = value.toString().trim();
+    if (wkt == null || wkt.isEmpty())
+      return null;
+    try {
+      return new WKTReader().read(wkt);
+    } catch (ParseException e) {
+      throw new IllegalArgumentException("Cannot parse JTS geometry from WKT: " + wkt, e);
+    }
+  }
+
+  /**
+   * Convert a JTS Geometry to WKT string.
+   */
+  public static String jtsToWKT(final Geometry geometry) {
+    if (geometry == null)
+      return null;
+    return new WKTWriter().write(geometry);
+  }
+
+  /**
+   * Format a double for WKT output: no trailing zeros, uses dot decimal separator.
+   */
+  public static String formatCoord(final double value) {
+    // Remove trailing zeros while using US locale for decimal point
+    final String s = String.format(Locale.US, "%.10f", value);
+    // Strip trailing zeros after decimal point
+    int end = s.length();
+    while (end > 1 && s.charAt(end - 1) == '0') end--;
+    if (s.charAt(end - 1) == '.') end--;
+    return s.substring(0, end);
   }
 }

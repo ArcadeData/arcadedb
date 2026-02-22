@@ -29,12 +29,18 @@ import com.arcadedb.function.sql.coll.SQLFunctionMap;
 import com.arcadedb.function.sql.coll.SQLFunctionSet;
 import com.arcadedb.function.sql.coll.SQLFunctionSymmetricDifference;
 import com.arcadedb.function.sql.coll.SQLFunctionUnionAll;
-import com.arcadedb.function.sql.geo.SQLFunctionCircle;
-import com.arcadedb.function.sql.geo.SQLFunctionDistance;
-import com.arcadedb.function.sql.geo.SQLFunctionLineString;
-import com.arcadedb.function.sql.geo.SQLFunctionPoint;
-import com.arcadedb.function.sql.geo.SQLFunctionPolygon;
-import com.arcadedb.function.sql.geo.SQLFunctionRectangle;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Area;
+import com.arcadedb.function.sql.geo.SQLFunctionST_AsGeoJson;
+import com.arcadedb.function.sql.geo.SQLFunctionST_AsText;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Buffer;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Distance;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Envelope;
+import com.arcadedb.function.sql.geo.SQLFunctionST_GeomFromText;
+import com.arcadedb.function.sql.geo.SQLFunctionST_LineString;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Point;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Polygon;
+import com.arcadedb.function.sql.geo.SQLFunctionST_X;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Y;
 import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 import com.arcadedb.function.sql.graph.SQLFunctionBellmanFord;
 import com.arcadedb.function.sql.graph.SQLFunctionBoth;
@@ -166,13 +172,19 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
     register(SQLFunctionUnionAll.NAME, SQLFunctionUnionAll.class);
 
-    // Geo
-    register(SQLFunctionCircle.NAME, new SQLFunctionCircle());
-    register(SQLFunctionDistance.NAME, new SQLFunctionDistance());
-    register(SQLFunctionLineString.NAME, new SQLFunctionLineString());
-    register(SQLFunctionPoint.NAME, new SQLFunctionPoint());
-    register(SQLFunctionPolygon.NAME, new SQLFunctionPolygon());
-    register(SQLFunctionRectangle.NAME, new SQLFunctionRectangle());
+    // Geo — ST_* standard functions
+    register(SQLFunctionST_GeomFromText.NAME, new SQLFunctionST_GeomFromText());
+    register(SQLFunctionST_Point.NAME, new SQLFunctionST_Point());
+    register(SQLFunctionST_LineString.NAME, new SQLFunctionST_LineString());
+    register(SQLFunctionST_Polygon.NAME, new SQLFunctionST_Polygon());
+    register(SQLFunctionST_Buffer.NAME, new SQLFunctionST_Buffer());
+    register(SQLFunctionST_Envelope.NAME, new SQLFunctionST_Envelope());
+    register(SQLFunctionST_Distance.NAME, new SQLFunctionST_Distance());
+    register(SQLFunctionST_Area.NAME, new SQLFunctionST_Area());
+    register(SQLFunctionST_AsText.NAME, new SQLFunctionST_AsText());
+    register(SQLFunctionST_AsGeoJson.NAME, new SQLFunctionST_AsGeoJson());
+    register(SQLFunctionST_X.NAME, new SQLFunctionST_X());
+    register(SQLFunctionST_Y.NAME, new SQLFunctionST_Y());
 
     // Graph
     register(SQLFunctionAstar.NAME, SQLFunctionAstar.class);

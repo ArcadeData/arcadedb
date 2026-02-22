@@ -19,32 +19,34 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * Returns a point in space with X and Y as parameters.
+ * SQL function ST_Point: constructs a WKT POINT string from X (longitude) and Y (latitude).
  *
- * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
+ * <p>Usage: {@code ST_Point(<x>, <y>)}</p>
+ * <p>Returns: WKT string {@code "POINT (x y)"}</p>
  */
-public class SQLFunctionPoint extends SQLFunctionAbstract {
-  public static final String NAME = "point";
+public class SQLFunctionST_Point extends SQLFunctionAbstract {
+  public static final String NAME = "ST_Point";
 
-  public SQLFunctionPoint() {
+  public SQLFunctionST_Point() {
     super(NAME);
   }
 
-  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
-      final CommandContext context) {
-    if (params.length != 2)
-      throw new IllegalArgumentException("point() requires X and Y as parameters");
-
-    // Use lightweight Point for fast serialization (optimized for bulk inserts)
-    return new LightweightPoint(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));
+  @Override
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParams, final CommandContext iContext) {
+    if (iParams == null || iParams.length < 2 || iParams[0] == null || iParams[1] == null)
+      return null;
+    final double x = GeoUtils.getDoubleValue(iParams[0]);
+    final double y = GeoUtils.getDoubleValue(iParams[1]);
+    return "POINT (" + GeoUtils.formatCoord(x) + " " + GeoUtils.formatCoord(y) + ")";
   }
 
+  @Override
   public String getSyntax() {
-    return "point(<x>,<y>)";
+    return "ST_Point(<x>, <y>)";
   }
-
 }
