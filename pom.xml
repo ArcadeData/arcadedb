@@ -89,7 +89,7 @@
         <slf4j.version>2.0.17</slf4j.version>
         <undertow-core.version>2.3.23.Final</undertow-core.version>
         <mockito-core.version>5.21.0</mockito-core.version>
-        <neo4j-driver.version>5.28.10</neo4j-driver.version>
+        <neo4j-driver.version>6.0.3</neo4j-driver.version>
         <byte-buddy.version>1.17.7</byte-buddy.version>
 
 
