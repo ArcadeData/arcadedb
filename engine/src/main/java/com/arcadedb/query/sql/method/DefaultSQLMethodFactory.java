@@ -166,6 +166,10 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodTrim.NAME, new SQLMethodTrim());
   }
 
+  public Map<String, Object> getMethods() {
+    return methods;
+  }
+
   public void register(final String iName, final Object iImplementation) {
     methods.put(iName.toLowerCase(Locale.ENGLISH), iImplementation);
   }

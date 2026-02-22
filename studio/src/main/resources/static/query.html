@@ -431,6 +431,7 @@
     });
 
     renderCodeEditor();
+    loadFunctionReference();
     initSidebarPanels();
     populateQuerySidebar();
     executeCommand();
@@ -483,6 +484,25 @@
       "Ctrl-Down": function (cm) { historyNext(); },
       "Cmd-Up": function (cm) { historyPrevious(); },
       "Cmd-Down": function (cm) { historyNext(); },
+      "Alt-/": function (cm) {
+        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
+      },
+      "Ctrl-Space": function (cm) {
+        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
+      }
+    });
+
+    editor.on("inputRead", function (cm, event) {
+      if (event.origin !== "+input")
+        return;
+      var cur = cm.getCursor();
+      var line = cm.getLine(cur.line);
+      var end = cur.ch;
+      var start = end;
+      while (start > 0 && /[\w._]/.test(line.charAt(start - 1)))
+        start--;
+      if (end - start >= 2)
+        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
     });
 
     setTimeout(function () { editor.refresh(); }, 1);
