@@ -33,7 +33,8 @@
       "Bash(./mvnw install:*)",
       "Bash(tail:*)",
       "Bash(mvn:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(python3:*)"
     ]
   }
 }

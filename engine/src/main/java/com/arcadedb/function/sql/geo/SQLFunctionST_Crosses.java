@@ -18,6 +18,10 @@
  */
 package com.arcadedb.function.sql.geo;
 
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FromClause;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.spatial4j.shape.Shape;
 
@@ -33,6 +37,18 @@ public class SQLFunctionST_Crosses extends SQLFunctionST_Predicate {
 
   public SQLFunctionST_Crosses() {
     super(NAME);
+  }
+
+  /**
+   * ST_Crosses cannot use indexed execution: crossing is a DE-9IM predicate that requires
+   * the geometries to share some — but not all — interior points. Bounding-box intersection
+   * (which the GeoHash index evaluates) is not a valid candidate superset for DE-9IM crossing,
+   * so the index would produce incorrect results.
+   */
+  @Override
+  public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
+      final CommandContext context, final Expression[] oExpressions) {
+    return false;
   }
 
   @Override

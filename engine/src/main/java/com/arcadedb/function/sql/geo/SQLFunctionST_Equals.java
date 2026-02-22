@@ -18,6 +18,10 @@
  */
 package com.arcadedb.function.sql.geo;
 
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FromClause;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.spatial4j.shape.Shape;
 
@@ -33,6 +37,17 @@ public class SQLFunctionST_Equals extends SQLFunctionST_Predicate {
 
   public SQLFunctionST_Equals() {
     super(NAME);
+  }
+
+  /**
+   * ST_Equals cannot use indexed execution: geometric equality requires an exact coordinate match.
+   * The GeoHash index returns all records whose bounding box intersects the search shape, which is
+   * a much coarser superset than exact equality — the index cannot guarantee correctness here.
+   */
+  @Override
+  public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
+      final CommandContext context, final Expression[] oExpressions) {
+    return false;
   }
 
   @Override

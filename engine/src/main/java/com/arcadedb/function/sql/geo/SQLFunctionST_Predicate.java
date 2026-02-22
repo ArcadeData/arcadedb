@@ -53,6 +53,16 @@ public abstract class SQLFunctionST_Predicate extends SQLFunctionAbstract implem
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {
     if (iParams == null || iParams.length < 2 || iParams[0] == null || iParams[1] == null)

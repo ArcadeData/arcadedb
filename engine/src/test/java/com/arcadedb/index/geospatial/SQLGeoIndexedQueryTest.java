@@ -93,10 +93,23 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_DWithin proximity query: only Rome is within ~4 degrees of the search point.
+   * Verifies ST_DWithin proximity query using the inline full-scan fallback path (the index
+   * exists on the type but ST_DWithin always disables indexed execution).
+   *
+   * <p>Search point: POINT (12.0, 41.5), distance threshold: 1.0 degree (great-circle degrees
+   * as computed by {@code SpatialContext.calcDistance()}).
+   *
+   * <p>Distances from the search point:
+   * <ul>
+   *   <li>Rome   (12.5, 41.9): sqrt(0.5^2 + 0.4^2) ≈ 0.64 degrees — within 1.0, included</li>
+   *   <li>Naples (14.3, 40.8): sqrt(2.3^2 + 0.7^2) ≈ 2.40 degrees — outside 1.0, excluded</li>
+   *   <li>Milan  ( 9.2, 45.5): far away              — outside 1.0, excluded</li>
+   * </ul>
+   *
+   * <p>Only Rome qualifies.
    */
   @Test
-  void stDWithinWithIndex() {
+  void stDWithinFallbackWithExistingIndex() {
     database.command("sql", "CREATE DOCUMENT TYPE Location3");
     database.command("sql", "CREATE PROPERTY Location3.name STRING");
     database.command("sql", "CREATE PROPERTY Location3.coords STRING");
@@ -108,17 +121,16 @@ class SQLGeoIndexedQueryTest extends TestHelper {
       database.command("sql", "INSERT INTO Location3 SET name = 'Naples', coords = 'POINT (14.3 40.8)'");
     });
 
-    // Search near Rome (12.5, 42.0) within 1.5 degrees — should find Rome and Naples but not Milan
+    // Search from POINT (12.0, 41.5) within 1.0 degree — only Rome qualifies
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location3 WHERE ST_DWithin(coords, 'POINT (12.5 42.0)', 2.0) = true");
+        "SELECT name FROM Location3 WHERE ST_DWithin(coords, 'POINT (12.0 41.5)', 1.0) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
       names.add(result.next().getProperty("name"));
 
-    assertThat(names).isNotEmpty();
-    assertThat(names).contains("Rome");
-    assertThat(names).doesNotContain("Milan");
+    assertThat(names).hasSize(1);
+    assertThat(names).containsExactlyInAnyOrder("Rome");
   }
 
   /**

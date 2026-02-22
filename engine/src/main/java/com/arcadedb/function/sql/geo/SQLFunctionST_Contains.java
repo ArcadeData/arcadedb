@@ -18,6 +18,10 @@
  */
 package com.arcadedb.function.sql.geo;
 
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FromClause;
 import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.SpatialRelation;
 
@@ -32,6 +36,18 @@ public class SQLFunctionST_Contains extends SQLFunctionST_Predicate {
 
   public SQLFunctionST_Contains() {
     super(NAME);
+  }
+
+  /**
+   * ST_Contains cannot use indexed execution: the stored geometry is the container and the query
+   * argument is the containee. The GeoHash index is built on the stored shape, but containment
+   * queries run in the opposite direction — the index cannot serve as a valid candidate superset
+   * for containment queries from that reversed direction.
+   */
+  @Override
+  public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
+      final CommandContext context, final Expression[] oExpressions) {
+    return false;
   }
 
   @Override
