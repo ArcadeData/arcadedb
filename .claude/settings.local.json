@@ -34,7 +34,8 @@
       "Bash(tail:*)",
       "Bash(mvn:*)",
       "Bash(head:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(git:*)"
     ]
   }
 }

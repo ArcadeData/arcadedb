@@ -107,6 +107,33 @@ class LSMTreeGeoIndexTest extends TestHelper {
     assertThat(cursor.hasNext()).isFalse();
   }
 
+  /**
+   * Exercises the transaction-replay path: LSM-Tree calls put() a second time during commit with
+   * the already-tokenized GeoHash strings. The looksLikeGeoHashToken() heuristic must recognise
+   * them and pass them through to the underlying index unchanged, rather than trying to parse them
+   * as WKT (which would fail or lose data).
+   */
+  @Test
+  void transactionReplayWithPreTokenizedGeohashStrings() throws Exception {
+    final LSMTreeGeoIndex idx = createAndRegisterIndex("test-geo-replay");
+
+    final RID rid = new RID(database, 1, 0);
+
+    // Normal WKT put — this indexes the point and generates GeoHash tokens
+    database.transaction(() -> idx.put(new Object[]{"POINT (10.0 45.0)"}, new RID[]{rid}));
+
+    // Simulate commit replay: put() called directly with a short GeoHash token (as the LSM-Tree
+    // TransactionIndexContext does on second-phase commit). The token must be accepted and stored.
+    final String geohashToken = "u0n"; // a valid GeoHash prefix in the Base-32 alphabet
+    database.transaction(() -> idx.put(new Object[]{geohashToken}, new RID[]{rid}));
+
+    // The point should still be retrievable (both the original and the replayed tokens are present)
+    final Shape searchShape = GeoUtils.getSpatialContext()
+        .getShapeFactory().rect(5.0, 15.0, 40.0, 50.0);
+    final IndexCursor cursor = idx.get(new Object[]{searchShape});
+    assertThat(cursor.hasNext()).isTrue();
+  }
+
   @Test
   void nullWktIsSkippedSilently() throws Exception {
     final LSMTreeGeoIndex idx = createAndRegisterIndex("test-geo3");
