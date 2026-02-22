@@ -58,6 +58,8 @@ import com.arcadedb.server.http.handler.GetTimeSeriesLatestHandler;
 import com.arcadedb.server.http.handler.GetGrafanaHealthHandler;
 import com.arcadedb.server.http.handler.GetGrafanaMetadataHandler;
 import com.arcadedb.server.http.handler.PostGrafanaQueryHandler;
+import com.arcadedb.server.http.handler.PostPrometheusWriteHandler;
+import com.arcadedb.server.http.handler.PostPrometheusReadHandler;
 import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
@@ -206,6 +208,8 @@ public class HttpServer implements ServerPlugin {
         .get("/ts/{database}/grafana/health", new GetGrafanaHealthHandler(this))
         .get("/ts/{database}/grafana/metadata", new GetGrafanaMetadataHandler(this))
         .post("/ts/{database}/grafana/query", new PostGrafanaQueryHandler(this))
+        .post("/ts/{database}/prom/write", new PostPrometheusWriteHandler(this))
+        .post("/ts/{database}/prom/read", new PostPrometheusReadHandler(this))
     );
 
     // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling
