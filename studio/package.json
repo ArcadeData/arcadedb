@@ -22,7 +22,7 @@
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.2.0",
     "@popperjs/core": "^2.11.8",
-    "apexcharts": "^5.4.0",
+    "apexcharts": "^5.6.0",
     "bootstrap": "^5.3.8",
     "codemirror": "^5.65.21",
     "cytoscape": "^3.33.1",
@@ -40,13 +40,13 @@
     "datatables.net-select-bs5": "^3.1.3",
     "jquery": "^4.0.0",
     "jszip": "^3.10.1",
-    "pdfmake": "^0.3.4",
-    "swagger-ui-dist": "^5.31.0",
-    "sweetalert2": "^11.26.18"
+    "pdfmake": "^0.3.5",
+    "swagger-ui-dist": "^5.31.2",
+    "sweetalert2": "^11.26.20"
   },
   "devDependencies": {
     "copy-webpack-plugin": "^13.0.1",
-    "css-loader": "^7.1.3",
+    "css-loader": "^7.1.4",
     "file-loader": "^6.2.0",
     "html-webpack-plugin": "^5.6.6",
     "style-loader": "^4.0.0",

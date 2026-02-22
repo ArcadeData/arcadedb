@@ -433,6 +433,7 @@
     });
 
     renderCodeEditor();
+    loadFunctionReference();
     initSidebarPanels();
     populateQuerySidebar();
     executeCommand();
@@ -488,6 +489,25 @@
       "Ctrl-Down": function (cm) { historyNext(); },
       "Cmd-Up": function (cm) { historyPrevious(); },
       "Cmd-Down": function (cm) { historyNext(); },
+      "Alt-/": function (cm) {
+        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
+      },
+      "Ctrl-Space": function (cm) {
+        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
+      }
+    });
+
+    editor.on("inputRead", function (cm, event) {
+      if (event.origin !== "+input")
+        return;
+      var cur = cm.getCursor();
+      var line = cm.getLine(cur.line);
+      var end = cur.ch;
+      var start = end;
+      while (start > 0 && /[\w._]/.test(line.charAt(start - 1)))
+        start--;
+      if (end - start >= 2)
+        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
     });
 
     setTimeout(function () { editor.refresh(); }, 1);
@@ -496,8 +516,8 @@
   function getEditorMode() {
     let language = $("#inputLanguage").val();
     let mime = null;
-    if (language == "sql") mime = "text/x-sql";
-    else if (language == "sqlScript") mime = "text/x-sql";
+    if (language == "sql") mime = "arcadedb-sql";
+    else if (language == "sqlScript") mime = "arcadedb-sql";
     else if (language == "cypher") mime = "application/x-cypher-query";
     else if (language == "opencypher") mime = "application/x-cypher-query";
     else if (language == "gremlin") mime = "sql";

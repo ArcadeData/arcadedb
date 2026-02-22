@@ -1,0 +1,3925 @@
+{
+  "generated": "2026-02-22",
+  "categories": {
+    "SQL Functions": {
+      "Collection": [
+        {
+          "name": "symmetricdifference",
+          "syntax": "difference(<field>*)",
+          "description": "difference(<field>*)",
+          "since": "sql"
+        },
+        {
+          "name": "unionall",
+          "syntax": "unionAll(<field>*)",
+          "description": "unionAll(<field>*)",
+          "since": "sql"
+        },
+        {
+          "name": "difference",
+          "syntax": "difference(<field>, <field> [, <field]*)",
+          "description": "difference(<field>, <field> [, <field]*)",
+          "since": "sql"
+        },
+        {
+          "name": "set",
+          "syntax": "set(<value>*)",
+          "description": "set(<value>*)",
+          "since": "sql"
+        },
+        {
+          "name": "last",
+          "syntax": "last(<field>)",
+          "description": "last(<field>)",
+          "since": "sql"
+        },
+        {
+          "name": "list",
+          "syntax": "list(<value>*)",
+          "description": "list(<value>*)",
+          "since": "sql"
+        },
+        {
+          "name": "intersect",
+          "syntax": "intersect(<field>*)",
+          "description": "intersect(<field>*)",
+          "since": "sql"
+        },
+        {
+          "name": "map",
+          "syntax": "map(<map>|[<key>,<value>]*)",
+          "description": "map(<map>|[<key>,<value>]*)",
+          "since": "sql"
+        },
+        {
+          "name": "first",
+          "syntax": "first(<field>)",
+          "description": "first(<field>)",
+          "since": "sql"
+        }
+      ],
+      "Geo": [
+        {
+          "name": "circle",
+          "syntax": "circle(<center-x>,<center-y>,<distance>)",
+          "description": "circle(<center-x>,<center-y>,<distance>)",
+          "since": "sql"
+        },
+        {
+          "name": "linestring",
+          "syntax": "lineString([ <point>* ])",
+          "description": "lineString([ <point>* ])",
+          "since": "sql"
+        },
+        {
+          "name": "distance",
+          "syntax": "distance(<point1>,<point2>[,<unit>]) or distance(<x1>,<y1>,<x2>,<y2>[,<unit>])",
+          "description": "distance(<point1>,<point2>[,<unit>]) or distance(<x1>,<y1>,<x2>,<y2>[,<unit>])",
+          "since": "sql"
+        },
+        {
+          "name": "polygon",
+          "syntax": "polygon([ <point>* ])",
+          "description": "polygon([ <point>* ])",
+          "since": "sql"
+        },
+        {
+          "name": "rectangle",
+          "syntax": "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>)",
+          "description": "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>)",
+          "since": "sql"
+        },
+        {
+          "name": "point",
+          "syntax": "point(<x>,<y>)",
+          "description": "point(<x>,<y>)",
+          "since": "sql"
+        }
+      ],
+      "Graph": [
+        {
+          "name": "dijkstra",
+          "syntax": "dijkstra(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<direction>])",
+          "description": "dijkstra(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<direction>])",
+          "since": "sql"
+        },
+        {
+          "name": "bothv",
+          "syntax": "Syntax error: bothV([<labels>])",
+          "description": "Syntax error: bothV([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "bothe",
+          "syntax": "Syntax error: bothE([<labels>])",
+          "description": "Syntax error: bothE([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "duansssp",
+          "syntax": "duanSSSP(<sourceVertex>, <destinationVertex>, [<weightEdgeFieldName>], [<direction>])",
+          "description": "duanSSSP(<sourceVertex>, <destinationVertex>, [<weightEdgeFieldName>], [<direction>])",
+          "since": "sql"
+        },
+        {
+          "name": "outv",
+          "syntax": "Syntax error: outV([<labels>])",
+          "description": "Syntax error: outV([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "oute",
+          "syntax": "Syntax error: outE([<labels>])",
+          "description": "Syntax error: outE([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "shortestpath",
+          "syntax": "shortestPath(<sourceVertex>, <destinationVertex>, [<direction>, [ <edgeTypeAsString> ]])",
+          "description": "shortestPath(<sourceVertex>, <destinationVertex>, [<direction>, [ <edgeTypeAsString> ]])",
+          "since": "sql"
+        },
+        {
+          "name": "in",
+          "syntax": "Syntax error: in([<labels>])",
+          "description": "Syntax error: in([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "out",
+          "syntax": "Syntax error: out([<labels>])",
+          "description": "Syntax error: out([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "both",
+          "syntax": "Syntax error: both([<labels>])",
+          "description": "Syntax error: both([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "astar",
+          "syntax": "astar(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<options>]) \n // options  : {direction:\"OUT\",edgeTypeNames:[] , vertexAxisNames:[] , parallel : false , tieBreaker:true,maxDepth:99999,dFactor:1.0,customHeuristicFormula:'custom_Function_Name_here'  }",
+          "description": "astar(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<options>]) \n // options  : {direction:\"OUT\",edgeTypeNames:[] , vertexAxisNames:[] , parallel : false , tieBreaker:true,maxDepth:99999,dFactor:1.0,customHeuristicFormula:'custom_Function_Name_here'  }",
+          "since": "sql"
+        },
+        {
+          "name": "ine",
+          "syntax": "Syntax error: inE([<labels>])",
+          "description": "Syntax error: inE([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "inv",
+          "syntax": "Syntax error: inV([<labels>])",
+          "description": "Syntax error: inV([<labels>])",
+          "since": "sql"
+        }
+      ],
+      "Math": [
+        {
+          "name": "math_toradians",
+          "syntax": "math_toRadians",
+          "description": "math_toRadians",
+          "since": "sql"
+        },
+        {
+          "name": "math_tan",
+          "syntax": "math_tan",
+          "description": "math_tan",
+          "since": "sql"
+        },
+        {
+          "name": "math_cos",
+          "syntax": "math_cos",
+          "description": "math_cos",
+          "since": "sql"
+        },
+        {
+          "name": "math_unsignedmultiplyhigh",
+          "syntax": "math_unsignedMultiplyHigh",
+          "description": "math_unsignedMultiplyHigh",
+          "since": "sql"
+        },
+        {
+          "name": "math_cosh",
+          "syntax": "math_cosh",
+          "description": "math_cosh",
+          "since": "sql"
+        },
+        {
+          "name": "math_nextafter",
+          "syntax": "math_nextAfter",
+          "description": "math_nextAfter",
+          "since": "sql"
+        },
+        {
+          "name": "percentile",
+          "syntax": "percentile(<field>, <quantile> [,<quantile>*])",
+          "description": "percentile(<field>, <quantile> [,<quantile>*])",
+          "since": "sql"
+        },
+        {
+          "name": "math_scalb",
+          "syntax": "math_scalb",
+          "description": "math_scalb",
+          "since": "sql"
+        },
+        {
+          "name": "math_clamp",
+          "syntax": "math_clamp",
+          "description": "math_clamp",
+          "since": "sql"
+        },
+        {
+          "name": "sum",
+          "syntax": "sum(<field> [,<field>*])",
+          "description": "sum(<field> [,<field>*])",
+          "since": "sql"
+        },
+        {
+          "name": "math_absexact",
+          "syntax": "math_absExact",
+          "description": "math_absExact",
+          "since": "sql"
+        },
+        {
+          "name": "min",
+          "syntax": "min(<field> [,<field>*])",
+          "description": "min(<field> [,<field>*])",
+          "since": "sql"
+        },
+        {
+          "name": "math_max",
+          "syntax": "math_max",
+          "description": "math_max",
+          "since": "sql"
+        },
+        {
+          "name": "pow",
+          "syntax": "pow(<number>, <power>)",
+          "description": "pow(<number>, <power>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_getexponent",
+          "syntax": "math_getExponent",
+          "description": "math_getExponent",
+          "since": "sql"
+        },
+        {
+          "name": "math_todegrees",
+          "syntax": "math_toDegrees",
+          "description": "math_toDegrees",
+          "since": "sql"
+        },
+        {
+          "name": "abs",
+          "syntax": "abs(<number>)",
+          "description": "abs(<number>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_log",
+          "syntax": "math_log",
+          "description": "math_log",
+          "since": "sql"
+        },
+        {
+          "name": "math_multiplyhigh",
+          "syntax": "math_multiplyHigh",
+          "description": "math_multiplyHigh",
+          "since": "sql"
+        },
+        {
+          "name": "math_nextdown",
+          "syntax": "math_nextDown",
+          "description": "math_nextDown",
+          "since": "sql"
+        },
+        {
+          "name": "stddevp",
+          "syntax": "stddevp(<field>)",
+          "description": "stddevp(<field>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_unsignedmultiplyexact",
+          "syntax": "math_unsignedMultiplyExact",
+          "description": "math_unsignedMultiplyExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_floor",
+          "syntax": "math_floor",
+          "description": "math_floor",
+          "since": "sql"
+        },
+        {
+          "name": "count",
+          "syntax": "count(<field>|*)",
+          "description": "count(<field>|*)",
+          "since": "sql"
+        },
+        {
+          "name": "eval",
+          "syntax": "eval(<expression>)",
+          "description": "eval(<expression>)",
+          "since": "sql"
+        },
+        {
+          "name": "median",
+          "syntax": "median(<field>)",
+          "description": "median(<field>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_round",
+          "syntax": "math_round",
+          "description": "math_round",
+          "since": "sql"
+        },
+        {
+          "name": "math_copysign",
+          "syntax": "math_copySign",
+          "description": "math_copySign",
+          "since": "sql"
+        },
+        {
+          "name": "avg",
+          "syntax": "avg(<field> [,<field>*])",
+          "description": "avg(<field> [,<field>*])",
+          "since": "sql"
+        },
+        {
+          "name": "math_sin",
+          "syntax": "math_sin",
+          "description": "math_sin",
+          "since": "sql"
+        },
+        {
+          "name": "math_powexact",
+          "syntax": "math_powExact",
+          "description": "math_powExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_multiplyexact",
+          "syntax": "math_multiplyExact",
+          "description": "math_multiplyExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_atan",
+          "syntax": "math_atan",
+          "description": "math_atan",
+          "since": "sql"
+        },
+        {
+          "name": "randomint",
+          "syntax": "randomInt(<maximum>)",
+          "description": "randomInt(<maximum>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_incrementexact",
+          "syntax": "math_incrementExact",
+          "description": "math_incrementExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_random",
+          "syntax": "math_random",
+          "description": "math_random",
+          "since": "sql"
+        },
+        {
+          "name": "math_expm1",
+          "syntax": "math_expm1",
+          "description": "math_expm1",
+          "since": "sql"
+        },
+        {
+          "name": "math_acos",
+          "syntax": "math_acos",
+          "description": "math_acos",
+          "since": "sql"
+        },
+        {
+          "name": "math_atan2",
+          "syntax": "math_atan2",
+          "description": "math_atan2",
+          "since": "sql"
+        },
+        {
+          "name": "math_ulp",
+          "syntax": "math_ulp",
+          "description": "math_ulp",
+          "since": "sql"
+        },
+        {
+          "name": "variancep",
+          "syntax": "variancep(<field>)",
+          "description": "variancep(<field>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_subtractexact",
+          "syntax": "math_subtractExact",
+          "description": "math_subtractExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_asin",
+          "syntax": "math_asin",
+          "description": "math_asin",
+          "since": "sql"
+        },
+        {
+          "name": "math_floordivexact",
+          "syntax": "math_floorDivExact",
+          "description": "math_floorDivExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_tanh",
+          "syntax": "math_tanh",
+          "description": "math_tanh",
+          "since": "sql"
+        },
+        {
+          "name": "math_cbrt",
+          "syntax": "math_cbrt",
+          "description": "math_cbrt",
+          "since": "sql"
+        },
+        {
+          "name": "sqrt",
+          "syntax": "sqrt(<number>)",
+          "description": "sqrt(<number>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_ieeeremainder",
+          "syntax": "math_IEEEremainder",
+          "description": "math_IEEEremainder",
+          "since": "sql"
+        },
+        {
+          "name": "math_unsignedpowexact",
+          "syntax": "math_unsignedPowExact",
+          "description": "math_unsignedPowExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_fma",
+          "syntax": "math_fma",
+          "description": "math_fma",
+          "since": "sql"
+        },
+        {
+          "name": "math_divideexact",
+          "syntax": "math_divideExact",
+          "description": "math_divideExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_sqrt",
+          "syntax": "math_sqrt",
+          "description": "math_sqrt",
+          "since": "sql"
+        },
+        {
+          "name": "math_floormod",
+          "syntax": "math_floorMod",
+          "description": "math_floorMod",
+          "since": "sql"
+        },
+        {
+          "name": "math_abs",
+          "syntax": "math_abs",
+          "description": "math_abs",
+          "since": "sql"
+        },
+        {
+          "name": "math_tointexact",
+          "syntax": "math_toIntExact",
+          "description": "math_toIntExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_pow",
+          "syntax": "math_pow",
+          "description": "math_pow",
+          "since": "sql"
+        },
+        {
+          "name": "max",
+          "syntax": "max(<field> [,<field>*])",
+          "description": "max(<field> [,<field>*])",
+          "since": "sql"
+        },
+        {
+          "name": "math_log10",
+          "syntax": "math_log10",
+          "description": "math_log10",
+          "since": "sql"
+        },
+        {
+          "name": "math_min",
+          "syntax": "math_min",
+          "description": "math_min",
+          "since": "sql"
+        },
+        {
+          "name": "math_ceil",
+          "syntax": "math_ceil",
+          "description": "math_ceil",
+          "since": "sql"
+        },
+        {
+          "name": "math_nextup",
+          "syntax": "math_nextUp",
+          "description": "math_nextUp",
+          "since": "sql"
+        },
+        {
+          "name": "math_signum",
+          "syntax": "math_signum",
+          "description": "math_signum",
+          "since": "sql"
+        },
+        {
+          "name": "math_ceildiv",
+          "syntax": "math_ceilDiv",
+          "description": "math_ceilDiv",
+          "since": "sql"
+        },
+        {
+          "name": "math_hypot",
+          "syntax": "math_hypot",
+          "description": "math_hypot",
+          "since": "sql"
+        },
+        {
+          "name": "mode",
+          "syntax": "mode(<field>)",
+          "description": "mode(<field>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_decrementexact",
+          "syntax": "math_decrementExact",
+          "description": "math_decrementExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_exp",
+          "syntax": "math_exp",
+          "description": "math_exp",
+          "since": "sql"
+        },
+        {
+          "name": "math_multiplyfull",
+          "syntax": "math_multiplyFull",
+          "description": "math_multiplyFull",
+          "since": "sql"
+        },
+        {
+          "name": "math_rint",
+          "syntax": "math_rint",
+          "description": "math_rint",
+          "since": "sql"
+        },
+        {
+          "name": "math_log1p",
+          "syntax": "math_log1p",
+          "description": "math_log1p",
+          "since": "sql"
+        },
+        {
+          "name": "math_floordiv",
+          "syntax": "math_floorDiv",
+          "description": "math_floorDiv",
+          "since": "sql"
+        },
+        {
+          "name": "math_sinh",
+          "syntax": "math_sinh",
+          "description": "math_sinh",
+          "since": "sql"
+        },
+        {
+          "name": "math_ceildivexact",
+          "syntax": "math_ceilDivExact",
+          "description": "math_ceilDivExact",
+          "since": "sql"
+        },
+        {
+          "name": "stddev",
+          "syntax": "stddev(<field>)",
+          "description": "stddev(<field>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_ceilmod",
+          "syntax": "math_ceilMod",
+          "description": "math_ceilMod",
+          "since": "sql"
+        },
+        {
+          "name": "variance",
+          "syntax": "variance(<field>)",
+          "description": "variance(<field>)",
+          "since": "sql"
+        },
+        {
+          "name": "math_addexact",
+          "syntax": "math_addExact",
+          "description": "math_addExact",
+          "since": "sql"
+        },
+        {
+          "name": "math_negateexact",
+          "syntax": "math_negateExact",
+          "description": "math_negateExact",
+          "since": "sql"
+        }
+      ],
+      "Misc": [
+        {
+          "name": "coalesce",
+          "syntax": "Returns the first not-null parameter or null if all parameters are null. Syntax: coalesce(<field|value> [,<field|value>]*)",
+          "description": "Returns the first not-null parameter or null if all parameters are null. Syntax: coalesce(<field|value> [,<field|value>]*)",
+          "since": "sql"
+        },
+        {
+          "name": "version",
+          "syntax": "version()",
+          "description": "version()",
+          "since": "sql"
+        },
+        {
+          "name": "ifempty",
+          "syntax": "Syntax error: ifempty(<field|value>, <return_value_if_empty> [,<return_value_if_not_empty>])",
+          "description": "Syntax error: ifempty(<field|value>, <return_value_if_empty> [,<return_value_if_not_empty>])",
+          "since": "sql"
+        },
+        {
+          "name": "encode",
+          "syntax": "encode(<value|rid>, <format>)",
+          "description": "encode(<value|rid>, <format>)",
+          "since": "sql"
+        },
+        {
+          "name": "bool_or",
+          "syntax": "bool_or(<field> [,<field>*])",
+          "description": "bool_or(<field> [,<field>*])",
+          "since": "sql"
+        },
+        {
+          "name": "bool_and",
+          "syntax": "bool_and(<field> [,<field>*])",
+          "description": "bool_and(<field> [,<field>*])",
+          "since": "sql"
+        },
+        {
+          "name": "ifnull",
+          "syntax": "Syntax error: ifnull(<field|value>, <return_value_if_null> [,<return_value_if_not_null>])",
+          "description": "Syntax error: ifnull(<field|value>, <return_value_if_null> [,<return_value_if_not_null>])",
+          "since": "sql"
+        },
+        {
+          "name": "if",
+          "syntax": "if(<field|value|expression>, <return_value_if_true> [,<return_value_if_false>])",
+          "description": "if(<field|value|expression>, <return_value_if_true> [,<return_value_if_false>])",
+          "since": "sql"
+        },
+        {
+          "name": "decode",
+          "syntax": "decode(<value>, <format>)",
+          "description": "decode(<value>, <format>)",
+          "since": "sql"
+        },
+        {
+          "name": "uuid",
+          "syntax": "uuid()",
+          "description": "uuid()",
+          "since": "sql"
+        }
+      ],
+      "Text": [
+        {
+          "name": "concat",
+          "syntax": "concat(<field>, [<delim>])",
+          "description": "concat(<field>, [<delim>])",
+          "since": "sql"
+        },
+        {
+          "name": "strcmpci",
+          "syntax": "strcmpci(<arg1>, <arg2>)",
+          "description": "strcmpci(<arg1>, <arg2>)",
+          "since": "sql"
+        },
+        {
+          "name": "search_index_more",
+          "syntax": "SEARCH_INDEX_MORE(<index-name>, <source-rids>, [<metadata>])",
+          "description": "SEARCH_INDEX_MORE(<index-name>, <source-rids>, [<metadata>])",
+          "since": "sql"
+        },
+        {
+          "name": "search_index",
+          "syntax": "SEARCH_INDEX(<index-name>, <query>)",
+          "description": "SEARCH_INDEX(<index-name>, <query>)",
+          "since": "sql"
+        },
+        {
+          "name": "search_fields_more",
+          "syntax": "SEARCH_FIELDS_MORE(<field-names>, <source-rids>, [<metadata>])",
+          "description": "SEARCH_FIELDS_MORE(<field-names>, <source-rids>, [<metadata>])",
+          "since": "sql"
+        },
+        {
+          "name": "search_fields",
+          "syntax": "SEARCH_FIELDS(<fields-array>, <query>)",
+          "description": "SEARCH_FIELDS(<fields-array>, <query>)",
+          "since": "sql"
+        },
+        {
+          "name": "format",
+          "syntax": "format(<format>, <arg1> [,<argN>]*)",
+          "description": "format(<format>, <arg1> [,<argN>]*)",
+          "since": "sql"
+        }
+      ],
+      "Time": [
+        {
+          "name": "duration",
+          "syntax": "duration(<amount>, <time-unit>)",
+          "description": "duration(<amount>, <time-unit>)",
+          "since": "sql"
+        },
+        {
+          "name": "date",
+          "syntax": "date([<date-as-number-or-string>] [,<format>] [,<timezone>])",
+          "description": "date([<date-as-number-or-string>] [,<format>] [,<timezone>])",
+          "since": "sql"
+        },
+        {
+          "name": "sysdate",
+          "syntax": "sysdate([<zoneid>])",
+          "description": "sysdate([<zoneid>])",
+          "since": "sql"
+        }
+      ],
+      "Vector": [
+        {
+          "name": "vectoravg",
+          "syntax": "vector.avg(<vector_column>)",
+          "description": "vector.avg(<vector_column>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorisnormalized",
+          "syntax": "vector.isNormalized(<vector> [, <tolerance>])",
+          "description": "vector.isNormalized(<vector> [, <tolerance>])",
+          "since": "sql"
+        },
+        {
+          "name": "vector.sparsetodense",
+          "syntax": "vector.sparseToDense(<sparse_vector>)",
+          "description": "vector.sparseToDense(<sparse_vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.quantizebinary",
+          "syntax": "vector.quantizeBinary(<vector>)",
+          "description": "vector.quantizeBinary(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorscoretransform",
+          "syntax": "vector.scoreTransform(<score>, <method>)",
+          "description": "vector.scoreTransform(<score>, <method>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectormultiscore",
+          "syntax": "vector.multiScore(<scores_array>, <method> [, <weights_array>])",
+          "description": "vector.multiScore(<scores_array>, <method> [, <weights_array>])",
+          "since": "sql"
+        },
+        {
+          "name": "vector.rrfscore",
+          "syntax": "vector.rrfScore(<rank1>, <rank2>, ..., [<k>])",
+          "description": "vector.rrfScore(<rank1>, <rank2>, ..., [<k>])",
+          "since": "sql"
+        },
+        {
+          "name": "vectorscale",
+          "syntax": "vector.scale(<vector>, <scalar>)",
+          "description": "vector.scale(<vector>, <scalar>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.sum",
+          "syntax": "vector.sum(<vector_column>)",
+          "description": "vector.sum(<vector_column>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.min",
+          "syntax": "vector.min(<vector_column>)",
+          "description": "vector.min(<vector_column>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.sparsity",
+          "syntax": "vector.sparsity(<vector>, <threshold>)",
+          "description": "vector.sparsity(<vector>, <threshold>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorclip",
+          "syntax": "vector.clip(<vector>, <min>, <max>)",
+          "description": "vector.clip(<vector>, <min>, <max>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorhybridscore",
+          "syntax": "vector.hybridScore(<vector_score>, <keyword_score>, <alpha>)",
+          "description": "vector.hybridScore(<vector_score>, <keyword_score>, <alpha>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.l1norm",
+          "syntax": "vector.l1Norm(<vector>)",
+          "description": "vector.l1Norm(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.sparsecreate",
+          "syntax": "vector.sparseCreate(<indices_array>, <values_array> [, <dimensions>])",
+          "description": "vector.sparseCreate(<indices_array>, <values_array> [, <dimensions>])",
+          "since": "sql"
+        },
+        {
+          "name": "vector.normalize",
+          "syntax": "vectorNormalize(<vector>)",
+          "description": "vectorNormalize(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.quantizeint8",
+          "syntax": "vector.quantizeInt8(<vector>)",
+          "description": "vector.quantizeInt8(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorquantizebinary",
+          "syntax": "vector.quantizeBinary(<vector>)",
+          "description": "vector.quantizeBinary(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectormagnitude",
+          "syntax": "vector.magnitude(<vector>)",
+          "description": "vector.magnitude(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.scoretransform",
+          "syntax": "vector.scoreTransform(<score>, <method>)",
+          "description": "vector.scoreTransform(<score>, <method>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorl1norm",
+          "syntax": "vector.l1Norm(<vector>)",
+          "description": "vector.l1Norm(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.add",
+          "syntax": "vector.add(<vector1>, <vector2>)",
+          "description": "vector.add(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.isnormalized",
+          "syntax": "vector.isNormalized(<vector> [, <tolerance>])",
+          "description": "vector.isNormalized(<vector> [, <tolerance>])",
+          "since": "sql"
+        },
+        {
+          "name": "vectorrrfscore",
+          "syntax": "vector.rrfScore(<rank1>, <rank2>, ..., [<k>])",
+          "description": "vector.rrfScore(<rank1>, <rank2>, ..., [<k>])",
+          "since": "sql"
+        },
+        {
+          "name": "vectormin",
+          "syntax": "vector.min(<vector_column>)",
+          "description": "vector.min(<vector_column>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorsum",
+          "syntax": "vector.sum(<vector_column>)",
+          "description": "vector.sum(<vector_column>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.linfnorm",
+          "syntax": "vector.lInfNorm(<vector>)",
+          "description": "vector.lInfNorm(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.avg",
+          "syntax": "vector.avg(<vector_column>)",
+          "description": "vector.avg(<vector_column>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.variance",
+          "syntax": "vector.variance(<vector>)",
+          "description": "vector.variance(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.hasnan",
+          "syntax": "vector.hasNaN(<vector>)",
+          "description": "vector.hasNaN(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.dimension",
+          "syntax": "vector.dimension(<vector>)",
+          "description": "vector.dimension(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.normalizescores",
+          "syntax": "vector.normalizeScores(<scores_array>)",
+          "description": "vector.normalizeScores(<scores_array>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectortostring",
+          "syntax": "vector.toString(<vector> [, <format>])",
+          "description": "vector.toString(<vector> [, <format>])",
+          "since": "sql"
+        },
+        {
+          "name": "vector.cosinesimilarity",
+          "syntax": "vector.cosineSimilarity(<vector1>, <vector2>)",
+          "description": "vector.cosineSimilarity(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectoradd",
+          "syntax": "vector.add(<vector1>, <vector2>)",
+          "description": "vector.add(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectordimension",
+          "syntax": "vector.dimension(<vector>)",
+          "description": "vector.dimension(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorl2distance",
+          "syntax": "vector.l2Distance(<vector1>, <vector2>)",
+          "description": "vector.l2Distance(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.magnitude",
+          "syntax": "vector.magnitude(<vector>)",
+          "description": "vector.magnitude(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectornormalizescores",
+          "syntax": "vector.normalizeScores(<scores_array>)",
+          "description": "vector.normalizeScores(<scores_array>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectormultiply",
+          "syntax": "vector.multiply(<vector1>, <vector2>)",
+          "description": "vector.multiply(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.clip",
+          "syntax": "vector.clip(<vector>, <min>, <max>)",
+          "description": "vector.clip(<vector>, <min>, <max>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorhasnan",
+          "syntax": "vector.hasNaN(<vector>)",
+          "description": "vector.hasNaN(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.l2distance",
+          "syntax": "vector.l2Distance(<vector1>, <vector2>)",
+          "description": "vector.l2Distance(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorapproxdistance",
+          "syntax": "vector.approxDistance(<quantized1>, <quantized2>, <type>)",
+          "description": "vector.approxDistance(<quantized1>, <quantized2>, <type>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.max",
+          "syntax": "vector.max(<vector_column>)",
+          "description": "vector.max(<vector_column>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.dotproduct",
+          "syntax": "vector.dotProduct(<vector1>, <vector2>)",
+          "description": "vector.dotProduct(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.tostring",
+          "syntax": "vector.toString(<vector> [, <format>])",
+          "description": "vector.toString(<vector> [, <format>])",
+          "since": "sql"
+        },
+        {
+          "name": "vector.multiscore",
+          "syntax": "vector.multiScore(<scores_array>, <method> [, <weights_array>])",
+          "description": "vector.multiScore(<scores_array>, <method> [, <weights_array>])",
+          "since": "sql"
+        },
+        {
+          "name": "vector.stddev",
+          "syntax": "vector.stdDev(<vector>)",
+          "description": "vector.stdDev(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorstddev",
+          "syntax": "vector.stdDev(<vector>)",
+          "description": "vector.stdDev(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.scale",
+          "syntax": "vector.scale(<vector>, <scalar>)",
+          "description": "vector.scale(<vector>, <scalar>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorsparsedot",
+          "syntax": "vector.sparseDot(<sparse_vector1>, <sparse_vector2>)",
+          "description": "vector.sparseDot(<sparse_vector1>, <sparse_vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.approxdistance",
+          "syntax": "vector.approxDistance(<quantized1>, <quantized2>, <type>)",
+          "description": "vector.approxDistance(<quantized1>, <quantized2>, <type>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.subtract",
+          "syntax": "vector.subtract(<vector1>, <vector2>)",
+          "description": "vector.subtract(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorcosinesimilarity",
+          "syntax": "vector.cosineSimilarity(<vector1>, <vector2>)",
+          "description": "vector.cosineSimilarity(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.neighbors",
+          "syntax": "vector.neighbors(<index-name>, <key-or-vector>, <k>)",
+          "description": "vector.neighbors(<index-name>, <key-or-vector>, <k>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorsubtract",
+          "syntax": "vector.subtract(<vector1>, <vector2>)",
+          "description": "vector.subtract(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorsparsity",
+          "syntax": "vector.sparsity(<vector>, <threshold>)",
+          "description": "vector.sparsity(<vector>, <threshold>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.hasinf",
+          "syntax": "vector.hasInf(<vector>)",
+          "description": "vector.hasInf(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.multiply",
+          "syntax": "vector.multiply(<vector1>, <vector2>)",
+          "description": "vector.multiply(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorvariance",
+          "syntax": "vector.variance(<vector>)",
+          "description": "vector.variance(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.dequantizeint8",
+          "syntax": "vector.dequantizeInt8(<quantized_bytes>, <min>, <max>)",
+          "description": "vector.dequantizeInt8(<quantized_bytes>, <min>, <max>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorquantizeint8",
+          "syntax": "vector.quantizeInt8(<vector>)",
+          "description": "vector.quantizeInt8(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.sparsedot",
+          "syntax": "vector.sparseDot(<sparse_vector1>, <sparse_vector2>)",
+          "description": "vector.sparseDot(<sparse_vector1>, <sparse_vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorsparsetodense",
+          "syntax": "vector.sparseToDense(<sparse_vector>)",
+          "description": "vector.sparseToDense(<sparse_vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorhasinf",
+          "syntax": "vector.hasInf(<vector>)",
+          "description": "vector.hasInf(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectordotproduct",
+          "syntax": "vector.dotProduct(<vector1>, <vector2>)",
+          "description": "vector.dotProduct(<vector1>, <vector2>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectordequantizeint8",
+          "syntax": "vector.dequantizeInt8(<quantized_bytes>, <min>, <max>)",
+          "description": "vector.dequantizeInt8(<quantized_bytes>, <min>, <max>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectordensetosparse",
+          "syntax": "vector.denseToSparse(<vector> [, <threshold>])",
+          "description": "vector.denseToSparse(<vector> [, <threshold>])",
+          "since": "sql"
+        },
+        {
+          "name": "vectorneighbors",
+          "syntax": "vector.neighbors(<index-name>, <key-or-vector>, <k>)",
+          "description": "vector.neighbors(<index-name>, <key-or-vector>, <k>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.hybridscore",
+          "syntax": "vector.hybridScore(<vector_score>, <keyword_score>, <alpha>)",
+          "description": "vector.hybridScore(<vector_score>, <keyword_score>, <alpha>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectornormalize",
+          "syntax": "vectorNormalize(<vector>)",
+          "description": "vectorNormalize(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectormax",
+          "syntax": "vector.max(<vector_column>)",
+          "description": "vector.max(<vector_column>)",
+          "since": "sql"
+        },
+        {
+          "name": "vectorlinfnorm",
+          "syntax": "vector.lInfNorm(<vector>)",
+          "description": "vector.lInfNorm(<vector>)",
+          "since": "sql"
+        },
+        {
+          "name": "vector.densetosparse",
+          "syntax": "vector.denseToSparse(<vector> [, <threshold>])",
+          "description": "vector.denseToSparse(<vector> [, <threshold>])",
+          "since": "sql"
+        },
+        {
+          "name": "vectorsparsecreate",
+          "syntax": "vector.sparseCreate(<indices_array>, <values_array> [, <dimensions>])",
+          "description": "vector.sparseCreate(<indices_array>, <values_array> [, <dimensions>])",
+          "since": "sql"
+        }
+      ]
+    },
+    "Cypher Functions": {
+      "Agg": [
+        {
+          "name": "agg.last",
+          "syntax": "agg.last(...)",
+          "description": "Return the last non-null element in the list",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.maxItems",
+          "syntax": "agg.maxItems(...)",
+          "description": "Return all items corresponding to the maximum value",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.nth",
+          "syntax": "agg.nth(...)",
+          "description": "Return the nth element in the list (0-indexed)",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.slice",
+          "syntax": "agg.slice(...)",
+          "description": "Return a sublist from index 'from' to 'to' (exclusive)",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.median",
+          "syntax": "agg.median(...)",
+          "description": "Return the median value of a list of numbers",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.statistics",
+          "syntax": "agg.statistics(...)",
+          "description": "Return full statistics (count, min, max, sum, mean, stdev) for a list of numbers",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.product",
+          "syntax": "agg.product(...)",
+          "description": "Return the product of all numbers in the list",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.minItems",
+          "syntax": "agg.minItems(...)",
+          "description": "Return all items corresponding to the minimum value",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.percentiles",
+          "syntax": "agg.percentiles(...)",
+          "description": "Return the percentile values of a list of numbers",
+          "since": "cypher"
+        },
+        {
+          "name": "agg.first",
+          "syntax": "agg.first(...)",
+          "description": "Return the first non-null element in the list",
+          "since": "cypher"
+        }
+      ],
+      "Coll": [
+        {
+          "name": "coll.insert",
+          "syntax": "coll.insert(...)",
+          "description": "Returns a new list with value inserted at the given index",
+          "since": "cypher"
+        },
+        {
+          "name": "coll.distinct",
+          "syntax": "coll.distinct(...)",
+          "description": "Returns a list with duplicate values removed, preserving order of first occurrence",
+          "since": "cypher"
+        },
+        {
+          "name": "coll.remove",
+          "syntax": "coll.remove(...)",
+          "description": "Returns a new list with element(s) removed at the given index",
+          "since": "cypher"
+        },
+        {
+          "name": "coll.sort",
+          "syntax": "coll.sort(...)",
+          "description": "Returns a sorted copy of the list",
+          "since": "cypher"
+        },
+        {
+          "name": "coll.indexOf",
+          "syntax": "coll.indexOf(...)",
+          "description": "Returns the index of the first occurrence of value in the list, or -1 if not found",
+          "since": "cypher"
+        },
+        {
+          "name": "coll.max",
+          "syntax": "coll.max(...)",
+          "description": "Returns the maximum value in the list",
+          "since": "cypher"
+        },
+        {
+          "name": "coll.min",
+          "syntax": "coll.min(...)",
+          "description": "Returns the minimum value in the list",
+          "since": "cypher"
+        },
+        {
+          "name": "coll.flatten",
+          "syntax": "coll.flatten(...)",
+          "description": "Flattens nested lists into a single list",
+          "since": "cypher"
+        }
+      ],
+      "Convert": [
+        {
+          "name": "convert.toJson",
+          "syntax": "convert.toJson(...)",
+          "description": "Convert value to JSON string representation",
+          "since": "cypher"
+        },
+        {
+          "name": "convert.fromJsonList",
+          "syntax": "convert.fromJsonList(...)",
+          "description": "Parse JSON string to a list",
+          "since": "cypher"
+        },
+        {
+          "name": "convert.toBoolean",
+          "syntax": "convert.toBoolean(...)",
+          "description": "Convert value to boolean",
+          "since": "cypher"
+        },
+        {
+          "name": "convert.toList",
+          "syntax": "convert.toList(...)",
+          "description": "Convert value to a list",
+          "since": "cypher"
+        },
+        {
+          "name": "convert.toSet",
+          "syntax": "convert.toSet(...)",
+          "description": "Convert a list to a set (removes duplicates, preserves order)",
+          "since": "cypher"
+        },
+        {
+          "name": "convert.toMap",
+          "syntax": "convert.toMap(...)",
+          "description": "Convert value to a map",
+          "since": "cypher"
+        },
+        {
+          "name": "convert.toInteger",
+          "syntax": "convert.toInteger(...)",
+          "description": "Convert value to integer (long)",
+          "since": "cypher"
+        },
+        {
+          "name": "convert.toFloat",
+          "syntax": "convert.toFloat(...)",
+          "description": "Convert value to float (double)",
+          "since": "cypher"
+        },
+        {
+          "name": "convert.fromJsonMap",
+          "syntax": "convert.fromJsonMap(...)",
+          "description": "Parse JSON string to a map",
+          "since": "cypher"
+        }
+      ],
+      "Create": [
+        {
+          "name": "create.uuidBase64",
+          "syntax": "create.uuidBase64(...)",
+          "description": "Generate a random UUID encoded as Base64 (shorter than standard UUID)",
+          "since": "cypher"
+        },
+        {
+          "name": "create.vNode",
+          "syntax": "create.vNode(...)",
+          "description": "Create a virtual node (not persisted) with the given labels and properties",
+          "since": "cypher"
+        },
+        {
+          "name": "create.uuid",
+          "syntax": "create.uuid(...)",
+          "description": "Generate a random UUID string",
+          "since": "cypher"
+        },
+        {
+          "name": "create.vRelationship",
+          "syntax": "create.vRelationship(...)",
+          "description": "Create a virtual relationship (not persisted) between two nodes",
+          "since": "cypher"
+        }
+      ],
+      "Date": [
+        {
+          "name": "date.parse",
+          "syntax": "date.parse(...)",
+          "description": "Parse a date string to a timestamp using the specified format pattern",
+          "since": "cypher"
+        },
+        {
+          "name": "date.fromISO8601",
+          "syntax": "date.fromISO8601(...)",
+          "description": "Parse an ISO 8601 format string to a timestamp",
+          "since": "cypher"
+        },
+        {
+          "name": "date.systemTimezone",
+          "syntax": "date.systemTimezone(...)",
+          "description": "Get the system's default timezone",
+          "since": "cypher"
+        },
+        {
+          "name": "date.field",
+          "syntax": "date.field(...)",
+          "description": "Extract a specific field (year, month, day, etc.) from a timestamp",
+          "since": "cypher"
+        },
+        {
+          "name": "date.fields",
+          "syntax": "date.fields(...)",
+          "description": "Parse a date string and extract all fields as a map (supports optional timezone parameter)",
+          "since": "cypher"
+        },
+        {
+          "name": "date.add",
+          "syntax": "date.add(...)",
+          "description": "Add a specified amount of time to a timestamp",
+          "since": "cypher"
+        },
+        {
+          "name": "date.toISO8601",
+          "syntax": "date.toISO8601(...)",
+          "description": "Convert a timestamp to ISO 8601 format string",
+          "since": "cypher"
+        },
+        {
+          "name": "date.currentTimestamp",
+          "syntax": "date.currentTimestamp(...)",
+          "description": "Get the current timestamp in milliseconds since epoch",
+          "since": "cypher"
+        },
+        {
+          "name": "date.convert",
+          "syntax": "date.convert(...)",
+          "description": "Convert a timestamp from one unit to another",
+          "since": "cypher"
+        },
+        {
+          "name": "date.format",
+          "syntax": "date.format(...)",
+          "description": "Format a timestamp to a string using the specified format pattern",
+          "since": "cypher"
+        }
+      ],
+      "Map": [
+        {
+          "name": "map.values",
+          "syntax": "map.values(...)",
+          "description": "Get values for the specified keys in order",
+          "since": "cypher"
+        },
+        {
+          "name": "map.submap",
+          "syntax": "map.submap(...)",
+          "description": "Extract a submap containing only the specified keys",
+          "since": "cypher"
+        },
+        {
+          "name": "map.removeKeys",
+          "syntax": "map.removeKeys(...)",
+          "description": "Return a new map with the specified keys removed",
+          "since": "cypher"
+        },
+        {
+          "name": "map.fromPairs",
+          "syntax": "map.fromPairs(...)",
+          "description": "Create a map from a list of [key, value] pairs",
+          "since": "cypher"
+        },
+        {
+          "name": "map.flatten",
+          "syntax": "map.flatten(...)",
+          "description": "Flatten a nested map into a single-level map with dotted key paths",
+          "since": "cypher"
+        },
+        {
+          "name": "map.clean",
+          "syntax": "map.clean(...)",
+          "description": "Return a new map with specified keys removed and entries with specified values removed",
+          "since": "cypher"
+        },
+        {
+          "name": "map.removeKey",
+          "syntax": "map.removeKey(...)",
+          "description": "Return a new map with the specified key removed",
+          "since": "cypher"
+        },
+        {
+          "name": "map.groupBy",
+          "syntax": "map.groupBy(...)",
+          "description": "Group a list of maps by a key property into a map of lists",
+          "since": "cypher"
+        },
+        {
+          "name": "map.setKey",
+          "syntax": "map.setKey(...)",
+          "description": "Return a new map with the key set to the value",
+          "since": "cypher"
+        },
+        {
+          "name": "map.mergeList",
+          "syntax": "map.mergeList(...)",
+          "description": "Merge a list of maps into a single map",
+          "since": "cypher"
+        },
+        {
+          "name": "map.fromLists",
+          "syntax": "map.fromLists(...)",
+          "description": "Create a map from parallel lists of keys and values",
+          "since": "cypher"
+        },
+        {
+          "name": "map.unflatten",
+          "syntax": "map.unflatten(...)",
+          "description": "Unflatten a map with dotted key paths into nested maps",
+          "since": "cypher"
+        },
+        {
+          "name": "map.sortedProperties",
+          "syntax": "map.sortedProperties(...)",
+          "description": "Get a list of [key, value] pairs sorted by key",
+          "since": "cypher"
+        },
+        {
+          "name": "map.merge",
+          "syntax": "map.merge(...)",
+          "description": "Merge two maps; values from second map override the first",
+          "since": "cypher"
+        }
+      ],
+      "Math": [
+        {
+          "name": "math.cosh",
+          "syntax": "math.cosh(...)",
+          "description": "Calculate the hyperbolic cosine",
+          "since": "cypher"
+        },
+        {
+          "name": "math.sinh",
+          "syntax": "math.sinh(...)",
+          "description": "Calculate the hyperbolic sine",
+          "since": "cypher"
+        },
+        {
+          "name": "math.minLong",
+          "syntax": "math.minLong(...)",
+          "description": "Return the minimum Long value (-2^63)",
+          "since": "cypher"
+        },
+        {
+          "name": "math.maxDouble",
+          "syntax": "math.maxDouble(...)",
+          "description": "Return the maximum Double value",
+          "since": "cypher"
+        },
+        {
+          "name": "math.maxLong",
+          "syntax": "math.maxLong(...)",
+          "description": "Return the maximum Long value (2^63 - 1)",
+          "since": "cypher"
+        },
+        {
+          "name": "math.sigmoidPrime",
+          "syntax": "math.sigmoidPrime(...)",
+          "description": "Calculate the derivative of sigmoid: sigmoid(x) * (1 - sigmoid(x))",
+          "since": "cypher"
+        },
+        {
+          "name": "math.sigmoid",
+          "syntax": "math.sigmoid(...)",
+          "description": "Calculate the sigmoid function: 1 / (1 + e^(-x))",
+          "since": "cypher"
+        },
+        {
+          "name": "math.tanh",
+          "syntax": "math.tanh(...)",
+          "description": "Calculate the hyperbolic tangent",
+          "since": "cypher"
+        }
+      ],
+      "Node": [
+        {
+          "name": "node.relationship.types",
+          "syntax": "node.relationship.types(...)",
+          "description": "Get all relationship types connected to a node",
+          "since": "cypher"
+        },
+        {
+          "name": "node.degree.out",
+          "syntax": "node.degree.out(...)",
+          "description": "Get the out-degree (number of outgoing relationships) of a node",
+          "since": "cypher"
+        },
+        {
+          "name": "node.degree",
+          "syntax": "node.degree(...)",
+          "description": "Get the degree (number of relationships) of a node, optionally filtered by relationship types and direction",
+          "since": "cypher"
+        },
+        {
+          "name": "node.id",
+          "syntax": "node.id(...)",
+          "description": "Get the internal record ID of a node",
+          "since": "cypher"
+        },
+        {
+          "name": "node.relationship.exists",
+          "syntax": "node.relationship.exists(...)",
+          "description": "Check if a node has any relationships, optionally filtered by type and direction",
+          "since": "cypher"
+        },
+        {
+          "name": "node.labels",
+          "syntax": "node.labels(...)",
+          "description": "Get the labels (types) of a node",
+          "since": "cypher"
+        },
+        {
+          "name": "node.degree.in",
+          "syntax": "node.degree.in(...)",
+          "description": "Get the in-degree (number of incoming relationships) of a node",
+          "since": "cypher"
+        }
+      ],
+      "Path": [
+        {
+          "name": "path.slice",
+          "syntax": "path.slice(...)",
+          "description": "Extract a subpath from index 'from' to 'to' (based on relationship count)",
+          "since": "cypher"
+        },
+        {
+          "name": "path.elements",
+          "syntax": "path.elements(...)",
+          "description": "Get all elements (alternating nodes and relationships) from a path",
+          "since": "cypher"
+        },
+        {
+          "name": "path.create",
+          "syntax": "path.create(...)",
+          "description": "Create a path from a start node and a list of relationships",
+          "since": "cypher"
+        },
+        {
+          "name": "path.combine",
+          "syntax": "path.combine(...)",
+          "description": "Combine multiple paths into a single path",
+          "since": "cypher"
+        }
+      ],
+      "Rel": [
+        {
+          "name": "rel.type",
+          "syntax": "rel.type(...)",
+          "description": "Get the type name of a relationship",
+          "since": "cypher"
+        },
+        {
+          "name": "rel.endNode",
+          "syntax": "rel.endNode(...)",
+          "description": "Get the end (target) node of a relationship",
+          "since": "cypher"
+        },
+        {
+          "name": "rel.startNode",
+          "syntax": "rel.startNode(...)",
+          "description": "Get the start (source) node of a relationship",
+          "since": "cypher"
+        },
+        {
+          "name": "rel.id",
+          "syntax": "rel.id(...)",
+          "description": "Get the internal record ID of a relationship",
+          "since": "cypher"
+        }
+      ],
+      "Text": [
+        {
+          "name": "text.charAt",
+          "syntax": "text.charAt(...)",
+          "description": "Get the character at the specified index (0-based)",
+          "since": "cypher"
+        },
+        {
+          "name": "text.indexOf",
+          "syntax": "text.indexOf(...)",
+          "description": "Find position of substring in string, optionally starting from specified position",
+          "since": "cypher"
+        },
+        {
+          "name": "text.replace",
+          "syntax": "text.replace(...)",
+          "description": "Replace all occurrences of search string with replacement",
+          "since": "cypher"
+        },
+        {
+          "name": "text.hexValue",
+          "syntax": "text.hexValue(...)",
+          "description": "Convert value to hexadecimal string representation",
+          "since": "cypher"
+        },
+        {
+          "name": "text.split",
+          "syntax": "text.split(...)",
+          "description": "Split string into a list using the specified delimiter",
+          "since": "cypher"
+        },
+        {
+          "name": "text.join",
+          "syntax": "text.join(...)",
+          "description": "Join list elements into a string with the specified delimiter",
+          "since": "cypher"
+        },
+        {
+          "name": "text.capitalizeAll",
+          "syntax": "text.capitalizeAll(...)",
+          "description": "Capitalize the first letter of each word in the string",
+          "since": "cypher"
+        },
+        {
+          "name": "text.code",
+          "syntax": "text.code(...)",
+          "description": "Get the Unicode code point of the first character",
+          "since": "cypher"
+        },
+        {
+          "name": "text.rpad",
+          "syntax": "text.rpad(...)",
+          "description": "Right pad string to the specified length with the specified character",
+          "since": "cypher"
+        },
+        {
+          "name": "text.decapitalize",
+          "syntax": "text.decapitalize(...)",
+          "description": "Lowercase the first letter of the string",
+          "since": "cypher"
+        },
+        {
+          "name": "text.random",
+          "syntax": "text.random(...)",
+          "description": "Generate a random string of the specified length using optional character set",
+          "since": "cypher"
+        },
+        {
+          "name": "text.decapitalizeAll",
+          "syntax": "text.decapitalizeAll(...)",
+          "description": "Lowercase the first letter of each word in the string",
+          "since": "cypher"
+        },
+        {
+          "name": "text.jaroWinklerDistance",
+          "syntax": "text.jaroWinklerDistance(...)",
+          "description": "Calculate the Jaro-Winkler similarity (0-1) between two strings",
+          "since": "cypher"
+        },
+        {
+          "name": "text.format",
+          "syntax": "text.format(...)",
+          "description": "Format string using Java's String.format() with the provided arguments",
+          "since": "cypher"
+        },
+        {
+          "name": "text.snakeCase",
+          "syntax": "text.snakeCase(...)",
+          "description": "Convert string to snake_case (lowercase with underscores)",
+          "since": "cypher"
+        },
+        {
+          "name": "text.byteCount",
+          "syntax": "text.byteCount(...)",
+          "description": "Get the byte count of string in the specified charset (default UTF-8)",
+          "since": "cypher"
+        },
+        {
+          "name": "text.levenshteinSimilarity",
+          "syntax": "text.levenshteinSimilarity(...)",
+          "description": "Calculate similarity (0-1) based on Levenshtein edit distance",
+          "since": "cypher"
+        },
+        {
+          "name": "text.lpad",
+          "syntax": "text.lpad(...)",
+          "description": "Left pad string to the specified length with the specified character",
+          "since": "cypher"
+        },
+        {
+          "name": "text.slug",
+          "syntax": "text.slug(...)",
+          "description": "Create a URL-friendly slug from the string",
+          "since": "cypher"
+        },
+        {
+          "name": "text.regexReplace",
+          "syntax": "text.regexReplace(...)",
+          "description": "Replace all matches of a regular expression with replacement",
+          "since": "cypher"
+        },
+        {
+          "name": "text.levenshteinDistance",
+          "syntax": "text.levenshteinDistance(...)",
+          "description": "Calculate the Levenshtein edit distance between two strings (O(n*m) complexity)",
+          "since": "cypher"
+        },
+        {
+          "name": "text.hammingDistance",
+          "syntax": "text.hammingDistance(...)",
+          "description": "Calculate the Hamming distance between two equal-length strings",
+          "since": "cypher"
+        },
+        {
+          "name": "text.sorensenDiceSimilarity",
+          "syntax": "text.sorensenDiceSimilarity(...)",
+          "description": "Calculate the Sorensen-Dice similarity coefficient based on bigrams",
+          "since": "cypher"
+        },
+        {
+          "name": "text.upperCamelCase",
+          "syntax": "text.upperCamelCase(...)",
+          "description": "Convert string to UpperCamelCase (PascalCase)",
+          "since": "cypher"
+        },
+        {
+          "name": "text.camelCase",
+          "syntax": "text.camelCase(...)",
+          "description": "Convert string to camelCase (first letter lowercase, words capitalized)",
+          "since": "cypher"
+        },
+        {
+          "name": "text.capitalize",
+          "syntax": "text.capitalize(...)",
+          "description": "Capitalize the first letter of the string",
+          "since": "cypher"
+        }
+      ],
+      "Util": [
+        {
+          "name": "util.sha512",
+          "syntax": "util.sha512(...)",
+          "description": "Compute SHA-512 hash of the given value",
+          "since": "cypher"
+        },
+        {
+          "name": "util.validate",
+          "syntax": "util.validate(...)",
+          "description": "Throws an exception with the given message if the predicate is false",
+          "since": "cypher"
+        },
+        {
+          "name": "util.compress",
+          "syntax": "util.compress(...)",
+          "description": "Compress data using the specified algorithm (gzip or deflate), returns base64-encoded string",
+          "since": "cypher"
+        },
+        {
+          "name": "util.sha1",
+          "syntax": "util.sha1(...)",
+          "description": "Compute SHA-1 hash of the given value",
+          "since": "cypher"
+        },
+        {
+          "name": "util.decompress",
+          "syntax": "util.decompress(...)",
+          "description": "Decompress base64-encoded data using the specified algorithm (gzip or deflate)",
+          "since": "cypher"
+        },
+        {
+          "name": "util.sha256",
+          "syntax": "util.sha256(...)",
+          "description": "Compute SHA-256 hash of the given value",
+          "since": "cypher"
+        },
+        {
+          "name": "util.md5",
+          "syntax": "util.md5(...)",
+          "description": "Compute MD5 hash of the given value",
+          "since": "cypher"
+        },
+        {
+          "name": "util.sleep",
+          "syntax": "util.sleep(...)",
+          "description": "Sleep for the specified number of milliseconds",
+          "since": "cypher"
+        }
+      ]
+    },
+    "SQL Methods": {
+      "Collection": [
+        {
+          "name": "join",
+          "syntax": "<field>.join(param1)",
+          "since": "sql"
+        },
+        {
+          "name": "sort",
+          "syntax": "sort(<bool>)",
+          "since": "sql"
+        },
+        {
+          "name": "field",
+          "syntax": "<property>.field(<string>)",
+          "since": "sql"
+        },
+        {
+          "name": "size",
+          "syntax": "<field>.size()",
+          "since": "sql"
+        },
+        {
+          "name": "keys",
+          "syntax": "<field>.keys()",
+          "since": "sql"
+        },
+        {
+          "name": "values",
+          "syntax": "<field>.values()",
+          "since": "sql"
+        },
+        {
+          "name": "remove",
+          "syntax": "remove(<item>*)",
+          "since": "sql"
+        },
+        {
+          "name": "transform",
+          "syntax": "transform()",
+          "since": "sql"
+        },
+        {
+          "name": "removeall",
+          "syntax": "<field>.removeall(param1[])",
+          "since": "sql"
+        }
+      ],
+      "Conversion": [
+        {
+          "name": "asinteger",
+          "syntax": "<field>.asinteger()",
+          "since": "sql"
+        },
+        {
+          "name": "asrecord",
+          "syntax": "<field>.asrecord()",
+          "since": "sql"
+        },
+        {
+          "name": "convert",
+          "syntax": "convert(<type>)",
+          "since": "sql"
+        },
+        {
+          "name": "asjson",
+          "syntax": "asJSON()",
+          "since": "sql"
+        },
+        {
+          "name": "asrid",
+          "syntax": "<field>.asrid()",
+          "since": "sql"
+        },
+        {
+          "name": "asfloat",
+          "syntax": "<field>.asfloat()",
+          "since": "sql"
+        },
+        {
+          "name": "aslong",
+          "syntax": "<field>.aslong()",
+          "since": "sql"
+        },
+        {
+          "name": "asbyte",
+          "syntax": "<field>.asbyte()",
+          "since": "sql"
+        },
+        {
+          "name": "asdouble",
+          "syntax": "<field>.asdouble()",
+          "since": "sql"
+        },
+        {
+          "name": "asboolean",
+          "syntax": "<field>.asboolean()",
+          "since": "sql"
+        },
+        {
+          "name": "asstring",
+          "syntax": "<field>.asstring()",
+          "since": "sql"
+        },
+        {
+          "name": "asdatetime",
+          "syntax": "asDatetime([<format>])",
+          "since": "sql"
+        },
+        {
+          "name": "asdecimal",
+          "syntax": "asDecimal()",
+          "since": "sql"
+        },
+        {
+          "name": "aslist",
+          "syntax": "<field>.aslist()",
+          "since": "sql"
+        },
+        {
+          "name": "asmap",
+          "syntax": "<field>.asmap()",
+          "since": "sql"
+        },
+        {
+          "name": "asdate",
+          "syntax": "asDate([<format>])",
+          "since": "sql"
+        },
+        {
+          "name": "asshort",
+          "syntax": "<field>.asshort()",
+          "since": "sql"
+        },
+        {
+          "name": "asset",
+          "syntax": "<field>.asset()",
+          "since": "sql"
+        }
+      ],
+      "Geo": [
+        {
+          "name": "intersectswith",
+          "syntax": "intersectsWith( <shape> )",
+          "since": "sql"
+        },
+        {
+          "name": "iswithin",
+          "syntax": "isWithin( <shape> )",
+          "since": "sql"
+        }
+      ],
+      "Misc": [
+        {
+          "name": "precision",
+          "syntax": "<field>.precision(param1)",
+          "since": "sql"
+        },
+        {
+          "name": "type",
+          "syntax": "<field>.type()",
+          "since": "sql"
+        },
+        {
+          "name": "exclude",
+          "syntax": "Syntax error: exclude([<field-name>][,]*)",
+          "since": "sql"
+        },
+        {
+          "name": "tojson",
+          "syntax": "toJSON()",
+          "since": "sql"
+        },
+        {
+          "name": "hash",
+          "syntax": "hash([<algorithm>])",
+          "since": "sql"
+        },
+        {
+          "name": "javatype",
+          "syntax": "<field>.javatype()",
+          "since": "sql"
+        },
+        {
+          "name": "ifnull",
+          "syntax": "Syntax error: ifnull(<return_value_if_null>)",
+          "since": "sql"
+        },
+        {
+          "name": "include",
+          "syntax": "Syntax error: include([<field-name>][,]*)",
+          "since": "sql"
+        },
+        {
+          "name": "ifempty",
+          "syntax": "Syntax error: ifempty(<return_value_if_empty>)",
+          "since": "sql"
+        }
+      ],
+      "String": [
+        {
+          "name": "prefix",
+          "syntax": "<field>.prefix(param1)",
+          "since": "sql"
+        },
+        {
+          "name": "replace",
+          "syntax": "replace(<to-find>, <to-replace>)",
+          "since": "sql"
+        },
+        {
+          "name": "trimprefix",
+          "syntax": "<field>.trimprefix(param1)",
+          "since": "sql"
+        },
+        {
+          "name": "split",
+          "syntax": "<field>.split(param1)",
+          "since": "sql"
+        },
+        {
+          "name": "trim",
+          "syntax": "<field>.trim()",
+          "since": "sql"
+        },
+        {
+          "name": "normalize",
+          "syntax": "<field>.normalize([param1, param2])",
+          "since": "sql"
+        },
+        {
+          "name": "format",
+          "syntax": "<field>.format(param1[, param2])",
+          "since": "sql"
+        },
+        {
+          "name": "capitalize",
+          "syntax": "<field>.capitalize()",
+          "since": "sql"
+        },
+        {
+          "name": "left",
+          "syntax": "left(<characters>)",
+          "since": "sql"
+        },
+        {
+          "name": "lastindexof",
+          "syntax": "<field>.lastindexof(param1[, param2])",
+          "since": "sql"
+        },
+        {
+          "name": "substring",
+          "syntax": "subString(<from-index> [,<to-index>])",
+          "since": "sql"
+        },
+        {
+          "name": "tolowercase",
+          "syntax": "<field>.tolowercase()",
+          "since": "sql"
+        },
+        {
+          "name": "charat",
+          "syntax": "charAt(<position>)",
+          "since": "sql"
+        },
+        {
+          "name": "length",
+          "syntax": "length()",
+          "since": "sql"
+        },
+        {
+          "name": "right",
+          "syntax": "right( <characters>)",
+          "since": "sql"
+        },
+        {
+          "name": "trimsuffix",
+          "syntax": "<field>.trimsuffix(param1)",
+          "since": "sql"
+        },
+        {
+          "name": "touppercase",
+          "syntax": "<field>.touppercase()",
+          "since": "sql"
+        },
+        {
+          "name": "indexof",
+          "syntax": "<field>.indexof(param1[, param2])",
+          "since": "sql"
+        },
+        {
+          "name": "append",
+          "syntax": "append([<value|expression|field>]*)",
+          "since": "sql"
+        }
+      ]
+    }
+  },
+  "autocomplete": [
+    "abs",
+    "agg.first",
+    "agg.last",
+    "agg.maxItems",
+    "agg.median",
+    "agg.minItems",
+    "agg.nth",
+    "agg.percentiles",
+    "agg.product",
+    "agg.slice",
+    "agg.statistics",
+    "append",
+    "asboolean",
+    "asbyte",
+    "asdate",
+    "asdatetime",
+    "asdecimal",
+    "asdouble",
+    "asfloat",
+    "asinteger",
+    "asjson",
+    "aslist",
+    "aslong",
+    "asmap",
+    "asrecord",
+    "asrid",
+    "asset",
+    "asshort",
+    "asstring",
+    "astar",
+    "avg",
+    "bool_and",
+    "bool_or",
+    "both",
+    "bothe",
+    "bothv",
+    "capitalize",
+    "charat",
+    "circle",
+    "coalesce",
+    "coll.distinct",
+    "coll.flatten",
+    "coll.indexOf",
+    "coll.insert",
+    "coll.max",
+    "coll.min",
+    "coll.remove",
+    "coll.sort",
+    "concat",
+    "convert",
+    "convert.fromJsonList",
+    "convert.fromJsonMap",
+    "convert.toBoolean",
+    "convert.toFloat",
+    "convert.toInteger",
+    "convert.toJson",
+    "convert.toList",
+    "convert.toMap",
+    "convert.toSet",
+    "count",
+    "create.uuid",
+    "create.uuidBase64",
+    "create.vNode",
+    "create.vRelationship",
+    "date",
+    "date.add",
+    "date.convert",
+    "date.currentTimestamp",
+    "date.field",
+    "date.fields",
+    "date.format",
+    "date.fromISO8601",
+    "date.parse",
+    "date.systemTimezone",
+    "date.toISO8601",
+    "decode",
+    "difference",
+    "dijkstra",
+    "distance",
+    "duansssp",
+    "duration",
+    "encode",
+    "eval",
+    "exclude",
+    "field",
+    "first",
+    "format",
+    "hash",
+    "if",
+    "ifempty",
+    "ifnull",
+    "in",
+    "include",
+    "indexof",
+    "ine",
+    "intersect",
+    "intersectswith",
+    "inv",
+    "iswithin",
+    "javatype",
+    "join",
+    "keys",
+    "last",
+    "lastindexof",
+    "left",
+    "length",
+    "linestring",
+    "list",
+    "map",
+    "map.clean",
+    "map.flatten",
+    "map.fromLists",
+    "map.fromPairs",
+    "map.groupBy",
+    "map.merge",
+    "map.mergeList",
+    "map.removeKey",
+    "map.removeKeys",
+    "map.setKey",
+    "map.sortedProperties",
+    "map.submap",
+    "map.unflatten",
+    "map.values",
+    "math.cosh",
+    "math.maxDouble",
+    "math.maxLong",
+    "math.minLong",
+    "math.sigmoid",
+    "math.sigmoidPrime",
+    "math.sinh",
+    "math.tanh",
+    "math_abs",
+    "math_absexact",
+    "math_acos",
+    "math_addexact",
+    "math_asin",
+    "math_atan",
+    "math_atan2",
+    "math_cbrt",
+    "math_ceil",
+    "math_ceildiv",
+    "math_ceildivexact",
+    "math_ceilmod",
+    "math_clamp",
+    "math_copysign",
+    "math_cos",
+    "math_cosh",
+    "math_decrementexact",
+    "math_divideexact",
+    "math_exp",
+    "math_expm1",
+    "math_floor",
+    "math_floordiv",
+    "math_floordivexact",
+    "math_floormod",
+    "math_fma",
+    "math_getexponent",
+    "math_hypot",
+    "math_ieeeremainder",
+    "math_incrementexact",
+    "math_log",
+    "math_log10",
+    "math_log1p",
+    "math_max",
+    "math_min",
+    "math_multiplyexact",
+    "math_multiplyfull",
+    "math_multiplyhigh",
+    "math_negateexact",
+    "math_nextafter",
+    "math_nextdown",
+    "math_nextup",
+    "math_pow",
+    "math_powexact",
+    "math_random",
+    "math_rint",
+    "math_round",
+    "math_scalb",
+    "math_signum",
+    "math_sin",
+    "math_sinh",
+    "math_sqrt",
+    "math_subtractexact",
+    "math_tan",
+    "math_tanh",
+    "math_todegrees",
+    "math_tointexact",
+    "math_toradians",
+    "math_ulp",
+    "math_unsignedmultiplyexact",
+    "math_unsignedmultiplyhigh",
+    "math_unsignedpowexact",
+    "max",
+    "median",
+    "min",
+    "mode",
+    "node.degree",
+    "node.degree.in",
+    "node.degree.out",
+    "node.id",
+    "node.labels",
+    "node.relationship.exists",
+    "node.relationship.types",
+    "normalize",
+    "out",
+    "oute",
+    "outv",
+    "path.combine",
+    "path.create",
+    "path.elements",
+    "path.slice",
+    "percentile",
+    "point",
+    "polygon",
+    "pow",
+    "precision",
+    "prefix",
+    "randomint",
+    "rectangle",
+    "rel.endNode",
+    "rel.id",
+    "rel.startNode",
+    "rel.type",
+    "remove",
+    "removeall",
+    "replace",
+    "right",
+    "search_fields",
+    "search_fields_more",
+    "search_index",
+    "search_index_more",
+    "set",
+    "shortestpath",
+    "size",
+    "sort",
+    "split",
+    "sqrt",
+    "stddev",
+    "stddevp",
+    "strcmpci",
+    "substring",
+    "sum",
+    "symmetricdifference",
+    "sysdate",
+    "text.byteCount",
+    "text.camelCase",
+    "text.capitalize",
+    "text.capitalizeAll",
+    "text.charAt",
+    "text.code",
+    "text.decapitalize",
+    "text.decapitalizeAll",
+    "text.format",
+    "text.hammingDistance",
+    "text.hexValue",
+    "text.indexOf",
+    "text.jaroWinklerDistance",
+    "text.join",
+    "text.levenshteinDistance",
+    "text.levenshteinSimilarity",
+    "text.lpad",
+    "text.random",
+    "text.regexReplace",
+    "text.replace",
+    "text.rpad",
+    "text.slug",
+    "text.snakeCase",
+    "text.sorensenDiceSimilarity",
+    "text.split",
+    "text.upperCamelCase",
+    "tojson",
+    "tolowercase",
+    "touppercase",
+    "transform",
+    "trim",
+    "trimprefix",
+    "trimsuffix",
+    "type",
+    "unionall",
+    "util.compress",
+    "util.decompress",
+    "util.md5",
+    "util.sha1",
+    "util.sha256",
+    "util.sha512",
+    "util.sleep",
+    "util.validate",
+    "uuid",
+    "values",
+    "variance",
+    "variancep",
+    "vector.add",
+    "vector.approxdistance",
+    "vector.avg",
+    "vector.clip",
+    "vector.cosinesimilarity",
+    "vector.densetosparse",
+    "vector.dequantizeint8",
+    "vector.dimension",
+    "vector.dotproduct",
+    "vector.hasinf",
+    "vector.hasnan",
+    "vector.hybridscore",
+    "vector.isnormalized",
+    "vector.l1norm",
+    "vector.l2distance",
+    "vector.linfnorm",
+    "vector.magnitude",
+    "vector.max",
+    "vector.min",
+    "vector.multiply",
+    "vector.multiscore",
+    "vector.neighbors",
+    "vector.normalize",
+    "vector.normalizescores",
+    "vector.quantizebinary",
+    "vector.quantizeint8",
+    "vector.rrfscore",
+    "vector.scale",
+    "vector.scoretransform",
+    "vector.sparsecreate",
+    "vector.sparsedot",
+    "vector.sparsetodense",
+    "vector.sparsity",
+    "vector.stddev",
+    "vector.subtract",
+    "vector.sum",
+    "vector.tostring",
+    "vector.variance",
+    "vectoradd",
+    "vectorapproxdistance",
+    "vectoravg",
+    "vectorclip",
+    "vectorcosinesimilarity",
+    "vectordensetosparse",
+    "vectordequantizeint8",
+    "vectordimension",
+    "vectordotproduct",
+    "vectorhasinf",
+    "vectorhasnan",
+    "vectorhybridscore",
+    "vectorisnormalized",
+    "vectorl1norm",
+    "vectorl2distance",
+    "vectorlinfnorm",
+    "vectormagnitude",
+    "vectormax",
+    "vectormin",
+    "vectormultiply",
+    "vectormultiscore",
+    "vectorneighbors",
+    "vectornormalize",
+    "vectornormalizescores",
+    "vectorquantizebinary",
+    "vectorquantizeint8",
+    "vectorrrfscore",
+    "vectorscale",
+    "vectorscoretransform",
+    "vectorsparsecreate",
+    "vectorsparsedot",
+    "vectorsparsetodense",
+    "vectorsparsity",
+    "vectorstddev",
+    "vectorsubtract",
+    "vectorsum",
+    "vectortostring",
+    "vectorvariance",
+    "version"
+  ],
+  "sqlKeywords": [
+    "add",
+    "addbucket",
+    "after",
+    "aliases",
+    "align",
+    "all",
+    "alter",
+    "and",
+    "as",
+    "asc",
+    "backup",
+    "batch",
+    "before",
+    "begin",
+    "between",
+    "breadth_first",
+    "break",
+    "bucket",
+    "buckets",
+    "bucketselectionstrategy",
+    "by",
+    "check",
+    "commit",
+    "compress",
+    "console",
+    "contains",
+    "containsall",
+    "containsany",
+    "containskey",
+    "containstext",
+    "containsvalue",
+    "content",
+    "continue",
+    "count",
+    "create",
+    "custom",
+    "database",
+    "define",
+    "defined",
+    "delete",
+    "depth_first",
+    "depthalias",
+    "desc",
+    "distinct",
+    "document",
+    "drop",
+    "edge",
+    "else",
+    "engine",
+    "error",
+    "exception",
+    "execute",
+    "exists",
+    "explain",
+    "export",
+    "extends",
+    "fail",
+    "false",
+    "find",
+    "fix",
+    "force",
+    "foreach",
+    "format",
+    "from",
+    "function",
+    "grant",
+    "group by",
+    "hidden",
+    "identified",
+    "if",
+    "ilike",
+    "import",
+    "in",
+    "increment",
+    "index",
+    "insert",
+    "instanceof",
+    "into",
+    "inverse",
+    "is",
+    "isolation",
+    "item",
+    "key",
+    "language",
+    "let",
+    "like",
+    "limit",
+    "link",
+    "lock",
+    "match",
+    "matches",
+    "maxdepth",
+    "merge",
+    "metadata",
+    "mindepth",
+    "move",
+    "name",
+    "near",
+    "none",
+    "not",
+    "null",
+    "null_strategy",
+    "of",
+    "off",
+    "offset",
+    "on",
+    "optimize",
+    "optional",
+    "or",
+    "order by",
+    "overwrite",
+    "parameters",
+    "pathalias",
+    "polymorphic",
+    "profile",
+    "property",
+    "put",
+    "read",
+    "rebuild",
+    "record",
+    "remove",
+    "removebucket",
+    "retry",
+    "return",
+    "revoke",
+    "rid",
+    "rollback",
+    "schema",
+    "select",
+    "set",
+    "skip",
+    "sleep",
+    "start",
+    "strategy",
+    "supertype",
+    "system",
+    "timeout",
+    "to",
+    "traverse",
+    "true",
+    "truncate",
+    "type",
+    "types",
+    "unidirectional",
+    "unsafe",
+    "unwind",
+    "update",
+    "upsert",
+    "value",
+    "values",
+    "vertex",
+    "wait",
+    "where",
+    "while",
+    "with",
+    "within"
+  ],
+  "cypherKeywords": [
+    "ACCESS",
+    "ACTIVE",
+    "ACYCLIC",
+    "ADD",
+    "ADMIN",
+    "ADMINISTRATOR",
+    "ALIAS",
+    "ALIASES",
+    "ALL",
+    "ALLREDUCE",
+    "ALL_SHORTEST_PATHS",
+    "ALTER",
+    "AMPERSAND",
+    "AND",
+    "ANY",
+    "ARRAY",
+    "AS",
+    "ASC",
+    "ASCENDING",
+    "ASSIGN",
+    "AT",
+    "AUTH",
+    "BAR",
+    "BINDINGS",
+    "BOOL",
+    "BOOLEAN",
+    "BOOSTED",
+    "BOTH",
+    "BREAK",
+    "BUILT",
+    "BY",
+    "CALL",
+    "CASCADE",
+    "CASE",
+    "CHANGE",
+    "CIDR",
+    "COLLECT",
+    "COLON",
+    "COLONCOLON",
+    "COMMA",
+    "COMMAND",
+    "COMMANDS",
+    "COMPOSITE",
+    "CONCURRENT",
+    "CONDITION",
+    "CONSTRAINT",
+    "CONSTRAINTS",
+    "CONTAINS",
+    "CONTINUE",
+    "COPY",
+    "COSINE",
+    "COUNT",
+    "CREATE",
+    "CREDENTIAL",
+    "CSV",
+    "CURRENT",
+    "CYPHER",
+    "DATA",
+    "DATABASE",
+    "DATABASES",
+    "DATE",
+    "DATETIME",
+    "DBMS",
+    "DEALLOCATE",
+    "DEFAULT",
+    "DEFINE",
+    "DEFINED",
+    "DELETE",
+    "DENY",
+    "DESC",
+    "DESCENDING",
+    "DESTROY",
+    "DETACH",
+    "DIFFERENT",
+    "DISTINCT",
+    "DIVIDE",
+    "DOLLAR",
+    "DOT",
+    "DOTDOT",
+    "DOT_METRIC",
+    "DOUBLEBAR",
+    "DRIVER",
+    "DROP",
+    "DRYRUN",
+    "DUMP",
+    "DURATION",
+    "EACH",
+    "EDGE",
+    "ELEMENT",
+    "ELEMENTS",
+    "ELSE",
+    "ENABLE",
+    "ENABLED",
+    "ENCRYPTED",
+    "END",
+    "ENDS",
+    "EQ",
+    "ERROR",
+    "EUCLIDEAN",
+    "EUCLIDEAN_SQUARED",
+    "EXCLAMATION_MARK",
+    "EXECUTABLE",
+    "EXECUTE",
+    "EXIST",
+    "EXISTENCE",
+    "EXISTS",
+    "FAIL",
+    "FALSE",
+    "FIELDTERMINATOR",
+    "FILTER",
+    "FINISH",
+    "FLOAT",
+    "FLOAT32",
+    "FLOAT64",
+    "FOR",
+    "FOREACH",
+    "FORWARDING",
+    "FROM",
+    "FULLTEXT",
+    "FUNCTION",
+    "FUNCTIONS",
+    "GE",
+    "GRANT",
+    "GRAPH",
+    "GRAPHS",
+    "GROUP",
+    "GROUPS",
+    "GT",
+    "HAMMING",
+    "HEADERS",
+    "HOME",
+    "ID",
+    "IF",
+    "IMMUTABLE",
+    "IMPERSONATE",
+    "IMPLIES",
+    "IN",
+    "INDEX",
+    "INDEXES",
+    "INF",
+    "INFINITY",
+    "INSERT",
+    "INT",
+    "INT16",
+    "INT32",
+    "INT64",
+    "INT8",
+    "INVALID_NEQ",
+    "IS",
+    "JOIN",
+    "KEY",
+    "LABEL",
+    "LABELS",
+    "LANGUAGE",
+    "LBRACKET",
+    "LCURLY",
+    "LE",
+    "LEADING",
+    "LET",
+    "LIMITROWS",
+    "LIST",
+    "LOAD",
+    "LOCAL",
+    "LOOKUP",
+    "LPAREN",
+    "LT",
+    "MANAGEMENT",
+    "MANHATTAN",
+    "MAP",
+    "MATCH",
+    "MERGE",
+    "MINUS",
+    "NAME",
+    "NAMES",
+    "NAN",
+    "NEQ",
+    "NEW",
+    "NEXT",
+    "NFC",
+    "NFD",
+    "NFKC",
+    "NFKD",
+    "NODE",
+    "NODES",
+    "NODETACH",
+    "NONE",
+    "NORMALIZE",
+    "NORMALIZED",
+    "NOT",
+    "NOTHING",
+    "NOWAIT",
+    "NULL",
+    "OF",
+    "OFFSET",
+    "OIDC",
+    "ON",
+    "ONLY",
+    "OPTION",
+    "OPTIONAL",
+    "OPTIONS",
+    "OR",
+    "ORDER",
+    "PASSWORD",
+    "PASSWORDS",
+    "PATH",
+    "PATHS",
+    "PERCENT",
+    "PLAINTEXT",
+    "PLUS",
+    "PLUSEQUAL",
+    "POINT",
+    "POPULATED",
+    "POW",
+    "PRIMARIES",
+    "PRIMARY",
+    "PRIVILEGE",
+    "PRIVILEGES",
+    "PROCEDURE",
+    "PROCEDURES",
+    "PROPERTIES",
+    "PROPERTY",
+    "PROVIDER",
+    "PROVIDERS",
+    "QUESTION",
+    "RANGE",
+    "RBRACKET",
+    "RCURLY",
+    "READ",
+    "REALLOCATE",
+    "REDUCE",
+    "REGEQ",
+    "REL",
+    "RELATIONSHIP",
+    "RELATIONSHIPS",
+    "REMOVE",
+    "RENAME",
+    "REPEATABLE",
+    "REPLACE",
+    "REPLICA",
+    "REPLICAS",
+    "REPORT",
+    "REQUIRE",
+    "REQUIRED",
+    "RESTRICT",
+    "RETRY",
+    "RETURN",
+    "REVOKE",
+    "ROLE",
+    "ROLES",
+    "ROW",
+    "ROWS",
+    "RPAREN",
+    "RULE",
+    "RULES",
+    "SCAN",
+    "SCORE",
+    "SEARCH",
+    "SEC",
+    "SECOND",
+    "SECONDARIES",
+    "SECONDARY",
+    "SECONDS",
+    "SEEK",
+    "SEMICOLON",
+    "SERVER",
+    "SERVERS",
+    "SET",
+    "SETTING",
+    "SETTINGS",
+    "SHARD",
+    "SHARDS",
+    "SHORTEST",
+    "SHORTEST_PATH",
+    "SHOW",
+    "SIGNED",
+    "SINGLE",
+    "SKIPROWS",
+    "START",
+    "STARTS",
+    "STATUS",
+    "STOP",
+    "STRING",
+    "SUPPORTED",
+    "SUSPENDED",
+    "TARGET",
+    "TERMINATE",
+    "TEXT",
+    "THEN",
+    "TIME",
+    "TIMES",
+    "TIMESTAMP",
+    "TIMEZONE",
+    "TO",
+    "TOPOLOGY",
+    "TRAIL",
+    "TRAILING",
+    "TRANSACTION",
+    "TRANSACTIONS",
+    "TRAVERSE",
+    "TRIM",
+    "TRUE",
+    "TYPE",
+    "TYPED",
+    "TYPES",
+    "UNION",
+    "UNIQUE",
+    "UNIQUENESS",
+    "UNWIND",
+    "URL",
+    "USE",
+    "USER",
+    "USERS",
+    "USING",
+    "VALUE",
+    "VARCHAR",
+    "VECTOR",
+    "VECTOR_DISTANCE",
+    "VECTOR_NORM",
+    "VERTEX",
+    "WAIT",
+    "WALK",
+    "WHEN",
+    "WHERE",
+    "WITH",
+    "WITHOUT",
+    "WRITE",
+    "XOR",
+    "YIELD",
+    "ZONE",
+    "ZONED"
+  ],
+  "sqlGrammar": {
+    "_start": {
+      "keywords": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "CREATE",
+        "ALTER",
+        "DROP",
+        "TRUNCATE",
+        "MATCH",
+        "TRAVERSE",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "LET",
+        "RETURN",
+        "IF",
+        "EXPLAIN",
+        "PROFILE",
+        "REBUILD",
+        "IMPORT",
+        "EXPORT",
+        "BACKUP",
+        "CHECK",
+        "ALIGN",
+        "DEFINE",
+        "MOVE",
+        "LOCK",
+        "SLEEP",
+        "REFRESH"
+      ]
+    },
+    "SELECT": {
+      "keywords": [
+        "DISTINCT",
+        "*",
+        "FROM"
+      ],
+      "expect": [
+        "expression",
+        "function"
+      ]
+    },
+    "SELECT._projection": {
+      "keywords": [
+        "FROM",
+        "AS",
+        ","
+      ],
+      "expect": [
+        "expression",
+        "function"
+      ]
+    },
+    "SELECT.FROM": {
+      "keywords": [
+        "BUCKET"
+      ],
+      "expect": [
+        "type",
+        "subquery"
+      ]
+    },
+    "SELECT.FROM._target": {
+      "keywords": [
+        "WHERE",
+        "LET",
+        "GROUP BY",
+        "ORDER BY",
+        "UNWIND",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT",
+        "AS"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "SELECT.WHERE": {
+      "keywords": [
+        "AND",
+        "OR",
+        "NOT",
+        "IS",
+        "IN",
+        "BETWEEN",
+        "LIKE",
+        "ILIKE",
+        "CONTAINS",
+        "CONTAINSALL",
+        "CONTAINSANY",
+        "CONTAINSKEY",
+        "CONTAINSVALUE",
+        "CONTAINSTEXT",
+        "MATCHES",
+        "INSTANCEOF",
+        "NULL",
+        "TRUE",
+        "FALSE",
+        "DEFINED"
+      ],
+      "expect": [
+        "expression",
+        "property",
+        "function"
+      ]
+    },
+    "SELECT.WHERE._after": {
+      "keywords": [
+        "AND",
+        "OR",
+        "GROUP BY",
+        "ORDER BY",
+        "UNWIND",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT"
+      ]
+    },
+    "SELECT.GROUP_BY": {
+      "keywords": [
+        "ORDER BY",
+        "UNWIND",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "SELECT.ORDER_BY": {
+      "keywords": [
+        "ASC",
+        "DESC",
+        "UNWIND",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT",
+        ","
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "SELECT.UNWIND": {
+      "keywords": [
+        "AS",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "SELECT.LIMIT": {
+      "keywords": [
+        "SKIP",
+        "TIMEOUT"
+      ]
+    },
+    "SELECT.SKIP": {
+      "keywords": [
+        "LIMIT",
+        "TIMEOUT"
+      ]
+    },
+    "INSERT": {
+      "keywords": [
+        "INTO"
+      ]
+    },
+    "INSERT.INTO": {
+      "keywords": [
+        "BUCKET"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "INSERT.INTO._target": {
+      "keywords": [
+        "SET",
+        "VALUES",
+        "CONTENT",
+        "RETURN",
+        "FROM",
+        "UNSAFE",
+        "("
+      ]
+    },
+    "INSERT.SET": {
+      "keywords": [
+        ",",
+        "RETURN",
+        "FROM",
+        "UNSAFE"
+      ],
+      "expect": [
+        "property"
+      ]
+    },
+    "INSERT.CONTENT": {
+      "keywords": [
+        "RETURN",
+        "FROM",
+        "UNSAFE"
+      ]
+    },
+    "INSERT.VALUES": {
+      "keywords": [
+        ",",
+        "RETURN",
+        "FROM",
+        "UNSAFE"
+      ]
+    },
+    "UPDATE": {
+      "expect": [
+        "type"
+      ]
+    },
+    "UPDATE._target": {
+      "keywords": [
+        "SET",
+        "ADD",
+        "PUT",
+        "REMOVE",
+        "INCREMENT",
+        "MERGE",
+        "CONTENT",
+        "UPSERT",
+        "RETURN",
+        "WHERE",
+        "LIMIT",
+        "TIMEOUT"
+      ]
+    },
+    "UPDATE.SET": {
+      "keywords": [
+        ",",
+        "ADD",
+        "PUT",
+        "REMOVE",
+        "INCREMENT",
+        "MERGE",
+        "CONTENT",
+        "UPSERT",
+        "RETURN",
+        "WHERE",
+        "LIMIT",
+        "TIMEOUT"
+      ],
+      "expect": [
+        "property"
+      ]
+    },
+    "UPDATE.WHERE": {
+      "keywords": [
+        "AND",
+        "OR",
+        "NOT",
+        "LIMIT",
+        "TIMEOUT"
+      ]
+    },
+    "DELETE": {
+      "keywords": [
+        "VERTEX",
+        "FROM"
+      ]
+    },
+    "DELETE.FROM": {
+      "keywords": [
+        "RETURN",
+        "WHERE",
+        "LIMIT",
+        "UNSAFE"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "DELETE.WHERE": {
+      "keywords": [
+        "AND",
+        "OR",
+        "NOT",
+        "LIMIT",
+        "UNSAFE"
+      ]
+    },
+    "CREATE": {
+      "keywords": [
+        "VERTEX",
+        "EDGE",
+        "DOCUMENT",
+        "PROPERTY",
+        "INDEX",
+        "BUCKET",
+        "TRIGGER",
+        "MATERIALIZED"
+      ]
+    },
+    "CREATE.DOCUMENT": {
+      "keywords": [
+        "TYPE"
+      ]
+    },
+    "CREATE.VERTEX": {
+      "keywords": [
+        "TYPE"
+      ]
+    },
+    "CREATE.EDGE": {
+      "keywords": [
+        "TYPE"
+      ]
+    },
+    "CREATE.VERTEX_TYPE": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "CREATE.VERTEX_TYPE._name": {
+      "keywords": [
+        "IF",
+        "EXTENDS",
+        "BUCKET",
+        "BUCKETS",
+        "PAGESIZE"
+      ]
+    },
+    "CREATE.EDGE_TYPE": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "CREATE.EDGE_TYPE._name": {
+      "keywords": [
+        "IF",
+        "EXTENDS",
+        "UNIDIRECTIONAL",
+        "BUCKET",
+        "BUCKETS",
+        "PAGESIZE"
+      ]
+    },
+    "CREATE.DOCUMENT_TYPE": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "CREATE.DOCUMENT_TYPE._name": {
+      "keywords": [
+        "IF",
+        "EXTENDS",
+        "BUCKET",
+        "BUCKETS",
+        "PAGESIZE"
+      ]
+    },
+    "CREATE.PROPERTY": {
+      "expect": [
+        "type"
+      ]
+    },
+    "CREATE.INDEX": {
+      "keywords": [
+        "ON",
+        "IF"
+      ]
+    },
+    "CREATE.INDEX.ON": {
+      "keywords": [
+        "TYPE"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "CREATE.MATERIALIZED": {
+      "keywords": [
+        "VIEW"
+      ]
+    },
+    "CREATE.MATERIALIZED_VIEW": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "CREATE.MATERIALIZED_VIEW._name": {
+      "keywords": [
+        "AS"
+      ]
+    },
+    "ALTER": {
+      "keywords": [
+        "TYPE",
+        "PROPERTY",
+        "BUCKET",
+        "DATABASE",
+        "MATERIALIZED"
+      ]
+    },
+    "ALTER.TYPE": {
+      "expect": [
+        "type"
+      ]
+    },
+    "ALTER.TYPE._name": {
+      "keywords": [
+        "NAME",
+        "SUPERTYPE",
+        "BUCKETSELECTIONSTRATEGY",
+        "BUCKET",
+        "CUSTOM",
+        "ALIASES"
+      ]
+    },
+    "ALTER.PROPERTY": {
+      "expect": [
+        "type"
+      ]
+    },
+    "ALTER.BUCKET": {
+      "expect": [
+        "identifier"
+      ]
+    },
+    "ALTER.DATABASE": {
+      "expect": [
+        "identifier"
+      ]
+    },
+    "ALTER.MATERIALIZED": {
+      "keywords": [
+        "VIEW"
+      ]
+    },
+    "DROP": {
+      "keywords": [
+        "TYPE",
+        "PROPERTY",
+        "INDEX",
+        "BUCKET",
+        "TRIGGER",
+        "MATERIALIZED"
+      ]
+    },
+    "DROP.TYPE": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "DROP.PROPERTY": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "DROP.INDEX": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "DROP.MATERIALIZED": {
+      "keywords": [
+        "VIEW"
+      ]
+    },
+    "TRUNCATE": {
+      "keywords": [
+        "TYPE",
+        "BUCKET",
+        "RECORD"
+      ]
+    },
+    "TRUNCATE.TYPE": {
+      "keywords": [
+        "POLYMORPHIC",
+        "UNSAFE"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "TRUNCATE.BUCKET": {
+      "keywords": [
+        "UNSAFE"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "MATCH": {
+      "keywords": [
+        "{"
+      ],
+      "expect": [
+        "function"
+      ]
+    },
+    "MATCH._pattern": {
+      "keywords": [
+        "RETURN",
+        ",",
+        "-->",
+        "<--",
+        "--",
+        "-"
+      ]
+    },
+    "MATCH.RETURN": {
+      "keywords": [
+        "DISTINCT",
+        "GROUP BY",
+        "ORDER BY",
+        "SKIP",
+        "LIMIT",
+        "AS",
+        ","
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "TRAVERSE": {
+      "keywords": [
+        "FROM"
+      ],
+      "expect": [
+        "expression",
+        "function"
+      ]
+    },
+    "TRAVERSE.FROM": {
+      "keywords": [
+        "MAXDEPTH",
+        "WHILE",
+        "LIMIT",
+        "STRATEGY"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "TRAVERSE.WHILE": {
+      "keywords": [
+        "LIMIT",
+        "STRATEGY"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "TRAVERSE.STRATEGY": {
+      "keywords": [
+        "DEPTH_FIRST",
+        "BREADTH_FIRST"
+      ]
+    },
+    "BEGIN": {
+      "keywords": [
+        "ISOLATION"
+      ]
+    },
+    "COMMIT": {
+      "keywords": [
+        "RETRY"
+      ]
+    },
+    "REBUILD": {
+      "keywords": [
+        "INDEX"
+      ]
+    },
+    "EXPLAIN": {
+      "keywords": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "MATCH",
+        "TRAVERSE"
+      ]
+    },
+    "PROFILE": {
+      "keywords": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "MATCH",
+        "TRAVERSE"
+      ]
+    },
+    "IMPORT": {
+      "keywords": [
+        "DATABASE"
+      ]
+    },
+    "EXPORT": {
+      "keywords": [
+        "DATABASE"
+      ]
+    },
+    "BACKUP": {
+      "keywords": [
+        "DATABASE"
+      ]
+    },
+    "CHECK": {
+      "keywords": [
+        "DATABASE"
+      ]
+    },
+    "CHECK.DATABASE": {
+      "keywords": [
+        "TYPE",
+        "BUCKET",
+        "FIX",
+        "COMPRESS"
+      ]
+    },
+    "LOCK": {
+      "keywords": [
+        "TYPE",
+        "BUCKET"
+      ]
+    },
+    "DEFINE": {
+      "keywords": [
+        "FUNCTION"
+      ]
+    },
+    "REFRESH": {
+      "keywords": [
+        "MATERIALIZED"
+      ]
+    },
+    "REFRESH.MATERIALIZED": {
+      "keywords": [
+        "VIEW"
+      ]
+    }
+  },
+  "cypherGrammar": {
+    "_start": {
+      "keywords": [
+        "MATCH",
+        "CREATE",
+        "MERGE",
+        "DELETE",
+        "DETACH",
+        "REMOVE",
+        "SET",
+        "WITH",
+        "UNWIND",
+        "RETURN",
+        "OPTIONAL",
+        "CALL",
+        "UNION",
+        "FOREACH"
+      ]
+    },
+    "MATCH": {
+      "keywords": [
+        "(",
+        "WHERE",
+        "RETURN",
+        "WITH",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE",
+        "MERGE",
+        "OPTIONAL",
+        "UNWIND"
+      ]
+    },
+    "MATCH._pattern": {
+      "keywords": [
+        "WHERE",
+        "RETURN",
+        "WITH",
+        ",",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE"
+      ]
+    },
+    "WHERE": {
+      "keywords": [
+        "AND",
+        "OR",
+        "NOT",
+        "XOR",
+        "IS",
+        "IN",
+        "CONTAINS",
+        "STARTS",
+        "ENDS",
+        "RETURN",
+        "WITH",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE"
+      ]
+    },
+    "RETURN": {
+      "keywords": [
+        "DISTINCT",
+        "AS",
+        "ORDER BY",
+        "SKIP",
+        "LIMIT",
+        ",",
+        "UNION"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "WITH": {
+      "keywords": [
+        "DISTINCT",
+        "AS",
+        "WHERE",
+        "ORDER BY",
+        "SKIP",
+        "LIMIT",
+        ",",
+        "MATCH",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE",
+        "MERGE",
+        "UNWIND",
+        "RETURN"
+      ]
+    },
+    "CREATE": {
+      "keywords": [
+        "(",
+        "RETURN",
+        "WITH",
+        "SET",
+        "DELETE",
+        "REMOVE",
+        "MERGE"
+      ]
+    },
+    "SET": {
+      "keywords": [
+        ",",
+        "RETURN",
+        "WITH",
+        "DELETE",
+        "REMOVE",
+        "CREATE"
+      ],
+      "expect": [
+        "property"
+      ]
+    },
+    "DELETE": {
+      "keywords": [
+        "RETURN",
+        "WITH",
+        "CREATE",
+        "SET",
+        "REMOVE"
+      ]
+    },
+    "UNWIND": {
+      "keywords": [
+        "AS"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "UNWIND.AS": {
+      "keywords": [
+        "MATCH",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE",
+        "MERGE",
+        "RETURN",
+        "WITH",
+        "UNWIND"
+      ]
+    },
+    "ORDER_BY": {
+      "keywords": [
+        "ASC",
+        "DESC",
+        "ASCENDING",
+        "DESCENDING",
+        "SKIP",
+        "LIMIT",
+        ","
+      ]
+    }
+  }
+}

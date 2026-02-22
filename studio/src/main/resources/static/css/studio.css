@@ -993,6 +993,33 @@ div.dt-search {
   background-color: #dbeafe;
 }
 
+/* CodeMirror Autocomplete Hints */
+.CodeMirror-hints {
+  z-index: 10000;
+  max-height: 250px;
+  font-size: 0.8rem;
+}
+.arcadedb-hint-item {
+  padding: 2px 6px;
+}
+.arcadedb-hint-keyword {
+  padding: 2px 6px;
+  color: var(--color-brand, #7c3aed);
+  font-weight: 600;
+}
+.arcadedb-hint-type {
+  padding: 2px 6px;
+  color: #0d6efd;
+}
+.arcadedb-hint-function {
+  padding: 2px 6px;
+  color: #198754;
+}
+.arcadedb-hint-property {
+  padding: 2px 6px;
+  color: #6c757d;
+}
+
 /* Settings Panel */
 .settings-section {
   padding: 12px;
@@ -2374,6 +2401,17 @@ div.dt-search {
 
 [data-theme="dark"] .reference-example:hover {
   background-color: var(--bg-hover);
+}
+[data-theme="dark"] .CodeMirror-hints {
+  background: var(--bg-card);
+  border-color: var(--border-main);
+}
+[data-theme="dark"] .CodeMirror-hint {
+  color: var(--text-primary);
+}
+[data-theme="dark"] li.CodeMirror-hint-active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 [data-theme="dark"] .db-action-btn-danger:hover {

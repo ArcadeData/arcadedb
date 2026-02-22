@@ -6,6 +6,23 @@ var globalCredentials = null;
 var globalBasicAuth = null;
 var globalUsername = null;
 var globalSchemaTypes = null;
+var globalFunctionReference = null;
+
+// Register arcadedb-sql MIME type eagerly so the editor can use it before JSON loads
+(function() {
+  if (typeof CodeMirror !== "undefined") {
+    var basicKw = "select insert update delete create alter drop truncate from where and or not in is null set into values as asc desc order by group having limit offset distinct join left right inner outer on between like exists count sum avg min max begin commit rollback return match traverse let if else vertex edge document type property index bucket";
+    var kwObj = {};
+    basicKw.split(" ").forEach(function(w) { kwObj[w] = true; });
+    CodeMirror.defineMIME("arcadedb-sql", {
+      name: "sql",
+      keywords: kwObj,
+      builtin: {},
+      atoms: { "false": true, "true": true, "null": true },
+      operatorChars: /^[*+\-%<>!=&|~^\/\?]/
+    });
+  }
+})();
 
 var SESSION_STORAGE_KEY = "arcadedb-session";
 var USERNAME_STORAGE_KEY = "arcadedb-username";
@@ -1254,6 +1271,398 @@ function deleteSelectedHistory() {
   populateHistoryPanel();
 }
 
+// --- Function Reference ---
+
+function loadFunctionReference() {
+  $.ajax({
+    url: "js/function-reference.json",
+    type: "GET",
+    dataType: "json",
+    success: function(data) {
+      globalFunctionReference = data;
+      initArcadeDBModes();
+    },
+    error: function() {
+      globalFunctionReference = null;
+    }
+  });
+}
+
+function initArcadeDBModes() {
+  var sqlKw = (globalFunctionReference && globalFunctionReference.sqlKeywords) || [];
+  var sqlKwObj = {};
+  for (var i = 0; i < sqlKw.length; i++)
+    sqlKwObj[sqlKw[i]] = true;
+
+  CodeMirror.defineMIME("arcadedb-sql", {
+    name: "sql",
+    keywords: sqlKwObj,
+    builtin: {},
+    atoms: { "false": true, "true": true, "null": true },
+    operatorChars: /^[*+\-%<>!=&|~^\/\?]/
+  });
+
+  // Refresh the editor mode so it picks up the new keywords
+  if (typeof editor !== "undefined" && editor) {
+    var language = $("#inputLanguage").val();
+    if (language === "sql" || language === "sqlScript")
+      editor.setOption("mode", "arcadedb-sql");
+  }
+}
+
+function buildSchemaTablesForHint() {
+  var tables = {};
+  if (!globalSchemaTypes)
+    return tables;
+  for (var i = 0; i < globalSchemaTypes.length; i++) {
+    var row = globalSchemaTypes[i];
+    var typeName = row.name;
+    if (!typeName)
+      continue;
+    var props = [];
+    if (row.properties) {
+      for (var k in row.properties) {
+        var property = row.properties[k];
+        if (property && property.name)
+          props.push(property.name);
+      }
+    }
+    tables[typeName] = props;
+  }
+  return tables;
+}
+
+function resolveGrammarContext(cm, grammarTree) {
+  if (!grammarTree)
+    return null;
+
+  var cur = cm.getCursor();
+  var fullText = cm.getRange({ line: 0, ch: 0 }, cur);
+  var lastSemicolon = fullText.lastIndexOf(";");
+  var stmtText = (lastSemicolon >= 0) ? fullText.substring(lastSemicolon + 1) : fullText;
+
+  var tokens = stmtText.trim().toUpperCase().match(/[A-Z_]+/g) || [];
+  if (tokens.length === 0)
+    return grammarTree["_start"];
+
+  var state = "_start";
+  var node = grammarTree[state];
+  for (var i = 0; i < tokens.length; i++) {
+    var token = tokens[i];
+    // Try compound keywords: check if this + next form a compound like "GROUP BY", "ORDER BY", etc.
+    if (i + 1 < tokens.length) {
+      var compound = token + " " + tokens[i + 1];
+      var compoundKey = token + "_" + tokens[i + 1];
+      // Check if compound matches a keyword in current node
+      if (node && node.keywords) {
+        var isCompound = false;
+        for (var k = 0; k < node.keywords.length; k++) {
+          if (node.keywords[k] === compound) {
+            isCompound = true;
+            break;
+          }
+        }
+        if (isCompound) {
+          // Try state transition with compound key
+          var compoundCandidates = [
+            state + "." + compoundKey + "._target",
+            state + "." + compoundKey + "._name",
+            state + "." + compoundKey,
+            compoundKey
+          ];
+          for (var c = 0; c < compoundCandidates.length; c++) {
+            if (grammarTree[compoundCandidates[c]]) {
+              state = compoundCandidates[c];
+              node = grammarTree[state];
+              i++; // skip next token
+              break;
+            }
+          }
+          continue;
+        }
+      }
+    }
+    // Try progressively specific paths
+    var candidates = [
+      state + "." + token + "._target",
+      state + "." + token + "._name",
+      state + "." + token + "._after",
+      state + "." + token + "._projection",
+      state + "." + token + "._pattern",
+      state + "." + token,
+      token
+    ];
+    for (var c = 0; c < candidates.length; c++) {
+      if (grammarTree[candidates[c]]) {
+        state = candidates[c];
+        node = grammarTree[state];
+        break;
+      }
+    }
+  }
+  return node;
+}
+
+function arcadedbHint(cm) {
+  var language = $("#inputLanguage").val();
+  var isSql = (language === "sql" || language === "sqlScript");
+  var isCypher = (language === "cypher" || language === "opencypher");
+
+  if (isSql)
+    return arcadedbSqlHint(cm);
+  else if (isCypher)
+    return arcadedbCypherHint(cm);
+  else
+    return arcadedbFunctionHint(cm);
+}
+
+function arcadedbSqlHint(cm) {
+  var ref = globalFunctionReference;
+  var grammarTree = ref && ref.sqlGrammar;
+  var ctx = resolveGrammarContext(cm, grammarTree);
+
+  var cur = cm.getCursor();
+  var line = cm.getLine(cur.line);
+  var end = cur.ch;
+  var start = end;
+  while (start > 0 && /[\w._]/.test(line.charAt(start - 1)))
+    start--;
+  var word = line.substring(start, end);
+  var upperWord = word.toUpperCase();
+
+  // Check if we're in a TypeName.property context (dot completion)
+  var tables = buildSchemaTablesForHint();
+  var sqlResult = null;
+  if (CodeMirror.hint && CodeMirror.hint.sql && Object.keys(tables).length > 0) {
+    try {
+      sqlResult = CodeMirror.hint.sql(cm, { tables: tables, completeSingle: false, disableKeywords: true });
+    } catch (e) {
+      // sql-hint may fail if mode config is not available
+    }
+  }
+
+  var completions = [];
+  var seen = {};
+
+  // Add grammar-contextual keywords
+  if (ctx && ctx.keywords) {
+    for (var i = 0; i < ctx.keywords.length; i++) {
+      var kw = ctx.keywords[i];
+      if (upperWord.length === 0 || kw.toUpperCase().indexOf(upperWord) === 0) {
+        if (!seen[kw.toUpperCase()]) {
+          seen[kw.toUpperCase()] = true;
+          completions.push({ text: kw, displayText: kw, className: "arcadedb-hint-keyword" });
+        }
+      }
+    }
+  }
+
+  // Add dynamic completions based on context expectations
+  if (ctx && ctx.expect) {
+    var expectTypes = false, expectFunctions = false, expectProperties = false;
+    for (var i = 0; i < ctx.expect.length; i++) {
+      if (ctx.expect[i] === "type" || ctx.expect[i] === "expression")
+        expectTypes = true;
+      if (ctx.expect[i] === "function" || ctx.expect[i] === "expression")
+        expectFunctions = true;
+      if (ctx.expect[i] === "property" || ctx.expect[i] === "expression")
+        expectProperties = true;
+    }
+
+    if (expectTypes && globalSchemaTypes) {
+      for (var i = 0; i < globalSchemaTypes.length; i++) {
+        var typeName = globalSchemaTypes[i].name;
+        if (typeName && (upperWord.length === 0 || typeName.toUpperCase().indexOf(upperWord) === 0)) {
+          if (!seen[typeName.toUpperCase()]) {
+            seen[typeName.toUpperCase()] = true;
+            completions.push({ text: typeName, displayText: typeName, className: "arcadedb-hint-type" });
+          }
+        }
+      }
+    }
+
+    if (expectFunctions && ref && ref.autocomplete) {
+      var funcs = ref.autocomplete;
+      for (var i = 0; i < funcs.length; i++) {
+        if (upperWord.length === 0 || funcs[i].toUpperCase().indexOf(upperWord) === 0) {
+          if (!seen[funcs[i].toUpperCase()]) {
+            seen[funcs[i].toUpperCase()] = true;
+            var info = findFunctionInfo(funcs[i]);
+            completions.push({
+              text: funcs[i],
+              displayText: info ? funcs[i] + " - " + info.syntax : funcs[i],
+              className: "arcadedb-hint-function"
+            });
+          }
+        }
+      }
+    }
+
+    if (expectProperties) {
+      for (var tName in tables) {
+        var props = tables[tName];
+        for (var j = 0; j < props.length; j++) {
+          if (upperWord.length === 0 || props[j].toUpperCase().indexOf(upperWord) === 0) {
+            if (!seen[props[j].toUpperCase()]) {
+              seen[props[j].toUpperCase()] = true;
+              completions.push({ text: props[j], displayText: props[j], className: "arcadedb-hint-property" });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Add sql-hint results (handles TypeName.property via sql-hint.js)
+  if (sqlResult && sqlResult.list) {
+    for (var j = 0; j < sqlResult.list.length; j++) {
+      var item = sqlResult.list[j];
+      var text = (typeof item === "string") ? item : item.text;
+      if (!seen[text.toUpperCase()]) {
+        seen[text.toUpperCase()] = true;
+        completions.push(typeof item === "string" ? { text: item, displayText: item } : item);
+      }
+    }
+  }
+
+  if (completions.length === 0)
+    return;
+
+  return { list: completions, from: CodeMirror.Pos(cur.line, start), to: CodeMirror.Pos(cur.line, end) };
+}
+
+function arcadedbCypherHint(cm) {
+  var ref = globalFunctionReference;
+  var grammarTree = ref && ref.cypherGrammar;
+  var ctx = resolveGrammarContext(cm, grammarTree);
+
+  var cur = cm.getCursor();
+  var line = cm.getLine(cur.line);
+  var end = cur.ch;
+  var start = end;
+  while (start > 0 && /[\w._]/.test(line.charAt(start - 1)))
+    start--;
+  var word = line.substring(start, end);
+  var upperWord = word.toUpperCase();
+
+  var completions = [];
+  var seen = {};
+
+  // Add grammar-contextual keywords
+  if (ctx && ctx.keywords) {
+    for (var i = 0; i < ctx.keywords.length; i++) {
+      var kw = ctx.keywords[i];
+      if (upperWord.length === 0 || kw.toUpperCase().indexOf(upperWord) === 0) {
+        if (!seen[kw.toUpperCase()]) {
+          seen[kw.toUpperCase()] = true;
+          completions.push({ text: kw, displayText: kw, className: "arcadedb-hint-keyword" });
+        }
+      }
+    }
+  }
+
+  // Add dynamic completions based on context expectations
+  if (ctx && ctx.expect) {
+    for (var i = 0; i < ctx.expect.length; i++) {
+      if ((ctx.expect[i] === "expression" || ctx.expect[i] === "property") && globalSchemaTypes) {
+        for (var j = 0; j < globalSchemaTypes.length; j++) {
+          var typeName = globalSchemaTypes[j].name;
+          if (typeName && (upperWord.length === 0 || typeName.toUpperCase().indexOf(upperWord) === 0)) {
+            if (!seen[typeName.toUpperCase()]) {
+              seen[typeName.toUpperCase()] = true;
+              completions.push({ text: typeName, displayText: typeName, className: "arcadedb-hint-type" });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Add function names
+  if (ref && ref.autocomplete) {
+    var funcs = ref.autocomplete;
+    for (var i = 0; i < funcs.length; i++) {
+      if (word.length >= 2 && funcs[i].toUpperCase().indexOf(upperWord) === 0) {
+        if (!seen[funcs[i].toUpperCase()]) {
+          seen[funcs[i].toUpperCase()] = true;
+          var info = findFunctionInfo(funcs[i]);
+          completions.push({
+            text: funcs[i],
+            displayText: info ? funcs[i] + " - " + info.syntax : funcs[i],
+            className: "arcadedb-hint-function"
+          });
+        }
+      }
+    }
+  }
+
+  if (completions.length === 0)
+    return;
+
+  return { list: completions, from: CodeMirror.Pos(cur.line, start), to: CodeMirror.Pos(cur.line, end) };
+}
+
+function arcadedbFunctionHint(cm) {
+  if (!globalFunctionReference || !globalFunctionReference.autocomplete)
+    return;
+
+  var cur = cm.getCursor();
+  var line = cm.getLine(cur.line);
+  var end = cur.ch;
+  var start = end;
+  while (start > 0 && /[\w._]/.test(line.charAt(start - 1)))
+    start--;
+  var word = line.substring(start, end);
+  if (word.length < 2)
+    return;
+
+  var lowerWord = word.toLowerCase();
+  var matches = [];
+  var list = globalFunctionReference.autocomplete;
+
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].toLowerCase().indexOf(lowerWord) === 0)
+      matches.push(list[i]);
+  }
+
+  if (matches.length === 0)
+    return;
+
+  var completions = [];
+  for (var i = 0; i < matches.length; i++) {
+    var info = findFunctionInfo(matches[i]);
+    completions.push({
+      text: matches[i],
+      displayText: info ? matches[i] + " - " + info.syntax : matches[i],
+      className: "arcadedb-hint-item"
+    });
+  }
+
+  return {
+    list: completions,
+    from: CodeMirror.Pos(cur.line, start),
+    to: CodeMirror.Pos(cur.line, end)
+  };
+}
+
+function findFunctionInfo(name) {
+  if (!globalFunctionReference || !globalFunctionReference.categories)
+    return null;
+
+  var cats = globalFunctionReference.categories;
+  for (var section in cats) {
+    var subcats = cats[section];
+    for (var cat in subcats) {
+      var funcs = subcats[cat];
+      for (var i = 0; i < funcs.length; i++) {
+        if (funcs[i].name === name)
+          return funcs[i];
+      }
+    }
+  }
+  return null;
+}
+
 // --- Reference Panel ---
 
 function populateReferencePanel() {
@@ -1326,7 +1735,74 @@ function populateReferencePanel() {
     html += "</div></div>";
   }
 
+  // --- Function Reference ---
+  if (globalFunctionReference && globalFunctionReference.categories) {
+    html += "<div style='margin-top:12px;border-top:1px solid var(--border-main);padding-top:8px;'>";
+    html += "<div style='font-weight:600;font-size:0.85rem;margin-bottom:6px;'>Function Reference</div>";
+    html += "<input type='text' id='functionRefFilter' class='form-control form-control-sm' placeholder='Filter functions...' oninput='filterFunctionReference(this.value)' style='margin-bottom:8px;' />";
+
+    var cats = globalFunctionReference.categories;
+    for (var section in cats) {
+      html += "<div class='reference-section fn-ref-section'>";
+      html += "<div class='reference-section-header' onclick='toggleReferenceSection(this)'><span>" + escapeHtml(section) + "</span><i class='fa fa-chevron-right'></i></div>";
+      html += "<div class='reference-section-body'>";
+      var subcats = cats[section];
+      for (var cat in subcats) {
+        html += "<div class='fn-ref-category' data-category='" + escapeHtml(cat) + "'>";
+        html += "<div style='font-size:0.75rem;font-weight:600;color:var(--color-brand);margin:4px 0 2px;'>" + escapeHtml(cat) + "</div>";
+        var funcs = subcats[cat];
+        for (var i = 0; i < funcs.length; i++) {
+          var fn = funcs[i];
+          var syntax = escapeHtml(fn.syntax);
+          var desc = fn.description ? escapeHtml(fn.description) : "";
+          var title = desc ? desc : syntax;
+          html += "<div class='reference-example fn-ref-item' data-name='" + escapeHtml(fn.name) + "' title='" + title + "' onclick='insertFunctionSyntax(\"" + syntax.replace(/"/g, "&quot;") + "\")'>";
+          html += "<code style='font-size:0.72rem;'>" + syntax + "</code>";
+          if (desc)
+            html += "<br><small style='color:#888;font-size:0.65rem;'>" + desc + "</small>";
+          html += "</div>";
+        }
+        html += "</div>";
+      }
+      html += "</div></div>";
+    }
+    html += "</div>";
+  }
+
   container.html(html);
+}
+
+function filterFunctionReference(query) {
+  var lowerQuery = query.toLowerCase();
+  $(".fn-ref-item").each(function() {
+    var name = $(this).attr("data-name") || "";
+    var text = $(this).text().toLowerCase();
+    if (lowerQuery === "" || name.indexOf(lowerQuery) >= 0 || text.indexOf(lowerQuery) >= 0)
+      $(this).show();
+    else
+      $(this).hide();
+  });
+  $(".fn-ref-category").each(function() {
+    var visibleItems = $(this).find(".fn-ref-item:visible").length;
+    if (visibleItems > 0)
+      $(this).show();
+    else
+      $(this).hide();
+  });
+  // Auto-expand sections with matching results when filtering
+  if (lowerQuery.length > 0) {
+    $(".fn-ref-section .reference-section-body").addClass("open");
+    $(".fn-ref-section .reference-section-header i").addClass("open");
+  }
+}
+
+function insertFunctionSyntax(syntax) {
+  var tmp = document.createElement("textarea");
+  tmp.innerHTML = syntax;
+  var decoded = tmp.value;
+  var cur = editor.getCursor();
+  editor.replaceRange(decoded, cur);
+  editor.focus();
 }
 
 function toggleReferenceSection(header) {
@@ -1398,7 +1874,8 @@ function populateSettingsPanel() {
   html += "<div style='font-size:0.75rem;color:#666;padding:0 2px;'>";
   html += "<div style='margin-bottom:4px;'><kbd>Ctrl+Enter</kbd> Execute query</div>";
   html += "<div style='margin-bottom:4px;'><kbd>Ctrl+Up</kbd> Previous history</div>";
-  html += "<div><kbd>Ctrl+Down</kbd> Next history</div>";
+  html += "<div style='margin-bottom:4px;'><kbd>Ctrl+Down</kbd> Next history</div>";
+  html += "<div><kbd>Alt+/</kbd> Autocomplete (keywords, types, functions)</div>";
   html += "</div></div>";
 
   container.html(html);

@@ -59,8 +59,8 @@
         <docker.plugin.version>1.2.2</docker.plugin.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
-        <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
-        <maven-failsafe-plugin.version>3.5.4</maven-failsafe-plugin.version>
+        <maven-surefire-plugin.version>3.5.5</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.5.5</maven-failsafe-plugin.version>
         <maven-assembly-plugin.version>3.8.0</maven-assembly-plugin.version>
         <maven-resources-plugin.version>3.4.0</maven-resources-plugin.version>
         <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
@@ -78,12 +78,12 @@
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.3</testcontainers.version>
-        <logback-classic.version>1.5.31</logback-classic.version>
+        <logback-classic.version>1.5.32</logback-classic.version>
         <micrometer.version>1.16.3</micrometer.version>
         <postgres.version>42.7.10</postgres.version>
 
         <assertj-core.version>3.27.7</assertj-core.version>
-        <junit.jupiter.version>6.0.2</junit.jupiter.version>
+        <junit.jupiter.version>6.0.3</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
         <json-path.version>2.10.0</json-path.version>
         <slf4j.version>2.0.17</slf4j.version>
@@ -97,7 +97,7 @@
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.33.5</protobuf-java.version>
-        <com.google.api.grpc.version>2.65.1</com.google.api.grpc.version>
+        <com.google.api.grpc.version>2.66.0</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
