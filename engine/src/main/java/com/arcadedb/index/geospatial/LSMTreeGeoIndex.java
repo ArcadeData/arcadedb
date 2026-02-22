@@ -452,6 +452,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     if (bucketId >= 0)
       json.put("bucket", underlyingIndex.getComponent().getDatabase().getSchema().getBucketById(bucketId).getName());
     json.put("properties", getPropertyNames());
+    json.put("precision", precision);
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
     return json;
