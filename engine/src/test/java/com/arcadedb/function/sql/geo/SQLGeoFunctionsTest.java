@@ -515,4 +515,295 @@ class SQLGeoFunctionsTest {
       assertThat(y).isCloseTo(-7.3, org.assertj.core.data.Offset.offset(1e-6));
     });
   }
+
+  // ─── ST_Within ────────────────────────────────────────────────────────────────
+
+  @Test
+  void stWithinPointInsidePolygon() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Within('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stWithinPointOutsidePolygon() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Within('POINT (15 15)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isFalse();
+    });
+  }
+
+  @Test
+  void stWithinNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Within(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
+
+  // ─── ST_Intersects ────────────────────────────────────────────────────────────
+
+  @Test
+  void stIntersectsOverlappingPolygons() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Intersects('POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))', 'POLYGON ((3 3, 9 3, 9 9, 3 9, 3 3))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stIntersectsDisjointPolygons() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Intersects('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isFalse();
+    });
+  }
+
+  @Test
+  void stIntersectsNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Intersects(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
+
+  // ─── ST_Contains ──────────────────────────────────────────────────────────────
+
+  @Test
+  void stContainsPolygonContainsPoint() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Contains('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))', 'POINT (5 5)') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stContainsPolygonDoesNotContainOutsidePoint() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Contains('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))', 'POINT (15 15)') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isFalse();
+    });
+  }
+
+  @Test
+  void stContainsNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Contains(null, 'POINT (5 5)') as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
+
+  // ─── ST_DWithin ───────────────────────────────────────────────────────────────
+
+  @Test
+  void stDWithinNearbyPoints() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      // Two points at about 1.414 degrees apart; distance threshold = 2.0 → true
+      final ResultSet result = db.query("sql",
+          "select ST_DWithin('POINT (0 0)', 'POINT (1 1)', 2.0) as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stDWithinFarPoints() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      // Two points far apart; distance threshold = 1.0 → false
+      final ResultSet result = db.query("sql",
+          "select ST_DWithin('POINT (0 0)', 'POINT (10 10)', 1.0) as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isFalse();
+    });
+  }
+
+  @Test
+  void stDWithinNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_DWithin(null, 'POINT (1 1)', 2.0) as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
+
+  // ─── ST_Disjoint ──────────────────────────────────────────────────────────────
+
+  @Test
+  void stDisjointFarApartShapes() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Disjoint('POINT (50 50)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stDisjointIntersectingShapes() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Disjoint('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isFalse();
+    });
+  }
+
+  @Test
+  void stDisjointNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Disjoint(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
+
+  // ─── ST_Equals ────────────────────────────────────────────────────────────────
+
+  @Test
+  void stEqualsIdenticalPoints() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Equals('POINT (5 5)', 'POINT (5 5)') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stEqualsDifferentPoints() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Equals('POINT (5 5)', 'POINT (6 6)') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isFalse();
+    });
+  }
+
+  @Test
+  void stEqualsNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Equals(null, 'POINT (5 5)') as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
+
+  // ─── ST_Crosses ───────────────────────────────────────────────────────────────
+
+  @Test
+  void stCrossesLineCrossesPolygon() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      // A line crossing a polygon boundary
+      final ResultSet result = db.query("sql",
+          "select ST_Crosses('LINESTRING (-1 5, 11 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stCrossesNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Crosses(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
+
+  // ─── ST_Overlaps ──────────────────────────────────────────────────────────────
+
+  @Test
+  void stOverlapsPartiallyOverlappingPolygons() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Overlaps('POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))', 'POLYGON ((3 3, 9 3, 9 9, 3 9, 3 3))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stOverlapsDisjointPolygons() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Overlaps('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isFalse();
+    });
+  }
+
+  @Test
+  void stOverlapsNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Overlaps(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
+
+  // ─── ST_Touches ───────────────────────────────────────────────────────────────
+
+  @Test
+  void stTouchesAdjacentPolygons() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      // Two polygons sharing exactly one edge
+      final ResultSet result = db.query("sql",
+          "select ST_Touches('POLYGON ((0 0, 5 0, 5 5, 0 5, 0 0))', 'POLYGON ((5 0, 10 0, 10 5, 5 5, 5 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isTrue();
+    });
+  }
+
+  @Test
+  void stTouchesDisjointPolygons() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Touches('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((Boolean) result.next().getProperty("v")).isFalse();
+    });
+  }
+
+  @Test
+  void stTouchesNullArg() throws Exception {
+    TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      final ResultSet result = db.query("sql",
+          "select ST_Touches(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+      assertThat(result.hasNext()).isTrue();
+      final Object val = result.next().getProperty("v");
+      assertThat(val).isNull();
+    });
+  }
 }

@@ -27,7 +27,9 @@ import org.locationtech.spatial4j.context.SpatialContextFactory;
 import org.locationtech.spatial4j.context.jts.JtsSpatialContext;
 import org.locationtech.spatial4j.context.jts.JtsSpatialContextFactory;
 import org.locationtech.spatial4j.io.ShapeIO;
+import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
+import org.locationtech.spatial4j.shape.jts.JtsGeometry;
 
 import java.util.Locale;
 
@@ -84,10 +86,21 @@ public class GeoUtils {
   /**
    * Parse a WKT string or Shape into a JTS Geometry for advanced operations (buffer, envelope, etc.).
    * Returns null if the value is null.
+   * <p>
+   * When the input is a {@link JtsGeometry}, the underlying JTS geometry is returned directly to
+   * avoid lossy WKT round-trips (Spatial4j may write Rectangle shapes as ENVELOPE WKT which is
+   * not understood by the JTS WKT reader).
+   * </p>
    */
   public static Geometry parseJtsGeometry(final Object value) {
     if (value == null)
       return null;
+    // Fast path: JtsGeometry wraps the JTS Geometry directly — no WKT round-trip needed
+    if (value instanceof JtsGeometry jtsShape)
+      return jtsShape.getGeom();
+    // For Rectangle (bounding box shapes), build the polygon manually to avoid ENVELOPE WKT
+    if (value instanceof Rectangle rect)
+      return buildPolygonFromRect(rect);
     final String wkt;
     if (value instanceof Shape shape)
       wkt = toWKT(shape);
@@ -95,10 +108,57 @@ public class GeoUtils {
       wkt = value.toString().trim();
     if (wkt == null || wkt.isEmpty())
       return null;
+    // If the WKT is ENVELOPE format (Spatial4j-specific), convert to polygon
+    if (wkt.startsWith("ENVELOPE"))
+      return parseEnvelopeWkt(wkt);
     try {
       return new WKTReader().read(wkt);
     } catch (ParseException e) {
       throw new IllegalArgumentException("Cannot parse JTS geometry from WKT: " + wkt, e);
+    }
+  }
+
+  /**
+   * Builds a rectangular JTS Polygon from a Spatial4j Rectangle.
+   */
+  private static Geometry buildPolygonFromRect(final Rectangle rect) {
+    final double minX = rect.getMinX();
+    final double maxX = rect.getMaxX();
+    final double minY = rect.getMinY();
+    final double maxY = rect.getMaxY();
+    final String wkt = String.format(Locale.US,
+        "POLYGON ((%s %s, %s %s, %s %s, %s %s, %s %s))",
+        minX, minY, maxX, minY, maxX, maxY, minX, maxY, minX, minY);
+    try {
+      return new WKTReader().read(wkt);
+    } catch (ParseException e) {
+      throw new IllegalArgumentException("Cannot build polygon from rectangle: " + rect, e);
+    }
+  }
+
+  /**
+   * Parses Spatial4j's ENVELOPE(minX, maxX, maxY, minY) into a JTS polygon.
+   */
+  private static Geometry parseEnvelopeWkt(final String envelopeWkt) {
+    // Format: ENVELOPE (minX, maxX, maxY, minY)
+    final int start = envelopeWkt.indexOf('(');
+    final int end = envelopeWkt.lastIndexOf(')');
+    if (start < 0 || end < 0)
+      throw new IllegalArgumentException("Invalid ENVELOPE WKT: " + envelopeWkt);
+    final String[] parts = envelopeWkt.substring(start + 1, end).split(",");
+    if (parts.length != 4)
+      throw new IllegalArgumentException("Invalid ENVELOPE WKT: " + envelopeWkt);
+    final double minX = Double.parseDouble(parts[0].trim());
+    final double maxX = Double.parseDouble(parts[1].trim());
+    final double maxY = Double.parseDouble(parts[2].trim());
+    final double minY = Double.parseDouble(parts[3].trim());
+    final String wkt = String.format(Locale.US,
+        "POLYGON ((%s %s, %s %s, %s %s, %s %s, %s %s))",
+        minX, minY, maxX, minY, maxX, maxY, minX, maxY, minX, minY);
+    try {
+      return new WKTReader().read(wkt);
+    } catch (ParseException e) {
+      throw new IllegalArgumentException("Cannot parse ENVELOPE as polygon: " + envelopeWkt, e);
     }
   }
 

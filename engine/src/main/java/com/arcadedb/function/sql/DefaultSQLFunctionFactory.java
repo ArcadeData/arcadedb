@@ -39,6 +39,15 @@ import com.arcadedb.function.sql.geo.SQLFunctionST_GeomFromText;
 import com.arcadedb.function.sql.geo.SQLFunctionST_LineString;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Point;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Polygon;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Contains;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Crosses;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Disjoint;
+import com.arcadedb.function.sql.geo.SQLFunctionST_DWithin;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Equals;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Intersects;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Overlaps;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Touches;
+import com.arcadedb.function.sql.geo.SQLFunctionST_Within;
 import com.arcadedb.function.sql.geo.SQLFunctionST_X;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Y;
 import com.arcadedb.function.sql.graph.SQLFunctionAstar;
@@ -185,6 +194,17 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionST_AsGeoJson.NAME, new SQLFunctionST_AsGeoJson());
     register(SQLFunctionST_X.NAME, new SQLFunctionST_X());
     register(SQLFunctionST_Y.NAME, new SQLFunctionST_Y());
+
+    // Geo — ST_* spatial predicate functions (IndexableSQLFunction)
+    register(SQLFunctionST_Within.NAME, new SQLFunctionST_Within());
+    register(SQLFunctionST_Intersects.NAME, new SQLFunctionST_Intersects());
+    register(SQLFunctionST_Contains.NAME, new SQLFunctionST_Contains());
+    register(SQLFunctionST_DWithin.NAME, new SQLFunctionST_DWithin());
+    register(SQLFunctionST_Disjoint.NAME, new SQLFunctionST_Disjoint());
+    register(SQLFunctionST_Equals.NAME, new SQLFunctionST_Equals());
+    register(SQLFunctionST_Crosses.NAME, new SQLFunctionST_Crosses());
+    register(SQLFunctionST_Overlaps.NAME, new SQLFunctionST_Overlaps());
+    register(SQLFunctionST_Touches.NAME, new SQLFunctionST_Touches());
 
     // Graph
     register(SQLFunctionAstar.NAME, SQLFunctionAstar.class);
