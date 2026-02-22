@@ -55,7 +55,7 @@ import org.locationtech.spatial4j.shape.Shape;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
@@ -190,28 +190,8 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
    * underlying LSM index.
    */
   private void indexShape(final Shape shape, final RID[] rids) {
-    final Field[] fields = strategy.createIndexableFields(shape);
-    for (final Field field : fields) {
-      try {
-        final TokenStream ts = field.tokenStream(null, null);
-        if (ts == null)
-          continue;
-        // Spatial token streams emit binary GeoHash bytes via TermToBytesRefAttribute,
-        // not via CharTermAttribute.
-        final TermToBytesRefAttribute bytesAttr = ts.addAttribute(TermToBytesRefAttribute.class);
-        ts.reset();
-        while (ts.incrementToken()) {
-          final String token = bytesAttr.getBytesRef().utf8ToString();
-          if (!token.isEmpty())
-            underlyingIndex.put(new Object[]{token}, rids);
-        }
-        ts.end();
-        ts.close();
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Geospatial index: token error for shape '%s': %s", shape, e.getMessage());
-      }
-    }
+    for (final String token : extractTokens(shape))
+      underlyingIndex.put(new Object[]{token}, rids);
   }
 
   /**
@@ -252,7 +232,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
     // Iterate all tree cells that cover the search shape and collect their GeoHash tokens
     final CellIterator cellIter = grid.getTreeCellIterator(searchShape, detailLevel);
-    final Map<RID, Integer> seen = new LinkedHashMap<>();
+    final LinkedHashSet<RID> seen = new LinkedHashSet<>();
     while (cellIter.hasNext()) {
       final Cell cell = cellIter.next();
       if (cell.getShapeRel() == null)
@@ -262,12 +242,12 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         continue;
       final IndexCursor cursor = underlyingIndex.get(new Object[]{token});
       while (cursor.hasNext())
-        seen.put(cursor.next().getIdentity(), 1);
+        seen.add(cursor.next().getIdentity());
     }
 
     final int maxElements = limit > -1 ? Math.min(limit, seen.size()) : seen.size();
     final List<IndexCursorEntry> entries = new ArrayList<>(maxElements);
-    for (final RID rid : seen.keySet()) {
+    for (final RID rid : seen) {
       if (entries.size() >= maxElements)
         break;
       entries.add(new IndexCursorEntry(keys, rid, 1));
@@ -456,8 +436,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
   @Override
   public Schema.INDEX_TYPE getType() {
-    // Placeholder — will return Schema.INDEX_TYPE.GEOSPATIAL after Task 4
-    throw new UnsupportedOperationException("GEOSPATIAL index type not yet registered in schema — Task 4 pending");
+    throw new UnsupportedOperationException("GEOSPATIAL index type is not yet available");
   }
 
   @Override
@@ -469,6 +448,9 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
     json.put("type", "GEOSPATIAL");
+    final int bucketId = underlyingIndex.getAssociatedBucketId();
+    if (bucketId >= 0)
+      json.put("bucket", underlyingIndex.getComponent().getDatabase().getSchema().getBucketById(bucketId).getName());
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
@@ -517,7 +499,8 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         ts.end();
         ts.close();
       } catch (final IOException e) {
-        // skip
+        LogManager.instance().log(this, Level.WARNING,
+            "Geospatial index: token error for shape '%s': %s", shape, e.getMessage());
       }
     }
     return tokens;
