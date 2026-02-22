@@ -6,6 +6,7 @@ var globalCredentials = null;
 var globalBasicAuth = null;
 var globalUsername = null;
 var globalSchemaTypes = null;
+var globalFunctionReference = null;
 
 var SESSION_STORAGE_KEY = "arcadedb-session";
 var USERNAME_STORAGE_KEY = "arcadedb-username";
@@ -1044,6 +1045,84 @@ function deleteSelectedHistory() {
   populateHistoryPanel();
 }
 
+// --- Function Reference ---
+
+function loadFunctionReference() {
+  $.ajax({
+    url: "js/function-reference.json",
+    type: "GET",
+    dataType: "json",
+    success: function(data) {
+      globalFunctionReference = data;
+    },
+    error: function() {
+      globalFunctionReference = null;
+    }
+  });
+}
+
+function arcadedbHint(cm) {
+  if (!globalFunctionReference || !globalFunctionReference.autocomplete)
+    return;
+
+  var cur = cm.getCursor();
+  var line = cm.getLine(cur.line);
+  var end = cur.ch;
+  var start = end;
+  while (start > 0 && /[\w._]/.test(line.charAt(start - 1)))
+    start--;
+  var word = line.substring(start, end);
+  if (word.length < 2)
+    return;
+
+  var lowerWord = word.toLowerCase();
+  var matches = [];
+  var list = globalFunctionReference.autocomplete;
+
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].toLowerCase().indexOf(lowerWord) === 0)
+      matches.push(list[i]);
+  }
+
+  if (matches.length === 0)
+    return;
+
+  // Look up syntax info for each match
+  var completions = [];
+  for (var i = 0; i < matches.length; i++) {
+    var info = findFunctionInfo(matches[i]);
+    completions.push({
+      text: matches[i],
+      displayText: info ? matches[i] + " - " + info.syntax : matches[i],
+      className: "arcadedb-hint-item"
+    });
+  }
+
+  return {
+    list: completions,
+    from: CodeMirror.Pos(cur.line, start),
+    to: CodeMirror.Pos(cur.line, end)
+  };
+}
+
+function findFunctionInfo(name) {
+  if (!globalFunctionReference || !globalFunctionReference.categories)
+    return null;
+
+  var cats = globalFunctionReference.categories;
+  for (var section in cats) {
+    var subcats = cats[section];
+    for (var cat in subcats) {
+      var funcs = subcats[cat];
+      for (var i = 0; i < funcs.length; i++) {
+        if (funcs[i].name === name)
+          return funcs[i];
+      }
+    }
+  }
+  return null;
+}
+
 // --- Reference Panel ---
 
 function populateReferencePanel() {
@@ -1116,7 +1195,74 @@ function populateReferencePanel() {
     html += "</div></div>";
   }
 
+  // --- Function Reference ---
+  if (globalFunctionReference && globalFunctionReference.categories) {
+    html += "<div style='margin-top:12px;border-top:1px solid var(--border-main);padding-top:8px;'>";
+    html += "<div style='font-weight:600;font-size:0.85rem;margin-bottom:6px;'>Function Reference</div>";
+    html += "<input type='text' id='functionRefFilter' class='form-control form-control-sm' placeholder='Filter functions...' oninput='filterFunctionReference(this.value)' style='margin-bottom:8px;' />";
+
+    var cats = globalFunctionReference.categories;
+    for (var section in cats) {
+      html += "<div class='reference-section fn-ref-section'>";
+      html += "<div class='reference-section-header' onclick='toggleReferenceSection(this)'><span>" + escapeHtml(section) + "</span><i class='fa fa-chevron-right'></i></div>";
+      html += "<div class='reference-section-body'>";
+      var subcats = cats[section];
+      for (var cat in subcats) {
+        html += "<div class='fn-ref-category' data-category='" + escapeHtml(cat) + "'>";
+        html += "<div style='font-size:0.75rem;font-weight:600;color:var(--color-brand);margin:4px 0 2px;'>" + escapeHtml(cat) + "</div>";
+        var funcs = subcats[cat];
+        for (var i = 0; i < funcs.length; i++) {
+          var fn = funcs[i];
+          var syntax = escapeHtml(fn.syntax);
+          var desc = fn.description ? escapeHtml(fn.description) : "";
+          var title = desc ? desc : syntax;
+          html += "<div class='reference-example fn-ref-item' data-name='" + escapeHtml(fn.name) + "' title='" + title + "' onclick='insertFunctionSyntax(\"" + syntax.replace(/"/g, "&quot;") + "\")'>";
+          html += "<code style='font-size:0.72rem;'>" + syntax + "</code>";
+          if (desc)
+            html += "<br><small style='color:#888;font-size:0.65rem;'>" + desc + "</small>";
+          html += "</div>";
+        }
+        html += "</div>";
+      }
+      html += "</div></div>";
+    }
+    html += "</div>";
+  }
+
   container.html(html);
+}
+
+function filterFunctionReference(query) {
+  var lowerQuery = query.toLowerCase();
+  $(".fn-ref-item").each(function() {
+    var name = $(this).attr("data-name") || "";
+    var text = $(this).text().toLowerCase();
+    if (lowerQuery === "" || name.indexOf(lowerQuery) >= 0 || text.indexOf(lowerQuery) >= 0)
+      $(this).show();
+    else
+      $(this).hide();
+  });
+  $(".fn-ref-category").each(function() {
+    var visibleItems = $(this).find(".fn-ref-item:visible").length;
+    if (visibleItems > 0)
+      $(this).show();
+    else
+      $(this).hide();
+  });
+  // Auto-expand sections with matching results when filtering
+  if (lowerQuery.length > 0) {
+    $(".fn-ref-section .reference-section-body").addClass("open");
+    $(".fn-ref-section .reference-section-header i").addClass("open");
+  }
+}
+
+function insertFunctionSyntax(syntax) {
+  var tmp = document.createElement("textarea");
+  tmp.innerHTML = syntax;
+  var decoded = tmp.value;
+  var cur = editor.getCursor();
+  editor.replaceRange(decoded, cur);
+  editor.focus();
 }
 
 function toggleReferenceSection(header) {
@@ -1188,7 +1334,8 @@ function populateSettingsPanel() {
   html += "<div style='font-size:0.75rem;color:#666;padding:0 2px;'>";
   html += "<div style='margin-bottom:4px;'><kbd>Ctrl+Enter</kbd> Execute query</div>";
   html += "<div style='margin-bottom:4px;'><kbd>Ctrl+Up</kbd> Previous history</div>";
-  html += "<div><kbd>Ctrl+Down</kbd> Next history</div>";
+  html += "<div style='margin-bottom:4px;'><kbd>Ctrl+Down</kbd> Next history</div>";
+  html += "<div><kbd>Alt+/</kbd> Autocomplete functions</div>";
   html += "</div></div>";
 
   container.html(html);
