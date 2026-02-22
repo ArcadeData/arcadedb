@@ -265,9 +265,13 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         seen.put(cursor.next().getIdentity(), 1);
     }
 
-    final List<IndexCursorEntry> entries = new ArrayList<>(seen.size());
-    for (final RID rid : seen.keySet())
+    final int maxElements = limit > -1 ? Math.min(limit, seen.size()) : seen.size();
+    final List<IndexCursorEntry> entries = new ArrayList<>(maxElements);
+    for (final RID rid : seen.keySet()) {
+      if (entries.size() >= maxElements)
+        break;
       entries.add(new IndexCursorEntry(keys, rid, 1));
+    }
     return new TempIndexCursor(entries);
   }
 
