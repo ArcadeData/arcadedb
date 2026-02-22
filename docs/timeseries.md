@@ -58,7 +58,7 @@
   - Reusable decode buffers: `long[65536]` and `double[65536]` allocated once per `aggregateMultiBlocks()` call, reused across all blocks. Buffer-reuse `decode()` overloads added to `DeltaOfDeltaCodec` and `GorillaXORCodec`
   - `BitReader` sliding-window register: pre-loaded 64-bit MSB-aligned window with lazy refill — `readBits(n)` extracts top n bits via single shift, refill amortized every ~7-8 bytes consumed. Eliminates per-call byte-assembly loop (decompVal 1305ms → 1224ms, ~6% improvement — JIT already optimized the old loop effectively)
   - Bucket-aligned compaction: `COMPACTION_INTERVAL` DDL option splits sealed blocks at time bucket boundaries during compaction, ensuring each block fits entirely within one bucket for 100% fast-path aggregation. SQL syntax: `CREATE TIMESERIES TYPE ... COMPACTION_INTERVAL 1 HOURS`. Config persisted in schema JSON and threaded through `TimeSeriesEngine` → `TimeSeriesShard`
-  - 228 timeseries tests passing, zero regressions
+  - 213 timeseries tests passing, zero regressions
 
 - **Phase 4: Downsampling Policies** — Automatic resolution reduction for old data:
   - `DownsamplingTier` record: `afterMs` (age threshold) + `granularityMs` (target resolution), with validation
@@ -93,7 +93,22 @@
   - **Automatic Retention/Downsampling Scheduler** — `TimeSeriesMaintenanceScheduler` runs as a daemon thread (60s interval), automatically applying retention and downsampling policies. Follows the same pattern as `MaterializedViewScheduler`. Integrated into `LocalSchema` (lazy init, shutdown on close) and `TimeSeriesTypeBuilder` (scheduled on type creation). Previously required explicit `applyRetention()` / `applyDownsampling()` calls from application code
   - **Linear Interpolation** — `ts.interpolate(value, 'linear', timestamp)` added as a 4th method. Interpolates null values using linear interpolation between surrounding non-null values. Requires optional 3rd parameter for timestamps
   - **Approximate Percentiles** — New `ts.percentile(value, percentile)` function (registered as `SQLFunctionTsPercentile`). Works with GROUP BY for per-bucket percentile calculation (e.g., `ts.percentile(latency, 0.99)` for p99)
-  - 19 new tests in `TimeSeriesGapAnalysisTest`, all 180 timeseries tests passing
+  - 19 new tests in `TimeSeriesGapAnalysisTest`
+
+- **Block-Level Tag Metadata for Sealed Blocks** — Per-block distinct tag values stored in sealed block headers, enabling three-way block decision during tag-filtered queries:
+  - **Block header tag metadata section**: after numeric stats, stores `tagColCount` (2 bytes) + per-TAG column `distinctCount` + UTF-8 encoded distinct values. Minimal overhead: a block with one tag column holding "TSLA" costs 10 bytes per block header
+  - **Sealed format version upgrade**: `CURRENT_VERSION` bumped from 0 to 1. `loadDirectory()` reads tag metadata for version ≥ 1. Auto-migration via `upgradeFileToVersion1()` rewrites version-0 blocks with empty tag metadata on first `appendBlock()`
+  - **Three-way block decision** (`BlockMatchResult` enum):
+    - **SKIP** — filtered tag value not in block's distinct set → skip entire block (zero decompression)
+    - **FAST_PATH** — block has exactly 1 distinct value for the filtered tag AND it matches → use block-level stats (min/max/sum/count) directly, zero decompression
+    - **SLOW_PATH** — block has multiple distinct values including the filtered one → decompress tag columns via `DictionaryCodec.decode()`, filter rows inline
+  - **Compaction integration**: `TimeSeriesShard.compact()` collects distinct tag values per chunk via `LinkedHashSet` and passes `String[][] tagDistinctValues` to `appendBlock()`
+  - **Aggregation path**: `aggregateMultiBlocks()` accepts `TagFilter` parameter, applies three-way decision per block. Removed the `aggregateMultiWithTagFilter()` row-by-row fallback from `TimeSeriesEngine` — sealed store handles block-level skipping internally. Mutable bucket tag filtering remains row-level
+  - **Query path**: `scanRange()` and `iterateRange()` accept `TagFilter` parameter, skip non-matching blocks entirely
+  - **Downsampling integration**: `downsampleBlocks()` computes tag metadata for newly created blocks
+  - CRC32 integrity covers tag metadata section
+  - 3 new tests in `TimeSeriesGapAnalysisTest`: `testTagFilterBlockSkipping`, `testTagFilterAggregationAfterCompaction`, `testTagFilterNonexistentTag`
+  - All 213 timeseries tests passing, zero regressions
 
 ### In Progress / Not Yet Started
 
