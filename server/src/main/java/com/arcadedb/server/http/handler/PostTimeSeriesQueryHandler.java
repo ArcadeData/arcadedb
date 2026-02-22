@@ -193,62 +193,12 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
   private TagFilter buildTagFilter(final JSONObject payload, final List<ColumnDefinition> columns) {
     if (!payload.has("tags"))
       return null;
-
-    final JSONObject tagsJson = payload.getJSONObject("tags");
-    final var tagKeys = tagsJson.keySet();
-    if (tagKeys.isEmpty())
-      return null;
-
-    TagFilter filter = null;
-
-    for (final String tagName : tagKeys) {
-      final Object tagValue = tagsJson.get(tagName);
-
-      // Find column index among non-timestamp columns (0-based)
-      int nonTsIdx = 0;
-      for (final ColumnDefinition col : columns) {
-        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-          continue;
-        if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName)) {
-          if (filter == null)
-            filter = TagFilter.eq(nonTsIdx, tagValue);
-          else
-            filter = filter.and(nonTsIdx, tagValue);
-          break;
-        }
-        nonTsIdx++;
-      }
-    }
-
-    return filter;
+    return TimeSeriesHandlerUtils.buildTagFilter(payload.getJSONObject("tags"), columns);
   }
 
   private int[] resolveColumnIndices(final JSONObject payload, final List<ColumnDefinition> columns) {
     if (!payload.has("fields"))
       return null;
-
-    final JSONArray fieldsJson = payload.getJSONArray("fields");
-    final List<Integer> indices = new ArrayList<>();
-
-    // Always include timestamp
-    for (int i = 0; i < columns.size(); i++) {
-      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
-        indices.add(i);
-        break;
-      }
-    }
-
-    for (int f = 0; f < fieldsJson.length(); f++) {
-      final String fieldName = fieldsJson.getString(f);
-      for (int i = 0; i < columns.size(); i++) {
-        if (columns.get(i).getName().equals(fieldName) &&
-            columns.get(i).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP) {
-          indices.add(i);
-          break;
-        }
-      }
-    }
-
-    return indices.stream().mapToInt(Integer::intValue).toArray();
+    return TimeSeriesHandlerUtils.resolveColumnIndices(payload.getJSONArray("fields"), columns);
   }
 }

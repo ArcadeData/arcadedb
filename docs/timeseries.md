@@ -110,6 +110,13 @@
   - 3 new tests in `TimeSeriesGapAnalysisTest`: `testTagFilterBlockSkipping`, `testTagFilterAggregationAfterCompaction`, `testTagFilterNonexistentTag`
   - All 213 timeseries tests passing, zero regressions
 
+- **Grafana Integration** — Grafana DataFrame-compatible HTTP endpoints for visualization via the Grafana Infinity datasource plugin (no custom plugin needed):
+  - `GET /api/v1/ts/{database}/grafana/health` — datasource health check (verifies database exists)
+  - `GET /api/v1/ts/{database}/grafana/metadata` — discovers TimeSeries types, fields, tags, and available aggregation types
+  - `POST /api/v1/ts/{database}/grafana/query` — multi-target query returning Grafana DataFrame wire format (columnar arrays with schema metadata); supports raw queries, aggregated queries (SUM/AVG/MIN/MAX/COUNT), tag filtering, field projection, and automatic bucket interval calculation from `maxDataPoints`
+  - Shared `TimeSeriesHandlerUtils` utility class extracted from `PostTimeSeriesQueryHandler` (tag filter building, column index resolution)
+  - 8 integration tests in `GrafanaTimeSeriesHandlerIT`: health, metadata, raw query, aggregated query, multi-target, tag filter, auto maxDataPoints, missing targets
+
 ### In Progress / Not Yet Started
 
 #### Competitive Gap Analysis — Prioritized Roadmap
@@ -122,7 +129,7 @@ Gap analysis comparing ArcadeDB's TimeSeries against top 10 TSDBs: InfluxDB 3, T
 - ~~Multi-tag filtering~~ — **DONE** (ANDed multi-tag conditions)
 - ~~Automatic retention/downsampling scheduler~~ — **DONE** (daemon thread, 60s interval)
 - **PromQL / MetricsQL query language** — De-facto standard for observability. Thousands of Grafana dashboards and alerting rules use PromQL. Without it, ArcadeDB can't serve as a drop-in Prometheus backend
-- **Grafana native datasource plugin** — All 10 TSDBs have Grafana support. Without a plugin, users must use generic JSON/Infinity datasource, losing time-range pushdown and template variables
+- ~~Grafana native datasource plugin~~ — **DONE** (Grafana DataFrame-compatible endpoints: `GET /ts/{db}/grafana/health`, `GET /ts/{db}/grafana/metadata`, `POST /ts/{db}/grafana/query` — works with Grafana Infinity datasource plugin, no custom plugin needed)
 - **Prometheus `remote_write` / `remote_read` protocol** — Standard push protocol for metrics (6/10 TSDBs support it). Prometheus, vmagent, Grafana Agent, OpenTelemetry Collector all use it
 - **Alerting & recording rules** — Built-in alerting on metric thresholds with routing (email, Slack, PagerDuty). Recording rules pre-compute expensive queries (7+/10 TSDBs)
 
@@ -2279,6 +2286,7 @@ At 1M total samples with 5 columns:
 - ✅ `POST /api/v1/ts/{database}/write?precision=ns|us|ms|s` — InfluxDB Line Protocol batch ingestion
 - ✅ `POST /api/v1/ts/{database}/query` — JSON query with raw/aggregated response, time range, field projection, tag filtering
 - ✅ `GET /api/v1/ts/{database}/latest?type=name&tag=key:value` — latest value per series with optional tag filter
+- ✅ Grafana DataFrame-compatible endpoints (`GET .../grafana/health`, `GET .../grafana/metadata`, `POST .../grafana/query`) — works with Grafana Infinity datasource plugin
 - Prometheus remote-write/remote-read compatibility endpoints (future — requires protobuf dependency)
 
 #### 5b. Studio TimeSeries Explorer

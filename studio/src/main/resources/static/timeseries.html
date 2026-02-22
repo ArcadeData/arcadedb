@@ -18,7 +18,7 @@
   <ul class="nav nav-tabs flex-shrink-0" id="tabs-timeseries" style="padding: 0 12px;">
     <li class="nav-item"><a data-toggle="tab" href="#tab-ts-query" class="active show nav-link" id="tab-ts-query-sel">Query</a></li>
     <li class="nav-item"><a data-toggle="tab" href="#tab-ts-schema" class="nav-link" id="tab-ts-schema-sel" onclick="tsLoadSchema()">Schema</a></li>
-    <li class="nav-item"><a data-toggle="tab" href="#tab-ts-ingestion" class="nav-link" id="tab-ts-ingestion-sel">Ingestion</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-ts-ingestion" class="nav-link" id="tab-ts-ingestion-sel">Quick Tour</a></li>
   </ul>
 
   <div class="tab-content">
@@ -149,10 +149,10 @@
     <div class="tab-pane fade" id="tab-ts-ingestion" role="tabpanel">
       <div class="px-3 py-3" style="max-width: 960px;">
 
-        <h5 style="margin-bottom: 16px;">Ingesting Data into TimeSeries</h5>
         <p style="font-size: 0.9rem; color: var(--text-muted);">
-          ArcadeDB TimeSeries supports multiple ingestion methods. Before ingesting data, create a TimeSeries type that defines
-          the timestamp column, tags (dimensions for filtering), and fields (numeric measurements).
+          ArcadeDB TimeSeries supports multiple ingestion methods and integrates with Grafana for visualization.
+          Before ingesting data, create a TimeSeries type that defines the timestamp column, tags (dimensions for filtering),
+          and fields (numeric measurements).
         </p>
 
         <!-- 1. Create Type -->
@@ -369,6 +369,176 @@ db.commit();</code></pre>
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <hr style="margin: 24px 0;" />
+
+        <h5 style="margin-bottom: 16px;">Grafana Integration</h5>
+        <p style="font-size: 0.9rem; color: var(--text-muted);">
+          ArcadeDB exposes Grafana DataFrame-compatible endpoints so you can visualize TimeSeries data in Grafana
+          without a custom plugin. Use the
+          <a href="https://grafana.com/grafana/plugins/yesoreyeram-infinity-datasource/" target="_blank">Grafana Infinity datasource</a>
+          plugin to connect.
+        </p>
+
+        <!-- Grafana Setup -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-chart-area" style="color: #f46800;"></i> 1. Install the Infinity Datasource Plugin</h6>
+            <p style="font-size: 0.85rem;">
+              The Infinity plugin is a generic JSON/CSV/XML datasource maintained by the Grafana community.
+              Install it from the Grafana plugin catalog or via CLI:
+            </p>
+<pre class="ts-ingest-code"><code>grafana cli plugins install yesoreyeram-infinity-datasource
+# then restart Grafana</code></pre>
+          </div>
+        </div>
+
+        <!-- Grafana Datasource Config -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-cog" style="color: #f46800;"></i> 2. Configure the Datasource</h6>
+            <p style="font-size: 0.85rem;">
+              In Grafana, go to <b>Connections &rarr; Data Sources &rarr; Add data source</b>, select <b>Infinity</b>, and configure:
+            </p>
+            <div class="table-responsive">
+              <table class="table table-sm" style="font-size: 0.85rem;">
+                <thead><tr><th style="width:200px;">Setting</th><th>Value</th></tr></thead>
+                <tbody>
+                  <tr><td><b>URL</b></td><td><code>http://&lt;arcadedb-host&gt;:2480</code></td></tr>
+                  <tr><td><b>Authentication</b></td><td>Basic Auth</td></tr>
+                  <tr><td><b>User / Password</b></td><td>Your ArcadeDB credentials</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">
+              Test the connection using the <b>Health Check URL</b>:
+            </p>
+<pre class="ts-ingest-code"><code>GET /api/v1/ts/{database}/grafana/health
+
+# Response: { "status": "ok", "database": "mydb" }</code></pre>
+          </div>
+        </div>
+
+        <!-- Grafana Endpoints -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-plug" style="color: #f46800;"></i> 3. Available Endpoints</h6>
+            <div class="table-responsive">
+              <table class="table table-sm" style="font-size: 0.85rem;">
+                <thead><tr><th>Method</th><th>Endpoint</th><th>Purpose</th></tr></thead>
+                <tbody>
+                  <tr><td><code>GET</code></td><td><code>/api/v1/ts/{db}/grafana/health</code></td><td>Datasource health check</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/api/v1/ts/{db}/grafana/metadata</code></td><td>Discover types, fields, tags, aggregation types</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/v1/ts/{db}/grafana/query</code></td><td>Query &rarr; Grafana DataFrame JSON</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Grafana Metadata -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-list" style="color: #f46800;"></i> 4. Discover Available Metrics (Metadata)</h6>
+            <p style="font-size: 0.85rem;">
+              Use the metadata endpoint to discover TimeSeries types and their fields before configuring panels:
+            </p>
+<pre class="ts-ingest-code"><code>curl -u root:password \
+  "http://localhost:2480/api/v1/ts/mydb/grafana/metadata"</code></pre>
+            <div style="font-size: 0.82rem; font-weight: 600; margin: 8px 0 4px;">Response</div>
+<pre class="ts-ingest-code"><code>{
+  "types": [
+    {
+      "name": "weather",
+      "fields": [{ "name": "temperature", "dataType": "DOUBLE" }],
+      "tags": [{ "name": "location", "dataType": "STRING" }]
+    }
+  ],
+  "aggregationTypes": ["SUM", "AVG", "MIN", "MAX", "COUNT"]
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- Grafana Query -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-play" style="color: #f46800;"></i> 5. Build a Panel Query</h6>
+            <p style="font-size: 0.85rem;">
+              Configure the Infinity plugin to POST JSON to the query endpoint. Each target maps to a Grafana panel query
+              (refId A, B, C...). The response uses the columnar DataFrame format Grafana expects.
+            </p>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Request</div>
+<pre class="ts-ingest-code"><code>{
+  "from": 1700000000000,
+  "to": 1700086400000,
+  "maxDataPoints": 1000,
+  "targets": [
+    {
+      "refId": "A",
+      "type": "weather",
+      "fields": ["temperature"],
+      "tags": { "location": "us-east" },
+      "aggregation": {
+        "bucketInterval": 60000,
+        "requests": [
+          { "field": "temperature", "type": "AVG", "alias": "avg_temp" }
+        ]
+      }
+    }
+  ]
+}</code></pre>
+            <div style="font-size: 0.82rem; font-weight: 600; margin: 8px 0 4px;">Response (DataFrame format)</div>
+<pre class="ts-ingest-code"><code>{
+  "results": {
+    "A": {
+      "frames": [{
+        "schema": {
+          "fields": [
+            { "name": "time", "type": "time" },
+            { "name": "avg_temp", "type": "number" }
+          ]
+        },
+        "data": {
+          "values": [
+            [1700000000000, 1700000060000],
+            [23.5, 24.1]
+          ]
+        }
+      }]
+    }
+  }
+}</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              <b>Auto bucket interval:</b> If <code>aggregation</code> is present but <code>bucketInterval</code> is omitted,
+              it is automatically calculated as <code>(to - from) / maxDataPoints</code>.
+              Omit <code>aggregation</code> entirely to get raw data points.
+            </p>
+          </div>
+        </div>
+
+        <!-- Grafana curl example -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-terminal" style="color: #f46800;"></i> 6. curl Example</h6>
+<pre class="ts-ingest-code"><code>curl -u root:password -X POST \
+  "http://localhost:2480/api/v1/ts/mydb/grafana/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": 1700000000000,
+    "to": 1700086400000,
+    "maxDataPoints": 500,
+    "targets": [{
+      "refId": "A",
+      "type": "weather",
+      "aggregation": {
+        "requests": [
+          { "field": "temperature", "type": "AVG", "alias": "avg_temp" }
+        ]
+      }
+    }]
+  }'</code></pre>
           </div>
         </div>
 

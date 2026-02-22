@@ -55,6 +55,9 @@ import com.arcadedb.server.http.handler.PostServerCommandHandler;
 import com.arcadedb.server.http.handler.PostTimeSeriesQueryHandler;
 import com.arcadedb.server.http.handler.PostTimeSeriesWriteHandler;
 import com.arcadedb.server.http.handler.GetTimeSeriesLatestHandler;
+import com.arcadedb.server.http.handler.GetGrafanaHealthHandler;
+import com.arcadedb.server.http.handler.GetGrafanaMetadataHandler;
+import com.arcadedb.server.http.handler.PostGrafanaQueryHandler;
 import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
@@ -200,6 +203,9 @@ public class HttpServer implements ServerPlugin {
         .post("/ts/{database}/write", new PostTimeSeriesWriteHandler(this))
         .post("/ts/{database}/query", new PostTimeSeriesQueryHandler(this))
         .get("/ts/{database}/latest", new GetTimeSeriesLatestHandler(this))
+        .get("/ts/{database}/grafana/health", new GetGrafanaHealthHandler(this))
+        .get("/ts/{database}/grafana/metadata", new GetGrafanaMetadataHandler(this))
+        .post("/ts/{database}/grafana/query", new PostGrafanaQueryHandler(this))
     );
 
     // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling

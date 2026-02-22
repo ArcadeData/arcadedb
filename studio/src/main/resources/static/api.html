@@ -128,6 +128,21 @@
             <span class="api-path">/api/v1/ts/{db}/latest</span>
             <span class="api-desc">Get latest value</span>
           </div>
+          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaHealth')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/ts/{db}/grafana/health</span>
+            <span class="api-desc">Grafana health check</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaMetadata')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/ts/{db}/grafana/metadata</span>
+            <span class="api-desc">Grafana metadata</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaQuery')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/ts/{db}/grafana/query</span>
+            <span class="api-desc">Grafana DataFrame query</span>
+          </div>
         </div>
 
         <!-- Documentation -->
@@ -377,6 +392,45 @@ var apiEndpoints = {
     responseCode: "200 OK",
     responseBody: '{\n  "type": "stocks",\n  "columns": ["ts", "symbol", "open", "close", "high", "low", "volume"],\n  "latest": [1700100000000, "TSLA", 255.30, 256.10, 257.00, 254.80, 142000]\n}\n\n// When no data exists:\n{\n  "type": "stocks",\n  "columns": ["ts", "symbol", "open", "close", "high", "low", "volume"],\n  "latest": null\n}',
     notes: "Returns <code>\"latest\": null</code> if no data exists. The tag filter format is <code>key:value</code> (e.g. <code>?tag=symbol:TSLA</code>)."
+  },
+  tsGrafanaHealth: {
+    method: "GET", path: "/api/v1/ts/{database}/grafana/health", auth: true, tryIt: true,
+    docsAnchor: "http-timeseries",
+    title: "Grafana Health Check",
+    description: "Verifies the database exists and the Grafana endpoints are reachable. Use this as the health check URL when configuring a Grafana Infinity datasource.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "status": "ok",\n  "database": "mydb"\n}',
+    notes: "Returns <code>200</code> with status <code>ok</code> if the database exists."
+  },
+  tsGrafanaMetadata: {
+    method: "GET", path: "/api/v1/ts/{database}/grafana/metadata", auth: true, tryIt: true,
+    docsAnchor: "http-timeseries",
+    title: "Grafana Metadata",
+    description: "Discovers all TimeSeries types in the database with their fields, tags, and available aggregation types. Use this to configure Grafana panel queries.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "types": [\n    {\n      "name": "weather",\n      "fields": [{ "name": "temperature", "dataType": "DOUBLE" }],\n      "tags": [{ "name": "location", "dataType": "STRING" }]\n    }\n  ],\n  "aggregationTypes": ["SUM", "AVG", "MIN", "MAX", "COUNT"]\n}',
+    notes: "Lists only types that are TimeSeries types with an active engine. Non-TimeSeries types are excluded."
+  },
+  tsGrafanaQuery: {
+    method: "POST", path: "/api/v1/ts/{database}/grafana/query", auth: true, tryIt: true,
+    docsAnchor: "http-timeseries",
+    title: "Grafana DataFrame Query",
+    description: "Queries TimeSeries data and returns results in Grafana DataFrame wire format (columnar arrays with schema metadata). Supports multiple targets (one per Grafana panel query), raw and aggregated queries, tag filtering, and automatic bucket interval calculation.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: '{\n  "from": 1700000000000,\n  "to": 1700086400000,\n  "maxDataPoints": 1000,\n  "targets": [\n    {\n      "refId": "A",\n      "type": "weather",\n      "fields": ["temperature"],\n      "tags": { "location": "us-east" },\n      "aggregation": {\n        "bucketInterval": 60000,\n        "requests": [\n          { "field": "temperature", "type": "AVG", "alias": "avg_temp" }\n        ]\n      }\n    }\n  ]\n}',
+    responseCode: "200 OK",
+    responseBody: '{\n  "results": {\n    "A": {\n      "frames": [{\n        "schema": {\n          "fields": [\n            { "name": "time", "type": "time" },\n            { "name": "avg_temp", "type": "number" }\n          ]\n        },\n        "data": {\n          "values": [\n            [1700000000000, 1700000060000],\n            [23.5, 24.1]\n          ]\n        }\n      }]\n    }\n  }\n}',
+    notes: "Request fields: <code>from</code>/<code>to</code> (optional) &mdash; epoch ms shared across all targets. <code>maxDataPoints</code> (optional) &mdash; auto-calculates <code>bucketInterval</code> when aggregation is requested but interval is omitted. <code>targets[].refId</code> &mdash; Grafana panel query ID. <code>targets[].type</code> (required) &mdash; TimeSeries type name. <code>targets[].fields</code> (optional) &mdash; subset of columns. <code>targets[].tags</code> (optional) &mdash; tag filter. <code>targets[].aggregation</code> (optional) &mdash; aggregation with bucket interval and requests. Supported aggregation types: <code>AVG</code>, <code>SUM</code>, <code>MIN</code>, <code>MAX</code>, <code>COUNT</code>."
   }
 };
 
