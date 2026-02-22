@@ -55,6 +55,11 @@ import com.arcadedb.server.http.handler.PostServerCommandHandler;
 import com.arcadedb.server.http.handler.PostTimeSeriesQueryHandler;
 import com.arcadedb.server.http.handler.PostTimeSeriesWriteHandler;
 import com.arcadedb.server.http.handler.GetTimeSeriesLatestHandler;
+import com.arcadedb.server.http.handler.GetPromQLQueryHandler;
+import com.arcadedb.server.http.handler.GetPromQLQueryRangeHandler;
+import com.arcadedb.server.http.handler.GetPromQLLabelsHandler;
+import com.arcadedb.server.http.handler.GetPromQLLabelValuesHandler;
+import com.arcadedb.server.http.handler.GetPromQLSeriesHandler;
 import com.arcadedb.server.http.handler.GetGrafanaHealthHandler;
 import com.arcadedb.server.http.handler.GetGrafanaMetadataHandler;
 import com.arcadedb.server.http.handler.PostGrafanaQueryHandler;
@@ -210,6 +215,11 @@ public class HttpServer implements ServerPlugin {
         .post("/ts/{database}/grafana/query", new PostGrafanaQueryHandler(this))
         .post("/ts/{database}/prom/write", new PostPrometheusWriteHandler(this))
         .post("/ts/{database}/prom/read", new PostPrometheusReadHandler(this))
+        .get("/ts/{database}/prom/api/v1/query", new GetPromQLQueryHandler(this))
+        .get("/ts/{database}/prom/api/v1/query_range", new GetPromQLQueryRangeHandler(this))
+        .get("/ts/{database}/prom/api/v1/labels", new GetPromQLLabelsHandler(this))
+        .get("/ts/{database}/prom/api/v1/label/{name}/values", new GetPromQLLabelValuesHandler(this))
+        .get("/ts/{database}/prom/api/v1/series", new GetPromQLSeriesHandler(this))
     );
 
     // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling

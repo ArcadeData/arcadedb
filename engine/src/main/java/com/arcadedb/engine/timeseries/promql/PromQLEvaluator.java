@@ -1,0 +1,582 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.engine.timeseries.promql;
+
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.TagFilter;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.InstantVector;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.MatrixResult;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.MatrixSeries;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.RangeSeries;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.RangeVector;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.ScalarResult;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.VectorSample;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.AggregationExpr;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.BinaryExpr;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.BinaryOp;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.FunctionCallExpr;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.LabelMatcher;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.MatchOp;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.MatrixSelector;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.NumberLiteral;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.StringLiteral;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalTimeSeriesType;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+/**
+ * Tree-walking interpreter for PromQL AST.
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class PromQLEvaluator {
+
+  private static final long DEFAULT_LOOKBACK_MS = 5 * 60_000; // 5 minutes
+
+  private final DatabaseInternal database;
+
+  public PromQLEvaluator(final DatabaseInternal database) {
+    this.database = database;
+  }
+
+  /**
+   * Evaluate an instant query at a single timestamp.
+   */
+  public PromQLResult evaluateInstant(final PromQLExpr expr, final long evalTimeMs) {
+    return evaluate(expr, evalTimeMs, evalTimeMs, evalTimeMs, 0);
+  }
+
+  /**
+   * Evaluate a range query, returning a matrix result with values at each step.
+   */
+  public PromQLResult evaluateRange(final PromQLExpr expr, final long startMs, final long endMs, final long stepMs) {
+    // For range queries, evaluate at each step point and collect into MatrixResult
+    final Map<String, List<double[]>> seriesMap = new LinkedHashMap<>();
+    final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
+
+    for (long t = startMs; t <= endMs; t += stepMs) {
+      final PromQLResult result = evaluate(expr, t, startMs, endMs, stepMs);
+      if (result instanceof InstantVector iv) {
+        for (final VectorSample sample : iv.samples()) {
+          final String key = labelKey(sample.labels());
+          seriesMap.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { sample.timestampMs(), sample.value() });
+          labelsMap.putIfAbsent(key, sample.labels());
+        }
+      } else if (result instanceof ScalarResult sr) {
+        final String key = "{}";
+        seriesMap.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { t, sr.value() });
+        labelsMap.putIfAbsent(key, Map.of());
+      }
+    }
+
+    final List<MatrixSeries> series = new ArrayList<>();
+    for (final Map.Entry<String, List<double[]>> entry : seriesMap.entrySet())
+      series.add(new MatrixSeries(labelsMap.get(entry.getKey()), entry.getValue()));
+    return new MatrixResult(series);
+  }
+
+  private PromQLResult evaluate(final PromQLExpr expr, final long evalTimeMs, final long queryStartMs, final long queryEndMs,
+      final long stepMs) {
+    return switch (expr) {
+      case NumberLiteral nl -> new ScalarResult(nl.value(), evalTimeMs);
+      case StringLiteral ignored -> new ScalarResult(Double.NaN, evalTimeMs);
+      case VectorSelector vs -> evaluateVectorSelector(vs, evalTimeMs);
+      case MatrixSelector ms -> evaluateMatrixSelector(ms, evalTimeMs);
+      case AggregationExpr agg -> evaluateAggregation(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      case FunctionCallExpr fn -> evaluateFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      case BinaryExpr bin -> evaluateBinary(bin, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      case UnaryExpr un -> evaluateUnary(un, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+    };
+  }
+
+  private PromQLResult evaluateVectorSelector(final VectorSelector vs, final long evalTimeMs) {
+    final String typeName = sanitizeTypeName(vs.metricName());
+    if (!database.getSchema().existsType(typeName))
+      return new InstantVector(List.of());
+
+    final DocumentType docType = database.getSchema().getType(typeName);
+    if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+      return new InstantVector(List.of());
+
+    final TimeSeriesEngine engine = tsType.getEngine();
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+    final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
+    final long offset = vs.offsetMs();
+    final long queryEnd = evalTimeMs - offset;
+    final long queryStart = queryEnd - DEFAULT_LOOKBACK_MS;
+
+    final List<Object[]> rows;
+    try {
+      rows = engine.query(queryStart, queryEnd, null, tagFilter);
+    } catch (final Exception e) {
+      return new InstantVector(List.of());
+    }
+
+    // Post-filter for NEQ/RE/NRE and group by label combination
+    final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
+    for (final Object[] row : rows) {
+      if (!matchesPostFilters(row, vs.matchers(), columns))
+        continue;
+      final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
+      final String key = labelKey(labels);
+      final long ts = (long) row[0];
+      final double value = extractValue(row, columns);
+      // Keep the latest sample for each label combination
+      latestByLabels.put(key, new VectorSample(labels, value, ts));
+    }
+
+    return new InstantVector(new ArrayList<>(latestByLabels.values()));
+  }
+
+  private PromQLResult evaluateMatrixSelector(final MatrixSelector ms, final long evalTimeMs) {
+    final VectorSelector vs = ms.selector();
+    final String typeName = sanitizeTypeName(vs.metricName());
+    if (!database.getSchema().existsType(typeName))
+      return new RangeVector(List.of());
+
+    final DocumentType docType = database.getSchema().getType(typeName);
+    if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+      return new RangeVector(List.of());
+
+    final TimeSeriesEngine engine = tsType.getEngine();
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+    final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
+    final long offset = vs.offsetMs();
+    final long queryEnd = evalTimeMs - offset;
+    final long queryStart = queryEnd - ms.rangeMs();
+
+    final List<Object[]> rows;
+    try {
+      rows = engine.query(queryStart, queryEnd, null, tagFilter);
+    } catch (final Exception e) {
+      return new RangeVector(List.of());
+    }
+
+    // Group rows by label combination
+    final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
+    final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
+    for (final Object[] row : rows) {
+      if (!matchesPostFilters(row, vs.matchers(), columns))
+        continue;
+      final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
+      final String key = labelKey(labels);
+      seriesByLabels.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { (long) row[0], extractValue(row, columns) });
+      labelsMap.putIfAbsent(key, labels);
+    }
+
+    final List<RangeSeries> result = new ArrayList<>();
+    for (final Map.Entry<String, List<double[]>> entry : seriesByLabels.entrySet())
+      result.add(new RangeSeries(labelsMap.get(entry.getKey()), entry.getValue()));
+    return new RangeVector(result);
+  }
+
+  private PromQLResult evaluateAggregation(final AggregationExpr agg, final long evalTimeMs, final long queryStartMs,
+      final long queryEndMs, final long stepMs) {
+    final PromQLResult inner = evaluate(agg.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+    if (!(inner instanceof InstantVector iv))
+      return new InstantVector(List.of());
+
+    // Group samples by labels
+    final Map<String, List<VectorSample>> groups = new LinkedHashMap<>();
+    for (final VectorSample sample : iv.samples()) {
+      final Map<String, String> groupKey = computeGroupLabels(sample.labels(), agg.groupLabels(), agg.without());
+      final String key = labelKey(groupKey);
+      groups.computeIfAbsent(key, k -> new ArrayList<>()).add(sample);
+    }
+
+    final List<VectorSample> result = new ArrayList<>();
+    for (final Map.Entry<String, List<VectorSample>> entry : groups.entrySet()) {
+      final List<VectorSample> group = entry.getValue();
+      final Map<String, String> groupLabels = computeGroupLabels(group.getFirst().labels(), agg.groupLabels(), agg.without());
+      final long ts = group.getFirst().timestampMs();
+
+      final double value = switch (agg.op()) {
+        case SUM -> {
+          double sum = 0;
+          for (final VectorSample s : group) sum += s.value();
+          yield sum;
+        }
+        case AVG -> {
+          double sum = 0;
+          for (final VectorSample s : group) sum += s.value();
+          yield sum / group.size();
+        }
+        case MIN -> {
+          double min = Double.POSITIVE_INFINITY;
+          for (final VectorSample s : group) if (s.value() < min) min = s.value();
+          yield min;
+        }
+        case MAX -> {
+          double max = Double.NEGATIVE_INFINITY;
+          for (final VectorSample s : group) if (s.value() > max) max = s.value();
+          yield max;
+        }
+        case COUNT -> (double) group.size();
+        case TOPK -> {
+          final int k = agg.param() != null ? (int) ((NumberLiteral) agg.param()).value() : 1;
+          group.sort(Comparator.comparingDouble(VectorSample::value).reversed());
+          for (int i = 0; i < Math.min(k, group.size()); i++)
+            result.add(group.get(i));
+          yield Double.NaN; // topk adds samples directly
+        }
+        case BOTTOMK -> {
+          final int k = agg.param() != null ? (int) ((NumberLiteral) agg.param()).value() : 1;
+          group.sort(Comparator.comparingDouble(VectorSample::value));
+          for (int i = 0; i < Math.min(k, group.size()); i++)
+            result.add(group.get(i));
+          yield Double.NaN; // bottomk adds samples directly
+        }
+      };
+
+      if (agg.op() != PromQLExpr.AggOp.TOPK && agg.op() != PromQLExpr.AggOp.BOTTOMK)
+        result.add(new VectorSample(groupLabels, value, ts));
+    }
+
+    return new InstantVector(result);
+  }
+
+  private PromQLResult evaluateFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
+      final long queryEndMs, final long stepMs) {
+    final String name = fn.name().toLowerCase();
+
+    // Range-vector functions
+    if (isRangeFunction(name)) {
+      if (fn.args().isEmpty())
+        throw new IllegalArgumentException("Function '" + fn.name() + "' requires a range vector argument");
+      final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      if (!(argResult instanceof RangeVector rv))
+        throw new IllegalArgumentException("Function '" + fn.name() + "' requires a range vector argument");
+
+      final List<VectorSample> samples = new ArrayList<>();
+      for (final RangeSeries series : rv.series()) {
+        final double value = switch (name) {
+          case "rate" -> PromQLFunctions.rate(series);
+          case "irate" -> PromQLFunctions.irate(series);
+          case "increase" -> PromQLFunctions.increase(series);
+          case "sum_over_time" -> PromQLFunctions.sumOverTime(series);
+          case "avg_over_time" -> PromQLFunctions.avgOverTime(series);
+          case "min_over_time" -> PromQLFunctions.minOverTime(series);
+          case "max_over_time" -> PromQLFunctions.maxOverTime(series);
+          case "count_over_time" -> PromQLFunctions.countOverTime(series);
+          default -> throw new IllegalArgumentException("Unknown range function: " + fn.name());
+        };
+        samples.add(new VectorSample(series.labels(), value, evalTimeMs));
+      }
+      return new InstantVector(samples);
+    }
+
+    // Scalar functions
+    if ("abs".equals(name) || "ceil".equals(name) || "floor".equals(name) || "round".equals(name))
+      return evaluateScalarFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+
+    throw new IllegalArgumentException("Unknown function: " + fn.name());
+  }
+
+  private PromQLResult evaluateScalarFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
+      final long queryEndMs, final long stepMs) {
+    final String name = fn.name().toLowerCase();
+    final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+    final double param = extractSecondParam(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+
+    if (argResult instanceof ScalarResult sr)
+      return new ScalarResult(applyScalarFn(name, sr.value(), param), evalTimeMs);
+
+    if (argResult instanceof InstantVector iv) {
+      final List<VectorSample> samples = new ArrayList<>();
+      for (final VectorSample sample : iv.samples())
+        samples.add(new VectorSample(sample.labels(), applyScalarFn(name, sample.value(), param), sample.timestampMs()));
+      return new InstantVector(samples);
+    }
+
+    return argResult;
+  }
+
+  private double extractSecondParam(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
+      final long queryEndMs, final long stepMs) {
+    if (fn.args().size() <= 1)
+      return 1.0;
+    final PromQLResult paramResult = evaluate(fn.args().get(1), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+    if (paramResult instanceof ScalarResult sr)
+      return sr.value();
+    return 1.0;
+  }
+
+  private double applyScalarFn(final String name, final double value, final double param) {
+    return switch (name) {
+      case "abs" -> PromQLFunctions.abs(value);
+      case "ceil" -> PromQLFunctions.ceil(value);
+      case "floor" -> PromQLFunctions.floor(value);
+      case "round" -> PromQLFunctions.round(value, param);
+      default -> value;
+    };
+  }
+
+  private PromQLResult evaluateBinary(final BinaryExpr bin, final long evalTimeMs, final long queryStartMs,
+      final long queryEndMs, final long stepMs) {
+    final PromQLResult leftResult = evaluate(bin.left(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+    final PromQLResult rightResult = evaluate(bin.right(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+
+    // scalar-scalar
+    if (leftResult instanceof ScalarResult ls && rightResult instanceof ScalarResult rs)
+      return new ScalarResult(applyBinaryOp(bin.op(), ls.value(), rs.value()), evalTimeMs);
+
+    // vector-scalar
+    if (leftResult instanceof InstantVector iv && rightResult instanceof ScalarResult rs)
+      return applyVectorScalar(iv, rs.value(), bin.op(), false);
+
+    // scalar-vector
+    if (leftResult instanceof ScalarResult ls && rightResult instanceof InstantVector iv)
+      return applyVectorScalar(iv, ls.value(), bin.op(), true);
+
+    // vector-vector
+    if (leftResult instanceof InstantVector lv && rightResult instanceof InstantVector rv)
+      return applyVectorVector(lv, rv, bin.op());
+
+    return new ScalarResult(Double.NaN, evalTimeMs);
+  }
+
+  private PromQLResult evaluateUnary(final UnaryExpr un, final long evalTimeMs, final long queryStartMs, final long queryEndMs,
+      final long stepMs) {
+    final PromQLResult result = evaluate(un.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+    if (un.op() == '-') {
+      if (result instanceof ScalarResult sr)
+        return new ScalarResult(-sr.value(), sr.timestampMs());
+      if (result instanceof InstantVector iv) {
+        final List<VectorSample> samples = new ArrayList<>();
+        for (final VectorSample s : iv.samples())
+          samples.add(new VectorSample(s.labels(), -s.value(), s.timestampMs()));
+        return new InstantVector(samples);
+      }
+    }
+    return result;
+  }
+
+  // --- Helper methods ---
+
+  private TagFilter buildTagFilter(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
+    TagFilter filter = null;
+    for (final LabelMatcher m : matchers) {
+      if (m.op() != MatchOp.EQ || "__name__".equals(m.name()))
+        continue;
+      final int idx = findNonTsColumnIndex(m.name(), columns);
+      if (idx < 0)
+        continue;
+      filter = filter == null ? TagFilter.eq(idx, m.value()) : filter.and(idx, m.value());
+    }
+    return filter;
+  }
+
+  private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
+      final List<ColumnDefinition> columns) {
+    for (final LabelMatcher m : matchers) {
+      if (m.op() == MatchOp.EQ || "__name__".equals(m.name()))
+        continue;
+      final int fullIdx = findFullColumnIndex(m.name(), columns);
+      if (fullIdx < 0)
+        return false;
+      final Object val = row[fullIdx];
+      final String strVal = val != null ? val.toString() : "";
+      switch (m.op()) {
+        case NEQ:
+          if (strVal.equals(m.value()))
+            return false;
+          break;
+        case RE:
+          if (!Pattern.matches(m.value(), strVal))
+            return false;
+          break;
+        case NRE:
+          if (Pattern.matches(m.value(), strVal))
+            return false;
+          break;
+        default:
+          break;
+      }
+    }
+    return true;
+  }
+
+  private Map<String, String> extractLabels(final Object[] row, final List<ColumnDefinition> columns, final String metricName) {
+    final Map<String, String> labels = new LinkedHashMap<>();
+    labels.put("__name__", metricName);
+    for (int i = 0; i < columns.size(); i++) {
+      final ColumnDefinition col = columns.get(i);
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && row[i] != null)
+        labels.put(col.getName(), row[i].toString());
+    }
+    return labels;
+  }
+
+  private double extractValue(final Object[] row, final List<ColumnDefinition> columns) {
+    for (int i = 0; i < columns.size(); i++) {
+      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.FIELD)
+        return row[i] instanceof Number ? ((Number) row[i]).doubleValue() : Double.NaN;
+    }
+    return Double.NaN;
+  }
+
+  private int findNonTsColumnIndex(final String name, final List<ColumnDefinition> columns) {
+    int nonTsIdx = -1;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      nonTsIdx++;
+      if (col.getName().equals(name))
+        return nonTsIdx;
+    }
+    return -1;
+  }
+
+  private int findFullColumnIndex(final String name, final List<ColumnDefinition> columns) {
+    for (int i = 0; i < columns.size(); i++)
+      if (columns.get(i).getName().equals(name))
+        return i;
+    return -1;
+  }
+
+  private Map<String, String> computeGroupLabels(final Map<String, String> labels, final List<String> groupLabels,
+      final boolean without) {
+    if (groupLabels.isEmpty() && !without)
+      return Map.of();
+    final Map<String, String> result = new LinkedHashMap<>();
+    if (without) {
+      final Set<String> exclude = new HashSet<>(groupLabels);
+      for (final Map.Entry<String, String> entry : labels.entrySet())
+        if (!exclude.contains(entry.getKey()))
+          result.put(entry.getKey(), entry.getValue());
+    } else {
+      for (final String label : groupLabels)
+        if (labels.containsKey(label))
+          result.put(label, labels.get(label));
+    }
+    return result;
+  }
+
+  private String labelKey(final Map<String, String> labels) {
+    if (labels.isEmpty())
+      return "{}";
+    final List<String> sorted = new ArrayList<>(labels.keySet());
+    Collections.sort(sorted);
+    final StringBuilder sb = new StringBuilder("{");
+    for (int i = 0; i < sorted.size(); i++) {
+      if (i > 0)
+        sb.append(',');
+      sb.append(sorted.get(i)).append('=').append(labels.get(sorted.get(i)));
+    }
+    sb.append('}');
+    return sb.toString();
+  }
+
+  private InstantVector applyVectorScalar(final InstantVector iv, final double scalar, final BinaryOp op,
+      final boolean scalarOnLeft) {
+    final List<VectorSample> result = new ArrayList<>();
+    for (final VectorSample s : iv.samples()) {
+      final double value = scalarOnLeft ? applyBinaryOp(op, scalar, s.value()) : applyBinaryOp(op, s.value(), scalar);
+      if (!isComparisonOp(op) || value != 0)
+        result.add(new VectorSample(s.labels(), isComparisonOp(op) ? s.value() : value, s.timestampMs()));
+    }
+    return new InstantVector(result);
+  }
+
+  private InstantVector applyVectorVector(final InstantVector left, final InstantVector right, final BinaryOp op) {
+    // Simple vector-vector matching by label identity
+    final Map<String, VectorSample> rightMap = new HashMap<>();
+    for (final VectorSample s : right.samples())
+      rightMap.put(labelKey(s.labels()), s);
+
+    final List<VectorSample> result = new ArrayList<>();
+    for (final VectorSample ls : left.samples()) {
+      final VectorSample rs = rightMap.get(labelKey(ls.labels()));
+      if (rs != null) {
+        if (op == BinaryOp.AND) {
+          result.add(ls);
+        } else if (op == BinaryOp.UNLESS) {
+          // skip — matched, so excluded
+        } else {
+          final double value = applyBinaryOp(op, ls.value(), rs.value());
+          if (!isComparisonOp(op) || value != 0)
+            result.add(new VectorSample(ls.labels(), isComparisonOp(op) ? ls.value() : value, ls.timestampMs()));
+        }
+      } else if (op == BinaryOp.OR || op == BinaryOp.UNLESS) {
+        result.add(ls);
+      }
+    }
+    // For OR, also add unmatched right-side samples
+    if (op == BinaryOp.OR) {
+      final Set<String> leftKeys = new HashSet<>();
+      for (final VectorSample s : left.samples())
+        leftKeys.add(labelKey(s.labels()));
+      for (final VectorSample rs : right.samples())
+        if (!leftKeys.contains(labelKey(rs.labels())))
+          result.add(rs);
+    }
+    return new InstantVector(result);
+  }
+
+  private double applyBinaryOp(final BinaryOp op, final double left, final double right) {
+    return switch (op) {
+      case ADD -> left + right;
+      case SUB -> left - right;
+      case MUL -> left * right;
+      case DIV -> right == 0 ? Double.NaN : left / right;
+      case MOD -> right == 0 ? Double.NaN : left % right;
+      case POW -> Math.pow(left, right);
+      case EQ -> left == right ? 1.0 : 0.0;
+      case NEQ -> left != right ? 1.0 : 0.0;
+      case LT -> left < right ? 1.0 : 0.0;
+      case GT -> left > right ? 1.0 : 0.0;
+      case LTE -> left <= right ? 1.0 : 0.0;
+      case GTE -> left >= right ? 1.0 : 0.0;
+      case AND, OR, UNLESS -> Double.NaN; // handled at vector level
+    };
+  }
+
+  private boolean isComparisonOp(final BinaryOp op) {
+    return op == BinaryOp.EQ || op == BinaryOp.NEQ || op == BinaryOp.LT || op == BinaryOp.GT || op == BinaryOp.LTE
+        || op == BinaryOp.GTE;
+  }
+
+  private boolean isRangeFunction(final String name) {
+    return switch (name) {
+      case "rate", "irate", "increase", "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time" ->
+        true;
+      default -> false;
+    };
+  }
+
+  public static String sanitizeTypeName(final String name) {
+    return name.replace('.', '_').replace('-', '_').replace(':', '_');
+  }
+}

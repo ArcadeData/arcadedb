@@ -23,10 +23,40 @@ var tsAutoRefreshTimer = null;
 var tsCurrentFields = [];
 var tsCurrentTags = [];
 var tsLastResult = null;
+var tsQueryMode = "builder";
 
 function initTimeSeries() {
   tsRestorePanelToggles();
   tsLoadTypes();
+}
+
+function tsToggleQueryMode(mode) {
+  tsQueryMode = mode;
+
+  if (mode === "builder") {
+    $("#tsModeBuilderBtn").css({ background: "var(--bs-primary,#0d6efd)", color: "#fff" });
+    $("#tsModePromQLBtn").css({ background: "transparent", color: "#6c757d" });
+  } else {
+    $("#tsModePromQLBtn").css({ background: "var(--bs-primary,#0d6efd)", color: "#fff" });
+    $("#tsModeBuilderBtn").css({ background: "transparent", color: "#6c757d" });
+  }
+
+  $(".ts-builder-only").toggle(mode === "builder");
+  $("#tsPromQLInputGroup").toggle(mode === "promql");
+  $("#tsLatestBtn").toggle(mode === "builder");
+
+  // Clear results when switching modes
+  tsLastResult = null;
+  $("#tsQueryStats").html("");
+  if (tsChartInstance) {
+    tsChartInstance.destroy();
+    tsChartInstance = null;
+  }
+  $("#tsChart").empty();
+  if ($.fn.DataTable.isDataTable("#tsDataTable")) {
+    $("#tsDataTable").DataTable().destroy();
+    $("#tsDataTable").empty();
+  }
 }
 
 function tsLoadTypes() {
@@ -168,6 +198,11 @@ function tsGetTimeRange() {
 }
 
 function tsExecuteQuery() {
+  if (tsQueryMode === "promql") {
+    tsExecutePromQLQuery();
+    return;
+  }
+
   var db = getCurrentDatabase();
   var typeName = $("#tsType").val();
 
@@ -241,6 +276,142 @@ function tsExecuteQuery() {
     $("#tsQueryStats").html("");
     globalNotify("Error", "Query failed: " + (jqXHR.responseText || "unknown error"), "danger");
   });
+}
+
+function tsExecutePromQLQuery() {
+  var db = getCurrentDatabase();
+  var expr = $("#tsPromQLExpr").val().trim();
+
+  if (!db) {
+    globalNotify("Warning", "Please select a database", "warning");
+    return;
+  }
+  if (!expr) {
+    globalNotify("Warning", "Please enter a PromQL expression", "warning");
+    return;
+  }
+
+  var timeRange = tsGetTimeRange();
+  var now = Date.now();
+  // "all" has no meaning in a range query — default to last 1 hour
+  var startSec = timeRange.from != null ? timeRange.from / 1000 : (now - 3600000) / 1000;
+  var endSec   = timeRange.to   != null ? timeRange.to   / 1000 : now / 1000;
+  var stepSec  = parseInt($("#tsBucketInterval").val()) / 1000;
+
+  var url = "api/v1/ts/" + db + "/prom/api/v1/query_range" +
+    "?query=" + encodeURIComponent(expr) +
+    "&start=" + startSec +
+    "&end="   + endSec +
+    "&step="  + stepSec;
+
+  var beginTime = new Date();
+
+  jQuery.ajax({
+    type: "GET",
+    url: url,
+    beforeSend: function (xhr) {
+      xhr.setRequestHeader("Authorization", globalCredentials);
+    }
+  })
+  .done(function (data) {
+    var elapsed = new Date() - beginTime;
+
+    if (data.status === "error") {
+      globalNotify("PromQL Error", escapeHtml(data.error || "Query failed"), "danger");
+      return;
+    }
+
+    var converted = tsConvertPromQLResult(data);
+    if (!converted) {
+      globalNotify("Warning", "No data returned", "warning");
+      return;
+    }
+
+    var count = converted.count || 0;
+    $("#tsQueryStats").html("Returned <b>" + count + "</b> records in <b>" + elapsed + "</b> ms");
+
+    tsLastResult = converted;
+    tsRenderResult(converted);
+  })
+  .fail(function (jqXHR) {
+    $("#tsQueryStats").html("");
+    var errMsg = "Query failed";
+    try {
+      var errData = JSON.parse(jqXHR.responseText);
+      if (errData.error) errMsg = errData.error;
+    } catch (e) {}
+    globalNotify("Error", escapeHtml(errMsg), "danger");
+  });
+}
+
+function tsConvertPromQLResult(data) {
+  if (!data || data.status !== "success" || !data.data)
+    return null;
+
+  var resultType = data.data.resultType;
+  var result = data.data.result;
+
+  if (resultType === "matrix") {
+    if (!result || result.length === 0)
+      return { aggregations: [], buckets: [], count: 0 };
+
+    var aggregations = result.map(function (s) { return tsPromQLSeriesLabel(s.metric); });
+
+    // Collect all unique timestamps across all series
+    var tsSet = {};
+    for (var s = 0; s < result.length; s++)
+      for (var v = 0; v < result[s].values.length; v++)
+        tsSet[Math.round(result[s].values[v][0] * 1000)] = true;
+
+    var timestamps = Object.keys(tsSet).map(Number).sort(function (a, b) { return a - b; });
+
+    // Build per-series lookup: timestampMs → value
+    var seriesIndex = result.map(function (s) {
+      var idx = {};
+      for (var v = 0; v < s.values.length; v++)
+        idx[Math.round(s.values[v][0] * 1000)] = parseFloat(s.values[v][1]);
+      return idx;
+    });
+
+    var buckets = timestamps.map(function (ts) {
+      return {
+        timestamp: ts,
+        values: seriesIndex.map(function (idx) { return idx.hasOwnProperty(ts) ? idx[ts] : null; })
+      };
+    });
+
+    return { aggregations: aggregations, buckets: buckets, count: buckets.length * result.length };
+  }
+
+  if (resultType === "vector") {
+    if (!result || result.length === 0)
+      return { columns: ["Timestamp", "Metric", "Value"], rows: [], count: 0 };
+
+    var rows = result.map(function (s) {
+      return [Math.round(s.value[0] * 1000), tsPromQLSeriesLabel(s.metric), parseFloat(s.value[1])];
+    });
+    return { columns: ["Timestamp", "Metric", "Value"], rows: rows, count: rows.length };
+  }
+
+  if (resultType === "scalar") {
+    var ts = Math.round(data.data.result[0] * 1000);
+    var val = parseFloat(data.data.result[1]);
+    return { columns: ["Timestamp", "Value"], rows: [[ts, val]], count: 1 };
+  }
+
+  return null;
+}
+
+function tsPromQLSeriesLabel(metric) {
+  if (!metric) return "value";
+  var name = metric["__name__"] || "";
+  var parts = [];
+  for (var k in metric) {
+    if (k !== "__name__")
+      parts.push(k + "=" + metric[k]);
+  }
+  if (parts.length === 0) return name || "value";
+  return name + "{" + parts.join(", ") + "}";
 }
 
 function tsRenderResult(data) {

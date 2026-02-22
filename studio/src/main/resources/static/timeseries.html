@@ -26,7 +26,17 @@
     <div class="tab-pane fade show active" id="tab-ts-query" role="tabpanel">
       <!-- Controls: all in one row -->
       <div class="px-3 py-2" style="border-bottom: 1px solid var(--border-light);">
-        <div class="d-flex flex-wrap gap-2 align-items-end">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <div style="display:flex; align-items:center; background:#e9ecef; border-radius:20px; padding:2px; gap:2px;">
+            <button id="tsModeBuilderBtn" onclick="tsToggleQueryMode('builder')"
+              style="border:none; border-radius:18px; padding:3px 11px; font-size:0.78rem; cursor:pointer; background:var(--bs-primary,#0d6efd); color:#fff; transition:all 0.15s;">
+              <i class="fa fa-sliders" style="font-size:0.72rem;"></i> Builder
+            </button>
+            <button id="tsModePromQLBtn" onclick="tsToggleQueryMode('promql')"
+              style="border:none; border-radius:18px; padding:3px 11px; font-size:0.78rem; cursor:pointer; background:transparent; color:#6c757d; transition:all 0.15s;">
+              <i class="fa fa-code" style="font-size:0.72rem;"></i> PromQL
+            </button>
+          </div>
           <div>
             <label class="form-label form-label-sm mb-1">Time Range</label>
             <select id="tsTimeRange" class="form-select form-select-sm" style="width: 110px;" onchange="tsTimeRangeChanged()">
@@ -46,7 +56,7 @@
             <label class="form-label form-label-sm mb-1">To</label>
             <input type="datetime-local" id="tsCustomTo" class="form-control form-control-sm" style="width: 170px;" />
           </div>
-          <div>
+          <div class="ts-builder-only">
             <label class="form-label form-label-sm mb-1">Aggregation</label>
             <select id="tsAggType" class="form-select form-select-sm" style="width: 110px;">
               <option value="">None (raw)</option>
@@ -68,19 +78,19 @@
               <option value="86400000">1 day</option>
             </select>
           </div>
-          <div id="tsTagFiltersGroup" style="display:none;">
+          <div id="tsTagFiltersGroup" class="ts-builder-only" style="display:none;">
             <label class="form-label form-label-sm mb-1">Tags</label>
             <div id="tsTagFilters" class="d-flex flex-wrap gap-2" style="min-height: 30px;"></div>
           </div>
-          <div>
+          <div class="ts-builder-only">
             <label class="form-label form-label-sm mb-1">Fields</label>
             <div id="tsFieldCheckboxes" class="d-flex flex-wrap gap-2" style="min-height: 30px;">
               <span class="text-muted" style="font-size: 0.8rem;">Select a type first</span>
             </div>
           </div>
-          <div class="d-flex gap-2 align-items-end ms-auto">
+          <div class="d-flex gap-2 align-items-center ms-auto">
             <button class="btn btn-sm btn-primary" style="height: 31px; line-height: 1;" onclick="tsExecuteQuery()"><i class="fa fa-play"></i> Query</button>
-            <button class="btn btn-sm btn-outline-secondary" style="height: 31px; line-height: 1;" onclick="tsGetLatest()"><i class="fa fa-arrow-down"></i> Latest</button>
+            <button id="tsLatestBtn" class="btn btn-sm btn-outline-secondary" style="height: 31px; line-height: 1;" onclick="tsGetLatest()"><i class="fa fa-arrow-down"></i> Latest</button>
             <div class="dropdown">
               <button class="btn btn-sm btn-outline-secondary dropdown-toggle" style="height: 31px; line-height: 1;" data-bs-toggle="dropdown">
                 <i class="fa fa-sync"></i>
@@ -93,6 +103,16 @@
               </ul>
             </div>
             <span id="tsQueryStats" style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;"></span>
+          </div>
+        </div>
+        <!-- PromQL expression row (only visible in PromQL mode) -->
+        <div id="tsPromQLInputGroup" style="display:none; margin-top:6px;">
+          <div class="d-flex gap-2 align-items-center">
+            <i class="fa fa-code" style="color:#6c757d; font-size:0.85rem;"></i>
+            <textarea id="tsPromQLExpr" class="form-control form-control-sm" rows="1"
+              placeholder="e.g. rate(http_requests[5m])  ·  sum by (host) (cpu_usage)  ·  avg_over_time(temp[1h])"
+              style="font-family: monospace; font-size: 0.82rem; resize: vertical;"
+              onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){tsExecuteQuery();event.preventDefault();}"></textarea>
           </div>
         </div>
       </div>
