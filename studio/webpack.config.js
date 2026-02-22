@@ -190,6 +190,10 @@ module.exports = {
           to: 'css/show-hint.css',
         },
         {
+          from: 'node_modules/codemirror/addon/hint/sql-hint.js',
+          to: 'js/sql-hint.js',
+        },
+        {
           from: 'node_modules/cytoscape-cxtmenu/cytoscape-cxtmenu.js',
           to: 'js/cytoscape-cxtmenu.js',
         },

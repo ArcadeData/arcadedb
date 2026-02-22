@@ -754,57 +754,9 @@
       ],
       "Time": [
         {
-          "name": "ts.rownumber",
-          "syntax": "ts.rowNumber(<timestamp>)",
-          "description": "ts.rowNumber(<timestamp>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.lead",
-          "syntax": "ts.lead(<value>, <offset>, <timestamp> [, <default>])",
-          "description": "ts.lead(<value>, <offset>, <timestamp> [, <default>])",
-          "since": "sql"
-        },
-        {
-          "name": "ts.delta",
-          "syntax": "ts.delta(<value>, <timestamp>)",
-          "description": "ts.delta(<value>, <timestamp>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.percentile",
-          "syntax": "ts.percentile(<value>, <percentile>)",
-          "description": "ts.percentile(<value>, <percentile>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.movingavg",
-          "syntax": "ts.movingAvg(<value>, <window_size>)",
-          "description": "ts.movingAvg(<value>, <window_size>)",
-          "since": "sql"
-        },
-        {
           "name": "duration",
           "syntax": "duration(<amount>, <time-unit>)",
           "description": "duration(<amount>, <time-unit>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.first",
-          "syntax": "ts.first(<value>, <timestamp>)",
-          "description": "ts.first(<value>, <timestamp>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.rank",
-          "syntax": "ts.rank(<value>, <timestamp>)",
-          "description": "ts.rank(<value>, <timestamp>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.interpolate",
-          "syntax": "ts.interpolate(<value>, <method> [, <timestamp>])",
-          "description": "ts.interpolate(<value>, <method> [, <timestamp>])",
           "since": "sql"
         },
         {
@@ -817,36 +769,6 @@
           "name": "sysdate",
           "syntax": "sysdate([<zoneid>])",
           "description": "sysdate([<zoneid>])",
-          "since": "sql"
-        },
-        {
-          "name": "ts.rate",
-          "syntax": "ts.rate(<value>, <timestamp> [, <counterResetDetection>])",
-          "description": "ts.rate(<value>, <timestamp> [, <counterResetDetection>])",
-          "since": "sql"
-        },
-        {
-          "name": "ts.correlate",
-          "syntax": "ts.correlate(<value_a>, <value_b>)",
-          "description": "ts.correlate(<value_a>, <value_b>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.timebucket",
-          "syntax": "time_bucket(<interval_string>, <timestamp>)",
-          "description": "time_bucket(<interval_string>, <timestamp>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.last",
-          "syntax": "ts.last(<value>, <timestamp>)",
-          "description": "ts.last(<value>, <timestamp>)",
-          "since": "sql"
-        },
-        {
-          "name": "ts.lag",
-          "syntax": "ts.lag(<value>, <offset>, <timestamp> [, <default>])",
-          "description": "ts.lag(<value>, <offset>, <timestamp> [, <default>])",
           "since": "sql"
         }
       ],
@@ -2583,19 +2505,6 @@
     "trim",
     "trimprefix",
     "trimsuffix",
-    "ts.correlate",
-    "ts.delta",
-    "ts.first",
-    "ts.interpolate",
-    "ts.lag",
-    "ts.last",
-    "ts.lead",
-    "ts.movingavg",
-    "ts.percentile",
-    "ts.rank",
-    "ts.rate",
-    "ts.rownumber",
-    "ts.timebucket",
     "type",
     "unionall",
     "util.compress",
@@ -2687,5 +2596,1330 @@
     "vectortostring",
     "vectorvariance",
     "version"
-  ]
+  ],
+  "sqlKeywords": [
+    "add",
+    "addbucket",
+    "after",
+    "aliases",
+    "align",
+    "all",
+    "alter",
+    "and",
+    "as",
+    "asc",
+    "backup",
+    "batch",
+    "before",
+    "begin",
+    "between",
+    "breadth_first",
+    "break",
+    "bucket",
+    "buckets",
+    "bucketselectionstrategy",
+    "by",
+    "check",
+    "commit",
+    "compress",
+    "console",
+    "contains",
+    "containsall",
+    "containsany",
+    "containskey",
+    "containstext",
+    "containsvalue",
+    "content",
+    "continue",
+    "count",
+    "create",
+    "custom",
+    "database",
+    "define",
+    "defined",
+    "delete",
+    "depth_first",
+    "depthalias",
+    "desc",
+    "distinct",
+    "document",
+    "drop",
+    "edge",
+    "else",
+    "engine",
+    "error",
+    "exception",
+    "execute",
+    "exists",
+    "explain",
+    "export",
+    "extends",
+    "fail",
+    "false",
+    "find",
+    "fix",
+    "force",
+    "foreach",
+    "format",
+    "from",
+    "function",
+    "grant",
+    "group by",
+    "hidden",
+    "identified",
+    "if",
+    "ilike",
+    "import",
+    "in",
+    "increment",
+    "index",
+    "insert",
+    "instanceof",
+    "into",
+    "inverse",
+    "is",
+    "isolation",
+    "item",
+    "key",
+    "language",
+    "let",
+    "like",
+    "limit",
+    "link",
+    "lock",
+    "match",
+    "matches",
+    "maxdepth",
+    "merge",
+    "metadata",
+    "mindepth",
+    "move",
+    "name",
+    "near",
+    "none",
+    "not",
+    "null",
+    "null_strategy",
+    "of",
+    "off",
+    "offset",
+    "on",
+    "optimize",
+    "optional",
+    "or",
+    "order by",
+    "overwrite",
+    "parameters",
+    "pathalias",
+    "polymorphic",
+    "profile",
+    "property",
+    "put",
+    "read",
+    "rebuild",
+    "record",
+    "remove",
+    "removebucket",
+    "retry",
+    "return",
+    "revoke",
+    "rid",
+    "rollback",
+    "schema",
+    "select",
+    "set",
+    "skip",
+    "sleep",
+    "start",
+    "strategy",
+    "supertype",
+    "system",
+    "timeout",
+    "to",
+    "traverse",
+    "true",
+    "truncate",
+    "type",
+    "types",
+    "unidirectional",
+    "unsafe",
+    "unwind",
+    "update",
+    "upsert",
+    "value",
+    "values",
+    "vertex",
+    "wait",
+    "where",
+    "while",
+    "with",
+    "within"
+  ],
+  "cypherKeywords": [
+    "ACCESS",
+    "ACTIVE",
+    "ACYCLIC",
+    "ADD",
+    "ADMIN",
+    "ADMINISTRATOR",
+    "ALIAS",
+    "ALIASES",
+    "ALL",
+    "ALLREDUCE",
+    "ALL_SHORTEST_PATHS",
+    "ALTER",
+    "AMPERSAND",
+    "AND",
+    "ANY",
+    "ARRAY",
+    "AS",
+    "ASC",
+    "ASCENDING",
+    "ASSIGN",
+    "AT",
+    "AUTH",
+    "BAR",
+    "BINDINGS",
+    "BOOL",
+    "BOOLEAN",
+    "BOOSTED",
+    "BOTH",
+    "BREAK",
+    "BUILT",
+    "BY",
+    "CALL",
+    "CASCADE",
+    "CASE",
+    "CHANGE",
+    "CIDR",
+    "COLLECT",
+    "COLON",
+    "COLONCOLON",
+    "COMMA",
+    "COMMAND",
+    "COMMANDS",
+    "COMPOSITE",
+    "CONCURRENT",
+    "CONDITION",
+    "CONSTRAINT",
+    "CONSTRAINTS",
+    "CONTAINS",
+    "CONTINUE",
+    "COPY",
+    "COSINE",
+    "COUNT",
+    "CREATE",
+    "CREDENTIAL",
+    "CSV",
+    "CURRENT",
+    "CYPHER",
+    "DATA",
+    "DATABASE",
+    "DATABASES",
+    "DATE",
+    "DATETIME",
+    "DBMS",
+    "DEALLOCATE",
+    "DEFAULT",
+    "DEFINE",
+    "DEFINED",
+    "DELETE",
+    "DENY",
+    "DESC",
+    "DESCENDING",
+    "DESTROY",
+    "DETACH",
+    "DIFFERENT",
+    "DISTINCT",
+    "DIVIDE",
+    "DOLLAR",
+    "DOT",
+    "DOTDOT",
+    "DOT_METRIC",
+    "DOUBLEBAR",
+    "DRIVER",
+    "DROP",
+    "DRYRUN",
+    "DUMP",
+    "DURATION",
+    "EACH",
+    "EDGE",
+    "ELEMENT",
+    "ELEMENTS",
+    "ELSE",
+    "ENABLE",
+    "ENABLED",
+    "ENCRYPTED",
+    "END",
+    "ENDS",
+    "EQ",
+    "ERROR",
+    "EUCLIDEAN",
+    "EUCLIDEAN_SQUARED",
+    "EXCLAMATION_MARK",
+    "EXECUTABLE",
+    "EXECUTE",
+    "EXIST",
+    "EXISTENCE",
+    "EXISTS",
+    "FAIL",
+    "FALSE",
+    "FIELDTERMINATOR",
+    "FILTER",
+    "FINISH",
+    "FLOAT",
+    "FLOAT32",
+    "FLOAT64",
+    "FOR",
+    "FOREACH",
+    "FORWARDING",
+    "FROM",
+    "FULLTEXT",
+    "FUNCTION",
+    "FUNCTIONS",
+    "GE",
+    "GRANT",
+    "GRAPH",
+    "GRAPHS",
+    "GROUP",
+    "GROUPS",
+    "GT",
+    "HAMMING",
+    "HEADERS",
+    "HOME",
+    "ID",
+    "IF",
+    "IMMUTABLE",
+    "IMPERSONATE",
+    "IMPLIES",
+    "IN",
+    "INDEX",
+    "INDEXES",
+    "INF",
+    "INFINITY",
+    "INSERT",
+    "INT",
+    "INT16",
+    "INT32",
+    "INT64",
+    "INT8",
+    "INVALID_NEQ",
+    "IS",
+    "JOIN",
+    "KEY",
+    "LABEL",
+    "LABELS",
+    "LANGUAGE",
+    "LBRACKET",
+    "LCURLY",
+    "LE",
+    "LEADING",
+    "LET",
+    "LIMITROWS",
+    "LIST",
+    "LOAD",
+    "LOCAL",
+    "LOOKUP",
+    "LPAREN",
+    "LT",
+    "MANAGEMENT",
+    "MANHATTAN",
+    "MAP",
+    "MATCH",
+    "MERGE",
+    "MINUS",
+    "NAME",
+    "NAMES",
+    "NAN",
+    "NEQ",
+    "NEW",
+    "NEXT",
+    "NFC",
+    "NFD",
+    "NFKC",
+    "NFKD",
+    "NODE",
+    "NODES",
+    "NODETACH",
+    "NONE",
+    "NORMALIZE",
+    "NORMALIZED",
+    "NOT",
+    "NOTHING",
+    "NOWAIT",
+    "NULL",
+    "OF",
+    "OFFSET",
+    "OIDC",
+    "ON",
+    "ONLY",
+    "OPTION",
+    "OPTIONAL",
+    "OPTIONS",
+    "OR",
+    "ORDER",
+    "PASSWORD",
+    "PASSWORDS",
+    "PATH",
+    "PATHS",
+    "PERCENT",
+    "PLAINTEXT",
+    "PLUS",
+    "PLUSEQUAL",
+    "POINT",
+    "POPULATED",
+    "POW",
+    "PRIMARIES",
+    "PRIMARY",
+    "PRIVILEGE",
+    "PRIVILEGES",
+    "PROCEDURE",
+    "PROCEDURES",
+    "PROPERTIES",
+    "PROPERTY",
+    "PROVIDER",
+    "PROVIDERS",
+    "QUESTION",
+    "RANGE",
+    "RBRACKET",
+    "RCURLY",
+    "READ",
+    "REALLOCATE",
+    "REDUCE",
+    "REGEQ",
+    "REL",
+    "RELATIONSHIP",
+    "RELATIONSHIPS",
+    "REMOVE",
+    "RENAME",
+    "REPEATABLE",
+    "REPLACE",
+    "REPLICA",
+    "REPLICAS",
+    "REPORT",
+    "REQUIRE",
+    "REQUIRED",
+    "RESTRICT",
+    "RETRY",
+    "RETURN",
+    "REVOKE",
+    "ROLE",
+    "ROLES",
+    "ROW",
+    "ROWS",
+    "RPAREN",
+    "RULE",
+    "RULES",
+    "SCAN",
+    "SCORE",
+    "SEARCH",
+    "SEC",
+    "SECOND",
+    "SECONDARIES",
+    "SECONDARY",
+    "SECONDS",
+    "SEEK",
+    "SEMICOLON",
+    "SERVER",
+    "SERVERS",
+    "SET",
+    "SETTING",
+    "SETTINGS",
+    "SHARD",
+    "SHARDS",
+    "SHORTEST",
+    "SHORTEST_PATH",
+    "SHOW",
+    "SIGNED",
+    "SINGLE",
+    "SKIPROWS",
+    "START",
+    "STARTS",
+    "STATUS",
+    "STOP",
+    "STRING",
+    "SUPPORTED",
+    "SUSPENDED",
+    "TARGET",
+    "TERMINATE",
+    "TEXT",
+    "THEN",
+    "TIME",
+    "TIMES",
+    "TIMESTAMP",
+    "TIMEZONE",
+    "TO",
+    "TOPOLOGY",
+    "TRAIL",
+    "TRAILING",
+    "TRANSACTION",
+    "TRANSACTIONS",
+    "TRAVERSE",
+    "TRIM",
+    "TRUE",
+    "TYPE",
+    "TYPED",
+    "TYPES",
+    "UNION",
+    "UNIQUE",
+    "UNIQUENESS",
+    "UNWIND",
+    "URL",
+    "USE",
+    "USER",
+    "USERS",
+    "USING",
+    "VALUE",
+    "VARCHAR",
+    "VECTOR",
+    "VECTOR_DISTANCE",
+    "VECTOR_NORM",
+    "VERTEX",
+    "WAIT",
+    "WALK",
+    "WHEN",
+    "WHERE",
+    "WITH",
+    "WITHOUT",
+    "WRITE",
+    "XOR",
+    "YIELD",
+    "ZONE",
+    "ZONED"
+  ],
+  "sqlGrammar": {
+    "_start": {
+      "keywords": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "CREATE",
+        "ALTER",
+        "DROP",
+        "TRUNCATE",
+        "MATCH",
+        "TRAVERSE",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "LET",
+        "RETURN",
+        "IF",
+        "EXPLAIN",
+        "PROFILE",
+        "REBUILD",
+        "IMPORT",
+        "EXPORT",
+        "BACKUP",
+        "CHECK",
+        "ALIGN",
+        "DEFINE",
+        "MOVE",
+        "LOCK",
+        "SLEEP",
+        "REFRESH"
+      ]
+    },
+    "SELECT": {
+      "keywords": [
+        "DISTINCT",
+        "*",
+        "FROM"
+      ],
+      "expect": [
+        "expression",
+        "function"
+      ]
+    },
+    "SELECT._projection": {
+      "keywords": [
+        "FROM",
+        "AS",
+        ","
+      ],
+      "expect": [
+        "expression",
+        "function"
+      ]
+    },
+    "SELECT.FROM": {
+      "keywords": [
+        "BUCKET"
+      ],
+      "expect": [
+        "type",
+        "subquery"
+      ]
+    },
+    "SELECT.FROM._target": {
+      "keywords": [
+        "WHERE",
+        "LET",
+        "GROUP BY",
+        "ORDER BY",
+        "UNWIND",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT",
+        "AS"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "SELECT.WHERE": {
+      "keywords": [
+        "AND",
+        "OR",
+        "NOT",
+        "IS",
+        "IN",
+        "BETWEEN",
+        "LIKE",
+        "ILIKE",
+        "CONTAINS",
+        "CONTAINSALL",
+        "CONTAINSANY",
+        "CONTAINSKEY",
+        "CONTAINSVALUE",
+        "CONTAINSTEXT",
+        "MATCHES",
+        "INSTANCEOF",
+        "NULL",
+        "TRUE",
+        "FALSE",
+        "DEFINED"
+      ],
+      "expect": [
+        "expression",
+        "property",
+        "function"
+      ]
+    },
+    "SELECT.WHERE._after": {
+      "keywords": [
+        "AND",
+        "OR",
+        "GROUP BY",
+        "ORDER BY",
+        "UNWIND",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT"
+      ]
+    },
+    "SELECT.GROUP_BY": {
+      "keywords": [
+        "ORDER BY",
+        "UNWIND",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "SELECT.ORDER_BY": {
+      "keywords": [
+        "ASC",
+        "DESC",
+        "UNWIND",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT",
+        ","
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "SELECT.UNWIND": {
+      "keywords": [
+        "AS",
+        "SKIP",
+        "LIMIT",
+        "TIMEOUT"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "SELECT.LIMIT": {
+      "keywords": [
+        "SKIP",
+        "TIMEOUT"
+      ]
+    },
+    "SELECT.SKIP": {
+      "keywords": [
+        "LIMIT",
+        "TIMEOUT"
+      ]
+    },
+    "INSERT": {
+      "keywords": [
+        "INTO"
+      ]
+    },
+    "INSERT.INTO": {
+      "keywords": [
+        "BUCKET"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "INSERT.INTO._target": {
+      "keywords": [
+        "SET",
+        "VALUES",
+        "CONTENT",
+        "RETURN",
+        "FROM",
+        "UNSAFE",
+        "("
+      ]
+    },
+    "INSERT.SET": {
+      "keywords": [
+        ",",
+        "RETURN",
+        "FROM",
+        "UNSAFE"
+      ],
+      "expect": [
+        "property"
+      ]
+    },
+    "INSERT.CONTENT": {
+      "keywords": [
+        "RETURN",
+        "FROM",
+        "UNSAFE"
+      ]
+    },
+    "INSERT.VALUES": {
+      "keywords": [
+        ",",
+        "RETURN",
+        "FROM",
+        "UNSAFE"
+      ]
+    },
+    "UPDATE": {
+      "expect": [
+        "type"
+      ]
+    },
+    "UPDATE._target": {
+      "keywords": [
+        "SET",
+        "ADD",
+        "PUT",
+        "REMOVE",
+        "INCREMENT",
+        "MERGE",
+        "CONTENT",
+        "UPSERT",
+        "RETURN",
+        "WHERE",
+        "LIMIT",
+        "TIMEOUT"
+      ]
+    },
+    "UPDATE.SET": {
+      "keywords": [
+        ",",
+        "ADD",
+        "PUT",
+        "REMOVE",
+        "INCREMENT",
+        "MERGE",
+        "CONTENT",
+        "UPSERT",
+        "RETURN",
+        "WHERE",
+        "LIMIT",
+        "TIMEOUT"
+      ],
+      "expect": [
+        "property"
+      ]
+    },
+    "UPDATE.WHERE": {
+      "keywords": [
+        "AND",
+        "OR",
+        "NOT",
+        "LIMIT",
+        "TIMEOUT"
+      ]
+    },
+    "DELETE": {
+      "keywords": [
+        "VERTEX",
+        "FROM"
+      ]
+    },
+    "DELETE.FROM": {
+      "keywords": [
+        "RETURN",
+        "WHERE",
+        "LIMIT",
+        "UNSAFE"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "DELETE.WHERE": {
+      "keywords": [
+        "AND",
+        "OR",
+        "NOT",
+        "LIMIT",
+        "UNSAFE"
+      ]
+    },
+    "CREATE": {
+      "keywords": [
+        "VERTEX",
+        "EDGE",
+        "DOCUMENT",
+        "PROPERTY",
+        "INDEX",
+        "BUCKET",
+        "TRIGGER",
+        "MATERIALIZED"
+      ]
+    },
+    "CREATE.DOCUMENT": {
+      "keywords": [
+        "TYPE"
+      ]
+    },
+    "CREATE.VERTEX": {
+      "keywords": [
+        "TYPE"
+      ]
+    },
+    "CREATE.EDGE": {
+      "keywords": [
+        "TYPE"
+      ]
+    },
+    "CREATE.VERTEX_TYPE": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "CREATE.VERTEX_TYPE._name": {
+      "keywords": [
+        "IF",
+        "EXTENDS",
+        "BUCKET",
+        "BUCKETS",
+        "PAGESIZE"
+      ]
+    },
+    "CREATE.EDGE_TYPE": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "CREATE.EDGE_TYPE._name": {
+      "keywords": [
+        "IF",
+        "EXTENDS",
+        "UNIDIRECTIONAL",
+        "BUCKET",
+        "BUCKETS",
+        "PAGESIZE"
+      ]
+    },
+    "CREATE.DOCUMENT_TYPE": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "CREATE.DOCUMENT_TYPE._name": {
+      "keywords": [
+        "IF",
+        "EXTENDS",
+        "BUCKET",
+        "BUCKETS",
+        "PAGESIZE"
+      ]
+    },
+    "CREATE.PROPERTY": {
+      "expect": [
+        "type"
+      ]
+    },
+    "CREATE.INDEX": {
+      "keywords": [
+        "ON",
+        "IF"
+      ]
+    },
+    "CREATE.INDEX.ON": {
+      "keywords": [
+        "TYPE"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "CREATE.MATERIALIZED": {
+      "keywords": [
+        "VIEW"
+      ]
+    },
+    "CREATE.MATERIALIZED_VIEW": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "CREATE.MATERIALIZED_VIEW._name": {
+      "keywords": [
+        "AS"
+      ]
+    },
+    "ALTER": {
+      "keywords": [
+        "TYPE",
+        "PROPERTY",
+        "BUCKET",
+        "DATABASE",
+        "MATERIALIZED"
+      ]
+    },
+    "ALTER.TYPE": {
+      "expect": [
+        "type"
+      ]
+    },
+    "ALTER.TYPE._name": {
+      "keywords": [
+        "NAME",
+        "SUPERTYPE",
+        "BUCKETSELECTIONSTRATEGY",
+        "BUCKET",
+        "CUSTOM",
+        "ALIASES"
+      ]
+    },
+    "ALTER.PROPERTY": {
+      "expect": [
+        "type"
+      ]
+    },
+    "ALTER.BUCKET": {
+      "expect": [
+        "identifier"
+      ]
+    },
+    "ALTER.DATABASE": {
+      "expect": [
+        "identifier"
+      ]
+    },
+    "ALTER.MATERIALIZED": {
+      "keywords": [
+        "VIEW"
+      ]
+    },
+    "DROP": {
+      "keywords": [
+        "TYPE",
+        "PROPERTY",
+        "INDEX",
+        "BUCKET",
+        "TRIGGER",
+        "MATERIALIZED"
+      ]
+    },
+    "DROP.TYPE": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "DROP.PROPERTY": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "DROP.INDEX": {
+      "keywords": [
+        "IF"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "DROP.MATERIALIZED": {
+      "keywords": [
+        "VIEW"
+      ]
+    },
+    "TRUNCATE": {
+      "keywords": [
+        "TYPE",
+        "BUCKET",
+        "RECORD"
+      ]
+    },
+    "TRUNCATE.TYPE": {
+      "keywords": [
+        "POLYMORPHIC",
+        "UNSAFE"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "TRUNCATE.BUCKET": {
+      "keywords": [
+        "UNSAFE"
+      ],
+      "expect": [
+        "identifier"
+      ]
+    },
+    "MATCH": {
+      "keywords": [
+        "{"
+      ],
+      "expect": [
+        "function"
+      ]
+    },
+    "MATCH._pattern": {
+      "keywords": [
+        "RETURN",
+        ",",
+        "-->",
+        "<--",
+        "--",
+        "-"
+      ]
+    },
+    "MATCH.RETURN": {
+      "keywords": [
+        "DISTINCT",
+        "GROUP BY",
+        "ORDER BY",
+        "SKIP",
+        "LIMIT",
+        "AS",
+        ","
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "TRAVERSE": {
+      "keywords": [
+        "FROM"
+      ],
+      "expect": [
+        "expression",
+        "function"
+      ]
+    },
+    "TRAVERSE.FROM": {
+      "keywords": [
+        "MAXDEPTH",
+        "WHILE",
+        "LIMIT",
+        "STRATEGY"
+      ],
+      "expect": [
+        "type"
+      ]
+    },
+    "TRAVERSE.WHILE": {
+      "keywords": [
+        "LIMIT",
+        "STRATEGY"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "TRAVERSE.STRATEGY": {
+      "keywords": [
+        "DEPTH_FIRST",
+        "BREADTH_FIRST"
+      ]
+    },
+    "BEGIN": {
+      "keywords": [
+        "ISOLATION"
+      ]
+    },
+    "COMMIT": {
+      "keywords": [
+        "RETRY"
+      ]
+    },
+    "REBUILD": {
+      "keywords": [
+        "INDEX"
+      ]
+    },
+    "EXPLAIN": {
+      "keywords": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "MATCH",
+        "TRAVERSE"
+      ]
+    },
+    "PROFILE": {
+      "keywords": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "MATCH",
+        "TRAVERSE"
+      ]
+    },
+    "IMPORT": {
+      "keywords": [
+        "DATABASE"
+      ]
+    },
+    "EXPORT": {
+      "keywords": [
+        "DATABASE"
+      ]
+    },
+    "BACKUP": {
+      "keywords": [
+        "DATABASE"
+      ]
+    },
+    "CHECK": {
+      "keywords": [
+        "DATABASE"
+      ]
+    },
+    "CHECK.DATABASE": {
+      "keywords": [
+        "TYPE",
+        "BUCKET",
+        "FIX",
+        "COMPRESS"
+      ]
+    },
+    "LOCK": {
+      "keywords": [
+        "TYPE",
+        "BUCKET"
+      ]
+    },
+    "DEFINE": {
+      "keywords": [
+        "FUNCTION"
+      ]
+    },
+    "REFRESH": {
+      "keywords": [
+        "MATERIALIZED"
+      ]
+    },
+    "REFRESH.MATERIALIZED": {
+      "keywords": [
+        "VIEW"
+      ]
+    }
+  },
+  "cypherGrammar": {
+    "_start": {
+      "keywords": [
+        "MATCH",
+        "CREATE",
+        "MERGE",
+        "DELETE",
+        "DETACH",
+        "REMOVE",
+        "SET",
+        "WITH",
+        "UNWIND",
+        "RETURN",
+        "OPTIONAL",
+        "CALL",
+        "UNION",
+        "FOREACH"
+      ]
+    },
+    "MATCH": {
+      "keywords": [
+        "(",
+        "WHERE",
+        "RETURN",
+        "WITH",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE",
+        "MERGE",
+        "OPTIONAL",
+        "UNWIND"
+      ]
+    },
+    "MATCH._pattern": {
+      "keywords": [
+        "WHERE",
+        "RETURN",
+        "WITH",
+        ",",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE"
+      ]
+    },
+    "WHERE": {
+      "keywords": [
+        "AND",
+        "OR",
+        "NOT",
+        "XOR",
+        "IS",
+        "IN",
+        "CONTAINS",
+        "STARTS",
+        "ENDS",
+        "RETURN",
+        "WITH",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE"
+      ]
+    },
+    "RETURN": {
+      "keywords": [
+        "DISTINCT",
+        "AS",
+        "ORDER BY",
+        "SKIP",
+        "LIMIT",
+        ",",
+        "UNION"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "WITH": {
+      "keywords": [
+        "DISTINCT",
+        "AS",
+        "WHERE",
+        "ORDER BY",
+        "SKIP",
+        "LIMIT",
+        ",",
+        "MATCH",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE",
+        "MERGE",
+        "UNWIND",
+        "RETURN"
+      ]
+    },
+    "CREATE": {
+      "keywords": [
+        "(",
+        "RETURN",
+        "WITH",
+        "SET",
+        "DELETE",
+        "REMOVE",
+        "MERGE"
+      ]
+    },
+    "SET": {
+      "keywords": [
+        ",",
+        "RETURN",
+        "WITH",
+        "DELETE",
+        "REMOVE",
+        "CREATE"
+      ],
+      "expect": [
+        "property"
+      ]
+    },
+    "DELETE": {
+      "keywords": [
+        "RETURN",
+        "WITH",
+        "CREATE",
+        "SET",
+        "REMOVE"
+      ]
+    },
+    "UNWIND": {
+      "keywords": [
+        "AS"
+      ],
+      "expect": [
+        "expression"
+      ]
+    },
+    "UNWIND.AS": {
+      "keywords": [
+        "MATCH",
+        "CREATE",
+        "DELETE",
+        "SET",
+        "REMOVE",
+        "MERGE",
+        "RETURN",
+        "WITH",
+        "UNWIND"
+      ]
+    },
+    "ORDER_BY": {
+      "keywords": [
+        "ASC",
+        "DESC",
+        "ASCENDING",
+        "DESCENDING",
+        "SKIP",
+        "LIMIT",
+        ","
+      ]
+    }
+  }
 }
