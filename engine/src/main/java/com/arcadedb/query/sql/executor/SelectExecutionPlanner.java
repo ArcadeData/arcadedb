@@ -1643,8 +1643,11 @@ public class SelectExecutionPlanner {
           for (final BooleanExpression expr : andBlock.getSubBlocks()) {
             final long[] range = extractTimeRange(expr, tsType.getTimestampColumn(), context);
             if (range != null) {
-              fromTs = range[0];
-              toTs = range[1];
+              // Tighten bounds: take the most restrictive range
+              if (range[0] != Long.MIN_VALUE)
+                fromTs = Math.max(fromTs, range[0]);
+              if (range[1] != Long.MAX_VALUE)
+                toTs = Math.min(toTs, range[1]);
             }
           }
         }
@@ -1688,8 +1691,9 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Extracts a time range from a BETWEEN expression on the timestamp column.
-   * Returns [fromTs, toTs] or null if not a matching BETWEEN.
+   * Extracts a time range from a BETWEEN or comparison expression on the timestamp column.
+   * Returns [fromTs, toTs] or null if not a matching expression.
+   * Supports: BETWEEN, >, >=, <, <=, = operators.
    */
   private long[] extractTimeRange(final BooleanExpression expr, final String timestampColumn, final CommandContext context) {
     if (expr instanceof BetweenCondition between) {
@@ -1698,6 +1702,47 @@ public class SelectExecutionPlanner {
         final Object fromVal = between.getSecond().execute((Identifiable) null, context);
         final Object toVal = between.getThird().execute((Identifiable) null, context);
         return new long[] { toEpochMs(fromVal), toEpochMs(toVal) };
+      }
+    } else if (expr instanceof BinaryCondition binary) {
+      // Check if one side is the timestamp column and the other is a value
+      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+      final boolean leftIsTs = timestampColumn.equals(leftStr);
+      final boolean rightIsTs = timestampColumn.equals(rightStr);
+
+      if (leftIsTs || rightIsTs) {
+        final Expression valueExpr = leftIsTs ? binary.right : binary.left;
+        final Object rawVal = valueExpr.execute((Identifiable) null, context);
+        final long val = toEpochMs(rawVal);
+        if (val == Long.MIN_VALUE)
+          return null;
+
+        final BinaryCompareOperator op = binary.operator;
+        // When field is on the right side, invert the operator semantics
+        if (leftIsTs) {
+          if (op instanceof GtOperator)
+            return new long[] { val + 1, Long.MAX_VALUE };
+          if (op instanceof GeOperator)
+            return new long[] { val, Long.MAX_VALUE };
+          if (op instanceof LtOperator)
+            return new long[] { Long.MIN_VALUE, val - 1 };
+          if (op instanceof LeOperator)
+            return new long[] { Long.MIN_VALUE, val };
+          if (op instanceof EqualsCompareOperator)
+            return new long[] { val, val };
+        } else {
+          // timestamp is on the right: "value > ts" means "ts < value"
+          if (op instanceof GtOperator)
+            return new long[] { Long.MIN_VALUE, val - 1 };
+          if (op instanceof GeOperator)
+            return new long[] { Long.MIN_VALUE, val };
+          if (op instanceof LtOperator)
+            return new long[] { val + 1, Long.MAX_VALUE };
+          if (op instanceof LeOperator)
+            return new long[] { val, Long.MAX_VALUE };
+          if (op instanceof EqualsCompareOperator)
+            return new long[] { val, val };
+        }
       }
     }
     return null;

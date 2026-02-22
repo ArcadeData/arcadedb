@@ -68,6 +68,10 @@
               <option value="86400000">1 day</option>
             </select>
           </div>
+          <div id="tsTagFiltersGroup" style="display:none;">
+            <label class="form-label form-label-sm mb-1">Tags</label>
+            <div id="tsTagFilters" class="d-flex flex-wrap gap-2" style="min-height: 30px;"></div>
+          </div>
           <div>
             <label class="form-label form-label-sm mb-1">Fields</label>
             <div id="tsFieldCheckboxes" class="d-flex flex-wrap gap-2" style="min-height: 30px;">
@@ -289,6 +293,64 @@ db.commit();</code></pre>
             <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
               The columns array must match the order of non-timestamp columns as defined in the type schema.
               Use <code>tsType.getTsColumns()</code> to inspect the column order.
+            </p>
+          </div>
+        </div>
+
+        <!-- 5. Analytical SQL Functions -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-chart-bar" style="color: #f43f5e;"></i> 5. Analytical SQL Functions</h6>
+            <p style="font-size: 0.85rem;">
+              Use these aggregate functions in SQL queries via the Query tab for advanced time series analysis.
+            </p>
+            <div class="table-responsive">
+              <table class="table table-sm" style="font-size: 0.82rem;">
+                <thead><tr><th style="width:260px;">Function</th><th>Description</th></tr></thead>
+                <tbody>
+                  <tr><td><code>ts.rate(value, ts)</code></td><td>Per-second rate of change</td></tr>
+                  <tr><td><code>ts.rate(value, ts, true)</code></td><td>Rate with counter reset detection (Prometheus-style)</td></tr>
+                  <tr><td><code>ts.delta(value, ts)</code></td><td>Difference between first and last values</td></tr>
+                  <tr><td><code>ts.percentile(value, 0.95)</code></td><td>Approximate percentile (p50, p95, p99, etc.)</td></tr>
+                  <tr><td><code>ts.movingAvg(value, 10)</code></td><td>Moving average with configurable window size</td></tr>
+                  <tr><td><code>ts.interpolate(value, 'linear', ts)</code></td><td>Gap filling with linear interpolation</td></tr>
+                  <tr><td><code>ts.interpolate(value, 'prev')</code></td><td>Gap filling with previous value</td></tr>
+                  <tr><td><code>ts.first(value, ts)</code></td><td>First value ordered by timestamp</td></tr>
+                  <tr><td><code>ts.last(value, ts)</code></td><td>Last value ordered by timestamp</td></tr>
+                  <tr><td><code>ts.correlate(a, b)</code></td><td>Pearson correlation coefficient between two series</td></tr>
+                  <tr><td><code>ts.timeBucket(60000, ts)</code></td><td>Time bucketing for GROUP BY (interval in ms)</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Example: p95 Latency per Minute</div>
+<pre class="ts-ingest-code"><code>SELECT ts.timeBucket(60000, ts) AS bucket, ts.percentile(latency, 0.95) AS p95
+  FROM metrics
+  WHERE ts BETWEEN 1700000000000 AND 1700086400000
+  GROUP BY bucket ORDER BY bucket</code></pre>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Example: Rate with Counter Reset Detection</div>
+<pre class="ts-ingest-code"><code>SELECT ts.timeBucket(300000, ts) AS bucket, ts.rate(requests_total, ts, true) AS req_per_sec
+  FROM counters GROUP BY bucket ORDER BY bucket</code></pre>
+          </div>
+        </div>
+
+        <!-- 6. Downsampling & Retention -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-layer-group" style="color: #0ea5e9;"></i> 6. Downsampling &amp; Retention Policies</h6>
+            <p style="font-size: 0.85rem;">
+              Configure automatic data lifecycle management. Retention removes old data; downsampling reduces granularity for historical data.
+              Both policies are enforced automatically by a background scheduler (every 60 seconds).
+            </p>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Set Retention on Create</div>
+<pre class="ts-ingest-code"><code>CREATE TIMESERIES TYPE metrics TIMESTAMP ts
+  TAGS (host STRING) FIELDS (cpu DOUBLE, mem DOUBLE)
+  RETENTION 30 DAYS</code></pre>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Add Downsampling Policy</div>
+<pre class="ts-ingest-code"><code>ALTER TIMESERIES TYPE metrics ADD DOWNSAMPLING POLICY
+  AFTER 7 DAYS GRANULARITY 1 HOURS
+  AFTER 30 DAYS GRANULARITY 1 DAYS</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              You can also manage downsampling policies from the <b>Schema</b> tab using the visual controls.
             </p>
           </div>
         </div>

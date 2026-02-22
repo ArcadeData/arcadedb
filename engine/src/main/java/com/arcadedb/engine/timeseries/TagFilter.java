@@ -18,43 +18,94 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 /**
- * Simple predicate for tag column filtering.
+ * Predicate for tag column filtering. Supports multiple tag conditions ANDed together.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class TagFilter {
 
-  private final int        columnIndex; // index among non-timestamp columns
-  private final Set<Object> values;
+  private final List<Condition> conditions;
 
-  private TagFilter(final int columnIndex, final Set<Object> values) {
-    this.columnIndex = columnIndex;
-    this.values = values;
-  }
-
-  public static TagFilter eq(final int columnIndex, final Object value) {
-    return new TagFilter(columnIndex, Set.of(value));
-  }
-
-  public static TagFilter in(final int columnIndex, final Set<Object> values) {
-    return new TagFilter(columnIndex, values);
-  }
-
-  public int getColumnIndex() {
-    return columnIndex;
+  private TagFilter(final List<Condition> conditions) {
+    this.conditions = conditions;
   }
 
   /**
-   * Tests if a sample row matches this filter.
+   * Creates a filter matching a single tag equality.
+   */
+  public static TagFilter eq(final int columnIndex, final Object value) {
+    final List<Condition> conditions = new ArrayList<>(1);
+    conditions.add(new Condition(columnIndex, Set.of(value)));
+    return new TagFilter(conditions);
+  }
+
+  /**
+   * Creates a filter matching a single tag against a set of values (IN).
+   */
+  public static TagFilter in(final int columnIndex, final Set<Object> values) {
+    final List<Condition> conditions = new ArrayList<>(1);
+    conditions.add(new Condition(columnIndex, values));
+    return new TagFilter(conditions);
+  }
+
+  /**
+   * Returns a new TagFilter that ANDs this filter with an additional tag equality condition.
+   */
+  public TagFilter and(final int columnIndex, final Object value) {
+    final List<Condition> newConditions = new ArrayList<>(conditions.size() + 1);
+    newConditions.addAll(conditions);
+    newConditions.add(new Condition(columnIndex, Set.of(value)));
+    return new TagFilter(newConditions);
+  }
+
+  /**
+   * Returns a new TagFilter that ANDs this filter with an additional IN condition.
+   */
+  public TagFilter andIn(final int columnIndex, final Set<Object> values) {
+    final List<Condition> newConditions = new ArrayList<>(conditions.size() + 1);
+    newConditions.addAll(conditions);
+    newConditions.add(new Condition(columnIndex, values));
+    return new TagFilter(newConditions);
+  }
+
+  /**
+   * Returns the column index of the first condition (for backward compatibility).
+   */
+  public int getColumnIndex() {
+    return conditions.isEmpty() ? -1 : conditions.getFirst().columnIndex;
+  }
+
+  /**
+   * Returns the number of conditions in this filter.
+   */
+  public int getConditionCount() {
+    return conditions.size();
+  }
+
+  /**
+   * Tests if a sample row matches all conditions in this filter.
    *
    * @param row the sample row (index 0 = timestamp, index 1+ = columns)
    */
   public boolean matches(final Object[] row) {
-    if (columnIndex + 1 >= row.length)
-      return false;
-    return values.contains(row[columnIndex + 1]);
+    for (final Condition cond : conditions) {
+      if (cond.columnIndex + 1 >= row.length)
+        return false;
+      if (!cond.values.contains(row[cond.columnIndex + 1]))
+        return false;
+    }
+    return true;
+  }
+
+  record Condition(int columnIndex, Set<Object> values) {
+  }
+
+  List<Condition> getConditions() {
+    return conditions;
   }
 }

@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -94,7 +95,7 @@ public class TimeSeriesShard implements AutoCloseable {
     final List<Object[]> results = new ArrayList<>();
 
     // Sealed layer first
-    final List<Object[]> sealedResults = sealedStore.scanRange(fromTs, toTs, columnIndices);
+    final List<Object[]> sealedResults = sealedStore.scanRange(fromTs, toTs, columnIndices, tagFilter);
     addFiltered(results, sealedResults, tagFilter);
 
     // Then mutable layer
@@ -111,7 +112,7 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
-    final Iterator<Object[]> sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices);
+    final Iterator<Object[]> sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter);
     final Iterator<Object[]> mutableIter = mutableBucket.iterateRange(fromTs, toTs, columnIndices);
 
     // Chain sealed then mutable, with inline tag filtering
@@ -268,7 +269,21 @@ public class TimeSeriesShard implements AutoCloseable {
           }
         }
 
-        sealedStore.appendBlock(chunkLen, chunkTs[0], chunkTs[chunkLen - 1], compressedCols, mins, maxs, sums);
+        // Collect distinct tag values for this chunk
+        final String[][] chunkTagDistinctValues = new String[colCount][];
+        for (int c = 0; c < colCount; c++) {
+          if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG && sortedColArrays[c] != null) {
+            final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
+            for (int i = chunkStart; i < chunkEnd; i++) {
+              final Object val = sortedColArrays[c][i];
+              distinctSet.add(val != null ? val.toString() : "");
+            }
+            chunkTagDistinctValues[c] = distinctSet.toArray(new String[0]);
+          }
+        }
+
+        sealedStore.appendBlock(chunkLen, chunkTs[0], chunkTs[chunkLen - 1], compressedCols, mins, maxs, sums,
+            chunkTagDistinctValues);
         chunkStart = chunkEnd;
       }
 

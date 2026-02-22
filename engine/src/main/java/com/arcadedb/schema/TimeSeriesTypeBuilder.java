@@ -122,6 +122,9 @@ public class TimeSeriesTypeBuilder {
       throw new SchemaException("Failed to initialize TimeSeries engine for type '" + typeName + "'", e);
     }
 
+    // Schedule automatic retention/downsampling if policies are defined
+    schema.getTimeSeriesMaintenanceScheduler().schedule(database, type);
+
     schema.saveConfiguration();
     return type;
   }

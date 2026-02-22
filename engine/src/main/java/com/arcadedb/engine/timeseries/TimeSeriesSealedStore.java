@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -65,7 +66,7 @@ import java.util.zip.CRC32;
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
-  static final         int CURRENT_VERSION  = 0;
+  static final         int CURRENT_VERSION  = 1;
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   private static final int BLOCK_MAGIC_VALUE = 0x5453424C; // "TSBL"
   private static final int HEADER_SIZE       = 27;
@@ -75,6 +76,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private final List<ColumnDefinition> columns;
   private       RandomAccessFile     indexFile;
   private       FileChannel          indexChannel;
+  private       int                  fileVersion;
+
+  enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
   // In-memory block directory (loaded at open)
   private final List<BlockEntry> blockDirectory = new ArrayList<>();
@@ -90,6 +94,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final double[] columnMins;   // per-column min (NaN for non-numeric)
     final double[] columnMaxs;   // per-column max
     final double[] columnSums;   // per-column sum
+    String[][]     tagDistinctValues; // indexed by schema column index, null for non-TAG columns
     long           blockStartOffset; // file offset where block meta begins (for lazy CRC)
     int            storedCRC;        // CRC32 stored on disk (-1 if written inline, not yet flushed)
     boolean        crcValidated;     // true after first successful CRC check
@@ -137,7 +142,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public synchronized void appendBlock(final int sampleCount, final long minTs, final long maxTs,
       final byte[][] compressedColumns,
-      final double[] columnMins, final double[] columnMaxs, final double[] columnSums) throws IOException {
+      final double[] columnMins, final double[] columnMaxs, final double[] columnSums,
+      final String[][] tagDistinctValues) throws IOException {
+    // Upgrade version 0 files to version 1 format
+    if (fileVersion < 1) {
+      if (!blockDirectory.isEmpty())
+        upgradeFileToVersion1();
+      else
+        fileVersion = 1;
+    }
+
     final int colCount = columns.size();
 
     // Count numeric columns (those with non-NaN stats)
@@ -146,10 +160,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (!Double.isNaN(columnMins[c]))
         numericColCount++;
 
+    // Build tag metadata section
+    final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
+
     // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4*colCount)
     //              + numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount
+    //              + tag metadata
     final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
-    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize;
+    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize + tagMeta.length;
     final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
     metaBuf.putInt(BLOCK_MAGIC_VALUE);
     metaBuf.putLong(minTs);
@@ -167,6 +185,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         metaBuf.putDouble(columnSums[c]);
       }
     }
+
+    // Write tag metadata
+    metaBuf.put(tagMeta);
     metaBuf.flip();
 
     // Compute CRC32 over meta + compressed data
@@ -179,6 +200,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     offset += metaSize;
 
     final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
+    entry.tagDistinctValues = tagDistinctValues;
     // Write compressed column data
     for (int c = 0; c < colCount; c++) {
       entry.columnOffsets[c] = offset;
@@ -207,11 +229,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Scans blocks overlapping the given time range and returns decompressed data.
    */
-  public List<Object[]> scanRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
+  public List<Object[]> scanRange(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter) throws IOException {
     final List<Object[]> results = new ArrayList<>();
 
     for (final BlockEntry entry : blockDirectory) {
       if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
+        continue;
+
+      if (tagFilter != null && blockMatchesTagFilter(entry, tagFilter) == BlockMatchResult.SKIP)
         continue;
 
       // Decompress timestamp column (always column 0)
@@ -254,7 +280,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    *
    * @return iterator yielding Object[] { timestamp, col1, col2, ... }
    */
-  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter) throws IOException {
     final int tsColIdx = findTimestampColumnIndex();
     final int dirSize = blockDirectory.size();
 
@@ -320,6 +347,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             blockIdx++;
 
             if (entry.maxTimestamp < fromTs)
+              continue;
+
+            // Block-level tag filter: skip blocks that cannot contain matching rows
+            if (tagFilter != null && blockMatchesTagFilter(entry, tagFilter) == BlockMatchResult.SKIP)
               continue;
 
             // Decompress timestamps first
@@ -450,7 +481,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public void aggregateMultiBlocks(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
-      final MultiColumnAggregationResult result, final AggregationMetrics metrics) throws IOException {
+      final MultiColumnAggregationResult result, final AggregationMetrics metrics,
+      final TagFilter tagFilter) throws IOException {
     final int tsColIdx = findTimestampColumnIndex();
     final int reqCount = requests.size();
 
@@ -478,8 +510,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         continue;
       }
 
+      // Block-level tag filter: SKIP blocks that cannot contain matching rows
+      final BlockMatchResult tagMatch = tagFilter != null
+          ? blockMatchesTagFilter(entry, tagFilter)
+          : BlockMatchResult.FAST_PATH;
+      if (tagMatch == BlockMatchResult.SKIP) {
+        if (metrics != null)
+          metrics.addSkippedBlock();
+        continue;
+      }
+
       // Check if entire block falls within a single time bucket and is fully inside the query range
-      if (bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
+      // FAST_PATH: block is homogeneous for the filtered tag, so block-level stats are valid
+      if (tagMatch == BlockMatchResult.FAST_PATH
+          && bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
         final long blockMinBucket = (entry.minTimestamp / bucketIntervalMs) * bucketIntervalMs;
         final long blockMaxBucket = (entry.maxTimestamp / bucketIntervalMs) * bucketIntervalMs;
 
@@ -544,56 +588,87 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
       }
 
+      // Decompress tag columns for SLOW_PATH tag filtering
+      final boolean needRowTagFilter = tagFilter != null && tagMatch == BlockMatchResult.SLOW_PATH;
+      String[][] tagCols = null;
+      List<TagFilter.Condition> filterConditions = null;
+      if (needRowTagFilter) {
+        filterConditions = tagFilter.getConditions();
+        tagCols = new String[filterConditions.size()][];
+        for (int ci = 0; ci < filterConditions.size(); ci++) {
+          final int schemaIdx = findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex());
+          final byte[] colBytes = sliceColumn(blockData, entry, schemaIdx);
+          tagCols[ci] = DictionaryCodec.decode(colBytes);
+        }
+      }
+
       // Use tsCount (not array length) since reusableTsBuf may be larger than actual data
       final long[] timestamps = reusableTsBuf;
 
       // Aggregate using segment-based vectorized accumulation
       t0 = metrics != null ? System.nanoTime() : 0;
 
+      // Clip to query range using binary search on sorted timestamps
+      final int rangeStart = lowerBound(timestamps, 0, tsCount, fromTs);
+      final int rangeEnd = upperBound(timestamps, 0, tsCount, toTs);
+
       if (bucketIntervalMs > 0) {
-        // Vectorized path: find contiguous segments within each bucket and use SIMD ops
-        final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
-        final int tsLen = timestamps.length;
-
-        // Clip to query range using binary search on sorted timestamps
-        final int rangeStart = lowerBound(timestamps, 0, tsCount, fromTs);
-        final int rangeEnd = upperBound(timestamps, 0, tsCount, toTs);
-
-        int segStart = rangeStart;
-        while (segStart < rangeEnd) {
-          final long bucketTs = (timestamps[segStart] / bucketIntervalMs) * bucketIntervalMs;
-          final long nextBucketTs = bucketTs + bucketIntervalMs;
-
-          // Find end of this bucket's segment
-          int segEnd = segStart + 1;
-          while (segEnd < rangeEnd && timestamps[segEnd] < nextBucketTs)
-            segEnd++;
-
-          final int segLen = segEnd - segStart;
-
-          // Accumulate each request using vectorized ops on the segment
-          for (int r = 0; r < reqCount; r++) {
-            if (isCount[r]) {
-              result.accumulateSingleStat(bucketTs, r, segLen, segLen);
-            } else {
-              final double[] colData = decompressedCols[schemaColIndices[r]];
-              final double val = switch (requests.get(r).type()) {
-                case SUM, AVG -> ops.sum(colData, segStart, segLen);
-                case MIN -> ops.min(colData, segStart, segLen);
-                case MAX -> ops.max(colData, segStart, segLen);
-                case COUNT -> segLen;
-              };
-              result.accumulateSingleStat(bucketTs, r, val, segLen);
+        if (needRowTagFilter) {
+          // Per-row accumulation with tag filtering (cannot use SIMD on mixed-tag blocks)
+          for (int i = rangeStart; i < rangeEnd; i++) {
+            if (!matchesTagConditions(tagCols, filterConditions, i))
+              continue;
+            final long bucketTs = (timestamps[i] / bucketIntervalMs) * bucketIntervalMs;
+            for (int r = 0; r < reqCount; r++) {
+              if (isCount[r])
+                result.accumulateSingleStat(bucketTs, r, 1.0, 1);
+              else
+                result.accumulateSingleStat(bucketTs, r, decompressedCols[schemaColIndices[r]][i], 1);
             }
           }
+        } else {
+          // Vectorized path: find contiguous segments within each bucket and use SIMD ops
+          final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
 
-          segStart = segEnd;
+          int segStart = rangeStart;
+          while (segStart < rangeEnd) {
+            final long bucketTs = (timestamps[segStart] / bucketIntervalMs) * bucketIntervalMs;
+            final long nextBucketTs = bucketTs + bucketIntervalMs;
+
+            // Find end of this bucket's segment
+            int segEnd = segStart + 1;
+            while (segEnd < rangeEnd && timestamps[segEnd] < nextBucketTs)
+              segEnd++;
+
+            final int segLen = segEnd - segStart;
+
+            // Accumulate each request using vectorized ops on the segment
+            for (int r = 0; r < reqCount; r++) {
+              if (isCount[r]) {
+                result.accumulateSingleStat(bucketTs, r, segLen, segLen);
+              } else {
+                final double[] colData = decompressedCols[schemaColIndices[r]];
+                final double val = switch (requests.get(r).type()) {
+                  case SUM, AVG -> ops.sum(colData, segStart, segLen);
+                  case MIN -> ops.min(colData, segStart, segLen);
+                  case MAX -> ops.max(colData, segStart, segLen);
+                  case COUNT -> segLen;
+                };
+                result.accumulateSingleStat(bucketTs, r, val, segLen);
+              }
+            }
+
+            segStart = segEnd;
+          }
         }
       } else {
         // No bucket interval — accumulate all into one bucket
         for (int i = 0; i < tsCount; i++) {
           final long ts = timestamps[i];
           if (ts < fromTs || ts > toTs)
+            continue;
+
+          if (needRowTagFilter && !matchesTagConditions(tagCols, filterConditions, i))
             continue;
 
           for (int r = 0; r < reqCount; r++)
@@ -620,89 +695,25 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       return; // Nothing to truncate
 
     // Rewrite the file with only retained blocks
-    blockDirectory.clear();
+    final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-      // Write empty header first
       final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
       headerBuf.putInt(MAGIC_VALUE);
       headerBuf.put((byte) CURRENT_VERSION);
-      headerBuf.putShort((short) columns.size());
+      headerBuf.putShort((short) colCount);
       headerBuf.putInt(0);
       headerBuf.putLong(Long.MAX_VALUE);
       headerBuf.putLong(Long.MIN_VALUE);
       headerBuf.flip();
       tempFile.getChannel().write(headerBuf);
 
+      blockDirectory.clear();
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
 
-      final int colCount = columns.size();
-      for (final BlockEntry oldEntry : retained) {
-        // Read compressed data from old file
-        final byte[][] compressedCols = new byte[colCount][];
-        for (int c = 0; c < colCount; c++)
-          compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
-
-        long dataOffset = tempFile.length();
-        tempFile.seek(dataOffset);
-
-        // Write block header with stats (no colIdx)
-        int numericColCount = 0;
-        for (int c = 0; c < colCount; c++)
-          if (!Double.isNaN(oldEntry.columnMins[c]))
-            numericColCount++;
-
-        final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
-        final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize;
-        final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-        metaBuf.putInt(BLOCK_MAGIC_VALUE);
-        metaBuf.putLong(oldEntry.minTimestamp);
-        metaBuf.putLong(oldEntry.maxTimestamp);
-        metaBuf.putInt(oldEntry.sampleCount);
-        for (final byte[] col : compressedCols)
-          metaBuf.putInt(col.length);
-        metaBuf.putInt(numericColCount);
-        for (int c = 0; c < colCount; c++) {
-          if (!Double.isNaN(oldEntry.columnMins[c])) {
-            metaBuf.putDouble(oldEntry.columnMins[c]);
-            metaBuf.putDouble(oldEntry.columnMaxs[c]);
-            metaBuf.putDouble(oldEntry.columnSums[c]);
-          }
-        }
-        metaBuf.flip();
-
-        // Compute CRC32 over meta + compressed data
-        final CRC32 crc = new CRC32();
-        crc.update(metaBuf.array());
-
-        tempFile.write(metaBuf.array());
-        dataOffset += metaSize;
-
-        // Write compressed column data
-        final BlockEntry newEntry = new BlockEntry(oldEntry.minTimestamp, oldEntry.maxTimestamp,
-            oldEntry.sampleCount, colCount, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums);
-        for (int c = 0; c < colCount; c++) {
-          newEntry.columnOffsets[c] = dataOffset;
-          newEntry.columnSizes[c] = compressedCols[c].length;
-          crc.update(compressedCols[c]);
-          tempFile.write(compressedCols[c]);
-          dataOffset += compressedCols[c].length;
-        }
-
-        // Write block CRC32
-        final ByteBuffer crcBuf = ByteBuffer.allocate(4);
-        crcBuf.putInt((int) crc.getValue());
-        crcBuf.flip();
-        tempFile.write(crcBuf.array());
-
-        blockDirectory.add(newEntry);
-
-        if (oldEntry.minTimestamp < globalMinTs)
-          globalMinTs = oldEntry.minTimestamp;
-        if (oldEntry.maxTimestamp > globalMaxTs)
-          globalMaxTs = oldEntry.maxTimestamp;
-      }
+      for (final BlockEntry oldEntry : retained)
+        copyBlockToFile(tempFile, oldEntry, colCount);
     }
 
     // Swap files
@@ -716,6 +727,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();
+    fileVersion = CURRENT_VERSION;
     rewriteHeader();
   }
 
@@ -832,6 +844,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final List<double[]> newBlocksMins = new ArrayList<>();
     final List<double[]> newBlocksMaxs = new ArrayList<>();
     final List<double[]> newBlocksSums = new ArrayList<>();
+    final List<String[][]> newBlocksTagDV = new ArrayList<>();
 
     int chunkStart = 0;
     while (chunkStart < newSamples.size()) {
@@ -879,16 +892,31 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
       }
 
+      // Collect distinct tag values for this chunk
+      final String[][] chunkTagDV = new String[colCount][];
+      for (int c = 0; c < colCount; c++) {
+        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG) {
+          final java.util.LinkedHashSet<String> distinctSet = new java.util.LinkedHashSet<>();
+          for (int i = chunkStart; i < chunkEnd; i++) {
+            final Object val = newSamples.get(i)[c];
+            distinctSet.add(val != null ? val.toString() : "");
+          }
+          chunkTagDV[c] = distinctSet.toArray(new String[0]);
+        }
+      }
+
       newBlocksCompressed.add(compressedCols);
       newBlocksMeta.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
       newBlocksMins.add(mins);
       newBlocksMaxs.add(maxs);
       newBlocksSums.add(sums);
+      newBlocksTagDV.add(chunkTagDV);
       chunkStart = chunkEnd;
     }
 
     // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
-    rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksMins, newBlocksMaxs, newBlocksSums);
+    rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksMins, newBlocksMaxs, newBlocksSums,
+        newBlocksTagDV);
   }
 
   /**
@@ -897,7 +925,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private void rewriteWithBlocks(final List<BlockEntry> retained,
       final List<byte[][]> newCompressed, final List<long[]> newMeta,
-      final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums) throws IOException {
+      final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums,
+      final List<String[][]> newTagDistinctValues) throws IOException {
 
     final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
@@ -926,7 +955,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       for (int b = 0; b < newCompressed.size(); b++) {
         final long[] meta = newMeta.get(b);
         writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
-            newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount);
+            newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
+            newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
       }
 
       // Sort block directory by minTimestamp
@@ -944,6 +974,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();
+    fileVersion = CURRENT_VERSION;
     rewriteHeader();
   }
 
@@ -953,21 +984,23 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
 
     writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp, oldEntry.maxTimestamp,
-        compressedCols, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums, colCount);
+        compressedCols, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums, colCount, oldEntry.tagDistinctValues);
   }
 
   private void writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
       final long minTs, final long maxTs, final byte[][] compressedCols,
       final double[] columnMins, final double[] columnMaxs, final double[] columnSums,
-      final int colCount) throws IOException {
+      final int colCount, final String[][] tagDistinctValues) throws IOException {
 
     int numericColCount = 0;
     for (int c = 0; c < colCount; c++)
       if (!Double.isNaN(columnMins[c]))
         numericColCount++;
 
+    final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
+
     final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
-    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize;
+    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize + tagMeta.length;
     final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
     metaBuf.putInt(BLOCK_MAGIC_VALUE);
     metaBuf.putLong(minTs);
@@ -983,6 +1016,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         metaBuf.putDouble(columnSums[c]);
       }
     }
+    metaBuf.put(tagMeta);
     metaBuf.flip();
 
     final CRC32 crc = new CRC32();
@@ -994,6 +1028,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     dataOffset += metaSize;
 
     final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
+    newEntry.tagDistinctValues = tagDistinctValues;
     for (int c = 0; c < colCount; c++) {
       newEntry.columnOffsets[c] = dataOffset;
       newEntry.columnSizes[c] = compressedCols[c].length;
@@ -1081,7 +1116,140 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   // --- Private helpers ---
 
+  /**
+   * Returns SKIP if the block cannot contain matching rows, FAST_PATH if the block
+   * is homogeneous for the filtered tag(s), or SLOW_PATH if per-row filtering is needed.
+   */
+  BlockMatchResult blockMatchesTagFilter(final BlockEntry entry, final TagFilter tagFilter) {
+    if (tagFilter == null)
+      return BlockMatchResult.FAST_PATH;
+
+    if (entry.tagDistinctValues == null)
+      return BlockMatchResult.SLOW_PATH;
+
+    boolean allSingleMatch = true;
+    for (final TagFilter.Condition cond : tagFilter.getConditions()) {
+      final int schemaIdx = findNonTsColumnSchemaIndex(cond.columnIndex());
+      if (schemaIdx < 0 || schemaIdx >= entry.tagDistinctValues.length || entry.tagDistinctValues[schemaIdx] == null)
+        return BlockMatchResult.SLOW_PATH;
+
+      final String[] distinctVals = entry.tagDistinctValues[schemaIdx];
+      boolean anyMatch = false;
+      for (final String dv : distinctVals) {
+        if (cond.values().contains(dv)) {
+          anyMatch = true;
+          break;
+        }
+      }
+      if (!anyMatch)
+        return BlockMatchResult.SKIP;
+
+      if (distinctVals.length != 1)
+        allSingleMatch = false;
+    }
+    return allSingleMatch ? BlockMatchResult.FAST_PATH : BlockMatchResult.SLOW_PATH;
+  }
+
+  /**
+   * Checks if a row at index i matches all tag filter conditions.
+   */
+  private static boolean matchesTagConditions(final String[][] tagCols,
+      final List<TagFilter.Condition> conditions, final int i) {
+    for (int ci = 0; ci < tagCols.length; ci++)
+      if (!conditions.get(ci).values().contains(tagCols[ci][i]))
+        return false;
+    return true;
+  }
+
+  /**
+   * Builds the tag metadata byte array for a block.
+   */
+  private byte[] buildTagMetadata(final String[][] tagDistinctValues, final int colCount) {
+    short tagColCount = 0;
+    if (tagDistinctValues != null)
+      for (int c = 0; c < colCount; c++)
+        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG && tagDistinctValues[c] != null)
+          tagColCount++;
+
+    if (tagColCount == 0) {
+      final ByteBuffer buf = ByteBuffer.allocate(2);
+      buf.putShort((short) 0);
+      return buf.array();
+    }
+
+    // Pre-compute UTF-8 bytes
+    final byte[][][] utf8Values = new byte[colCount][][];
+    int totalSize = 2; // tagColCount
+    for (int c = 0; c < colCount; c++) {
+      if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG
+          && tagDistinctValues[c] != null) {
+        utf8Values[c] = new byte[tagDistinctValues[c].length][];
+        totalSize += 2; // distinctCount
+        for (int v = 0; v < tagDistinctValues[c].length; v++) {
+          utf8Values[c][v] = tagDistinctValues[c][v].getBytes(StandardCharsets.UTF_8);
+          totalSize += 2 + utf8Values[c][v].length;
+        }
+      }
+    }
+
+    final ByteBuffer buf = ByteBuffer.allocate(totalSize);
+    buf.putShort(tagColCount);
+    for (int c = 0; c < colCount; c++) {
+      if (utf8Values[c] != null) {
+        buf.putShort((short) utf8Values[c].length);
+        for (final byte[] val : utf8Values[c]) {
+          buf.putShort((short) val.length);
+          buf.put(val);
+        }
+      }
+    }
+    return buf.array();
+  }
+
+  /**
+   * Upgrades a version 0 file to version 1 by rewriting all blocks with tag metadata sections.
+   * Existing blocks get tagColCount=0 (empty tag metadata). One-time migration cost.
+   */
+  private void upgradeFileToVersion1() throws IOException {
+    final List<BlockEntry> allBlocks = new ArrayList<>(blockDirectory);
+    final int colCount = columns.size();
+    final String tempPath = basePath + ".ts.sealed.tmp";
+
+    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+      headerBuf.putInt(MAGIC_VALUE);
+      headerBuf.put((byte) CURRENT_VERSION);
+      headerBuf.putShort((short) colCount);
+      headerBuf.putInt(0);
+      headerBuf.putLong(Long.MAX_VALUE);
+      headerBuf.putLong(Long.MIN_VALUE);
+      headerBuf.flip();
+      tempFile.getChannel().write(headerBuf);
+
+      blockDirectory.clear();
+      globalMinTs = Long.MAX_VALUE;
+      globalMaxTs = Long.MIN_VALUE;
+
+      for (final BlockEntry oldEntry : allBlocks)
+        copyBlockToFile(tempFile, oldEntry, colCount);
+    }
+
+    indexChannel.close();
+    indexFile.close();
+
+    final File oldFile = new File(basePath + ".ts.sealed");
+    final File tmpFile = new File(tempPath);
+    if (!oldFile.delete() || !tmpFile.renameTo(oldFile))
+      throw new IOException("Failed to upgrade sealed store to version 1");
+
+    indexFile = new RandomAccessFile(oldFile, "rw");
+    indexChannel = indexFile.getChannel();
+    fileVersion = CURRENT_VERSION;
+    rewriteHeader();
+  }
+
   private void writeEmptyHeader() throws IOException {
+    fileVersion = CURRENT_VERSION;
     final ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
     buf.putInt(MAGIC_VALUE);
     buf.put((byte) CURRENT_VERSION);
@@ -1120,6 +1288,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (version > CURRENT_VERSION)
       throw new IOException(
           "Unsupported sealed store format version " + version + " (max supported: " + CURRENT_VERSION + ")");
+    this.fileVersion = version;
 
     final int colCount = headerBuf.getShort();
     final int blockCount = headerBuf.getInt();
@@ -1186,9 +1355,52 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         statsPos += tripletSize;
       }
 
+      // Read tag metadata section (version 1+)
+      String[][] blockTagDistinctValues = null;
+      long tagEndPos = statsPos;
+      if (version >= 1) {
+        final ByteBuffer tagCountBuf = ByteBuffer.allocate(2);
+        if (indexChannel.read(tagCountBuf, tagEndPos) < 2)
+          break;
+        tagCountBuf.flip();
+        final short tagColCount = tagCountBuf.getShort();
+        tagEndPos += 2;
+
+        if (tagColCount > 0) {
+          blockTagDistinctValues = new String[colCount][];
+          int tagIdx = 0;
+          for (int c = 0; c < colCount && tagIdx < tagColCount; c++) {
+            if (columns.get(c).getRole() != ColumnDefinition.ColumnRole.TAG)
+              continue;
+            final ByteBuffer dcBuf = ByteBuffer.allocate(2);
+            indexChannel.read(dcBuf, tagEndPos);
+            dcBuf.flip();
+            final short distinctCount = dcBuf.getShort();
+            tagEndPos += 2;
+
+            blockTagDistinctValues[c] = new String[distinctCount];
+            for (int v = 0; v < distinctCount; v++) {
+              final ByteBuffer lenBuf = ByteBuffer.allocate(2);
+              indexChannel.read(lenBuf, tagEndPos);
+              lenBuf.flip();
+              final short valLen = lenBuf.getShort();
+              tagEndPos += 2;
+
+              final byte[] valBytes = new byte[valLen];
+              final ByteBuffer valBuf = ByteBuffer.wrap(valBytes);
+              indexChannel.read(valBuf, tagEndPos);
+              blockTagDistinctValues[c][v] = new String(valBytes, StandardCharsets.UTF_8);
+              tagEndPos += valLen;
+            }
+            tagIdx++;
+          }
+        }
+      }
+
       final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums);
+      entry.tagDistinctValues = blockTagDistinctValues;
       entry.blockStartOffset = pos;
-      long dataPos = statsPos;
+      long dataPos = tagEndPos;
       for (int c = 0; c < colCount; c++) {
         entry.columnOffsets[c] = dataPos;
         entry.columnSizes[c] = colSizes[c];

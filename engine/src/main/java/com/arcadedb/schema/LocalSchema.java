@@ -36,6 +36,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
+import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
 import com.arcadedb.event.*;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -112,6 +113,7 @@ public class LocalSchema implements Schema {
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
   private              MaterializedViewScheduler              materializedViewScheduler;
+  private              TimeSeriesMaintenanceScheduler         timeSeriesMaintenanceScheduler;
 
   public LocalSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -920,6 +922,11 @@ public class LocalSchema implements Schema {
       materializedViewScheduler = null;
     }
 
+    if (timeSeriesMaintenanceScheduler != null) {
+      timeSeriesMaintenanceScheduler.shutdown();
+      timeSeriesMaintenanceScheduler = null;
+    }
+
     writeStatisticsFile();
     materializedViews.clear();
     continuousAggregates.clear();
@@ -935,6 +942,12 @@ public class LocalSchema implements Schema {
     if (materializedViewScheduler == null)
       materializedViewScheduler = new MaterializedViewScheduler();
     return materializedViewScheduler;
+  }
+
+  public synchronized TimeSeriesMaintenanceScheduler getTimeSeriesMaintenanceScheduler() {
+    if (timeSeriesMaintenanceScheduler == null)
+      timeSeriesMaintenanceScheduler = new TimeSeriesMaintenanceScheduler();
+    return timeSeriesMaintenanceScheduler;
   }
 
   private void readStatisticsFile() {
@@ -1362,6 +1375,8 @@ public class LocalSchema implements Schema {
             } catch (final IOException e) {
               throw new ConfigurationException("Error initializing TimeSeries engine for type '" + typeName + "'", e);
             }
+            // Schedule automatic retention/downsampling if policies are defined
+            getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
             yield tsType;
           }
           case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");

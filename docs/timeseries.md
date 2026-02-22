@@ -1,17 +1,18 @@
 # ArcadeDB TimeSeries Module — Research Report & Implementation Plan
 
-## Implementation Progress (last updated: 2026-02-21)
+## Implementation Progress (last updated: 2026-02-22)
 
 ### Completed
 - **Phase 1: Core Storage Engine** — TimeSeries type, columnar storage with Gorilla/Delta-of-Delta/Simple-8b/Dictionary codecs, sealed bucket compaction, shard-per-core parallelism, Line Protocol ingestion (HTTP handler), retention policies, `CREATE TIMESERIES TYPE` SQL statement, `FetchFromTimeSeriesStep` query executor, basic SQL queries (`SELECT`, `WHERE`, `GROUP BY`, `ORDER BY`)
-- **Phase 2: Analytical Functions** — All 8 timeseries SQL functions implemented and tested:
+- **Phase 2: Analytical Functions** — All 9 timeseries SQL functions implemented and tested:
   - `ts.first(value, ts)` / `ts.last(value, ts)` — first/last value by timestamp
-  - `ts.rate(value, ts)` — per-second rate of change
+  - `ts.rate(value, ts [, counterResetDetection])` — per-second rate of change with optional counter reset detection (3rd param = `true` enables Prometheus-style reset handling for monotonic counters)
   - `ts.delta(value, ts)` — difference between first and last values
   - `ts.movingAvg(value, window)` — moving average with configurable window
-  - `ts.interpolate(value, method)` — gap filling (zero/prev methods)
+  - `ts.interpolate(value, method [, timestamp])` — gap filling (zero/prev/linear/none methods; linear interpolation requires timestamp parameter)
   - `ts.correlate(a, b)` — Pearson correlation coefficient
   - `ts.timeBucket(interval, ts)` — time bucketing for GROUP BY aggregation
+  - `ts.percentile(value, percentile)` — approximate percentile calculation (0.0-1.0, e.g. 0.95 for p95, 0.99 for p99) with sorted exact computation and linear rank interpolation
 
 - **Phase 3: Continuous Aggregates** — Watermark-based incremental refresh for pre-computed timeseries rollups:
   - `ContinuousAggregate` interface and `ContinuousAggregateImpl` with watermark tracking, atomic refresh guard, JSON persistence, metrics
@@ -71,9 +72,70 @@
   - Multi-tier behavior: tiers applied independently; density check naturally handles hierarchy (1min blocks pass 1min check but fail 1hr check when tier 2 cutoff reached)
   - 7 new tests: DDL add/drop with persistence across close/reopen, single-tier accuracy (AVG=30.5 for 1..60), multi-tier, idempotency, multi-tag grouping, retention interaction, empty engine no-op
 
+- **Phase 5: HTTP API & Studio Integration** — Dedicated REST endpoints and web-based TimeSeries Explorer:
+  - **REST Endpoints**: 3 dedicated timeseries HTTP handlers registered in `HttpServer`:
+    - `POST /api/v1/ts/{database}/write` — InfluxDB Line Protocol ingestion with configurable precision (`ns`/`us`/`ms`/`s`), `requiresJsonPayload()=false` to avoid JSON parsing of plain-text body
+    - `POST /api/v1/ts/{database}/query` — JSON query endpoint supporting raw queries (time range, field projection, tag filtering, limit) and aggregated queries (`AVG`/`SUM`/`MIN`/`MAX`/`COUNT` with configurable bucket intervals via `aggregateMulti()`)
+    - `GET /api/v1/ts/{database}/latest?type=name&tag=key:value` — returns most recent data point with optional single-tag filter
+  - **Studio TimeSeries Tab**: Full-featured explorer accessible from the main navigation sidebar:
+    - Header bar: database selector (synced `.inputDatabase` class), TimeSeries type dropdown with live sample count, Create/Drop type buttons
+    - **Query sub-tab**: single-row controls (Time Range, Aggregation, Bucket Interval, Field checkboxes), Query/Latest/Auto-refresh buttons, ApexCharts line/area chart with datetime x-axis and zoom, DataTable with pagination, chart/table toggle switches with per-database localStorage persistence, query execution time display
+    - **Schema sub-tab**: detailed type introspection — TimeSeries Columns (with TIMESTAMP/TAG/FIELD role badges), Diagnostics cards (total samples, shards, time range), Configuration table, Downsampling Tiers, per-Shard Details (sealed/mutable block counts, timestamps)
+    - **Ingestion sub-tab**: comprehensive documentation with 4 ingestion methods (SQL CREATE TYPE, InfluxDB Line Protocol with curl/Python examples, SQL INSERT, Java embedded API), method comparison table
+  - **API Panel Integration**: TimeSeries section in HTTP API Reference with all 3 endpoints documented, including query parameter support, request/response examples, and working "Try It" playground (with `text/plain` content type handling for Line Protocol)
+  - **Query tab layout**: "Connected as" bar moved above Database Info sidebar for uniform positioning across Query/Database/TimeSeries tabs
+  - 10 integration tests in `TimeSeriesQueryHandlerIT`: raw query, aggregated query, tag filter, field projection, missing/invalid type errors, latest value, latest with tag, latest on empty type
+
+- **Competitive Gap Closure (P0/P1)** — Critical features identified from gap analysis against top 10 TSDBs (InfluxDB 3, TimescaleDB, Prometheus, QuestDB, TDengine, ClickHouse, Kdb+, Apache IoTDB, VictoriaMetrics, Grafana Mimir):
+  - **Counter Reset Detection in `ts.rate()`** — Optional 3rd parameter enables Prometheus-style counter reset handling. When `true`, detects value decreases and treats post-reset values as increments from 0. Default behavior (simple `(last-first)/timeDelta`) preserved for backward compatibility with gauge-type data
+  - **Time Range Operators Beyond BETWEEN** — `SelectExecutionPlanner.extractTimeRange()` now handles `>`, `>=`, `<`, `<=`, `=` operators on the timestamp column, pushing them down to the TimeSeries engine. Multiple range conditions ANDed together (tightest bounds win). Previously only `BETWEEN` was pushed down; other operators caused full scans
+  - **Multi-Tag Filtering** — `TagFilter` redesigned to support multiple tag conditions ANDed together via `and()` and `andIn()` chaining methods. HTTP query handler updated to iterate over all tags in the request JSON (previously only used the first tag). Backward compatible: existing `eq()` and `in()` factory methods still work
+  - **Automatic Retention/Downsampling Scheduler** — `TimeSeriesMaintenanceScheduler` runs as a daemon thread (60s interval), automatically applying retention and downsampling policies. Follows the same pattern as `MaterializedViewScheduler`. Integrated into `LocalSchema` (lazy init, shutdown on close) and `TimeSeriesTypeBuilder` (scheduled on type creation). Previously required explicit `applyRetention()` / `applyDownsampling()` calls from application code
+  - **Linear Interpolation** — `ts.interpolate(value, 'linear', timestamp)` added as a 4th method. Interpolates null values using linear interpolation between surrounding non-null values. Requires optional 3rd parameter for timestamps
+  - **Approximate Percentiles** — New `ts.percentile(value, percentile)` function (registered as `SQLFunctionTsPercentile`). Works with GROUP BY for per-bucket percentile calculation (e.g., `ts.percentile(latency, 0.99)` for p99)
+  - 19 new tests in `TimeSeriesGapAnalysisTest`, all 180 timeseries tests passing
+
 ### In Progress / Not Yet Started
-- **Phase 6: PromQL / MetricsQL Compatibility** — Alternative query language support for monitoring use cases
-- **Phase 7: Grafana Integration** — Native data source plugin for Grafana dashboards
+
+#### Competitive Gap Analysis — Prioritized Roadmap
+
+Gap analysis comparing ArcadeDB's TimeSeries against top 10 TSDBs: InfluxDB 3, TimescaleDB, Prometheus, QuestDB, TDengine, ClickHouse, Kdb+, Apache IoTDB, VictoriaMetrics, Grafana Mimir.
+
+**P0 — Table Stakes (standard in 7+/10 TSDBs):**
+- ~~Counter reset handling in `ts.rate()`~~ — **DONE** (optional 3rd param)
+- ~~Time range operators beyond BETWEEN~~ — **DONE** (`>`, `>=`, `<`, `<=`, `=` pushed down)
+- ~~Multi-tag filtering~~ — **DONE** (ANDed multi-tag conditions)
+- ~~Automatic retention/downsampling scheduler~~ — **DONE** (daemon thread, 60s interval)
+- **PromQL / MetricsQL query language** — De-facto standard for observability. Thousands of Grafana dashboards and alerting rules use PromQL. Without it, ArcadeDB can't serve as a drop-in Prometheus backend
+- **Grafana native datasource plugin** — All 10 TSDBs have Grafana support. Without a plugin, users must use generic JSON/Infinity datasource, losing time-range pushdown and template variables
+- **Prometheus `remote_write` / `remote_read` protocol** — Standard push protocol for metrics (6/10 TSDBs support it). Prometheus, vmagent, Grafana Agent, OpenTelemetry Collector all use it
+- **Alerting & recording rules** — Built-in alerting on metric thresholds with routing (email, Slack, PagerDuty). Recording rules pre-compute expensive queries (7+/10 TSDBs)
+
+**P1 — Core Analytics (present in 4-6/10 TSDBs):**
+- ~~Approximate percentiles (p50/p95/p99)~~ — **DONE** (`ts.percentile` function)
+- ~~Linear interpolation in gap filling~~ — **DONE** (`ts.interpolate` 'linear' method)
+- **OpenTelemetry (OTLP) ingestion** — CNCF standard for observability. OTLP (gRPC + HTTP) becoming the universal ingest protocol (5/10 and growing)
+- **Window functions for TimeSeries queries** — `ROW_NUMBER`, `LAG`, `LEAD`, `RANK` etc. Essential for comparing current vs previous values, running totals. Not available via push-down aggregation path (6/10 TSDBs)
+- **Cardinality management & monitoring** — Tools to explore, limit, and alert on cardinality growth. The `DictionaryCodec` has a hard 65,535 limit per block that throws at runtime with no warning
+- **Streaming / real-time aggregation at ingestion** — Pre-aggregate data at ingestion time to reduce storage and query cost (e.g., reduce 1s samples to 1min before storage)
+- **ASOF JOIN / temporal joins** — Find closest timestamp match between two time series without exact alignment. Critical for correlating data from sensors with different sampling rates (3/10 TSDBs)
+
+**P2 — Ecosystem & Advanced Features (present in 2-3/10 TSDBs):**
+- **TimeSeries via PostgreSQL wire protocol** — ArcadeDB already has `postgresw` module. Enabling TS queries through it would unlock all PostgreSQL client libraries, BI tools (Tableau, Metabase, Superset), JDBC/ODBC connectivity
+- **Native histogram support** — Modern way to capture latency distributions without pre-defined bucket boundaries (Prometheus 3.0, VictoriaMetrics 3.0)
+- **Tiered storage (hot/warm/cold with object storage)** — Object storage (S3/GCS) backends reduce cost 10-100x for historical data (5/10 TSDBs)
+- **Parquet/Arrow export/import** — Standard format for data lakes. Enables interop with Spark, Pandas, DuckDB
+- **MQTT protocol support** — Dominant protocol for IoT devices. Native ingestion eliminates broker middleware (TDengine, Apache IoTDB)
+- **Exemplars (trace-to-metrics linking)** — Attach trace IDs to metric samples for click-through from metric spike to distributed trace
+- **Anomaly detection** — ML-based anomaly scoring on time series (emerging feature, VictoriaMetrics enterprise)
+
+**Competitive Advantages (what ArcadeDB has that others don't):**
+- Multi-model in one engine: Graph + Document + K/V + TimeSeries in the same database with cross-model queries
+- Embeddable: can run as a Java library inside an application (no separate process)
+- InfluxDB Line Protocol ingestion: already implemented (most TSDBs except InfluxDB don't have this natively)
+- Continuous aggregates with auto-refresh on commit: post-INSERT trigger-based refresh is more immediate than TimescaleDB's policy-based refresh
+- SIMD-vectorized aggregation: Java Vector API usage for aggregation is cutting-edge
+
 - **Graph + TimeSeries Integration** — Cross-model queries (e.g., `MATCH {type: Device} -HAS_METRIC-> {type: Sensor} WHERE ts.rate(value, ts) > 100`)
 
 ---
@@ -2078,15 +2140,15 @@ At 1M total samples with 5 columns:
 
 ### Phase 2: Query Engine — TimeSeries Functions & Aggregations
 
-#### 2a. TimeSeries-Specific Functions
-- `first(value, timestamp)` / `last(value, timestamp)` — first/last value in time window
-- `rate(value)` — per-second rate of change
-- `delta(value)` — difference between first and last in window
-- `moving_avg(value, window)` — sliding window average
-- `percentile(value, p)` / `histogram(value, buckets)` — distribution analysis
-- `interpolate(value, method)` — fill missing values (linear, previous, none)
-- `downsample(value, interval, aggregation)` — reduce resolution
-- `correlate(series_a, series_b)` — Pearson correlation between two series
+#### 2a. TimeSeries-Specific Functions — **COMPLETED**
+- ✅ `ts.first(value, timestamp)` / `ts.last(value, timestamp)` — first/last value in time window
+- ✅ `ts.rate(value, ts [, counterResetDetection])` — per-second rate of change with optional counter reset detection
+- ✅ `ts.delta(value, ts)` — difference between first and last in window
+- ✅ `ts.movingAvg(value, window)` — sliding window average
+- ✅ `ts.percentile(value, percentile)` — approximate percentile (p50/p95/p99) with exact sort and rank interpolation
+- ✅ `ts.interpolate(value, method [, timestamp])` — fill missing values (linear, prev, zero, none)
+- ✅ `ts.correlate(series_a, series_b)` — Pearson correlation between two series
+- ✅ `ts.timeBucket(interval, ts)` — time bucketing for GROUP BY aggregation
 - **Reuses**: Existing `SQLFunction` registration framework
 
 #### 2b. Continuous Aggregates (**IMPLEMENTED**)
@@ -2196,19 +2258,24 @@ At 1M total samples with 5 columns:
 - Smaller blocks for high-cardinality data (faster filtering)
 - Larger blocks for uniform data (better compression ratios)
 
-### Phase 5: HTTP API & Studio Integration
+### Phase 5: HTTP API & Studio Integration — **COMPLETED**
 
 #### 5a. REST API for TimeSeries
-- `POST /api/v1/timeseries/{type}/write` — batch ingestion (line protocol compatible)
-- `POST /api/v1/timeseries/{type}/query` — timeseries query with JSON response
-- `GET /api/v1/timeseries/{type}/latest` — get latest value per series
-- Prometheus remote-write/remote-read compatibility endpoints
+- ✅ `POST /api/v1/ts/{database}/write?precision=ns|us|ms|s` — InfluxDB Line Protocol batch ingestion
+- ✅ `POST /api/v1/ts/{database}/query` — JSON query with raw/aggregated response, time range, field projection, tag filtering
+- ✅ `GET /api/v1/ts/{database}/latest?type=name&tag=key:value` — latest value per series with optional tag filter
+- Prometheus remote-write/remote-read compatibility endpoints (future — requires protobuf dependency)
 
-#### 5b. Studio TimeSeries Dashboard
-- Time-range picker with configurable granularity
-- Line/area charts for timeseries visualization
-- Combined graph + timeseries view: select a vertex in the graph, see its timeseries below
-- Dashboard save/load functionality
+#### 5b. Studio TimeSeries Explorer
+- ✅ Full TimeSeries tab in Studio navigation with Query, Schema, and Ingestion sub-tabs
+- ✅ Time-range picker (5min/1h/24h/7d/All/Custom) with configurable aggregation and bucket intervals
+- ✅ ApexCharts line/area charts with datetime x-axis, zoom, dark mode support
+- ✅ DataTable with pagination for raw and aggregated results
+- ✅ Chart/table toggle switches with per-database localStorage persistence
+- ✅ Schema introspection: columns, diagnostics, configuration, downsampling tiers, shard details
+- ✅ Ingestion documentation: Line Protocol, SQL INSERT, Java API with examples and comparison table
+- ✅ HTTP API Reference panel with 3 TimeSeries endpoints and interactive playground
+- Combined graph + timeseries view (future — Phase 3 integration)
 
 ---
 
@@ -2234,9 +2301,12 @@ At 1M total samples with 5 columns:
 
 ### v2 (Phase 2 — "Rich Query Functions") — **COMPLETED**
 **Goal**: Competitive query capabilities for analytics.
-- ✅ TimeSeries-specific functions (rate, delta, moving_avg, interpolate, correlate, timeBucket, first, last)
+- ✅ TimeSeries-specific functions (rate, delta, moving_avg, interpolate, correlate, timeBucket, first, last, percentile)
+- ✅ Counter reset detection in `ts.rate()` (optional 3rd param for Prometheus-style monotonic counters)
+- ✅ Linear interpolation in `ts.interpolate()` (4th fill method)
+- ✅ Approximate percentiles via `ts.percentile()` (p50/p95/p99)
 - ✅ Continuous aggregates (watermark-based incremental refresh, automatic post-commit trigger, SQL DDL, schema metadata)
-- Downsampling policies (not yet started)
+- ✅ Downsampling policies with automatic scheduler
 
 ### v3 (Phase 3 — "Graph + TimeSeries, The Differentiator")
 **Goal**: World's first native graph + timeseries integration.
@@ -2246,18 +2316,50 @@ At 1M total samples with 5 columns:
 - Graph-aware aggregation (`ROLLUP ALONG` graph hierarchy)
 - Combined graph + timeseries Studio visualization
 
-### v4 (Phase 4+5 — "Performance & Ecosystem")
+### v4 (Phase 4+5 — "Performance & Ecosystem") — **COMPLETED**
 **Goal**: Advanced optimizations + full ecosystem integration.
 - ✅ SIMD-accelerated aggregation: `TimeSeriesVectorOps` wired into `aggregateMultiBlocks()` slow path with segment-based vectorized `sum()/min()/max()`
 - ✅ Parallel shard aggregation: `CompletableFuture`-based concurrent sealed store processing with flat-array merge
 - ✅ Coalesced I/O: single pread per block, reusable decode buffers, flat array accumulation (no HashMap)
 - ✅ BitReader sliding-window register: pre-loaded 64-bit window, lazy refill every ~7-8 bytes (decompVal 1305ms → 1224ms)
 - ✅ Bucket-aligned compaction: `COMPACTION_INTERVAL` DDL splits blocks at bucket boundaries for 100% fast-path aggregation
+- ✅ Dedicated timeseries JSON query endpoint (`POST /api/v1/ts/{db}/query`) with raw + aggregated responses
+- ✅ Dedicated latest-value endpoint (`GET /api/v1/ts/{db}/latest`) with tag filtering
+- ✅ Studio TimeSeries Explorer: Query (charts + tables), Schema (introspection), Ingestion (docs + examples)
+- ✅ HTTP API Reference panel with TimeSeries section and interactive playground
+- ✅ Multi-tag filtering in query engine and HTTP API
+- ✅ Time range operator push-down (`>`, `>=`, `<`, `<=`, `=` — not just `BETWEEN`)
+- ✅ Automatic retention/downsampling scheduler (`TimeSeriesMaintenanceScheduler` daemon thread)
 - Advanced decompression: Gorilla XOR decode is inherently sequential (each value XORs with previous) — further gains require fused decode+aggregate or alternative encoding schemes
-- Prometheus remote-write endpoint (protobuf + Snappy)
-- Dedicated timeseries JSON query endpoint for Grafana dashboards
-- TCP ingestion socket (raw ILP over TCP, like QuestDB port 9009)
-- Studio timeseries dashboards
+
+### v5 (Phase 6+7 — "Observability Ecosystem Integration")
+**Goal**: Drop-in compatibility with the Prometheus/Grafana/OpenTelemetry ecosystem.
+
+| Priority | Feature | Who has it | Effort |
+|----------|---------|-----------|--------|
+| P0 | PromQL / MetricsQL query language | Prometheus, VictoriaMetrics, Grafana Mimir | High |
+| P0 | Grafana native datasource plugin | All 10 TSDBs | Medium |
+| P0 | Prometheus `remote_write` / `remote_read` | 6/10 TSDBs | Medium |
+| P0 | Alerting & recording rules | 7+/10 TSDBs | High |
+| P1 | OpenTelemetry OTLP ingestion (gRPC + HTTP) | 5/10 TSDBs (growing) | Medium |
+| P1 | Cardinality management & monitoring | VictoriaMetrics, Grafana Mimir, Prometheus | Medium |
+
+### v6 (Phase 8 — "Advanced Analytics & Data Platform")
+**Goal**: Feature parity with analytics-focused TSDBs.
+
+| Priority | Feature | Who has it | Effort |
+|----------|---------|-----------|--------|
+| P1 | SQL window functions (LAG, LEAD, RANK, etc.) | TimescaleDB, QuestDB, ClickHouse, TDengine, Kdb+ | High |
+| P1 | ASOF JOIN / temporal joins | QuestDB, ClickHouse, Kdb+ | High |
+| P1 | Streaming aggregation at ingestion | TDengine, VictoriaMetrics, QuestDB | High |
+| P2 | TimeSeries via PostgreSQL wire protocol | TimescaleDB, QuestDB | Medium |
+| P2 | Native histogram support | Prometheus 3.0, VictoriaMetrics 3.0 | High |
+| P2 | Tiered storage (S3/GCS/Azure Blob) | InfluxDB 3, Grafana Mimir, ClickHouse | High |
+| P2 | Parquet/Arrow export/import | InfluxDB 3, QuestDB, ClickHouse, Kdb+ | Medium |
+| P3 | MQTT protocol support | TDengine, Apache IoTDB | Medium |
+| P3 | Exemplars (trace-to-metrics linking) | Prometheus, Grafana Mimir, VictoriaMetrics | Medium |
+| P3 | Anomaly detection | VictoriaMetrics (enterprise) | High |
+| P3 | TCP ingestion socket (raw ILP over TCP) | QuestDB | Low |
 
 ---
 
@@ -2271,3 +2373,4 @@ At 1M total samples with 5 columns:
 - QuestDB architecture — Columnar + SIMD reference implementation
 - ClickHouse MergeTree — Sparse indexing + composable codecs
 - Datadog Monocle — Shard-per-core LSM design
+- Competitive gap analysis (Feb 2026) — Feature comparison against InfluxDB 3, TimescaleDB, Prometheus, QuestDB, TDengine, ClickHouse, Kdb+, Apache IoTDB, VictoriaMetrics, Grafana Mimir

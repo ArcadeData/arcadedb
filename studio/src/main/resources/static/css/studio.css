@@ -193,6 +193,8 @@ table,
 
 #tab-query {
   overflow-y: hidden !important;
+  display: flex;
+  flex-direction: column;
 }
 
 #tab-database {

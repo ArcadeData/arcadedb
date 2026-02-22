@@ -199,21 +199,28 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     if (tagKeys.isEmpty())
       return null;
 
-    // Use first tag for filter
-    final String tagName = tagKeys.iterator().next();
-    final Object tagValue = tagsJson.get(tagName);
+    TagFilter filter = null;
 
-    // columnIndex for TagFilter is among non-timestamp columns (0-based)
-    int nonTsIdx = 0;
-    for (final ColumnDefinition col : columns) {
-      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-        continue;
-      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName))
-        return TagFilter.eq(nonTsIdx, tagValue);
-      nonTsIdx++;
+    for (final String tagName : tagKeys) {
+      final Object tagValue = tagsJson.get(tagName);
+
+      // Find column index among non-timestamp columns (0-based)
+      int nonTsIdx = 0;
+      for (final ColumnDefinition col : columns) {
+        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
+        if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName)) {
+          if (filter == null)
+            filter = TagFilter.eq(nonTsIdx, tagValue);
+          else
+            filter = filter.and(nonTsIdx, tagValue);
+          break;
+        }
+        nonTsIdx++;
+      }
     }
 
-    return null;
+    return filter;
   }
 
   private int[] resolveColumnIndices(final JSONObject payload, final List<ColumnDefinition> columns) {

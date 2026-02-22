@@ -79,7 +79,7 @@ class TimeSeriesBlockStatsTest {
 
     // Write block with stats
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
-      store.appendBlock(5, 1000L, 5000L, compressed, mins, maxs, sums);
+      store.appendBlock(5, 1000L, 5000L, compressed, mins, maxs, sums, null);
       assertThat(store.getBlockCount()).isEqualTo(1);
     }
 
@@ -90,7 +90,7 @@ class TimeSeriesBlockStatsTest {
       assertThat(store.getGlobalMaxTimestamp()).isEqualTo(5000L);
 
       // Data should still be readable
-      final List<Object[]> results = store.scanRange(1000L, 5000L, null);
+      final List<Object[]> results = store.scanRange(1000L, 5000L, null, null);
       assertThat(results).hasSize(5);
       assertThat((double) results.get(0)[1]).isEqualTo(10.0);
       assertThat((double) results.get(4)[1]).isEqualTo(50.0);
@@ -115,7 +115,7 @@ class TimeSeriesBlockStatsTest {
     final double[] sums = { Double.NaN, 150.0, 30.0 };
 
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
-      store.appendBlock(5, 0L, 4000L, compressed, mins, maxs, sums);
+      store.appendBlock(5, 0L, 4000L, compressed, mins, maxs, sums, null);
 
       final long bucketInterval = 3600000L; // 1 hour
 
@@ -128,7 +128,7 @@ class TimeSeriesBlockStatsTest {
       );
 
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
-      store.aggregateMultiBlocks(0L, 4000L, requests, bucketInterval, result, null);
+      store.aggregateMultiBlocks(0L, 4000L, requests, bucketInterval, result, null, null);
       result.finalizeAvg();
 
       assertThat(result.size()).isEqualTo(1);
@@ -167,7 +167,7 @@ class TimeSeriesBlockStatsTest {
     final double[] sums = { Double.NaN, 100.0, 10.0 };
 
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
-      store.appendBlock(4, 500L, 1500L, compressed, mins, maxs, sums);
+      store.appendBlock(4, 500L, 1500L, compressed, mins, maxs, sums, null);
 
       final long bucketInterval = 1000L;
 
@@ -177,7 +177,7 @@ class TimeSeriesBlockStatsTest {
       );
 
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
-      store.aggregateMultiBlocks(500L, 1500L, requests, bucketInterval, result, null);
+      store.aggregateMultiBlocks(500L, 1500L, requests, bucketInterval, result, null, null);
       result.finalizeAvg();
 
       // Should have 2 buckets: 0 and 1000
@@ -211,12 +211,12 @@ class TimeSeriesBlockStatsTest {
       store.appendBlock(2, 1000L, 2000L, block1,
           new double[] { Double.NaN, 10.0, 1.0 },
           new double[] { Double.NaN, 20.0, 2.0 },
-          new double[] { Double.NaN, 30.0, 3.0 });
+          new double[] { Double.NaN, 30.0, 3.0 }, null);
 
       store.appendBlock(2, 3000L, 4000L, block2,
           new double[] { Double.NaN, 30.0, 3.0 },
           new double[] { Double.NaN, 40.0, 4.0 },
-          new double[] { Double.NaN, 70.0, 7.0 });
+          new double[] { Double.NaN, 70.0, 7.0 }, null);
 
       assertThat(store.getBlockCount()).isEqualTo(2);
 
@@ -227,7 +227,7 @@ class TimeSeriesBlockStatsTest {
       );
 
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
-      store.aggregateMultiBlocks(1000L, 4000L, requests, 3600000L, result, null);
+      store.aggregateMultiBlocks(1000L, 4000L, requests, 3600000L, result, null, null);
 
       // SUM = 10+20+30+40 = 100
       final long bucket = result.getBucketTimestamps().get(0);
@@ -255,12 +255,12 @@ class TimeSeriesBlockStatsTest {
       store.appendBlock(2, 1000L, 2000L, block1,
           new double[] { Double.NaN, 10.0, 1.0 },
           new double[] { Double.NaN, 20.0, 2.0 },
-          new double[] { Double.NaN, 30.0, 3.0 });
+          new double[] { Double.NaN, 30.0, 3.0 }, null);
 
       store.appendBlock(2, 5000L, 6000L, block2,
           new double[] { Double.NaN, 50.0, 5.0 },
           new double[] { Double.NaN, 60.0, 6.0 },
-          new double[] { Double.NaN, 110.0, 11.0 });
+          new double[] { Double.NaN, 110.0, 11.0 }, null);
 
       // Truncate: remove block 1
       store.truncateBefore(3000L);
@@ -274,7 +274,7 @@ class TimeSeriesBlockStatsTest {
       );
 
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
-      store.aggregateMultiBlocks(5000L, 6000L, requests, 3600000L, result, null);
+      store.aggregateMultiBlocks(5000L, 6000L, requests, 3600000L, result, null, null);
 
       final long bucket = result.getBucketTimestamps().get(0);
       assertThat(result.getValue(bucket, 0)).isCloseTo(110.0, within(0.01));
@@ -301,12 +301,12 @@ class TimeSeriesBlockStatsTest {
       store.appendBlock(2, 1000L, 2000L, block1,
           new double[] { Double.NaN, 10.0, 1.0 },
           new double[] { Double.NaN, 20.0, 2.0 },
-          new double[] { Double.NaN, 30.0, 3.0 });
+          new double[] { Double.NaN, 30.0, 3.0 }, null);
 
       store.appendBlock(2, 5000L, 6000L, block2,
           new double[] { Double.NaN, 50.0, 5.0 },
           new double[] { Double.NaN, 60.0, 6.0 },
-          new double[] { Double.NaN, 110.0, 11.0 });
+          new double[] { Double.NaN, 110.0, 11.0 }, null);
 
       store.truncateBefore(3000L);
     }
@@ -315,7 +315,7 @@ class TimeSeriesBlockStatsTest {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       assertThat(store.getBlockCount()).isEqualTo(1);
 
-      final List<Object[]> results = store.scanRange(0L, 10000L, null);
+      final List<Object[]> results = store.scanRange(0L, 10000L, null, null);
       assertThat(results).hasSize(2);
       assertThat((double) results.get(0)[1]).isEqualTo(50.0);
       assertThat((double) results.get(1)[1]).isEqualTo(60.0);

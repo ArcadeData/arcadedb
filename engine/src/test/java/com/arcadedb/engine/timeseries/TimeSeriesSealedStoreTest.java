@@ -85,14 +85,14 @@ class TimeSeriesSealedStoreTest {
       store.appendBlock(5, 1000L, 5000L, compressed,
           new double[] { Double.NaN, Double.NaN, 19.5 },
           new double[] { Double.NaN, Double.NaN, 23.0 },
-          new double[] { Double.NaN, Double.NaN, 106.0 });
+          new double[] { Double.NaN, Double.NaN, 106.0 }, null);
 
       assertThat(store.getBlockCount()).isEqualTo(1);
       assertThat(store.getGlobalMinTimestamp()).isEqualTo(1000L);
       assertThat(store.getGlobalMaxTimestamp()).isEqualTo(5000L);
 
       // Read back
-      final List<Object[]> results = store.scanRange(1000L, 5000L, null);
+      final List<Object[]> results = store.scanRange(1000L, 5000L, null, null);
       assertThat(results).hasSize(5);
 
       assertThat((long) results.get(0)[0]).isEqualTo(1000L);
@@ -117,10 +117,10 @@ class TimeSeriesSealedStoreTest {
           DictionaryCodec.encode(sensorIds),
           GorillaXORCodec.encode(temperatures)
       };
-      store.appendBlock(5, 1000L, 5000L, compressed, NO_MINS, NO_MAXS, NO_SUMS);
+      store.appendBlock(5, 1000L, 5000L, compressed, NO_MINS, NO_MAXS, NO_SUMS, null);
 
       // Query subset
-      final List<Object[]> results = store.scanRange(2000L, 4000L, null);
+      final List<Object[]> results = store.scanRange(2000L, 4000L, null, null);
       assertThat(results).hasSize(3);
       assertThat((long) results.get(0)[0]).isEqualTo(2000L);
       assertThat((long) results.get(2)[0]).isEqualTo(4000L);
@@ -135,21 +135,21 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L, 3000L }),
           DictionaryCodec.encode(new String[] { "A", "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0, 12.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS);
+      }, NO_MINS, NO_MAXS, NO_SUMS, null);
 
       // Block 2: timestamps 4000-6000
       store.appendBlock(3, 4000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 4000L, 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0, 22.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS);
+      }, NO_MINS, NO_MAXS, NO_SUMS, null);
 
       assertThat(store.getBlockCount()).isEqualTo(2);
       assertThat(store.getGlobalMinTimestamp()).isEqualTo(1000L);
       assertThat(store.getGlobalMaxTimestamp()).isEqualTo(6000L);
 
       // Query spanning both blocks
-      final List<Object[]> results = store.scanRange(2000L, 5000L, null);
+      final List<Object[]> results = store.scanRange(2000L, 5000L, null, null);
       assertThat(results).hasSize(4);
     }
   }
@@ -161,16 +161,16 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
           DictionaryCodec.encode(new String[] { "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS);
+      }, NO_MINS, NO_MAXS, NO_SUMS, null);
 
       store.appendBlock(2, 5000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS);
+      }, NO_MINS, NO_MAXS, NO_SUMS, null);
 
       // Query only block 2
-      final List<Object[]> results = store.scanRange(5000L, 6000L, null);
+      final List<Object[]> results = store.scanRange(5000L, 6000L, null, null);
       assertThat(results).hasSize(2);
       assertThat((String) results.get(0)[1]).isEqualTo("B");
     }
@@ -183,19 +183,19 @@ class TimeSeriesSealedStoreTest {
           DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
           DictionaryCodec.encode(new String[] { "A", "A" }),
           GorillaXORCodec.encode(new double[] { 10.0, 11.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS);
+      }, NO_MINS, NO_MAXS, NO_SUMS, null);
 
       store.appendBlock(2, 5000L, 6000L, new byte[][] {
           DeltaOfDeltaCodec.encode(new long[] { 5000L, 6000L }),
           DictionaryCodec.encode(new String[] { "B", "B" }),
           GorillaXORCodec.encode(new double[] { 20.0, 21.0 })
-      }, NO_MINS, NO_MAXS, NO_SUMS);
+      }, NO_MINS, NO_MAXS, NO_SUMS, null);
 
       // Truncate old data
       store.truncateBefore(3000L);
       assertThat(store.getBlockCount()).isEqualTo(1);
 
-      final List<Object[]> results = store.scanRange(0L, 10000L, null);
+      final List<Object[]> results = store.scanRange(0L, 10000L, null, null);
       assertThat(results).hasSize(2);
       assertThat((long) results.get(0)[0]).isEqualTo(5000L);
     }

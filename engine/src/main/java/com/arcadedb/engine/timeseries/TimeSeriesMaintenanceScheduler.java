@@ -1,0 +1,122 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.engine.timeseries;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalTimeSeriesType;
+
+import java.lang.ref.WeakReference;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+
+/**
+ * Background scheduler that automatically applies retention and downsampling
+ * policies for TimeSeries types. Runs as a daemon thread and checks each
+ * registered type at a configurable interval (default: 60 seconds).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class TimeSeriesMaintenanceScheduler {
+
+  private static final long DEFAULT_CHECK_INTERVAL_MS = 60_000; // 1 minute
+
+  private final ScheduledExecutorService executor;
+  private final Map<String, ScheduledFuture<?>> tasks = new ConcurrentHashMap<>();
+
+  public TimeSeriesMaintenanceScheduler() {
+    this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, "ArcadeDB-TS-Maintenance");
+      t.setDaemon(true);
+      return t;
+    });
+  }
+
+  /**
+   * Schedules automatic retention and downsampling for a TimeSeries type.
+   * Only schedules if the type has retention or downsampling policies defined.
+   */
+  public void schedule(final Database database, final LocalTimeSeriesType tsType) {
+    if (tsType.getRetentionMs() <= 0 && tsType.getDownsamplingTiers().isEmpty())
+      return; // No policies to enforce
+
+    final String typeName = tsType.getName();
+    // Avoid duplicate scheduling
+    if (tasks.containsKey(typeName))
+      return;
+
+    final WeakReference<Database> dbRef = new WeakReference<>(database);
+    final WeakReference<LocalTimeSeriesType> typeRef = new WeakReference<>(tsType);
+
+    final ScheduledFuture<?> future = executor.scheduleAtFixedRate(() -> {
+      final Database db = dbRef.get();
+      final LocalTimeSeriesType type = typeRef.get();
+      if (db == null || !db.isOpen() || type == null) {
+        cancel(typeName);
+        return;
+      }
+
+      try {
+        final TimeSeriesEngine engine = type.getEngine();
+        if (engine == null)
+          return;
+
+        final long nowMs = System.currentTimeMillis();
+
+        // Apply retention policy
+        if (type.getRetentionMs() > 0) {
+          final long cutoff = nowMs - type.getRetentionMs();
+          engine.applyRetention(cutoff);
+        }
+
+        // Apply downsampling tiers
+        if (!type.getDownsamplingTiers().isEmpty())
+          engine.applyDownsampling(type.getDownsamplingTiers(), nowMs);
+
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error in TimeSeries maintenance for type '%s': %s", e, typeName, e.getMessage());
+      }
+    }, DEFAULT_CHECK_INTERVAL_MS, DEFAULT_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS);
+
+    tasks.put(typeName, future);
+  }
+
+  /**
+   * Cancels the maintenance task for a specific type.
+   */
+  public void cancel(final String typeName) {
+    final ScheduledFuture<?> future = tasks.remove(typeName);
+    if (future != null)
+      future.cancel(false);
+  }
+
+  /**
+   * Shuts down the scheduler and cancels all tasks.
+   */
+  public void shutdown() {
+    executor.shutdownNow();
+    tasks.clear();
+  }
+}

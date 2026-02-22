@@ -21,6 +21,7 @@ var tsChartInstance = null;
 var tsChartType = "line";
 var tsAutoRefreshTimer = null;
 var tsCurrentFields = [];
+var tsCurrentTags = [];
 var tsLastResult = null;
 
 function initTimeSeries() {
@@ -63,9 +64,13 @@ function tsTypeChanged() {
   var db = getCurrentDatabase();
   var typeName = $("#tsType").val();
   var container = $("#tsFieldCheckboxes");
+  var tagContainer = $("#tsTagFilters");
   container.empty();
+  tagContainer.empty();
   tsCurrentFields = [];
+  tsCurrentTags = [];
   $("#tsTypeCount").html("");
+  $("#tsTagFiltersGroup").hide();
 
   if (!typeName) {
     container.html('<span class="text-muted" style="font-size: 0.8rem;">Select a type first</span>');
@@ -96,7 +101,16 @@ function tsTypeChanged() {
 
     for (var i = 0; i < tsColumns.length; i++) {
       var col = tsColumns[i];
-      if (col.role === "FIELD") {
+      if (col.role === "TAG") {
+        tsCurrentTags.push(col.name);
+        tagContainer.append(
+          '<div class="input-group input-group-sm" style="width: auto; min-width: 130px;">' +
+          '<span class="input-group-text" style="font-size:0.75rem; padding: 2px 6px;">' + escapeHtml(col.name) + '</span>' +
+          '<input type="text" class="form-control form-control-sm ts-tag-input" data-tag="' + escapeHtml(col.name) + '" ' +
+          'placeholder="filter..." style="width: 80px; font-size:0.8rem;">' +
+          '</div>'
+        );
+      } else if (col.role === "FIELD") {
         tsCurrentFields.push(col.name);
         container.append(
           '<div class="form-check form-check-inline">' +
@@ -106,6 +120,9 @@ function tsTypeChanged() {
         );
       }
     }
+
+    if (tsCurrentTags.length > 0)
+      $("#tsTagFiltersGroup").show();
 
     if (tsCurrentFields.length === 0)
       container.html('<span class="text-muted" style="font-size: 0.8rem;">No fields found</span>');
@@ -176,6 +193,11 @@ function tsExecuteQuery() {
 
   if (selectedFields.length > 0 && selectedFields.length < tsCurrentFields.length)
     request.fields = selectedFields;
+
+  // Collect tag filters
+  var tags = tsCollectTagFilters();
+  if (tags)
+    request.tags = tags;
 
   var bucketInterval = parseInt($("#tsBucketInterval").val());
   var effectiveAgg = aggType || "AVG";
@@ -333,6 +355,14 @@ function tsGetLatest() {
 
   var url = "api/v1/ts/" + db + "/latest?type=" + encodeURIComponent(typeName);
 
+  // Add first non-empty tag filter as query param (API supports single tag via query string)
+  $(".ts-tag-input").each(function () {
+    var tagVal = $(this).val().trim();
+    if (tagVal && !url.includes("&tag=")) {
+      url += "&tag=" + encodeURIComponent($(this).data("tag") + ":" + tagVal);
+    }
+  });
+
   jQuery.ajax({
     type: "GET",
     url: url,
@@ -412,6 +442,19 @@ function tsRenderTable(data) {
   }
 }
 
+function tsCollectTagFilters() {
+  var tags = {};
+  var hasTag = false;
+  $(".ts-tag-input").each(function () {
+    var tagVal = $(this).val().trim();
+    if (tagVal) {
+      tags[$(this).data("tag")] = tagVal;
+      hasTag = true;
+    }
+  });
+  return hasTag ? tags : null;
+}
+
 function tsStartAutoRefresh(intervalMs) {
   if (tsAutoRefreshTimer) {
     clearInterval(tsAutoRefreshTimer);
@@ -455,10 +498,100 @@ function tsDropType() {
         globalNotify("Success", "TimeSeries type '" + escapeHtml(typeName) + "' dropped", "success");
         tsLoadTypes();
         $("#tsFieldCheckboxes").empty().html('<span class="text-muted" style="font-size: 0.8rem;">Select a type first</span>');
+        $("#tsTagFilters").empty();
+        $("#tsTagFiltersGroup").hide();
         tsCurrentFields = [];
+        tsCurrentTags = [];
       })
       .fail(function (jqXHR) {
         globalNotify("Error", "Failed to drop type: " + (jqXHR.responseText || "unknown error"), "danger");
+      });
+    }
+  );
+}
+
+function tsAddDownsamplingPolicy(typeName) {
+  var html = "<p style='font-size:0.85rem;'>Add downsampling tiers to <b>" + escapeHtml(typeName) + "</b>. Each tier defines when data older than a threshold gets downsampled to a coarser granularity.</p>";
+  html += "<div id='tsDownsamplingTiers'></div>";
+  html += "<button type='button' class='btn btn-sm btn-outline-secondary mt-2' onclick='tsAddDownsamplingTierRow()'><i class='fa fa-plus'></i> Add Tier</button>";
+
+  globalPrompt("Add Downsampling Policy", html, "Apply", function () {
+    var tiers = [];
+    $("#tsDownsamplingTiers .ts-ds-tier-row").each(function () {
+      var afterVal = parseInt($(this).find(".ts-ds-after").val());
+      var afterUnit = $(this).find(".ts-ds-after-unit").val();
+      var granVal = parseInt($(this).find(".ts-ds-gran").val());
+      var granUnit = $(this).find(".ts-ds-gran-unit").val();
+      if (afterVal > 0 && granVal > 0)
+        tiers.push({ after: afterVal, afterUnit: afterUnit, gran: granVal, granUnit: granUnit });
+    });
+
+    if (tiers.length === 0) {
+      globalNotify("Error", "At least one tier is required", "danger");
+      return;
+    }
+
+    var command = "ALTER TIMESERIES TYPE `" + typeName + "` ADD DOWNSAMPLING POLICY";
+    for (var i = 0; i < tiers.length; i++)
+      command += " AFTER " + tiers[i].after + " " + tiers[i].afterUnit + " GRANULARITY " + tiers[i].gran + " " + tiers[i].granUnit;
+
+    var db = getCurrentDatabase();
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + db,
+      data: JSON.stringify({ language: "sql", command: command }),
+      contentType: "application/json",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      }
+    })
+    .done(function () {
+      globalNotify("Success", "Downsampling policy added", "success");
+      tsLoadSchema();
+    })
+    .fail(function (jqXHR) {
+      globalNotify("Error", "Failed: " + (jqXHR.responseText || "unknown error"), "danger");
+    });
+  });
+
+  setTimeout(function () {
+    tsAddDownsamplingTierRow();
+  }, 200);
+}
+
+function tsAddDownsamplingTierRow() {
+  var unitOptions = "<option value='HOURS' selected>Hours</option><option value='DAYS'>Days</option><option value='MINUTES'>Minutes</option>";
+  var html = "<div class='d-flex gap-2 mb-1 ts-ds-tier-row align-items-center'>";
+  html += "<span style='font-size:0.82rem; white-space:nowrap;'>After</span>";
+  html += "<input class='form-control form-control-sm ts-ds-after' type='number' min='1' placeholder='1' style='width:60px;'>";
+  html += "<select class='form-select form-select-sm ts-ds-after-unit' style='width:auto;'>" + unitOptions + "</select>";
+  html += "<span style='font-size:0.82rem; white-space:nowrap;'>Granularity</span>";
+  html += "<input class='form-control form-control-sm ts-ds-gran' type='number' min='1' placeholder='5' style='width:60px;'>";
+  html += "<select class='form-select form-select-sm ts-ds-gran-unit' style='width:auto;'>" + unitOptions + "</select>";
+  html += "<button type='button' class='btn btn-sm btn-outline-danger' onclick='$(this).closest(\".ts-ds-tier-row\").remove()'><i class='fa fa-times'></i></button>";
+  html += "</div>";
+  $("#tsDownsamplingTiers").append(html);
+}
+
+function tsDropDownsamplingPolicy(typeName) {
+  globalConfirm("Drop Downsampling Policy", "Remove all downsampling tiers from <b>" + escapeHtml(typeName) + "</b>?", "warning",
+    function () {
+      var db = getCurrentDatabase();
+      jQuery.ajax({
+        type: "POST",
+        url: "api/v1/command/" + db,
+        data: JSON.stringify({ language: "sql", command: "ALTER TIMESERIES TYPE `" + typeName + "` DROP DOWNSAMPLING POLICY" }),
+        contentType: "application/json",
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        }
+      })
+      .done(function () {
+        globalNotify("Success", "Downsampling policy removed", "success");
+        tsLoadSchema();
+      })
+      .fail(function (jqXHR) {
+        globalNotify("Error", "Failed: " + (jqXHR.responseText || "unknown error"), "danger");
       });
     }
   );
@@ -604,11 +737,13 @@ function tsRenderTypeSchema(row) {
   html += "<tr><td style='width:200px;'>Timestamp Column</td><td><code>" + escapeHtml(row.timestampColumn || "ts") + "</code></td></tr>";
   html += "<tr><td>Retention</td><td>" + (row.retentionMs > 0 ? formatTsDuration(row.retentionMs) : "<span class='text-muted'>unlimited</span>") + "</td></tr>";
   html += "<tr><td>Compaction Interval</td><td>" + (row.compactionBucketIntervalMs > 0 ? formatTsDuration(row.compactionBucketIntervalMs) : "<span class='text-muted'>none</span>") + "</td></tr>";
+  var hasAutoMaintenance = (row.retentionMs > 0) || (row.downsamplingTiers && row.downsamplingTiers.length > 0);
+  html += "<tr><td>Auto Maintenance</td><td>" + (hasAutoMaintenance ? "<span class='badge bg-success'>Active</span> <small class='text-muted'>scheduler runs every 60s</small>" : "<span class='text-muted'>inactive (no retention or downsampling configured)</span>") + "</td></tr>";
   html += "</tbody></table></div>";
 
   // Downsampling tiers
+  html += "<h6 style='font-size:0.82rem;margin-top:12px;'>Downsampling Tiers</h6>";
   if (row.downsamplingTiers && row.downsamplingTiers.length > 0) {
-    html += "<h6 style='font-size:0.82rem;margin-top:12px;'>Downsampling Tiers</h6>";
     html += "<div class='table-responsive'>";
     html += "<table class='table table-sm db-detail-table'>";
     html += "<thead><tr><th>After</th><th>Granularity</th></tr></thead><tbody>";
@@ -617,7 +752,11 @@ function tsRenderTypeSchema(row) {
       html += "<tr><td>" + formatTsDuration(tier.afterMs) + "</td><td>" + formatTsDuration(tier.granularityMs) + "</td></tr>";
     }
     html += "</tbody></table></div>";
+    html += "<button class='btn btn-sm btn-outline-danger mt-1' onclick='tsDropDownsamplingPolicy(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-trash'></i> Drop Policy</button> ";
+  } else {
+    html += "<p class='text-muted' style='font-size:0.82rem;'>No downsampling policy configured.</p>";
   }
+  html += "<button class='btn btn-sm btn-outline-primary mt-1' onclick='tsAddDownsamplingPolicy(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-plus'></i> Add Downsampling Policy</button>";
 
   // Per-shard stats
   if (row.shards && row.shards.length > 0) {

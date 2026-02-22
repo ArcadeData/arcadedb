@@ -224,7 +224,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             final MultiColumnAggregationResult shardResult =
                 new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets);
 
-            shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, shardResult, shardMetrics);
+            shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, shardResult, shardMetrics, tagFilter);
 
             if (metrics != null)
               metrics.mergeFrom(shardMetrics);
@@ -255,9 +255,9 @@ public class TimeSeriesEngine implements AutoCloseable {
         final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
         while (mutableIter.hasNext()) {
           final Object[] row = mutableIter.next();
-          final long ts = (long) row[0];
           if (tagFilter != null && !tagFilter.matches(row))
             continue;
+          final long ts = (long) row[0];
           final long bucketTs = (ts / bucketIntervalMs) * bucketIntervalMs;
           for (int r = 0; r < reqCount; r++) {
             if (isCount[r])
@@ -283,14 +283,14 @@ public class TimeSeriesEngine implements AutoCloseable {
       final double[] rowValues = new double[reqCount];
 
       for (final TimeSeriesShard shard : shards) {
-        shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, result, metrics);
+        shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, result, metrics, tagFilter);
 
         final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
         while (mutableIter.hasNext()) {
           final Object[] row = mutableIter.next();
-          final long ts = (long) row[0];
           if (tagFilter != null && !tagFilter.matches(row))
             continue;
+          final long ts = (long) row[0];
           final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
 
           for (int r = 0; r < reqCount; r++) {

@@ -27,14 +27,18 @@ import java.util.List;
 
 /**
  * Fills null values in a series using the specified method.
- * Syntax: interpolate(value, method)
- * Methods: 'prev' (carry forward), 'zero' (replace with 0), 'none' (leave nulls)
+ * Syntax: interpolate(value, method [, timestamp])
+ * Methods: 'prev' (carry forward), 'zero' (replace with 0), 'none' (leave nulls),
+ *          'linear' (linear interpolation between surrounding non-null values, requires timestamp parameter)
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SQLFunctionInterpolate extends SQLAggregatedFunction {
   public static final String NAME = "ts.interpolate";
 
-  private final List<Object> values = new ArrayList<>();
-  private String method;
+  private final List<Object> values     = new ArrayList<>();
+  private final List<Long>   timestamps = new ArrayList<>();
+  private       String       method;
 
   public SQLFunctionInterpolate() {
     super(NAME);
@@ -47,6 +51,13 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
       method = params[1].toString();
 
     values.add(params[0]);
+
+    // Capture timestamp if provided (needed for linear interpolation)
+    if (params.length > 2 && params[2] != null)
+      timestamps.add(SQLFunctionRate.toEpochMillis(params[2]));
+    else
+      timestamps.add((long) timestamps.size()); // Use index as fallback
+
     return null;
   }
 
@@ -78,6 +89,10 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
       }
       break;
 
+    case "linear":
+      applyLinearInterpolation(result);
+      break;
+
     default: // "none"
       result.addAll(values);
       break;
@@ -85,8 +100,64 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
     return result;
   }
 
+  private void applyLinearInterpolation(final List<Object> result) {
+    final int size = values.size();
+
+    // First pass: copy all values
+    for (final Object v : values)
+      result.add(v);
+
+    // Second pass: interpolate nulls between non-null values
+    int i = 0;
+    while (i < size) {
+      if (result.get(i) != null) {
+        i++;
+        continue;
+      }
+
+      // Find the previous non-null value
+      final int prevIdx = i - 1;
+      if (prevIdx < 0 || result.get(prevIdx) == null) {
+        // No previous value - leave null
+        i++;
+        continue;
+      }
+
+      // Find the next non-null value
+      int nextIdx = i + 1;
+      while (nextIdx < size && values.get(nextIdx) == null)
+        nextIdx++;
+
+      if (nextIdx >= size) {
+        // No next value - leave nulls
+        break;
+      }
+
+      // Interpolate all nulls between prevIdx and nextIdx
+      final double prevVal = ((Number) result.get(prevIdx)).doubleValue();
+      final double nextVal = ((Number) values.get(nextIdx)).doubleValue();
+      final long prevTs = timestamps.get(prevIdx);
+      final long nextTs = timestamps.get(nextIdx);
+      final long tsDelta = nextTs - prevTs;
+
+      if (tsDelta == 0) {
+        // Same timestamp - just use prev value
+        for (int j = i; j < nextIdx; j++)
+          result.set(j, prevVal);
+      } else {
+        for (int j = i; j < nextIdx; j++) {
+          final long currentTs = timestamps.get(j);
+          final double fraction = (double) (currentTs - prevTs) / tsDelta;
+          result.set(j, prevVal + fraction * (nextVal - prevVal));
+        }
+      }
+
+      i = nextIdx + 1;
+    }
+  }
+
   @Override
   public String getSyntax() {
-    return NAME + "(<value>, <method>)";
+    return NAME + "(<value>, <method> [, <timestamp>])";
   }
 }
