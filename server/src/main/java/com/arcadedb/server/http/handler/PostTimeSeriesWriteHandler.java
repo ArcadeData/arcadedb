@@ -56,6 +56,11 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean requiresJsonPayload() {
+    return false;
+  }
+
+  @Override
   protected String parseRequestPayload(final io.undertow.server.HttpServerExchange e) {
     // Store the raw payload for Line Protocol parsing
     rawPayload = super.parseRequestPayload(e);

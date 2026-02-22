@@ -19,11 +19,16 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesShard;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
@@ -63,9 +68,12 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
           r.setProperty("name", type.getName());
 
+          final boolean isTimeSeries = type instanceof LocalTimeSeriesType;
           String t = "?";
 
-          if (type.getType() == Document.RECORD_TYPE)
+          if (isTimeSeries)
+            t = LocalTimeSeriesType.KIND_CODE;
+          else if (type.getType() == Document.RECORD_TYPE)
             t = "document";
           else if (type.getType() == Vertex.RECORD_TYPE)
             t = "vertex";
@@ -73,7 +81,11 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             t = "edge";
 
           r.setProperty("type", t);
-          r.setProperty("records", context.getDatabase().countType(typeName, false));
+
+          if (isTimeSeries)
+            populateTimeSeriesMetadata(r, (LocalTimeSeriesType) type);
+          else
+            r.setProperty("records", context.getDatabase().countType(typeName, false));
           r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
           r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
 
@@ -162,6 +174,102 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
         cursor = 0;
       }
     };
+  }
+
+  private void populateTimeSeriesMetadata(final ResultInternal r, final LocalTimeSeriesType tsType) {
+    r.setProperty("timestampColumn", tsType.getTimestampColumn());
+    r.setProperty("shardCount", tsType.getShardCount());
+    r.setProperty("retentionMs", tsType.getRetentionMs());
+    r.setProperty("compactionBucketIntervalMs", tsType.getCompactionBucketIntervalMs());
+
+    // Column definitions
+    final List<ResultInternal> tsColResults = new ArrayList<>();
+    for (final ColumnDefinition col : tsType.getTsColumns()) {
+      final ResultInternal colR = new ResultInternal();
+      colR.setProperty("name", col.getName());
+      colR.setProperty("dataType", col.getDataType().name());
+      colR.setProperty("role", col.getRole().name());
+      tsColResults.add(colR);
+    }
+    r.setProperty("tsColumns", tsColResults);
+
+    // Downsampling tiers
+    final List<DownsamplingTier> tiers = tsType.getDownsamplingTiers();
+    if (tiers != null && !tiers.isEmpty()) {
+      final List<ResultInternal> tierResults = new ArrayList<>();
+      for (final DownsamplingTier tier : tiers) {
+        final ResultInternal tierR = new ResultInternal();
+        tierR.setProperty("afterMs", tier.afterMs());
+        tierR.setProperty("granularityMs", tier.granularityMs());
+        tierResults.add(tierR);
+      }
+      r.setProperty("downsamplingTiers", tierResults);
+    }
+
+    // Engine runtime stats (per-shard diagnostics)
+    final TimeSeriesEngine engine = tsType.getEngine();
+    if (engine != null) {
+      long totalSamples = 0;
+      long globalMin = Long.MAX_VALUE;
+      long globalMax = Long.MIN_VALUE;
+
+      final List<ResultInternal> shardStats = new ArrayList<>();
+      for (int s = 0; s < engine.getShardCount(); s++) {
+        final TimeSeriesShard shard = engine.getShard(s);
+        final ResultInternal shardR = new ResultInternal();
+        shardR.setProperty("shard", s);
+
+        try {
+          final long sealedSamples = shard.getSealedStore().getTotalSampleCount();
+          final long mutableSamples = shard.getMutableBucket().getSampleCount();
+          final int sealedBlocks = shard.getSealedStore().getBlockCount();
+
+          shardR.setProperty("sealedBlocks", sealedBlocks);
+          shardR.setProperty("sealedSamples", sealedSamples);
+          shardR.setProperty("mutableSamples", mutableSamples);
+          shardR.setProperty("totalSamples", sealedSamples + mutableSamples);
+
+          totalSamples += sealedSamples + mutableSamples;
+
+          if (sealedBlocks > 0) {
+            final long min = shard.getSealedStore().getGlobalMinTimestamp();
+            final long max = shard.getSealedStore().getGlobalMaxTimestamp();
+            shardR.setProperty("minTimestamp", min);
+            shardR.setProperty("maxTimestamp", max);
+            if (min < globalMin)
+              globalMin = min;
+            if (max > globalMax)
+              globalMax = max;
+          }
+
+          if (mutableSamples > 0) {
+            final long mMin = shard.getMutableBucket().getMinTimestamp();
+            final long mMax = shard.getMutableBucket().getMaxTimestamp();
+            shardR.setProperty("mutableMinTimestamp", mMin);
+            shardR.setProperty("mutableMaxTimestamp", mMax);
+            if (mMin < globalMin)
+              globalMin = mMin;
+            if (mMax > globalMax)
+              globalMax = mMax;
+          }
+
+        } catch (final Exception e) {
+          shardR.setProperty("error", e.getMessage());
+        }
+
+        shardStats.add(shardR);
+      }
+
+      r.setProperty("records", totalSamples);
+      r.setProperty("shards", shardStats);
+
+      if (globalMin != Long.MAX_VALUE)
+        r.setProperty("globalMinTimestamp", globalMin);
+      if (globalMax != Long.MIN_VALUE)
+        r.setProperty("globalMaxTimestamp", globalMax);
+    } else {
+      r.setProperty("records", 0L);
+    }
   }
 
   @Override

@@ -52,7 +52,9 @@ import com.arcadedb.server.http.handler.PostLogoutHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
 import com.arcadedb.server.http.handler.PostServerCommandHandler;
+import com.arcadedb.server.http.handler.PostTimeSeriesQueryHandler;
 import com.arcadedb.server.http.handler.PostTimeSeriesWriteHandler;
+import com.arcadedb.server.http.handler.GetTimeSeriesLatestHandler;
 import com.arcadedb.server.http.ssl.SslUtils;
 import com.arcadedb.server.http.ssl.TlsProtocol;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
@@ -196,6 +198,8 @@ public class HttpServer implements ServerPlugin {
         .post("/server/groups", new PostGroupHandler(this))
         .delete("/server/groups", new DeleteGroupHandler(this))
         .post("/ts/{database}/write", new PostTimeSeriesWriteHandler(this))
+        .post("/ts/{database}/query", new PostTimeSeriesQueryHandler(this))
+        .get("/ts/{database}/latest", new GetTimeSeriesLatestHandler(this))
     );
 
     // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling

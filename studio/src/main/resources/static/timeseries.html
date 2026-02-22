@@ -1,0 +1,316 @@
+<div class="tab-pane fade" id="tab-timeseries" role="tabpanel">
+  <div class="d-flex align-items-center justify-content-between flex-shrink-0" style="padding: 10px 12px 6px;">
+    <div class="d-flex align-items-center gap-2">
+      <i class="fa fa-chart-line" style="font-size: 1.2rem; color: #00aeee;"></i>
+      <label>Connected as&nbsp;</label><label id="tsUser"></label>@
+      <select id="tsInputDatabase" class="inputDatabase form-select form-select-sm" style="width: auto; display: inline-block;"></select>
+      <select id="tsType" class="form-select form-select-sm" style="width: auto; display: inline-block; min-width: 150px;" onchange="tsTypeChanged()">
+        <option value="">-- select type --</option>
+      </select>
+      <span id="tsTypeCount" style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;"></span>
+    </div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-sm db-action-btn" onclick="createTimeSeriesType()"><i class="fa fa-plus"></i> Create</button>
+      <button class="btn btn-sm db-action-btn db-action-btn-danger" onclick="tsDropType()"><i class="fa fa-trash"></i> Drop</button>
+    </div>
+  </div>
+
+  <ul class="nav nav-tabs flex-shrink-0" id="tabs-timeseries" style="padding: 0 12px;">
+    <li class="nav-item"><a data-toggle="tab" href="#tab-ts-query" class="active show nav-link" id="tab-ts-query-sel">Query</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-ts-schema" class="nav-link" id="tab-ts-schema-sel" onclick="tsLoadSchema()">Schema</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-ts-ingestion" class="nav-link" id="tab-ts-ingestion-sel">Ingestion</a></li>
+  </ul>
+
+  <div class="tab-content">
+    <!-- Query Tab -->
+    <div class="tab-pane fade show active" id="tab-ts-query" role="tabpanel">
+      <!-- Controls: all in one row -->
+      <div class="px-3 py-2" style="border-bottom: 1px solid var(--border-light);">
+        <div class="d-flex flex-wrap gap-2 align-items-end">
+          <div>
+            <label class="form-label form-label-sm mb-1">Time Range</label>
+            <select id="tsTimeRange" class="form-select form-select-sm" style="width: 110px;" onchange="tsTimeRangeChanged()">
+              <option value="5m">Last 5 min</option>
+              <option value="1h">Last 1 hour</option>
+              <option value="24h">Last 24 hours</option>
+              <option value="7d">Last 7 days</option>
+              <option value="all" selected>All data</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div id="tsCustomFromGroup" style="display:none;">
+            <label class="form-label form-label-sm mb-1">From</label>
+            <input type="datetime-local" id="tsCustomFrom" class="form-control form-control-sm" style="width: 170px;" />
+          </div>
+          <div id="tsCustomToGroup" style="display:none;">
+            <label class="form-label form-label-sm mb-1">To</label>
+            <input type="datetime-local" id="tsCustomTo" class="form-control form-control-sm" style="width: 170px;" />
+          </div>
+          <div>
+            <label class="form-label form-label-sm mb-1">Aggregation</label>
+            <select id="tsAggType" class="form-select form-select-sm" style="width: 110px;">
+              <option value="">None (raw)</option>
+              <option value="AVG">AVG</option>
+              <option value="SUM">SUM</option>
+              <option value="MIN">MIN</option>
+              <option value="MAX">MAX</option>
+              <option value="COUNT">COUNT</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label form-label-sm mb-1">Bucket</label>
+            <select id="tsBucketInterval" class="form-select form-select-sm" style="width: 90px;">
+              <option value="1000">1 sec</option>
+              <option value="10000">10 sec</option>
+              <option value="60000" selected>1 min</option>
+              <option value="300000">5 min</option>
+              <option value="3600000">1 hour</option>
+              <option value="86400000">1 day</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label form-label-sm mb-1">Fields</label>
+            <div id="tsFieldCheckboxes" class="d-flex flex-wrap gap-2" style="min-height: 30px;">
+              <span class="text-muted" style="font-size: 0.8rem;">Select a type first</span>
+            </div>
+          </div>
+          <div class="d-flex gap-2 align-items-end ms-auto">
+            <button class="btn btn-sm btn-primary" style="height: 31px; line-height: 1;" onclick="tsExecuteQuery()"><i class="fa fa-play"></i> Query</button>
+            <button class="btn btn-sm btn-outline-secondary" style="height: 31px; line-height: 1;" onclick="tsGetLatest()"><i class="fa fa-arrow-down"></i> Latest</button>
+            <div class="dropdown">
+              <button class="btn btn-sm btn-outline-secondary dropdown-toggle" style="height: 31px; line-height: 1;" data-bs-toggle="dropdown">
+                <i class="fa fa-sync"></i>
+              </button>
+              <ul class="dropdown-menu">
+                <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(0)">Off</a></li>
+                <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(10000)">10s</a></li>
+                <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(30000)">30s</a></li>
+                <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(60000)">1 min</a></li>
+              </ul>
+            </div>
+            <span id="tsQueryStats" style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chart -->
+      <div class="px-3 py-2">
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div class="d-flex align-items-center gap-2">
+                <span style="font-size: 0.85rem; font-weight: 500;">Chart</span>
+                <div class="form-check form-switch mb-0" style="padding-left: 2.5em;">
+                  <input class="form-check-input" type="checkbox" id="tsChartEnabled" checked onchange="tsTogglePanel('chart')">
+                </div>
+              </div>
+              <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-secondary active" id="tsChartLineBtn" onclick="tsToggleChartType('line')">Line</button>
+                <button class="btn btn-outline-secondary" id="tsChartAreaBtn" onclick="tsToggleChartType('area')">Area</button>
+              </div>
+            </div>
+            <div id="tsChart" style="min-height: 350px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Data Table -->
+      <div class="px-3 py-2">
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <span style="font-size: 0.85rem; font-weight: 500;">Data</span>
+              <div class="form-check form-switch mb-0" style="padding-left: 2.5em;">
+                <input class="form-check-input" type="checkbox" id="tsTableEnabled" checked onchange="tsTogglePanel('table')">
+              </div>
+            </div>
+            <div class="table-responsive">
+              <table id="tsDataTable" class="table table-sm table-striped" style="width:100%"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Schema Tab -->
+    <div class="tab-pane fade" id="tab-ts-schema" role="tabpanel">
+      <div class="px-3 py-3">
+        <div id="tsSchemaContent">
+          <p class="text-muted">Select a database to view TimeSeries schema.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ingestion Tab -->
+    <div class="tab-pane fade" id="tab-ts-ingestion" role="tabpanel">
+      <div class="px-3 py-3" style="max-width: 960px;">
+
+        <h5 style="margin-bottom: 16px;">Ingesting Data into TimeSeries</h5>
+        <p style="font-size: 0.9rem; color: var(--text-muted);">
+          ArcadeDB TimeSeries supports multiple ingestion methods. Before ingesting data, create a TimeSeries type that defines
+          the timestamp column, tags (dimensions for filtering), and fields (numeric measurements).
+        </p>
+
+        <!-- 1. Create Type -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-plus-circle" style="color: #00aeee;"></i> 1. Create a TimeSeries Type (SQL)</h6>
+            <p style="font-size: 0.85rem;">Define the schema before ingesting. Tags are indexed dimensions for fast filtering; fields are the numeric measurements.</p>
+<pre class="ts-ingest-code"><code>CREATE TIMESERIES TYPE stocks
+  TIMESTAMP ts
+  TAGS (symbol STRING)
+  FIELDS (open DOUBLE, close DOUBLE, high DOUBLE, low DOUBLE, volume LONG)
+  SHARDS 4</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              Optional parameters: <code>RETENTION &lt;ms&gt;</code> for automatic data expiration,
+              <code>COMPACTION_INTERVAL &lt;ms&gt;</code> for time-bucketed compaction,
+              <code>IF NOT EXISTS</code> to avoid errors if the type already exists.
+            </p>
+          </div>
+        </div>
+
+        <!-- 2. InfluxDB Line Protocol -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-bolt" style="color: #f59e0b;"></i> 2. InfluxDB Line Protocol (HTTP API) &mdash; Recommended for Bulk Ingestion</h6>
+            <p style="font-size: 0.85rem;">
+              The fastest way to ingest large volumes of data. Send one or more lines in
+              <a href="https://docs.influxdata.com/influxdb/v2/reference/syntax/line-protocol/" target="_blank">InfluxDB Line Protocol</a> format.
+              Each line is: <code>measurement,tag1=val1 field1=value1,field2=value2 timestamp</code>
+            </p>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Endpoint</div>
+<pre class="ts-ingest-code"><code>POST /api/v1/ts/{database}/write?precision=ns|us|ms|s</code></pre>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Line Protocol Format</div>
+<pre class="ts-ingest-code"><code># measurement,tag1=val1,tag2=val2 field1=value1,field2=value2 timestamp
+stocks,symbol=TSLA open=250.64,close=252.10,high=253.50,low=249.80,volume=125000i 1700000000000000000
+stocks,symbol=AAPL open=195.20,close=196.50,high=197.00,low=194.80,volume=89000i  1700000000000000000</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">
+              <b>Data type hints:</b> integers require an <code>i</code> suffix (e.g. <code>volume=125000i</code>), floats are bare numbers,
+              strings are quoted (<code>"value"</code>). Timestamp precision defaults to nanoseconds; use <code>?precision=ms</code> for milliseconds.
+            </p>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">curl Example &mdash; Single Point</div>
+<pre class="ts-ingest-code"><code>curl -u root:password -X POST \
+  "http://localhost:2480/api/v1/ts/mydb/write?precision=ms" \
+  -H "Content-Type: text/plain" \
+  --data-binary 'stocks,symbol=TSLA open=250.64,close=252.10,high=253.50,low=249.80,volume=125000i 1700000000000'</code></pre>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">curl + Python Example &mdash; Generate 5,000 Sample Points</div>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">Generates realistic stock data for 5 symbols, 1,000 points each at 1-minute intervals:</p>
+<pre class="ts-ingest-code"><code>curl -s -u root:password -X POST \
+  "http://localhost:2480/api/v1/ts/mydb/write" \
+  -H "Content-Type: text/plain" \
+  --data-binary "$(python3 -c "
+import random, time
+
+symbols = ['TSLA', 'AAPL', 'GOOGL', 'MSFT', 'AMZN']
+bases = {'TSLA': 250, 'AAPL': 195, 'GOOGL': 175, 'MSFT': 420, 'AMZN': 185}
+
+now_ns = int(time.time() * 1e9)
+interval = 60 * 1_000_000_000  # 1 min in ns
+
+lines = []
+for sym in symbols:
+    price = bases[sym]
+    for i in range(1000):
+        ts = now_ns - (1000 - i) * interval
+        o = round(price + random.uniform(-2, 2), 2)
+        c = round(o + random.uniform(-3, 3), 2)
+        h = round(max(o, c) + random.uniform(0, 2), 2)
+        l = round(min(o, c) - random.uniform(0, 2), 2)
+        v = random.randint(10000, 500000)
+        lines.append(f'stocks,symbol={sym} open={o},close={c},high={h},low={l},volume={v}i {ts}')
+        price = c
+print('\n'.join(lines))
+")"</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              Returns <code>204 No Content</code> on success. Unknown measurement names (no matching TimeSeries type) are silently skipped.
+            </p>
+          </div>
+        </div>
+
+        <!-- 3. SQL INSERT -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-database" style="color: #8b5cf6;"></i> 3. SQL INSERT (via Command API)</h6>
+            <p style="font-size: 0.85rem;">
+              Use standard SQL INSERT statements through the generic command endpoint. Useful for small batches or when integrating
+              with existing SQL-based workflows.
+            </p>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Endpoint</div>
+<pre class="ts-ingest-code"><code>POST /api/v1/command/{database}</code></pre>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">SQL Syntax</div>
+<pre class="ts-ingest-code"><code>INSERT INTO stocks (ts, symbol, open, close, high, low, volume)
+  VALUES (1700000000000, 'TSLA', 250.64, 252.10, 253.50, 249.80, 125000)</code></pre>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">curl Example</div>
+<pre class="ts-ingest-code"><code>curl -u root:password -X POST \
+  "http://localhost:2480/api/v1/command/mydb" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "language": "sql",
+    "command": "INSERT INTO stocks (ts, symbol, open, close, high, low, volume) VALUES (1700000000000, '\''TSLA'\'', 250.64, 252.10, 253.50, 249.80, 125000)"
+  }'</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              Timestamps are in milliseconds (epoch). Each INSERT runs inside a transaction. For bulk inserts, prefer the Line Protocol endpoint.
+            </p>
+          </div>
+        </div>
+
+        <!-- 4. Java API -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-code" style="color: #10b981;"></i> 4. Java Embedded API</h6>
+            <p style="font-size: 0.85rem;">
+              For applications embedding ArcadeDB directly, use the <code>TimeSeriesEngine</code> API for maximum performance with zero network overhead.
+            </p>
+<pre class="ts-ingest-code"><code>// Get the TimeSeries type and engine
+LocalTimeSeriesType tsType = (LocalTimeSeriesType) db.getSchema().getType("stocks");
+TimeSeriesEngine engine = tsType.getEngine();
+
+// Prepare sample data (batch of N samples)
+long[] timestamps = new long[] { System.currentTimeMillis(), System.currentTimeMillis() + 1000 };
+Object[][] columns = new Object[][] {
+    { "TSLA", "TSLA" },        // symbol (tag)
+    { 250.64, 251.30 },        // open
+    { 252.10, 253.00 },        // close
+    { 253.50, 254.00 },        // high
+    { 249.80, 250.50 },        // low
+    { 125000L, 130000L }       // volume
+};
+
+db.begin();
+engine.appendSamples(timestamps, columns);
+db.commit();</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              The columns array must match the order of non-timestamp columns as defined in the type schema.
+              Use <code>tsType.getTsColumns()</code> to inspect the column order.
+            </p>
+          </div>
+        </div>
+
+        <!-- Comparison Table -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-balance-scale" style="color: #6366f1;"></i> Method Comparison</h6>
+            <div class="table-responsive">
+              <table class="table table-sm" style="font-size: 0.85rem;">
+                <thead><tr><th>Method</th><th>Best For</th><th>Throughput</th><th>Batching</th></tr></thead>
+                <tbody>
+                  <tr><td><b>Line Protocol</b></td><td>Bulk ingestion, IoT, metrics collection</td><td>Highest</td><td>Native (multi-line)</td></tr>
+                  <tr><td><b>SQL INSERT</b></td><td>Small batches, ad-hoc inserts, SQL workflows</td><td>Medium</td><td>One row per statement</td></tr>
+                  <tr><td><b>Java API</b></td><td>Embedded applications, maximum control</td><td>Highest</td><td>Native (array-based)</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>

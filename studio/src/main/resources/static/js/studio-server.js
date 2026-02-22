@@ -16,6 +16,8 @@ function updateServer(callback) {
 
   lastUpdate = currentSecond;
 
+  $("#serverSummaryLoading").show();
+
   jQuery
     .ajax({
       type: "GET",
@@ -25,6 +27,7 @@ function updateServer(callback) {
       },
     })
     .done(function (data) {
+      $("#serverSummaryLoading").hide();
       let version = data.version;
       let buildInfo = '';
       let pos = data.version.indexOf("(build");
@@ -58,6 +61,7 @@ function updateServer(callback) {
       if (callback) callback();
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
+      $("#serverSummaryLoading").hide();
       globalNotifyError(jqXHR.responseText);
     });
 }
