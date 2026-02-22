@@ -34,7 +34,7 @@
     <name>ArcadeDB RedisW</name>
 
     <properties>
-        <jedis.version>7.2.1</jedis.version>
+        <jedis.version>7.3.0</jedis.version>
     </properties>
 
     <dependencies>
