@@ -737,7 +737,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         globalMaxTs = Long.MIN_VALUE;
 
         for (final BlockEntry oldEntry : retained)
-          copyBlockToFile(tempFile, oldEntry, colCount);
+          copyBlockToFile(tempFile, oldEntry, colCount, blockDirectory);
       }
 
       // Atomic file swap — if move fails, the original file remains intact
@@ -990,13 +990,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Write all blocks in ascending minTimestamp order
       for (final WriteSpec spec : writeOrder) {
         if (spec.retained()) {
-          copyBlockToFile(tempFile, retained.get(spec.idx()), colCount);
+          copyBlockToFile(tempFile, retained.get(spec.idx()), colCount, blockDirectory);
         } else {
           final int b = spec.idx();
           final long[] meta = newMeta.get(b);
-          writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
+          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
               newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
               newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+          blockDirectory.add(entry);
+          if (entry.minTimestamp < globalMinTs)
+            globalMinTs = entry.minTimestamp;
+          if (entry.maxTimestamp > globalMaxTs)
+            globalMaxTs = entry.maxTimestamp;
         }
       }
     }
@@ -1014,16 +1019,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     rewriteHeader();
   }
 
-  private void copyBlockToFile(final RandomAccessFile tempFile, final BlockEntry oldEntry, final int colCount) throws IOException {
+  private void copyBlockToFile(final RandomAccessFile tempFile, final BlockEntry oldEntry, final int colCount,
+      final List<BlockEntry> target) throws IOException {
     final byte[][] compressedCols = new byte[colCount][];
     for (int c = 0; c < colCount; c++)
       compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
 
-    writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp, oldEntry.maxTimestamp,
-        compressedCols, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums, colCount, oldEntry.tagDistinctValues);
+    final BlockEntry newEntry = writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp,
+        oldEntry.maxTimestamp, compressedCols, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums,
+        colCount, oldEntry.tagDistinctValues);
+    target.add(newEntry);
+    if (newEntry.minTimestamp < globalMinTs)
+      globalMinTs = newEntry.minTimestamp;
+    if (newEntry.maxTimestamp > globalMaxTs)
+      globalMaxTs = newEntry.maxTimestamp;
   }
 
-  private void writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
+  /**
+   * Writes a single block to a temp file and returns the resulting {@link BlockEntry}.
+   * Does NOT modify {@link #blockDirectory} or the global min/max timestamps —
+   * callers are responsible for those updates.
+   */
+  private BlockEntry writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
       final long minTs, final long maxTs, final byte[][] compressedCols,
       final double[] columnMins, final double[] columnMaxs, final double[] columnSums,
       final int colCount, final String[][] tagDistinctValues) throws IOException {
@@ -1079,12 +1096,146 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     crcBuf.flip();
     tempFile.write(crcBuf.array());
 
-    blockDirectory.add(newEntry);
+    return newEntry;
+  }
 
-    if (minTs < globalMinTs)
-      globalMinTs = minTs;
-    if (maxTs > globalMaxTs)
-      globalMaxTs = maxTs;
+  /**
+   * Lock-free phase of compaction: snapshots existing sealed blocks (under a brief read lock),
+   * then writes all of them plus the new compressed blocks to {@code .ts.sealed.tmp} — entirely
+   * without holding any lock.
+   * <p>
+   * Call {@link #commitTempCompactionFile(List)} under the caller's write lock to atomically
+   * swap the temp file for the live sealed file and install the returned block directory.
+   *
+   * @param newCompressed      compressed column bytes for each new block
+   * @param newMeta            {@code [minTs, maxTs, sampleCount]} for each new block
+   * @param newMins            per-column min stats for each new block
+   * @param newMaxs            per-column max stats for each new block
+   * @param newSums            per-column sum stats for each new block
+   * @param newTagDistinctValues tag metadata for each new block (may be null)
+   *
+   * @return the new {@link BlockEntry} list to pass to {@link #commitTempCompactionFile(List)}
+   */
+  List<BlockEntry> writeTempCompactionFile(
+      final List<byte[][]> newCompressed, final List<long[]> newMeta,
+      final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums,
+      final List<String[][]> newTagDistinctValues) throws IOException {
+
+    final int colCount = columns.size();
+    final String tempPath = basePath + ".ts.sealed.tmp";
+
+    // Snapshot the current block list and pre-read all retained block bytes under the read lock.
+    // This guards against concurrent truncateBefore / downsampleBlocks closing the channel.
+    final List<BlockEntry> retained;
+    final List<byte[][]> retainedBytes;
+    directoryLock.readLock().lock();
+    try {
+      retained = new ArrayList<>(blockDirectory);
+      retainedBytes = new ArrayList<>(retained.size());
+      for (final BlockEntry e : retained) {
+        final byte[][] cols = new byte[colCount][];
+        for (int c = 0; c < colCount; c++)
+          cols[c] = readBytes(e.columnOffsets[c], e.columnSizes[c]);
+        retainedBytes.add(cols);
+      }
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+
+    // Build merged, minTimestamp-sorted write plan (same ordering as rewriteWithBlocks).
+    record WriteSpec(long minTs, boolean isRetained, int idx) {}
+    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newCompressed.size());
+    for (int i = 0; i < retained.size(); i++)
+      writeOrder.add(new WriteSpec(retained.get(i).minTimestamp, true, i));
+    for (int b = 0; b < newCompressed.size(); b++)
+      writeOrder.add(new WriteSpec(newMeta.get(b)[0], false, b));
+    writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
+
+    final List<BlockEntry> newDirectory = new ArrayList<>(writeOrder.size());
+
+    // Write placeholder header + all blocks to the temp file (no lock held).
+    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+      headerBuf.putInt(MAGIC_VALUE);
+      headerBuf.put((byte) CURRENT_VERSION);
+      headerBuf.putShort((short) colCount);
+      headerBuf.putInt(0);
+      headerBuf.putLong(Long.MAX_VALUE);
+      headerBuf.putLong(Long.MIN_VALUE);
+      headerBuf.flip();
+      tempFile.getChannel().write(headerBuf);
+
+      for (final WriteSpec spec : writeOrder) {
+        final BlockEntry entry;
+        if (spec.isRetained()) {
+          final int i = spec.idx();
+          final BlockEntry old = retained.get(i);
+          entry = writeNewBlockToFile(tempFile, old.sampleCount, old.minTimestamp, old.maxTimestamp,
+              retainedBytes.get(i), old.columnMins, old.columnMaxs, old.columnSums, colCount, old.tagDistinctValues);
+        } else {
+          final int b = spec.idx();
+          final long[] meta = newMeta.get(b);
+          entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
+              newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
+              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+        }
+        newDirectory.add(entry);
+      }
+    }
+
+    return newDirectory;
+  }
+
+  /**
+   * Completes the compaction by atomically swapping {@code .ts.sealed.tmp} for the live
+   * {@code .ts.sealed} file and installing the given block directory.
+   * <p>
+   * Must be called while the caller holds its own write lock (e.g.
+   * {@code compactionLock.writeLock()} in {@link TimeSeriesShard}) to prevent concurrent
+   * queries from reading the sealed store while the channel is being replaced.
+   * This method also acquires {@link #directoryLock} internally for the in-memory updates.
+   *
+   * @param newBlockDirectory the block entries returned by {@link #writeTempCompactionFile}
+   */
+  void commitTempCompactionFile(final List<BlockEntry> newBlockDirectory) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      indexChannel.close();
+      indexFile.close();
+
+      final File sealedFile = new File(basePath + ".ts.sealed");
+      final File tmpFile = new File(basePath + ".ts.sealed.tmp");
+      Files.move(tmpFile.toPath(), sealedFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+
+      indexFile = new RandomAccessFile(sealedFile, "rw");
+      indexChannel = indexFile.getChannel();
+
+      blockDirectory.clear();
+      blockDirectory.addAll(newBlockDirectory);
+
+      globalMinTs = Long.MAX_VALUE;
+      globalMaxTs = Long.MIN_VALUE;
+      for (final BlockEntry e : blockDirectory) {
+        if (e.minTimestamp < globalMinTs)
+          globalMinTs = e.minTimestamp;
+        if (e.maxTimestamp > globalMaxTs)
+          globalMaxTs = e.maxTimestamp;
+      }
+
+      rewriteHeader();
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * Deletes the temp compaction file ({@code .ts.sealed.tmp}) if it exists.
+   * Called from error-recovery paths to leave a clean state.
+   */
+  void deleteTempFileIfExists() {
+    final File tmp = new File(basePath + ".ts.sealed.tmp");
+    if (tmp.exists())
+      tmp.delete();
   }
 
   private static byte[] compressColumn(final ColumnDefinition col, final Object[] values) {
@@ -1141,7 +1292,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         globalMaxTs = Long.MIN_VALUE;
 
         for (final BlockEntry entry : retained)
-          copyBlockToFile(tempFile, entry, colCount);
+          copyBlockToFile(tempFile, entry, colCount, blockDirectory);
       }
 
       // Atomic file swap — if move fails, the original file remains intact

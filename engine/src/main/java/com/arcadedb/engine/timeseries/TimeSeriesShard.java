@@ -106,16 +106,12 @@ public class TimeSeriesShard implements AutoCloseable {
 
   /**
    * Appends samples to the mutable bucket.
-   * Holds the read lock to prevent {@link #compact()} from clearing newly appended
-   * samples that arrive between {@code readAllForCompaction()} and {@code clearDataPages()}.
+   * No compactionLock needed: ArcadeDB's MVCC guarantees that if appendSamples() commits
+   * concurrently with compact(), the page-version conflict is detected at commit time and the
+   * losing transaction retries — preventing both data loss and double-counting.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    compactionLock.readLock().lock();
-    try {
-      mutableBucket.appendSamples(timestamps, columnValues);
-    } finally {
-      compactionLock.readLock().unlock();
-    }
+    mutableBucket.appendSamples(timestamps, columnValues);
   }
 
   /**
@@ -214,160 +210,211 @@ public class TimeSeriesShard implements AutoCloseable {
    * Compacts mutable data into sealed columnar storage.
    * Data is written in chunks of {@link #SEALED_BLOCK_SIZE} rows to keep
    * individual sealed blocks small for fast decompression during queries.
-   * Crash-safe: uses a flag to detect incomplete compactions.
+   * <p>
+   * Follows the same lock-free pattern as LSMTree compaction:
+   * <ol>
+   *   <li>Heavy work (read, sort, compress, write temp file) runs WITHOUT the write lock so
+   *       concurrent reads proceed unimpeded.</li>
+   *   <li>The write lock is held only for the brief atomic-swap window:
+   *       temp-file rename + mutable-bucket clear + commit.</li>
+   * </ol>
+   * Crash-safe: the {@code compactionInProgress} flag is persisted inside the same transaction
+   * as {@code clearDataPages}, so crash recovery via {@link #TimeSeriesShard} constructor
+   * correctly handles an interrupted swap.
    */
   public void compact() throws IOException {
-    // Write lock prevents queries from seeing data twice during the window between
-    // sealing mutable data and clearing the mutable bucket.
-    compactionLock.writeLock().lock();
-    try {
     // Capture the initial block count before writing any new blocks.
-    // If an exception occurs mid-compaction (non-crash), we truncate back here
-    // to prevent duplicate blocks on the next compaction run.
+    // Used for truncation if an exception occurs mid-compaction.
     final long initialBlockCount = sealedStore.getBlockCount();
+
+    // ── Phase 1 (lock-free): read mutable data inside a transaction ──────────────────────────
     database.begin();
     try {
       if (mutableBucket.getSampleCount() == 0) {
         database.rollback();
         return;
       }
+    } catch (final Exception e) {
+      if (database.isTransactionActive())
+        database.rollback();
+      throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed", e);
+    }
 
-      // Phase 1: Set compaction flag
+    final Object[] allData;
+    try {
+      // Set crash-recovery flag before doing any sealed-store writes so that a crash
+      // between the file swap and the mutable-clear commit can be detected on restart.
       mutableBucket.setCompactionInProgress(true);
-      final long watermark = initialBlockCount;
-      mutableBucket.setCompactionWatermark(watermark);
+      mutableBucket.setCompactionWatermark(initialBlockCount);
 
-      // Phase 2: Read all mutable data
-      final Object[] allData = mutableBucket.readAllForCompaction();
+      allData = mutableBucket.readAllForCompaction();
       if (allData == null) {
         mutableBucket.setCompactionInProgress(false);
         database.commit();
         return;
       }
-
-      final long[] timestamps = (long[]) allData[0];
-      final int totalSamples = timestamps.length;
-
-      // Sort by timestamp
-      final int[] sortedIndices = sortIndices(timestamps);
-      final long[] sortedTs = applyOrder(timestamps, sortedIndices);
-
-      // Build sorted column arrays once
-      final int colCount = columns.size();
-      final Object[][] sortedColArrays = new Object[colCount][];
-      int nonTsIdx = 0;
-      for (int c = 0; c < colCount; c++) {
-        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-          sortedColArrays[c] = null; // timestamps handled separately
-        else {
-          sortedColArrays[c] = applyOrderObjects((Object[]) allData[nonTsIdx + 1], sortedIndices);
-          nonTsIdx++;
-        }
-      }
-
-      // Phase 3: Write sealed blocks in chunks with per-column stats.
-      // When bucket-aligned compaction is configured, split at bucket boundaries
-      // so each block fits entirely within one time bucket (enabling 100% fast-path aggregation).
-      int chunkStart = 0;
-      while (chunkStart < totalSamples) {
-        int chunkEnd;
-        if (compactionBucketIntervalMs > 0) {
-          // Find the bucket for the first sample in this chunk
-          final long bucketStart = (sortedTs[chunkStart] / compactionBucketIntervalMs) * compactionBucketIntervalMs;
-          final long bucketEnd = bucketStart + compactionBucketIntervalMs;
-
-          // Find where the bucket ends (first sample >= bucketEnd) or cap at SEALED_BLOCK_SIZE
-          chunkEnd = chunkStart;
-          final int maxEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
-          while (chunkEnd < maxEnd && sortedTs[chunkEnd] < bucketEnd)
-            chunkEnd++;
-
-          // Safety: ensure at least one sample per chunk to avoid infinite loop
-          if (chunkEnd == chunkStart)
-            chunkEnd = chunkStart + 1;
-        } else {
-          chunkEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
-        }
-
-        // Shrink chunk if any DICTIONARY column exceeds max distinct values
-        chunkEnd = adjustChunkForDictionaryLimit(chunkStart, chunkEnd, colCount, sortedColArrays);
-
-        final int chunkLen = chunkEnd - chunkStart;
-        final long[] chunkTs = Arrays.copyOfRange(sortedTs, chunkStart, chunkEnd);
-
-        // Compute per-column stats for numeric columns
-        final double[] mins = new double[colCount];
-        final double[] maxs = new double[colCount];
-        final double[] sums = new double[colCount];
-        Arrays.fill(mins, Double.NaN);
-        Arrays.fill(maxs, Double.NaN);
-
-        final byte[][] compressedCols = new byte[colCount][];
-        for (int c = 0; c < colCount; c++) {
-          if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
-            compressedCols[c] = DeltaOfDeltaCodec.encode(chunkTs);
-          } else {
-            final Object[] chunkValues = Arrays.copyOfRange(sortedColArrays[c], chunkStart, chunkEnd);
-            compressedCols[c] = compressColumn(columns.get(c), chunkValues);
-
-            // Compute stats for numeric columns (GORILLA_XOR / SIMPLE8B)
-            final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
-            if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
-              double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
-              for (final Object v : chunkValues) {
-                final double d = v != null ? ((Number) v).doubleValue() : 0.0;
-                if (d < min)
-                  min = d;
-                if (d > max)
-                  max = d;
-                sum += d;
-              }
-              mins[c] = min;
-              maxs[c] = max;
-              sums[c] = sum;
-            }
-          }
-        }
-
-        // Collect distinct tag values for this chunk
-        final String[][] chunkTagDistinctValues = new String[colCount][];
-        for (int c = 0; c < colCount; c++) {
-          if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG && sortedColArrays[c] != null) {
-            final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
-            for (int i = chunkStart; i < chunkEnd; i++) {
-              final Object val = sortedColArrays[c][i];
-              distinctSet.add(val != null ? val.toString() : "");
-            }
-            chunkTagDistinctValues[c] = distinctSet.toArray(new String[0]);
-          }
-        }
-
-        sealedStore.appendBlock(chunkLen, chunkTs[0], chunkTs[chunkLen - 1], compressedCols, mins, maxs, sums,
-            chunkTagDistinctValues);
-        chunkStart = chunkEnd;
-      }
-
-      // Flush sealed store header after all blocks have been written
-      sealedStore.flushHeader();
-
-      // Phase 4: Clear mutable pages
-      mutableBucket.clearDataPages();
-      mutableBucket.setCompactionInProgress(false);
-      database.commit();
-
     } catch (final Exception e) {
       if (database.isTransactionActive())
         database.rollback();
-      // Truncate any sealed blocks written during this failed attempt so the
-      // next compaction run starts from a clean state and avoids duplicates.
-      try {
-        sealedStore.truncateToBlockCount(initialBlockCount);
-      } catch (final IOException te) {
-        // Log but do not suppress the original exception
-        throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
-      }
       throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed", e);
     }
+    // Transaction stays open through the sort/compress/file-write phases so that
+    // any concurrent appendSamples() commit is detected via MVCC at our commit time.
+
+    // ── Phase 2 (lock-free): sort + compress ─────────────────────────────────────────────────
+    final long[] timestamps = (long[]) allData[0];
+    final int totalSamples = timestamps.length;
+
+    final int[] sortedIndices = sortIndices(timestamps);
+    final long[] sortedTs = applyOrder(timestamps, sortedIndices);
+
+    final int colCount = columns.size();
+    final Object[][] sortedColArrays = new Object[colCount][];
+    int nonTsIdx = 0;
+    for (int c = 0; c < colCount; c++) {
+      if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        sortedColArrays[c] = null;
+      else {
+        sortedColArrays[c] = applyOrderObjects((Object[]) allData[nonTsIdx + 1], sortedIndices);
+        nonTsIdx++;
+      }
+    }
+
+    // Build lists of compressed blocks (written to the temp file in Phase 3).
+    // When bucket-aligned compaction is configured, split at bucket boundaries
+    // so each block fits entirely within one time bucket (enabling fast-path aggregation).
+    final List<byte[][]> newCompressedList = new ArrayList<>();
+    final List<long[]> newMetaList = new ArrayList<>();    // [minTs, maxTs, sampleCount]
+    final List<double[]> newMinsList = new ArrayList<>();
+    final List<double[]> newMaxsList = new ArrayList<>();
+    final List<double[]> newSumsList = new ArrayList<>();
+    final List<String[][]> newTagDVList = new ArrayList<>();
+
+    int chunkStart = 0;
+    while (chunkStart < totalSamples) {
+      int chunkEnd;
+      if (compactionBucketIntervalMs > 0) {
+        final long bucketStart = (sortedTs[chunkStart] / compactionBucketIntervalMs) * compactionBucketIntervalMs;
+        final long bucketEnd = bucketStart + compactionBucketIntervalMs;
+        chunkEnd = chunkStart;
+        final int maxEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
+        while (chunkEnd < maxEnd && sortedTs[chunkEnd] < bucketEnd)
+          chunkEnd++;
+        if (chunkEnd == chunkStart)
+          chunkEnd = chunkStart + 1;
+      } else {
+        chunkEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
+      }
+
+      chunkEnd = adjustChunkForDictionaryLimit(chunkStart, chunkEnd, colCount, sortedColArrays);
+
+      final int chunkLen = chunkEnd - chunkStart;
+      final long[] chunkTs = Arrays.copyOfRange(sortedTs, chunkStart, chunkEnd);
+
+      final double[] mins = new double[colCount];
+      final double[] maxs = new double[colCount];
+      final double[] sums = new double[colCount];
+      Arrays.fill(mins, Double.NaN);
+      Arrays.fill(maxs, Double.NaN);
+
+      final byte[][] compressedCols = new byte[colCount][];
+      for (int c = 0; c < colCount; c++) {
+        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
+          compressedCols[c] = DeltaOfDeltaCodec.encode(chunkTs);
+        } else {
+          final Object[] chunkValues = Arrays.copyOfRange(sortedColArrays[c], chunkStart, chunkEnd);
+          compressedCols[c] = compressColumn(columns.get(c), chunkValues);
+
+          final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
+          if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
+            double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
+            for (final Object v : chunkValues) {
+              final double d = v != null ? ((Number) v).doubleValue() : 0.0;
+              if (d < min)
+                min = d;
+              if (d > max)
+                max = d;
+              sum += d;
+            }
+            mins[c] = min;
+            maxs[c] = max;
+            sums[c] = sum;
+          }
+        }
+      }
+
+      final String[][] chunkTagDistinctValues = new String[colCount][];
+      for (int c = 0; c < colCount; c++) {
+        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG && sortedColArrays[c] != null) {
+          final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
+          for (int i = chunkStart; i < chunkEnd; i++) {
+            final Object val = sortedColArrays[c][i];
+            distinctSet.add(val != null ? val.toString() : "");
+          }
+          chunkTagDistinctValues[c] = distinctSet.toArray(new String[0]);
+        }
+      }
+
+      newCompressedList.add(compressedCols);
+      newMetaList.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
+      newMinsList.add(mins);
+      newMaxsList.add(maxs);
+      newSumsList.add(sums);
+      newTagDVList.add(chunkTagDistinctValues);
+      chunkStart = chunkEnd;
+    }
+
+    // ── Phase 3 (lock-free): write existing + new blocks to a temp file ──────────────────────
+    // Concurrent queries still read from the CURRENT sealed file — no double-counting possible.
+    final List<TimeSeriesSealedStore.BlockEntry> newBlockDirectory;
+    try {
+      newBlockDirectory = sealedStore.writeTempCompactionFile(
+          newCompressedList, newMetaList, newMinsList, newMaxsList, newSumsList, newTagDVList);
+    } catch (final Exception e) {
+      if (database.isTransactionActive())
+        database.rollback();
+      sealedStore.deleteTempFileIfExists();
+      throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
+    }
+
+    // ── Phase 4 (brief write lock): atomic file swap + clear mutable ─────────────────────────
+    // The write lock prevents queries from seeing both the new sealed blocks AND the mutable
+    // data simultaneously during the brief swap + clear window.
+    compactionLock.writeLock().lock();
+    try {
+      try {
+        // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
+        sealedStore.commitTempCompactionFile(newBlockDirectory);
+      } catch (final Exception e) {
+        if (database.isTransactionActive())
+          database.rollback();
+        // Temp file may have been partially swapped — restore sealed store to initial state.
+        try {
+          sealedStore.truncateToBlockCount(initialBlockCount);
+        } catch (final IOException te) {
+          throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
+        }
+        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed during file swap", e);
+      }
+
+      try {
+        // Clear mutable bucket and persist the crash-recovery flag (both in one commit so
+        // MVCC detects any concurrent appendSamples() that committed between Phase 1 and now).
+        mutableBucket.clearDataPages();
+        mutableBucket.setCompactionInProgress(false);
+        database.commit();
+      } catch (final Exception e) {
+        if (database.isTransactionActive())
+          database.rollback();
+        // The sealed file was already swapped. Truncate it back so the next run
+        // re-compacts from a clean state (crash-recovery flag is set, so restart also works).
+        try {
+          sealedStore.truncateToBlockCount(initialBlockCount);
+        } catch (final IOException te) {
+          throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
+        }
+        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed clearing mutable", e);
+      }
     } finally {
       compactionLock.writeLock().unlock();
     }
