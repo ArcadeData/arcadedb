@@ -27,6 +27,11 @@ import java.util.Map;
  * Dictionary encoding for low-cardinality string columns (e.g., tags).
  * Builds a per-block dictionary (String → int16), emits dictionary + int16[] indices.
  * <p>
+ * <b>Important:</b> The maximum number of distinct values per block is {@link #MAX_DICTIONARY_SIZE} (65535).
+ * This limit is enforced at encode time (throws {@link IllegalArgumentException}).
+ * During compaction, {@code TimeSeriesShard} automatically splits chunks that would exceed
+ * this limit into smaller blocks, so high-cardinality tag data is handled gracefully.
+ * <p>
  * Format:
  * - 4 bytes: value count
  * - 2 bytes: dictionary size

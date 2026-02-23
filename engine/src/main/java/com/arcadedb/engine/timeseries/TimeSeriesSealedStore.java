@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
@@ -43,6 +44,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.logging.Level;
 import java.util.zip.CRC32;
 
 /**
@@ -86,6 +88,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private final List<BlockEntry> blockDirectory = new ArrayList<>();
   private       long             globalMinTs    = Long.MAX_VALUE;
   private       long             globalMaxTs    = Long.MIN_VALUE;
+  private       boolean          headerDirty;
 
   static final class BlockEntry {
     final long     minTimestamp;
@@ -121,8 +124,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Clean up stale .tmp files left by interrupted shutdown or maintenance
     final File tmpFile = new File(basePath + ".ts.sealed.tmp");
-    if (tmpFile.exists())
-      tmpFile.delete();
+    if (tmpFile.exists() && !tmpFile.delete())
+      throw new IOException("Failed to delete stale temporary file: " + tmpFile.getAbsolutePath());
 
     final File f = new File(basePath + ".ts.sealed");
     final boolean exists = f.exists();
@@ -153,9 +156,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final String[][] tagDistinctValues) throws IOException {
     // Upgrade version 0 files to version 1 format
     if (fileVersion < 1) {
-      if (!blockDirectory.isEmpty())
+      if (!blockDirectory.isEmpty()) {
+        final long fileSize = indexFile.length();
+        LogManager.instance().log(this, Level.INFO,
+            "Upgrading sealed store '%s' from format v0 to v1 (%d blocks, %d bytes)",
+            null, basePath, blockDirectory.size(), fileSize);
         upgradeFileToVersion1();
-      else
+      } else
         fileVersion = 1;
     }
 
@@ -230,7 +237,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (maxTs > globalMaxTs)
       globalMaxTs = maxTs;
 
-    rewriteHeader();
+    headerDirty = true;
+  }
+
+  /**
+   * Flushes the header to disk if any blocks have been appended since the last flush.
+   * Called automatically by {@link #close()}.
+   */
+  public synchronized void flushHeader() throws IOException {
+    if (headerDirty) {
+      rewriteHeader();
+      headerDirty = false;
+    }
   }
 
   /**
@@ -1157,6 +1175,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
+    flushHeader();
     if (indexChannel != null && indexChannel.isOpen())
       indexChannel.close();
     if (indexFile != null)

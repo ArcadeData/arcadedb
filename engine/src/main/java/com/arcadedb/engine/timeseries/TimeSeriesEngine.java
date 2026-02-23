@@ -104,6 +104,11 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Note: this method is not synchronized. When multiple threads call it concurrently,
    * they may be routed to the same shard. For contention-free writes, use the async API
    * which provides 1:1 slot-to-shard affinity.
+   * <p>
+   * <b>Dictionary column constraint:</b> columns using {@code DICTIONARY} compression
+   * (typically TAG columns) must not exceed {@link com.arcadedb.engine.timeseries.codec.DictionaryCodec#MAX_DICTIONARY_SIZE}
+   * distinct values per sealed block. This is validated at compaction time; data that violates
+   * the limit will cause compaction to fail. Plan tag cardinality accordingly.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
     final int shardIdx = (int) (appendCounter.getAndIncrement() % shardCount);
@@ -236,7 +241,12 @@ public class TimeSeriesEngine implements AutoCloseable {
     final int maxBuckets;
     if (useFlatMode && actualMin <= actualMax) {
       firstBucket = (actualMin / bucketIntervalMs) * bucketIntervalMs;
-      maxBuckets = (int) ((actualMax - firstBucket) / bucketIntervalMs) + 2;
+      final long computedBuckets = (actualMax - firstBucket) / bucketIntervalMs + 2;
+      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS)
+        // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
+        maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
+      else
+        maxBuckets = (int) computedBuckets;
     } else {
       firstBucket = 0;
       maxBuckets = 0;
@@ -364,7 +374,9 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
-   * Applies retention policy: removes data older than the given timestamp.
+   * Applies retention policy: removes sealed blocks older than the given timestamp.
+   * Note: this only truncates sealed stores. To ensure mutable bucket data is also
+   * covered, call {@link #compactAll()} before this method.
    */
   public void applyRetention(final long cutoffTimestamp) throws IOException {
     for (final TimeSeriesShard shard : shards)

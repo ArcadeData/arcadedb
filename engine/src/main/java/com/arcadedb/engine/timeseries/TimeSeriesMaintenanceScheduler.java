@@ -86,6 +86,10 @@ public class TimeSeriesMaintenanceScheduler {
 
         final long nowMs = System.currentTimeMillis();
 
+        // Compact mutable data before retention/downsampling so that
+        // all samples are in the sealed store and subject to truncation.
+        engine.compactAll();
+
         // Apply retention policy
         if (type.getRetentionMs() > 0) {
           final long cutoff = nowMs - type.getRetentionMs();

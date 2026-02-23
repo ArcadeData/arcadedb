@@ -189,7 +189,7 @@ public class TimeSeriesShard implements AutoCloseable {
     database.begin();
     try {
       if (mutableBucket.getSampleCount() == 0) {
-        database.commit();
+        database.rollback();
         return;
       }
 
@@ -250,6 +250,9 @@ public class TimeSeriesShard implements AutoCloseable {
           chunkEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);
         }
 
+        // Shrink chunk if any DICTIONARY column exceeds max distinct values
+        chunkEnd = adjustChunkForDictionaryLimit(chunkStart, chunkEnd, colCount, sortedColArrays);
+
         final int chunkLen = chunkEnd - chunkStart;
         final long[] chunkTs = Arrays.copyOfRange(sortedTs, chunkStart, chunkEnd);
 
@@ -259,19 +262,6 @@ public class TimeSeriesShard implements AutoCloseable {
         final double[] sums = new double[colCount];
         Arrays.fill(mins, Double.NaN);
         Arrays.fill(maxs, Double.NaN);
-
-        // Pre-validate: ensure no DICTIONARY column in this chunk exceeds max distinct values
-        for (int c = 0; c < colCount; c++) {
-          if (columns.get(c).getCompressionHint() == TimeSeriesCodec.DICTIONARY && sortedColArrays[c] != null) {
-            final HashSet<Object> distinct = new HashSet<>();
-            for (int i = chunkStart; i < chunkEnd; i++)
-              distinct.add(sortedColArrays[c][i] != null ? sortedColArrays[c][i] : "");
-            if (distinct.size() > DictionaryCodec.MAX_DICTIONARY_SIZE)
-              throw new IOException(
-                  "Column '" + columns.get(c).getName() + "' has " + distinct.size() +
-                      " distinct values in chunk, exceeding dictionary limit of " + DictionaryCodec.MAX_DICTIONARY_SIZE);
-          }
-        }
 
         final byte[][] compressedCols = new byte[colCount][];
         for (int c = 0; c < colCount; c++) {
@@ -317,6 +307,9 @@ public class TimeSeriesShard implements AutoCloseable {
             chunkTagDistinctValues);
         chunkStart = chunkEnd;
       }
+
+      // Flush sealed store header after all blocks have been written
+      sealedStore.flushHeader();
 
       // Phase 4: Clear mutable pages
       mutableBucket.clearDataPages();
@@ -427,5 +420,27 @@ public class TimeSeriesShard implements AutoCloseable {
       }
       default -> throw new IllegalStateException("Unknown compression codec: " + codec);
     };
+  }
+
+  /**
+   * If any DICTIONARY column in [chunkStart, chunkEnd) exceeds {@link DictionaryCodec#MAX_DICTIONARY_SIZE},
+   * shrinks chunkEnd until all dictionary columns fit. Guarantees at least one row per chunk.
+   */
+  private int adjustChunkForDictionaryLimit(final int chunkStart, int chunkEnd,
+      final int colCount, final Object[][] sortedColArrays) {
+    for (int c = 0; c < colCount; c++) {
+      if (columns.get(c).getCompressionHint() != TimeSeriesCodec.DICTIONARY || sortedColArrays[c] == null)
+        continue;
+      final HashSet<Object> distinct = new HashSet<>();
+      for (int i = chunkStart; i < chunkEnd; i++) {
+        distinct.add(sortedColArrays[c][i] != null ? sortedColArrays[c][i] : "");
+        if (distinct.size() > DictionaryCodec.MAX_DICTIONARY_SIZE) {
+          // Shrink chunk to i (exclusive) — the last row that still fits
+          chunkEnd = Math.max(chunkStart + 1, i);
+          break;
+        }
+      }
+    }
+    return chunkEnd;
   }
 }

@@ -54,7 +54,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -71,8 +70,16 @@ public class PromQLEvaluator {
 
   private final DatabaseInternal        database;
   private final long                    lookbackMs;
-  private static final int              MAX_REGEX_LENGTH = 1024;
-  private final Map<String, Pattern>    patternCache = new ConcurrentHashMap<>();
+  private static final int              MAX_REGEX_LENGTH   = 1024;
+  private static final int              MAX_PATTERN_CACHE  = 1024;
+  private final Set<String>             warnedMultiFieldTypes = new HashSet<>();
+  private final Map<String, Pattern>    patternCache = Collections.synchronizedMap(
+      new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(final Map.Entry<String, Pattern> eldest) {
+          return size() > MAX_PATTERN_CACHE;
+        }
+      });
 
   public PromQLEvaluator(final DatabaseInternal database) {
     this(database, DEFAULT_LOOKBACK_MS);
@@ -157,6 +164,8 @@ public class PromQLEvaluator {
     final TimeSeriesEngine engine = tsType.getEngine();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
+    warnIfMultipleFields(columns, vs.metricName());
+
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
     final long offset = vs.offsetMs();
     final long queryEnd = evalTimeMs - offset;
@@ -197,6 +206,8 @@ public class PromQLEvaluator {
 
     final TimeSeriesEngine engine = tsType.getEngine();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+    warnIfMultipleFields(columns, vs.metricName());
 
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
     final long offset = vs.offsetMs();
@@ -483,6 +494,31 @@ public class PromQLEvaluator {
         return row[i] instanceof Number ? ((Number) row[i]).doubleValue() : Double.NaN;
     }
     return Double.NaN;
+  }
+
+  /**
+   * Logs a warning if the given column list has more than one FIELD column,
+   * since PromQL evaluation only uses the first one. Logged once per type name.
+   */
+  private void warnIfMultipleFields(final List<ColumnDefinition> columns, final String typeName) {
+    if (warnedMultiFieldTypes.contains(typeName))
+      return;
+    int fieldCount = 0;
+    String firstName = null;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.FIELD) {
+        if (firstName == null)
+          firstName = col.getName();
+        fieldCount++;
+      }
+    }
+    if (fieldCount > 1) {
+      warnedMultiFieldTypes.add(typeName);
+      LogManager.instance().log(this, Level.WARNING,
+          "PromQL evaluation: type '%s' has %d FIELD columns but only the first ('%s') is used. "
+              + "Use explicit column selection or split into separate types",
+          null, typeName, fieldCount, firstName);
+    }
   }
 
   private int findNonTsColumnIndex(final String name, final List<ColumnDefinition> columns) {

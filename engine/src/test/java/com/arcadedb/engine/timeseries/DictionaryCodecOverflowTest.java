@@ -51,7 +51,7 @@ class DictionaryCodecOverflowTest extends TestHelper {
   }
 
   @Test
-  void testCompactionFailsCleanlyOnOverflow() throws Exception {
+  void testCompactionAutoSplitsOnOverflow() throws Exception {
     final List<ColumnDefinition> columns = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("tag", Type.STRING, ColumnDefinition.ColumnRole.TAG),
@@ -62,7 +62,7 @@ class DictionaryCodecOverflowTest extends TestHelper {
     final TimeSeriesShard shard = new TimeSeriesShard(
         (DatabaseInternal) database, "test_dict_overflow", 0, columns);
 
-    // Insert data with more distinct tag values than the dictionary can handle
+    // Insert data with more distinct tag values than the dictionary can handle in one block
     final int overflowCount = DictionaryCodec.MAX_DICTIONARY_SIZE + 100;
     final long[] timestamps = new long[overflowCount];
     final Object[] tags = new Object[overflowCount];
@@ -76,17 +76,18 @@ class DictionaryCodecOverflowTest extends TestHelper {
     shard.appendSamples(timestamps, tags, values);
     database.commit();
 
-    // Record sealed block count before attempted compaction
-    final int sealedBlocksBefore = shard.getSealedStore().getBlockCount();
+    // Compaction should succeed by auto-splitting into multiple blocks
+    shard.compact();
 
-    // Compaction should fail with a clear error (pre-validation catches it)
-    assertThatThrownBy(shard::compact).isInstanceOf(IOException.class)
-        .hasMessageContaining("distinct values");
+    // Multiple sealed blocks should be created (at least 2)
+    assertThat(shard.getSealedStore().getBlockCount()).isGreaterThanOrEqualTo(2);
 
-    // Sealed store should be unchanged (no partial writes)
-    assertThat(shard.getSealedStore().getBlockCount()).isEqualTo(sealedBlocksBefore);
+    // Mutable bucket should be empty after compaction
+    database.begin();
+    assertThat(shard.getMutableBucket().getSampleCount()).isEqualTo(0);
+    database.commit();
 
-    // Data should still be accessible from the mutable bucket
+    // All data should be readable from sealed store
     database.begin();
     final List<Object[]> results = shard.scanRange(0, Long.MAX_VALUE, null, null);
     database.commit();

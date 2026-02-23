@@ -42,6 +42,12 @@ public class ContinuousAggregateRefresher {
       final String bucketColumn = ca.getBucketColumn();
       final long watermark = ca.getWatermarkTs();
 
+      // Validate interpolated names to prevent backtick injection
+      if (!SAFE_COLUMN_NAME.matcher(backingTypeName).matches())
+        throw new IllegalArgumentException("Unsafe backing type name: '" + backingTypeName + "'");
+      if (!SAFE_COLUMN_NAME.matcher(bucketColumn).matches())
+        throw new IllegalArgumentException("Unsafe bucket column name: '" + bucketColumn + "'");
+
       database.transaction(() -> {
         // Delete rows in the current (possibly incomplete) bucket and all newer buckets
         if (watermark > 0)
@@ -123,11 +129,15 @@ public class ContinuousAggregateRefresher {
       final String after = query.substring(whereIdx + 5);
       return before + " `" + tsColumn + "` >= " + watermark + " AND" + after;
     } else {
-      // No WHERE clause — insert before GROUP BY, ORDER BY, or at end
-      final int groupByIdx = findKeywordIndex(upperQuery, "GROUP BY");
-      if (groupByIdx >= 0) {
-        final String before = query.substring(0, groupByIdx);
-        final String after = query.substring(groupByIdx);
+      // No WHERE clause — insert before GROUP BY, ORDER BY, LIMIT, or at end
+      int insertIdx = findKeywordIndex(upperQuery, "GROUP BY");
+      if (insertIdx < 0)
+        insertIdx = findKeywordIndex(upperQuery, "ORDER BY");
+      if (insertIdx < 0)
+        insertIdx = findKeywordIndex(upperQuery, "LIMIT");
+      if (insertIdx >= 0) {
+        final String before = query.substring(0, insertIdx);
+        final String after = query.substring(insertIdx);
         return before + "WHERE `" + tsColumn + "` >= " + watermark + " " + after;
       }
       return query + " WHERE `" + tsColumn + "` >= " + watermark;
