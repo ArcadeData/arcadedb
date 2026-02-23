@@ -147,6 +147,14 @@ class CypherProcedureRegistryTest {
     assertThat(CypherProcedureRegistry.hasProcedure("algo.clique")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("algo.graphSummary")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("algo.modularityScore")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.leiden")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.personalizedPageRank")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.kTruss")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.assortativity")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.richClub")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.influenceMaximization")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.hierarchicalClustering")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.conductance")).isTrue();
   }
 
   @Test
