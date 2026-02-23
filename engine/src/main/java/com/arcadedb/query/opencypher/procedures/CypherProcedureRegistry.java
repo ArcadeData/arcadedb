@@ -37,8 +37,16 @@ import com.arcadedb.query.opencypher.procedures.algo.AlgoGraphSummary;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoHITS;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoHarmonicCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoJaccardSimilarity;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAssortativity;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoConductance;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoHierarchicalClustering;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoInfluenceMaximization;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoKCore;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoKShortestPaths;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKTruss;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoLeiden;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoPersonalizedPageRank;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoRichClub;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoKatz;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoLabelPropagation;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoLouvain;
@@ -295,6 +303,14 @@ public final class CypherProcedureRegistry {
     register(new AlgoClique());
     register(new AlgoGraphSummary());
     register(new AlgoModularityScore());
+    register(new AlgoLeiden());
+    register(new AlgoPersonalizedPageRank());
+    register(new AlgoKTruss());
+    register(new AlgoAssortativity());
+    register(new AlgoRichClub());
+    register(new AlgoInfluenceMaximization());
+    register(new AlgoHierarchicalClustering());
+    register(new AlgoConductance());
   }
 
   private static void registerPathProcedures() {
