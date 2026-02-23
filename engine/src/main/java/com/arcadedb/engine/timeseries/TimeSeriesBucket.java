@@ -282,7 +282,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
             pageNum++;
           }
         } catch (final IOException e) {
-          throw new RuntimeException("Error iterating TimeSeries bucket pages", e);
+          throw new com.arcadedb.exception.DatabaseOperationException("Error iterating TimeSeries bucket pages", e);
         }
       }
 

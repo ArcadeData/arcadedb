@@ -98,6 +98,10 @@ public class LineProtocolParser {
     }
   }
 
+  private record ParsedString(String value, int length) {}
+
+  private record ParsedValue(Object value, int length) {}
+
   /**
    * Parses one or more lines of InfluxDB Line Protocol.
    */
@@ -159,13 +163,11 @@ public class LineProtocolParser {
       if (pos < len && line.charAt(pos) == ',') {
         pos++; // skip comma
         while (pos < len && line.charAt(pos) != ' ') {
-          final Object[] keyResult = readKeyWithLength(line, pos, '=');
-          final String key = (String) keyResult[0];
-          pos += (int) keyResult[1] + 1; // +1 for '='
-          final Object[] valResult = readTagValueWithLength(line, pos);
-          final String value = (String) valResult[0];
-          pos += (int) valResult[1];
-          tags.put(key, value);
+          final ParsedString keyResult = readKeyWithLength(line, pos, '=');
+          pos += keyResult.length() + 1; // +1 for '='
+          final ParsedString valResult = readTagValueWithLength(line, pos);
+          pos += valResult.length();
+          tags.put(keyResult.value(), valResult.value());
           if (pos < len && line.charAt(pos) == ',')
             pos++; // skip comma separator
         }
@@ -178,12 +180,11 @@ public class LineProtocolParser {
       // Parse fields (comma-separated key=value pairs)
       final Map<String, Object> fields = new LinkedHashMap<>();
       while (pos < len && line.charAt(pos) != ' ') {
-        final Object[] keyResult = readKeyWithLength(line, pos, '=');
-        final String key = (String) keyResult[0];
-        pos += (int) keyResult[1] + 1; // +1 for '='
-        final Object[] valueAndLen = readFieldValue(line, pos);
-        fields.put(key, valueAndLen[0]);
-        pos += (int) valueAndLen[1];
+        final ParsedString keyResult = readKeyWithLength(line, pos, '=');
+        pos += keyResult.length() + 1; // +1 for '='
+        final ParsedValue valueAndLen = readFieldValue(line, pos);
+        fields.put(keyResult.value(), valueAndLen.value());
+        pos += valueAndLen.length();
         if (pos < len && line.charAt(pos) == ',')
           pos++; // skip comma separator
       }
@@ -216,9 +217,9 @@ public class LineProtocolParser {
 
   /**
    * Reads a key (tag key or field key) terminated by {@code stopChar}, handling backslash escapes.
-   * Returns {@code Object[] { decodedString, rawLength }} so the caller advances the position once.
+   * Returns the decoded string and the raw byte length consumed (not including the stop character).
    */
-  private static Object[] readKeyWithLength(final String line, final int start, final char stopChar) {
+  private static ParsedString readKeyWithLength(final String line, final int start, final char stopChar) {
     final StringBuilder sb = new StringBuilder();
     int pos = start;
     while (pos < line.length()) {
@@ -233,14 +234,14 @@ public class LineProtocolParser {
       sb.append(c);
       pos++;
     }
-    return new Object[] { sb.toString(), pos - start };
+    return new ParsedString(sb.toString(), pos - start);
   }
 
   /**
    * Reads a tag value terminated by ',' or ' ', handling backslash escapes.
-   * Returns {@code Object[] { decodedString, rawLength }} so the caller advances the position once.
+   * Returns the decoded string and the raw byte length consumed.
    */
-  private static Object[] readTagValueWithLength(final String line, final int start) {
+  private static ParsedString readTagValueWithLength(final String line, final int start) {
     final StringBuilder sb = new StringBuilder();
     int pos = start;
     while (pos < line.length()) {
@@ -255,15 +256,15 @@ public class LineProtocolParser {
       sb.append(c);
       pos++;
     }
-    return new Object[] { sb.toString(), pos - start };
+    return new ParsedString(sb.toString(), pos - start);
   }
 
   /**
-   * Reads a field value and returns [value, rawLength].
+   * Reads a field value and returns the parsed value and the raw byte length consumed.
    */
-  private static Object[] readFieldValue(final String line, final int start) {
+  private static ParsedValue readFieldValue(final String line, final int start) {
     if (start >= line.length())
-      return new Object[] { 0.0, 0 };
+      return new ParsedValue(0.0, 0);
 
     final char first = line.charAt(start);
 
@@ -285,7 +286,7 @@ public class LineProtocolParser {
         sb.append(c);
         pos++;
       }
-      return new Object[] { sb.toString(), pos - start };
+      return new ParsedValue(sb.toString(), pos - start);
     }
 
     // Read until comma or space
@@ -298,14 +299,14 @@ public class LineProtocolParser {
 
     // Boolean
     if ("true".equalsIgnoreCase(raw) || "t".equalsIgnoreCase(raw))
-      return new Object[] { true, rawLen };
+      return new ParsedValue(true, rawLen);
     if ("false".equalsIgnoreCase(raw) || "f".equalsIgnoreCase(raw))
-      return new Object[] { false, rawLen };
+      return new ParsedValue(false, rawLen);
 
     // Integer (suffix 'i')
     if (raw.endsWith("i")) {
       final long intVal = Long.parseLong(raw.substring(0, raw.length() - 1));
-      return new Object[] { intVal, rawLen };
+      return new ParsedValue(intVal, rawLen);
     }
 
     // Unsigned integer (suffix 'u')
@@ -314,11 +315,11 @@ public class LineProtocolParser {
       if (uintVal < 0)
         throw new IllegalArgumentException(
             "Unsigned integer value cannot be represented as a signed 64-bit integer (exceeds " + Long.MAX_VALUE + "): " + raw);
-      return new Object[] { uintVal, rawLen };
+      return new ParsedValue(uintVal, rawLen);
     }
 
     // Default: double
-    return new Object[] { Double.parseDouble(raw), rawLen };
+    return new ParsedValue(Double.parseDouble(raw), rawLen);
   }
 
 }

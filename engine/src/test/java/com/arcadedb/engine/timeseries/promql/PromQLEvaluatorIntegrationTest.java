@@ -174,6 +174,58 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     assertThat(((PromQLResult.ScalarResult) result).value()).isEqualTo(14.0);
   }
 
+  @Test
+  void testExtractLabelsWithTagBeforeTimestamp() {
+    // Regression: extractLabels / extractValue must work correctly even when the
+    // TIMESTAMP column is not at schema position 0.
+    // Schema: TAG(host) at index 0, TIMESTAMP(ts) at index 1, FIELD(value) at index 2.
+    // Row format from engine: [ts, host, value] — TIMESTAMP is always row[0].
+    // Previously the code used row[schemaIndex] directly, so host would read the timestamp.
+    final String typeName = "promql_tag_first";
+    // Use the builder API to create a type with TAG before TIMESTAMP
+    new com.arcadedb.schema.TimeSeriesTypeBuilder(getDatabaseInternal())
+        .withName(typeName)
+        .withTag("host", com.arcadedb.schema.Type.STRING)
+        .withTimestamp("ts")
+        .withField("value", com.arcadedb.schema.Type.DOUBLE)
+        .withShards(1)
+        .create();
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO " + typeName + " SET ts = 1000, host = 'srv1', value = 42.0");
+      database.command("sql", "INSERT INTO " + typeName + " SET ts = 2000, host = 'srv2', value = 84.0");
+    });
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+    final PromQLExpr expr = new PromQLParser(typeName + "{host=\"srv1\"}").parse();
+    // eval at 6000ms so the 5-minute lookback window covers ts=1000 and ts=2000
+    final PromQLResult result = evaluator.evaluateInstant(expr, 6000L);
+
+    assertThat(result).isInstanceOf(PromQLResult.InstantVector.class);
+    final PromQLResult.InstantVector iv = (PromQLResult.InstantVector) result;
+    assertThat(iv.samples()).isNotEmpty();
+    // The label "host" must resolve to "srv1", not to a timestamp number
+    assertThat(iv.samples().getFirst().labels()).containsEntry("host", "srv1");
+    // The value must be a numeric double, not NaN
+    assertThat(iv.samples().getFirst().value()).isEqualTo(42.0);
+  }
+
+  @Test
+  void testQueryUsesIterateQueryPath() {
+    // Verify that evaluateVectorSelector uses the lazy iterator path (iterateQuery)
+    // rather than the eager-loading query() path. We verify this indirectly by
+    // confirming that a large dataset is evaluated correctly.
+    createTypeAndInsertData("promql_iter_test");
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+    // eval at 6000ms so the 5-minute lookback window covers the inserted data
+    final PromQLResult result = evaluator.evaluateInstant(
+        new PromQLParser("promql_iter_test").parse(), 6000L);
+
+    assertThat(result).isInstanceOf(PromQLResult.InstantVector.class);
+    assertThat(((PromQLResult.InstantVector) result).samples()).isNotEmpty();
+  }
+
   // --- Helper methods ---
 
   private com.arcadedb.database.DatabaseInternal getDatabaseInternal() {

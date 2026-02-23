@@ -82,7 +82,7 @@ class TimeSeriesFormatVersionTest {
 
       // Format version: byte 4
       final byte version = raf.readByte();
-      assertThat(version).isEqualTo((byte) 1);
+      assertThat(version).isEqualTo((byte) TimeSeriesSealedStore.CURRENT_VERSION);
 
       // Column count: bytes 5-6
       final short colCount = raf.readShort();

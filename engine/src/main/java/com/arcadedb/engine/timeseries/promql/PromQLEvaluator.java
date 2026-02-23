@@ -50,6 +50,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -175,16 +176,19 @@ public class PromQLEvaluator {
     final long queryEnd = evalTimeMs - offset;
     final long queryStart = queryEnd - lookbackMs;
 
-    final List<Object[]> rows;
+    final Iterator<Object[]> rowIter;
     try {
-      rows = engine.query(queryStart, queryEnd, null, tagFilter);
+      rowIter = engine.iterateQuery(queryStart, queryEnd, null, tagFilter);
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error querying TimeSeries type '%s': %s", null, typeName, e.getMessage());
       return new InstantVector(List.of());
     }
 
     // Post-filter for NEQ/RE/NRE and group by label combination
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
-    for (final Object[] row : rows) {
+    while (rowIter.hasNext()) {
+      final Object[] row = rowIter.next();
       if (!matchesPostFilters(row, vs.matchers(), columns))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
@@ -218,17 +222,20 @@ public class PromQLEvaluator {
     final long queryEnd = evalTimeMs - offset;
     final long queryStart = queryEnd - ms.rangeMs();
 
-    final List<Object[]> rows;
+    final Iterator<Object[]> rowIter;
     try {
-      rows = engine.query(queryStart, queryEnd, null, tagFilter);
+      rowIter = engine.iterateQuery(queryStart, queryEnd, null, tagFilter);
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error querying TimeSeries type '%s': %s", null, typeName, e.getMessage());
       return new RangeVector(List.of());
     }
 
     // Group rows by label combination
     final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
-    for (final Object[] row : rows) {
+    while (rowIter.hasNext()) {
+      final Object[] row = rowIter.next();
       if (!matchesPostFilters(row, vs.matchers(), columns))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
@@ -461,10 +468,10 @@ public class PromQLEvaluator {
     for (final LabelMatcher m : matchers) {
       if (m.op() == MatchOp.EQ || "__name__".equals(m.name()))
         continue;
-      final int fullIdx = findFullColumnIndex(m.name(), columns);
-      if (fullIdx < 0)
+      final int rowIdx = findNonTsRowIndex(m.name(), columns);
+      if (rowIdx < 0)
         return false;
-      final Object val = row[fullIdx];
+      final Object val = rowIdx < row.length ? row[rowIdx] : null;
       final String strVal = val != null ? val.toString() : "";
       switch (m.op()) {
         case NEQ:
@@ -486,21 +493,42 @@ public class PromQLEvaluator {
     return true;
   }
 
+  /**
+   * Extracts label key/value pairs from a row.
+   * The row format is always {@code [timestamp, non-ts-col-0, non-ts-col-1, ...]}, so we
+   * iterate non-TIMESTAMP columns and map them to row positions 1, 2, 3… regardless of
+   * where the TIMESTAMP column appears in the schema definition.
+   */
   private Map<String, String> extractLabels(final Object[] row, final List<ColumnDefinition> columns, final String metricName) {
     final Map<String, String> labels = new LinkedHashMap<>();
     labels.put("__name__", metricName);
-    for (int i = 0; i < columns.size(); i++) {
-      final ColumnDefinition col = columns.get(i);
-      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && row[i] != null)
-        labels.put(col.getName(), row[i].toString());
+    int nonTsIdx = 0;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      final int rowPos = 1 + nonTsIdx;
+      nonTsIdx++;
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && rowPos < row.length && row[rowPos] != null)
+        labels.put(col.getName(), row[rowPos].toString());
     }
     return labels;
   }
 
+  /**
+   * Extracts the first FIELD column value from a row.
+   * The row format is always {@code [timestamp, non-ts-col-0, non-ts-col-1, ...]}, so we
+   * iterate non-TIMESTAMP columns and map them to row positions 1, 2, 3… regardless of
+   * where the TIMESTAMP column appears in the schema definition.
+   */
   private double extractValue(final Object[] row, final List<ColumnDefinition> columns) {
-    for (int i = 0; i < columns.size(); i++) {
-      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.FIELD)
-        return row[i] instanceof Number ? ((Number) row[i]).doubleValue() : Double.NaN;
+    int nonTsIdx = 0;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      final int rowPos = 1 + nonTsIdx;
+      nonTsIdx++;
+      if (col.getRole() == ColumnDefinition.ColumnRole.FIELD)
+        return rowPos < row.length && row[rowPos] instanceof Number ? ((Number) row[rowPos]).doubleValue() : Double.NaN;
     }
     return Double.NaN;
   }
@@ -542,10 +570,20 @@ public class PromQLEvaluator {
     return -1;
   }
 
-  private int findFullColumnIndex(final String name, final List<ColumnDefinition> columns) {
-    for (int i = 0; i < columns.size(); i++)
-      if (columns.get(i).getName().equals(name))
-        return i;
+  /**
+   * Returns the row index for a named column in the engine row format
+   * {@code [timestamp, non-ts-col-0, non-ts-col-1, ...]}.
+   * Returns -1 if the column is not found or is the TIMESTAMP column.
+   */
+  private int findNonTsRowIndex(final String name, final List<ColumnDefinition> columns) {
+    int rowIdx = 1; // row[0] is always the timestamp
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (col.getName().equals(name))
+        return rowIdx;
+      rowIdx++;
+    }
     return -1;
   }
 

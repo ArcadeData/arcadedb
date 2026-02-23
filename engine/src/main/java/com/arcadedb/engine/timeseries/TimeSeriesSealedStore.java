@@ -54,7 +54,7 @@ import java.util.zip.CRC32;
  * <p>
  * Index file (.ts.sealed) layout — 27-byte header:
  * - [0..3]   magic "TSIX" (4 bytes)
- * - [4]      formatVersion (1 byte)
+ * - [4]      format version byte (always {@value #CURRENT_VERSION})
  * - [5..6]   column count (short)
  * - [7..10]  block count (int)
  * - [11..18] global min timestamp (long)
@@ -64,14 +64,28 @@ import java.util.zip.CRC32;
  * Block entry layout:
  * - magic "TSBL" (4), minTs (8), maxTs (8), sampleCount (4), colSizes (4*colCount)
  * - numericColCount (4), [min (8) + max (8) + sum (8)] * numericColCount (schema order, no colIdx)
+ * - tag metadata: tagColCount (2), per TAG column: distinctCount (2), per value: len (2) + UTF-8 bytes
  * - compressed column data bytes
  * - blockCRC32 (4) — CRC32 of everything from blockMagic to end of compressed data
+ * <p>
+ * <b>High-Availability / Replication note:</b>
+ * Sealed store files ({@code .ts.sealed}) are written via {@link RandomAccessFile} and
+ * {@link FileChannel} directly to the local filesystem, <em>bypassing</em> ArcadeDB's
+ * page-level replication infrastructure. This is by design: compacted time-series data
+ * is derived (it is produced by compacting the replicated mutable {@link TimeSeriesBucket}
+ * pages) and therefore does not need to be replicated separately. Each HA node independently
+ * performs its own compaction from its own replicated mutable buckets, eventually reaching
+ * an equivalent sealed store. In-flight mutable data (the {@code .tstb} bucket files) is
+ * fully replicated through the normal {@link com.arcadedb.engine.PaginatedComponent} path.
+ * The consequence is that, immediately after a failover, a follower that has not yet
+ * compacted may serve queries from the mutable bucket only until its maintenance scheduler
+ * runs the next compaction cycle.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
-  static final         int CURRENT_VERSION  = 1;
+  static final         int CURRENT_VERSION  = 0;
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   private static final int BLOCK_MAGIC_VALUE = 0x5453424C; // "TSBL"
   private static final int HEADER_SIZE       = 27;
@@ -81,16 +95,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private final List<ColumnDefinition> columns;
   private       RandomAccessFile     indexFile;
   private       FileChannel          indexChannel;
-  private       int                  fileVersion;
 
   enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
   // In-memory block directory (loaded at open) — protected by directoryLock
   private final List<BlockEntry>    blockDirectory = new ArrayList<>();
   private final ReadWriteLock       directoryLock  = new ReentrantReadWriteLock();
-  private       long             globalMinTs    = Long.MAX_VALUE;
-  private       long             globalMaxTs    = Long.MIN_VALUE;
-  private       boolean          headerDirty;
+  private volatile long             globalMinTs    = Long.MAX_VALUE;  // volatile: read without write lock
+  private volatile long             globalMaxTs    = Long.MIN_VALUE;  // volatile: read without write lock
+  private          boolean          headerDirty;
 
   static final class BlockEntry {
     final long     minTimestamp;
@@ -104,7 +117,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     String[][]     tagDistinctValues; // indexed by schema column index, null for non-TAG columns
     long           blockStartOffset; // file offset where block meta begins (for lazy CRC)
     int            storedCRC;        // CRC32 stored on disk (-1 if written inline, not yet flushed)
-    boolean        crcValidated;     // true after first successful CRC check
+    volatile boolean crcValidated;   // true after first successful CRC check (volatile: read without lock)
 
     BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
         final double[] mins, final double[] maxs, final double[] sums) {
@@ -158,91 +171,79 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final String[][] tagDistinctValues) throws IOException {
     directoryLock.writeLock().lock();
     try {
-    // Upgrade version 0 files to version 1 format
-    if (fileVersion < 1) {
-      if (!blockDirectory.isEmpty()) {
-        final long fileSize = indexFile.length();
-        LogManager.instance().log(this, Level.INFO,
-            "Upgrading sealed store '%s' from format v0 to v1 (%d blocks, %d bytes)",
-            null, basePath, blockDirectory.size(), fileSize);
-        upgradeFileToVersion1();
-      } else
-        fileVersion = 1;
-    }
+      final int colCount = columns.size();
 
-    final int colCount = columns.size();
+      // Count numeric columns (those with non-NaN stats)
+      int numericColCount = 0;
+      for (int c = 0; c < colCount; c++)
+        if (!Double.isNaN(columnMins[c]))
+          numericColCount++;
 
-    // Count numeric columns (those with non-NaN stats)
-    int numericColCount = 0;
-    for (int c = 0; c < colCount; c++)
-      if (!Double.isNaN(columnMins[c]))
-        numericColCount++;
+      // Build tag metadata section
+      final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
 
-    // Build tag metadata section
-    final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
+      // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4*colCount)
+      //              + numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount
+      //              + tag metadata
+      final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
+      final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize + tagMeta.length;
+      final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
+      metaBuf.putInt(BLOCK_MAGIC_VALUE);
+      metaBuf.putLong(minTs);
+      metaBuf.putLong(maxTs);
+      metaBuf.putInt(sampleCount);
+      for (final byte[] col : compressedColumns)
+        metaBuf.putInt(col.length);
 
-    // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4*colCount)
-    //              + numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount
-    //              + tag metadata
-    final int statsSize = 4 + (8 + 8 + 8) * numericColCount;
-    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize + tagMeta.length;
-    final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-    metaBuf.putInt(BLOCK_MAGIC_VALUE);
-    metaBuf.putLong(minTs);
-    metaBuf.putLong(maxTs);
-    metaBuf.putInt(sampleCount);
-    for (final byte[] col : compressedColumns)
-      metaBuf.putInt(col.length);
-
-    // Write stats section (schema order, no colIdx — iterate columns, skip non-numeric)
-    metaBuf.putInt(numericColCount);
-    for (int c = 0; c < colCount; c++) {
-      if (!Double.isNaN(columnMins[c])) {
-        metaBuf.putDouble(columnMins[c]);
-        metaBuf.putDouble(columnMaxs[c]);
-        metaBuf.putDouble(columnSums[c]);
+      // Write stats section (schema order, no colIdx — iterate columns, skip non-numeric)
+      metaBuf.putInt(numericColCount);
+      for (int c = 0; c < colCount; c++) {
+        if (!Double.isNaN(columnMins[c])) {
+          metaBuf.putDouble(columnMins[c]);
+          metaBuf.putDouble(columnMaxs[c]);
+          metaBuf.putDouble(columnSums[c]);
+        }
       }
-    }
 
-    // Write tag metadata
-    metaBuf.put(tagMeta);
-    metaBuf.flip();
+      // Write tag metadata
+      metaBuf.put(tagMeta);
+      metaBuf.flip();
 
-    // Compute CRC32 over meta + compressed data
-    // Use metaBuf.limit() (not .array().length) since the backing array may be larger after flip
-    final CRC32 crc = new CRC32();
-    crc.update(metaBuf.array(), 0, metaBuf.limit());
+      // Compute CRC32 over meta + compressed data
+      // Use metaBuf.limit() (not .array().length) since the backing array may be larger after flip
+      final CRC32 crc = new CRC32();
+      crc.update(metaBuf.array(), 0, metaBuf.limit());
 
-    long offset = indexFile.length();
-    indexFile.seek(offset);
-    indexFile.write(metaBuf.array(), 0, metaBuf.limit());
-    offset += metaSize;
+      long offset = indexFile.length();
+      indexFile.seek(offset);
+      indexFile.write(metaBuf.array(), 0, metaBuf.limit());
+      offset += metaSize;
 
-    final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
-    entry.tagDistinctValues = tagDistinctValues;
-    // Write compressed column data
-    for (int c = 0; c < colCount; c++) {
-      entry.columnOffsets[c] = offset;
-      entry.columnSizes[c] = compressedColumns[c].length;
-      crc.update(compressedColumns[c]);
-      indexFile.write(compressedColumns[c]);
-      offset += compressedColumns[c].length;
-    }
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
+      entry.tagDistinctValues = tagDistinctValues;
+      // Write compressed column data
+      for (int c = 0; c < colCount; c++) {
+        entry.columnOffsets[c] = offset;
+        entry.columnSizes[c] = compressedColumns[c].length;
+        crc.update(compressedColumns[c]);
+        indexFile.write(compressedColumns[c]);
+        offset += compressedColumns[c].length;
+      }
 
-    // Write block CRC32
-    final ByteBuffer crcBuf = ByteBuffer.allocate(4);
-    crcBuf.putInt((int) crc.getValue());
-    crcBuf.flip();
-    indexFile.write(crcBuf.array());
+      // Write block CRC32
+      final ByteBuffer crcBuf = ByteBuffer.allocate(4);
+      crcBuf.putInt((int) crc.getValue());
+      crcBuf.flip();
+      indexFile.write(crcBuf.array());
 
-    blockDirectory.add(entry);
+      blockDirectory.add(entry);
 
-    if (minTs < globalMinTs)
-      globalMinTs = minTs;
-    if (maxTs > globalMaxTs)
-      globalMaxTs = maxTs;
+      if (minTs < globalMinTs)
+        globalMinTs = minTs;
+      if (maxTs > globalMaxTs)
+        globalMaxTs = maxTs;
 
-    headerDirty = true;
+      headerDirty = true;
     } finally {
       directoryLock.writeLock().unlock();
     }
@@ -749,7 +750,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       indexFile = new RandomAccessFile(oldFile, "rw");
       indexChannel = indexFile.getChannel();
-      fileVersion = CURRENT_VERSION;
       rewriteHeader();
     } finally {
       directoryLock.writeLock().unlock();
@@ -948,7 +948,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Rewrites the sealed file, copying retained blocks as raw bytes and appending new blocks.
-   * Sorts the combined result by minTimestamp. Uses atomic tmp-file rename.
+   * Blocks are written in ascending minTimestamp order so that the on-disk layout matches
+   * the in-memory block directory, preserving binary search correctness after a restart.
+   * Uses atomic tmp-file rename.
    */
   private void rewriteWithBlocks(final List<BlockEntry> retained,
       final List<byte[][]> newCompressed, final List<long[]> newMeta,
@@ -957,6 +959,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
+
+    // Build a merged, minTimestamp-sorted write plan so that the on-disk layout is
+    // always in ascending order (required by binary search in iterateRange/scanRange).
+    // A negative index means a "new" (downsampled) block; non-negative means retained.
+    record WriteSpec(long minTs, boolean retained, int idx) {}
+    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newCompressed.size());
+    for (int i = 0; i < retained.size(); i++)
+      writeOrder.add(new WriteSpec(retained.get(i).minTimestamp, true, i));
+    for (int b = 0; b < newCompressed.size(); b++)
+      writeOrder.add(new WriteSpec(newMeta.get(b)[0], false, b));
+    writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
 
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
       // Write placeholder header
@@ -974,20 +987,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
 
-      // Write retained blocks (raw copy)
-      for (final BlockEntry oldEntry : retained)
-        copyBlockToFile(tempFile, oldEntry, colCount);
-
-      // Write new downsampled blocks
-      for (int b = 0; b < newCompressed.size(); b++) {
-        final long[] meta = newMeta.get(b);
-        writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
-            newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
-            newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+      // Write all blocks in ascending minTimestamp order
+      for (final WriteSpec spec : writeOrder) {
+        if (spec.retained()) {
+          copyBlockToFile(tempFile, retained.get(spec.idx()), colCount);
+        } else {
+          final int b = spec.idx();
+          final long[] meta = newMeta.get(b);
+          writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
+              newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
+              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+        }
       }
-
-      // Sort block directory by minTimestamp
-      blockDirectory.sort(Comparator.comparingLong(e -> e.minTimestamp));
     }
 
     // Atomic file swap — if move fails, the original file remains intact
@@ -1000,7 +1011,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();
-    fileVersion = CURRENT_VERSION;
     rewriteHeader();
   }
 
@@ -1144,7 +1154,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       indexFile = new RandomAccessFile(oldFile, "rw");
       indexChannel = indexFile.getChannel();
-      fileVersion = CURRENT_VERSION;
       rewriteHeader();
     } finally {
       directoryLock.writeLock().unlock();
@@ -1274,6 +1283,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         totalSize += 2; // distinctCount
         for (int v = 0; v < tagDistinctValues[c].length; v++) {
           utf8Values[c][v] = tagDistinctValues[c][v].getBytes(StandardCharsets.UTF_8);
+          if (utf8Values[c][v].length > 32767)
+            throw new IllegalArgumentException(
+                "Tag value too long: UTF-8 encoding is " + utf8Values[c][v].length
+                    + " bytes (max 32767): '" + tagDistinctValues[c][v].substring(0, Math.min(40, tagDistinctValues[c][v].length())) + "...'");
           totalSize += 2 + utf8Values[c][v].length;
         }
       }
@@ -1293,49 +1306,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return buf.array();
   }
 
-  /**
-   * Upgrades a version 0 file to version 1 by rewriting all blocks with tag metadata sections.
-   * Existing blocks get tagColCount=0 (empty tag metadata). One-time migration cost.
-   */
-  private void upgradeFileToVersion1() throws IOException {
-    final List<BlockEntry> allBlocks = new ArrayList<>(blockDirectory);
-    final int colCount = columns.size();
-    final String tempPath = basePath + ".ts.sealed.tmp";
-
-    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-      headerBuf.putInt(MAGIC_VALUE);
-      headerBuf.put((byte) CURRENT_VERSION);
-      headerBuf.putShort((short) colCount);
-      headerBuf.putInt(0);
-      headerBuf.putLong(Long.MAX_VALUE);
-      headerBuf.putLong(Long.MIN_VALUE);
-      headerBuf.flip();
-      tempFile.getChannel().write(headerBuf);
-
-      blockDirectory.clear();
-      globalMinTs = Long.MAX_VALUE;
-      globalMaxTs = Long.MIN_VALUE;
-
-      for (final BlockEntry oldEntry : allBlocks)
-        copyBlockToFile(tempFile, oldEntry, colCount);
-    }
-
-    indexChannel.close();
-    indexFile.close();
-
-    final File oldFile = new File(basePath + ".ts.sealed");
-    final File tmpFile = new File(tempPath);
-    Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-
-    indexFile = new RandomAccessFile(oldFile, "rw");
-    indexChannel = indexFile.getChannel();
-    fileVersion = CURRENT_VERSION;
-    rewriteHeader();
-  }
-
   private void writeEmptyHeader() throws IOException {
-    fileVersion = CURRENT_VERSION;
     final ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
     buf.putInt(MAGIC_VALUE);
     buf.put((byte) CURRENT_VERSION);
@@ -1371,12 +1342,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       throw new IOException("Invalid sealed store magic: " + Integer.toHexString(magic));
 
     final int version = headerBuf.get() & 0xFF;
-    if (version > CURRENT_VERSION)
+    if (version != CURRENT_VERSION)
       throw new IOException(
-          "Unsupported sealed store format version " + version + " (max supported: " + CURRENT_VERSION + ")");
-    this.fileVersion = version;
+          "Unsupported sealed store format version " + version + " (expected: " + CURRENT_VERSION + ")");
 
-    final int colCount = headerBuf.getShort();
+    final int colCount = headerBuf.getShort() & 0xFFFF;
+    if (colCount != columns.size())
+      throw new IOException("Column count mismatch in sealed store header: file has " + colCount
+          + " columns, schema has " + columns.size());
     final int blockCount = headerBuf.getInt();
     globalMinTs = headerBuf.getLong();
     globalMaxTs = headerBuf.getLong();
@@ -1441,45 +1414,43 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         statsPos += tripletSize;
       }
 
-      // Read tag metadata section (version 1+)
+      // Read tag metadata section
       String[][] blockTagDistinctValues = null;
       long tagEndPos = statsPos;
-      if (version >= 1) {
-        final ByteBuffer tagCountBuf = ByteBuffer.allocate(2);
-        if (indexChannel.read(tagCountBuf, tagEndPos) < 2)
-          break;
-        tagCountBuf.flip();
-        final short tagColCount = tagCountBuf.getShort();
-        tagEndPos += 2;
+      final ByteBuffer tagCountBuf = ByteBuffer.allocate(2);
+      if (indexChannel.read(tagCountBuf, tagEndPos) < 2)
+        break;
+      tagCountBuf.flip();
+      final short tagColCount = tagCountBuf.getShort();
+      tagEndPos += 2;
 
-        if (tagColCount > 0) {
-          blockTagDistinctValues = new String[colCount][];
-          int tagIdx = 0;
-          for (int c = 0; c < colCount && tagIdx < tagColCount; c++) {
-            if (columns.get(c).getRole() != ColumnDefinition.ColumnRole.TAG)
-              continue;
-            final ByteBuffer dcBuf = ByteBuffer.allocate(2);
-            indexChannel.read(dcBuf, tagEndPos);
-            dcBuf.flip();
-            final short distinctCount = dcBuf.getShort();
+      if (tagColCount > 0) {
+        blockTagDistinctValues = new String[colCount][];
+        int tagIdx = 0;
+        for (int c = 0; c < colCount && tagIdx < tagColCount; c++) {
+          if (columns.get(c).getRole() != ColumnDefinition.ColumnRole.TAG)
+            continue;
+          final ByteBuffer dcBuf = ByteBuffer.allocate(2);
+          indexChannel.read(dcBuf, tagEndPos);
+          dcBuf.flip();
+          final short distinctCount = dcBuf.getShort();
+          tagEndPos += 2;
+
+          blockTagDistinctValues[c] = new String[distinctCount];
+          for (int v = 0; v < distinctCount; v++) {
+            final ByteBuffer lenBuf = ByteBuffer.allocate(2);
+            indexChannel.read(lenBuf, tagEndPos);
+            lenBuf.flip();
+            final short valLen = lenBuf.getShort();
             tagEndPos += 2;
 
-            blockTagDistinctValues[c] = new String[distinctCount];
-            for (int v = 0; v < distinctCount; v++) {
-              final ByteBuffer lenBuf = ByteBuffer.allocate(2);
-              indexChannel.read(lenBuf, tagEndPos);
-              lenBuf.flip();
-              final short valLen = lenBuf.getShort();
-              tagEndPos += 2;
-
-              final byte[] valBytes = new byte[valLen];
-              final ByteBuffer valBuf = ByteBuffer.wrap(valBytes);
-              indexChannel.read(valBuf, tagEndPos);
-              blockTagDistinctValues[c][v] = new String(valBytes, StandardCharsets.UTF_8);
-              tagEndPos += valLen;
-            }
-            tagIdx++;
+            final byte[] valBytes = new byte[valLen];
+            final ByteBuffer valBuf = ByteBuffer.wrap(valBytes);
+            indexChannel.read(valBuf, tagEndPos);
+            blockTagDistinctValues[c][v] = new String(valBytes, StandardCharsets.UTF_8);
+            tagEndPos += valLen;
           }
+          tagIdx++;
         }
       }
 

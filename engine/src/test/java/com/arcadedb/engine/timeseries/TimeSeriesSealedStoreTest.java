@@ -28,9 +28,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
+import java.util.Iterator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -242,6 +245,106 @@ class TimeSeriesSealedStoreTest {
       assertThat(results).hasSize(2);
       assertThat((String) results.get(0)[1]).isEqualTo("X");
       assertThat((String) results.get(1)[1]).isEqualTo("X");
+    }
+  }
+
+  /**
+   * Regression: buildTagMetadata must throw when a tag value's UTF-8 encoding exceeds 32767 bytes.
+   * Previously it silently truncated the value via (short) val.length, causing data corruption.
+   */
+  @Test
+  void testTagValueTooLongRejected() throws Exception {
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
+      // 'ß' encodes to 2 UTF-8 bytes, so 16384 repetitions = 32768 bytes > 32767 limit
+      final String longValue = "ß".repeat(16384);
+      final String[][] tagDV = new String[3][];
+      tagDV[1] = new String[] { longValue };
+
+      assertThatThrownBy(() -> store.appendBlock(1, 1000L, 1000L, new byte[][] {
+          DeltaOfDeltaCodec.encode(new long[] { 1000L }),
+          DictionaryCodec.encode(new String[] { longValue }),
+          GorillaXORCodec.encode(new double[] { 1.0 })
+      }, NO_MINS, NO_MAXS, NO_SUMS, tagDV))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("too long");
+    }
+  }
+
+  /**
+   * Regression: loadDirectory must throw when the file's column count does not match the schema.
+   * Previously the mismatch was silently ignored, potentially causing incorrect reads.
+   */
+  @Test
+  void testColumnCountMismatchOnReopen() throws Exception {
+    // Write a store with 3 columns
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
+      store.appendBlock(1, 1000L, 1000L, new byte[][] {
+          DeltaOfDeltaCodec.encode(new long[] { 1000L }),
+          DictionaryCodec.encode(new String[] { "A" }),
+          GorillaXORCodec.encode(new double[] { 1.0 })
+      }, NO_MINS, NO_MAXS, NO_SUMS, null);
+    }
+
+    // Try to reopen with a different schema (2 columns instead of 3)
+    final List<ColumnDefinition> wrongSchema = List.of(
+        new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+        new ColumnDefinition("temperature", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)
+    );
+    assertThatThrownBy(() -> new TimeSeriesSealedStore(TEST_PATH, wrongSchema))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Column count mismatch");
+  }
+
+  /**
+   * Regression: rewriteWithBlocks must write blocks in ascending minTimestamp order on disk.
+   * Previously retained (newer) blocks were written first, then downsampled (older) blocks second.
+   * After a restart, loadDirectory reads in file order — if the file is not sorted,
+   * binary search in iterateRange fails to find blocks.
+   */
+  @Test
+  void testDownsamplePreservesAscendingOrderOnDisk() throws Exception {
+    final List<ColumnDefinition> numericCols = List.of(
+        new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+        new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)
+    );
+    final double[] noMins2 = { Double.NaN, Double.NaN };
+    final double[] noMaxs2 = { Double.NaN, Double.NaN };
+    final double[] noSums2 = { Double.NaN, Double.NaN };
+
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, numericCols)) {
+      // Older block: t=6000..8000 — will be downsampled; bucket = (6000/5000)*5000 = 5000
+      store.appendBlock(3, 6_000L, 8_000L, new byte[][] {
+          DeltaOfDeltaCodec.encode(new long[] { 6_000L, 7_000L, 8_000L }),
+          GorillaXORCodec.encode(new double[] { 1.0, 2.0, 3.0 })
+      }, new double[] { Double.NaN, 1.0 }, new double[] { Double.NaN, 3.0 }, new double[] { Double.NaN, 6.0 }, null);
+
+      // Newer block: t=100_000..102_000 — retained (beyond cutoff)
+      store.appendBlock(3, 100_000L, 102_000L, new byte[][] {
+          DeltaOfDeltaCodec.encode(new long[] { 100_000L, 101_000L, 102_000L }),
+          GorillaXORCodec.encode(new double[] { 10.0, 20.0, 30.0 })
+      }, new double[] { Double.NaN, 10.0 }, new double[] { Double.NaN, 30.0 }, new double[] { Double.NaN, 60.0 }, null);
+
+      // Downsample blocks older than t=10_000 to 5_000ms granularity
+      store.downsampleBlocks(10_000L, 5_000L, 0,
+          List.of(),            // no tag columns
+          List.of(1));          // numeric column at index 1
+    }
+
+    // Reopen to force loadDirectory — verifies on-disk ordering is correct
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, numericCols)) {
+      // iterateRange uses binary search — requires ascending on-disk block order.
+      // Downsampled block lands at bucket t=5000; query 5000..9000 to find it.
+      final Iterator<Object[]> iter = store.iterateRange(5_000L, 9_000L, null, null);
+      final List<Object[]> old = new java.util.ArrayList<>();
+      while (iter.hasNext())
+        old.add(iter.next());
+
+      // Key assertion: iterateRange must find rows even after reopen (binary search correctness)
+      assertThat(old).isNotEmpty();
+
+      // Newer block should also be retrievable
+      final Iterator<Object[]> iterNew = store.iterateRange(100_000L, 102_000L, null, null);
+      assertThat(iterNew.hasNext()).isTrue();
     }
   }
 

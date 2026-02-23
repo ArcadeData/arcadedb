@@ -85,4 +85,26 @@ class DictionaryCodecTest {
     final String[] input = { "c", "a", "b", "a", "c", "b" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
   }
+
+  @Test
+  void testUtf8LengthGuard() {
+    // A string whose UTF-8 encoding exceeds 65535 bytes must be rejected with a clear error.
+    // Each '豆' character encodes to 3 UTF-8 bytes, so 21845 repetitions = 65535 bytes.
+    final String longEntry = "豆".repeat(21846); // 21846 × 3 = 65538 bytes > 65535
+    final String[] input = { longEntry };
+    assertThatThrownBy(() -> DictionaryCodec.encode(input))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("too long");
+  }
+
+  @Test
+  void testDictionaryOverflow() {
+    // More than MAX_DICTIONARY_SIZE distinct values must be rejected.
+    final String[] input = new String[DictionaryCodec.MAX_DICTIONARY_SIZE + 1];
+    for (int i = 0; i <= DictionaryCodec.MAX_DICTIONARY_SIZE; i++)
+      input[i] = "v_" + i;
+    assertThatThrownBy(() -> DictionaryCodec.encode(input))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Dictionary overflow");
+  }
 }

@@ -166,6 +166,42 @@ Gap analysis comparing ArcadeDB's TimeSeries against top 10 TSDBs: InfluxDB 3, T
 
 ---
 
+## High Availability (HA) and Multi-Node Behaviour
+
+### How TimeSeries data flows in an HA cluster
+
+ArcadeDB's HA layer replicates data at the page level through the `PaginatedComponent` infrastructure. TimeSeries storage uses two layers:
+
+| Layer | File extension | Storage mechanism | Replicated? |
+|---|---|---|---|
+| Mutable bucket | `.tstb` | `TimeSeriesBucket extends PaginatedComponent` | **Yes** — changes are page-replicated to all followers in real time |
+| Sealed store | `.ts.sealed` | `TimeSeriesSealedStore` via `RandomAccessFile` / `FileChannel` | **No** — local-only files |
+
+### Why sealed stores are not replicated
+
+This is by design. The sealed store is a *derived* artefact: it is produced by compacting the mutable bucket. Since the mutable bucket data is already replicated, every HA node independently holds all the source data it needs to perform its own compaction. Replicating the sealed files as well would double the I/O cost for no benefit.
+
+The `TimeSeriesMaintenanceScheduler` runs as a daemon thread on each node and periodically compacts mutable data into the local sealed store. Each node therefore converges to the same sealed state independently.
+
+### Behaviour after a failover
+
+Immediately after a follower is promoted to leader (or a new follower joins), it may not yet have compacted all mutable data into its sealed store. In that case:
+
+- **Range queries** still return correct results: the engine queries both the sealed store and the mutable bucket for every time range.
+- **Aggregation queries** also remain correct: `aggregateMulti()` processes sealed blocks (fast path) and then iterates the mutable bucket (slow path) for the same time window.
+- **Compaction lag**: a follower that has not yet compacted may serve reads slightly more slowly until its maintenance scheduler runs the next compaction cycle (default interval: 60 seconds).
+
+### Summary
+
+| Concern | Answer |
+|---|---|
+| Is in-flight mutable data replicated? | Yes, via the normal page-replication protocol |
+| Are sealed store files replicated? | No — each node compacts independently |
+| Are reads consistent immediately after failover? | Yes — the mutable bucket covers the gap |
+| Is there a performance impact after failover? | Queries may be slower until compaction catches up |
+
+---
+
 ## Context
 
 ArcadeDB users are requesting native TimeSeries support, with the key requirement being **fast range queries**. ArcadeDB is uniquely positioned as a multi-model database (Graph, Document, Key/Value, Search, Vector) to become the first production database that **natively unifies graph traversal with timeseries aggregation** in a single query engine — a gap confirmed by a January 2025 SIGMOD survey paper (arXiv:2601.00304).
