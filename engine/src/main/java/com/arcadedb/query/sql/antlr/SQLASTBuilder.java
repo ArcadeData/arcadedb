@@ -49,6 +49,10 @@ import java.util.Set;
 public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
+   * Namespaces that are recognized as function call prefixes in dotted SQL syntax (e.g. {@code geo.point(x, y)}).
+   * This rewriting is performed in {@link #visitIdentifierChain} for the ANTLR parser only.
+   * The JavaCC parser does not support unquoted dotted function names; use backtick-quoted names
+   * (e.g. {@code `geo.point`(x, y)}) for compatibility with both parsers.
    * Known function namespace prefixes. When the parser sees {@code namespace.method(args)} and the namespace
    * is in this set, the AST builder produces a {@link FunctionCall} node with the qualified name
    * (e.g., "ts.first") instead of an identifier chain with a method modifier.
