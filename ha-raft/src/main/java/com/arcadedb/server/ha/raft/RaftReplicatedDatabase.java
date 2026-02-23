@@ -75,7 +75,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public void commit() {
-    proxied.incrementStatsTxCommits();
+    proxied.incrementStatsWriteTx();
 
     final boolean leader = isLeader();
 
