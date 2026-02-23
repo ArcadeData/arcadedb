@@ -36,6 +36,7 @@ import com.arcadedb.function.sql.geo.SQLFunctionPoint;
 import com.arcadedb.function.sql.geo.SQLFunctionPolygon;
 import com.arcadedb.function.sql.geo.SQLFunctionRectangle;
 import com.arcadedb.function.sql.graph.SQLFunctionAstar;
+import com.arcadedb.function.sql.graph.SQLFunctionBellmanFord;
 import com.arcadedb.function.sql.graph.SQLFunctionBoth;
 import com.arcadedb.function.sql.graph.SQLFunctionBothE;
 import com.arcadedb.function.sql.graph.SQLFunctionBothV;
@@ -174,6 +175,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
 
     // Graph
     register(SQLFunctionAstar.NAME, SQLFunctionAstar.class);
+    register(SQLFunctionBellmanFord.NAME, SQLFunctionBellmanFord.class);
     register(SQLFunctionBoth.NAME, SQLFunctionBoth.class);
     register(SQLFunctionBothE.NAME, SQLFunctionBothE.class);
     register(SQLFunctionBothV.NAME, SQLFunctionBothV.class);
