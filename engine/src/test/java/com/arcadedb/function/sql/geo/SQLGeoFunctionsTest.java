@@ -128,7 +128,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_* standard function tests ────────────────────────────────────────────
+  // ─── geo.* standard function tests ────────────────────────────────────────────
 
   @Test
   void stGeomFromText() throws Exception {
@@ -435,7 +435,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stXNonPoint() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      // ST_X on a polygon should return null
+      // geo.x on a polygon should return null
       ResultSet result = db.query("sql",
           "select geo.x('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as x");
       assertThat(result.hasNext()).isTrue();
@@ -500,7 +500,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stPointRoundTrip() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      // ST_Point → ST_X / ST_Y round-trip
+      // geo.point → geo.x / geo.y round-trip
       // Note: small floating-point precision loss is expected when going through WKT parsing
       ResultSet result = db.query("sql", "select geo.x(geo.geomFromText(geo.point(42.5, -7.3))) as x");
       assertThat(result.hasNext()).isTrue();
@@ -516,7 +516,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_Within ────────────────────────────────────────────────────────────────
+  // ─── geo.within ────────────────────────────────────────────────────────────────
 
   @Test
   void stWithinPointInsidePolygon() throws Exception {
@@ -549,7 +549,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_Intersects ────────────────────────────────────────────────────────────
+  // ─── geo.intersects ────────────────────────────────────────────────────────────
 
   @Test
   void stIntersectsOverlappingPolygons() throws Exception {
@@ -582,7 +582,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_Contains ──────────────────────────────────────────────────────────────
+  // ─── geo.contains ──────────────────────────────────────────────────────────────
 
   @Test
   void stContainsPolygonContainsPoint() throws Exception {
@@ -615,7 +615,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_DWithin ───────────────────────────────────────────────────────────────
+  // ─── geo.dWithin ───────────────────────────────────────────────────────────────
 
   @Test
   void stDWithinNearbyPoints() throws Exception {
@@ -650,7 +650,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_Disjoint ──────────────────────────────────────────────────────────────
+  // ─── geo.disjoint ──────────────────────────────────────────────────────────────
 
   @Test
   void stDisjointFarApartShapes() throws Exception {
@@ -683,7 +683,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_Equals ────────────────────────────────────────────────────────────────
+  // ─── geo.equals ────────────────────────────────────────────────────────────────
 
   @Test
   void stEqualsIdenticalPoints() throws Exception {
@@ -716,7 +716,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_Crosses ───────────────────────────────────────────────────────────────
+  // ─── geo.crosses ───────────────────────────────────────────────────────────────
 
   @Test
   void stCrossesLineCrossesPolygon() throws Exception {
@@ -740,7 +740,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_Overlaps ──────────────────────────────────────────────────────────────
+  // ─── geo.overlaps ──────────────────────────────────────────────────────────────
 
   @Test
   void stOverlapsPartiallyOverlappingPolygons() throws Exception {
@@ -773,7 +773,7 @@ class SQLGeoFunctionsTest {
     });
   }
 
-  // ─── ST_Touches ───────────────────────────────────────────────────────────────
+  // ─── geo.touches ───────────────────────────────────────────────────────────────
 
   @Test
   void stTouchesAdjacentPolygons() throws Exception {
