@@ -21,19 +21,19 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
-import org.locationtech.spatial4j.shape.Rectangle;
+import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_Envelope: returns the WKT bounding box polygon of a geometry.
+ * SQL function geo.y: returns the Y (latitude) coordinate of a point geometry.
  *
- * <p>Usage: {@code ST_Envelope(<geometry>)}</p>
- * <p>Returns: WKT {@code "POLYGON ((minX minY, maxX minY, maxX maxY, minX maxY, minX minY))"}</p>
+ * <p>Usage: {@code geo.y(<point>)}</p>
+ * <p>Returns: Double Y coordinate, or null if input is not a point</p>
  */
-public class SQLFunctionST_Envelope extends SQLFunctionAbstract {
-  public static final String NAME = "ST_Envelope";
+public class SQLFunctionGeoY extends SQLFunctionAbstract {
+  public static final String NAME = "geo.y";
 
-  public SQLFunctionST_Envelope() {
+  public SQLFunctionGeoY() {
     super(NAME);
   }
 
@@ -43,27 +43,25 @@ public class SQLFunctionST_Envelope extends SQLFunctionAbstract {
     if (iParams == null || iParams.length < 1 || iParams[0] == null)
       return null;
 
-    final Shape shape = GeoUtils.parseGeometry(iParams[0]);
-    if (shape == null)
-      return null;
+    final Object input = iParams[0];
 
-    final Rectangle bbox = shape.getBoundingBox();
-    final double minX = bbox.getMinX();
-    final double minY = bbox.getMinY();
-    final double maxX = bbox.getMaxX();
-    final double maxY = bbox.getMaxY();
+    if (input instanceof Point p)
+      return p.getY();
 
-    return "POLYGON ((" +
-        GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(minY) + ", " +
-        GeoUtils.formatCoord(maxX) + " " + GeoUtils.formatCoord(minY) + ", " +
-        GeoUtils.formatCoord(maxX) + " " + GeoUtils.formatCoord(maxY) + ", " +
-        GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(maxY) + ", " +
-        GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(minY) +
-        "))";
+    // Try parsing as geometry
+    try {
+      final Shape shape = GeoUtils.parseGeometry(input);
+      if (shape instanceof Point p)
+        return p.getY();
+    } catch (Exception ignored) {
+      // Not a valid geometry or not a point
+    }
+
+    return null;
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Envelope(<geometry>)";
+    return "geo.y(<point>)";
   }
 }

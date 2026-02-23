@@ -23,30 +23,27 @@ import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * SQL function ST_Point: constructs a WKT POINT string from X (longitude) and Y (latitude).
+ * SQL function geo.geomFromText: parses a WKT string and returns a Shape object.
  *
- * <p>Usage: {@code ST_Point(<x>, <y>)}</p>
- * <p>Returns: WKT string {@code "POINT (x y)"}</p>
+ * <p>Usage: {@code geo.geomFromText(<wkt>)}</p>
  */
-public class SQLFunctionST_Point extends SQLFunctionAbstract {
-  public static final String NAME = "ST_Point";
+public class SQLFunctionGeoGeomFromText extends SQLFunctionAbstract {
+  public static final String NAME = "geo.geomFromText";
 
-  public SQLFunctionST_Point() {
+  public SQLFunctionGeoGeomFromText() {
     super(NAME);
   }
 
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {
-    if (iParams == null || iParams.length < 2 || iParams[0] == null || iParams[1] == null)
+    if (iParams == null || iParams.length < 1 || iParams[0] == null)
       return null;
-    final double x = GeoUtils.getDoubleValue(iParams[0]);
-    final double y = GeoUtils.getDoubleValue(iParams[1]);
-    return "POINT (" + GeoUtils.formatCoord(x) + " " + GeoUtils.formatCoord(y) + ")";
+    return GeoUtils.parseGeometry(iParams[0]);
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Point(<x>, <y>)";
+    return "geo.geomFromText(<wkt>)";
   }
 }

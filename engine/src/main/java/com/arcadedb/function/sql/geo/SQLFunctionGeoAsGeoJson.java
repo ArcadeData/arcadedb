@@ -33,16 +33,16 @@ import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.Polygon;
 
 /**
- * SQL function ST_AsGeoJson: returns the GeoJSON representation of a geometry.
+ * SQL function geo.asGeoJson: returns the GeoJSON representation of a geometry.
  * Uses JTS for geometry parsing and manual serialization via JSONObject/JSONArray.
  *
- * <p>Usage: {@code ST_AsGeoJson(<geometry>)}</p>
+ * <p>Usage: {@code geo.asGeoJson(<geometry>)}</p>
  * <p>Returns: GeoJSON string</p>
  */
-public class SQLFunctionST_AsGeoJson extends SQLFunctionAbstract {
-  public static final String NAME = "ST_AsGeoJson";
+public class SQLFunctionGeoAsGeoJson extends SQLFunctionAbstract {
+  public static final String NAME = "geo.asGeoJson";
 
-  public SQLFunctionST_AsGeoJson() {
+  public SQLFunctionGeoAsGeoJson() {
     super(NAME);
   }
 
@@ -129,6 +129,6 @@ public class SQLFunctionST_AsGeoJson extends SQLFunctionAbstract {
 
   @Override
   public String getSyntax() {
-    return "ST_AsGeoJson(<geometry>)";
+    return "geo.asGeoJson(<geometry>)";
   }
 }

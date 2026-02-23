@@ -21,19 +21,20 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
-import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_Area: returns the area of a geometry in square degrees.
+ * SQL function geo.asText: returns the WKT representation of a geometry.
+ * If the input is already a WKT string, it is returned as-is.
+ * If the input is a Shape object, it is converted to WKT.
  *
- * <p>Usage: {@code ST_Area(<geometry>)}</p>
- * <p>Returns: Double area value in square degrees</p>
+ * <p>Usage: {@code geo.asText(<geometry>)}</p>
+ * <p>Returns: WKT string</p>
  */
-public class SQLFunctionST_Area extends SQLFunctionAbstract {
-  public static final String NAME = "ST_Area";
+public class SQLFunctionGeoAsText extends SQLFunctionAbstract {
+  public static final String NAME = "geo.asText";
 
-  public SQLFunctionST_Area() {
+  public SQLFunctionGeoAsText() {
     super(NAME);
   }
 
@@ -43,16 +44,20 @@ public class SQLFunctionST_Area extends SQLFunctionAbstract {
     if (iParams == null || iParams.length < 1 || iParams[0] == null)
       return null;
 
-    final Shape shape = GeoUtils.parseGeometry(iParams[0]);
-    if (shape == null)
-      return null;
+    final Object input = iParams[0];
+    if (input instanceof String str)
+      return str;
 
-    final SpatialContext ctx = GeoUtils.getSpatialContext();
-    return shape.getArea(ctx);
+    if (input instanceof Shape shape)
+      return GeoUtils.toWKT(shape);
+
+    // Try to parse then convert
+    final Shape shape = GeoUtils.parseGeometry(input);
+    return GeoUtils.toWKT(shape);
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Area(<geometry>)";
+    return "geo.asText(<geometry>)";
   }
 }

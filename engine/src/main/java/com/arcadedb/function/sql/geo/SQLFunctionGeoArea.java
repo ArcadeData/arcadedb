@@ -21,16 +21,19 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
+import org.locationtech.spatial4j.context.SpatialContext;
+import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_GeomFromText: parses a WKT string and returns a Shape object.
+ * SQL function geo.area: returns the area of a geometry in square degrees.
  *
- * <p>Usage: {@code ST_GeomFromText(<wkt>)}</p>
+ * <p>Usage: {@code geo.area(<geometry>)}</p>
+ * <p>Returns: Double area value in square degrees</p>
  */
-public class SQLFunctionST_GeomFromText extends SQLFunctionAbstract {
-  public static final String NAME = "ST_GeomFromText";
+public class SQLFunctionGeoArea extends SQLFunctionAbstract {
+  public static final String NAME = "geo.area";
 
-  public SQLFunctionST_GeomFromText() {
+  public SQLFunctionGeoArea() {
     super(NAME);
   }
 
@@ -39,11 +42,17 @@ public class SQLFunctionST_GeomFromText extends SQLFunctionAbstract {
       final Object[] iParams, final CommandContext iContext) {
     if (iParams == null || iParams.length < 1 || iParams[0] == null)
       return null;
-    return GeoUtils.parseGeometry(iParams[0]);
+
+    final Shape shape = GeoUtils.parseGeometry(iParams[0]);
+    if (shape == null)
+      return null;
+
+    final SpatialContext ctx = GeoUtils.getSpatialContext();
+    return shape.getArea(ctx);
   }
 
   @Override
   public String getSyntax() {
-    return "ST_GeomFromText(<wkt>)";
+    return "geo.area(<geometry>)";
   }
 }

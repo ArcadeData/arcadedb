@@ -26,15 +26,15 @@ import org.locationtech.spatial4j.shape.Point;
 import java.util.List;
 
 /**
- * SQL function ST_LineString: constructs a WKT LINESTRING string from a list of coordinate pairs.
+ * SQL function geo.lineString: constructs a WKT LINESTRING string from a list of coordinate pairs.
  *
- * <p>Usage: {@code ST_LineString([[x1,y1],[x2,y2],...])}</p>
+ * <p>Usage: {@code geo.lineString([[x1,y1],[x2,y2],...])}</p>
  * <p>Returns: WKT string {@code "LINESTRING (x1 y1, x2 y2, ...)"}</p>
  */
-public class SQLFunctionST_LineString extends SQLFunctionAbstract {
-  public static final String NAME = "ST_LineString";
+public class SQLFunctionGeoLineString extends SQLFunctionAbstract {
+  public static final String NAME = "geo.lineString";
 
-  public SQLFunctionST_LineString() {
+  public SQLFunctionGeoLineString() {
     super(NAME);
   }
 
@@ -73,6 +73,6 @@ public class SQLFunctionST_LineString extends SQLFunctionAbstract {
 
   @Override
   public String getSyntax() {
-    return "ST_LineString([[x1,y1],[x2,y2],...])";
+    return "geo.lineString([[x1,y1],[x2,y2],...])";
   }
 }

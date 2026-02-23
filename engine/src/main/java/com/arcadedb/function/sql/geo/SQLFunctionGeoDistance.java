@@ -25,19 +25,19 @@ import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_Distance: computes the Haversine distance between two points.
+ * SQL function geo.distance: computes the Haversine distance between two points.
  * Points may be WKT strings or Spatial4j Shape/Point objects.
  *
- * <p>Usage: {@code ST_Distance(<point1>, <point2>[, <unit>])}</p>
+ * <p>Usage: {@code geo.distance(<point1>, <point2>[, <unit>])}</p>
  * <p>Unit: "m" (default), "km", "mi", "nmi"</p>
  * <p>Returns: Double distance value</p>
  */
-public class SQLFunctionST_Distance extends SQLFunctionAbstract {
-  public static final String NAME = "ST_Distance";
+public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
+  public static final String NAME = "geo.distance";
 
   private static final double EARTH_RADIUS_KM = 6371.0;
 
-  public SQLFunctionST_Distance() {
+  public SQLFunctionGeoDistance() {
     super(NAME);
   }
 
@@ -93,6 +93,6 @@ public class SQLFunctionST_Distance extends SQLFunctionAbstract {
 
   @Override
   public String getSyntax() {
-    return "ST_Distance(<point1>, <point2>[, <unit>])";
+    return "geo.distance(<point1>, <point2>[, <unit>])";
   }
 }

@@ -29,7 +29,7 @@ import com.arcadedb.function.temporal.*;
 import com.arcadedb.function.agg.*;
 import com.arcadedb.function.misc.*;
 import com.arcadedb.function.geo.*;
-import com.arcadedb.function.sql.geo.SQLFunctionST_Distance;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoDistance;
 import com.arcadedb.function.cypher.*;
 import com.arcadedb.function.math.*;
 import com.arcadedb.function.CypherFunctionRegistry;
@@ -405,7 +405,7 @@ public class CypherFunctionFactory {
       case "vector.norm" -> new VectorNormFunction();
       // Geo-spatial functions
       case "point" -> new CypherPointFunction();
-      case "distance" -> new SQLFunctionBridge(sqlFunctionFactory.getFunctionInstance(SQLFunctionST_Distance.NAME), "distance");
+      case "distance" -> new SQLFunctionBridge(sqlFunctionFactory.getFunctionInstance(SQLFunctionGeoDistance.NAME), "distance");
       case "point.withinbbox" -> new PointWithinBBoxFunction();
       // Temporal constructor functions
       case "date" -> new DateConstructorFunction();

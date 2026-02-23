@@ -21,20 +21,19 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
+import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_AsText: returns the WKT representation of a geometry.
- * If the input is already a WKT string, it is returned as-is.
- * If the input is a Shape object, it is converted to WKT.
+ * SQL function geo.envelope: returns the WKT bounding box polygon of a geometry.
  *
- * <p>Usage: {@code ST_AsText(<geometry>)}</p>
- * <p>Returns: WKT string</p>
+ * <p>Usage: {@code geo.envelope(<geometry>)}</p>
+ * <p>Returns: WKT {@code "POLYGON ((minX minY, maxX minY, maxX maxY, minX maxY, minX minY))"}</p>
  */
-public class SQLFunctionST_AsText extends SQLFunctionAbstract {
-  public static final String NAME = "ST_AsText";
+public class SQLFunctionGeoEnvelope extends SQLFunctionAbstract {
+  public static final String NAME = "geo.envelope";
 
-  public SQLFunctionST_AsText() {
+  public SQLFunctionGeoEnvelope() {
     super(NAME);
   }
 
@@ -44,20 +43,27 @@ public class SQLFunctionST_AsText extends SQLFunctionAbstract {
     if (iParams == null || iParams.length < 1 || iParams[0] == null)
       return null;
 
-    final Object input = iParams[0];
-    if (input instanceof String str)
-      return str;
+    final Shape shape = GeoUtils.parseGeometry(iParams[0]);
+    if (shape == null)
+      return null;
 
-    if (input instanceof Shape shape)
-      return GeoUtils.toWKT(shape);
+    final Rectangle bbox = shape.getBoundingBox();
+    final double minX = bbox.getMinX();
+    final double minY = bbox.getMinY();
+    final double maxX = bbox.getMaxX();
+    final double maxY = bbox.getMaxY();
 
-    // Try to parse then convert
-    final Shape shape = GeoUtils.parseGeometry(input);
-    return GeoUtils.toWKT(shape);
+    return "POLYGON ((" +
+        GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(minY) + ", " +
+        GeoUtils.formatCoord(maxX) + " " + GeoUtils.formatCoord(minY) + ", " +
+        GeoUtils.formatCoord(maxX) + " " + GeoUtils.formatCoord(maxY) + ", " +
+        GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(maxY) + ", " +
+        GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(minY) +
+        "))";
   }
 
   @Override
   public String getSyntax() {
-    return "ST_AsText(<geometry>)";
+    return "geo.envelope(<geometry>)";
   }
 }

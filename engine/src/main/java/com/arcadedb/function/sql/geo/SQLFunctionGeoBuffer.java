@@ -21,47 +21,39 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
-import org.locationtech.spatial4j.shape.Point;
-import org.locationtech.spatial4j.shape.Shape;
+import org.locationtech.jts.geom.Geometry;
 
 /**
- * SQL function ST_X: returns the X (longitude) coordinate of a point geometry.
+ * SQL function geo.buffer: returns a WKT string of the buffered geometry.
+ * Uses JTS Geometry.buffer(distance) for the computation.
  *
- * <p>Usage: {@code ST_X(<point>)}</p>
- * <p>Returns: Double X coordinate, or null if input is not a point</p>
+ * <p>Usage: {@code geo.buffer(<geometry>, <distance>)}</p>
+ * <p>Returns: WKT string of the buffered shape</p>
  */
-public class SQLFunctionST_X extends SQLFunctionAbstract {
-  public static final String NAME = "ST_X";
+public class SQLFunctionGeoBuffer extends SQLFunctionAbstract {
+  public static final String NAME = "geo.buffer";
 
-  public SQLFunctionST_X() {
+  public SQLFunctionGeoBuffer() {
     super(NAME);
   }
 
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {
-    if (iParams == null || iParams.length < 1 || iParams[0] == null)
+    if (iParams == null || iParams.length < 2 || iParams[0] == null || iParams[1] == null)
       return null;
 
-    final Object input = iParams[0];
+    final Geometry geometry = GeoUtils.parseJtsGeometry(iParams[0]);
+    if (geometry == null)
+      return null;
 
-    if (input instanceof Point p)
-      return p.getX();
-
-    // Try parsing as geometry
-    try {
-      final Shape shape = GeoUtils.parseGeometry(input);
-      if (shape instanceof Point p)
-        return p.getX();
-    } catch (Exception ignored) {
-      // Not a valid geometry or not a point
-    }
-
-    return null;
+    final double distance = GeoUtils.getDoubleValue(iParams[1]);
+    final Geometry buffered = geometry.buffer(distance);
+    return GeoUtils.jtsToWKT(buffered);
   }
 
   @Override
   public String getSyntax() {
-    return "ST_X(<point>)";
+    return "geo.buffer(<geometry>, <distance>)";
   }
 }

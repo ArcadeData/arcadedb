@@ -21,47 +21,32 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
-import org.locationtech.spatial4j.shape.Point;
-import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_Y: returns the Y (latitude) coordinate of a point geometry.
+ * SQL function geo.point: constructs a WKT POINT string from X (longitude) and Y (latitude).
  *
- * <p>Usage: {@code ST_Y(<point>)}</p>
- * <p>Returns: Double Y coordinate, or null if input is not a point</p>
+ * <p>Usage: {@code geo.point(<x>, <y>)}</p>
+ * <p>Returns: WKT string {@code "POINT (x y)"}</p>
  */
-public class SQLFunctionST_Y extends SQLFunctionAbstract {
-  public static final String NAME = "ST_Y";
+public class SQLFunctionGeoPoint extends SQLFunctionAbstract {
+  public static final String NAME = "geo.point";
 
-  public SQLFunctionST_Y() {
+  public SQLFunctionGeoPoint() {
     super(NAME);
   }
 
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {
-    if (iParams == null || iParams.length < 1 || iParams[0] == null)
+    if (iParams == null || iParams.length < 2 || iParams[0] == null || iParams[1] == null)
       return null;
-
-    final Object input = iParams[0];
-
-    if (input instanceof Point p)
-      return p.getY();
-
-    // Try parsing as geometry
-    try {
-      final Shape shape = GeoUtils.parseGeometry(input);
-      if (shape instanceof Point p)
-        return p.getY();
-    } catch (Exception ignored) {
-      // Not a valid geometry or not a point
-    }
-
-    return null;
+    final double x = GeoUtils.getDoubleValue(iParams[0]);
+    final double y = GeoUtils.getDoubleValue(iParams[1]);
+    return "POINT (" + GeoUtils.formatCoord(x) + " " + GeoUtils.formatCoord(y) + ")";
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Y(<point>)";
+    return "geo.point(<x>, <y>)";
   }
 }

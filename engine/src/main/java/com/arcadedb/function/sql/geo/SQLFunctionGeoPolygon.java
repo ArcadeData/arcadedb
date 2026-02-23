@@ -26,16 +26,16 @@ import org.locationtech.spatial4j.shape.Point;
 import java.util.List;
 
 /**
- * SQL function ST_Polygon: constructs a WKT POLYGON string from a list of coordinate pairs.
+ * SQL function geo.polygon: constructs a WKT POLYGON string from a list of coordinate pairs.
  * The ring is automatically closed if the first and last points differ.
  *
- * <p>Usage: {@code ST_Polygon([[x1,y1],[x2,y2],...])}</p>
+ * <p>Usage: {@code geo.polygon([[x1,y1],[x2,y2],...])}</p>
  * <p>Returns: WKT string {@code "POLYGON ((x1 y1, x2 y2, ..., x1 y1))"}</p>
  */
-public class SQLFunctionST_Polygon extends SQLFunctionAbstract {
-  public static final String NAME = "ST_Polygon";
+public class SQLFunctionGeoPolygon extends SQLFunctionAbstract {
+  public static final String NAME = "geo.polygon";
 
-  public SQLFunctionST_Polygon() {
+  public SQLFunctionGeoPolygon() {
     super(NAME);
   }
 
@@ -97,6 +97,6 @@ public class SQLFunctionST_Polygon extends SQLFunctionAbstract {
 
   @Override
   public String getSyntax() {
-    return "ST_Polygon([[x1,y1],[x2,y2],...])";
+    return "geo.polygon([[x1,y1],[x2,y2],...])";
   }
 }
