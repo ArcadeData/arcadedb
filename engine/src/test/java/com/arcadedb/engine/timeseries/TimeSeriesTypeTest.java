@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.schema.DocumentType;
@@ -147,5 +148,19 @@ public class TimeSeriesTypeTest extends TestHelper {
     // Verify fields
     assertThat(type.getTsColumns().get(3).getRole()).isEqualTo(ColumnDefinition.ColumnRole.FIELD);
     assertThat(type.getTsColumns().get(4).getRole()).isEqualTo(ColumnDefinition.ColumnRole.FIELD);
+  }
+
+  @Test
+  public void testDefaultShardCountMatchesAsyncWorkerThreads() {
+    final int expectedShards = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS);
+
+    final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()
+        .withName("DefaultShards")
+        .withTimestamp("ts")
+        .withField("value", Type.DOUBLE)
+        .create();
+
+    assertThat(type.getShardCount()).isEqualTo(expectedShards);
+    assertThat(type.getEngine().getShardCount()).isEqualTo(expectedShards);
   }
 }

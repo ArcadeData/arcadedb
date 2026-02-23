@@ -33,10 +33,18 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Coordinates N shards for a TimeSeries type. Routes writes to shards
- * using random selection, merges reads from all shards.
+ * Coordinates N shards for a TimeSeries type. Routes sync writes to shards
+ * using round-robin selection, merges reads from all shards.
+ * <p>
+ * Shard count defaults to the number of async worker threads so that when
+ * using the async API each slot owns exactly one shard (1:1 affinity).
+ * When running on a machine with fewer or more cores than the one where
+ * the type was created, the async executor's {@code getSlot(shardIdx)}
+ * mapping still guarantees contention-free writes: each shard always
+ * maps to the same slot.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -49,6 +57,7 @@ public class TimeSeriesEngine implements AutoCloseable {
   private final int                    shardCount;
   private final long                   compactionBucketIntervalMs;
   private final ExecutorService        shardExecutor;
+  private final AtomicLong             appendCounter = new AtomicLong();
 
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount) throws IOException {
@@ -76,10 +85,10 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
-   * Appends samples, routing to a shard based on the current thread.
+   * Appends samples, routing to a shard using round-robin distribution.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    final int shardIdx = java.util.concurrent.ThreadLocalRandom.current().nextInt(shardCount);
+    final int shardIdx = (int) (appendCounter.getAndIncrement() % shardCount);
     shards[shardIdx].appendSamples(timestamps, columnValues);
   }
 

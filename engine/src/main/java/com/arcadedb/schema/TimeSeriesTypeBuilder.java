@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
@@ -36,7 +37,7 @@ public class TimeSeriesTypeBuilder {
   private final DatabaseInternal       database;
   private       String                 typeName;
   private       String                 timestampColumn;
-  private       int                    shards      = 0; // 0 = default (1 for now)
+  private       int                    shards      = 0; // 0 = default (async worker threads)
   private       long                   retentionMs                = 0;
   private       long                   compactionBucketIntervalMs = 0;
   private       List<DownsamplingTier> downsamplingTiers          = new ArrayList<>();
@@ -99,7 +100,7 @@ public class TimeSeriesTypeBuilder {
 
     final LocalTimeSeriesType type = new LocalTimeSeriesType(schema, typeName);
     type.setTimestampColumn(timestampColumn);
-    type.setShardCount(shards > 0 ? shards : 1);
+    type.setShardCount(shards > 0 ? shards : database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS));
     type.setRetentionMs(retentionMs);
     type.setCompactionBucketIntervalMs(compactionBucketIntervalMs);
     type.setDownsamplingTiers(downsamplingTiers);

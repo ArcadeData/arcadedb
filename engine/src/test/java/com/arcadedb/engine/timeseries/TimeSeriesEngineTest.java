@@ -105,6 +105,43 @@ class TimeSeriesEngineTest extends TestHelper {
     engine.close();
   }
 
+  @Test
+  void testRoundRobinShardDistribution() throws Exception {
+    final List<ColumnDefinition> cols = List.of(
+        new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+        new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)
+    );
+
+    database.begin();
+    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "test_roundrobin", cols, 4);
+
+    // Append 4 batches — round-robin should put one in each shard
+    for (int i = 0; i < 4; i++)
+      engine.appendSamples(new long[] { (i + 1) * 1000L }, new Object[] { (double) i });
+
+    // Each shard should have exactly 1 sample
+    for (int s = 0; s < 4; s++)
+      assertThat(engine.getShard(s).getMutableBucket().getSampleCount()).isEqualTo(1);
+
+    // Append 4 more — second round-robin cycle
+    for (int i = 4; i < 8; i++)
+      engine.appendSamples(new long[] { (i + 1) * 1000L }, new Object[] { (double) i });
+
+    // Each shard should now have exactly 2 samples
+    for (int s = 0; s < 4; s++)
+      assertThat(engine.getShard(s).getMutableBucket().getSampleCount()).isEqualTo(2);
+
+    database.commit();
+
+    // All 8 samples should be queryable
+    database.begin();
+    final List<Object[]> results = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+    assertThat(results).hasSize(8);
+    database.commit();
+
+    engine.close();
+  }
+
   @Override
   protected boolean isCheckingDatabaseIntegrity() {
     return false;
