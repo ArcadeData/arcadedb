@@ -72,7 +72,10 @@ public class GetPromQLQueryRangeHandler extends AbstractServerHttpHandler {
 
     try {
       final PromQLExpr expr = new PromQLParser(query).parse();
-      final PromQLEvaluator evaluator = new PromQLEvaluator(database);
+      final String lookbackStr = getQueryParameter(exchange, "lookback_delta");
+      final PromQLEvaluator evaluator = lookbackStr != null && !lookbackStr.isBlank()
+          ? new PromQLEvaluator(database, PromQLParser.parseDuration(lookbackStr))
+          : new PromQLEvaluator(database);
       final PromQLResult result = evaluator.evaluateRange(expr, startMs, endMs, stepMs);
       return new ExecutionResponse(200, PromQLResponseFormatter.formatSuccess(result));
     } catch (final IllegalArgumentException e) {

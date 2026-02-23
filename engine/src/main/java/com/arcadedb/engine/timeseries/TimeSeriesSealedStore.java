@@ -1075,6 +1075,51 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     };
   }
 
+  /**
+   * Truncates the sealed store to exactly {@code targetBlockCount} blocks,
+   * removing any blocks appended after the watermark during an interrupted compaction.
+   */
+  public synchronized void truncateToBlockCount(final long targetBlockCount) throws IOException {
+    if (targetBlockCount >= blockDirectory.size())
+      return; // nothing to truncate
+
+    final List<BlockEntry> retained = new ArrayList<>(blockDirectory.subList(0, (int) targetBlockCount));
+    final int colCount = columns.size();
+    final String tempPath = basePath + ".ts.sealed.tmp";
+    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+      headerBuf.putInt(MAGIC_VALUE);
+      headerBuf.put((byte) CURRENT_VERSION);
+      headerBuf.putShort((short) colCount);
+      headerBuf.putInt(0);
+      headerBuf.putLong(Long.MAX_VALUE);
+      headerBuf.putLong(Long.MIN_VALUE);
+      headerBuf.flip();
+      tempFile.getChannel().write(headerBuf);
+
+      blockDirectory.clear();
+      globalMinTs = Long.MAX_VALUE;
+      globalMaxTs = Long.MIN_VALUE;
+
+      for (final BlockEntry entry : retained)
+        copyBlockToFile(tempFile, entry, colCount);
+    }
+
+    // Swap files
+    indexChannel.close();
+    indexFile.close();
+
+    final File oldFile = new File(basePath + ".ts.sealed");
+    final File tmpFile = new File(tempPath);
+    if (!oldFile.delete() || !tmpFile.renameTo(oldFile))
+      throw new IOException("Failed to swap sealed store files during truncation");
+
+    indexFile = new RandomAccessFile(oldFile, "rw");
+    indexChannel = indexFile.getChannel();
+    fileVersion = CURRENT_VERSION;
+    rewriteHeader();
+  }
+
   public int getBlockCount() {
     return blockDirectory.size();
   }

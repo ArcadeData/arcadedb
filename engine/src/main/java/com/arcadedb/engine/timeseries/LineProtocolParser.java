@@ -154,7 +154,7 @@ public class LineProtocolParser {
         pos += key.length() + 1; // +1 for '='
         final String value = readTagValue(line, pos);
         pos += rawTagValueLength(line, pos);
-        tags.put(unescape(key), unescape(value));
+        tags.put(key, value);
         if (pos < len && line.charAt(pos) == ',')
           pos++; // skip comma separator
       }
@@ -171,7 +171,7 @@ public class LineProtocolParser {
       final String key = readFieldKey(line, pos);
       pos += rawFieldKeyLength(line, pos) + 1; // +1 for '='
       final Object[] valueAndLen = readFieldValue(line, pos);
-      fields.put(unescape(key), valueAndLen[0]);
+      fields.put(key, valueAndLen[0]);
       pos += (int) valueAndLen[1];
       if (pos < len && line.charAt(pos) == ',')
         pos++; // skip comma separator
@@ -335,6 +335,8 @@ public class LineProtocolParser {
     // Unsigned integer (suffix 'u')
     if (raw.endsWith("u")) {
       final long uintVal = Long.parseUnsignedLong(raw.substring(0, raw.length() - 1));
+      if (uintVal < 0)
+        throw new IllegalArgumentException("Unsigned integer exceeds Long.MAX_VALUE: " + raw);
       return new Object[] { uintVal, rawLen };
     }
 

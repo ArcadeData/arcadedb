@@ -62,14 +62,11 @@ public class TimeSeriesMaintenanceScheduler {
       return; // No policies to enforce
 
     final String typeName = tsType.getName();
-    // Avoid duplicate scheduling
-    if (tasks.containsKey(typeName))
-      return;
 
     final WeakReference<Database> dbRef = new WeakReference<>(database);
     final WeakReference<LocalTimeSeriesType> typeRef = new WeakReference<>(tsType);
 
-    final ScheduledFuture<?> future = executor.scheduleAtFixedRate(() -> {
+    tasks.computeIfAbsent(typeName, k -> executor.scheduleAtFixedRate(() -> {
       final Database db = dbRef.get();
       final LocalTimeSeriesType type = typeRef.get();
       if (db == null || !db.isOpen() || type == null) {
@@ -98,9 +95,7 @@ public class TimeSeriesMaintenanceScheduler {
         LogManager.instance().log(this, Level.WARNING,
             "Error in TimeSeries maintenance for type '%s': %s", e, typeName, e.getMessage());
       }
-    }, DEFAULT_CHECK_INTERVAL_MS, DEFAULT_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS);
-
-    tasks.put(typeName, future);
+    }, DEFAULT_CHECK_INTERVAL_MS, DEFAULT_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS));
   }
 
   /**
@@ -116,7 +111,14 @@ public class TimeSeriesMaintenanceScheduler {
    * Shuts down the scheduler and cancels all tasks.
    */
   public void shutdown() {
-    executor.shutdownNow();
+    executor.shutdown();
+    try {
+      if (!executor.awaitTermination(10, TimeUnit.SECONDS))
+        executor.shutdownNow();
+    } catch (final InterruptedException e) {
+      executor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
     tasks.clear();
   }
 }

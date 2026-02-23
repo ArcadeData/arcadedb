@@ -119,6 +119,10 @@ public class ContinuousAggregateBuilder {
     if (!query.toUpperCase().contains("GROUP BY"))
       throw new SchemaException("Continuous aggregate query must include a GROUP BY clause");
 
+    // Validate query structure: buildFilteredQuery uses string manipulation so it cannot
+    // handle subqueries, CTEs, or inline comments. Reject unsupported patterns at creation time.
+    validateQueryStructure(query);
+
     final String finalBucketAlias = bucketAlias;
     final String finalTsColumn = tsColumnInQuery;
 
@@ -152,6 +156,23 @@ public class ContinuousAggregateBuilder {
 
       return ca;
     });
+  }
+
+  private static void validateQueryStructure(final String query) {
+    final String upper = query.toUpperCase().trim();
+    // Reject CTEs (WITH ... AS)
+    if (upper.startsWith("WITH "))
+      throw new SchemaException("Continuous aggregate queries must not use CTEs (WITH ... AS). " +
+          "Use a simple SELECT ... FROM ... GROUP BY query.");
+    // Reject subqueries in FROM clause
+    if (upper.contains("(SELECT ") || upper.contains("( SELECT "))
+      throw new SchemaException("Continuous aggregate queries must not contain subqueries. " +
+          "Use a simple SELECT ... FROM ... GROUP BY query.");
+    // Reject UNION/INTERSECT/EXCEPT
+    for (final String keyword : new String[] { " UNION ", " INTERSECT ", " EXCEPT " })
+      if (upper.contains(keyword))
+        throw new SchemaException("Continuous aggregate queries must not use " + keyword.trim() + ". " +
+            "Use a simple SELECT ... FROM ... GROUP BY query.");
   }
 
   private String extractSourceType(final String sql) {

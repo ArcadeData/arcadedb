@@ -39,7 +39,7 @@ public final class TimeSeriesVectorOpsProvider {
       // Quick smoke test
       ops.sum(new double[] { 1.0, 2.0 }, 0, 2);
       LogManager.instance().log(TimeSeriesVectorOpsProvider.class, Level.INFO, "TimeSeries SIMD vector ops enabled");
-    } catch (final Throwable t) {
+    } catch (final Exception | LinkageError t) {
       ops = new ScalarTimeSeriesVectorOps();
       LogManager.instance()
           .log(TimeSeriesVectorOpsProvider.class, Level.INFO, "TimeSeries SIMD not available, using scalar fallback: %s",

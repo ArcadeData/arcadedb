@@ -46,16 +46,16 @@ public final class DictionaryCodec {
     if (values == null || values.length == 0)
       return new byte[0];
 
-    // Build dictionary
-    final Map<String, Short> dict = new HashMap<>();
-    final String[] dictEntries = new String[values.length]; // max possible unique
-    short nextIndex = 0;
+    // Build dictionary (use int counter to avoid short overflow)
+    final Map<String, Integer> dict = new HashMap<>();
+    final String[] dictEntries = new String[Math.min(values.length, MAX_DICTIONARY_SIZE)];
+    int nextIndex = 0;
 
-    final short[] indices = new short[values.length];
+    final int[] indices = new int[values.length];
     for (int i = 0; i < values.length; i++) {
-      Short idx = dict.get(values[i]);
+      Integer idx = dict.get(values[i]);
       if (idx == null) {
-        if (nextIndex == MAX_DICTIONARY_SIZE)
+        if (nextIndex >= MAX_DICTIONARY_SIZE)
           throw new IllegalArgumentException("Dictionary overflow: more than " + MAX_DICTIONARY_SIZE + " unique values");
         idx = nextIndex;
         dict.put(values[i], idx);
@@ -75,7 +75,7 @@ public final class DictionaryCodec {
 
     final ByteBuffer buf = ByteBuffer.allocate(size);
     buf.putInt(values.length);
-    buf.putShort(nextIndex);
+    buf.putShort((short) nextIndex);
 
     for (int i = 0; i < nextIndex; i++) {
       final byte[] utf8 = dictEntries[i].getBytes(StandardCharsets.UTF_8);
@@ -83,8 +83,8 @@ public final class DictionaryCodec {
       buf.put(utf8);
     }
 
-    for (final short index : indices)
-      buf.putShort(index);
+    for (final int index : indices)
+      buf.putShort((short) index);
 
     return buf.array();
   }
@@ -95,7 +95,7 @@ public final class DictionaryCodec {
 
     final ByteBuffer buf = ByteBuffer.wrap(data);
     final int count = buf.getInt();
-    final short dictSize = buf.getShort();
+    final int dictSize = buf.getShort() & 0xFFFF;
 
     final String[] dictEntries = new String[dictSize];
     for (int i = 0; i < dictSize; i++) {

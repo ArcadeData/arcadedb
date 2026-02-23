@@ -64,9 +64,15 @@ public class PromQLEvaluator {
   private static final long DEFAULT_LOOKBACK_MS = 5 * 60_000; // 5 minutes
 
   private final DatabaseInternal database;
+  private final long             lookbackMs;
 
   public PromQLEvaluator(final DatabaseInternal database) {
+    this(database, DEFAULT_LOOKBACK_MS);
+  }
+
+  public PromQLEvaluator(final DatabaseInternal database, final long lookbackMs) {
     this.database = database;
+    this.lookbackMs = lookbackMs;
   }
 
   /**
@@ -134,7 +140,7 @@ public class PromQLEvaluator {
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
     final long offset = vs.offsetMs();
     final long queryEnd = evalTimeMs - offset;
-    final long queryStart = queryEnd - DEFAULT_LOOKBACK_MS;
+    final long queryStart = queryEnd - lookbackMs;
 
     final List<Object[]> rows;
     try {

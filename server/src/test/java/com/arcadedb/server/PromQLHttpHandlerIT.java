@@ -235,6 +235,71 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  @Test
+  void testEmptyResultSet() throws Exception {
+    testEachServer((serverIndex) -> {
+      // Query a metric that has no data ingested
+      final JSONObject result = getPromQL(serverIndex, "query",
+          "query=" + encode("completely_nonexistent_metric") + "&time=5");
+      assertThat(result.getString("status")).isEqualTo("success");
+      final JSONArray resultArr = result.getJSONObject("data").getJSONArray("result");
+      assertThat(resultArr.length()).isEqualTo(0);
+    });
+  }
+
+  @Test
+  void testTopkWithKGreaterThanSeriesCount() throws Exception {
+    testEachServer((serverIndex) -> {
+      ingestTestData(serverIndex);
+      // prom_cpu has 2 series (server1, server2); ask for topk(10) — should return all 2
+      final JSONObject result = getPromQL(serverIndex, "query",
+          "query=" + encode("topk(10, prom_cpu)") + "&time=5");
+      assertThat(result.getString("status")).isEqualTo("success");
+      final JSONArray resultArr = result.getJSONObject("data").getJSONArray("result");
+      // Should return all available series (2), not error
+      assertThat(resultArr.length()).isLessThanOrEqualTo(2);
+      assertThat(resultArr.length()).isGreaterThan(0);
+    });
+  }
+
+  @Test
+  void testBottomkWithKGreaterThanSeriesCount() throws Exception {
+    testEachServer((serverIndex) -> {
+      ingestTestData(serverIndex);
+      // Ask for bottomk(100) — should return all available series
+      final JSONObject result = getPromQL(serverIndex, "query",
+          "query=" + encode("bottomk(100, prom_cpu)") + "&time=5");
+      assertThat(result.getString("status")).isEqualTo("success");
+      final JSONArray resultArr = result.getJSONObject("data").getJSONArray("result");
+      assertThat(resultArr.length()).isGreaterThan(0);
+    });
+  }
+
+  @Test
+  void testRangeQueryEmptyResult() throws Exception {
+    testEachServer((serverIndex) -> {
+      // Range query on nonexistent metric
+      final JSONObject result = getPromQL(serverIndex, "query_range",
+          "query=" + encode("nonexistent_range_metric") + "&start=1&end=5&step=1");
+      assertThat(result.getString("status")).isEqualTo("success");
+      final JSONObject data = result.getJSONObject("data");
+      assertThat(data.getString("resultType")).isEqualTo("matrix");
+      assertThat(data.getJSONArray("result").length()).isEqualTo(0);
+    });
+  }
+
+  @Test
+  void testLookbackDeltaParameter() throws Exception {
+    testEachServer((serverIndex) -> {
+      ingestTestData(serverIndex);
+      // Query with a custom lookback_delta
+      final JSONObject result = getPromQL(serverIndex, "query",
+          "query=" + encode("prom_cpu") + "&time=5&lookback_delta=10m");
+      assertThat(result.getString("status")).isEqualTo("success");
+      assertThat(result.getJSONObject("data").getJSONArray("result").length()).isGreaterThan(0);
+    });
+  }
+
   // --- Helpers ---
 
   private JSONObject getPromQL(final int serverIndex, final String endpoint, final String queryString) throws Exception {

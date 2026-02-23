@@ -29,6 +29,8 @@ import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Coordinates N shards for a TimeSeries type. Routes writes to shards
@@ -44,6 +46,7 @@ public class TimeSeriesEngine implements AutoCloseable {
   private final TimeSeriesShard[]      shards;
   private final int                    shardCount;
   private final long                   compactionBucketIntervalMs;
+  private final ExecutorService        shardExecutor;
 
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount) throws IOException {
@@ -59,6 +62,11 @@ public class TimeSeriesEngine implements AutoCloseable {
     this.shardCount = shardCount;
     this.compactionBucketIntervalMs = compactionBucketIntervalMs;
     this.shards = new TimeSeriesShard[shardCount];
+    this.shardExecutor = Executors.newFixedThreadPool(shardCount, r -> {
+      final Thread t = new Thread(r, "ArcadeDB-TS-Shard-" + typeName);
+      t.setDaemon(true);
+      return t;
+    });
 
     for (int i = 0; i < shardCount; i++)
       shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs);
@@ -68,7 +76,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Appends samples, routing to a shard based on the current thread.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    final int shardIdx = (int) (Thread.currentThread().threadId() % shardCount);
+    final int shardIdx = java.util.concurrent.ThreadLocalRandom.current().nextInt(shardCount);
     shards[shardIdx].appendSamples(timestamps, columnValues);
   }
 
@@ -233,7 +241,7 @@ public class TimeSeriesEngine implements AutoCloseable {
           } catch (final IOException e) {
             throw new CompletionException(e);
           }
-        });
+        }, shardExecutor);
       }
 
       // Wait for all sealed store results and merge
@@ -396,6 +404,7 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
+    shardExecutor.shutdown();
     for (final TimeSeriesShard shard : shards)
       shard.close();
   }

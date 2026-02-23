@@ -30,6 +30,7 @@ import com.arcadedb.schema.Type;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -78,6 +79,23 @@ public class TimeSeriesShard implements AutoCloseable {
     }
 
     this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
+
+    // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks
+    database.begin();
+    try {
+      if (mutableBucket.isCompactionInProgress()) {
+        final long watermark = mutableBucket.getCompactionWatermark();
+        sealedStore.truncateToBlockCount(watermark);
+        mutableBucket.setCompactionInProgress(false);
+        database.commit();
+      } else {
+        database.rollback();
+      }
+    } catch (final Exception e) {
+      if (database.isTransactionActive())
+        database.rollback();
+      throw e instanceof IOException ? (IOException) e : new IOException("Crash recovery failed for shard " + shardIndex, e);
+    }
   }
 
   /**
@@ -208,6 +226,19 @@ public class TimeSeriesShard implements AutoCloseable {
         }
       }
 
+      // Pre-validate: ensure no DICTIONARY column exceeds max distinct values per chunk
+      for (int c = 0; c < colCount; c++) {
+        if (columns.get(c).getCompressionHint() == TimeSeriesCodec.DICTIONARY && sortedColArrays[c] != null) {
+          final HashSet<Object> distinct = new HashSet<>();
+          for (final Object v : sortedColArrays[c])
+            distinct.add(v != null ? v : "");
+          if (distinct.size() > DictionaryCodec.MAX_DICTIONARY_SIZE)
+            throw new IOException(
+                "Column '" + columns.get(c).getName() + "' has " + distinct.size() +
+                    " distinct values, exceeding dictionary limit of " + DictionaryCodec.MAX_DICTIONARY_SIZE);
+        }
+      }
+
       // Phase 3: Write sealed blocks in chunks with per-column stats.
       // When bucket-aligned compaction is configured, split at bucket boundaries
       // so each block fits entirely within one time bucket (enabling 100% fast-path aggregation).
@@ -329,14 +360,34 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   private static int[] sortIndices(final long[] timestamps) {
-    final Integer[] indices = new Integer[timestamps.length];
-    for (int i = 0; i < indices.length; i++)
+    final int n = timestamps.length;
+    final int[] indices = new int[n];
+    for (int i = 0; i < n; i++)
       indices[i] = i;
-    Arrays.sort(indices, (a, b) -> Long.compare(timestamps[a], timestamps[b]));
-    final int[] result = new int[indices.length];
-    for (int i = 0; i < indices.length; i++)
-      result[i] = indices[i];
-    return result;
+    // Merge sort on primitive int[] to avoid Integer boxing
+    mergeSort(indices, new int[n], 0, n, timestamps);
+    return indices;
+  }
+
+  private static void mergeSort(final int[] arr, final int[] temp, final int from, final int to, final long[] keys) {
+    if (to - from <= 1)
+      return;
+    final int mid = (from + to) >>> 1;
+    mergeSort(arr, temp, from, mid, keys);
+    mergeSort(arr, temp, mid, to, keys);
+    // Merge
+    int i = from, j = mid, k = from;
+    while (i < mid && j < to) {
+      if (keys[arr[i]] <= keys[arr[j]])
+        temp[k++] = arr[i++];
+      else
+        temp[k++] = arr[j++];
+    }
+    while (i < mid)
+      temp[k++] = arr[i++];
+    while (j < to)
+      temp[k++] = arr[j++];
+    System.arraycopy(temp, from, arr, from, to - from);
   }
 
   private static long[] applyOrder(final long[] data, final int[] indices) {
