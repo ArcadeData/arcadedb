@@ -3015,15 +3015,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Function call visitor - parses function name and parameters.
-   * Grammar: identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN
+   * Grammar: identifier (DOT identifier)? LPAREN (STAR | expression (COMMA expression)*)? RPAREN
+   * Supports simple calls (count(*)) and namespace-qualified calls (geo.point(x,y)).
    */
   @Override
   public FunctionCall visitFunctionCall(final SQLParser.FunctionCallContext ctx) {
     final FunctionCall funcCall = new FunctionCall(-1);
 
     try {
-      // Function name (using reflection for protected field)
-      final Identifier funcName = (Identifier) visit(ctx.identifier());
+      // Build the function name: either "name" or "namespace.name"
+      final Identifier funcName;
+      if (ctx.identifier().size() == 2) {
+        // Namespace-qualified: geo.point → combine as single Identifier "geo.point"
+        final Identifier ns = (Identifier) visit(ctx.identifier(0));
+        final Identifier fn = (Identifier) visit(ctx.identifier(1));
+        funcName = new Identifier(ns.getStringValue() + "." + fn.getStringValue());
+      } else {
+        funcName = (Identifier) visit(ctx.identifier(0));
+      }
       funcCall.name = funcName;
 
       // Parameters (using reflection for protected field)

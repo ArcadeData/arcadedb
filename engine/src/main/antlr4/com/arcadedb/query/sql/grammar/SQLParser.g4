@@ -1169,8 +1169,8 @@ baseExpression
     | INTEGER_RANGE                                                     # integerRange
     | ELLIPSIS_INTEGER_RANGE                                            # ellipsisIntegerRange
     | THIS                                                              # thisLiteral
-    | identifier (DOT identifier)* methodCall* arraySelector* modifier* # identifierChain
     | functionCall                                                      # functionCallExpr
+    | identifier (DOT identifier)* methodCall* arraySelector* modifier* # identifierChain
     | inputParameter modifier*                                          # inputParam
     | LPAREN statement RPAREN modifier*                                 # parenthesizedStmt
     | LPAREN expression RPAREN modifier*                                # parenthesizedExpr
@@ -1213,9 +1213,10 @@ extendedCaseAlternative
  * Supports array selectors: someFunc()[0]
  * Supports modifiers: someFunc().asString()
  * Supports nested projections: list({x:1}):{x} (processed before methodCall/arraySelector/modifier)
+ * Supports namespace-qualified calls: geo.point(x, y) — namespace DOT functionName LPAREN...
  */
 functionCall
-    : identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN nestedProjection* methodCall* arraySelector* modifier*
+    : identifier (DOT identifier)? LPAREN (STAR | expression (COMMA expression)*)? RPAREN nestedProjection* methodCall* arraySelector* modifier*
     ;
 
 /**
@@ -1475,4 +1476,5 @@ identifier
     | IDENTIFIED
     | SYSTEM
     | UNIDIRECTIONAL
+    | CONTAINS
     ;

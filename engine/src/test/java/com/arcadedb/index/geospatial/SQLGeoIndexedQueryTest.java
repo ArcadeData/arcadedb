@@ -54,7 +54,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 
     // Bounding box: lon 10..16, lat 38..44 — should include Rome and Naples, not Milan
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location WHERE ST_Within(coords, ST_GeomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
+        "SELECT name FROM Location WHERE geo.within(coords, geo.geomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -82,7 +82,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 
     // Bounding box covers Rome and Naples only
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location2 WHERE ST_Intersects(coords, ST_GeomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
+        "SELECT name FROM Location2 WHERE geo.intersects(coords, geo.geomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -123,7 +123,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 
     // Search from POINT (12.0, 41.5) within 1.0 degree — only Rome qualifies
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location3 WHERE ST_DWithin(coords, 'POINT (12.0 41.5)', 1.0) = true");
+        "SELECT name FROM Location3 WHERE geo.dWithin(coords, 'POINT (12.0 41.5)', 1.0) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -154,7 +154,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
     database.command("sql", "DROP INDEX `Location4[coords]`");
 
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location4 WHERE ST_Within(coords, ST_GeomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
+        "SELECT name FROM Location4 WHERE geo.within(coords, geo.geomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -184,7 +184,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 
     // Bounding box covering Rome only; Milan is disjoint from it
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location5 WHERE ST_Disjoint(coords, ST_GeomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
+        "SELECT name FROM Location5 WHERE geo.disjoint(coords, geo.geomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -195,7 +195,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 
   /**
    * Verifies ST_Contains with stored polygons using inline full-scan evaluation.
-   * ST_Contains(coords, point) finds which stored polygon contains Rome.
+   * geo.contains(coords, point) finds which stored polygon contains Rome.
    * No GEOSPATIAL index is created here because the index is optimised for searching
    * stored points inside a query polygon (ST_Within direction); ST_Contains queries
    * a small containee shape against large stored containers and the GeoHash detail
@@ -214,9 +214,9 @@ class SQLGeoIndexedQueryTest extends TestHelper {
       database.command("sql", "INSERT INTO Location6 SET name = 'NorthBox', coords = 'POLYGON ((8 44, 11 44, 11 47, 8 47, 8 44))'");
     });
 
-    // ST_Contains(coords, point) — find which stored polygon contains Rome
+    // geo.contains(coords, point) — find which stored polygon contains Rome
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location6 WHERE ST_Contains(coords, ST_GeomFromText('POINT (12.5 41.9)')) = true");
+        "SELECT name FROM Location6 WHERE geo.contains(coords, geo.geomFromText('POINT (12.5 41.9)')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -245,7 +245,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
     });
 
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location7 WHERE ST_Equals(coords, ST_GeomFromText('POINT (12.5 41.9)')) = true");
+        "SELECT name FROM Location7 WHERE geo.equals(coords, geo.geomFromText('POINT (12.5 41.9)')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -276,7 +276,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
     });
 
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location8 WHERE ST_Crosses(coords, ST_GeomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
+        "SELECT name FROM Location8 WHERE geo.crosses(coords, geo.geomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -308,7 +308,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 
     // Query polygon: POLYGON ((12 40, 16 40, 16 45, 12 45, 12 40))
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location9 WHERE ST_Overlaps(coords, ST_GeomFromText('POLYGON ((12 40, 16 40, 16 45, 12 45, 12 40))')) = true");
+        "SELECT name FROM Location9 WHERE geo.overlaps(coords, geo.geomFromText('POLYGON ((12 40, 16 40, 16 45, 12 45, 12 40))')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())
@@ -338,7 +338,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 
     // Right polygon starting at x=12 touches LeftBox at the shared edge
     final ResultSet result = database.query("sql",
-        "SELECT name FROM Location10 WHERE ST_Touches(coords, ST_GeomFromText('POLYGON ((12 38, 16 38, 16 42, 12 42, 12 38))')) = true");
+        "SELECT name FROM Location10 WHERE geo.touches(coords, geo.geomFromText('POLYGON ((12 38, 16 38, 16 42, 12 42, 12 38))')) = true");
 
     final List<String> names = new ArrayList<>();
     while (result.hasNext())

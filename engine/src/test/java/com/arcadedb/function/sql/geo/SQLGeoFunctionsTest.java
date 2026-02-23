@@ -134,7 +134,7 @@ class SQLGeoFunctionsTest {
   void stGeomFromText() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // Valid WKT point
-      ResultSet result = db.query("sql", "select ST_GeomFromText('POINT (10 20)') as geom");
+      ResultSet result = db.query("sql", "select geo.geomFromText('POINT (10 20)') as geom");
       assertThat(result.hasNext()).isTrue();
       final Object geom = result.next().getProperty("geom");
       assertThat(geom).isNotNull();
@@ -145,7 +145,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stGeomFromTextNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_GeomFromText(null) as geom");
+      ResultSet result = db.query("sql", "select geo.geomFromText(null) as geom");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("geom");
       assertThat(val).isNull();
@@ -155,7 +155,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stPoint() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Point(10, 20) as wkt");
+      ResultSet result = db.query("sql", "select geo.point(10, 20) as wkt");
       assertThat(result.hasNext()).isTrue();
       final String wkt = result.next().getProperty("wkt");
       assertThat(wkt).isNotNull();
@@ -168,7 +168,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stPointNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Point(null, 20) as wkt");
+      ResultSet result = db.query("sql", "select geo.point(null, 20) as wkt");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("wkt");
       assertThat(val).isNull();
@@ -178,7 +178,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stLineString() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_LineString([[0,0],[10,10],[20,0]]) as wkt");
+      ResultSet result = db.query("sql", "select geo.lineString([[0,0],[10,10],[20,0]]) as wkt");
       assertThat(result.hasNext()).isTrue();
       final String wkt = result.next().getProperty("wkt");
       assertThat(wkt).isNotNull();
@@ -192,7 +192,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stLineStringNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_LineString(null) as wkt");
+      ResultSet result = db.query("sql", "select geo.lineString(null) as wkt");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("wkt");
       assertThat(val).isNull();
@@ -203,7 +203,7 @@ class SQLGeoFunctionsTest {
   void stPolygon() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // Closed ring
-      ResultSet result = db.query("sql", "select ST_Polygon([[0,0],[10,0],[10,10],[0,10],[0,0]]) as wkt");
+      ResultSet result = db.query("sql", "select geo.polygon([[0,0],[10,0],[10,10],[0,10],[0,0]]) as wkt");
       assertThat(result.hasNext()).isTrue();
       final String wkt = result.next().getProperty("wkt");
       assertThat(wkt).isNotNull();
@@ -218,7 +218,7 @@ class SQLGeoFunctionsTest {
   void stPolygonAutoClose() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // Open ring — should be auto-closed
-      ResultSet result = db.query("sql", "select ST_Polygon([[0,0],[10,0],[10,10],[0,10]]) as wkt");
+      ResultSet result = db.query("sql", "select geo.polygon([[0,0],[10,0],[10,10],[0,10]]) as wkt");
       assertThat(result.hasNext()).isTrue();
       final String wkt = result.next().getProperty("wkt");
       assertThat(wkt).isNotNull();
@@ -233,7 +233,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stPolygonNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Polygon(null) as wkt");
+      ResultSet result = db.query("sql", "select geo.polygon(null) as wkt");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("wkt");
       assertThat(val).isNull();
@@ -243,7 +243,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stBuffer() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Buffer('POINT (10 20)', 1.0) as wkt");
+      ResultSet result = db.query("sql", "select geo.buffer('POINT (10 20)', 1.0) as wkt");
       assertThat(result.hasNext()).isTrue();
       final String wkt = result.next().getProperty("wkt");
       assertThat(wkt).isNotNull();
@@ -254,7 +254,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stBufferNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Buffer(null, 1.0) as wkt");
+      ResultSet result = db.query("sql", "select geo.buffer(null, 1.0) as wkt");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("wkt");
       assertThat(val).isNull();
@@ -265,7 +265,7 @@ class SQLGeoFunctionsTest {
   void stEnvelope() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
-          "select ST_Envelope('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as wkt");
+          "select geo.envelope('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as wkt");
       assertThat(result.hasNext()).isTrue();
       final String wkt = result.next().getProperty("wkt");
       assertThat(wkt).isNotNull();
@@ -278,7 +278,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stEnvelopeNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Envelope(null) as wkt");
+      ResultSet result = db.query("sql", "select geo.envelope(null) as wkt");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("wkt");
       assertThat(val).isNull();
@@ -289,14 +289,14 @@ class SQLGeoFunctionsTest {
   void stDistance() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // Distance between two points in meters (default unit)
-      ResultSet result = db.query("sql", "select ST_Distance('POINT (0 0)', 'POINT (1 0)') as dist");
+      ResultSet result = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)') as dist");
       assertThat(result.hasNext()).isTrue();
       final Double dist = result.next().getProperty("dist");
       assertThat(dist).isNotNull();
       assertThat(dist).isGreaterThan(0.0);
 
       // Distance in km
-      result = db.query("sql", "select ST_Distance('POINT (0 0)', 'POINT (1 0)', 'km') as dist");
+      result = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)', 'km') as dist");
       assertThat(result.hasNext()).isTrue();
       final Double distKm = result.next().getProperty("dist");
       assertThat(distKm).isNotNull();
@@ -309,7 +309,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stDistanceNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Distance(null, 'POINT (1 0)') as dist");
+      ResultSet result = db.query("sql", "select geo.distance(null, 'POINT (1 0)') as dist");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("dist");
       assertThat(val).isNull();
@@ -320,7 +320,7 @@ class SQLGeoFunctionsTest {
   void stArea() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
-          "select ST_Area('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as area");
+          "select geo.area('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as area");
       assertThat(result.hasNext()).isTrue();
       final Double area = result.next().getProperty("area");
       assertThat(area).isNotNull();
@@ -331,7 +331,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stAreaNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Area(null) as area");
+      ResultSet result = db.query("sql", "select geo.area(null) as area");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("area");
       assertThat(val).isNull();
@@ -342,7 +342,7 @@ class SQLGeoFunctionsTest {
   void stAsText() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // String input → returned as-is
-      ResultSet result = db.query("sql", "select ST_AsText('POINT (10 20)') as wkt");
+      ResultSet result = db.query("sql", "select geo.asText('POINT (10 20)') as wkt");
       assertThat(result.hasNext()).isTrue();
       final String wkt = result.next().getProperty("wkt");
       assertThat(wkt).isEqualTo("POINT (10 20)");
@@ -353,7 +353,7 @@ class SQLGeoFunctionsTest {
   void stAsTextFromShape() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // Shape → WKT
-      ResultSet result = db.query("sql", "select ST_AsText(ST_GeomFromText('POINT (10 20)')) as wkt");
+      ResultSet result = db.query("sql", "select geo.asText(geo.geomFromText('POINT (10 20)')) as wkt");
       assertThat(result.hasNext()).isTrue();
       final String wkt = result.next().getProperty("wkt");
       assertThat(wkt).isNotNull();
@@ -366,7 +366,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stAsTextNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_AsText(null) as wkt");
+      ResultSet result = db.query("sql", "select geo.asText(null) as wkt");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("wkt");
       assertThat(val).isNull();
@@ -376,7 +376,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stAsGeoJson() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_AsGeoJson('POINT (10 20)') as json");
+      ResultSet result = db.query("sql", "select geo.asGeoJson('POINT (10 20)') as json");
       assertThat(result.hasNext()).isTrue();
       final String json = result.next().getProperty("json");
       assertThat(json).isNotNull();
@@ -391,7 +391,7 @@ class SQLGeoFunctionsTest {
   void stAsGeoJsonPolygon() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
-          "select ST_AsGeoJson('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as json");
+          "select geo.asGeoJson('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as json");
       assertThat(result.hasNext()).isTrue();
       final String json = result.next().getProperty("json");
       assertThat(json).isNotNull();
@@ -403,7 +403,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stAsGeoJsonNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_AsGeoJson(null) as json");
+      ResultSet result = db.query("sql", "select geo.asGeoJson(null) as json");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("json");
       assertThat(val).isNull();
@@ -413,7 +413,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stX() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_X('POINT (10 20)') as x");
+      ResultSet result = db.query("sql", "select geo.x('POINT (10 20)') as x");
       assertThat(result.hasNext()).isTrue();
       final Double x = result.next().getProperty("x");
       assertThat(x).isNotNull();
@@ -424,7 +424,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stXFromShape() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_X(ST_GeomFromText('POINT (10 20)')) as x");
+      ResultSet result = db.query("sql", "select geo.x(geo.geomFromText('POINT (10 20)')) as x");
       assertThat(result.hasNext()).isTrue();
       final Double x = result.next().getProperty("x");
       assertThat(x).isNotNull();
@@ -437,7 +437,7 @@ class SQLGeoFunctionsTest {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // ST_X on a polygon should return null
       ResultSet result = db.query("sql",
-          "select ST_X('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as x");
+          "select geo.x('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as x");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("x");
       assertThat(val).isNull();
@@ -447,7 +447,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stXNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_X(null) as x");
+      ResultSet result = db.query("sql", "select geo.x(null) as x");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("x");
       assertThat(val).isNull();
@@ -457,7 +457,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stY() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Y('POINT (10 20)') as y");
+      ResultSet result = db.query("sql", "select geo.y('POINT (10 20)') as y");
       assertThat(result.hasNext()).isTrue();
       final Double y = result.next().getProperty("y");
       assertThat(y).isNotNull();
@@ -468,7 +468,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stYFromShape() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Y(ST_GeomFromText('POINT (10 20)')) as y");
+      ResultSet result = db.query("sql", "select geo.y(geo.geomFromText('POINT (10 20)')) as y");
       assertThat(result.hasNext()).isTrue();
       final Double y = result.next().getProperty("y");
       assertThat(y).isNotNull();
@@ -480,7 +480,7 @@ class SQLGeoFunctionsTest {
   void stYNonPoint() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       ResultSet result = db.query("sql",
-          "select ST_Y('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as y");
+          "select geo.y('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as y");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("y");
       assertThat(val).isNull();
@@ -490,7 +490,7 @@ class SQLGeoFunctionsTest {
   @Test
   void stYNull() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-      ResultSet result = db.query("sql", "select ST_Y(null) as y");
+      ResultSet result = db.query("sql", "select geo.y(null) as y");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("y");
       assertThat(val).isNull();
@@ -502,13 +502,13 @@ class SQLGeoFunctionsTest {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // ST_Point → ST_X / ST_Y round-trip
       // Note: small floating-point precision loss is expected when going through WKT parsing
-      ResultSet result = db.query("sql", "select ST_X(ST_GeomFromText(ST_Point(42.5, -7.3))) as x");
+      ResultSet result = db.query("sql", "select geo.x(geo.geomFromText(geo.point(42.5, -7.3))) as x");
       assertThat(result.hasNext()).isTrue();
       final Double x = result.next().getProperty("x");
       assertThat(x).isNotNull();
       assertThat(x).isCloseTo(42.5, org.assertj.core.data.Offset.offset(1e-6));
 
-      result = db.query("sql", "select ST_Y(ST_GeomFromText(ST_Point(42.5, -7.3))) as y");
+      result = db.query("sql", "select geo.y(geo.geomFromText(geo.point(42.5, -7.3))) as y");
       assertThat(result.hasNext()).isTrue();
       final Double y = result.next().getProperty("y");
       assertThat(y).isNotNull();
@@ -522,7 +522,7 @@ class SQLGeoFunctionsTest {
   void stWithinPointInsidePolygon() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Within('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.within('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -532,7 +532,7 @@ class SQLGeoFunctionsTest {
   void stWithinPointOutsidePolygon() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Within('POINT (15 15)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.within('POINT (15 15)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isFalse();
     });
@@ -542,7 +542,7 @@ class SQLGeoFunctionsTest {
   void stWithinNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Within(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.within(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
@@ -555,7 +555,7 @@ class SQLGeoFunctionsTest {
   void stIntersectsOverlappingPolygons() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Intersects('POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))', 'POLYGON ((3 3, 9 3, 9 9, 3 9, 3 3))') as v");
+          "select geo.intersects('POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))', 'POLYGON ((3 3, 9 3, 9 9, 3 9, 3 3))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -565,7 +565,7 @@ class SQLGeoFunctionsTest {
   void stIntersectsDisjointPolygons() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Intersects('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
+          "select geo.intersects('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isFalse();
     });
@@ -575,7 +575,7 @@ class SQLGeoFunctionsTest {
   void stIntersectsNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Intersects(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.intersects(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
@@ -588,7 +588,7 @@ class SQLGeoFunctionsTest {
   void stContainsPolygonContainsPoint() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Contains('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))', 'POINT (5 5)') as v");
+          "select geo.contains('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))', 'POINT (5 5)') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -598,7 +598,7 @@ class SQLGeoFunctionsTest {
   void stContainsPolygonDoesNotContainOutsidePoint() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Contains('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))', 'POINT (15 15)') as v");
+          "select geo.contains('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))', 'POINT (15 15)') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isFalse();
     });
@@ -608,7 +608,7 @@ class SQLGeoFunctionsTest {
   void stContainsNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Contains(null, 'POINT (5 5)') as v");
+          "select geo.contains(null, 'POINT (5 5)') as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
@@ -622,7 +622,7 @@ class SQLGeoFunctionsTest {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // Two points at about 1.414 degrees apart; distance threshold = 2.0 → true
       final ResultSet result = db.query("sql",
-          "select ST_DWithin('POINT (0 0)', 'POINT (1 1)', 2.0) as v");
+          "select geo.dWithin('POINT (0 0)', 'POINT (1 1)', 2.0) as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -633,7 +633,7 @@ class SQLGeoFunctionsTest {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // Two points far apart; distance threshold = 1.0 → false
       final ResultSet result = db.query("sql",
-          "select ST_DWithin('POINT (0 0)', 'POINT (10 10)', 1.0) as v");
+          "select geo.dWithin('POINT (0 0)', 'POINT (10 10)', 1.0) as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isFalse();
     });
@@ -643,7 +643,7 @@ class SQLGeoFunctionsTest {
   void stDWithinNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_DWithin(null, 'POINT (1 1)', 2.0) as v");
+          "select geo.dWithin(null, 'POINT (1 1)', 2.0) as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
@@ -656,7 +656,7 @@ class SQLGeoFunctionsTest {
   void stDisjointFarApartShapes() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Disjoint('POINT (50 50)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.disjoint('POINT (50 50)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -666,7 +666,7 @@ class SQLGeoFunctionsTest {
   void stDisjointIntersectingShapes() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Disjoint('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.disjoint('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isFalse();
     });
@@ -676,7 +676,7 @@ class SQLGeoFunctionsTest {
   void stDisjointNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Disjoint(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.disjoint(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
@@ -689,7 +689,7 @@ class SQLGeoFunctionsTest {
   void stEqualsIdenticalPoints() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Equals('POINT (5 5)', 'POINT (5 5)') as v");
+          "select geo.equals('POINT (5 5)', 'POINT (5 5)') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -699,7 +699,7 @@ class SQLGeoFunctionsTest {
   void stEqualsDifferentPoints() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Equals('POINT (5 5)', 'POINT (6 6)') as v");
+          "select geo.equals('POINT (5 5)', 'POINT (6 6)') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isFalse();
     });
@@ -709,7 +709,7 @@ class SQLGeoFunctionsTest {
   void stEqualsNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Equals(null, 'POINT (5 5)') as v");
+          "select geo.equals(null, 'POINT (5 5)') as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
@@ -723,7 +723,7 @@ class SQLGeoFunctionsTest {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // A line crossing a polygon boundary
       final ResultSet result = db.query("sql",
-          "select ST_Crosses('LINESTRING (-1 5, 11 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.crosses('LINESTRING (-1 5, 11 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -733,7 +733,7 @@ class SQLGeoFunctionsTest {
   void stCrossesNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Crosses(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.crosses(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
@@ -746,7 +746,7 @@ class SQLGeoFunctionsTest {
   void stOverlapsPartiallyOverlappingPolygons() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Overlaps('POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))', 'POLYGON ((3 3, 9 3, 9 9, 3 9, 3 3))') as v");
+          "select geo.overlaps('POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))', 'POLYGON ((3 3, 9 3, 9 9, 3 9, 3 3))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -756,7 +756,7 @@ class SQLGeoFunctionsTest {
   void stOverlapsDisjointPolygons() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Overlaps('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
+          "select geo.overlaps('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isFalse();
     });
@@ -766,7 +766,7 @@ class SQLGeoFunctionsTest {
   void stOverlapsNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Overlaps(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.overlaps(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
@@ -780,7 +780,7 @@ class SQLGeoFunctionsTest {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       // Two polygons sharing exactly one edge
       final ResultSet result = db.query("sql",
-          "select ST_Touches('POLYGON ((0 0, 5 0, 5 5, 0 5, 0 0))', 'POLYGON ((5 0, 10 0, 10 5, 5 5, 5 0))') as v");
+          "select geo.touches('POLYGON ((0 0, 5 0, 5 5, 0 5, 0 0))', 'POLYGON ((5 0, 10 0, 10 5, 5 5, 5 0))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isTrue();
     });
@@ -790,7 +790,7 @@ class SQLGeoFunctionsTest {
   void stTouchesDisjointPolygons() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Touches('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
+          "select geo.touches('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
       assertThat(result.hasNext()).isTrue();
       assertThat((Boolean) result.next().getProperty("v")).isFalse();
     });
@@ -800,7 +800,7 @@ class SQLGeoFunctionsTest {
   void stTouchesNullArg() throws Exception {
     TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
       final ResultSet result = db.query("sql",
-          "select ST_Touches(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+          "select geo.touches(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
       assertThat(result.hasNext()).isTrue();
       final Object val = result.next().getProperty("v");
       assertThat(val).isNull();
