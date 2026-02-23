@@ -1317,6 +1317,16 @@ public class LocalSchema implements Schema {
   }
 
   protected synchronized void readConfiguration() {
+    for (final DocumentType type : types.values()) {
+      if (type instanceof LocalTimeSeriesType tsType) {
+        try {
+          tsType.close();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error closing TimeSeries type '%s' during schema reload: %s", null,
+              tsType.getName(), e.getMessage());
+        }
+      }
+    }
     types.clear();
 
     loadInRamCompleted = false;

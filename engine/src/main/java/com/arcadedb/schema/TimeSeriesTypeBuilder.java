@@ -112,9 +112,6 @@ public class TimeSeriesTypeBuilder {
     for (final ColumnDefinition col : columns)
       type.createProperty(col.getName(), col.getDataType());
 
-    // Register the type with the schema
-    schema.registerType(type);
-
     try {
       database.begin();
       type.initEngine();
@@ -124,6 +121,9 @@ public class TimeSeriesTypeBuilder {
         database.rollback();
       throw new SchemaException("Failed to initialize TimeSeries engine for type '" + typeName + "'", e);
     }
+
+    // Register the type with the schema only after successful engine initialization
+    schema.registerType(type);
 
     // Schedule automatic retention/downsampling if policies are defined
     schema.getTimeSeriesMaintenanceScheduler().schedule(database, type);

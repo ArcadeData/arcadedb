@@ -35,8 +35,10 @@ public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
       final Object[][] columnValues) {
     this.engine = engine;
     this.shardIndex = shardIndex;
-    this.timestamps = timestamps;
-    this.columnValues = columnValues;
+    this.timestamps = timestamps.clone();
+    this.columnValues = new Object[columnValues.length][];
+    for (int i = 0; i < columnValues.length; i++)
+      this.columnValues[i] = columnValues[i] != null ? columnValues[i].clone() : null;
   }
 
   @Override

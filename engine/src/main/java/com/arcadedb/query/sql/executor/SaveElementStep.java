@@ -36,6 +36,7 @@ import com.arcadedb.schema.Type;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.Date;
 import java.util.List;
 import java.util.logging.Level;
@@ -74,7 +75,7 @@ public class SaveElementStep extends AbstractExecutionStep {
           // Check if this is a TimeSeries type — route to TimeSeriesEngine
           final var docType = context.getDatabase().getSchema().getType(doc.getTypeName());
           if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
-            saveToTimeSeries(tsType, doc);
+            saveToTimeSeries(tsType, doc, context);
             scheduleContinuousAggregateRefresh(context, tsType);
             return result;
           }
@@ -96,9 +97,10 @@ public class SaveElementStep extends AbstractExecutionStep {
     };
   }
 
-  private void saveToTimeSeries(final LocalTimeSeriesType tsType, final Document doc) {
+  private void saveToTimeSeries(final LocalTimeSeriesType tsType, final Document doc, final CommandContext context) {
     final TimeSeriesEngine engine = tsType.getEngine();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
+    final ZoneId zoneId = context.getDatabase().getSchema().getZoneId();
 
     final long[] timestamps = new long[1];
     int nonTsCount = 0;
@@ -113,7 +115,7 @@ public class SaveElementStep extends AbstractExecutionStep {
       final Object value = doc.get(col.getName());
 
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
-        timestamps[0] = toEpochMs(value);
+        timestamps[0] = toEpochMs(value, zoneId);
       } else {
         columnValues[colIdx][0] = convertValue(value, col.getDataType());
         colIdx++;
@@ -152,7 +154,7 @@ public class SaveElementStep extends AbstractExecutionStep {
     }
   }
 
-  private static long toEpochMs(final Object value) {
+  private static long toEpochMs(final Object value, final ZoneId zoneId) {
     if (value instanceof Long l)
       return l;
     if (value instanceof Date d)
@@ -162,15 +164,15 @@ public class SaveElementStep extends AbstractExecutionStep {
     if (value instanceof Number n)
       return n.longValue();
     if (value instanceof java.time.LocalDateTime ldt)
-      return ldt.toInstant(java.time.ZoneOffset.UTC).toEpochMilli(); // assumes UTC
+      return ldt.atZone(zoneId).toInstant().toEpochMilli();
     if (value instanceof java.time.LocalDate ld)
-      return ld.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli(); // assumes UTC
+      return ld.atStartOfDay(zoneId).toInstant().toEpochMilli();
     if (value instanceof String s) {
       try {
         return Instant.parse(s).toEpochMilli();
       } catch (final Exception e) {
         try {
-          return java.time.LocalDate.parse(s).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+          return java.time.LocalDate.parse(s).atStartOfDay(zoneId).toInstant().toEpochMilli();
         } catch (final Exception e2) {
           throw new CommandExecutionException("Cannot parse timestamp: '" + s + "'", e);
         }

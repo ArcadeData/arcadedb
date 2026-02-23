@@ -35,6 +35,8 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Pairs a mutable TimeSeriesBucket with a sealed TimeSeriesSealedStore.
@@ -50,6 +52,10 @@ public class TimeSeriesShard implements AutoCloseable {
   private final long                   compactionBucketIntervalMs;
   private final TimeSeriesBucket       mutableBucket;
   private final TimeSeriesSealedStore  sealedStore;
+  // Read lock: held by scan/iterate (concurrent reads allowed).
+  // Write lock: held by compact() to prevent queries from seeing data twice
+  // during the window where sealed blocks are written but mutable not yet cleared.
+  private final ReadWriteLock          compactionLock = new ReentrantReadWriteLock();
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
       final List<ColumnDefinition> columns) throws IOException {
@@ -107,33 +113,50 @@ public class TimeSeriesShard implements AutoCloseable {
 
   /**
    * Scans both sealed and mutable layers, merging results by timestamp.
+   * Holds the read lock to prevent concurrent {@link #compact()} from clearing the
+   * mutable bucket after sealing, which would cause double-counting.
    */
   public List<Object[]> scanRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
-    final List<Object[]> results = new ArrayList<>();
+    compactionLock.readLock().lock();
+    try {
+      final List<Object[]> results = new ArrayList<>();
 
-    // Sealed layer first (already filtered by tagFilter inside sealedStore)
-    final List<Object[]> sealedResults = sealedStore.scanRange(fromTs, toTs, columnIndices, tagFilter);
-    results.addAll(sealedResults);
+      // Sealed layer first (already filtered by tagFilter inside sealedStore)
+      final List<Object[]> sealedResults = sealedStore.scanRange(fromTs, toTs, columnIndices, tagFilter);
+      results.addAll(sealedResults);
 
-    // Then mutable layer
-    final List<Object[]> mutableResults = mutableBucket.scanRange(fromTs, toTs, columnIndices);
-    addFiltered(results, mutableResults, tagFilter, columnIndices);
+      // Then mutable layer
+      final List<Object[]> mutableResults = mutableBucket.scanRange(fromTs, toTs, columnIndices);
+      addFiltered(results, mutableResults, tagFilter, columnIndices);
 
-    return results;
+      return results;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
   }
 
   /**
    * Returns a lazy iterator over both sealed and mutable layers.
    * Sealed data is iterated first, then mutable. Tag filter is applied inline.
-   * Memory usage: O(blockSize) for sealed, O(pageSize) for mutable.
+   * Both underlying iterators eagerly collect matching rows under the read lock,
+   * preventing concurrent {@link #compact()} from clearing the mutable bucket
+   * while data collection is in progress.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
-    final Iterator<Object[]> sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter);
-    final Iterator<Object[]> mutableIter = mutableBucket.iterateRange(fromTs, toTs, columnIndices);
+    final Iterator<Object[]> sealedIter;
+    final Iterator<Object[]> mutableIter;
+    compactionLock.readLock().lock();
+    try {
+      sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter);
+      mutableIter = mutableBucket.iterateRange(fromTs, toTs, columnIndices);
+    } finally {
+      compactionLock.readLock().unlock();
+    }
 
-    // Chain sealed then mutable, with inline tag filtering
+    // Chain sealed then mutable, with inline tag filtering.
+    // Data is already in memory (both iterators are eager), so no lock needed here.
     return new Iterator<>() {
       private Iterator<Object[]> current = sealedIter;
       private boolean            switchedToMutable = false;
@@ -187,6 +210,10 @@ public class TimeSeriesShard implements AutoCloseable {
    * Crash-safe: uses a flag to detect incomplete compactions.
    */
   public void compact() throws IOException {
+    // Write lock prevents queries from seeing data twice during the window between
+    // sealing mutable data and clearing the mutable bucket.
+    compactionLock.writeLock().lock();
+    try {
     database.begin();
     try {
       if (mutableBucket.getSampleCount() == 0) {
@@ -321,6 +348,9 @@ public class TimeSeriesShard implements AutoCloseable {
       if (database.isTransactionActive())
         database.rollback();
       throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed", e);
+    }
+    } finally {
+      compactionLock.writeLock().unlock();
     }
   }
 

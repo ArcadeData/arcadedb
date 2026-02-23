@@ -316,6 +316,11 @@ public final class MultiColumnAggregationResult {
    */
   public void mergeFrom(final MultiColumnAggregationResult other) {
     if (flatMode && other.flatMode) {
+      if (firstBucketTs != other.firstBucketTs || bucketIntervalMs != other.bucketIntervalMs || maxBuckets != other.maxBuckets)
+        throw new IllegalArgumentException(
+            "Cannot merge incompatible flat-mode results: firstBucketTs=" + firstBucketTs + "/" + other.firstBucketTs
+                + " bucketIntervalMs=" + bucketIntervalMs + "/" + other.bucketIntervalMs
+                + " maxBuckets=" + maxBuckets + "/" + other.maxBuckets);
       for (int b = 0; b < other.maxBuckets; b++) {
         if (!other.bucketUsed[b])
           continue;

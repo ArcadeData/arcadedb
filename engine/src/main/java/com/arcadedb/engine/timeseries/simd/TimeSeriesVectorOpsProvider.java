@@ -36,8 +36,10 @@ public final class TimeSeriesVectorOpsProvider {
     TimeSeriesVectorOps ops;
     try {
       ops = new SimdTimeSeriesVectorOps();
-      // Quick smoke test
-      ops.sum(new double[] { 1.0, 2.0 }, 0, 2);
+      // Quick smoke test — verify the implementation returns correct results
+      final double smokeResult = ops.sum(new double[] { 1.0, 2.0 }, 0, 2);
+      if (smokeResult != 3.0)
+        throw new IllegalStateException("SIMD smoke test failed: expected 3.0 but got " + smokeResult);
       LogManager.instance().log(TimeSeriesVectorOpsProvider.class, Level.INFO, "TimeSeries SIMD vector ops enabled");
     } catch (final Exception | LinkageError t) {
       ops = new ScalarTimeSeriesVectorOps();

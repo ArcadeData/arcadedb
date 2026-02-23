@@ -90,9 +90,11 @@ public class ContinuousAggregateRefresher {
       ca.updateLastRefreshTime();
       ca.setStatus(MaterializedViewStatus.VALID);
 
-      // Persist updated watermark
-      final LocalSchema schema = (LocalSchema) database.getSchema();
-      schema.saveConfiguration();
+      // Persist updated watermark only if it actually advanced
+      if (ca.getWatermarkTs() > watermark) {
+        final LocalSchema schema = (LocalSchema) database.getSchema();
+        schema.saveConfiguration();
+      }
 
     } catch (final Exception e) {
       ca.recordRefreshError();
@@ -148,12 +150,30 @@ public class ContinuousAggregateRefresher {
   }
 
   private static int findWhereIndex(final String upperQuery) {
-    // Find standalone WHERE keyword at the outermost nesting level (depth 0).
-    // This skips WHERE keywords inside parenthesized subqueries or CTEs.
+    // Find standalone WHERE keyword at the outermost nesting level (depth 0),
+    // skipping over string literals (single or double quoted) and parenthesized
+    // subqueries so that WHERE keywords inside them are not mistaken for the
+    // top-level WHERE. E.g.: SELECT func('(foo)') FROM t WHERE ts > 0
     int depth = 0;
     int idx = 0;
-    while (idx < upperQuery.length()) {
+    final int len = upperQuery.length();
+    while (idx < len) {
       final char ch = upperQuery.charAt(idx);
+      // Skip over quoted string literals to avoid counting parens inside them
+      if (ch == '\'' || ch == '"') {
+        final char quote = ch;
+        idx++;
+        while (idx < len) {
+          final char c2 = upperQuery.charAt(idx);
+          idx++;
+          if (c2 == '\\') {
+            idx++; // skip escaped character
+          } else if (c2 == quote) {
+            break;
+          }
+        }
+        continue;
+      }
       if (ch == '(') {
         depth++;
         idx++;
@@ -170,7 +190,7 @@ public class ContinuousAggregateRefresher {
       }
       if (ch == 'W' && upperQuery.startsWith("WHERE", idx)) {
         final boolean leftBound = idx == 0 || !Character.isLetterOrDigit(upperQuery.charAt(idx - 1));
-        final boolean rightBound = idx + 5 >= upperQuery.length() || !Character.isLetterOrDigit(upperQuery.charAt(idx + 5));
+        final boolean rightBound = idx + 5 >= len || !Character.isLetterOrDigit(upperQuery.charAt(idx + 5));
         if (leftBound && rightBound)
           return idx;
         idx += 5;
