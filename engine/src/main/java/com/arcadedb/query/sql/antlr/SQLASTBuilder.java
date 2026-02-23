@@ -52,8 +52,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Known function namespace prefixes. When the parser sees {@code namespace.method(args)} and the namespace
    * is in this set, the AST builder produces a {@link FunctionCall} node with the qualified name
    * (e.g., "ts.first") instead of an identifier chain with a method modifier.
+   * Identifier prefixes that are treated as function namespaces rather than field names.
+   * When an identifierChain matches "namespace.method(args)", it is rewritten as a
+   * namespace-qualified function call (e.g. "geo.point(x,y)" → FunctionCall("geo.point")).
    */
-  private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts");
+  private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts","geo");
+
 
   private int positionalParamCounter = 0;
 
@@ -3015,24 +3019,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Function call visitor - parses function name and parameters.
-   * Grammar: identifier (DOT identifier)? LPAREN (STAR | expression (COMMA expression)*)? RPAREN
-   * Supports simple calls (count(*)) and namespace-qualified calls (geo.point(x,y)).
+   * Grammar: identifier LPAREN (STAR | expression (COMMA expression)*)? RPAREN
    */
   @Override
   public FunctionCall visitFunctionCall(final SQLParser.FunctionCallContext ctx) {
     final FunctionCall funcCall = new FunctionCall(-1);
 
     try {
-      // Build the function name: either "name" or "namespace.name"
-      final Identifier funcName;
-      if (ctx.identifier().size() == 2) {
-        // Namespace-qualified: geo.point → combine as single Identifier "geo.point"
-        final Identifier ns = (Identifier) visit(ctx.identifier(0));
-        final Identifier fn = (Identifier) visit(ctx.identifier(1));
-        funcName = new Identifier(ns.getStringValue() + "." + fn.getStringValue());
-      } else {
-        funcName = (Identifier) visit(ctx.identifier(0));
-      }
+      // Function name
+      final Identifier funcName = (Identifier) visit(ctx.identifier());
       funcCall.name = funcName;
 
       // Parameters (using reflection for protected field)
@@ -3078,6 +3073,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Build identifier chain
     if (CollectionUtils.isNotEmpty(ctx.identifier())) {
       final SQLParser.IdentifierContext firstIdCtx = ctx.identifier(0);
+
+      // Detect namespace-qualified function calls: geo.methodName(args)
+      // Pattern: exactly one base identifier that is a known namespace, no additional DOT-identifiers,
+      // and exactly one methodCall → rewrite as FunctionCall("namespace.methodName", args).
+      if (ctx.identifier().size() == 1 && CollectionUtils.isNotEmpty(ctx.methodCall()) && ctx.methodCall().size() == 1
+          && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
+          && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null) {
+        final String baseIdText = firstIdCtx.getText();
+        if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase())) {
+          return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(0), ctx);
+        }
+      }
 
       // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this)
       if (firstIdCtx.RID_ATTR() != null || firstIdCtx.TYPE_ATTR() != null ||
@@ -3212,6 +3219,83 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (firstModifier != null) {
         baseExpr.modifier = firstModifier;
       }
+    }
+
+    return baseExpr;
+  }
+
+  /**
+   * Builds a namespace-qualified FunctionCall BaseExpression from an identifierChain that looks like
+   * "namespace.functionName(args)" — e.g. "geo.point(x, y)" or "geo.within(geom, geo.point(x, y))".
+   * <p>
+   * The identifierChain grammar rule captures "namespace" as the base identifier and ".functionName(args)"
+   * as a methodCall. This helper recombines them into a proper FunctionCall AST node so that the
+   * execution engine resolves "geo.point" as a registered SQL function rather than a field access.
+   * <p>
+   * Any arraySelectors or modifiers that follow the method call on the identifierChain are preserved
+   * and chained onto the returned BaseExpression.
+   */
+  private BaseExpression buildNamespaceQualifiedFunctionCall(final String namespace,
+      final SQLParser.MethodCallContext methodCtx, final SQLParser.IdentifierChainContext chainCtx) {
+    final BaseExpression baseExpr = new BaseExpression(-1);
+
+    try {
+      // Build the combined function name: "geo.point", "geo.within", etc.
+      final Identifier methodName = (Identifier) visit(methodCtx.identifier());
+      final FunctionCall funcCall = new FunctionCall(-1);
+      funcCall.name = new Identifier(namespace + "." + methodName.getStringValue());
+
+      // Collect arguments from the method call
+      if (CollectionUtils.isNotEmpty(methodCtx.expression())) {
+        final List<Expression> params = new ArrayList<>();
+        for (final SQLParser.ExpressionContext exprCtx : methodCtx.expression()) {
+          params.add((Expression) visit(exprCtx));
+        }
+        funcCall.params = params;
+      }
+
+      // Wrap the FunctionCall in the standard BaseExpression structure
+      final LevelZeroIdentifier levelZero = new LevelZeroIdentifier(-1);
+      levelZero.functionCall = funcCall;
+      final BaseIdentifier baseId = new BaseIdentifier(-1);
+      baseId.levelZero = levelZero;
+      baseExpr.identifier = baseId;
+
+      // Preserve any arraySelectors or modifiers that follow the method call
+      Modifier firstModifier = null;
+      Modifier currentModifier = null;
+
+      if (CollectionUtils.isNotEmpty(chainCtx.arraySelector())) {
+        for (final SQLParser.ArraySelectorContext selectorCtx : chainCtx.arraySelector()) {
+          final Modifier modifier = createModifierForArraySelector(selectorCtx);
+          if (firstModifier == null) {
+            firstModifier = modifier;
+            currentModifier = modifier;
+          } else {
+            currentModifier.next = modifier;
+            currentModifier = modifier;
+          }
+        }
+      }
+
+      if (CollectionUtils.isNotEmpty(chainCtx.modifier())) {
+        for (final SQLParser.ModifierContext modCtx : chainCtx.modifier()) {
+          final Modifier modifier = (Modifier) visit(modCtx);
+          if (firstModifier == null) {
+            firstModifier = modifier;
+            currentModifier = modifier;
+          } else {
+            currentModifier.next = modifier;
+            currentModifier = modifier;
+          }
+        }
+      }
+
+      if (firstModifier != null)
+        baseExpr.modifier = firstModifier;
+
+    } catch (final Exception e) {
+      throw new CommandSQLParsingException("Failed to build namespace-qualified function call: " + e.getMessage(), e);
     }
 
     return baseExpr;
