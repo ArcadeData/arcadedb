@@ -107,4 +107,29 @@ class GorillaXORCodecTest {
     final byte[] encoded = GorillaXORCodec.encode(input);
     assertThat(GorillaXORCodec.decode(encoded)).containsExactly(input);
   }
+
+  /**
+   * Regression test: decoder must initialise prevLeading to Integer.MAX_VALUE, not 0.
+   * If prevLeading starts at 0, the '10' path (reuse block) may fire on the second pair
+   * without a prior '11' header having been written, producing wrong values.
+   * The encoder always emits '11' first, so the decoder must start with MAX_VALUE
+   * so that leading >= prevLeading is false and the '11' path is taken correctly.
+   */
+  @Test
+  void testDecoderPrevLeadingInitialisedToMaxValue() {
+    // Construct two values whose XOR has the same leading/trailing zeros as
+    // "no prior block" — use a constant array where the third differs.
+    // 1.0 XOR 2.0 has many leading zeros; encoding must round-trip correctly.
+    final double[] input = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 };
+    assertThat(GorillaXORCodec.decode(GorillaXORCodec.encode(input))).containsExactly(input);
+  }
+
+  @Test
+  void testDecodeBufferVariant() {
+    final double[] input = { 1.0, 2.0, 3.0, 4.0 };
+    final byte[] encoded = GorillaXORCodec.encode(input);
+    final double[] output = new double[input.length];
+    GorillaXORCodec.decode(encoded, output);
+    assertThat(output).containsExactly(input);
+  }
 }

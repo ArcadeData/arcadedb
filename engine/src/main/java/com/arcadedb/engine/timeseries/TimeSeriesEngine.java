@@ -165,6 +165,10 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   /**
    * Aggregates across all shards.
+   *
+   * @param columnIndex 0-based index among non-timestamp columns (i.e. column 0 = first non-ts column).
+   *                    This differs from {@link MultiColumnAggregationRequest#columnIndex()} which uses
+   *                    the full schema index (including the timestamp column).
    */
   public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
       final AggregationType aggType, final long bucketIntervalMs, final TagFilter tagFilter) throws IOException {

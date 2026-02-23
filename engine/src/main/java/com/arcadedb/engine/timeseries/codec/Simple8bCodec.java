@@ -22,8 +22,13 @@ import java.nio.ByteBuffer;
 
 /**
  * Simple-8b encoding for signed integer arrays using zigzag encoding.
- * Signed values are converted to non-negative via zigzag encoding before packing,
- * supporting the range [-(2^59)+1, (2^59)-1].
+ * Signed values are converted to non-negative via zigzag encoding before packing.
+ * <p>
+ * <b>Supported value range:</b> [-(2^59), (2^59)-1].
+ * Values outside this range cause encode() to throw {@link IllegalArgumentException}
+ * because the maximum selector packs 1 value × 60 bits and ZigZag encoding of the
+ * boundary value -(2^59) produces exactly (1L&lt;&lt;60)-1, which is the largest encodable value.
+ * Values with |v| &gt;= 2^59 would silently truncate — validation prevents silent data corruption.
  * <p>
  * Packs multiple integers into 64-bit words using a selector scheme.
  * The top 4 bits of each word are the selector (0-14), determining how many
@@ -43,6 +48,9 @@ public final class Simple8bCodec {
   // selector → bits per integer
   private static final int[] SELECTOR_BITS  = { 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 30, 60 };
 
+  // Maximum zigzag-encoded value that fits in 60 bits (selector 15 = 1 value × 60 bits)
+  static final long MAX_ZIGZAG_VALUE = (1L << 60) - 1;
+
   private Simple8bCodec() {
   }
 
@@ -50,10 +58,17 @@ public final class Simple8bCodec {
     if (values == null || values.length == 0)
       return new byte[0];
 
-    // Zigzag-encode signed longs to non-negative values before packing
+    // Zigzag-encode signed longs to non-negative values before packing.
+    // Validate that each zigzag-encoded value fits in 60 bits; values outside
+    // [-(2^59), (2^59)-1] cannot be represented and would silently truncate.
     final long[] zigzagged = new long[values.length];
-    for (int i = 0; i < values.length; i++)
-      zigzagged[i] = zigzagEncode(values[i]);
+    for (int i = 0; i < values.length; i++) {
+      final long encoded = zigzagEncode(values[i]);
+      if (encoded > MAX_ZIGZAG_VALUE)
+        throw new IllegalArgumentException(
+            "Value " + values[i] + " at index " + i + " is outside the Simple-8b supported range [-(2^59), (2^59)-1]");
+      zigzagged[i] = encoded;
+    }
 
     // Worst case: each value needs its own word + header
     final ByteBuffer buf = ByteBuffer.allocate(4 + (zigzagged.length + 1) * 8);

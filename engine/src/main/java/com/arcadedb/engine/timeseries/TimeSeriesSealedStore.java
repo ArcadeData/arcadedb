@@ -43,7 +43,6 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
@@ -210,12 +209,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     metaBuf.flip();
 
     // Compute CRC32 over meta + compressed data
+    // Use metaBuf.limit() (not .array().length) since the backing array may be larger after flip
     final CRC32 crc = new CRC32();
-    crc.update(metaBuf.array());
+    crc.update(metaBuf.array(), 0, metaBuf.limit());
 
     long offset = indexFile.length();
     indexFile.seek(offset);
-    indexFile.write(metaBuf.array());
+    indexFile.write(metaBuf.array(), 0, metaBuf.limit());
     offset += metaSize;
 
     final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
@@ -269,57 +269,54 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public List<Object[]> scanRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
-    final List<Object[]> results = new ArrayList<>();
-
-    final List<BlockEntry> snapshot;
+    // Hold the read lock for the entire scan including file I/O.
+    // This prevents concurrent writers from closing/replacing the file channel
+    // while reads are in progress (stale offset race).
     directoryLock.readLock().lock();
     try {
-      snapshot = new ArrayList<>(blockDirectory);
+      final List<Object[]> results = new ArrayList<>();
+      final int tsColIdx = findTimestampColumnIndex();
+
+      for (final BlockEntry entry : blockDirectory) {
+        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
+          continue;
+
+        final BlockMatchResult tagMatch = tagFilter != null
+            ? blockMatchesTagFilter(entry, tagFilter)
+            : BlockMatchResult.FAST_PATH;
+        if (tagMatch == BlockMatchResult.SKIP)
+          continue;
+
+        final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+        final Object[][] decompressedCols = decompressColumns(entry, columnIndices, tsColIdx);
+
+        final int resultCols = decompressedCols.length + 1;
+        for (int i = 0; i < timestamps.length; i++) {
+          if (timestamps[i] < fromTs || timestamps[i] > toTs)
+            continue;
+
+          final Object[] row = new Object[resultCols];
+          row[0] = timestamps[i];
+          for (int c = 0; c < decompressedCols.length; c++)
+            row[c + 1] = decompressedCols[c][i];
+
+          // For SLOW_PATH blocks (mixed tag values), apply per-row filtering
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matches(row))
+            continue;
+
+          results.add(row);
+        }
+      }
+      return results;
     } finally {
       directoryLock.readLock().unlock();
     }
-
-    final int tsColIdx = findTimestampColumnIndex();
-    for (final BlockEntry entry : snapshot) {
-      if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
-        continue;
-
-      final BlockMatchResult tagMatch = tagFilter != null
-          ? blockMatchesTagFilter(entry, tagFilter)
-          : BlockMatchResult.FAST_PATH;
-      if (tagMatch == BlockMatchResult.SKIP)
-        continue;
-
-      // Decompress timestamp column (always column 0)
-      final long[] timestamps = decompressTimestamps(entry, tsColIdx);
-
-      // Decompress requested columns
-      final Object[][] decompressedCols = decompressColumns(entry, columnIndices, tsColIdx);
-
-      // Filter by time range and build result rows
-      final int resultCols = decompressedCols.length + 1;
-      for (int i = 0; i < timestamps.length; i++) {
-        if (timestamps[i] < fromTs || timestamps[i] > toTs)
-          continue;
-
-        final Object[] row = new Object[resultCols];
-        row[0] = timestamps[i];
-        for (int c = 0; c < decompressedCols.length; c++)
-          row[c + 1] = decompressedCols[c][i];
-
-        // For SLOW_PATH blocks (mixed tag values), apply per-row filtering
-        if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matches(row))
-          continue;
-
-        results.add(row);
-      }
-    }
-    return results;
   }
 
   /**
-   * Returns a lazy iterator over sealed blocks overlapping the given time range.
-   * Decompresses one block at a time, yielding rows on demand.
+   * Returns an iterator over sealed blocks overlapping the given time range.
+   * Eagerly collects all matching rows under the read lock to prevent stale
+   * file offsets after atomic file replacement by concurrent writers.
    * <p>
    * Optimizations:
    * - Binary search on block directory to skip to first matching block
@@ -335,129 +332,68 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
-    final int tsColIdx = findTimestampColumnIndex();
-
-    // Snapshot the directory under read lock to avoid ConcurrentModificationException
-    final List<BlockEntry> snapshot;
+    // Hold the read lock for all file I/O to prevent stale offsets after
+    // atomic file replacement by concurrent writers (truncate/downsample).
     directoryLock.readLock().lock();
     try {
-      snapshot = new ArrayList<>(blockDirectory);
+      final List<Object[]> results = new ArrayList<>();
+      final int tsColIdx = findTimestampColumnIndex();
+      final int dirSize = blockDirectory.size();
+
+      // Binary search: find first block whose maxTimestamp >= fromTs
+      int startBlockIdx = 0;
+      if (dirSize > 0) {
+        int lo = 0, hi = dirSize - 1;
+        while (lo < hi) {
+          final int mid = (lo + hi) >>> 1;
+          if (blockDirectory.get(mid).maxTimestamp < fromTs)
+            lo = mid + 1;
+          else
+            hi = mid;
+        }
+        startBlockIdx = lo;
+      }
+
+      for (int blockIdx = startBlockIdx; blockIdx < dirSize; blockIdx++) {
+        final BlockEntry entry = blockDirectory.get(blockIdx);
+
+        // Early termination: blocks are sorted, so if minTs > toTs all remaining are past range
+        if (entry.minTimestamp > toTs)
+          break;
+
+        if (entry.maxTimestamp < fromTs)
+          continue;
+
+        final BlockMatchResult tagMatch = tagFilter != null
+            ? blockMatchesTagFilter(entry, tagFilter)
+            : BlockMatchResult.FAST_PATH;
+        if (tagMatch == BlockMatchResult.SKIP)
+          continue;
+
+        final long[] ts = decompressTimestamps(entry, tsColIdx);
+        final int start = lowerBound(ts, fromTs);
+        final int end = upperBound(ts, toTs);
+
+        if (start >= end)
+          continue;
+
+        final Object[][] decompCols = decompressColumns(entry, columnIndices, tsColIdx);
+        final int resultCols = decompCols.length + 1;
+
+        for (int i = start; i < end; i++) {
+          final Object[] row = new Object[resultCols];
+          row[0] = ts[i];
+          for (int c = 0; c < decompCols.length; c++)
+            row[c + 1] = decompCols[c][i];
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matches(row))
+            continue;
+          results.add(row);
+        }
+      }
+      return results.iterator();
     } finally {
       directoryLock.readLock().unlock();
     }
-    final int dirSize = snapshot.size();
-
-    // Binary search: find first block whose maxTimestamp >= fromTs
-    int startBlockIdx = 0;
-    if (dirSize > 0) {
-      int lo = 0, hi = dirSize - 1;
-      while (lo < hi) {
-        final int mid = (lo + hi) >>> 1;
-        if (snapshot.get(mid).maxTimestamp < fromTs)
-          lo = mid + 1;
-        else
-          hi = mid;
-      }
-      startBlockIdx = lo;
-    }
-
-    final int firstBlockIdx = startBlockIdx;
-
-    return new Iterator<>() {
-      private int             blockIdx         = firstBlockIdx;
-      private long[]          timestamps       = null;
-      private Object[][]      decompCols       = null;
-      private int             rowIdx           = 0;
-      private int             rowEnd           = 0;  // exclusive upper bound within block
-      private int             resultCols       = 0;
-      private Object[]        nextRow          = null;
-      private BlockMatchResult currentTagMatch = BlockMatchResult.FAST_PATH;
-
-      {
-        advance();
-      }
-
-      private void advance() {
-        nextRow = null;
-        try {
-          while (true) {
-            // Yield from current decompressed block
-            if (timestamps != null) {
-              while (rowIdx < rowEnd) {
-                final Object[] row = new Object[resultCols];
-                row[0] = timestamps[rowIdx];
-                for (int c = 0; c < decompCols.length; c++)
-                  row[c + 1] = decompCols[c][rowIdx];
-                rowIdx++;
-                // For SLOW_PATH blocks, apply per-row tag filtering
-                if (currentTagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matches(row))
-                  continue;
-                nextRow = row;
-                return;
-              }
-              // Current block exhausted
-              timestamps = null;
-              decompCols = null;
-            }
-
-            // Find next matching block
-            if (blockIdx >= dirSize)
-              return;
-
-            final BlockEntry entry = snapshot.get(blockIdx);
-
-            // Early termination: blocks are sorted, so if minTs > toTs all remaining are past range
-            if (entry.minTimestamp > toTs)
-              return;
-
-            blockIdx++;
-
-            if (entry.maxTimestamp < fromTs)
-              continue;
-
-            // Block-level tag filter: skip blocks that cannot contain matching rows
-            currentTagMatch = tagFilter != null
-                ? blockMatchesTagFilter(entry, tagFilter)
-                : BlockMatchResult.FAST_PATH;
-            if (currentTagMatch == BlockMatchResult.SKIP)
-              continue;
-
-            // Decompress timestamps first
-            final long[] ts = decompressTimestamps(entry, tsColIdx);
-
-            // Binary search for the matching range within sorted timestamps
-            final int start = lowerBound(ts, fromTs);
-            final int end = upperBound(ts, toTs);
-
-            if (start >= end)
-              continue;
-
-            // Timestamps have matches — now decompress value columns
-            timestamps = ts;
-            decompCols = decompressColumns(entry, columnIndices, tsColIdx);
-            rowIdx = start;
-            rowEnd = end;
-            resultCols = decompCols.length + 1;
-          }
-        } catch (final IOException e) {
-          throw new RuntimeException("Error iterating sealed TimeSeries blocks", e);
-        }
-      }
-
-      @Override
-      public boolean hasNext() {
-        return nextRow != null;
-      }
-
-      @Override
-      public Object[] next() {
-        if (nextRow == null)
-          throw new NoSuchElementException();
-        final Object[] result = nextRow;
-        advance();
-        return result;
-      }
-    };
   }
 
   /**
@@ -523,31 +459,30 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int tsColIdx = findTimestampColumnIndex();
     final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
 
-    final List<BlockEntry> snapshot;
+    // Hold the read lock for the entire scan including file I/O to prevent stale offsets
+    // after atomic file replacement by concurrent writers (truncate/downsample).
     directoryLock.readLock().lock();
     try {
-      snapshot = new ArrayList<>(blockDirectory);
+      for (final BlockEntry entry : blockDirectory) {
+        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
+          continue;
+
+        final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+        final double[] values = decompressDoubleColumn(entry, targetColSchemaIdx);
+
+        for (int i = 0; i < timestamps.length; i++) {
+          if (timestamps[i] < fromTs || timestamps[i] > toTs)
+            continue;
+
+          final long bucketTs = bucketIntervalMs > 0 ? (timestamps[i] / bucketIntervalMs) * bucketIntervalMs : fromTs;
+
+          accumulateSample(result, bucketTs, values[i], type);
+        }
+      }
+      return result;
     } finally {
       directoryLock.readLock().unlock();
     }
-
-    for (final BlockEntry entry : snapshot) {
-      if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
-        continue;
-
-      final long[] timestamps = decompressTimestamps(entry, tsColIdx);
-      final double[] values = decompressDoubleColumn(entry, targetColSchemaIdx);
-
-      for (int i = 0; i < timestamps.length; i++) {
-        if (timestamps[i] < fromTs || timestamps[i] > toTs)
-          continue;
-
-        final long bucketTs = bucketIntervalMs > 0 ? (timestamps[i] / bucketIntervalMs) * bucketIntervalMs : fromTs;
-
-        accumulateSample(result, bucketTs, values[i], type);
-      }
-    }
-    return result;
   }
 
   /**
@@ -580,16 +515,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final double[] reusableValBuf = new double[MAX_BLOCK_SIZE];
 
-    // Snapshot the directory under read lock to avoid concurrent-modification issues
-    final List<BlockEntry> snapshot;
+    // Hold the read lock for the entire scan including file I/O to prevent stale offsets
+    // after atomic file replacement by concurrent writers (truncate/downsample).
     directoryLock.readLock().lock();
     try {
-      snapshot = new ArrayList<>(blockDirectory);
-    } finally {
-      directoryLock.readLock().unlock();
-    }
-
-    for (final BlockEntry entry : snapshot) {
+    for (final BlockEntry entry : blockDirectory) {
       if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
         if (metrics != null)
           metrics.addSkippedBlock();
@@ -766,6 +696,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (metrics != null)
         metrics.addAccum(System.nanoTime() - t0);
     }
+    } finally {
+      directoryLock.readLock().unlock();
+    }
   }
 
   /**
@@ -852,7 +785,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       return;
 
     // Decompress all qualifying blocks and aggregate per (bucketTs, tagKey)
-    final Map<String, Map<Long, double[]>> groupedData = new HashMap<>(); // tagKey -> (bucketTs -> [sum0, count0, sum1, count1, ...])
+    // Use List<String> as map key (not null-byte-joined String) since tag values may contain null bytes.
+    final Map<List<String>, Map<Long, double[]>> groupedData = new HashMap<>(); // tagKey -> (bucketTs -> [sum0, count0, sum1, count1, ...])
     final int numFields = numericColIndices.size();
     final int accSize = numFields * 2; // sum + count per numeric field
 
@@ -882,18 +816,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         numData[n] = decompressDoubleColumn(entry, ci);
       }
 
-      // Group samples by (tagKey, bucketTs)
+      // Group samples by (tagValues list, bucketTs)
       for (int i = 0; i < timestamps.length; i++) {
         final long bucketTs = (timestamps[i] / granularityMs) * granularityMs;
 
-        // Build tag key
-        final StringBuilder tagKeyBuilder = new StringBuilder();
-        for (int t = 0; t < tagData.length; t++) {
-          if (t > 0)
-            tagKeyBuilder.append('\0');
-          tagKeyBuilder.append(tagData[t][i] != null ? tagData[t][i].toString() : "");
-        }
-        final String tagKey = tagKeyBuilder.toString();
+        // Build tag key as List<String> to avoid ambiguity with null bytes in tag values
+        final List<String> tagKey = new ArrayList<>(tagData.length);
+        for (final Object[] tagCol : tagData)
+          tagKey.add(tagCol[i] != null ? tagCol[i].toString() : "");
 
         final Map<Long, double[]> buckets = groupedData.computeIfAbsent(tagKey, k -> new HashMap<>());
         final double[] acc = buckets.computeIfAbsent(bucketTs, k -> new double[accSize]);
@@ -906,8 +836,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Build new downsampled samples from grouped data
     final List<Object[]> newSamples = new ArrayList<>();
-    for (final Map.Entry<String, Map<Long, double[]>> tagEntry : groupedData.entrySet()) {
-      final String[] tagParts = tagEntry.getKey().split("\0", -1);
+    for (final Map.Entry<List<String>, Map<Long, double[]>> tagEntry : groupedData.entrySet()) {
+      final List<String> tagParts = tagEntry.getKey();
       for (final Map.Entry<Long, double[]> bucketEntry : tagEntry.getValue().entrySet()) {
         final long bucketTs = bucketEntry.getKey();
         final double[] acc = bucketEntry.getValue();
@@ -917,7 +847,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final Object[] row = new Object[columns.size()];
         row[tsColIdx] = bucketTs;
         for (int t = 0; t < tagColIndices.size(); t++)
-          row[tagColIndices.get(t)] = t < tagParts.length ? tagParts[t] : "";
+          row[tagColIndices.get(t)] = t < tagParts.size() ? tagParts.get(t) : "";
         for (int n = 0; n < numFields; n++) {
           final double count = acc[n * 2 + 1];
           row[numericColIndices.get(n)] = count > 0 ? acc[n * 2] / count : 0.0;
@@ -1113,12 +1043,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     metaBuf.put(tagMeta);
     metaBuf.flip();
 
+    // Use metaBuf.limit() (not .array().length) since the backing array may be larger after flip
     final CRC32 crc = new CRC32();
-    crc.update(metaBuf.array());
+    crc.update(metaBuf.array(), 0, metaBuf.limit());
 
     long dataOffset = tempFile.length();
     tempFile.seek(dataOffset);
-    tempFile.write(metaBuf.array());
+    tempFile.write(metaBuf.array(), 0, metaBuf.limit());
     dataOffset += metaSize;
 
     final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);

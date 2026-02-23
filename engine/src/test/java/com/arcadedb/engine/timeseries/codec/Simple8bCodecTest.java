@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -119,6 +120,34 @@ class Simple8bCodecTest {
     for (int i = 0; i < input.length; i++)
       input[i] = Math.abs(rng.nextInt(10000));
 
+    assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
+  }
+
+  /**
+   * Regression test: values with |v| >= 2^59 must throw IllegalArgumentException rather than
+   * silently truncating via 60-bit ZigZag overflow. Previously encode() had no bounds check.
+   */
+  @Test
+  void testOutOfRangeValueThrows() {
+    // ZigZag(-(2^59) - 1) exceeds 60 bits and must be rejected
+    final long outOfRange = -(1L << 59) - 1;
+    assertThatThrownBy(() -> Simple8bCodec.encode(new long[] { outOfRange }))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Simple-8b supported range");
+  }
+
+  @Test
+  void testBoundaryValueAccepted() {
+    // ZigZag(-(2^59)) = (1L<<60)-1 which is exactly MAX_ZIGZAG_VALUE — must be accepted
+    final long boundary = -(1L << 59);
+    final long[] input = { boundary };
+    assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
+  }
+
+  @Test
+  void testMaxPositiveBoundaryAccepted() {
+    // (2^59)-1 is the largest positive value: ZigZag((2^59)-1) = (1L<<60)-2 < MAX_ZIGZAG_VALUE
+    final long[] input = { (1L << 59) - 1 };
     assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
   }
 }

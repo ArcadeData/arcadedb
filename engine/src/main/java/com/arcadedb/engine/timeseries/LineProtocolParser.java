@@ -200,8 +200,9 @@ public class LineProtocolParser {
       }
 
       return new Sample(measurement.toString(), tags, fields, timestampMs);
-    } catch (final NumberFormatException e) {
-      // Malformed numeric value or timestamp — skip this line rather than halting batch parse
+    } catch (final IllegalArgumentException e) {
+      // Malformed numeric value or timestamp (including unsigned integer overflow) —
+      // skip this line rather than halting batch parse
       return null;
     }
   }

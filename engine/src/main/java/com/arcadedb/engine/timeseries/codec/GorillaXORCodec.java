@@ -105,7 +105,9 @@ public final class GorillaXORCodec {
     if (count == 1)
       return result;
 
-    int prevLeading = 0;
+    // Initialize to MAX_VALUE to match the encoder's initial state: the first XOR'd value
+    // always encodes with a new block position (case '11'), which writes prevLeading/prevTrailing.
+    int prevLeading = Integer.MAX_VALUE;
     int prevTrailing = 0;
 
     for (int i = 1; i < count; i++) {
@@ -149,7 +151,9 @@ public final class GorillaXORCodec {
     if (count == 1)
       return count;
 
-    int prevLeading = 0;
+    // Initialize to MAX_VALUE to match the encoder's initial state: the first XOR'd value
+    // always encodes with a new block position (case '11'), which writes prevLeading/prevTrailing.
+    int prevLeading = Integer.MAX_VALUE;
     int prevTrailing = 0;
 
     for (int i = 1; i < count; i++) {
