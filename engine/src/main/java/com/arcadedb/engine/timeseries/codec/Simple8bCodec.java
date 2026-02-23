@@ -91,7 +91,7 @@ public final class Simple8bCodec {
           }
         }
 
-        if (fits && count >= Math.min(SELECTOR_COUNT[bestSelector], remaining)) {
+        if (fits) {
           bestSelector = sel;
           break; // Take the first (most compact) selector that fits
         }

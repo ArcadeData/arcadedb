@@ -20,7 +20,11 @@ package com.arcadedb.engine.timeseries;
 
 /**
  * Mutable accumulator for aggregation timing breakdown.
- * Thread-safe for merging results from parallel shards.
+ * <p>
+ * Thread-safety contract: each shard should use its own instance for accumulation
+ * (via {@code addIo()}, {@code addDecompTs()}, etc.). Only {@link #mergeFrom(AggregationMetrics)}
+ * is synchronized and safe to call from multiple threads to merge per-shard results
+ * into a shared instance after all futures have completed.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

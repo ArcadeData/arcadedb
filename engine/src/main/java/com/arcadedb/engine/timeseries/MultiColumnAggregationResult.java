@@ -36,6 +36,9 @@ import java.util.Map;
  */
 public final class MultiColumnAggregationResult {
 
+  /** Maximum number of buckets allowed in flat mode before falling back to map mode. */
+  static final int MAX_FLAT_BUCKETS = 10_000_000;
+
   private final int               requestCount;
   private final AggregationType[] types;
 
@@ -73,6 +76,8 @@ public final class MultiColumnAggregationResult {
 
   /**
    * Flat-mode constructor. Pre-allocates arrays for direct-index access.
+   * If {@code maxBuckets} exceeds {@link #MAX_FLAT_BUCKETS}, falls back to map mode
+   * to avoid excessive memory allocation.
    *
    * @param requests         aggregation request definitions
    * @param firstBucketTs    timestamp of the first bucket (aligned to interval)
@@ -85,17 +90,28 @@ public final class MultiColumnAggregationResult {
     this.types = new AggregationType[requestCount];
     for (int i = 0; i < requestCount; i++)
       types[i] = requests.get(i).type();
-    this.flatMode = true;
-    this.firstBucketTs = firstBucketTs;
-    this.bucketIntervalMs = bucketIntervalMs;
-    this.maxBuckets = maxBuckets;
-    this.flatValues = new double[maxBuckets][];
-    this.flatCounts = new long[maxBuckets][];
-    this.bucketUsed = new boolean[maxBuckets];
-    // Not used in flat mode but initialized to keep getters simple
-    this.valuesByBucket = null;
-    this.countsByBucket = null;
-    this.orderedBuckets = null;
+
+    if (maxBuckets > MAX_FLAT_BUCKETS) {
+      // Fall back to map mode to avoid OOM
+      this.flatMode = false;
+      this.firstBucketTs = 0;
+      this.bucketIntervalMs = 0;
+      this.maxBuckets = 0;
+      this.valuesByBucket = new HashMap<>();
+      this.countsByBucket = new HashMap<>();
+      this.orderedBuckets = new ArrayList<>();
+    } else {
+      this.flatMode = true;
+      this.firstBucketTs = firstBucketTs;
+      this.bucketIntervalMs = bucketIntervalMs;
+      this.maxBuckets = maxBuckets;
+      this.flatValues = new double[maxBuckets][];
+      this.flatCounts = new long[maxBuckets][];
+      this.bucketUsed = new boolean[maxBuckets];
+      this.valuesByBucket = null;
+      this.countsByBucket = null;
+      this.orderedBuckets = null;
+    }
   }
 
   /**

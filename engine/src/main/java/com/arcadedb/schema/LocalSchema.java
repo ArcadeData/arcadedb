@@ -1709,7 +1709,7 @@ public class LocalSchema implements Schema {
     return root;
   }
 
-  public void registerType(final LocalDocumentType type) {
+  void registerType(final LocalDocumentType type) {
     types.put(type.getName(), type);
   }
 

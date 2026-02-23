@@ -120,6 +120,8 @@ public class TimeSeriesTypeBuilder {
       type.initEngine();
       database.commit();
     } catch (final Exception e) {
+      if (database.isTransactionActive())
+        database.rollback();
       throw new SchemaException("Failed to initialize TimeSeries engine for type '" + typeName + "'", e);
     }
 

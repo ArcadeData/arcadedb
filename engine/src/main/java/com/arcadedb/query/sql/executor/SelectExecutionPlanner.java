@@ -1764,7 +1764,7 @@ public class SelectExecutionPlanner {
       try {
         return java.time.Instant.parse(s).toEpochMilli();
       } catch (final Exception e) {
-        // Try parsing as ISO date without time
+        // Try parsing as ISO date without time (assumes UTC)
         try {
           return java.time.LocalDate.parse(s).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
         } catch (final Exception e2) {

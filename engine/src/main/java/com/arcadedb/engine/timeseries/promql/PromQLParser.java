@@ -42,9 +42,11 @@ import java.util.Set;
  */
 public class PromQLParser {
 
-  private static final Set<String> AGG_OPS = Set.of("sum", "avg", "min", "max", "count", "topk", "bottomk");
+  private static final Set<String> AGG_OPS          = Set.of("sum", "avg", "min", "max", "count", "topk", "bottomk");
+  private static final int        MAX_PARSE_DEPTH  = 128;
 
   private final Lexer lexer;
+  private       int   parseDepth;
 
   public PromQLParser(final String input) {
     this.lexer = new Lexer(input);
@@ -60,11 +62,17 @@ public class PromQLParser {
   // --- Operator precedence chain ---
 
   private PromQLExpr parseOr() {
+    if (++parseDepth > MAX_PARSE_DEPTH)
+      throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_PARSE_DEPTH);
+    try {
     PromQLExpr left = parseAndUnless();
     while (lexer.matchKeyword("or")) {
       left = new BinaryExpr(left, BinaryOp.OR, parseAndUnless());
     }
     return left;
+    } finally {
+      parseDepth--;
+    }
   }
 
   private PromQLExpr parseAndUnless() {

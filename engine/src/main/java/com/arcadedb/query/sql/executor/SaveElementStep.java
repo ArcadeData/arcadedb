@@ -162,9 +162,9 @@ public class SaveElementStep extends AbstractExecutionStep {
     if (value instanceof Number n)
       return n.longValue();
     if (value instanceof java.time.LocalDateTime ldt)
-      return ldt.toInstant(java.time.ZoneOffset.UTC).toEpochMilli();
+      return ldt.toInstant(java.time.ZoneOffset.UTC).toEpochMilli(); // assumes UTC
     if (value instanceof java.time.LocalDate ld)
-      return ld.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+      return ld.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli(); // assumes UTC
     if (value instanceof String s) {
       try {
         return Instant.parse(s).toEpochMilli();

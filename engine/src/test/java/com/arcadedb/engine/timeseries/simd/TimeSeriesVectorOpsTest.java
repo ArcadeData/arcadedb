@@ -156,12 +156,52 @@ class TimeSeriesVectorOpsTest {
       longData[i] = rng.nextLong();
     }
 
+    // Basic aggregations
     assertThat(simd.sum(dblData, 0, size)).isCloseTo(scalar.sum(dblData, 0, size), within(1e-6));
     assertThat(simd.min(dblData, 0, size)).isEqualTo(scalar.min(dblData, 0, size));
     assertThat(simd.max(dblData, 0, size)).isEqualTo(scalar.max(dblData, 0, size));
     assertThat(simd.sumLong(longData, 0, size)).isEqualTo(scalar.sumLong(longData, 0, size));
     assertThat(simd.minLong(longData, 0, size)).isEqualTo(scalar.minLong(longData, 0, size));
     assertThat(simd.maxLong(longData, 0, size)).isEqualTo(scalar.maxLong(longData, 0, size));
+
+    // With offset
+    assertThat(simd.sum(dblData, 100, 500)).isCloseTo(scalar.sum(dblData, 100, 500), within(1e-6));
+    assertThat(simd.min(dblData, 100, 500)).isEqualTo(scalar.min(dblData, 100, 500));
+    assertThat(simd.max(dblData, 100, 500)).isEqualTo(scalar.max(dblData, 100, 500));
+    assertThat(simd.sumLong(longData, 100, 500)).isEqualTo(scalar.sumLong(longData, 100, 500));
+    assertThat(simd.minLong(longData, 100, 500)).isEqualTo(scalar.minLong(longData, 100, 500));
+    assertThat(simd.maxLong(longData, 100, 500)).isEqualTo(scalar.maxLong(longData, 100, 500));
+
+    // greaterThan parity
+    final int bitmaskWords = (size + 63) / 64;
+    final long[] scalarGt = new long[bitmaskWords];
+    final long[] simdGt = new long[bitmaskWords];
+    scalar.greaterThan(dblData, 0.0, scalarGt, 0, size);
+    simd.greaterThan(dblData, 0.0, simdGt, 0, size);
+    assertThat(simdGt).isEqualTo(scalarGt);
+
+    // sumFiltered parity (using the greaterThan output as bitmask)
+    assertThat(simd.sumFiltered(dblData, scalarGt, 0, size))
+        .isCloseTo(scalar.sumFiltered(dblData, scalarGt, 0, size), within(1e-6));
+
+    // countFiltered parity
+    assertThat(simd.countFiltered(scalarGt, 0, size)).isEqualTo(scalar.countFiltered(scalarGt, 0, size));
+
+    // bitmaskAnd / bitmaskOr parity
+    final long[] secondMask = new long[bitmaskWords];
+    scalar.greaterThan(dblData, -100.0, secondMask, 0, size);
+
+    final long[] scalarAnd = new long[bitmaskWords];
+    final long[] simdAnd = new long[bitmaskWords];
+    scalar.bitmaskAnd(scalarGt, secondMask, scalarAnd, bitmaskWords);
+    simd.bitmaskAnd(scalarGt, secondMask, simdAnd, bitmaskWords);
+    assertThat(simdAnd).isEqualTo(scalarAnd);
+
+    final long[] scalarOr = new long[bitmaskWords];
+    final long[] simdOr = new long[bitmaskWords];
+    scalar.bitmaskOr(scalarGt, secondMask, scalarOr, bitmaskWords);
+    simd.bitmaskOr(scalarGt, secondMask, simdOr, bitmaskWords);
+    assertThat(simdOr).isEqualTo(scalarOr);
   }
 
   @Test

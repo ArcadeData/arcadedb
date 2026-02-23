@@ -66,7 +66,12 @@ public class TimeSeriesMaintenanceScheduler {
     final WeakReference<Database> dbRef = new WeakReference<>(database);
     final WeakReference<LocalTimeSeriesType> typeRef = new WeakReference<>(tsType);
 
-    tasks.computeIfAbsent(typeName, k -> executor.scheduleAtFixedRate(() -> {
+    // Cancel any existing task for this type (e.g., if retention policy was changed via ALTER)
+    final ScheduledFuture<?> existing = tasks.remove(typeName);
+    if (existing != null)
+      existing.cancel(false);
+
+    tasks.put(typeName, executor.scheduleAtFixedRate(() -> {
       final Database db = dbRef.get();
       final LocalTimeSeriesType type = typeRef.get();
       if (db == null || !db.isOpen() || type == null) {
@@ -93,7 +98,7 @@ public class TimeSeriesMaintenanceScheduler {
 
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
-            "Error in TimeSeries maintenance for type '%s': %s", e, typeName, e.getMessage());
+            "Error in TimeSeries maintenance for type '%s'", e, typeName);
       }
     }, 5_000, DEFAULT_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS));
   }
