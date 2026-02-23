@@ -22,14 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.VertexType;
-import com.arcadedb.utility.MultiIterator;
 
 import java.util.*;
-import java.util.Arrays;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -75,25 +72,30 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         getName() + "(): " + paramName + " must be a map, got " + arg.getClass().getSimpleName());
   }
 
-  /**
-   * Returns a lazy iterator over all vertices in the database, optionally filtered by node labels.
-   * Uses a MultiIterator to compose per-type iterators without loading all vertices into RAM.
-   *
-   * @param db         the database to query
-   * @param nodeLabels optional array of vertex type names to filter (null or empty means all)
-   * @return lazy iterator over all matching vertices
-   */
-  @SuppressWarnings("unchecked")
+  /** @see GraphEngine#getAllVertices(Database, String[]) */
   protected Iterator<Vertex> getAllVertices(final Database db, final String[] nodeLabels) {
-    final MultiIterator<Vertex> multiIter = new MultiIterator<>();
-    for (final DocumentType type : db.getSchema().getTypes()) {
-      if (!(type instanceof VertexType))
-        continue;
-      if (nodeLabels != null && nodeLabels.length > 0 && !Arrays.asList(nodeLabels).contains(type.getName()))
-        continue;
-      multiIter.addIterator((Iterator<Vertex>) (Iterator<?>) db.iterateType(type.getName(), false));
-    }
-    return multiIter;
+    return GraphEngine.getAllVertices(db, nodeLabels);
+  }
+
+  /** @see GraphEngine#buildRidIndex(List) */
+  protected Map<RID, Integer> buildRidIndex(final List<Vertex> vertices) {
+    return GraphEngine.buildRidIndex(vertices);
+  }
+
+  /** @see GraphEngine#neighborRid(Edge, RID, Vertex.DIRECTION) */
+  protected RID neighborRid(final Edge edge, final RID sourceRid, final Vertex.DIRECTION dir) {
+    return GraphEngine.neighborRid(edge, sourceRid, dir);
+  }
+
+  /** @see GraphEngine#parseDirection(String) */
+  protected Vertex.DIRECTION parseDirection(final String dir) {
+    return GraphEngine.parseDirection(dir);
+  }
+
+  /** @see GraphEngine#buildAdjacencyList(List, Map, Vertex.DIRECTION, String[]) */
+  protected int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
+      final Vertex.DIRECTION dir, final String[] relTypes) {
+    return GraphEngine.buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
   }
 
   /**
@@ -105,11 +107,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
     for (final RID rid : rids) {
       final Document doc = database.lookupByRID(rid, true).asDocument();
-      if (doc instanceof Vertex) {
+      if (doc instanceof Vertex)
         nodes.add(doc);
-      } else if (doc instanceof Edge) {
+      else if (doc instanceof Edge)
         relationships.add(doc);
-      }
     }
 
     final Map<String, Object> path = new HashMap<>();

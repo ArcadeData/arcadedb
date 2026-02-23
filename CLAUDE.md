@@ -24,6 +24,8 @@ General design principles:
   - ❌ FORBIDDEN: GPL, AGPL, proprietary licenses without explicit permission, SSPL, Commons Clause
   - When adding a dependency, you MUST update ATTRIBUTIONS.md and, if Apache-licensed with a NOTICE file, incorporate required notices into the main NOTICE file
 - for Studio (webapp), limit to jquery and bootsptrap 5. If necessary use 3rd party libs, but they must be Apache 2.0 compatible (see allowed licenses above)
+- remember to reuse when possible. If a function/method is used multiple times, write it once in an existent helper/util class or create one if needed
+- always bear in mind PERFORMANCE. It must be always your mantra: performance and lightweight on garbage collector. If you can, prefer using arrays of primitives to List of Objects
 - if you need to use JSON, use the class com.arcadedb.serializer.json.JSONObject. Leverage the getter methods that accept the default value as 2nd argument, so you don't need to check if they present or not null = less boilerplate code
 - same thing for JSON arrays: use com.arcadedb.serializer.json.JSONArray class
 - code styles:
