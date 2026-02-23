@@ -20,12 +20,16 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
+import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
+import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -277,6 +281,94 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
     final List<Object[]> newResults = recovered.scanRange(0, Long.MAX_VALUE, null, null);
     database.commit();
     assertThat(newResults.stream().anyMatch(r -> (double) r[2] == 99.0)).isTrue();
+
+    recovered.close();
+  }
+
+  /**
+   * Regression test: verifies that extra sealed blocks written during an interrupted compaction
+   * are truncated back to the watermark on restart.
+   * <p>
+   * Previously the test only set the flag on an already-empty window, so the truncation was a
+   * no-op and the actual block-removal path was never exercised.
+   */
+  @Test
+  void testRecoveryTruncatesExtraSealedBlocks() throws Exception {
+    final List<ColumnDefinition> columns = createTestColumns();
+
+    // Step 1: Insert 3 samples and compact → 1 sealed block
+    database.begin();
+    final TimeSeriesShard shard = new TimeSeriesShard(
+        (DatabaseInternal) database, "test_truncate_extra", 0, columns);
+    shard.appendSamples(
+        new long[] { 1000L, 2000L, 3000L },
+        new Object[] { "A", "B", "A" },
+        new Object[] { 10.0, 20.0, 30.0 }
+    );
+    database.commit();
+
+    shard.compact();
+    final long watermark = shard.getSealedStore().getBlockCount();
+    assertThat(watermark).isGreaterThan(0);
+
+    // Step 2: Insert more data into the mutable bucket (will be retained after recovery)
+    database.begin();
+    shard.appendSamples(
+        new long[] { 4000L, 5000L },
+        new Object[] { "C", "D" },
+        new Object[] { 40.0, 50.0 }
+    );
+    database.commit();
+
+    // Step 3: Simulate partial compaction — write extra blocks directly to the sealed store,
+    // mimicking the state after compact() wrote blocks but crashed before clearing the mutable bucket.
+    final double[] nanStats = new double[columns.size()];
+    Arrays.fill(nanStats, Double.NaN);
+    final double[] mins = new double[columns.size()];
+    final double[] maxs = new double[columns.size()];
+    final double[] sums = new double[columns.size()];
+    Arrays.fill(mins, Double.NaN);
+    Arrays.fill(maxs, Double.NaN);
+    final long[] extraTs = { 4000L, 5000L };
+    final byte[][] compressedExtra = new byte[columns.size()][];
+    compressedExtra[0] = DeltaOfDeltaCodec.encode(extraTs);             // ts column
+    compressedExtra[1] = DictionaryCodec.encode(new String[]{"C","D"}); // tag column
+    final double[] extraVals = { 40.0, 50.0 };
+    compressedExtra[2] = GorillaXORCodec.encode(extraVals);             // field column
+    mins[2] = 40.0;
+    maxs[2] = 50.0;
+    sums[2] = 90.0;
+    shard.getSealedStore().appendBlock(2, 4000L, 5000L, compressedExtra, mins, maxs, sums, null);
+    shard.getSealedStore().flushHeader();
+
+    final long blocksWithExtra = shard.getSealedStore().getBlockCount();
+    assertThat(blocksWithExtra).isGreaterThan(watermark); // extra blocks are present
+
+    // Step 4: Set compaction-in-progress flag with the watermark pointing to BEFORE the extra blocks
+    database.begin();
+    shard.getMutableBucket().setCompactionInProgress(true);
+    shard.getMutableBucket().setCompactionWatermark(watermark);
+    database.commit();
+
+    shard.close();
+
+    // Step 5: Reopen — crash recovery must truncate the extra blocks and clear the flag
+    database.begin();
+    final TimeSeriesShard recovered = new TimeSeriesShard(
+        (DatabaseInternal) database, "test_truncate_extra", 0, columns);
+
+    assertThat(recovered.getMutableBucket().isCompactionInProgress()).isFalse();
+    // Extra blocks should have been removed; sealed store must be back to the watermark
+    assertThat(recovered.getSealedStore().getBlockCount()).isEqualTo(watermark);
+
+    // Mutable bucket still has the 2 samples that were not part of the partial compaction
+    final List<Object[]> results = recovered.scanRange(0, Long.MAX_VALUE, null, null);
+    database.commit();
+
+    // 3 sealed (original) + 2 mutable = 5 unique samples, no duplicates from the extra blocks
+    assertThat(results).hasSize(5);
+    final double[] values = results.stream().mapToDouble(r -> (double) r[2]).sorted().toArray();
+    assertThat(values).containsExactly(10.0, 20.0, 30.0, 40.0, 50.0);
 
     recovered.close();
   }
