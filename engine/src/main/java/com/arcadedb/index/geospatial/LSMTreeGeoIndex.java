@@ -19,6 +19,7 @@
 package com.arcadedb.index.geospatial;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
@@ -58,6 +59,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -431,7 +433,39 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
   @Override
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
-    return underlyingIndex.build(buildIndexBatchSize, callback);
+    // Must NOT delegate to underlyingIndex.build(), because that would pass the raw LSMTreeIndex
+    // to DocumentIndexer.addToIndex(), bypassing GeoHash tokenization and storing raw WKT keys.
+    // Instead, scan the bucket and call this.put() through the indexer so tokenization runs.
+    final DatabaseInternal db = underlyingIndex.getComponent().getDatabase();
+    final int bucketId = underlyingIndex.getAssociatedBucketId();
+    if (bucketId < 0)
+      return 0;
+
+    final String bucketName = db.getSchema().getBucketById(bucketId).getName();
+    final AtomicLong total = new AtomicLong();
+    final long startTime = System.currentTimeMillis();
+
+    LogManager.instance().log(this, Level.INFO, "Building geospatial index '%s'...", getName());
+
+    db.scanBucket(bucketName, record -> {
+      db.getIndexer().addToIndex(LSMTreeGeoIndex.this, record.getIdentity(), (Document) record);
+      total.incrementAndGet();
+
+      if (total.get() % buildIndexBatchSize == 0) {
+        db.getWrappedDatabaseInstance().commit();
+        db.getWrappedDatabaseInstance().begin();
+      }
+
+      if (callback != null)
+        callback.onDocumentIndexed((Document) record, total.get());
+
+      return true;
+    });
+
+    LogManager.instance().log(this, Level.INFO, "Completed building geospatial index '%s': processed %d records in %dms",
+        getName(), total.get(), System.currentTimeMillis() - startTime);
+
+    return total.get();
   }
 
   @Override

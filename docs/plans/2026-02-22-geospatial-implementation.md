@@ -1,7 +1,5 @@
 # Geospatial Indexing Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Port OrientDB-style geospatial indexing to ArcadeDB with `geo.*` SQL functions and automatic query optimizer integration.
 
 **Architecture:** `LSMTreeGeoIndex` wraps `LSMTreeIndex` (same pattern as `LSMTreeFullTextIndex`). `lucene-spatial-extras` `GeohashPrefixTree` decomposes WKT geometries into GeoHash cell tokens stored in LSM-Tree. `geo.*` predicate functions implement `IndexableSQLFunction` so the query optimizer uses the geo index automatically when `WHERE geo.within(field, shape) = true` is detected.
