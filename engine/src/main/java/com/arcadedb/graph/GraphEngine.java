@@ -37,7 +37,9 @@ import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -807,6 +809,110 @@ public class GraphEngine {
     }
 
     return null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Graph algorithm utilities (used by algo procedures and SQL functions)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Returns a lazy iterator over all vertices in the database, optionally filtered by node labels.
+   * Uses a MultiIterator to compose per-type iterators without loading all vertices into RAM.
+   *
+   * @param db         the database to query
+   * @param nodeLabels optional array of vertex type names to filter (null or empty means all)
+   * @return lazy iterator over all matching vertices
+   */
+  @SuppressWarnings("unchecked")
+  public static Iterator<Vertex> getAllVertices(final Database db, final String[] nodeLabels) {
+    final MultiIterator<Vertex> multiIter = new MultiIterator<>();
+    for (final DocumentType type : db.getSchema().getTypes()) {
+      if (!(type instanceof VertexType))
+        continue;
+      if (nodeLabels != null && nodeLabels.length > 0 && !Arrays.asList(nodeLabels).contains(type.getName()))
+        continue;
+      multiIter.addIterator((Iterator<Vertex>) (Iterator<?>) db.iterateType(type.getName(), false));
+    }
+    return multiIter;
+  }
+
+  /**
+   * Builds a mapping from vertex RID to array index for O(1) lookups.
+   */
+  public static Map<RID, Integer> buildRidIndex(final List<Vertex> vertices) {
+    final int n = vertices.size();
+    final Map<RID, Integer> map = new HashMap<>(n * 2);
+    for (int i = 0; i < n; i++)
+      map.put(vertices.get(i).getIdentity(), i);
+    return map;
+  }
+
+  /**
+   * Returns the neighbor RID for an edge given source RID and traversal direction.
+   */
+  public static RID neighborRid(final Edge edge, final RID sourceRid, final Vertex.DIRECTION dir) {
+    return switch (dir) {
+      case OUT -> edge.getIn();
+      case IN -> edge.getOut();
+      default -> edge.getOut().equals(sourceRid) ? edge.getIn() : edge.getOut();
+    };
+  }
+
+  /**
+   * Parses a direction string ("OUT", "IN", "BOTH") into a {@link Vertex.DIRECTION} enum value.
+   * Returns {@code BOTH} for null or unknown values.
+   */
+  public static Vertex.DIRECTION parseDirection(final String dir) {
+    if (dir == null)
+      return Vertex.DIRECTION.BOTH;
+    return switch (dir.toUpperCase()) {
+      case "OUT" -> Vertex.DIRECTION.OUT;
+      case "IN" -> Vertex.DIRECTION.IN;
+      default -> Vertex.DIRECTION.BOTH;
+    };
+  }
+
+  /**
+   * Builds an unweighted adjacency list as {@code int[][]} (GC-friendly, no boxing).
+   * Two-pass approach: first counts neighbors per vertex, then fills — no reallocation.
+   *
+   * @param vertices  ordered list of vertices
+   * @param ridToIdx  RID → index mapping (from {@link #buildRidIndex})
+   * @param dir       traversal direction
+   * @param relTypes  optional edge type filter (null or empty means all)
+   * @return adj[i] = array of neighbor indices for vertex i
+   */
+  public static int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
+      final Vertex.DIRECTION dir, final String[] relTypes) {
+    final int n = vertices.size();
+    final int[] counts = new int[n];
+    for (int i = 0; i < n; i++) {
+      final Vertex v = vertices.get(i);
+      final RID vid = v.getIdentity();
+      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
+          v.getEdges(dir, relTypes) : v.getEdges(dir);
+      for (final Edge e : edges) {
+        if (ridToIdx.containsKey(neighborRid(e, vid, dir)))
+          counts[i]++;
+      }
+    }
+    final int[][] adj = new int[n][];
+    for (int i = 0; i < n; i++)
+      adj[i] = new int[counts[i]];
+    final int[] pos = new int[n];
+    for (int i = 0; i < n; i++) {
+      final Vertex v = vertices.get(i);
+      final RID vid = v.getIdentity();
+      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
+          v.getEdges(dir, relTypes) : v.getEdges(dir);
+      for (final Edge e : edges) {
+        final RID nid = neighborRid(e, vid, dir);
+        final Integer j = ridToIdx.get(nid);
+        if (j != null)
+          adj[i][pos[i]++] = j;
+      }
+    }
+    return adj;
   }
 
   protected RID moveToType(final Vertex vertex, final String typeName) {
