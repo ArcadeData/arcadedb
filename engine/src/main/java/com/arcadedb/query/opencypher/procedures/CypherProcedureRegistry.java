@@ -22,7 +22,13 @@ import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAStar;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAllSimplePaths;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBellmanFord;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBetweenness;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDijkstra;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoLabelPropagation;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoLouvain;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoPageRank;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoWCC;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
 import com.arcadedb.query.opencypher.procedures.merge.MergeRelationship;
 import com.arcadedb.query.opencypher.procedures.meta.MetaGraph;
@@ -235,6 +241,12 @@ public final class CypherProcedureRegistry {
     register(new AlgoDijkstra());
     register(new AlgoAStar());
     register(new AlgoAllSimplePaths());
+    register(new AlgoBellmanFord());
+    register(new AlgoPageRank());
+    register(new AlgoBetweenness());
+    register(new AlgoWCC());
+    register(new AlgoLouvain());
+    register(new AlgoLabelPropagation());
   }
 
   private static void registerPathProcedures() {
