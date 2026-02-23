@@ -28,22 +28,30 @@ import com.arcadedb.query.opencypher.procedures.algo.AlgoArticulationPoints;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoBellmanFord;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoBetweenness;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoBridges;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoClique;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoClosenessCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDegreeCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDijkstra;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoEigenvectorCentrality;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoGraphSummary;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoHITS;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoHarmonicCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoJaccardSimilarity;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoKCore;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKShortestPaths;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKatz;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoLabelPropagation;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoLouvain;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoMST;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoMaxFlow;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoModularityScore;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoPageRank;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoRandomWalk;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoSCC;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoSimRank;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoTopologicalSort;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoTriangleCount;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoVoteRank;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoWCC;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
 import com.arcadedb.query.opencypher.procedures.merge.MergeRelationship;
@@ -279,6 +287,14 @@ public final class CypherProcedureRegistry {
     register(new AlgoTopologicalSort());
     register(new AlgoAPSP());
     register(new AlgoAdamicAdar());
+    register(new AlgoKatz());
+    register(new AlgoVoteRank());
+    register(new AlgoMaxFlow());
+    register(new AlgoKShortestPaths());
+    register(new AlgoSimRank());
+    register(new AlgoClique());
+    register(new AlgoGraphSummary());
+    register(new AlgoModularityScore());
   }
 
   private static void registerPathProcedures() {

@@ -139,6 +139,14 @@ class CypherProcedureRegistryTest {
     assertThat(CypherProcedureRegistry.hasProcedure("algo.topologicalSort")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("algo.apsp")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("algo.adamicAdar")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.katz")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.voteRank")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.maxFlow")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.kShortestPaths")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.simRank")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.clique")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.graphSummary")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.modularityScore")).isTrue();
   }
 
   @Test
