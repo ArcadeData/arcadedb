@@ -118,7 +118,7 @@ public class TimeSeriesShard implements AutoCloseable {
 
     // Then mutable layer
     final List<Object[]> mutableResults = mutableBucket.scanRange(fromTs, toTs, columnIndices);
-    addFiltered(results, mutableResults, tagFilter);
+    addFiltered(results, mutableResults, tagFilter, columnIndices);
 
     return results;
   }
@@ -148,7 +148,8 @@ public class TimeSeriesShard implements AutoCloseable {
         while (true) {
           if (current.hasNext()) {
             final Object[] row = current.next();
-            if (tagFilter == null || tagFilter.matches(row)) {
+            // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
+            if (tagFilter == null || tagFilter.matchesMapped(row, columnIndices)) {
               nextRow = row;
               return;
             }
@@ -343,12 +344,14 @@ public class TimeSeriesShard implements AutoCloseable {
 
   // --- Private helpers ---
 
-  private static void addFiltered(final List<Object[]> results, final List<Object[]> source, final TagFilter filter) {
+  private static void addFiltered(final List<Object[]> results, final List<Object[]> source, final TagFilter filter,
+      final int[] columnIndices) {
     if (filter == null)
       results.addAll(source);
     else
       for (final Object[] row : source)
-        if (filter.matches(row))
+        // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
+        if (filter.matchesMapped(row, columnIndices))
           results.add(row);
   }
 

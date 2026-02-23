@@ -390,6 +390,27 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
     scheduler.shutdown();
   }
 
+  @Test
+  void testMaintenanceSchedulerAlwaysSchedulesEvenWithoutPolicies() {
+    // Regression: scheduler previously skipped scheduling when no retention/downsampling
+    // policy was set, leaving the mutable bucket growing unboundedly.
+    database.command("sql", "CREATE TIMESERIES TYPE NoPolicySeries TIMESTAMP ts FIELDS (value DOUBLE)");
+
+    final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType("NoPolicySeries");
+    assertThat(tsType.getRetentionMs()).isZero();
+    assertThat(tsType.getDownsamplingTiers()).isEmpty();
+
+    final TimeSeriesMaintenanceScheduler scheduler = new TimeSeriesMaintenanceScheduler();
+    try {
+      // schedule() must register a task even though no policies are configured
+      scheduler.schedule(database, tsType);
+      // Verify a task was registered: cancelling it should not throw
+      scheduler.cancel("NoPolicySeries");
+    } finally {
+      scheduler.shutdown();
+    }
+  }
+
   // ===== Tag Filter on Aggregation Queries =====
 
   @Test

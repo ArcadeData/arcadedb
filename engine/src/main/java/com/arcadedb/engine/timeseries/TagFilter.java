@@ -103,14 +103,53 @@ public final class TagFilter {
 
   /**
    * Tests if a sample row matches all conditions in this filter.
+   * Assumes the row was built from <em>all</em> non-timestamp columns in schema order:
+   * {@code row[0] = timestamp, row[1] = non-ts col 0, row[2] = non-ts col 1, ...}
    *
-   * @param row the sample row (index 0 = timestamp, index 1+ = columns)
+   * @param row the sample row (index 0 = timestamp, index 1+ = columns in full schema order)
    */
   public boolean matches(final Object[] row) {
     for (final Condition cond : conditions) {
       if (cond.columnIndex + 1 >= row.length)
         return false;
       if (!cond.values.contains(row[cond.columnIndex + 1]))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Tests if a sample row matches all conditions in this filter, resolving column positions
+   * through the supplied {@code columnIndices} mapping.
+   * <p>
+   * Use this overload when the row was built from a <em>subset</em> of columns (i.e.
+   * {@code columnIndices != null} was passed to {@code scanRange} / {@code iterateRange}).
+   * In that case {@code row[i+1]} holds the column whose non-timestamp schema index equals
+   * {@code columnIndices[i]}, so a direct {@code cond.columnIndex+1} offset would be wrong.
+   * <p>
+   * Falls back to {@link #matches(Object[])} when {@code columnIndices} is {@code null}
+   * (all columns present in schema order).
+   *
+   * @param row           the sample row (index 0 = timestamp, index 1+ = selected columns)
+   * @param columnIndices the non-timestamp schema indices that were used to build the row,
+   *                      in ascending order; {@code null} means all columns in schema order
+   */
+  public boolean matchesMapped(final Object[] row, final int[] columnIndices) {
+    if (columnIndices == null)
+      return matches(row);
+    for (final Condition cond : conditions) {
+      int outPos = -1;
+      for (int i = 0; i < columnIndices.length; i++) {
+        if (columnIndices[i] == cond.columnIndex) {
+          outPos = i;
+          break;
+        }
+      }
+      if (outPos < 0)
+        return false; // tag column was not included in the requested subset
+      if (outPos + 1 >= row.length)
+        return false;
+      if (!cond.values.contains(row[outPos + 1]))
         return false;
     }
     return true;

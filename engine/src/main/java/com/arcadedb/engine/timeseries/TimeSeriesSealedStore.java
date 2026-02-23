@@ -300,8 +300,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           for (int c = 0; c < decompressedCols.length; c++)
             row[c + 1] = decompressedCols[c][i];
 
-          // For SLOW_PATH blocks (mixed tag values), apply per-row filtering
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matches(row))
+          // For SLOW_PATH blocks (mixed tag values), apply per-row filtering.
+          // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, columnIndices))
             continue;
 
           results.add(row);
@@ -385,7 +386,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           row[0] = ts[i];
           for (int c = 0; c < decompCols.length; c++)
             row[c + 1] = decompCols[c][i];
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matches(row))
+          // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, columnIndices))
             continue;
           results.add(row);
         }

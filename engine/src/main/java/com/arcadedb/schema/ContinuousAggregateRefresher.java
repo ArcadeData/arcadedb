@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Date;
+import java.util.Locale;
 import java.util.logging.Level;
 
 public class ContinuousAggregateRefresher {
@@ -120,7 +121,7 @@ public class ContinuousAggregateRefresher {
     // Find WHERE clause position at the outermost level (case-insensitive).
     // Note: CTEs and subqueries with their own WHERE clauses are not supported
     // in continuous-aggregate queries.
-    final String upperQuery = query.toUpperCase();
+    final String upperQuery = query.toUpperCase(Locale.ROOT);
     final int whereIdx = findWhereIndex(upperQuery);
 
     if (whereIdx >= 0) {

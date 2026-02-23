@@ -54,13 +54,11 @@ public class TimeSeriesMaintenanceScheduler {
   }
 
   /**
-   * Schedules automatic retention and downsampling for a TimeSeries type.
-   * Only schedules if the type has retention or downsampling policies defined.
+   * Schedules automatic compaction, retention, and downsampling for a TimeSeries type.
+   * Compaction is always scheduled to prevent unbounded mutable-bucket growth.
+   * Retention and downsampling steps are only executed when policies are configured.
    */
   public void schedule(final Database database, final LocalTimeSeriesType tsType) {
-    if (tsType.getRetentionMs() <= 0 && tsType.getDownsamplingTiers().isEmpty())
-      return; // No policies to enforce
-
     final String typeName = tsType.getName();
 
     final WeakReference<Database> dbRef = new WeakReference<>(database);
