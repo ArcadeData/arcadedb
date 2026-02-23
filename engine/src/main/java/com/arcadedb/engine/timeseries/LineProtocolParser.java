@@ -34,21 +34,21 @@ import java.util.Map;
 public class LineProtocolParser {
 
   public enum Precision {
-    NANOSECONDS(1_000_000L),
-    MICROSECONDS(1_000L),
-    MILLISECONDS(1L),
-    SECONDS(1L);
+    NANOSECONDS(1_000_000L, 1L),
+    MICROSECONDS(1_000L, 1L),
+    MILLISECONDS(1L, 1L),
+    SECONDS(1L, 1_000L);
 
-    private final long toMillisDivisor;
+    private final long divisor;
+    private final long multiplier;
 
-    Precision(final long toMillisDivisor) {
-      this.toMillisDivisor = toMillisDivisor;
+    Precision(final long divisor, final long multiplier) {
+      this.divisor = divisor;
+      this.multiplier = multiplier;
     }
 
     public long toMillis(final long value) {
-      if (this == SECONDS)
-        return value * 1000L;
-      return value / toMillisDivisor;
+      return (value / divisor) * multiplier;
     }
 
     public static Precision fromString(final String s) {

@@ -80,8 +80,22 @@ class Simple8bCodecTest {
 
   @Test
   void testVeryLargeInts() {
-    // Values that need 60 bits → 1 per word
-    final long[] input = { (1L << 59), (1L << 58) + 1, (1L << 59) - 1 };
+    // After zigzag encoding, max positive value that fits in 60 bits is (1L << 59) - 1
+    final long[] input = { (1L << 59) - 1, (1L << 58) + 1, (1L << 58) - 1 };
+    assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
+  }
+
+  @Test
+  void testNegativeValues() {
+    // Zigzag encoding allows negative values
+    final long[] input = { -1, -100, -1000, 0, 42, -42 };
+    assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
+  }
+
+  @Test
+  void testLargeNegativeValues() {
+    // Values within the zigzag-encodable range: max zigzag output must fit in 60 bits
+    final long[] input = { -(1L << 58), -(1L << 57), -999_999_999L, 999_999_999L };
     assertThat(Simple8bCodec.decode(Simple8bCodec.encode(input))).containsExactly(input);
   }
 

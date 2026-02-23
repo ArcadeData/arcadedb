@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -103,7 +104,8 @@ public class CreateTimeSeriesTypeStatementTest extends TestHelper {
 
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType("Minimal");
     assertThat(tsType.getTimestampColumn()).isEqualTo("ts");
-    assertThat(tsType.getShardCount()).isEqualTo(1);
+    final int expectedShards = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS);
+    assertThat(tsType.getShardCount()).isEqualTo(expectedShards);
     assertThat(tsType.getRetentionMs()).isEqualTo(0L);
   }
 }

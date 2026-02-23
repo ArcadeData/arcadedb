@@ -21,8 +21,11 @@ package com.arcadedb.engine.timeseries.codec;
 import java.nio.ByteBuffer;
 
 /**
- * Simple-8b encoding for non-negative integer arrays.
- * Packs multiple small integers into 64-bit words using a selector scheme.
+ * Simple-8b encoding for signed integer arrays using zigzag encoding.
+ * Signed values are converted to non-negative via zigzag encoding before packing,
+ * supporting the range [-(2^59)+1, (2^59)-1].
+ * <p>
+ * Packs multiple integers into 64-bit words using a selector scheme.
  * The top 4 bits of each word are the selector (0-14), determining how many
  * integers are packed and at what bit width.
  * <p>
@@ -47,13 +50,18 @@ public final class Simple8bCodec {
     if (values == null || values.length == 0)
       return new byte[0];
 
+    // Zigzag-encode signed longs to non-negative values before packing
+    final long[] zigzagged = new long[values.length];
+    for (int i = 0; i < values.length; i++)
+      zigzagged[i] = zigzagEncode(values[i]);
+
     // Worst case: each value needs its own word + header
-    final ByteBuffer buf = ByteBuffer.allocate(4 + (values.length + 1) * 8);
-    buf.putInt(values.length);
+    final ByteBuffer buf = ByteBuffer.allocate(4 + (zigzagged.length + 1) * 8);
+    buf.putInt(zigzagged.length);
 
     int pos = 0;
-    while (pos < values.length) {
-      final int remaining = values.length - pos;
+    while (pos < zigzagged.length) {
+      final int remaining = zigzagged.length - pos;
 
       // Find the best selector
       int bestSelector = 15; // fallback: 1 value × 60 bits
@@ -68,7 +76,7 @@ public final class Simple8bCodec {
         if (bits == 0) {
           // All must be zero
           for (int j = 0; j < count; j++) {
-            if (values[pos + j] != 0) {
+            if (zigzagged[pos + j] != 0) {
               fits = false;
               break;
             }
@@ -76,7 +84,7 @@ public final class Simple8bCodec {
         } else {
           final long maxVal = (1L << bits) - 1;
           for (int j = 0; j < count; j++) {
-            if (values[pos + j] < 0 || values[pos + j] > maxVal) {
+            if (zigzagged[pos + j] > maxVal) {
               fits = false;
               break;
             }
@@ -96,7 +104,7 @@ public final class Simple8bCodec {
 
       if (bits > 0) {
         for (int j = 0; j < count; j++)
-          word |= (values[pos + j] & ((1L << bits) - 1)) << (j * bits);
+          word |= (zigzagged[pos + j] & ((1L << bits) - 1)) << (j * bits);
       }
 
       buf.putLong(word);
@@ -135,6 +143,17 @@ public final class Simple8bCodec {
         pos += count;
       }
     }
+    // Zigzag-decode back to signed values
+    for (int i = 0; i < result.length; i++)
+      result[i] = zigzagDecode(result[i]);
     return result;
+  }
+
+  private static long zigzagEncode(final long n) {
+    return (n << 1) ^ (n >> 63);
+  }
+
+  private static long zigzagDecode(final long n) {
+    return (n >>> 1) ^ -(n & 1);
   }
 }

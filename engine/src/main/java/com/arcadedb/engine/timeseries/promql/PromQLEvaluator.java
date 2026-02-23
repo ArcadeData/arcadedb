@@ -54,8 +54,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Tree-walking interpreter for PromQL AST.
@@ -65,10 +67,12 @@ public class PromQLEvaluator {
 
   private static final long DEFAULT_LOOKBACK_MS  = 5 * 60_000; // 5 minutes
   private static final int  MAX_RECURSION_DEPTH  = 64;
+  private static final long MAX_RANGE_STEPS      = 1_000_000;
 
   private final DatabaseInternal        database;
   private final long                    lookbackMs;
-  private final Map<String, Pattern>    patternCache = new HashMap<>();
+  private static final int              MAX_REGEX_LENGTH = 1024;
+  private final Map<String, Pattern>    patternCache = new ConcurrentHashMap<>();
 
   public PromQLEvaluator(final DatabaseInternal database) {
     this(database, DEFAULT_LOOKBACK_MS);
@@ -90,6 +94,15 @@ public class PromQLEvaluator {
    * Evaluate a range query, returning a matrix result with values at each step.
    */
   public PromQLResult evaluateRange(final PromQLExpr expr, final long startMs, final long endMs, final long stepMs) {
+    if (stepMs <= 0)
+      throw new IllegalArgumentException("stepMs must be positive, got: " + stepMs);
+
+    final long maxSteps = (endMs - startMs) / stepMs + 1;
+    if (maxSteps > MAX_RANGE_STEPS)
+      throw new IllegalArgumentException(
+          "Range query would produce " + maxSteps + " steps, exceeding maximum of " + MAX_RANGE_STEPS
+              + ". Increase stepMs or reduce the time range");
+
     // For range queries, evaluate at each step point and collect into MatrixResult
     final Map<String, List<double[]>> seriesMap = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
@@ -159,7 +172,7 @@ public class PromQLEvaluator {
     // Post-filter for NEQ/RE/NRE and group by label combination
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     for (final Object[] row : rows) {
-      if (!matchesPostFilters(row, vs.matchers(), columns, patternCache))
+      if (!matchesPostFilters(row, vs.matchers(), columns))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -201,7 +214,7 @@ public class PromQLEvaluator {
     final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
     for (final Object[] row : rows) {
-      if (!matchesPostFilters(row, vs.matchers(), columns, patternCache))
+      if (!matchesPostFilters(row, vs.matchers(), columns))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -398,6 +411,18 @@ public class PromQLEvaluator {
 
   // --- Helper methods ---
 
+  private Pattern compilePattern(final String regex) {
+    if (regex.length() > MAX_REGEX_LENGTH)
+      throw new IllegalArgumentException("Regex pattern exceeds maximum length of " + MAX_REGEX_LENGTH + " characters");
+    return patternCache.computeIfAbsent(regex, r -> {
+      try {
+        return Pattern.compile(r);
+      } catch (final PatternSyntaxException e) {
+        throw new IllegalArgumentException("Invalid regex pattern: " + r, e);
+      }
+    });
+  }
+
   private TagFilter buildTagFilter(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
     TagFilter filter = null;
     for (final LabelMatcher m : matchers) {
@@ -412,7 +437,7 @@ public class PromQLEvaluator {
   }
 
   private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
-      final List<ColumnDefinition> columns, final Map<String, Pattern> patternCache) {
+      final List<ColumnDefinition> columns) {
     for (final LabelMatcher m : matchers) {
       if (m.op() == MatchOp.EQ || "__name__".equals(m.name()))
         continue;
@@ -427,11 +452,11 @@ public class PromQLEvaluator {
             return false;
           break;
         case RE:
-          if (!patternCache.computeIfAbsent(m.value(), Pattern::compile).matcher(strVal).matches())
+          if (!compilePattern(m.value()).matcher(strVal).matches())
             return false;
           break;
         case NRE:
-          if (patternCache.computeIfAbsent(m.value(), Pattern::compile).matcher(strVal).matches())
+          if (compilePattern(m.value()).matcher(strVal).matches())
             return false;
           break;
         default:

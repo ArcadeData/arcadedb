@@ -80,12 +80,30 @@ public class TimeSeriesEngine implements AutoCloseable {
       return t;
     });
 
-    for (int i = 0; i < shardCount; i++)
-      shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs);
+    try {
+      for (int i = 0; i < shardCount; i++)
+        shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs);
+    } catch (final Exception e) {
+      shardExecutor.shutdownNow();
+      // Close any shards that were successfully created
+      for (final TimeSeriesShard shard : shards) {
+        if (shard != null) {
+          try {
+            shard.close();
+          } catch (final IOException ignored) {
+          }
+        }
+      }
+      throw e instanceof IOException ? (IOException) e : new IOException("Failed to initialize shards for " + typeName, e);
+    }
   }
 
   /**
    * Appends samples, routing to a shard using round-robin distribution.
+   * <p>
+   * Note: this method is not synchronized. When multiple threads call it concurrently,
+   * they may be routed to the same shard. For contention-free writes, use the async API
+   * which provides 1:1 slot-to-shard affinity.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
     final int shardIdx = (int) (appendCounter.getAndIncrement() % shardCount);

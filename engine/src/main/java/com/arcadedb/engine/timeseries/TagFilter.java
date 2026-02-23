@@ -37,39 +37,53 @@ public final class TagFilter {
 
   /**
    * Creates a filter matching a single tag equality.
+   *
+   * @param nonTsColumnIndex zero-based column index excluding the timestamp column.
+   *                         In {@link #matches(Object[])}, this is offset by +1 to account
+   *                         for the timestamp at row[0].
+   * @param value            the value to match against
    */
-  public static TagFilter eq(final int columnIndex, final Object value) {
+  public static TagFilter eq(final int nonTsColumnIndex, final Object value) {
     final List<Condition> conditions = new ArrayList<>(1);
-    conditions.add(new Condition(columnIndex, Set.of(value)));
+    conditions.add(new Condition(nonTsColumnIndex, Set.of(value)));
     return new TagFilter(conditions);
   }
 
   /**
    * Creates a filter matching a single tag against a set of values (IN).
+   *
+   * @param nonTsColumnIndex zero-based column index excluding the timestamp column
+   * @param values           the set of values to match against
    */
-  public static TagFilter in(final int columnIndex, final Set<Object> values) {
+  public static TagFilter in(final int nonTsColumnIndex, final Set<Object> values) {
     final List<Condition> conditions = new ArrayList<>(1);
-    conditions.add(new Condition(columnIndex, values));
+    conditions.add(new Condition(nonTsColumnIndex, values));
     return new TagFilter(conditions);
   }
 
   /**
    * Returns a new TagFilter that ANDs this filter with an additional tag equality condition.
+   *
+   * @param nonTsColumnIndex zero-based column index excluding the timestamp column
+   * @param value            the value to match against
    */
-  public TagFilter and(final int columnIndex, final Object value) {
+  public TagFilter and(final int nonTsColumnIndex, final Object value) {
     final List<Condition> newConditions = new ArrayList<>(conditions.size() + 1);
     newConditions.addAll(conditions);
-    newConditions.add(new Condition(columnIndex, Set.of(value)));
+    newConditions.add(new Condition(nonTsColumnIndex, Set.of(value)));
     return new TagFilter(newConditions);
   }
 
   /**
    * Returns a new TagFilter that ANDs this filter with an additional IN condition.
+   *
+   * @param nonTsColumnIndex zero-based column index excluding the timestamp column
+   * @param values           the set of values to match against
    */
-  public TagFilter andIn(final int columnIndex, final Set<Object> values) {
+  public TagFilter andIn(final int nonTsColumnIndex, final Set<Object> values) {
     final List<Condition> newConditions = new ArrayList<>(conditions.size() + 1);
     newConditions.addAll(conditions);
-    newConditions.add(new Condition(columnIndex, values));
+    newConditions.add(new Condition(nonTsColumnIndex, values));
     return new TagFilter(newConditions);
   }
 
