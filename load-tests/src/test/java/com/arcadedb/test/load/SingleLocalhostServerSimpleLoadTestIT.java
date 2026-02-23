@@ -113,11 +113,11 @@ class SingleLocalhostServerSimpleLoadTestIT {
   }
 
   @Test
-  @Disabled
+//  @Disabled
   @DisplayName("Single server load test")
   void singleServerLoadTest() throws Exception {
 
-    ServerWrapper server = new ServerWrapper("localhost", 2480, 50051);
+    ServerWrapper server = new ServerWrapper("localhost", 2482, 50051);
     DatabaseWrapper db = new DatabaseWrapper(server, idSupplier, wordSupplier);
     db.createDatabase();
     db.createSchema();
