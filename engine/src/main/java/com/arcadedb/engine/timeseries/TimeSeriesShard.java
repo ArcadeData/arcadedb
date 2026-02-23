@@ -112,9 +112,9 @@ public class TimeSeriesShard implements AutoCloseable {
       final TagFilter tagFilter) throws IOException {
     final List<Object[]> results = new ArrayList<>();
 
-    // Sealed layer first
+    // Sealed layer first (already filtered by tagFilter inside sealedStore)
     final List<Object[]> sealedResults = sealedStore.scanRange(fromTs, toTs, columnIndices, tagFilter);
-    addFiltered(results, sealedResults, tagFilter);
+    results.addAll(sealedResults);
 
     // Then mutable layer
     final List<Object[]> mutableResults = mutableBucket.scanRange(fromTs, toTs, columnIndices);
@@ -425,7 +425,7 @@ public class TimeSeriesShard implements AutoCloseable {
           strings[i] = values[i] != null ? values[i].toString() : "";
         yield DictionaryCodec.encode(strings);
       }
-      default -> new byte[0];
+      default -> throw new IllegalStateException("Unknown compression codec: " + codec);
     };
   }
 }

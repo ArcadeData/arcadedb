@@ -21,13 +21,13 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
+import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
@@ -47,6 +47,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   private final long                               bucketIntervalMs;
   private final String                             timeBucketAlias;
   private final Map<String, String>                requestAliasToOutputAlias;
+  private final TagFilter                          tagFilter;
   private       Iterator<ResultInternal>           resultIterator;
   private       boolean                            fetched = false;
   private       AggregationMetrics                 aggregationMetrics;
@@ -54,6 +55,12 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   public AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final String timeBucketAlias,
       final Map<String, String> requestAliasToOutputAlias, final CommandContext context) {
+    this(tsType, fromTs, toTs, requests, bucketIntervalMs, timeBucketAlias, requestAliasToOutputAlias, null, context);
+  }
+
+  public AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final String timeBucketAlias,
+      final Map<String, String> requestAliasToOutputAlias, final TagFilter tagFilter, final CommandContext context) {
     super(context);
     this.tsType = tsType;
     this.fromTs = fromTs;
@@ -62,6 +69,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     this.bucketIntervalMs = bucketIntervalMs;
     this.timeBucketAlias = timeBucketAlias;
     this.requestAliasToOutputAlias = requestAliasToOutputAlias;
+    this.tagFilter = tagFilter;
   }
 
   @Override
@@ -73,21 +81,30 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
           final TimeSeriesEngine engine = tsType.getEngine();
           if (context.isProfiling())
             aggregationMetrics = new AggregationMetrics();
-          final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, null, aggregationMetrics);
+          final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter, aggregationMetrics);
 
-          final List<ResultInternal> rows = new ArrayList<>();
-          for (final long bucketTs : aggResult.getBucketTimestamps()) {
-            final ResultInternal row = new ResultInternal(context.getDatabase());
-            row.setProperty(timeBucketAlias, new Date(bucketTs));
-            for (int i = 0; i < requests.size(); i++) {
-              final MultiColumnAggregationRequest req = requests.get(i);
-              final String outputAlias = requestAliasToOutputAlias.getOrDefault(req.alias(), req.alias());
-              row.setProperty(outputAlias, aggResult.getValue(bucketTs, i));
+          // Lazy conversion: wrap the bucket timestamp iterator instead of materializing all rows
+          final Iterator<Long> bucketIterator = aggResult.getBucketTimestamps().iterator();
+          resultIterator = new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+              return bucketIterator.hasNext();
             }
-            rows.add(row);
-            rowCount++;
-          }
-          resultIterator = rows.iterator();
+
+            @Override
+            public ResultInternal next() {
+              final long bucketTs = bucketIterator.next();
+              final ResultInternal row = new ResultInternal(context.getDatabase());
+              row.setProperty(timeBucketAlias, new Date(bucketTs));
+              for (int i = 0; i < requests.size(); i++) {
+                final MultiColumnAggregationRequest req = requests.get(i);
+                final String outputAlias = requestAliasToOutputAlias.getOrDefault(req.alias(), req.alias());
+                row.setProperty(outputAlias, aggResult.getValue(bucketTs, i));
+              }
+              rowCount++;
+              return row;
+            }
+          };
           fetched = true;
         } catch (final IOException e) {
           throw new CommandExecutionException("Error in TimeSeries push-down aggregation", e);
@@ -145,6 +162,6 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   @Override
   public ExecutionStep copy(final CommandContext context) {
     return new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, timeBucketAlias,
-        requestAliasToOutputAlias, context);
+        requestAliasToOutputAlias, tagFilter, context);
   }
 }

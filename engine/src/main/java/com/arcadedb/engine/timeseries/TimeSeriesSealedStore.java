@@ -449,7 +449,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Push-down aggregation on sealed blocks.
    */
   public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
-      final AggregationType type, final long bucketIntervalNs) throws IOException {
+      final AggregationType type, final long bucketIntervalMs) throws IOException {
     final AggregationResult result = new AggregationResult();
     final int tsColIdx = findTimestampColumnIndex();
     final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
@@ -465,7 +465,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (timestamps[i] < fromTs || timestamps[i] > toTs)
           continue;
 
-        final long bucketTs = bucketIntervalNs > 0 ? (timestamps[i] / bucketIntervalNs) * bucketIntervalNs : fromTs;
+        final long bucketTs = bucketIntervalMs > 0 ? (timestamps[i] / bucketIntervalMs) * bucketIntervalMs : fromTs;
 
         accumulateSample(result, bucketTs, values[i], type);
       }

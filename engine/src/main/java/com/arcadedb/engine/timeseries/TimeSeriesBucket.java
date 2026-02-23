@@ -60,9 +60,10 @@ import java.util.NoSuchElementException;
  */
 public class TimeSeriesBucket extends PaginatedComponent {
 
-  public static final  String BUCKET_EXT  = "tstb";
-  private static final int    VERSION     = 0;
-  private static final int    MAGIC_VALUE = 0x54534243; // "TSBC"
+  public static final  String BUCKET_EXT       = "tstb";
+  public static final  int    MAX_STRING_BYTES = 256;
+  private static final int    VERSION          = 0;
+  private static final int    MAGIC_VALUE      = 0x54534243; // "TSBC"
 
   // Header page offsets (from PAGE_HEADER_SIZE)
   private static final int HEADER_MAGIC_OFFSET            = 0;
@@ -131,7 +132,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
   /**
    * Appends samples to the mutable bucket within the current transaction.
    *
-   * @param timestamps array of timestamps (nanosecond epoch)
+   * @param timestamps array of timestamps (millisecond epoch)
    * @param columnValues array of column value arrays, one per non-timestamp column
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
@@ -527,6 +528,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
       case STRING -> {
         // For strings in mutable layer, store length-prefixed UTF-8
         final byte[] bytes = value != null ? ((String) value).getBytes(java.nio.charset.StandardCharsets.UTF_8) : new byte[0];
+        if (bytes.length > MAX_STRING_BYTES)
+          throw new IllegalArgumentException(
+              "String value exceeds max length of " + MAX_STRING_BYTES + " bytes for column '" + col.getName() + "'");
         page.writeShort(offset, (short) bytes.length);
         if (bytes.length > 0)
           page.writeByteArray(offset + 2, bytes);
@@ -612,7 +616,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
       if (fixed > 0)
         size += fixed;
       else
-        size += 258; // max STRING: 2 + 256 bytes (conservative estimate for fixed row calc)
+        size += 2 + MAX_STRING_BYTES; // max STRING: 2-byte length prefix + max payload
     }
     return size;
   }

@@ -151,7 +151,7 @@ public class LineProtocolParser {
       pos++; // skip comma
       while (pos < len && line.charAt(pos) != ' ') {
         final String key = readTagKey(line, pos);
-        pos += key.length() + 1; // +1 for '='
+        pos += rawTagKeyLength(line, pos) + 1; // +1 for '='
         final String value = readTagValue(line, pos);
         pos += rawTagValueLength(line, pos);
         tags.put(key, value);
@@ -166,7 +166,6 @@ public class LineProtocolParser {
 
     // Parse fields (comma-separated key=value pairs)
     final Map<String, Object> fields = new LinkedHashMap<>();
-    final int fieldsStart = pos;
     while (pos < len && line.charAt(pos) != ' ') {
       final String key = readFieldKey(line, pos);
       pos += rawFieldKeyLength(line, pos) + 1; // +1 for '='
@@ -232,6 +231,21 @@ public class LineProtocolParser {
       pos++;
     }
     return sb.toString();
+  }
+
+  private static int rawTagKeyLength(final String line, final int start) {
+    int pos = start;
+    while (pos < line.length()) {
+      final char c = line.charAt(pos);
+      if (c == '\\' && pos + 1 < line.length()) {
+        pos += 2;
+        continue;
+      }
+      if (c == '=')
+        break;
+      pos++;
+    }
+    return pos - start;
   }
 
   private static int rawTagValueLength(final String line, final int start) {
@@ -344,9 +358,4 @@ public class LineProtocolParser {
     return new Object[] { Double.parseDouble(raw), rawLen };
   }
 
-  private static String unescape(final String s) {
-    if (s.indexOf('\\') < 0)
-      return s;
-    return s.replace("\\,", ",").replace("\\ ", " ").replace("\\=", "=");
-  }
 }

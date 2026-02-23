@@ -31,6 +31,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Coordinates N shards for a TimeSeries type. Routes writes to shards
@@ -62,8 +64,9 @@ public class TimeSeriesEngine implements AutoCloseable {
     this.shardCount = shardCount;
     this.compactionBucketIntervalMs = compactionBucketIntervalMs;
     this.shards = new TimeSeriesShard[shardCount];
+    final AtomicInteger threadCounter = new AtomicInteger(0);
     this.shardExecutor = Executors.newFixedThreadPool(shardCount, r -> {
-      final Thread t = new Thread(r, "ArcadeDB-TS-Shard-" + typeName);
+      final Thread t = new Thread(r, "ArcadeDB-TS-Shard-" + typeName + "-" + threadCounter.getAndIncrement());
       t.setDaemon(true);
       return t;
     });
@@ -132,14 +135,15 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Aggregates across all shards.
    */
   public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
-      final AggregationType aggType, final long bucketIntervalNs, final TagFilter tagFilter) throws IOException {
-    // For MVP: query all data and aggregate in-memory
-    final List<Object[]> data = query(fromTs, toTs, null, tagFilter);
+      final AggregationType aggType, final long bucketIntervalMs, final TagFilter tagFilter) throws IOException {
+    // Use lazy iteration to avoid loading all data into memory
+    final Iterator<Object[]> iter = iterateQuery(fromTs, toTs, null, tagFilter);
     final AggregationResult result = new AggregationResult();
 
-    for (final Object[] row : data) {
+    while (iter.hasNext()) {
+      final Object[] row = iter.next();
       final long ts = (long) row[0];
-      final long bucketTs = bucketIntervalNs > 0 ? (ts / bucketIntervalNs) * bucketIntervalNs : fromTs;
+      final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
       final double value;
 
       if (columnIndex + 1 < row.length && row[columnIndex + 1] instanceof Number)
@@ -224,18 +228,18 @@ public class TimeSeriesEngine implements AutoCloseable {
       @SuppressWarnings("unchecked")
       final CompletableFuture<MultiColumnAggregationResult>[] futures = new CompletableFuture[shardCount];
 
+      final AggregationMetrics[] shardMetricsArr = metrics != null ? new AggregationMetrics[shardCount] : null;
       for (int s = 0; s < shardCount; s++) {
         final TimeSeriesShard shard = shards[s];
         final AggregationMetrics shardMetrics = metrics != null ? new AggregationMetrics() : null;
+        if (shardMetricsArr != null)
+          shardMetricsArr[s] = shardMetrics;
         futures[s] = CompletableFuture.supplyAsync(() -> {
           try {
             final MultiColumnAggregationResult shardResult =
                 new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets);
 
             shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, shardResult, shardMetrics, tagFilter);
-
-            if (metrics != null)
-              metrics.mergeFrom(shardMetrics);
 
             return shardResult;
           } catch (final IOException e) {
@@ -252,6 +256,11 @@ public class TimeSeriesEngine implements AutoCloseable {
           throw ioe;
         throw new IOException("Parallel shard aggregation failed", e.getCause());
       }
+
+      // Merge metrics after all futures have completed (avoids race condition)
+      if (shardMetricsArr != null)
+        for (final AggregationMetrics sm : shardMetricsArr)
+          metrics.mergeFrom(sm);
 
       final MultiColumnAggregationResult result = futures[0].join();
       for (int s = 1; s < shardCount; s++)
@@ -405,6 +414,13 @@ public class TimeSeriesEngine implements AutoCloseable {
   @Override
   public void close() throws IOException {
     shardExecutor.shutdown();
+    try {
+      if (!shardExecutor.awaitTermination(30, TimeUnit.SECONDS))
+        shardExecutor.shutdownNow();
+    } catch (final InterruptedException e) {
+      shardExecutor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
     for (final TimeSeriesShard shard : shards)
       shard.close();
   }

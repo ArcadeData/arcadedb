@@ -106,6 +106,10 @@ public class ContinuousAggregateBuilder {
     final String tsColumnInQuery = bucketMatcher.group(2);
     final long bucketIntervalMs = parseInterval(intervalStr);
 
+    // Validate that the timestamp column name doesn't contain backticks (SQL injection prevention)
+    if (tsColumnInQuery.contains("`"))
+      throw new SchemaException("Timestamp column name must not contain backtick characters: '" + tsColumnInQuery + "'");
+
     // Extract the alias for the time bucket column
     final Matcher aliasMatcher = ALIAS_PATTERN.matcher(query);
     String bucketAlias = null;
@@ -114,6 +118,8 @@ public class ContinuousAggregateBuilder {
     if (bucketAlias == null)
       throw new SchemaException("The ts.timeBucket() projection must have an alias. " +
           "Example: ts.timeBucket('1h', ts) AS hour");
+    if (bucketAlias.contains("`"))
+      throw new SchemaException("Bucket alias must not contain backtick characters: '" + bucketAlias + "'");
 
     // Validate GROUP BY is present
     if (!query.toUpperCase().contains("GROUP BY"))

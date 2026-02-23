@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
@@ -40,15 +41,22 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
   private final LocalTimeSeriesType tsType;
   private final long                fromTs;
   private final long                toTs;
+  private final TagFilter           tagFilter;
   private       Iterator<Object[]>  resultIterator;
   private       boolean             fetched = false;
 
   public FetchFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
       final CommandContext context) {
+    this(tsType, fromTs, toTs, null, context);
+  }
+
+  public FetchFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
+      final TagFilter tagFilter, final CommandContext context) {
     super(context);
     this.tsType = tsType;
     this.fromTs = fromTs;
     this.toTs = toTs;
+    this.tagFilter = tagFilter;
   }
 
   @Override
@@ -58,7 +66,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
       if (!fetched) {
         try {
           final TimeSeriesEngine engine = tsType.getEngine();
-          resultIterator = engine.iterateQuery(fromTs, toTs, null, null);
+          resultIterator = engine.iterateQuery(fromTs, toTs, null, tagFilter);
           fetched = true;
         } catch (final IOException e) {
           throw new CommandExecutionException("Error querying TimeSeries engine", e);
@@ -135,6 +143,6 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromTimeSeriesStep(tsType, fromTs, toTs, context);
+    return new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, context);
   }
 }
