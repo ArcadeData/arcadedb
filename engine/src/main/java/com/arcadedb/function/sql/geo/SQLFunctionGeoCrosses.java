@@ -22,27 +22,28 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
+import org.locationtech.jts.geom.Geometry;
 import org.locationtech.spatial4j.shape.Shape;
-import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
- * SQL function ST_Contains: returns true if geometry g fully contains shape.
+ * SQL function geo.crosses: returns true if the two geometries cross each other.
+ * Uses JTS for this DE-9IM predicate (not natively supported by Spatial4j).
  *
- * <p>Usage: {@code ST_Contains(g, shape)}</p>
+ * <p>Usage: {@code geo.crosses(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Contains extends SQLFunctionGeoPredicate {
-  public static final String NAME = "ST_Contains";
+public class SQLFunctionGeoCrosses extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.crosses";
 
-  public SQLFunctionST_Contains() {
+  public SQLFunctionGeoCrosses() {
     super(NAME);
   }
 
   /**
-   * ST_Contains cannot use indexed execution: the stored geometry is the container and the query
-   * argument is the containee. The GeoHash index is built on the stored shape, but containment
-   * queries run in the opposite direction — the index cannot serve as a valid candidate superset
-   * for containment queries from that reversed direction.
+   * geo.crosses cannot use indexed execution: crossing is a DE-9IM predicate that requires
+   * the geometries to share some — but not all — interior points. Bounding-box intersection
+   * (which the GeoHash index evaluates) is not a valid candidate superset for DE-9IM crossing,
+   * so the index would produce incorrect results.
    */
   @Override
   public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
@@ -52,11 +53,15 @@ public class SQLFunctionST_Contains extends SQLFunctionGeoPredicate {
 
   @Override
   protected Boolean evaluate(final Shape geom1, final Shape geom2, final Object[] params) {
-    return geom1.relate(geom2) == SpatialRelation.CONTAINS;
+    final Geometry jts1 = GeoUtils.parseJtsGeometry(geom1);
+    final Geometry jts2 = GeoUtils.parseJtsGeometry(geom2);
+    if (jts1 == null || jts2 == null)
+      return null;
+    return jts1.crosses(jts2);
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Contains(<geometry>, <shape>)";
+    return "geo.crosses(<geometry1>, <geometry2>)";
   }
 }

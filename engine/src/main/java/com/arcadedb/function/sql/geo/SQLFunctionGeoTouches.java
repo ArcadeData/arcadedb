@@ -26,23 +26,24 @@ import org.locationtech.jts.geom.Geometry;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_Crosses: returns true if the two geometries cross each other.
- * Uses JTS for this DE-9IM predicate (not natively supported by Spatial4j).
+ * SQL function geo.touches: returns true if the geometries have at least one point in common
+ * but their interiors do not intersect.
+ * Uses JTS for this DE-9IM predicate.
  *
- * <p>Usage: {@code ST_Crosses(g1, g2)}</p>
+ * <p>Usage: {@code geo.touches(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Crosses extends SQLFunctionGeoPredicate {
-  public static final String NAME = "ST_Crosses";
+public class SQLFunctionGeoTouches extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.touches";
 
-  public SQLFunctionST_Crosses() {
+  public SQLFunctionGeoTouches() {
     super(NAME);
   }
 
   /**
-   * ST_Crosses cannot use indexed execution: crossing is a DE-9IM predicate that requires
-   * the geometries to share some — but not all — interior points. Bounding-box intersection
-   * (which the GeoHash index evaluates) is not a valid candidate superset for DE-9IM crossing,
+   * geo.touches cannot use indexed execution: touching is a DE-9IM predicate where geometries
+   * share boundary points but their interiors do not intersect. Bounding-box intersection
+   * (which the GeoHash index evaluates) is not a valid candidate superset for DE-9IM touching,
    * so the index would produce incorrect results.
    */
   @Override
@@ -57,11 +58,11 @@ public class SQLFunctionST_Crosses extends SQLFunctionGeoPredicate {
     final Geometry jts2 = GeoUtils.parseJtsGeometry(geom2);
     if (jts1 == null || jts2 == null)
       return null;
-    return jts1.crosses(jts2);
+    return jts1.touches(jts2);
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Crosses(<geometry1>, <geometry2>)";
+    return "geo.touches(<geometry1>, <geometry2>)";
   }
 }

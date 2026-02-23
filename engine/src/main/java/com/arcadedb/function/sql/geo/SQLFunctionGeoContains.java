@@ -23,36 +23,26 @@ import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import org.locationtech.spatial4j.shape.Shape;
+import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
- * SQL function ST_DWithin: returns true if geometry g is within the given distance of shape.
- * Distance is specified in degrees (consistent with Spatial4j's coordinate system).
+ * SQL function geo.contains: returns true if geometry g fully contains shape.
  *
- * <p>Usage: {@code ST_DWithin(g, shape, distanceDegrees)}</p>
+ * <p>Usage: {@code geo.contains(g, shape)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_DWithin extends SQLFunctionGeoPredicate {
-  public static final String NAME = "ST_DWithin";
+public class SQLFunctionGeoContains extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.contains";
 
-  public SQLFunctionST_DWithin() {
+  public SQLFunctionGeoContains() {
     super(NAME);
   }
 
-  @Override
-  public int getMinArgs() {
-    return 3;
-  }
-
-  @Override
-  public int getMaxArgs() {
-    return 3;
-  }
-
   /**
-   * ST_DWithin uses a radius distance check against the centers of the two geometries.
-   * The geospatial index returns records based on geohash intersection, which does not
-   * directly correspond to the distance radius. To guarantee correctness, indexed
-   * execution is disabled and the predicate is evaluated inline on all records.
+   * geo.contains cannot use indexed execution: the stored geometry is the container and the query
+   * argument is the containee. The GeoHash index is built on the stored shape, but containment
+   * queries run in the opposite direction — the index cannot serve as a valid candidate superset
+   * for containment queries from that reversed direction.
    */
   @Override
   public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
@@ -62,16 +52,11 @@ public class SQLFunctionST_DWithin extends SQLFunctionGeoPredicate {
 
   @Override
   protected Boolean evaluate(final Shape geom1, final Shape geom2, final Object[] params) {
-    if (params.length < 3 || params[2] == null)
-      return null;
-    final double distance = GeoUtils.getDoubleValue(params[2]);
-    final double actualDistance = GeoUtils.getSpatialContext()
-        .calcDistance(geom1.getCenter(), geom2.getCenter());
-    return actualDistance <= distance;
+    return geom1.relate(geom2) == SpatialRelation.CONTAINS;
   }
 
   @Override
   public String getSyntax() {
-    return "ST_DWithin(<geometry>, <shape>, <distanceDegrees>)";
+    return "geo.contains(<geometry>, <shape>)";
   }
 }

@@ -26,25 +26,25 @@ import org.locationtech.jts.geom.Geometry;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_Touches: returns true if the geometries have at least one point in common
- * but their interiors do not intersect.
+ * SQL function geo.overlaps: returns true if the two geometries overlap (share some but not all points,
+ * and have the same dimension).
  * Uses JTS for this DE-9IM predicate.
  *
- * <p>Usage: {@code ST_Touches(g1, g2)}</p>
+ * <p>Usage: {@code geo.overlaps(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Touches extends SQLFunctionGeoPredicate {
-  public static final String NAME = "ST_Touches";
+public class SQLFunctionGeoOverlaps extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.overlaps";
 
-  public SQLFunctionST_Touches() {
+  public SQLFunctionGeoOverlaps() {
     super(NAME);
   }
 
   /**
-   * ST_Touches cannot use indexed execution: touching is a DE-9IM predicate where geometries
-   * share boundary points but their interiors do not intersect. Bounding-box intersection
-   * (which the GeoHash index evaluates) is not a valid candidate superset for DE-9IM touching,
-   * so the index would produce incorrect results.
+   * geo.overlaps cannot use indexed execution: overlapping is a DE-9IM predicate requiring
+   * geometries of the same dimension to share some but not all interior points. Bounding-box
+   * intersection (which the GeoHash index evaluates) is not a valid candidate superset for
+   * DE-9IM overlapping, so the index would produce incorrect results.
    */
   @Override
   public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
@@ -58,11 +58,11 @@ public class SQLFunctionST_Touches extends SQLFunctionGeoPredicate {
     final Geometry jts2 = GeoUtils.parseJtsGeometry(geom2);
     if (jts1 == null || jts2 == null)
       return null;
-    return jts1.touches(jts2);
+    return jts1.overlaps(jts2);
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Touches(<geometry1>, <geometry2>)";
+    return "geo.overlaps(<geometry1>, <geometry2>)";
   }
 }

@@ -22,29 +22,26 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
-import org.locationtech.jts.geom.Geometry;
 import org.locationtech.spatial4j.shape.Shape;
+import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
- * SQL function ST_Overlaps: returns true if the two geometries overlap (share some but not all points,
- * and have the same dimension).
- * Uses JTS for this DE-9IM predicate.
+ * SQL function geo.disjoint: returns true if the two geometries share no points.
  *
- * <p>Usage: {@code ST_Overlaps(g1, g2)}</p>
+ * <p>Usage: {@code geo.disjoint(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Overlaps extends SQLFunctionGeoPredicate {
-  public static final String NAME = "ST_Overlaps";
+public class SQLFunctionGeoDisjoint extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.disjoint";
 
-  public SQLFunctionST_Overlaps() {
+  public SQLFunctionGeoDisjoint() {
     super(NAME);
   }
 
   /**
-   * ST_Overlaps cannot use indexed execution: overlapping is a DE-9IM predicate requiring
-   * geometries of the same dimension to share some but not all interior points. Bounding-box
-   * intersection (which the GeoHash index evaluates) is not a valid candidate superset for
-   * DE-9IM overlapping, so the index would produce incorrect results.
+   * geo.disjoint cannot use indexed execution: the index returns records that intersect
+   * the search shape, but disjoint records are precisely those NOT in the intersection result.
+   * Using the index would miss all disjoint records, so we always fall back to full scan.
    */
   @Override
   public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
@@ -54,15 +51,11 @@ public class SQLFunctionST_Overlaps extends SQLFunctionGeoPredicate {
 
   @Override
   protected Boolean evaluate(final Shape geom1, final Shape geom2, final Object[] params) {
-    final Geometry jts1 = GeoUtils.parseJtsGeometry(geom1);
-    final Geometry jts2 = GeoUtils.parseJtsGeometry(geom2);
-    if (jts1 == null || jts2 == null)
-      return null;
-    return jts1.overlaps(jts2);
+    return geom1.relate(geom2) == SpatialRelation.DISJOINT;
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Overlaps(<geometry1>, <geometry2>)";
+    return "geo.disjoint(<geometry1>, <geometry2>)";
   }
 }

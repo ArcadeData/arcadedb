@@ -23,25 +23,36 @@ import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import org.locationtech.spatial4j.shape.Shape;
-import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
- * SQL function ST_Disjoint: returns true if the two geometries share no points.
+ * SQL function geo.dWithin: returns true if geometry g is within the given distance of shape.
+ * Distance is specified in degrees (consistent with Spatial4j's coordinate system).
  *
- * <p>Usage: {@code ST_Disjoint(g1, g2)}</p>
+ * <p>Usage: {@code geo.dWithin(g, shape, distanceDegrees)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Disjoint extends SQLFunctionGeoPredicate {
-  public static final String NAME = "ST_Disjoint";
+public class SQLFunctionGeoDWithin extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.dWithin";
 
-  public SQLFunctionST_Disjoint() {
+  public SQLFunctionGeoDWithin() {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
   /**
-   * ST_Disjoint cannot use indexed execution: the index returns records that intersect
-   * the search shape, but disjoint records are precisely those NOT in the intersection result.
-   * Using the index would miss all disjoint records, so we always fall back to full scan.
+   * geo.dWithin uses a radius distance check against the centers of the two geometries.
+   * The geospatial index returns records based on geohash intersection, which does not
+   * directly correspond to the distance radius. To guarantee correctness, indexed
+   * execution is disabled and the predicate is evaluated inline on all records.
    */
   @Override
   public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
@@ -51,11 +62,16 @@ public class SQLFunctionST_Disjoint extends SQLFunctionGeoPredicate {
 
   @Override
   protected Boolean evaluate(final Shape geom1, final Shape geom2, final Object[] params) {
-    return geom1.relate(geom2) == SpatialRelation.DISJOINT;
+    if (params.length < 3 || params[2] == null)
+      return null;
+    final double distance = GeoUtils.getDoubleValue(params[2]);
+    final double actualDistance = GeoUtils.getSpatialContext()
+        .calcDistance(geom1.getCenter(), geom2.getCenter());
+    return actualDistance <= distance;
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Disjoint(<geometry1>, <geometry2>)";
+    return "geo.dWithin(<geometry>, <shape>, <distanceDegrees>)";
   }
 }

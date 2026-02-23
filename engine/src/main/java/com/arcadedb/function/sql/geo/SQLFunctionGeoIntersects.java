@@ -22,25 +22,25 @@ import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
- * SQL function ST_Within: returns true if geometry g is fully within shape.
+ * SQL function geo.intersects: returns true if the two geometries share any point.
  *
- * <p>Usage: {@code ST_Within(g, shape)}</p>
+ * <p>Usage: {@code geo.intersects(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Within extends SQLFunctionGeoPredicate {
-  public static final String NAME = "ST_Within";
+public class SQLFunctionGeoIntersects extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.intersects";
 
-  public SQLFunctionST_Within() {
+  public SQLFunctionGeoIntersects() {
     super(NAME);
   }
 
   @Override
   protected Boolean evaluate(final Shape geom1, final Shape geom2, final Object[] params) {
-    return geom1.relate(geom2) == SpatialRelation.WITHIN;
+    return geom1.relate(geom2) != SpatialRelation.DISJOINT;
   }
 
   @Override
   public String getSyntax() {
-    return "ST_Within(<geometry>, <shape>)";
+    return "geo.intersects(<geometry1>, <geometry2>)";
   }
 }

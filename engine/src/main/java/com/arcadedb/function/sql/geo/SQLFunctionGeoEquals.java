@@ -26,21 +26,21 @@ import org.locationtech.jts.geom.Geometry;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function ST_Equals: returns true if the two geometries are geometrically equal.
+ * SQL function geo.equals: returns true if the two geometries are geometrically equal.
  * Uses JTS geometric equality (structural equivalence after normalisation).
  *
- * <p>Usage: {@code ST_Equals(g1, g2)}</p>
+ * <p>Usage: {@code geo.equals(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Equals extends SQLFunctionGeoPredicate {
-  public static final String NAME = "ST_Equals";
+public class SQLFunctionGeoEquals extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.equals";
 
-  public SQLFunctionST_Equals() {
+  public SQLFunctionGeoEquals() {
     super(NAME);
   }
 
   /**
-   * ST_Equals cannot use indexed execution: geometric equality requires an exact coordinate match.
+   * geo.equals cannot use indexed execution: geometric equality requires an exact coordinate match.
    * The GeoHash index returns all records whose bounding box intersects the search shape, which is
    * a much coarser superset than exact equality — the index cannot guarantee correctness here.
    */
@@ -61,6 +61,6 @@ public class SQLFunctionST_Equals extends SQLFunctionGeoPredicate {
 
   @Override
   public String getSyntax() {
-    return "ST_Equals(<geometry1>, <geometry2>)";
+    return "geo.equals(<geometry1>, <geometry2>)";
   }
 }
