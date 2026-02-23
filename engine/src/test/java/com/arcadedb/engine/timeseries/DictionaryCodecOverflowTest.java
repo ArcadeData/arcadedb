@@ -98,7 +98,7 @@ class DictionaryCodecOverflowTest extends TestHelper {
   }
 
   @Test
-  void testCodecAtExactLimit() {
+  void testCodecAtExactLimit() throws java.io.IOException {
     // Exactly MAX_DICTIONARY_SIZE distinct values should succeed
     final String[] values = new String[DictionaryCodec.MAX_DICTIONARY_SIZE];
     for (int i = 0; i < values.length; i++)

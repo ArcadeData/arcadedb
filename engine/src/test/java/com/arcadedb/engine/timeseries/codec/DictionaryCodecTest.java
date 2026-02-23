@@ -20,6 +20,8 @@ package com.arcadedb.engine.timeseries.codec;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -29,19 +31,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DictionaryCodecTest {
 
   @Test
-  void testEmpty() {
+  void testEmpty() throws IOException {
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(new String[0]))).isEmpty();
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(null))).isEmpty();
   }
 
   @Test
-  void testSingleValue() {
+  void testSingleValue() throws IOException {
     final String[] input = { "sensor_a" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
   }
 
   @Test
-  void testSingleUniqueRepeated() {
+  void testSingleUniqueRepeated() throws IOException {
     final String[] input = { "host1", "host1", "host1", "host1", "host1" };
     final byte[] encoded = DictionaryCodec.encode(input);
     assertThat(DictionaryCodec.decode(encoded)).containsExactly(input);
@@ -51,7 +53,7 @@ class DictionaryCodecTest {
   }
 
   @Test
-  void testMultipleUnique() {
+  void testMultipleUnique() throws IOException {
     final String[] input = new String[100];
     for (int i = 0; i < input.length; i++)
       input[i] = "sensor_" + (i % 10);
@@ -60,19 +62,19 @@ class DictionaryCodecTest {
   }
 
   @Test
-  void testEmptyStrings() {
+  void testEmptyStrings() throws IOException {
     final String[] input = { "", "", "a", "", "b" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
   }
 
   @Test
-  void testUnicodeStrings() {
+  void testUnicodeStrings() throws IOException {
     final String[] input = { "温度", "湿度", "温度", "气压", "湿度" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
   }
 
   @Test
-  void testManyUniqueValues() {
+  void testManyUniqueValues() throws IOException {
     final String[] input = new String[1000];
     for (int i = 0; i < input.length; i++)
       input[i] = "unique_tag_" + i;
@@ -81,9 +83,17 @@ class DictionaryCodecTest {
   }
 
   @Test
-  void testPreservesOrder() {
+  void testPreservesOrder() throws IOException {
     final String[] input = { "c", "a", "b", "a", "c", "b" };
     assertThat(DictionaryCodec.decode(DictionaryCodec.encode(input))).containsExactly(input);
+  }
+
+  @Test
+  void testMalformedDataThrowsIOException() {
+    final byte[] malformed = new byte[] { 0, 0, 0, 5 }; // count=5 but no data follows
+    assertThatThrownBy(() -> DictionaryCodec.decode(malformed))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("malformed");
   }
 
   @Test

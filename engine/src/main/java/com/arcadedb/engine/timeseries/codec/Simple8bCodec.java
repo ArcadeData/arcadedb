@@ -132,36 +132,42 @@ public final class Simple8bCodec {
     return result;
   }
 
-  public static long[] decode(final byte[] data) {
+  public static long[] decode(final byte[] data) throws java.io.IOException {
     if (data == null || data.length == 0)
       return new long[0];
 
-    final ByteBuffer buf = ByteBuffer.wrap(data);
-    final int totalCount = buf.getInt();
-    final long[] result = new long[totalCount];
+    try {
+      final ByteBuffer buf = ByteBuffer.wrap(data);
+      final int totalCount = buf.getInt();
+      if (totalCount < 0)
+        throw new java.io.IOException("Simple8bCodec: negative count " + totalCount + " in header");
+      final long[] result = new long[totalCount];
 
-    int pos = 0;
-    while (pos < totalCount) {
-      final long word = buf.getLong();
-      final int selector = (int) (word >>> 60) & 0xF;
-      final int count = Math.min(SELECTOR_COUNT[selector], totalCount - pos);
-      final int bits = SELECTOR_BITS[selector];
+      int pos = 0;
+      while (pos < totalCount) {
+        final long word = buf.getLong();
+        final int selector = (int) (word >>> 60) & 0xF;
+        final int count = Math.min(SELECTOR_COUNT[selector], totalCount - pos);
+        final int bits = SELECTOR_BITS[selector];
 
-      if (bits == 0) {
-        // All zeros — result is already initialized to 0
-        pos += count;
-      } else {
-        final long mask = (1L << bits) - 1;
-        for (int j = 0; j < count; j++) {
-          result[pos + j] = (word >>> (j * bits)) & mask;
+        if (bits == 0) {
+          // All zeros — result is already initialized to 0
+          pos += count;
+        } else {
+          final long mask = (1L << bits) - 1;
+          for (int j = 0; j < count; j++) {
+            result[pos + j] = (word >>> (j * bits)) & mask;
+          }
+          pos += count;
         }
-        pos += count;
       }
+      // Zigzag-decode back to signed values
+      for (int i = 0; i < result.length; i++)
+        result[i] = zigzagDecode(result[i]);
+      return result;
+    } catch (final java.nio.BufferUnderflowException e) {
+      throw new java.io.IOException("Simple8bCodec: malformed data (truncated buffer, size=" + data.length + ")", e);
     }
-    // Zigzag-decode back to signed values
-    for (int i = 0; i < result.length; i++)
-      result[i] = zigzagDecode(result[i]);
-    return result;
   }
 
   private static long zigzagEncode(final long n) {

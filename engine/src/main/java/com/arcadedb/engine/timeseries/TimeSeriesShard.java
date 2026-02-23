@@ -106,9 +106,16 @@ public class TimeSeriesShard implements AutoCloseable {
 
   /**
    * Appends samples to the mutable bucket.
+   * Holds the read lock to prevent {@link #compact()} from clearing newly appended
+   * samples that arrive between {@code readAllForCompaction()} and {@code clearDataPages()}.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    mutableBucket.appendSamples(timestamps, columnValues);
+    compactionLock.readLock().lock();
+    try {
+      mutableBucket.appendSamples(timestamps, columnValues);
+    } finally {
+      compactionLock.readLock().unlock();
+    }
   }
 
   /**
@@ -214,6 +221,10 @@ public class TimeSeriesShard implements AutoCloseable {
     // sealing mutable data and clearing the mutable bucket.
     compactionLock.writeLock().lock();
     try {
+    // Capture the initial block count before writing any new blocks.
+    // If an exception occurs mid-compaction (non-crash), we truncate back here
+    // to prevent duplicate blocks on the next compaction run.
+    final long initialBlockCount = sealedStore.getBlockCount();
     database.begin();
     try {
       if (mutableBucket.getSampleCount() == 0) {
@@ -223,7 +234,7 @@ public class TimeSeriesShard implements AutoCloseable {
 
       // Phase 1: Set compaction flag
       mutableBucket.setCompactionInProgress(true);
-      final long watermark = sealedStore.getBlockCount();
+      final long watermark = initialBlockCount;
       mutableBucket.setCompactionWatermark(watermark);
 
       // Phase 2: Read all mutable data
@@ -347,6 +358,14 @@ public class TimeSeriesShard implements AutoCloseable {
     } catch (final Exception e) {
       if (database.isTransactionActive())
         database.rollback();
+      // Truncate any sealed blocks written during this failed attempt so the
+      // next compaction run starts from a clean state and avoids duplicates.
+      try {
+        sealedStore.truncateToBlockCount(initialBlockCount);
+      } catch (final IOException te) {
+        // Log but do not suppress the original exception
+        throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
+      }
       throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed", e);
     }
     } finally {

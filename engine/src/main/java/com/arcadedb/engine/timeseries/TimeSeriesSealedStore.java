@@ -1623,7 +1623,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Decompresses a double column from pre-read bytes (no I/O).
    */
-  private double[] decompressDoubleColumnFromBytes(final byte[] compressed, final int schemaColIdx) {
+  private double[] decompressDoubleColumnFromBytes(final byte[] compressed, final int schemaColIdx) throws IOException {
     final ColumnDefinition col = columns.get(schemaColIdx);
 
     if (col.getCompressionHint() == TimeSeriesCodec.GORILLA_XOR)

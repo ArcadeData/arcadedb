@@ -98,27 +98,33 @@ public final class DictionaryCodec {
     return buf.array();
   }
 
-  public static String[] decode(final byte[] data) {
+  public static String[] decode(final byte[] data) throws java.io.IOException {
     if (data == null || data.length == 0)
       return new String[0];
 
-    final ByteBuffer buf = ByteBuffer.wrap(data);
-    final int count = buf.getInt();
-    final int dictSize = buf.getShort() & 0xFFFF;
+    try {
+      final ByteBuffer buf = ByteBuffer.wrap(data);
+      final int count = buf.getInt();
+      final int dictSize = buf.getShort() & 0xFFFF;
 
-    final String[] dictEntries = new String[dictSize];
-    for (int i = 0; i < dictSize; i++) {
-      final int len = buf.getShort() & 0xFFFF;
-      final byte[] utf8 = new byte[len];
-      buf.get(utf8);
-      dictEntries[i] = new String(utf8, StandardCharsets.UTF_8);
-    }
+      final String[] dictEntries = new String[dictSize];
+      for (int i = 0; i < dictSize; i++) {
+        final int len = buf.getShort() & 0xFFFF;
+        final byte[] utf8 = new byte[len];
+        buf.get(utf8);
+        dictEntries[i] = new String(utf8, StandardCharsets.UTF_8);
+      }
 
-    final String[] result = new String[count];
-    for (int i = 0; i < count; i++) {
-      final int idx = buf.getShort() & 0xFFFF;
-      result[i] = dictEntries[idx];
+      final String[] result = new String[count];
+      for (int i = 0; i < count; i++) {
+        final int idx = buf.getShort() & 0xFFFF;
+        if (idx >= dictSize)
+          throw new java.io.IOException("DictionaryCodec: invalid dictionary index " + idx + " (dict size=" + dictSize + ")");
+        result[i] = dictEntries[idx];
+      }
+      return result;
+    } catch (final java.nio.BufferUnderflowException e) {
+      throw new java.io.IOException("DictionaryCodec: malformed data (truncated buffer, size=" + data.length + ")", e);
     }
-    return result;
   }
 }
