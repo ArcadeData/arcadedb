@@ -131,6 +131,14 @@ class CypherProcedureRegistryTest {
     assertThat(CypherProcedureRegistry.hasProcedure("meta.stats")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("meta.nodetypeproperties")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("meta.reltypeproperties")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.hits")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.harmonic")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.eigenvector")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.articulationPoints")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.bridges")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.topologicalSort")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.apsp")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.adamicAdar")).isTrue();
   }
 
   @Test
