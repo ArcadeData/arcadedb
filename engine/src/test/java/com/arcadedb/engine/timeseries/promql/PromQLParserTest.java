@@ -177,6 +177,36 @@ class PromQLParserTest {
   }
 
   @Test
+  void testDurationParsingMilliseconds() {
+    // Regression: '500ms' was previously mis-parsed as 500 minutes (30,000,000 ms) instead of 500 ms
+    assertThat(PromQLParser.parseDuration("500ms")).isEqualTo(500);
+    assertThat(PromQLParser.parseDuration("1ms")).isEqualTo(1);
+    assertThat(PromQLParser.parseDuration("100ms")).isEqualTo(100);
+    // Combined: 1s + 500ms
+    assertThat(PromQLParser.parseDuration("1s500ms")).isEqualTo(1_500);
+    // 'm' followed by something other than 's' should still be minutes
+    assertThat(PromQLParser.parseDuration("2m")).isEqualTo(120_000);
+    assertThat(PromQLParser.parseDuration("2m30s")).isEqualTo(150_000);
+  }
+
+  @Test
+  void testDurationParsingOverflow() {
+    // Values that overflow long when multiplied by the unit multiplier should throw.
+    // 300,000,000 years overflows: 300_000_000 * 31_536_000_000 > Long.MAX_VALUE
+    assertThatThrownBy(() -> PromQLParser.parseDuration("300000000y"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("too large");
+  }
+
+  @Test
+  void testRangeVectorWithMilliseconds() {
+    // Regression: metric[500ms] should have rangeMs = 500, not 30,000,000
+    final PromQLExpr expr = new PromQLParser("http_requests[500ms]").parse();
+    assertThat(expr).isInstanceOf(MatrixSelector.class);
+    assertThat(((MatrixSelector) expr).rangeMs()).isEqualTo(500);
+  }
+
+  @Test
   void testOperatorPrecedence() {
     // 1 + 2 * 3 should be 1 + (2 * 3)
     final PromQLExpr expr = new PromQLParser("1 + 2 * 3").parse();

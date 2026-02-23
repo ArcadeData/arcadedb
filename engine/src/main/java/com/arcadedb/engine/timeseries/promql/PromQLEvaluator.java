@@ -72,7 +72,9 @@ public class PromQLEvaluator {
   private final long                    lookbackMs;
   private static final int              MAX_REGEX_LENGTH   = 1024;
   private static final int              MAX_PATTERN_CACHE  = 1024;
-  private final Set<String>             warnedMultiFieldTypes = new HashSet<>();
+  // Detects nested quantifiers in flat groups, e.g. (a+)+, (a*b)*, which cause catastrophic backtracking (ReDoS)
+  private static final Pattern          REDOS_CHECK        = Pattern.compile("\\((?:[^()\\\\]|\\\\.)*[+*](?:[^()\\\\]|\\\\.)*\\)[+*]");
+  private final Set<String>             warnedMultiFieldTypes = Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
   private final Map<String, Pattern>    patternCache = Collections.synchronizedMap(
       new LinkedHashMap<>(16, 0.75f, true) {
         @Override
@@ -101,6 +103,8 @@ public class PromQLEvaluator {
    * Evaluate a range query, returning a matrix result with values at each step.
    */
   public PromQLResult evaluateRange(final PromQLExpr expr, final long startMs, final long endMs, final long stepMs) {
+    if (endMs < startMs)
+      throw new IllegalArgumentException("endMs (" + endMs + ") must be >= startMs (" + startMs + ")");
     if (stepMs <= 0)
       throw new IllegalArgumentException("stepMs must be positive, got: " + stepMs);
 
@@ -425,6 +429,11 @@ public class PromQLEvaluator {
   private Pattern compilePattern(final String regex) {
     if (regex.length() > MAX_REGEX_LENGTH)
       throw new IllegalArgumentException("Regex pattern exceeds maximum length of " + MAX_REGEX_LENGTH + " characters");
+    // Reject patterns with nested quantifiers that could cause catastrophic backtracking (ReDoS).
+    // Example dangerous patterns: (a+)+, (a*b)*, (a+|b+)+
+    if (REDOS_CHECK.matcher(regex).find())
+      throw new IllegalArgumentException(
+          "Regex pattern with nested quantifiers is not allowed (ReDoS risk): " + regex);
     return patternCache.computeIfAbsent(regex, r -> {
       try {
         return Pattern.compile(r);

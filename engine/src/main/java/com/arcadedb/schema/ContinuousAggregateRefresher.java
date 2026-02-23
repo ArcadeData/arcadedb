@@ -127,7 +127,7 @@ public class ContinuousAggregateRefresher {
       // Insert the watermark filter right after WHERE
       final String before = query.substring(0, whereIdx + 5); // "WHERE" is 5 chars
       final String after = query.substring(whereIdx + 5);
-      return before + " `" + tsColumn + "` >= " + watermark + " AND" + after;
+      return before + " `" + tsColumn + "` >= " + watermark + " AND " + after.stripLeading();
     } else {
       // No WHERE clause — insert before GROUP BY, ORDER BY, LIMIT, or at end
       int insertIdx = findKeywordIndex(upperQuery, "GROUP BY");

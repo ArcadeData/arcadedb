@@ -332,20 +332,30 @@ public class PromQLParser {
       if (c >= '0' && c <= '9') {
         current = current * 10 + (c - '0');
       } else {
-        totalMs += switch (c) {
-          case 's' -> current * 1000;
-          case 'm' -> current * 60_000;
-          case 'h' -> current * 3_600_000;
-          case 'd' -> current * 86_400_000;
-          case 'w' -> current * 604_800_000;
-          case 'y' -> current * 31_536_000_000L;
+        // Check for 'ms' (milliseconds) before consuming 'm' (minutes)
+        if (c == 'm' && i + 1 < s.length() && s.charAt(i + 1) == 's') {
+          totalMs += current; // already in milliseconds
+          current = 0;
+          i++; // skip the 's'
+          continue;
+        }
+        final long unitMs = switch (c) {
+          case 's' -> 1_000L;
+          case 'm' -> 60_000L;
+          case 'h' -> 3_600_000L;
+          case 'd' -> 86_400_000L;
+          case 'w' -> 604_800_000L;
+          case 'y' -> 31_536_000_000L;
           default -> throw new IllegalArgumentException("Unknown duration unit: " + c);
         };
+        if (current > Long.MAX_VALUE / unitMs)
+          throw new IllegalArgumentException("Duration value too large: " + s);
+        totalMs += current * unitMs;
         current = 0;
       }
     }
     if (current != 0)
-      throw new IllegalArgumentException("Duration must end with a unit (s/m/h/d/w/y): " + s);
+      throw new IllegalArgumentException("Duration must end with a unit (ms/s/m/h/d/w/y): " + s);
     return totalMs;
   }
 

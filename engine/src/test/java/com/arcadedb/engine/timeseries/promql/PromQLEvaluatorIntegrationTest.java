@@ -139,6 +139,32 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
+  void testEvaluateRangeInvertedBounds() {
+    // Regression: endMs < startMs previously returned empty results silently
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+    final PromQLExpr expr = new PromQLParser("42").parse();
+
+    assertThatThrownBy(() -> evaluator.evaluateRange(expr, 5000L, 1000L, 1000L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("endMs")
+        .hasMessageContaining("startMs");
+  }
+
+  @Test
+  void testReDoSPatternRejected() {
+    // Security: regex patterns with nested quantifiers must be rejected to prevent ReDoS attacks
+    createTypeWithTags("redos_metric");
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+    // (a+)+ is the classic ReDoS pattern
+    final PromQLExpr expr = new PromQLParser("redos_metric{host=~\"(a+)+\"}").parse();
+
+    assertThatThrownBy(() -> evaluator.evaluateInstant(expr, 6000L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("ReDoS");
+  }
+
+  @Test
   void testScalarArithmetic() {
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
     final PromQLExpr expr = new PromQLParser("2 + 3 * 4").parse();

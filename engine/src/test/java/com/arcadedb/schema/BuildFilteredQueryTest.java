@@ -85,6 +85,16 @@ class BuildFilteredQueryTest {
   }
 
   @Test
+  void testWhereConditionStartsWithParenthesis() {
+    // Regression: WHERE(condition) without a space after WHERE caused "AND(condition)" — missing space
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE(active = true) GROUP BY sensor_id");
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    assertThat(result).isEqualTo(
+        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 AND (active = true) GROUP BY sensor_id");
+  }
+
+  @Test
   void testWatermarkZeroReturnsOriginal() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id FROM SensorReading ORDER BY sensor_id");

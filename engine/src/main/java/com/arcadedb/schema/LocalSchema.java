@@ -931,6 +931,10 @@ public class LocalSchema implements Schema {
     materializedViews.clear();
     continuousAggregates.clear();
     files.clear();
+    for (final DocumentType type : types.values()) {
+      if (type instanceof LocalTimeSeriesType tsType)
+        tsType.close();
+    }
     types.clear();
     bucketMap.clear();
     indexMap.clear();
@@ -1112,6 +1116,9 @@ public class LocalSchema implements Schema {
           type.removeBucket(b);
           dropBucket(b.getName());
         }
+
+        if (type instanceof LocalTimeSeriesType tsType)
+          tsType.close();
 
         if (types.remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");

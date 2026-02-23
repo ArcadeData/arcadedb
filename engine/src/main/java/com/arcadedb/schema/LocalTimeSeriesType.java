@@ -22,12 +22,14 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Level;
 
 /**
  * Schema type for TimeSeries data. Extends LocalDocumentType and
@@ -65,6 +67,17 @@ public class LocalTimeSeriesType extends LocalDocumentType {
 
   public TimeSeriesEngine getEngine() {
     return engine;
+  }
+
+  public void close() {
+    if (engine != null) {
+      try {
+        engine.close();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing TimeSeriesEngine for type '%s': %s", e, name, e.getMessage());
+      }
+      engine = null;
+    }
   }
 
   public String getTimestampColumn() {

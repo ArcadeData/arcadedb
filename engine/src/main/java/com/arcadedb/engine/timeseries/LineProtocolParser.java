@@ -18,10 +18,13 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.log.LogManager;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Parser for InfluxDB Line Protocol.
@@ -112,6 +115,10 @@ public class LineProtocolParser {
       final Sample sample = parseLine(line, precision);
       if (sample != null)
         samples.add(sample);
+      else
+        LogManager.instance().log(LineProtocolParser.class, Level.WARNING,
+            "Skipping malformed line protocol line: '%s'", null,
+            line.length() > 120 ? line.substring(0, 120) + "..." : line);
     }
     return samples;
   }
