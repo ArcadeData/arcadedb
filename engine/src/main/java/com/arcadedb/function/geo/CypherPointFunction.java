@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * <p>Constructs a spatial point from latitude and longitude. Following Cypher/Neo4j convention,
  * the first argument is latitude and the second is longitude. The point is stored internally
  * using the spatial4j convention (x=longitude, y=latitude) so that spatial distance functions
- * such as {@code ST_Distance} operate correctly.</p>
+ * such as {@code geo.distance} operate correctly.</p>
  *
  * <p>Usage: {@code point(<latitude>, <longitude>)}</p>
  */

@@ -39,6 +39,8 @@ import com.arcadedb.function.sql.geo.SQLFunctionGeoGeomFromText;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoLineString;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoPoint;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoPolygon;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoX;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoY;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Contains;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Crosses;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Disjoint;
@@ -48,8 +50,6 @@ import com.arcadedb.function.sql.geo.SQLFunctionST_Intersects;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Overlaps;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Touches;
 import com.arcadedb.function.sql.geo.SQLFunctionST_Within;
-import com.arcadedb.function.sql.geo.SQLFunctionGeoX;
-import com.arcadedb.function.sql.geo.SQLFunctionGeoY;
 import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 import com.arcadedb.function.sql.graph.SQLFunctionBellmanFord;
 import com.arcadedb.function.sql.graph.SQLFunctionBoth;
@@ -181,7 +181,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
     register(SQLFunctionUnionAll.NAME, SQLFunctionUnionAll.class);
 
-    // Geo — ST_* standard functions
+    // Geo — geo.* constructor/accessor functions
     register(SQLFunctionGeoGeomFromText.NAME, new SQLFunctionGeoGeomFromText());
     register(SQLFunctionGeoPoint.NAME, new SQLFunctionGeoPoint());
     register(SQLFunctionGeoLineString.NAME, new SQLFunctionGeoLineString());
@@ -195,7 +195,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionGeoX.NAME, new SQLFunctionGeoX());
     register(SQLFunctionGeoY.NAME, new SQLFunctionGeoY());
 
-    // Geo — ST_* spatial predicate functions (IndexableSQLFunction)
+    // Geo — geo.* spatial predicate functions (IndexableSQLFunction)
     register(SQLFunctionST_Within.NAME, new SQLFunctionST_Within());
     register(SQLFunctionST_Intersects.NAME, new SQLFunctionST_Intersects());
     register(SQLFunctionST_Contains.NAME, new SQLFunctionST_Contains());
