@@ -272,6 +272,7 @@ public class LineProtocolParser {
     if (first == '"') {
       final StringBuilder sb = new StringBuilder();
       int pos = start + 1;
+      boolean closed = false;
       while (pos < line.length()) {
         final char c = line.charAt(pos);
         if (c == '\\' && pos + 1 < line.length()) {
@@ -281,11 +282,14 @@ public class LineProtocolParser {
         }
         if (c == '"') {
           pos++;
+          closed = true;
           break;
         }
         sb.append(c);
         pos++;
       }
+      if (!closed)
+        throw new IllegalArgumentException("Unterminated quoted string in field value at position " + start);
       return new ParsedValue(sb.toString(), pos - start);
     }
 

@@ -371,10 +371,10 @@ public final class MultiColumnAggregationResult {
   }
 
   private int flatIndex(final long bucketTs) {
-    final int idx = (int) ((bucketTs - firstBucketTs) / bucketIntervalMs);
+    final long idx = (bucketTs - firstBucketTs) / bucketIntervalMs;
     if (idx < 0 || idx >= maxBuckets)
       return -1;
-    return idx;
+    return (int) idx; // safe: idx < maxBuckets which is an int
   }
 
   private boolean ensureFlatBucket(final int idx) {

@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries.promql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -224,6 +225,31 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
 
     assertThat(result).isInstanceOf(PromQLResult.InstantVector.class);
     assertThat(((PromQLResult.InstantVector) result).samples()).isNotEmpty();
+  }
+
+  @Test
+  void testPromQLSqlFunction() {
+    createTypeAndInsertData("promql_sql_test");
+
+    // RETURN with a List<Map> unwraps each map entry into a separate result row.
+    // Each row has __value__ and any label properties as direct row properties.
+    try (final ResultSet rs = database.command("sql", "RETURN promql('promql_sql_test', 6000)")) {
+      assertThat(rs.hasNext()).isTrue();
+      // First row should have a numeric __value__
+      final Object sampleValue = rs.next().getProperty("__value__");
+      assertThat(sampleValue).isNotNull().isInstanceOf(Double.class);
+    }
+  }
+
+  @Test
+  void testPromQLSqlFunctionUsesCurrentTimeWhenNoArgument() {
+    createTypeAndInsertData("promql_sql_notime_test");
+
+    // Called without evalTimeMs — uses System.currentTimeMillis() internally.
+    // The data was inserted with timestamps 1000-5000 ms which are in the far past
+    // relative to current time, so results will be empty (lookback window is 5 minutes).
+    // RETURN of an empty list produces no rows — verify the query executes without error.
+    database.command("sql", "RETURN promql('promql_sql_notime_test')").close();
   }
 
   // --- Helper methods ---

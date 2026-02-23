@@ -111,7 +111,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * the limit will cause compaction to fail. Plan tag cardinality accordingly.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    final int shardIdx = (int) (appendCounter.getAndIncrement() % shardCount);
+    final int shardIdx = (int) Math.floorMod(appendCounter.getAndIncrement(), (long) shardCount);
     shards[shardIdx].appendSamples(timestamps, columnValues);
   }
 

@@ -213,4 +213,17 @@ public class LineProtocolParserTest {
     assertThat(samples.get(0).getTimestampMs()).isEqualTo(1000L);
     assertThat(samples.get(1).getTimestampMs()).isEqualTo(3000L);
   }
+
+  /**
+   * Regression: an unterminated quoted string should be rejected, not silently accepted
+   * with a wrong consumed-length.
+   */
+  @Test
+  public void testUnterminatedQuotedStringIsRejected() {
+    // The quoted string for field2 is never closed — the line is malformed
+    final String text = "metric field1=1.0,field2=\"unterminated 1000\n";
+    // Should skip the malformed line and return nothing (or throw)
+    final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
+    assertThat(samples).isEmpty();
+  }
 }

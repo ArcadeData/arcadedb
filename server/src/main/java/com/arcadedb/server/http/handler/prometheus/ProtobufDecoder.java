@@ -73,6 +73,8 @@ public final class ProtobufDecoder {
       if ((b & 0x80) == 0)
         return result;
       shift += 7;
+      if (shift >= 64)
+        throw new IllegalStateException("Varint too long (exceeds 64 bits)");
     }
     throw new IllegalStateException("Truncated varint");
   }
@@ -102,8 +104,8 @@ public final class ProtobufDecoder {
 
   public byte[] readLengthDelimited() {
     final int len = (int) readVarint();
-    if (offset + len > data.length)
-      throw new IllegalStateException("Truncated length-delimited field");
+    if (len < 0 || len > data.length - offset)
+      throw new IllegalStateException("Invalid length-delimited field length: " + len);
     final byte[] result = new byte[len];
     System.arraycopy(data, offset, result, 0, len);
     offset += len;
@@ -130,6 +132,8 @@ public final class ProtobufDecoder {
       break;
     case WIRETYPE_LENGTH_DELIMITED:
       final int len = (int) readVarint();
+      if (len < 0 || len > data.length - offset)
+        throw new IllegalStateException("Invalid length-delimited skip length: " + len);
       offset += len;
       break;
     default:
