@@ -38,7 +38,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Abstract base for ST_* spatial predicate functions that implement both
+ * Abstract base for geo.* spatial predicate functions that implement both
  * SQLFunctionAbstract and IndexableSQLFunction.
  * <p>
  * Subclasses provide the exact spatial predicate evaluation via {@link #evaluate(Shape, Shape, Object[])}.
@@ -226,7 +226,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
 
   /**
    * Resolves the search shape from the function expressions. The second argument (index 1)
-   * is the shape to search against. It may be a literal WKT string or a nested ST_* function call.
+   * is the shape to search against. It may be a literal WKT string or a nested geo.* function call.
    */
   private static Shape resolveSearchShape(final Expression[] oExpressions, final CommandContext context) {
     if (oExpressions.length < 2 || oExpressions[1] == null)

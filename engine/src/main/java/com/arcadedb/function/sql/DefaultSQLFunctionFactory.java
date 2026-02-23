@@ -196,15 +196,15 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionGeoY.NAME, new SQLFunctionGeoY());
 
     // Geo — geo.* spatial predicate functions (IndexableSQLFunction)
-    register(SQLFunctionGeoWithin.NAME, new SQLFunctionGeoWithin());
-    register(SQLFunctionGeoIntersects.NAME, new SQLFunctionGeoIntersects());
     register(SQLFunctionGeoContains.NAME, new SQLFunctionGeoContains());
-    register(SQLFunctionGeoDWithin.NAME, new SQLFunctionGeoDWithin());
-    register(SQLFunctionGeoDisjoint.NAME, new SQLFunctionGeoDisjoint());
-    register(SQLFunctionGeoEquals.NAME, new SQLFunctionGeoEquals());
     register(SQLFunctionGeoCrosses.NAME, new SQLFunctionGeoCrosses());
+    register(SQLFunctionGeoDisjoint.NAME, new SQLFunctionGeoDisjoint());
+    register(SQLFunctionGeoDWithin.NAME, new SQLFunctionGeoDWithin());
+    register(SQLFunctionGeoEquals.NAME, new SQLFunctionGeoEquals());
+    register(SQLFunctionGeoIntersects.NAME, new SQLFunctionGeoIntersects());
     register(SQLFunctionGeoOverlaps.NAME, new SQLFunctionGeoOverlaps());
     register(SQLFunctionGeoTouches.NAME, new SQLFunctionGeoTouches());
+    register(SQLFunctionGeoWithin.NAME, new SQLFunctionGeoWithin());
 
     // Graph
     register(SQLFunctionAstar.NAME, SQLFunctionAstar.class);
