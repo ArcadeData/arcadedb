@@ -23,6 +23,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -140,6 +143,140 @@ class TimeSeriesCrashRecoveryTest extends TestHelper {
     final List<Object[]> results = recovered.scanRange(0, Long.MAX_VALUE, null, null);
     database.commit();
     assertThat(results).hasSize(2);
+
+    recovered.close();
+  }
+
+  /**
+   * Simulates a crash during file swap where the original .sealed file was replaced by ATOMIC_MOVE
+   * but a stale .tmp file remains on disk (e.g., from a prior interrupted maintenance task).
+   * Verifies that the stale .tmp file is cleaned up on startup and the shard opens normally.
+   */
+  @Test
+  void testRecoveryWithStaleTmpFile() throws Exception {
+    final List<ColumnDefinition> columns = createTestColumns();
+
+    // Phase 1: Create shard, insert data, compact to create a valid .sealed file
+    database.begin();
+    final TimeSeriesShard shard = new TimeSeriesShard(
+        (DatabaseInternal) database, "test_tmp_cleanup", 0, columns);
+    shard.appendSamples(
+        new long[] { 1000L, 2000L, 3000L },
+        new Object[] { "A", "B", "A" },
+        new Object[] { 10.0, 20.0, 30.0 }
+    );
+    database.commit();
+    shard.compact();
+
+    final long blockCount = shard.getSealedStore().getBlockCount();
+    assertThat(blockCount).isGreaterThan(0);
+    shard.close();
+
+    // Phase 2: Create a stale .tmp file that simulates a leftover from an interrupted operation
+    final String shardPath = database.getDatabasePath() + "/test_tmp_cleanup_shard_0";
+    final File tmpFile = new File(shardPath + ".ts.sealed.tmp");
+    try (final RandomAccessFile tmp = new RandomAccessFile(tmpFile, "rw")) {
+      // Write some garbage data to simulate a partial temp file
+      tmp.write(new byte[] { 0x01, 0x02, 0x03, 0x04 });
+    }
+    assertThat(tmpFile.exists()).isTrue();
+
+    // Phase 3: Reopen shard — constructor should clean up the stale .tmp file
+    database.begin();
+    final TimeSeriesShard recovered = new TimeSeriesShard(
+        (DatabaseInternal) database, "test_tmp_cleanup", 0, columns);
+
+    // Verify .tmp file was cleaned up
+    assertThat(tmpFile.exists()).isFalse();
+
+    // Verify sealed store is intact with the original blocks
+    assertThat(recovered.getSealedStore().getBlockCount()).isEqualTo(blockCount);
+
+    // Verify data is correct
+    final List<Object[]> results = recovered.scanRange(0, Long.MAX_VALUE, null, null);
+    database.commit();
+    assertThat(results).hasSize(3);
+
+    final double[] values = results.stream().mapToDouble(r -> (double) r[2]).sorted().toArray();
+    assertThat(values).containsExactly(10.0, 20.0, 30.0);
+
+    recovered.close();
+  }
+
+  /**
+   * Simulates the most critical failure scenario for the old non-atomic file swap: the original
+   * .sealed file has been deleted but the .tmp file was never renamed (e.g., ENOSPC or OS crash
+   * between delete() and renameTo()). With ATOMIC_MOVE this path is no longer possible, but this
+   * test verifies that even in this degenerate state the sealed store recovers: the .tmp is cleaned
+   * up and a fresh empty sealed store is created.
+   */
+  @Test
+  void testRecoveryWithMissingSealedAndOrphanedTmp() throws Exception {
+    final List<ColumnDefinition> columns = createTestColumns();
+
+    // Phase 1: Create shard, insert data, compact to produce sealed blocks
+    database.begin();
+    final TimeSeriesShard shard = new TimeSeriesShard(
+        (DatabaseInternal) database, "test_orphan_tmp", 0, columns);
+    shard.appendSamples(
+        new long[] { 1000L, 2000L },
+        new Object[] { "A", "B" },
+        new Object[] { 10.0, 20.0 }
+    );
+    database.commit();
+    shard.compact();
+    shard.close();
+
+    // Phase 2: Simulate the old non-atomic failure: delete .sealed, leave .tmp
+    final String shardPath = database.getDatabasePath() + "/test_orphan_tmp_shard_0";
+    final File sealedFile = new File(shardPath + ".ts.sealed");
+    final File tmpFile = new File(shardPath + ".ts.sealed.tmp");
+
+    // Copy the current sealed file to .tmp (simulating a temp file that was ready to be renamed)
+    java.nio.file.Files.copy(sealedFile.toPath(), tmpFile.toPath());
+    // Delete the original sealed file (simulating delete() succeeded but renameTo() failed)
+    assertThat(sealedFile.delete()).isTrue();
+    assertThat(sealedFile.exists()).isFalse();
+    assertThat(tmpFile.exists()).isTrue();
+
+    // Phase 3: Reopen — sealed store constructor should:
+    // 1) Delete the stale .tmp file
+    // 2) Create a fresh empty .sealed file
+    database.begin();
+    final TimeSeriesShard recovered = new TimeSeriesShard(
+        (DatabaseInternal) database, "test_orphan_tmp", 0, columns);
+
+    // The .tmp should be cleaned up
+    assertThat(tmpFile.exists()).isFalse();
+    // The .sealed should exist again (freshly created, empty)
+    assertThat(sealedFile.exists()).isTrue();
+
+    // Sealed store is empty (the old data was lost in the simulated crash), but the mutable
+    // bucket still has data if not cleared. Since we compacted and closed, the mutable bucket
+    // was cleared during compaction, so we expect 0 results from the sealed store.
+    assertThat(recovered.getSealedStore().getBlockCount()).isEqualTo(0);
+
+    final List<Object[]> results = recovered.scanRange(0, Long.MAX_VALUE, null, null);
+    database.commit();
+
+    // In this catastrophic failure scenario (which ATOMIC_MOVE now prevents), the sealed data
+    // is lost. The mutable bucket data from before compaction was already consumed by compact().
+    // This test primarily verifies the system doesn't crash and can resume accepting writes.
+    assertThat(results).isNotNull();
+
+    // Verify the shard can accept new writes after recovery
+    database.begin();
+    recovered.appendSamples(
+        new long[] { 5000L },
+        new Object[] { "X" },
+        new Object[] { 99.0 }
+    );
+    database.commit();
+
+    database.begin();
+    final List<Object[]> newResults = recovered.scanRange(0, Long.MAX_VALUE, null, null);
+    database.commit();
+    assertThat(newResults.stream().anyMatch(r -> (double) r[2] == 99.0)).isTrue();
 
     recovered.close();
   }

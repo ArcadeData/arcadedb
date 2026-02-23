@@ -33,6 +33,8 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -116,6 +118,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   public TimeSeriesSealedStore(final String basePath, final List<ColumnDefinition> columns) throws IOException {
     this.basePath = basePath;
     this.columns = columns;
+
+    // Clean up stale .tmp files left by interrupted shutdown or maintenance
+    final File tmpFile = new File(basePath + ".ts.sealed.tmp");
+    if (tmpFile.exists())
+      tmpFile.delete();
 
     final File f = new File(basePath + ".ts.sealed");
     final boolean exists = f.exists();
@@ -716,14 +723,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         copyBlockToFile(tempFile, oldEntry, colCount);
     }
 
-    // Swap files
+    // Atomic file swap — if move fails, the original file remains intact
     indexChannel.close();
     indexFile.close();
 
     final File oldFile = new File(basePath + ".ts.sealed");
     final File tmpFile = new File(tempPath);
-    if (!oldFile.delete() || !tmpFile.renameTo(oldFile))
-      throw new IOException("Failed to swap sealed store files during truncation");
+    Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();
@@ -963,14 +969,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       blockDirectory.sort(Comparator.comparingLong(e -> e.minTimestamp));
     }
 
-    // Swap files
+    // Atomic file swap — if move fails, the original file remains intact
     indexChannel.close();
     indexFile.close();
 
     final File oldFile = new File(basePath + ".ts.sealed");
     final File tmpFile = new File(tempPath);
-    if (!oldFile.delete() || !tmpFile.renameTo(oldFile))
-      throw new IOException("Failed to swap sealed store files during downsampling");
+    Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();
@@ -1071,7 +1076,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           strings[i] = values[i] != null ? values[i].toString() : "";
         yield DictionaryCodec.encode(strings);
       }
-      default -> new byte[0];
+      default -> throw new IllegalStateException("Unknown compression codec: " + codec);
     };
   }
 
@@ -1105,14 +1110,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         copyBlockToFile(tempFile, entry, colCount);
     }
 
-    // Swap files
+    // Atomic file swap — if move fails, the original file remains intact
     indexChannel.close();
     indexFile.close();
 
     final File oldFile = new File(basePath + ".ts.sealed");
     final File tmpFile = new File(tempPath);
-    if (!oldFile.delete() || !tmpFile.renameTo(oldFile))
-      throw new IOException("Failed to swap sealed store files during truncation");
+    Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();
@@ -1284,8 +1288,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final File oldFile = new File(basePath + ".ts.sealed");
     final File tmpFile = new File(tempPath);
-    if (!oldFile.delete() || !tmpFile.renameTo(oldFile))
-      throw new IOException("Failed to upgrade sealed store to version 1");
+    Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();

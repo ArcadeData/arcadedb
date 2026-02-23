@@ -98,6 +98,8 @@ public class ContinuousAggregateRefresher {
     }
   }
 
+  private static final java.util.regex.Pattern SAFE_COLUMN_NAME = java.util.regex.Pattern.compile("[A-Za-z0-9_]+");
+
   static String buildFilteredQuery(final ContinuousAggregateImpl ca, final long watermark) {
     if (watermark <= 0)
       return ca.getQuery();
@@ -105,7 +107,13 @@ public class ContinuousAggregateRefresher {
     final String query = ca.getQuery();
     final String tsColumn = ca.getTimestampColumn();
 
-    // Find WHERE clause position (case-insensitive)
+    // Validate column name to prevent backtick injection
+    if (!SAFE_COLUMN_NAME.matcher(tsColumn).matches())
+      throw new IllegalArgumentException("Unsafe timestamp column name: '" + tsColumn + "'");
+
+    // Find WHERE clause position at the outermost level (case-insensitive).
+    // Note: CTEs and subqueries with their own WHERE clauses are not supported
+    // in continuous-aggregate queries.
     final String upperQuery = query.toUpperCase();
     final int whereIdx = findWhereIndex(upperQuery);
 
@@ -127,18 +135,35 @@ public class ContinuousAggregateRefresher {
   }
 
   private static int findWhereIndex(final String upperQuery) {
-    // Find WHERE that's not inside quotes — simple approach: look for standalone WHERE keyword
+    // Find standalone WHERE keyword at the outermost nesting level (depth 0).
+    // This skips WHERE keywords inside parenthesized subqueries or CTEs.
+    int depth = 0;
     int idx = 0;
     while (idx < upperQuery.length()) {
-      final int found = upperQuery.indexOf("WHERE", idx);
-      if (found < 0)
-        return -1;
-      // Check it's a standalone word
-      final boolean leftBound = found == 0 || !Character.isLetterOrDigit(upperQuery.charAt(found - 1));
-      final boolean rightBound = found + 5 >= upperQuery.length() || !Character.isLetterOrDigit(upperQuery.charAt(found + 5));
-      if (leftBound && rightBound)
-        return found;
-      idx = found + 5;
+      final char ch = upperQuery.charAt(idx);
+      if (ch == '(') {
+        depth++;
+        idx++;
+        continue;
+      }
+      if (ch == ')') {
+        depth--;
+        idx++;
+        continue;
+      }
+      if (depth > 0) {
+        idx++;
+        continue;
+      }
+      if (ch == 'W' && upperQuery.startsWith("WHERE", idx)) {
+        final boolean leftBound = idx == 0 || !Character.isLetterOrDigit(upperQuery.charAt(idx - 1));
+        final boolean rightBound = idx + 5 >= upperQuery.length() || !Character.isLetterOrDigit(upperQuery.charAt(idx + 5));
+        if (leftBound && rightBound)
+          return idx;
+        idx += 5;
+        continue;
+      }
+      idx++;
     }
     return -1;
   }

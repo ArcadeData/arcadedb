@@ -350,7 +350,8 @@ public class LineProtocolParser {
     if (raw.endsWith("u")) {
       final long uintVal = Long.parseUnsignedLong(raw.substring(0, raw.length() - 1));
       if (uintVal < 0)
-        throw new IllegalArgumentException("Unsigned integer exceeds Long.MAX_VALUE: " + raw);
+        throw new IllegalArgumentException(
+            "Unsigned integer value cannot be represented as a signed 64-bit integer (exceeds " + Long.MAX_VALUE + "): " + raw);
       return new Object[] { uintVal, rawLen };
     }
 

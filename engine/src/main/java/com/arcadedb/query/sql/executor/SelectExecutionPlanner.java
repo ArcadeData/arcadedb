@@ -1826,6 +1826,44 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * Returns true if the WHERE clause contains conditions that are NOT consumed by time-series
+   * push-down (i.e., not time-range predicates and not tag equality filters).
+   */
+  private static boolean hasNonPushDownConditions(final List<AndBlock> flattenedWhere,
+      final List<ColumnDefinition> columns, final String timestampColumn) {
+    for (final AndBlock andBlock : flattenedWhere) {
+      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+        if (expr instanceof BetweenCondition between) {
+          final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
+          if (timestampColumn.equals(fieldName))
+            continue; // consumed by time-range extraction
+          return true; // BETWEEN on a non-timestamp field — not consumed
+        }
+        if (!(expr instanceof BinaryCondition binary))
+          return true; // unknown condition type — not consumed
+        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+        // Time range predicate on timestamp column
+        if (timestampColumn.equals(leftStr) || timestampColumn.equals(rightStr))
+          continue;
+        // Tag equality predicate
+        if (binary.operator instanceof EqualsCompareOperator) {
+          boolean isTagPredicate = false;
+          for (final ColumnDefinition col : columns)
+            if (col.getRole() == ColumnDefinition.ColumnRole.TAG && (col.getName().equals(leftStr) || col.getName().equals(rightStr))) {
+              isTagPredicate = true;
+              break;
+            }
+          if (isTagPredicate)
+            continue;
+        }
+        return true; // anything else is not consumed by push-down
+      }
+    }
+    return false;
+  }
+
+  /**
    * Attempts to push down aggregation into the TimeSeries engine.
    * Eligible queries have: ts.timeBucket GROUP BY, simple aggregate functions (avg, max, min, sum, count),
    * no DISTINCT, no HAVING, no UNWIND, no LET.
@@ -1931,6 +1969,12 @@ public class SelectExecutionPlanner {
     // Extract tag filter from WHERE clause for push-down
     final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context);
 
+    // Verify all WHERE conditions are consumed by push-down (time-range or tag equality).
+    // If any field-value predicate remains (e.g., WHERE value > 100), bail out to avoid
+    // silently dropping it — the standard filter step will handle it instead.
+    if (info.flattenedWhereClause != null && hasNonPushDownConditions(info.flattenedWhereClause, columns, tsType.getTimestampColumn()))
+      return false;
+
     // Chain the push-down step
     plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs,
         timeBucketAlias, requestAliasToOutputAlias, tagFilter, context));
@@ -1940,8 +1984,7 @@ public class SelectExecutionPlanner {
     info.aggregateProjection = null;
     info.groupBy = null;
     info.projectionsCalculated = true;
-    // The time range and tag filters are consumed by the push-down step;
-    // null out the WHERE clause so FilterStep doesn't re-apply it on aggregated rows
+    // The time range and tag filters are consumed by the push-down step
     info.whereClause = null;
     info.flattenedWhereClause = null;
 

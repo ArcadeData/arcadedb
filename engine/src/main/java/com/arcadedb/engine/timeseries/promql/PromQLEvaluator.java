@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries.promql;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -53,6 +54,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 
 /**
@@ -64,8 +66,9 @@ public class PromQLEvaluator {
   private static final long DEFAULT_LOOKBACK_MS  = 5 * 60_000; // 5 minutes
   private static final int  MAX_RECURSION_DEPTH  = 64;
 
-  private final DatabaseInternal database;
-  private final long             lookbackMs;
+  private final DatabaseInternal        database;
+  private final long                    lookbackMs;
+  private final Map<String, Pattern>    patternCache = new HashMap<>();
 
   public PromQLEvaluator(final DatabaseInternal database) {
     this(database, DEFAULT_LOOKBACK_MS);
@@ -154,7 +157,6 @@ public class PromQLEvaluator {
     }
 
     // Post-filter for NEQ/RE/NRE and group by label combination
-    final Map<String, Pattern> patternCache = new HashMap<>();
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     for (final Object[] row : rows) {
       if (!matchesPostFilters(row, vs.matchers(), columns, patternCache))
@@ -196,7 +198,6 @@ public class PromQLEvaluator {
     }
 
     // Group rows by label combination
-    final Map<String, Pattern> patternCache = new HashMap<>();
     final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
     for (final Object[] row : rows) {
@@ -593,6 +594,10 @@ public class PromQLEvaluator {
 
   public static String sanitizeTypeName(final String name) {
     final String sanitized = name.replace('.', '_').replace('-', '_').replace(':', '_');
+    if (!sanitized.equals(name))
+      LogManager.instance().log(PromQLEvaluator.class, Level.WARNING,
+          "Metric name '%s' was sanitized to '%s'. Distinct Prometheus names that differ only by '.', '-', ':' vs '_' "
+              + "will map to the same ArcadeDB type and may return merged data", null, name, sanitized);
     if (sanitized.length() > MAX_TYPE_NAME_LENGTH)
       throw new IllegalArgumentException("Metric name too long: " + sanitized.length() + " chars (max " + MAX_TYPE_NAME_LENGTH + ")");
     if (!VALID_TYPE_NAME_PATTERN.matcher(sanitized).matches())
