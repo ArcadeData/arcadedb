@@ -113,6 +113,14 @@ class CypherProcedureRegistryTest {
     assertThat(CypherProcedureRegistry.hasProcedure("algo.wcc")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("algo.louvain")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("algo.labelpropagation")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.closeness")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.degree")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.triangleCount")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.kcore")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.scc")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.mst")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.jaccard")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.randomWalk")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("path.expand")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("path.expandconfig")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("path.subgraphnodes")).isTrue();
@@ -123,6 +131,14 @@ class CypherProcedureRegistryTest {
     assertThat(CypherProcedureRegistry.hasProcedure("meta.stats")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("meta.nodetypeproperties")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("meta.reltypeproperties")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.hits")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.harmonic")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.eigenvector")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.articulationPoints")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.bridges")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.topologicalSort")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.apsp")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.adamicAdar")).isTrue();
   }
 
   @Test

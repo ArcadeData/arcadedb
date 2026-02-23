@@ -184,11 +184,4 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     return results.stream();
   }
 
-  private Vertex.DIRECTION parseDirection(final String direction) {
-    return switch (direction.toUpperCase()) {
-      case "OUT" -> Vertex.DIRECTION.OUT;
-      case "IN" -> Vertex.DIRECTION.IN;
-      default -> Vertex.DIRECTION.BOTH;
-    };
-  }
 }
