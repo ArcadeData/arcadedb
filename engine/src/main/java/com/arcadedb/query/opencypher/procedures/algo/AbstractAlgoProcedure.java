@@ -24,10 +24,15 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.MultiIterator;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -84,6 +89,27 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
     throw new IllegalArgumentException(
         getName() + "(): " + paramName + " must be a map, got " + arg.getClass().getSimpleName());
+  }
+
+  /**
+   * Returns a lazy iterator over all vertices in the database, optionally filtered by node labels.
+   * Uses a MultiIterator to compose per-type iterators without loading all vertices into RAM.
+   *
+   * @param db         the database to query
+   * @param nodeLabels optional array of vertex type names to filter (null or empty means all)
+   * @return lazy iterator over all matching vertices
+   */
+  @SuppressWarnings("unchecked")
+  protected Iterator<Vertex> getAllVertices(final Database db, final String[] nodeLabels) {
+    final MultiIterator<Vertex> multiIter = new MultiIterator<>();
+    for (final DocumentType type : db.getSchema().getTypes()) {
+      if (!(type instanceof VertexType))
+        continue;
+      if (nodeLabels != null && nodeLabels.length > 0 && !Arrays.asList(nodeLabels).contains(type.getName()))
+        continue;
+      multiIter.addIterator((Iterator<Vertex>) (Iterator<?>) db.iterateType(type.getName(), false));
+    }
+    return multiIter;
   }
 
   /**

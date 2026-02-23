@@ -107,6 +107,12 @@ class CypherProcedureRegistryTest {
     assertThat(CypherProcedureRegistry.hasProcedure("algo.dijkstra")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("algo.astar")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("algo.allsimplepaths")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.bellmanford")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.pagerank")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.betweenness")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.wcc")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.louvain")).isTrue();
+    assertThat(CypherProcedureRegistry.hasProcedure("algo.labelpropagation")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("path.expand")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("path.expandconfig")).isTrue();
     assertThat(CypherProcedureRegistry.hasProcedure("path.subgraphnodes")).isTrue();

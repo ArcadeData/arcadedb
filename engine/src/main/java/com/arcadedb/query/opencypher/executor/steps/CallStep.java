@@ -468,6 +468,10 @@ public class CallStep extends AbstractExecutionStep {
    */
   @SuppressWarnings("unchecked")
   private ResultInternal convertItemToResult(final Object item) {
+    // If already a ResultInternal (e.g., from procedure execution), return it directly
+    if (item instanceof ResultInternal ri)
+      return ri;
+
     final ResultInternal result = new ResultInternal();
 
     if (item instanceof Map) {
