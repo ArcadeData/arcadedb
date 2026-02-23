@@ -1,6 +1,6 @@
 # ArcadeDB TimeSeries Module — Research Report & Implementation Plan
 
-## Implementation Progress (last updated: 2026-02-22)
+## Implementation Progress (last updated: 2026-02-23)
 
 ### Completed
 - **Phase 1: Core Storage Engine** — TimeSeries type, columnar storage with Gorilla/Delta-of-Delta/Simple-8b/Dictionary codecs, sealed bucket compaction, shard-per-core parallelism, Line Protocol ingestion (HTTP handler), retention policies, `CREATE TIMESERIES TYPE` SQL statement, `FetchFromTimeSeriesStep` query executor, basic SQL queries (`SELECT`, `WHERE`, `GROUP BY`, `ORDER BY`)
@@ -121,6 +121,40 @@
   - Shared `TimeSeriesHandlerUtils` utility class extracted from `PostTimeSeriesQueryHandler` (tag filter building, column index resolution)
   - 8 integration tests in `GrafanaTimeSeriesHandlerIT`: health, metadata, raw query, aggregated query, multi-target, tag filter, auto maxDataPoints, missing targets
 
+- **Phase 6: PromQL Query Language** — Native PromQL support for Prometheus-compatible observability:
+  - **`PromQLParser`** — Hand-written recursive-descent parser covering: instant vector selectors (`metric{label=~"re"}`), range vector selectors (`metric[5m]`), binary expressions (`+`, `-`, `*`, `/`, `%`, `^`, comparison ops, logical `and`/`or`/`unless`), aggregations (`sum`, `min`, `max`, `avg`, `count`, `topk`, `bottomk`, `quantile` with `by`/`without` clauses), function calls (`rate`, `irate`, `increase`, `delta`, `idelta`, `avg_over_time`, `min_over_time`, `max_over_time`, `sum_over_time`, `count_over_time`, `stddev_over_time`, `absent`, `ceil`, `floor`, `round`, `abs`, `sqrt`, `exp`, `ln`, `log2`, `log10`, `clamp_min`, `clamp_max`, `histogram_quantile`, `label_replace`, `label_join`, `vector`, `scalar`, `time`, `pi`), unary negation, and scalar literals. Duration parsing (`5m`, `1h`, `30s`, `1d`, `1w`, `1y`). `PromQLParser.parseDuration(str)` also available as utility
+  - **`PromQLEvaluator`** — Two-phase evaluation: `evaluateInstant(expr, evalTimeMs)` for instant vector results, `evaluateRange(expr, startMs, endMs, stepMs)` for matrix results. Vector selector → 5-minute lookback window (configurable via `PromQLEvaluator(database, lookbackMs)` constructor). Binary op label matching, aggregation with group-by/without, range function window computation via `TimeSeriesEngine.iterateQuery()`. ReDoS-safe regex compilation with pattern cache (ConcurrentHashMap, 512-entry LRU-style eviction). Validates regex patterns against nested quantifier and alternation+quantifier patterns before compilation
+  - **`PromQLResult`** — Sealed interface with three implementations: `InstantVector(List<VectorSample>)`, `MatrixResult(List<MatrixSeries>)`, `ScalarResult(double)`. `VectorSample` holds labels, value, and timestamp. `MatrixSeries` holds labels and a list of `(timestamp, value)` pairs
+  - **`PromQLFunctions`** — All range functions implemented: `rate`/`irate`/`increase`/`delta`/`idelta` use first/last sample arithmetic; `avg_over_time` etc. compute window statistics. `absent()` inverts presence. Math functions delegate to `Math.*`
+  - **HTTP API — PromQL-compatible endpoints** (base: `/ts/{database}/prom`):
+    - `GET /ts/{database}/prom/api/v1/query?query=&time=` — instant query; `time` is Unix seconds (float); defaults to current time; optional `lookback_delta` override
+    - `GET /ts/{database}/prom/api/v1/query_range?query=&start=&end=&step=` — range query; all timestamps in Unix seconds; `step` can be a duration string or seconds float
+    - `GET /ts/{database}/prom/api/v1/labels` — lists all TimeSeries type names (metric names) and their tag column names as PromQL label names
+    - `GET /ts/{database}/prom/api/v1/label/{name}/values` — returns distinct values for a given label across all TimeSeries types
+    - `GET /ts/{database}/prom/api/v1/series?match[]=` — returns series matching the given selector(s); evaluates each selector against all TimeSeries types
+    - All endpoints return standard Prometheus JSON `{status: "success", data: {...}}` format via `PromQLResponseFormatter`
+  - **SQL function `promql(expr [, evalTimeMs])`** — Calls the PromQL evaluator from within SQL. Returns a result row per matched sample (each map's keys become row properties; `__value__` holds the numeric value):
+    ```sql
+    -- Instant query at explicit time
+    RETURN promql('cpu_usage{host="srv1"}', 1700000000000)
+    -- Scalar arithmetic
+    RETURN promql('2 + 3 * 4', 1000)
+    -- Current time (no second arg)
+    RETURN promql('rate(http_requests_total[5m])')
+    ```
+    Registered as `promql` in `DefaultSQLFunctionFactory`; min 1 arg, max 2 args
+  - **Studio — PromQL Explorer tab**: new "PromQL" sub-tab alongside Query/Schema/Ingestion in the TimeSeries Explorer; expression input, instant / range toggle, time controls, executes via `/prom/api/v1/query` or `/prom/api/v1/query_range`, renders results in DataTable and ApexCharts line chart
+  - **14 integration tests in `PromQLHttpHandlerIT`**: instant query (scalar, instant vector, rate, sum by, binary op), range query, labels, label values, series, error cases (missing query param, invalid PromQL, zero step)
+
+- **Prometheus Remote Write / Read Protocol** — Drop-in Prometheus remote storage backend:
+  - **`POST /ts/{database}/prom/write`** (`PostPrometheusWriteHandler`) — accepts Prometheus `remote_write` Protobuf payload (snappy-compressed). Decodes `WriteRequest.timeseries[]` using hand-written `ProtobufDecoder`; each `TimeSeries` is mapped to an ArcadeDB TimeSeries type named after the `__name__` label. Tags become TimeSeries tag columns (via `CREATE TIMESERIES TYPE IF NOT EXISTS`). Samples bulk-appended via `DatabaseAsyncAppendSamples`. Returns HTTP 204 on success
+  - **`POST /ts/{database}/prom/read`** (`PostPrometheusReadHandler`) — accepts Prometheus `remote_read` Protobuf query payload (snappy-compressed). Each `Query` has matchers, start/end timestamps. Evaluates against the named TimeSeries type; encodes the response as a `ReadResponse.QueryResult` containing `TimeSeries[]` Protobuf objects, snappy-compressed. Supports `=`, `!=`, `=~`, `!~` label matchers
+  - **`ProtobufDecoder`** — Minimal hand-written protobuf wire-format decoder (no generated code, no protobuf library dependency): varint (wire type 0), fixed64 (wire type 1), length-delimited (wire type 2). Varint capped at 64 bits; length-delimited bounds-checked against remaining buffer. Used for both write and read request decoding
+  - **`ProtobufEncoder`** — Minimal protobuf encoder for building `ReadResponse` messages: `writeTag()`, `writeVarint()`, `writeLengthDelimited()`, `writeFixed64AsDouble()`, `writeSInt64()`. Outputs to `ByteArrayOutputStream`
+  - **`PrometheusTypes`** — Protobuf field constants for all message types in the `remote.proto` schema: `WriteRequest`, `TimeSeries`, `Label`, `Sample`, `ReadRequest`, `Query`, `LabelMatcher`, `QueryResult`, `ReadResponse`
+  - **snappy-java dependency** added to `server/pom.xml` (Apache 2.0) for frame-format decompression/compression of all remote_write/read payloads. Recorded in `ATTRIBUTIONS.md`
+  - **8 integration tests in `PrometheusRemoteWriteReadIT`**: write single series, write multi-series, read back written data, label matcher `=`/`!=`/`=~`/`!~`, empty result for unmatched matcher, round-trip write+read consistency
+
 ### In Progress / Not Yet Started
 
 #### Competitive Gap Analysis — Prioritized Roadmap
@@ -132,9 +166,9 @@ Gap analysis comparing ArcadeDB's TimeSeries against top 10 TSDBs: InfluxDB 3, T
 - ~~Time range operators beyond BETWEEN~~ — **DONE** (`>`, `>=`, `<`, `<=`, `=` pushed down)
 - ~~Multi-tag filtering~~ — **DONE** (ANDed multi-tag conditions)
 - ~~Automatic retention/downsampling scheduler~~ — **DONE** (daemon thread, 60s interval)
-- **PromQL / MetricsQL query language** — De-facto standard for observability. Thousands of Grafana dashboards and alerting rules use PromQL. Without it, ArcadeDB can't serve as a drop-in Prometheus backend
+- ~~PromQL / MetricsQL query language~~ — **DONE** (native `PromQLParser` + `PromQLEvaluator`; 5 HTTP endpoints under `/ts/{db}/prom/api/v1/`; `promql()` SQL function; Studio PromQL Explorer tab; 14 integration tests)
 - ~~Grafana native datasource plugin~~ — **DONE** (Grafana DataFrame-compatible endpoints: `GET /ts/{db}/grafana/health`, `GET /ts/{db}/grafana/metadata`, `POST /ts/{db}/grafana/query` — works with Grafana Infinity datasource plugin, no custom plugin needed)
-- **Prometheus `remote_write` / `remote_read` protocol** — Standard push protocol for metrics (6/10 TSDBs support it). Prometheus, vmagent, Grafana Agent, OpenTelemetry Collector all use it
+- ~~Prometheus `remote_write` / `remote_read` protocol~~ — **DONE** (`POST /ts/{db}/prom/write` + `POST /ts/{db}/prom/read`; hand-written protobuf decoder/encoder; snappy compression; 8 integration tests)
 - **Alerting & recording rules** — Built-in alerting on metric thresholds with routing (email, Slack, PagerDuty). Recording rules pre-compute expensive queries (7+/10 TSDBs)
 
 **P1 — Core Analytics (present in 4-6/10 TSDBs):**
