@@ -28,14 +28,14 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration tests for ST_* spatial predicate functions with a real geospatial index.
+ * Integration tests for geo.* spatial predicate functions with a real geospatial index.
  * Verifies that the query optimizer uses the GEOSPATIAL index and that results are correct
  * both with and without the index (inline full-scan fallback).
  */
 class SQLGeoIndexedQueryTest extends TestHelper {
 
   /**
-   * Inserts three Italian cities and verifies ST_Within correctly filters via index.
+   * Inserts three Italian cities and verifies geo.within correctly filters via index.
    * Rome (12.5, 41.9) and Naples (14.3, 40.8) are inside the bounding box;
    * Milan (9.2, 45.5) is outside.
    */
@@ -65,7 +65,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_Intersects against a bounding box returns the expected cities.
+   * Verifies geo.intersects against a bounding box returns the expected cities.
    */
   @Test
   void stIntersectsWithIndex() {
@@ -93,8 +93,8 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_DWithin proximity query using the inline full-scan fallback path (the index
-   * exists on the type but ST_DWithin always disables indexed execution).
+   * Verifies geo.dWithin proximity query using the inline full-scan fallback path (the index
+   * exists on the type but geo.dWithin always disables indexed execution).
    *
    * <p>Search point: POINT (12.0, 41.5), distance threshold: 1.0 degree (great-circle degrees
    * as computed by {@code SpatialContext.calcDistance()}).
@@ -134,7 +134,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies that dropping the index and re-running the ST_Within query (inline full-scan fallback)
+   * Verifies that dropping the index and re-running the geo.within query (inline full-scan fallback)
    * produces the same correct results.
    */
   @Test
@@ -165,8 +165,8 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_Disjoint returns the city outside the bounding box.
-   * ST_Disjoint always uses the inline full-scan fallback because the GeoHash index
+   * Verifies geo.disjoint returns the city outside the bounding box.
+   * geo.disjoint always uses the inline full-scan fallback because the GeoHash index
    * stores intersecting records — disjoint records are precisely those NOT returned
    * by the index, so the index cannot serve as a valid candidate superset.
    */
@@ -194,10 +194,10 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_Contains with stored polygons using inline full-scan evaluation.
+   * Verifies geo.contains with stored polygons using inline full-scan evaluation.
    * geo.contains(coords, point) finds which stored polygon contains Rome.
    * No GEOSPATIAL index is created here because the index is optimised for searching
-   * stored points inside a query polygon (ST_Within direction); ST_Contains queries
+   * stored points inside a query polygon (geo.within direction); geo.contains queries
    * a small containee shape against large stored containers and the GeoHash detail
    * level for a point query is too coarse to locate polygon tokens reliably.
    */
@@ -227,7 +227,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_Equals using inline full-scan evaluation.
+   * Verifies geo.equals using inline full-scan evaluation.
    * Only the record at exactly (12.5, 41.9) matches the equality query.
    * No GEOSPATIAL index is created here because the GeoHash detail level for a point
    * query shape is too coarse to retrieve the stored point token at full precision.
@@ -256,7 +256,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_Crosses: a stored linestring that crosses a polygon boundary is returned.
+   * Verifies geo.crosses: a stored linestring that crosses a polygon boundary is returned.
    * The line from (9, 38) to (16, 45) crosses the boundary of the polygon
    * POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38)).
    */
@@ -287,7 +287,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_Overlaps: two polygons with partial overlap are returned, but a fully-contained
+   * Verifies geo.overlaps: two polygons with partial overlap are returned, but a fully-contained
    * polygon is not (overlaps requires same-dimension partial intersection, not containment).
    */
   @Test
@@ -319,7 +319,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   /**
-   * Verifies ST_Touches: two polygons sharing exactly one edge touch each other.
+   * Verifies geo.touches: two polygons sharing exactly one edge touch each other.
    * The left polygon ends at x=12, the right polygon starts at x=12 — they share the boundary.
    */
   @Test
