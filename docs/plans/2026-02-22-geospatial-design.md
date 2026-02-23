@@ -6,12 +6,12 @@
 
 ## Overview
 
-Port OrientDB-style geospatial indexing to ArcadeDB, using the native LSM-Tree engine as storage (following the same pattern as `LSMTreeFullTextIndex`) and the OGC/PostGIS `ST_*` SQL function naming convention.
+Port OrientDB-style geospatial indexing to ArcadeDB, using the native LSM-Tree engine as storage (following the same pattern as `LSMTreeFullTextIndex`) and the `geo.*` SQL function namespace.
 
 ## Goals
 
-- Support all OGC spatial predicate functions OrientDB supported: `ST_Within`, `ST_Intersects`, `ST_Contains`, `ST_DWithin`, `ST_Disjoint`, `ST_Equals`, `ST_Crosses`, `ST_Overlaps`, `ST_Touches`
-- Replace existing non-standard geo functions (`point()`, `distance()`, `circle()`, etc.) with `ST_*` equivalents
+- Support all OGC spatial predicate functions OrientDB supported: `geo.within`, `geo.intersects`, `geo.contains`, `geo.dWithin`, `geo.disjoint`, `geo.equals`, `geo.crosses`, `geo.overlaps`, `geo.touches`
+- Replace existing non-standard geo functions (`point()`, `distance()`, `circle()`, etc.) with `geo.*` equivalents
 - Automatic query optimizer integration — no explicit `search_index()` call needed
 - WKT as the geometry storage format (consistent with existing partial support)
 - LSM-Tree as storage backend (ACID, WAL, HA, compaction all inherited for free)
@@ -28,11 +28,11 @@ Port OrientDB-style geospatial indexing to ArcadeDB, using the native LSM-Tree e
 ### Layers
 
 ```
-SQL Query:  WHERE ST_Within(location, ST_GeomFromText('POLYGON(...)')) = true
+SQL Query:  WHERE geo.within(location, geo.geomFromText('POLYGON(...)')) = true
                 │
                 ▼
     SelectExecutionPlanner
-    detects IndexableSQLFunction on ST_Within
+    detects IndexableSQLFunction on geo.within
     calls allowsIndexedExecution()
                 │
                 ▼
@@ -42,7 +42,7 @@ SQL Query:  WHERE ST_Within(location, ST_GeomFromText('POLYGON(...)')) = true
     returns candidate RIDs
                 │
                 ▼
-    ST_Within.shouldExecuteAfterSearch() = true
+    geo.within.shouldExecuteAfterSearch() = true
     → exact Spatial4j predicate post-filters candidates
 ```
 
@@ -68,11 +68,11 @@ Wraps `LSMTreeIndex` (identical to how `LSMTreeFullTextIndex` wraps it).
 
 ### Querying (`get(keys)`)
 
-1. The key is a `Shape` (passed from the ST_* function)
+1. The key is a `Shape` (passed from the `geo.*` function)
 2. Generate covering GeoHash cells via `SpatialArgs` + `RecursivePrefixTreeStrategy`
 3. Extract cell token strings from the Lucene query
 4. Look up each token in the LSM-Tree, union all matching RIDs
-5. Return `TempIndexCursor` (candidates; exact post-filter happens in the ST_* function)
+5. Return `TempIndexCursor` (candidates; exact post-filter happens in the `geo.*` function)
 
 ### Configuration
 
@@ -84,7 +84,7 @@ Wraps `LSMTreeIndex` (identical to how `LSMTreeFullTextIndex` wraps it).
 - Add `GEOSPATIAL` to `Schema.INDEX_TYPE` enum
 - Register `LSMTreeGeoIndex.GeoIndexFactoryHandler` in `LocalSchema` alongside `LSM_TREE`, `FULL_TEXT`, `LSM_VECTOR`
 
-## Component 2: ST_* SQL Functions
+## Component 2: geo.* SQL Functions
 
 **Package:** `com.arcadedb.function.sql.geo`
 **Registered in:** `DefaultSQLFunctionFactory`
@@ -93,42 +93,42 @@ Wraps `LSMTreeIndex` (identical to how `LSMTreeFullTextIndex` wraps it).
 
 | Function | Replaces | Notes |
 |---|---|---|
-| `ST_GeomFromText(wkt)` | — | Parse any WKT string → Spatial4j `Shape` |
-| `ST_Point(x, y)` | `point(x,y)` | Returns Spatial4j `Point` as WKT |
-| `ST_LineString(pts)` | `lineString(pts)` | |
-| `ST_Polygon(pts)` | `polygon(pts)` | |
-| `ST_Buffer(geom, dist)` | `circle(c,r)` | OGC buffer around any geometry |
-| `ST_Envelope(geom)` | `rectangle(pts)` | Bounding rectangle as WKT |
-| `ST_Distance(g1, g2 [,unit])` | `distance(...)` | Haversine; keeps SQL and Cypher-style params |
-| `ST_Area(geom)` | — | Area in square degrees via Spatial4j |
-| `ST_AsText(geom)` | — | Spatial4j `Shape` → WKT string |
-| `ST_AsGeoJson(geom)` | — | Shape → GeoJSON string via JTS |
-| `ST_X(point)` | — | Extract X coordinate |
-| `ST_Y(point)` | — | Extract Y coordinate |
+| `geo.geomFromText(wkt)` | — | Parse any WKT string → Spatial4j `Shape` |
+| `geo.point(x, y)` | `point(x,y)` | Returns Spatial4j `Point` as WKT |
+| `geo.lineString(pts)` | `lineString(pts)` | |
+| `geo.polygon(pts)` | `polygon(pts)` | |
+| `geo.buffer(geom, dist)` | `circle(c,r)` | OGC buffer around any geometry |
+| `geo.envelope(geom)` | `rectangle(pts)` | Bounding rectangle as WKT |
+| `geo.distance(g1, g2 [,unit])` | `distance(...)` | Haversine; keeps SQL and Cypher-style params |
+| `geo.area(geom)` | — | Area in square degrees via Spatial4j |
+| `geo.asText(geom)` | — | Spatial4j `Shape` → WKT string |
+| `geo.asGeoJson(geom)` | — | Shape → GeoJSON string via JTS |
+| `geo.x(point)` | — | Extract X coordinate |
+| `geo.y(point)` | — | Extract Y coordinate |
 
 ### Spatial Predicate Functions (implement `SQLFunction` + `IndexableSQLFunction`)
 
 | Function | Semantics | Post-filter |
 |---|---|---|
-| `ST_Within(g, shape)` | g is fully within shape | yes |
-| `ST_Intersects(g, shape)` | g and shape share any point | yes |
-| `ST_Contains(g, shape)` | g fully contains shape | yes |
-| `ST_DWithin(g, shape, dist)` | g is within dist of shape | yes |
-| `ST_Disjoint(g, shape)` | g and shape share no points | yes |
-| `ST_Equals(g, shape)` | geometrically equal | yes |
-| `ST_Crosses(g, shape)` | g crosses shape | yes |
-| `ST_Overlaps(g, shape)` | g overlaps shape | yes |
-| `ST_Touches(g, shape)` | g touches shape boundary | yes |
+| `geo.within(g, shape)` | g is fully within shape | yes |
+| `geo.intersects(g, shape)` | g and shape share any point | yes |
+| `geo.contains(g, shape)` | g fully contains shape | yes |
+| `geo.dWithin(g, shape, dist)` | g is within dist of shape | yes |
+| `geo.disjoint(g, shape)` | g and shape share no points | yes |
+| `geo.equals(g, shape)` | geometrically equal | yes |
+| `geo.crosses(g, shape)` | g crosses shape | yes |
+| `geo.overlaps(g, shape)` | g overlaps shape | yes |
+| `geo.touches(g, shape)` | g touches shape boundary | yes |
 
 All predicates return `null` when either argument is null (SQL three-valued logic).
 
 **Implementation notes on `allowsIndexedExecution()`:**
 
-- `ST_Disjoint` — returns `false`. The GeoHash index stores records whose geometry intersects
+- `geo.disjoint` — returns `false`. The GeoHash index stores records whose geometry intersects
   the indexed cells. Disjoint records are precisely those *not* present in the intersection
   result, so the index cannot produce a valid candidate superset. The predicate always falls
   back to a full scan with inline evaluation.
-- `ST_DWithin` — returns `false`. The current implementation evaluates proximity as a
+- `geo.dWithin` — returns `false`. The current implementation evaluates proximity as a
   straight-line distance between geometry centers. The GeoHash index returns cells that
   intersect the query shape, which does not correspond to a distance radius. Correct indexed
   proximity would require first expanding the search geometry into a bounding circle before
@@ -146,8 +146,8 @@ Each predicate's `IndexableSQLFunction` implementation:
 No changes to `SelectExecutionPlanner` required. The existing `indexedFunctionConditions` path fully supports this pattern:
 
 1. `block.getIndexedFunctionConditions(typez, context)` collects conditions where the left `Expression` is a function call implementing `IndexableSQLFunction`
-2. `ST_Within.allowsIndexedExecution()` checks for a `GEOSPATIAL` index on the referenced field
-3. `BinaryCondition.executeIndexedFunction()` → `ST_Within.searchFromTarget()` executes the indexed search
+2. `geo.within.allowsIndexedExecution()` checks for a `GEOSPATIAL` index on the referenced field
+3. `BinaryCondition.executeIndexedFunction()` → `geo.within.searchFromTarget()` executes the indexed search
 4. `shouldExecuteAfterSearch() = true` → exact post-filter applied to all returned candidates
 
 **Multi-bucket:** `searchFromTarget()` iterates all per-bucket `LSMTreeGeoIndex` instances via `TypeIndex.getIndexesOnBuckets()` and unions results, matching the full-text search pattern.
@@ -156,7 +156,7 @@ No changes to `SelectExecutionPlanner` required. The existing `indexedFunctionCo
 
 | Scenario | Behavior |
 |---|---|
-| Invalid WKT in `ST_GeomFromText()` | `IllegalArgumentException` with clear message |
+| Invalid WKT in `geo.geomFromText()` | `IllegalArgumentException` with clear message |
 | Null geometry argument in predicate | returns `null` (three-valued SQL logic) |
 | No geospatial index on field | falls back to full-scan; no error |
 | Non-WKT value in indexed property | `put()` skips record, logs warning |
@@ -175,15 +175,15 @@ All tests in `engine/src/test/java/com/arcadedb/`:
 - No-index fallback path
 
 ### `function/sql/geo/SQLGeoFunctionsTest` (extend existing)
-- All ST_* constructor and accessor functions
+- All `geo.*` constructor and accessor functions
 - Verify old `point()`, `distance()`, etc. throw "unknown function"
 
 ### `function/sql/geo/SQLGeoIndexedQueryTest` (new)
 - Create type with `GEOSPATIAL` index on WKT property
 - Insert records with point WKT values at known coordinates
-- `SELECT ... WHERE ST_Within(...) = true` — verify correct results
-- `SELECT ... WHERE ST_Intersects(...) = true` — verify
-- `SELECT ... WHERE ST_DWithin(..., dist) = true` — proximity radius query
+- `SELECT ... WHERE geo.within(...) = true` — verify correct results
+- `SELECT ... WHERE geo.intersects(...) = true` — verify
+- `SELECT ... WHERE geo.dWithin(..., dist) = true` — proximity radius query
 - All nine predicate functions covered
 - Query with no index (fallback) produces same results
 
@@ -197,27 +197,27 @@ engine/src/main/java/com/arcadedb/
     LSMTreeGeoIndex.java
     GeoIndexMetadata.java
   function/sql/geo/
-    SQLFunctionST_GeomFromText.java
-    SQLFunctionST_Point.java
-    SQLFunctionST_LineString.java
-    SQLFunctionST_Polygon.java
-    SQLFunctionST_Buffer.java
-    SQLFunctionST_Envelope.java
-    SQLFunctionST_Distance.java
-    SQLFunctionST_Area.java
-    SQLFunctionST_AsText.java
-    SQLFunctionST_AsGeoJson.java
-    SQLFunctionST_X.java
-    SQLFunctionST_Y.java
-    SQLFunctionST_Within.java        ← implements IndexableSQLFunction
-    SQLFunctionST_Intersects.java    ← implements IndexableSQLFunction
-    SQLFunctionST_Contains.java      ← implements IndexableSQLFunction
-    SQLFunctionST_DWithin.java       ← implements IndexableSQLFunction
-    SQLFunctionST_Disjoint.java      ← implements IndexableSQLFunction
-    SQLFunctionST_Equals.java        ← implements IndexableSQLFunction
-    SQLFunctionST_Crosses.java       ← implements IndexableSQLFunction
-    SQLFunctionST_Overlaps.java      ← implements IndexableSQLFunction
-    SQLFunctionST_Touches.java       ← implements IndexableSQLFunction
+    SQLFunctionGeoGeomFromText.java
+    SQLFunctionGeoPoint.java
+    SQLFunctionGeoLineString.java
+    SQLFunctionGeoPolygon.java
+    SQLFunctionGeoBuffer.java
+    SQLFunctionGeoEnvelope.java
+    SQLFunctionGeoDistance.java
+    SQLFunctionGeoArea.java
+    SQLFunctionGeoAsText.java
+    SQLFunctionGeoAsGeoJson.java
+    SQLFunctionGeoX.java
+    SQLFunctionGeoY.java
+    SQLFunctionGeoWithin.java        ← implements IndexableSQLFunction
+    SQLFunctionGeoIntersects.java    ← implements IndexableSQLFunction
+    SQLFunctionGeoContains.java      ← implements IndexableSQLFunction
+    SQLFunctionGeoDWithin.java       ← implements IndexableSQLFunction
+    SQLFunctionGeoDisjoint.java      ← implements IndexableSQLFunction
+    SQLFunctionGeoEquals.java        ← implements IndexableSQLFunction
+    SQLFunctionGeoCrosses.java       ← implements IndexableSQLFunction
+    SQLFunctionGeoOverlaps.java      ← implements IndexableSQLFunction
+    SQLFunctionGeoTouches.java       ← implements IndexableSQLFunction
     GeoUtils.java                    ← extend existing
     LightweightPoint.java            ← keep existing
 
@@ -233,5 +233,5 @@ engine/pom.xml                       ← add lucene-spatial-extras dependency
 
 ## Open Questions
 
-- Should `ST_Distance` return meters by default (Neo4j/Cypher compat) or kilometers (current `distance()` SQL default)? Current implementation keeps both styles based on argument count — recommend preserving this.
-- Should `ST_Buffer` accept distance in meters, kilometers, or degrees? Spatial4j works in degrees; conversion at the function boundary needed for user-facing meter/km inputs.
+- Should `geo.distance` return meters by default (Neo4j/Cypher compat) or kilometers (current `distance()` SQL default)? Current implementation keeps both styles based on argument count — recommend preserving this.
+- Should `geo.buffer` accept distance in meters, kilometers, or degrees? Spatial4j works in degrees; conversion at the function boundary needed for user-facing meter/km inputs.

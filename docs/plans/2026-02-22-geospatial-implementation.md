@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Port OrientDB-style geospatial indexing to ArcadeDB with ST_* SQL functions and automatic query optimizer integration.
+**Goal:** Port OrientDB-style geospatial indexing to ArcadeDB with `geo.*` SQL functions and automatic query optimizer integration.
 
-**Architecture:** `LSMTreeGeoIndex` wraps `LSMTreeIndex` (same pattern as `LSMTreeFullTextIndex`). `lucene-spatial-extras` `GeohashPrefixTree` decomposes WKT geometries into GeoHash cell tokens stored in LSM-Tree. ST_* predicate functions implement `IndexableSQLFunction` so the query optimizer uses the geo index automatically when `WHERE ST_Within(field, shape) = true` is detected.
+**Architecture:** `LSMTreeGeoIndex` wraps `LSMTreeIndex` (same pattern as `LSMTreeFullTextIndex`). `lucene-spatial-extras` `GeohashPrefixTree` decomposes WKT geometries into GeoHash cell tokens stored in LSM-Tree. `geo.*` predicate functions implement `IndexableSQLFunction` so the query optimizer uses the geo index automatically when `WHERE geo.within(field, shape) = true` is detected.
 
 **Tech Stack:** Java 21, `lucene-spatial-extras` 10.3.2, `spatial4j` 0.8, `jts-core` 1.20.0, JUnit 5 + AssertJ, Maven.
 
@@ -657,32 +657,32 @@ git commit -m "feat(geo): register GEOSPATIAL index type in Schema and LocalSche
 
 ---
 
-## Task 5: Create ST_* Constructor and Accessor Functions
+## Task 5: Create geo.* Constructor and Accessor Functions
 
 **Files:**
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_GeomFromText.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Point.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_LineString.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Polygon.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Buffer.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Envelope.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Distance.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Area.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_AsText.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_AsGeoJson.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_X.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Y.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoGeomFromText.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoPoint.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoLineString.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoPolygon.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoBuffer.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoEnvelope.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoDistance.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoArea.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoAsText.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoAsGeoJson.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoX.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoY.java`
 - Modify: `engine/src/main/java/com/arcadedb/function/sql/DefaultSQLFunctionFactory.java`
 
 **Step 1: Write the failing tests**
 
-Update `engine/src/test/java/com/arcadedb/function/sql/geo/SQLGeoFunctionsTest.java`. The existing `point()`, `distance()` etc. tests will become regression tests that the OLD names are gone. Add new ST_* tests:
+Update `engine/src/test/java/com/arcadedb/function/sql/geo/SQLGeoFunctionsTest.java`. The existing `point()`, `distance()` etc. tests will become regression tests that the OLD names are gone. Add new `geo.*` tests:
 
 ```java
 @Test
-void stPoint() throws Exception {
+void geoPoint() throws Exception {
   TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-    final ResultSet result = db.query("sql", "select ST_Point(11, 11) as pt");
+    final ResultSet result = db.query("sql", "select geo.point(11, 11) as pt");
     assertThat(result.hasNext()).isTrue();
     final Object pt = result.next().getProperty("pt");
     assertThat(pt).isNotNull();
@@ -691,9 +691,9 @@ void stPoint() throws Exception {
 }
 
 @Test
-void stGeomFromText() throws Exception {
+void geoGeomFromText() throws Exception {
   TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-    final ResultSet result = db.query("sql", "select ST_GeomFromText('POINT (10.0 45.0)') as geom");
+    final ResultSet result = db.query("sql", "select geo.geomFromText('POINT (10.0 45.0)') as geom");
     assertThat(result.hasNext()).isTrue();
     final Object geom = result.next().getProperty("geom");
     assertThat(geom).isNotNull();
@@ -701,9 +701,9 @@ void stGeomFromText() throws Exception {
 }
 
 @Test
-void stAsText() throws Exception {
+void geoAsText() throws Exception {
   TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-    final ResultSet result = db.query("sql", "select ST_AsText(ST_Point(10.0, 45.0)) as wkt");
+    final ResultSet result = db.query("sql", "select geo.asText(geo.point(10.0, 45.0)) as wkt");
     assertThat(result.hasNext()).isTrue();
     final String wkt = result.next().getProperty("wkt");
     assertThat(wkt).contains("10").contains("45");
@@ -711,9 +711,9 @@ void stAsText() throws Exception {
 }
 
 @Test
-void stXstY() throws Exception {
+void geoXgeoY() throws Exception {
   TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-    final ResultSet result = db.query("sql", "select ST_X(ST_Point(10.0, 45.0)) as x, ST_Y(ST_Point(10.0, 45.0)) as y");
+    final ResultSet result = db.query("sql", "select geo.x(geo.point(10.0, 45.0)) as x, geo.y(geo.point(10.0, 45.0)) as y");
     assertThat(result.hasNext()).isTrue();
     final com.arcadedb.query.sql.executor.Result row = result.next();
     assertThat(((Number) row.getProperty("x")).doubleValue()).isEqualTo(10.0);
@@ -722,10 +722,10 @@ void stXstY() throws Exception {
 }
 
 @Test
-void stDistance() throws Exception {
+void geoDistance() throws Exception {
   TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
     final ResultSet result = db.query("sql",
-        "select ST_Distance(ST_Point(0.0, 0.0), ST_Point(1.0, 0.0), 'km') as dist");
+        "select geo.distance(geo.point(0.0, 0.0), geo.point(1.0, 0.0), 'km') as dist");
     assertThat(result.hasNext()).isTrue();
     final Number dist = result.next().getProperty("dist");
     assertThat(dist.doubleValue()).isGreaterThan(100.0).isLessThan(120.0); // ~111km per degree
@@ -747,24 +747,24 @@ void oldFunctionNamesGone() throws Exception {
 cd engine && mvn test -Dtest=SQLGeoFunctionsTest -q 2>&1 | tail -10
 ```
 
-Expected: FAIL — ST_* functions not registered.
+Expected: FAIL — `geo.*` functions not registered.
 
 **Step 3: Create the function classes**
 
 Each function follows the exact same pattern as existing geo functions. Study `SQLFunctionPoint.java` and `SQLFunctionDistance.java` before writing. Key patterns:
 
 - Extend `SQLFunctionAbstract`
-- Constructor: `super("ST_FunctionName")`
+- Constructor: `super("geo.functionName")`
 - `execute()` validates params, calls `GeoUtils.getSpatialContext()` for shape creation
 - `getSyntax()` returns a docs string
 - `getMinArgs()` / `getMaxArgs()` for validation
 
-`SQLFunctionST_GeomFromText.java`:
+`SQLFunctionGeoGeomFromText.java`:
 ```java
-public class SQLFunctionST_GeomFromText extends SQLFunctionAbstract {
-  public static final String NAME = "ST_GeomFromText";
+public class SQLFunctionGeoGeomFromText extends SQLFunctionAbstract {
+  public static final String NAME = "geo.geomFromText";
 
-  public SQLFunctionST_GeomFromText() { super(NAME); }
+  public SQLFunctionGeoGeomFromText() { super(NAME); }
 
   @Override
   public Object execute(final Object self, final Identifiable currentRecord,
@@ -774,22 +774,22 @@ public class SQLFunctionST_GeomFromText extends SQLFunctionAbstract {
     try {
       return GeoUtils.getSpatialContext().getFormats().getWktReader().read(params[0].toString());
     } catch (final Exception e) {
-      throw new IllegalArgumentException("ST_GeomFromText: invalid WKT: " + params[0], e);
+      throw new IllegalArgumentException("geo.geomFromText: invalid WKT: " + params[0], e);
     }
   }
 
-  @Override public String getSyntax() { return "ST_GeomFromText(<wkt>)"; }
+  @Override public String getSyntax() { return "geo.geomFromText(<wkt>)"; }
   @Override public int getMinArgs() { return 1; }
   @Override public int getMaxArgs() { return 1; }
 }
 ```
 
-`SQLFunctionST_AsText.java`:
+`SQLFunctionGeoAsText.java`:
 ```java
-public class SQLFunctionST_AsText extends SQLFunctionAbstract {
-  public static final String NAME = "ST_AsText";
+public class SQLFunctionGeoAsText extends SQLFunctionAbstract {
+  public static final String NAME = "geo.asText";
 
-  public SQLFunctionST_AsText() { super(NAME); }
+  public SQLFunctionGeoAsText() { super(NAME); }
 
   @Override
   public Object execute(final Object self, final Identifiable currentRecord,
@@ -805,18 +805,18 @@ public class SQLFunctionST_AsText extends SQLFunctionAbstract {
     return params[0].toString();
   }
 
-  @Override public String getSyntax() { return "ST_AsText(<geometry>)"; }
+  @Override public String getSyntax() { return "geo.asText(<geometry>)"; }
   @Override public int getMinArgs() { return 1; }
   @Override public int getMaxArgs() { return 1; }
 }
 ```
 
-`SQLFunctionST_X.java`:
+`SQLFunctionGeoX.java`:
 ```java
-public class SQLFunctionST_X extends SQLFunctionAbstract {
-  public static final String NAME = "ST_X";
+public class SQLFunctionGeoX extends SQLFunctionAbstract {
+  public static final String NAME = "geo.x";
 
-  public SQLFunctionST_X() { super(NAME); }
+  public SQLFunctionGeoX() { super(NAME); }
 
   @Override
   public Object execute(final Object self, final Identifiable currentRecord,
@@ -825,35 +825,35 @@ public class SQLFunctionST_X extends SQLFunctionAbstract {
       return null;
     if (params[0] instanceof org.locationtech.spatial4j.shape.Point p)
       return p.getX();
-    throw new IllegalArgumentException("ST_X: argument must be a Point");
+    throw new IllegalArgumentException("geo.x: argument must be a Point");
   }
 
-  @Override public String getSyntax() { return "ST_X(<point>)"; }
+  @Override public String getSyntax() { return "geo.x(<point>)"; }
   @Override public int getMinArgs() { return 1; }
   @Override public int getMaxArgs() { return 1; }
 }
 ```
 
-`SQLFunctionST_Y.java` — same as ST_X but returns `p.getY()`.
+`SQLFunctionGeoY.java` — same as `SQLFunctionGeoX` but returns `p.getY()`.
 
-`SQLFunctionST_Point.java` — same logic as existing `SQLFunctionPoint.java` but named `ST_Point`.
+`SQLFunctionGeoPoint.java` — same logic as existing `SQLFunctionPoint.java` but named `geo.point`.
 
-`SQLFunctionST_Distance.java` — same logic as existing `SQLFunctionDistance.java` but named `ST_Distance`.
+`SQLFunctionGeoDistance.java` — same logic as existing `SQLFunctionDistance.java` but named `geo.distance`.
 
-`SQLFunctionST_LineString.java` — same as existing `SQLFunctionLineString.java` but named `ST_LineString`.
+`SQLFunctionGeoLineString.java` — same as existing `SQLFunctionLineString.java` but named `geo.lineString`.
 
-`SQLFunctionST_Polygon.java` — same as existing `SQLFunctionPolygon.java` but named `ST_Polygon`.
+`SQLFunctionGeoPolygon.java` — same as existing `SQLFunctionPolygon.java` but named `geo.polygon`.
 
-`SQLFunctionST_Buffer.java` — same as `SQLFunctionCircle.java` (circle = point + buffer radius) but named `ST_Buffer`.
+`SQLFunctionGeoBuffer.java` — same as `SQLFunctionCircle.java` (circle = point + buffer radius) but named `geo.buffer`.
 
-`SQLFunctionST_Envelope.java` — same as `SQLFunctionRectangle.java` but named `ST_Envelope`.
+`SQLFunctionGeoEnvelope.java` — same as `SQLFunctionRectangle.java` but named `geo.envelope`.
 
-`SQLFunctionST_Area.java`:
+`SQLFunctionGeoArea.java`:
 ```java
-public class SQLFunctionST_Area extends SQLFunctionAbstract {
-  public static final String NAME = "ST_Area";
+public class SQLFunctionGeoArea extends SQLFunctionAbstract {
+  public static final String NAME = "geo.area";
 
-  public SQLFunctionST_Area() { super(NAME); }
+  public SQLFunctionGeoArea() { super(NAME); }
 
   @Override
   public Object execute(final Object self, final Identifiable currentRecord,
@@ -864,16 +864,16 @@ public class SQLFunctionST_Area extends SQLFunctionAbstract {
         : GeoUtils.getSpatialContext().getShapeFactory().makePoint(0, 0); // placeholder
     if (params[0] instanceof Shape s)
       return s.getArea(GeoUtils.getSpatialContext());
-    throw new IllegalArgumentException("ST_Area: argument must be a Shape");
+    throw new IllegalArgumentException("geo.area: argument must be a Shape");
   }
 
-  @Override public String getSyntax() { return "ST_Area(<geometry>)"; }
+  @Override public String getSyntax() { return "geo.area(<geometry>)"; }
   @Override public int getMinArgs() { return 1; }
   @Override public int getMaxArgs() { return 1; }
 }
 ```
 
-`SQLFunctionST_AsGeoJson.java` — use JTS `GeoJsonWriter` (from `org.locationtech.jts.io.geojson`):
+`SQLFunctionGeoAsGeoJson.java` — use JTS `GeoJsonWriter` (from `org.locationtech.jts.io.geojson`):
 ```java
 // Convert Spatial4j Shape → JTS Geometry → GeoJSON string
 // GeoUtils.SPATIAL_CONTEXT has getGeometryFrom(Shape) if using JtsSpatialContext
@@ -896,20 +896,20 @@ In `DefaultSQLFunctionFactory.java`:
    register(SQLFunctionRectangle.NAME, new SQLFunctionRectangle());
    ```
 
-2. **Add** the new ST_* registrations in their place:
+2. **Add** the new `geo.*` registrations in their place:
    ```java
-   register(SQLFunctionST_GeomFromText.NAME, new SQLFunctionST_GeomFromText());
-   register(SQLFunctionST_Point.NAME, new SQLFunctionST_Point());
-   register(SQLFunctionST_LineString.NAME, new SQLFunctionST_LineString());
-   register(SQLFunctionST_Polygon.NAME, new SQLFunctionST_Polygon());
-   register(SQLFunctionST_Buffer.NAME, new SQLFunctionST_Buffer());
-   register(SQLFunctionST_Envelope.NAME, new SQLFunctionST_Envelope());
-   register(SQLFunctionST_Distance.NAME, new SQLFunctionST_Distance());
-   register(SQLFunctionST_Area.NAME, new SQLFunctionST_Area());
-   register(SQLFunctionST_AsText.NAME, new SQLFunctionST_AsText());
-   register(SQLFunctionST_AsGeoJson.NAME, new SQLFunctionST_AsGeoJson());
-   register(SQLFunctionST_X.NAME, new SQLFunctionST_X());
-   register(SQLFunctionST_Y.NAME, new SQLFunctionST_Y());
+   register(SQLFunctionGeoGeomFromText.NAME, new SQLFunctionGeoGeomFromText());
+   register(SQLFunctionGeoPoint.NAME, new SQLFunctionGeoPoint());
+   register(SQLFunctionGeoLineString.NAME, new SQLFunctionGeoLineString());
+   register(SQLFunctionGeoPolygon.NAME, new SQLFunctionGeoPolygon());
+   register(SQLFunctionGeoBuffer.NAME, new SQLFunctionGeoBuffer());
+   register(SQLFunctionGeoEnvelope.NAME, new SQLFunctionGeoEnvelope());
+   register(SQLFunctionGeoDistance.NAME, new SQLFunctionGeoDistance());
+   register(SQLFunctionGeoArea.NAME, new SQLFunctionGeoArea());
+   register(SQLFunctionGeoAsText.NAME, new SQLFunctionGeoAsText());
+   register(SQLFunctionGeoAsGeoJson.NAME, new SQLFunctionGeoAsGeoJson());
+   register(SQLFunctionGeoX.NAME, new SQLFunctionGeoX());
+   register(SQLFunctionGeoY.NAME, new SQLFunctionGeoY());
    ```
 
 **Step 5: Compile to check all references to old classes**
@@ -934,7 +934,7 @@ Expected: `BUILD SUCCESS`.
 git add engine/src/main/java/com/arcadedb/function/sql/geo/ \
         engine/src/main/java/com/arcadedb/function/sql/DefaultSQLFunctionFactory.java \
         engine/src/test/java/com/arcadedb/function/sql/geo/SQLGeoFunctionsTest.java
-git commit -m "feat(geo): add ST_* constructor and accessor functions, remove old geo function names"
+git commit -m "feat(geo): add geo.* constructor and accessor functions, remove old geo function names"
 ```
 
 ---
@@ -942,16 +942,16 @@ git commit -m "feat(geo): add ST_* constructor and accessor functions, remove ol
 ## Task 6: Create Spatial Predicate Functions with IndexableSQLFunction
 
 **Files:**
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Predicate.java` (abstract base)
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Within.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Intersects.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Contains.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_DWithin.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Disjoint.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Equals.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Crosses.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Overlaps.java`
-- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionST_Touches.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoPredicate.java` (abstract base)
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoWithin.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoIntersects.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoContains.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoDWithin.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoDisjoint.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoEquals.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoCrosses.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoOverlaps.java`
+- Create: `engine/src/main/java/com/arcadedb/function/sql/geo/SQLFunctionGeoTouches.java`
 - Modify: `engine/src/main/java/com/arcadedb/function/sql/DefaultSQLFunctionFactory.java`
 - Create: `engine/src/test/java/com/arcadedb/function/sql/geo/SQLGeoIndexedQueryTest.java`
 
@@ -974,7 +974,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   // ---- Non-indexed (full-scan) predicate evaluation ----
 
   @Test
-  void stWithinNoIndex() {
+  void geoWithinNoIndex() {
     database.command("sql", "CREATE DOCUMENT TYPE Place");
     database.transaction(() -> {
       final MutableDocument d = database.newDocument("Place");
@@ -983,14 +983,14 @@ class SQLGeoIndexedQueryTest extends TestHelper {
     });
     // Point (10,45) is inside POLYGON 5-15, 40-50
     final ResultSet rs = database.query("sql",
-        "SELECT FROM Place WHERE ST_Within(ST_GeomFromText(coords), " +
-        "ST_GeomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
+        "SELECT FROM Place WHERE geo.within(geo.geomFromText(coords), " +
+        "geo.geomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
     assertThat(rs.hasNext()).isTrue();
     rs.close();
   }
 
   @Test
-  void stWithinOutsideNoIndex() {
+  void geoWithinOutsideNoIndex() {
     database.command("sql", "CREATE DOCUMENT TYPE Place2");
     database.transaction(() -> {
       final MutableDocument d = database.newDocument("Place2");
@@ -998,14 +998,14 @@ class SQLGeoIndexedQueryTest extends TestHelper {
       d.save();
     });
     final ResultSet rs = database.query("sql",
-        "SELECT FROM Place2 WHERE ST_Within(ST_GeomFromText(coords), " +
-        "ST_GeomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
+        "SELECT FROM Place2 WHERE geo.within(geo.geomFromText(coords), " +
+        "geo.geomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
     assertThat(rs.hasNext()).isFalse();
     rs.close();
   }
 
   @Test
-  void stIntersectsNoIndex() {
+  void geoIntersectsNoIndex() {
     database.command("sql", "CREATE DOCUMENT TYPE Place3");
     database.transaction(() -> {
       final MutableDocument d = database.newDocument("Place3");
@@ -1013,8 +1013,8 @@ class SQLGeoIndexedQueryTest extends TestHelper {
       d.save();
     });
     final ResultSet rs = database.query("sql",
-        "SELECT FROM Place3 WHERE ST_Intersects(ST_GeomFromText(coords), " +
-        "ST_GeomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
+        "SELECT FROM Place3 WHERE geo.intersects(geo.geomFromText(coords), " +
+        "geo.geomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
     assertThat(rs.hasNext()).isTrue();
     rs.close();
   }
@@ -1022,7 +1022,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   // ---- Indexed predicate evaluation ----
 
   @Test
-  void stWithinWithIndex() {
+  void geoWithinWithIndex() {
     database.command("sql", "CREATE DOCUMENT TYPE IndexedPlace");
     database.command("sql", "CREATE PROPERTY IndexedPlace.coords STRING");
     database.command("sql", "CREATE INDEX ON IndexedPlace (coords) GEOSPATIAL");
@@ -1035,8 +1035,8 @@ class SQLGeoIndexedQueryTest extends TestHelper {
     });
 
     final ResultSet rs = database.query("sql",
-        "SELECT FROM IndexedPlace WHERE ST_Within(coords, " +
-        "ST_GeomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
+        "SELECT FROM IndexedPlace WHERE geo.within(coords, " +
+        "geo.geomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
 
     int count = 0;
     while (rs.hasNext()) {
@@ -1048,7 +1048,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   @Test
-  void stIntersectsWithIndex() {
+  void geoIntersectsWithIndex() {
     database.command("sql", "CREATE DOCUMENT TYPE IndexedPlace2");
     database.command("sql", "CREATE PROPERTY IndexedPlace2.coords STRING");
     database.command("sql", "CREATE INDEX ON IndexedPlace2 (coords) GEOSPATIAL");
@@ -1059,8 +1059,8 @@ class SQLGeoIndexedQueryTest extends TestHelper {
     });
 
     final ResultSet rs = database.query("sql",
-        "SELECT FROM IndexedPlace2 WHERE ST_Intersects(coords, " +
-        "ST_GeomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
+        "SELECT FROM IndexedPlace2 WHERE geo.intersects(coords, " +
+        "geo.geomFromText('POLYGON ((5 40, 15 40, 15 50, 5 50, 5 40))')) = true");
 
     int count = 0;
     while (rs.hasNext()) { rs.next(); count++; }
@@ -1069,7 +1069,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   @Test
-  void stContainsWithIndex() {
+  void geoContainsWithIndex() {
     database.command("sql", "CREATE DOCUMENT TYPE Region");
     database.command("sql", "CREATE PROPERTY Region.bounds STRING");
     database.command("sql", "CREATE INDEX ON Region (bounds) GEOSPATIAL");
@@ -1084,8 +1084,8 @@ class SQLGeoIndexedQueryTest extends TestHelper {
     });
 
     final ResultSet rs = database.query("sql",
-        "SELECT FROM Region WHERE ST_Contains(bounds, " +
-        "ST_GeomFromText('POINT (10.0 45.0)')) = true");
+        "SELECT FROM Region WHERE geo.contains(bounds, " +
+        "geo.geomFromText('POINT (10.0 45.0)')) = true");
 
     int count = 0;
     while (rs.hasNext()) { rs.next(); count++; }
@@ -1094,9 +1094,9 @@ class SQLGeoIndexedQueryTest extends TestHelper {
   }
 
   @Test
-  void stNullReturnsNull() {
+  void geoNullReturnsNull() {
     final ResultSet rs = database.query("sql",
-        "SELECT ST_Within(null, ST_GeomFromText('POINT (0 0)')) as result");
+        "SELECT geo.within(null, geo.geomFromText('POINT (0 0)')) as result");
     assertThat(rs.hasNext()).isTrue();
     final Result row = rs.next();
     assertThat(row.getProperty("result")).isNull();
@@ -1111,7 +1111,7 @@ class SQLGeoIndexedQueryTest extends TestHelper {
 cd engine && mvn test -Dtest=SQLGeoIndexedQueryTest -q 2>&1 | tail -10
 ```
 
-Expected: FAIL — ST_Within etc. not registered.
+Expected: FAIL — `geo.within` etc. not registered.
 
 **Step 3: Create the abstract base class**
 
@@ -1139,10 +1139,10 @@ import org.locationtech.spatial4j.shape.SpatialRelation;
 import java.util.ArrayList;
 import java.util.List;
 
-public abstract class SQLFunctionST_Predicate extends SQLFunctionAbstract
+public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract
     implements IndexableSQLFunction {
 
-  protected SQLFunctionST_Predicate(final String name) {
+  protected SQLFunctionGeoPredicate(final String name) {
     super(name);
   }
 
@@ -1292,23 +1292,23 @@ public abstract class SQLFunctionST_Predicate extends SQLFunctionAbstract
 
 **Step 4: Create the 9 predicate subclasses**
 
-Each is ~20 lines. Example for `ST_Within`:
+Each is ~20 lines. Example for `geo.within`:
 
 ```java
 package com.arcadedb.function.sql.geo;
 
 import org.locationtech.spatial4j.shape.SpatialRelation;
 
-public class SQLFunctionST_Within extends SQLFunctionST_Predicate {
-  public static final String NAME = "ST_Within";
+public class SQLFunctionGeoWithin extends SQLFunctionGeoPredicate {
+  public static final String NAME = "geo.within";
 
-  public SQLFunctionST_Within() { super(NAME); }
+  public SQLFunctionGeoWithin() { super(NAME); }
 
   @Override
   protected SpatialRelation getExpectedRelation() { return SpatialRelation.WITHIN; }
 
   @Override
-  public String getSyntax() { return "ST_Within(<geometry>, <shape>)"; }
+  public String getSyntax() { return "geo.within(<geometry>, <shape>)"; }
 
   @Override
   public int getMinArgs() { return 2; }
@@ -1319,16 +1319,16 @@ public class SQLFunctionST_Within extends SQLFunctionST_Predicate {
 ```
 
 Spatial4j `SpatialRelation` values:
-- `ST_Within` → `SpatialRelation.WITHIN`
-- `ST_Intersects` → `SpatialRelation.INTERSECTS`
-- `ST_Contains` → `SpatialRelation.CONTAINS`
-- `ST_Disjoint` → `SpatialRelation.DISJOINT`
-- `ST_Equals` → override `checkRelation` to use JTS `equals()`
+- `geo.within` → `SpatialRelation.WITHIN`
+- `geo.intersects` → `SpatialRelation.INTERSECTS`
+- `geo.contains` → `SpatialRelation.CONTAINS`
+- `geo.disjoint` → `SpatialRelation.DISJOINT`
+- `geo.equals` → override `checkRelation` to use JTS `equals()`
 
-For `ST_Crosses`, `ST_Overlaps`, `ST_Touches` — Spatial4j doesn't have these as `SpatialRelation` values. Override `checkRelation` to use JTS topology:
+For `geo.crosses`, `geo.overlaps`, `geo.touches` — Spatial4j doesn't have these as `SpatialRelation` values. Override `checkRelation` to use JTS topology:
 
 ```java
-// ST_Crosses example — needs JTS conversion
+// geo.crosses example — needs JTS conversion
 @Override
 protected Boolean checkRelation(final Shape g1, final Shape g2) {
   final org.locationtech.jts.geom.Geometry jg1 = GeoUtils.SPATIAL_CONTEXT.getGeometryFrom(g1);
@@ -1337,14 +1337,14 @@ protected Boolean checkRelation(final Shape g1, final Shape g2) {
 }
 ```
 
-`ST_DWithin` has a different signature `(g1, g2, distance)`, so override `execute()` directly:
+`geo.dWithin` has a different signature `(g1, g2, distance)`, so override `execute()` directly:
 
 ```java
-// ST_DWithin: returns true if g1 is within 'distance' of g2
+// geo.dWithin: returns true if g1 is within 'distance' of g2
 // Use Spatial4j's distance calculation
 @Override
 public Object execute(..., Object[] params, ...) {
-  if (params.length < 3) throw new IllegalArgumentException("ST_DWithin requires 3 args");
+  if (params.length < 3) throw new IllegalArgumentException("geo.dWithin requires 3 args");
   if (params[0] == null || params[1] == null || params[2] == null) return null;
   final Shape g1 = toShape(params[0]);
   final Shape g2 = toShape(params[1]);
@@ -1356,18 +1356,18 @@ public Object execute(..., Object[] params, ...) {
 
 **Step 5: Register predicates in DefaultSQLFunctionFactory**
 
-Add after the ST_AsGeoJson registration:
+Add after the `geo.asGeoJson` registration:
 
 ```java
-register(SQLFunctionST_Within.NAME, new SQLFunctionST_Within());
-register(SQLFunctionST_Intersects.NAME, new SQLFunctionST_Intersects());
-register(SQLFunctionST_Contains.NAME, new SQLFunctionST_Contains());
-register(SQLFunctionST_DWithin.NAME, new SQLFunctionST_DWithin());
-register(SQLFunctionST_Disjoint.NAME, new SQLFunctionST_Disjoint());
-register(SQLFunctionST_Equals.NAME, new SQLFunctionST_Equals());
-register(SQLFunctionST_Crosses.NAME, new SQLFunctionST_Crosses());
-register(SQLFunctionST_Overlaps.NAME, new SQLFunctionST_Overlaps());
-register(SQLFunctionST_Touches.NAME, new SQLFunctionST_Touches());
+register(SQLFunctionGeoWithin.NAME, new SQLFunctionGeoWithin());
+register(SQLFunctionGeoIntersects.NAME, new SQLFunctionGeoIntersects());
+register(SQLFunctionGeoContains.NAME, new SQLFunctionGeoContains());
+register(SQLFunctionGeoDWithin.NAME, new SQLFunctionGeoDWithin());
+register(SQLFunctionGeoDisjoint.NAME, new SQLFunctionGeoDisjoint());
+register(SQLFunctionGeoEquals.NAME, new SQLFunctionGeoEquals());
+register(SQLFunctionGeoCrosses.NAME, new SQLFunctionGeoCrosses());
+register(SQLFunctionGeoOverlaps.NAME, new SQLFunctionGeoOverlaps());
+register(SQLFunctionGeoTouches.NAME, new SQLFunctionGeoTouches());
 ```
 
 **Step 6: Compile**
@@ -1400,7 +1400,7 @@ Fix any failures before committing.
 git add engine/src/main/java/com/arcadedb/function/sql/geo/ \
         engine/src/main/java/com/arcadedb/function/sql/DefaultSQLFunctionFactory.java \
         engine/src/test/java/com/arcadedb/function/sql/geo/SQLGeoIndexedQueryTest.java
-git commit -m "feat(geo): add ST_* spatial predicate functions with IndexableSQLFunction for automatic index usage"
+git commit -m "feat(geo): add geo.* spatial predicate functions with IndexableSQLFunction for automatic index usage"
 ```
 
 ---
@@ -1436,7 +1436,7 @@ Expected: `BUILD SUCCESS`.
 
 ```bash
 git add -A
-git commit -m "feat(geo): complete geospatial indexing implementation with ST_* functions and LSMTreeGeoIndex"
+git commit -m "feat(geo): complete geospatial indexing implementation with geo.* functions and LSMTreeGeoIndex"
 ```
 
 ---
@@ -1451,6 +1451,6 @@ git commit -m "feat(geo): complete geospatial indexing implementation with ST_* 
 
 **WKT format:** Spatial4j's WKT reader accepts `POINT (x y)` with a space before the parenthesis. JTS requires `POINT(x y)` without space. The `GeoUtils.getSpatialContext().getFormats().getWktReader()` handles both.
 
-**ST_DWithin distance units:** The base implementation uses degrees. For user-facing meter/km input, add a conversion using `DistanceUtils.dist2Degrees(distKm, DistanceUtils.EARTH_MEAN_RADIUS_KM)` from Spatial4j.
+**geo.dWithin distance units:** The base implementation uses degrees. For user-facing meter/km input, add a conversion using `DistanceUtils.dist2Degrees(distKm, DistanceUtils.EARTH_MEAN_RADIUS_KM)` from Spatial4j.
 
 **Index loading:** After adding `GEOSPATIAL` to `LocalSchema`'s load path, verify that opening a database with an existing geo index (from disk) correctly instantiates `LSMTreeGeoIndex`. Test by creating a database, inserting data, closing and re-opening it, then querying.
