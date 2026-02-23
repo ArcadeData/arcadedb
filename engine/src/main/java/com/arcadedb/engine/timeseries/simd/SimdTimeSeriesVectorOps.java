@@ -131,41 +131,26 @@ public final class SimdTimeSeriesVectorOps implements TimeSeriesVectorOps {
     return m;
   }
 
+  // The scalar fallback instance used for bitmask-based operations that do not benefit from SIMD
+  // (bitmask layout with word/bit addressing doesn't map cleanly to SIMD masks)
+  private static final ScalarTimeSeriesVectorOps SCALAR = new ScalarTimeSeriesVectorOps();
+
   @Override
   public double sumFiltered(final double[] data, final long[] bitmask, final int offset, final int length) {
-    // Delegate to scalar for filtered operations (bitmask layout doesn't map well to SIMD masks)
-    double s = 0;
-    for (int i = 0; i < length; i++) {
-      final int maskWord = (offset + i) >> 6;
-      final int maskBit = (offset + i) & 63;
-      if ((bitmask[maskWord] & (1L << maskBit)) != 0)
-        s += data[offset + i];
-    }
-    return s;
+    // Scalar fallback — bitmask operations are not SIMD-accelerated
+    return SCALAR.sumFiltered(data, bitmask, offset, length);
   }
 
   @Override
   public int countFiltered(final long[] bitmask, final int offset, final int length) {
-    int count = 0;
-    for (int i = 0; i < length; i++) {
-      final int maskWord = (offset + i) >> 6;
-      final int maskBit = (offset + i) & 63;
-      if ((bitmask[maskWord] & (1L << maskBit)) != 0)
-        count++;
-    }
-    return count;
+    // Scalar fallback — bitmask operations are not SIMD-accelerated
+    return SCALAR.countFiltered(bitmask, offset, length);
   }
 
   @Override
   public void greaterThan(final double[] data, final double threshold, final long[] out, final int offset, final int length) {
-    for (int i = 0; i < length; i++) {
-      final int maskWord = (offset + i) >> 6;
-      final int maskBit = (offset + i) & 63;
-      if (data[offset + i] > threshold)
-        out[maskWord] |= (1L << maskBit);
-      else
-        out[maskWord] &= ~(1L << maskBit);
-    }
+    // Scalar fallback — bitmask output doesn't map cleanly to SIMD result masks
+    SCALAR.greaterThan(data, threshold, out, offset, length);
   }
 
   @Override

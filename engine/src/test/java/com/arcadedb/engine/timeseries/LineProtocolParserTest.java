@@ -166,4 +166,34 @@ public class LineProtocolParserTest {
     assertThat(LineProtocolParser.parse("", Precision.MILLISECONDS)).isEmpty();
     assertThat(LineProtocolParser.parse(null, Precision.MILLISECONDS)).isEmpty();
   }
+
+  /**
+   * Regression test: a single malformed line must not stop parsing of the remaining batch.
+   * Previously NumberFormatException would propagate and halt the entire parse.
+   */
+  @Test
+  public void testMalformedLineDoesNotHaltBatch() {
+    final String text = "metric value=1.0 1000\n" +
+        "metric value=not_a_number 2000\n" +    // malformed field value
+        "metric value=3.0 3000\n";
+    final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
+    // Bad line is skipped; good lines are still parsed
+    assertThat(samples).hasSize(2);
+    assertThat(samples.get(0).getTimestampMs()).isEqualTo(1000L);
+    assertThat(samples.get(1).getTimestampMs()).isEqualTo(3000L);
+  }
+
+  /**
+   * Regression test: a malformed timestamp must skip the line, not abort the batch.
+   */
+  @Test
+  public void testMalformedTimestampDoesNotHaltBatch() {
+    final String text = "metric value=1.0 1000\n" +
+        "metric value=2.0 NOT_A_TIMESTAMP\n" +   // malformed timestamp
+        "metric value=3.0 3000\n";
+    final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
+    assertThat(samples).hasSize(2);
+    assertThat(samples.get(0).getTimestampMs()).isEqualTo(1000L);
+    assertThat(samples.get(1).getTimestampMs()).isEqualTo(3000L);
+  }
 }

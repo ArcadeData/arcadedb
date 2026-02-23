@@ -27,9 +27,9 @@ import java.nio.ByteBuffer;
  * <p>
  * Encoding scheme for delta-of-deltas (dod):
  * - dod == 0: store '0' (1 bit)
- * - |dod| <= 63: store '10' + 7-bit value (9 bits)
- * - |dod| <= 255: store '110' + 9-bit value (12 bits)
- * - |dod| <= 2047: store '1110' + 12-bit value (16 bits)
+ * - dod in [-64, 63]: store '10' + 7-bit ZigZag value (9 bits)
+ * - dod in [-255, 255]: store '110' + 9-bit ZigZag value (12 bits)
+ * - dod in [-2047, 2047]: store '1110' + 12-bit ZigZag value (16 bits)
  * - otherwise: store '1111' + 64-bit raw value (68 bits)
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -64,7 +64,7 @@ public final class DeltaOfDeltaCodec {
 
       if (dod == 0) {
         writer.writeBit(0);
-      } else if (dod >= -63 && dod <= 63) {
+      } else if (dod >= -64 && dod <= 63) {
         writer.writeBits(0b10, 2);
         writer.writeBits(zigZagEncode(dod), 7);
       } else if (dod >= -255 && dod <= 255) {

@@ -118,86 +118,99 @@ public class LineProtocolParser {
 
   /**
    * Parses a single line of InfluxDB Line Protocol.
+   * Returns {@code null} if the line is malformed (missing measurement, no fields, or unparseable numbers).
    */
   static Sample parseLine(final String line, final Precision precision) {
     // Split into: measurement+tags, fields, [timestamp]
     // Space separates measurement+tags from fields, and fields from timestamp
     // But commas and equals within the measurement+tags section are significant
 
-    int pos = 0;
-    final int len = line.length();
+    try {
+      int pos = 0;
+      final int len = line.length();
 
-    // Parse measurement name (up to first unescaped comma or space)
-    final StringBuilder measurement = new StringBuilder();
-    while (pos < len) {
-      final char c = line.charAt(pos);
-      if (c == '\\' && pos + 1 < len) {
-        measurement.append(line.charAt(pos + 1));
-        pos += 2;
-        continue;
+      // Parse measurement name (up to first unescaped comma or space)
+      final StringBuilder measurement = new StringBuilder();
+      while (pos < len) {
+        final char c = line.charAt(pos);
+        if (c == '\\' && pos + 1 < len) {
+          measurement.append(line.charAt(pos + 1));
+          pos += 2;
+          continue;
+        }
+        if (c == ',' || c == ' ')
+          break;
+        measurement.append(c);
+        pos++;
       }
-      if (c == ',' || c == ' ')
-        break;
-      measurement.append(c);
-      pos++;
-    }
 
-    if (measurement.isEmpty())
-      return null;
+      if (measurement.isEmpty())
+        return null;
 
-    // Parse tags (comma-separated key=value pairs)
-    final Map<String, String> tags = new LinkedHashMap<>();
-    if (pos < len && line.charAt(pos) == ',') {
-      pos++; // skip comma
+      // Parse tags (comma-separated key=value pairs)
+      final Map<String, String> tags = new LinkedHashMap<>();
+      if (pos < len && line.charAt(pos) == ',') {
+        pos++; // skip comma
+        while (pos < len && line.charAt(pos) != ' ') {
+          final Object[] keyResult = readKeyWithLength(line, pos, '=');
+          final String key = (String) keyResult[0];
+          pos += (int) keyResult[1] + 1; // +1 for '='
+          final Object[] valResult = readTagValueWithLength(line, pos);
+          final String value = (String) valResult[0];
+          pos += (int) valResult[1];
+          tags.put(key, value);
+          if (pos < len && line.charAt(pos) == ',')
+            pos++; // skip comma separator
+        }
+      }
+
+      // Skip space before fields
+      if (pos < len && line.charAt(pos) == ' ')
+        pos++;
+
+      // Parse fields (comma-separated key=value pairs)
+      final Map<String, Object> fields = new LinkedHashMap<>();
       while (pos < len && line.charAt(pos) != ' ') {
-        final String key = readTagKey(line, pos);
-        pos += rawTagKeyLength(line, pos) + 1; // +1 for '='
-        final String value = readTagValue(line, pos);
-        pos += rawTagValueLength(line, pos);
-        tags.put(key, value);
+        final Object[] keyResult = readKeyWithLength(line, pos, '=');
+        final String key = (String) keyResult[0];
+        pos += (int) keyResult[1] + 1; // +1 for '='
+        final Object[] valueAndLen = readFieldValue(line, pos);
+        fields.put(key, valueAndLen[0]);
+        pos += (int) valueAndLen[1];
         if (pos < len && line.charAt(pos) == ',')
           pos++; // skip comma separator
       }
-    }
 
-    // Skip space before fields
-    if (pos < len && line.charAt(pos) == ' ')
-      pos++;
+      if (fields.isEmpty())
+        return null;
 
-    // Parse fields (comma-separated key=value pairs)
-    final Map<String, Object> fields = new LinkedHashMap<>();
-    while (pos < len && line.charAt(pos) != ' ') {
-      final String key = readFieldKey(line, pos);
-      pos += rawFieldKeyLength(line, pos) + 1; // +1 for '='
-      final Object[] valueAndLen = readFieldValue(line, pos);
-      fields.put(key, valueAndLen[0]);
-      pos += (int) valueAndLen[1];
-      if (pos < len && line.charAt(pos) == ',')
-        pos++; // skip comma separator
-    }
-
-    if (fields.isEmpty())
-      return null;
-
-    // Parse optional timestamp
-    long timestampMs;
-    if (pos < len && line.charAt(pos) == ' ') {
-      pos++; // skip space
-      final String tsStr = line.substring(pos).trim();
-      if (!tsStr.isEmpty()) {
-        final long rawTs = Long.parseLong(tsStr);
-        timestampMs = precision.toMillis(rawTs);
+      // Parse optional timestamp
+      long timestampMs;
+      if (pos < len && line.charAt(pos) == ' ') {
+        pos++; // skip space
+        final String tsStr = line.substring(pos).trim();
+        if (!tsStr.isEmpty()) {
+          final long rawTs = Long.parseLong(tsStr);
+          timestampMs = precision.toMillis(rawTs);
+        } else {
+          timestampMs = System.currentTimeMillis();
+        }
       } else {
         timestampMs = System.currentTimeMillis();
       }
-    } else {
-      timestampMs = System.currentTimeMillis();
-    }
 
-    return new Sample(measurement.toString(), tags, fields, timestampMs);
+      return new Sample(measurement.toString(), tags, fields, timestampMs);
+    } catch (final NumberFormatException e) {
+      // Malformed numeric value or timestamp — skip this line rather than halting batch parse
+      return null;
+    }
   }
 
-  private static String readTagKey(final String line, final int start) {
+  /**
+   * Reads a key (tag key or field key) terminated by {@code stopChar}, handling backslash escapes.
+   * Returns {@code Object[] { decodedString, rawLength }} so the caller advances the position once.
+   */
+  private static Object[] readKeyWithLength(final String line, final int start, final char stopChar) {
     final StringBuilder sb = new StringBuilder();
     int pos = start;
     while (pos < line.length()) {
@@ -207,15 +220,19 @@ public class LineProtocolParser {
         pos += 2;
         continue;
       }
-      if (c == '=')
+      if (c == stopChar)
         break;
       sb.append(c);
       pos++;
     }
-    return sb.toString();
+    return new Object[] { sb.toString(), pos - start };
   }
 
-  private static String readTagValue(final String line, final int start) {
+  /**
+   * Reads a tag value terminated by ',' or ' ', handling backslash escapes.
+   * Returns {@code Object[] { decodedString, rawLength }} so the caller advances the position once.
+   */
+  private static Object[] readTagValueWithLength(final String line, final int start) {
     final StringBuilder sb = new StringBuilder();
     int pos = start;
     while (pos < line.length()) {
@@ -230,70 +247,7 @@ public class LineProtocolParser {
       sb.append(c);
       pos++;
     }
-    return sb.toString();
-  }
-
-  private static int rawTagKeyLength(final String line, final int start) {
-    int pos = start;
-    while (pos < line.length()) {
-      final char c = line.charAt(pos);
-      if (c == '\\' && pos + 1 < line.length()) {
-        pos += 2;
-        continue;
-      }
-      if (c == '=')
-        break;
-      pos++;
-    }
-    return pos - start;
-  }
-
-  private static int rawTagValueLength(final String line, final int start) {
-    int pos = start;
-    while (pos < line.length()) {
-      final char c = line.charAt(pos);
-      if (c == '\\' && pos + 1 < line.length()) {
-        pos += 2;
-        continue;
-      }
-      if (c == ',' || c == ' ')
-        break;
-      pos++;
-    }
-    return pos - start;
-  }
-
-  private static String readFieldKey(final String line, final int start) {
-    final StringBuilder sb = new StringBuilder();
-    int pos = start;
-    while (pos < line.length()) {
-      final char c = line.charAt(pos);
-      if (c == '\\' && pos + 1 < line.length()) {
-        sb.append(line.charAt(pos + 1));
-        pos += 2;
-        continue;
-      }
-      if (c == '=')
-        break;
-      sb.append(c);
-      pos++;
-    }
-    return sb.toString();
-  }
-
-  private static int rawFieldKeyLength(final String line, final int start) {
-    int pos = start;
-    while (pos < line.length()) {
-      final char c = line.charAt(pos);
-      if (c == '\\' && pos + 1 < line.length()) {
-        pos += 2;
-        continue;
-      }
-      if (c == '=')
-        break;
-      pos++;
-    }
-    return pos - start;
+    return new Object[] { sb.toString(), pos - start };
   }
 
   /**

@@ -113,4 +113,21 @@ class DeltaOfDeltaCodecTest {
     final byte[] encoded = DeltaOfDeltaCodec.encode(input);
     assertThat(DeltaOfDeltaCodec.decode(encoded)).containsExactly(input);
   }
+
+  /**
+   * Regression test: dod == -64 must use the compact 7-bit ZigZag bucket, not the 64-bit fallback.
+   * ZigZag(-64) = 127 which fits in 7 bits. Previously the range check excluded -64.
+   */
+  @Test
+  void testDodMinusSixtyFourUsesCompactEncoding() {
+    // Construct timestamps where dod == -64: delta[1]=100, delta[2]=36 → dod = 36 - 100 = -64
+    final long[] input = { 1000L, 1100L, 1136L };
+    final byte[] encoded = DeltaOfDeltaCodec.encode(input);
+    assertThat(DeltaOfDeltaCodec.decode(encoded)).containsExactly(input);
+
+    // Verify it uses the compact bucket (encoded should be shorter than if using 64-bit fallback)
+    // 64-bit fallback: 4(count) + 8(first) + 8(firstDelta) + (4 + 64) / 8 = 29 bytes
+    // 7-bit bucket: 4(count) + 8(first) + 8(firstDelta) + (2 + 7 + 7) / 8 = ~22 bytes
+    assertThat(encoded.length).isLessThan(29);
+  }
 }

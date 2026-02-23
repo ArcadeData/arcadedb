@@ -44,6 +44,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
 
@@ -84,8 +86,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
-  // In-memory block directory (loaded at open)
-  private final List<BlockEntry> blockDirectory = new ArrayList<>();
+  // In-memory block directory (loaded at open) — protected by directoryLock
+  private final List<BlockEntry>    blockDirectory = new ArrayList<>();
+  private final ReadWriteLock       directoryLock  = new ReentrantReadWriteLock();
   private       long             globalMinTs    = Long.MAX_VALUE;
   private       long             globalMaxTs    = Long.MIN_VALUE;
   private       boolean          headerDirty;
@@ -150,10 +153,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @param columnMaxs        per-column max (NaN for non-numeric columns)
    * @param columnSums        per-column sum (NaN for non-numeric columns)
    */
-  public synchronized void appendBlock(final int sampleCount, final long minTs, final long maxTs,
+  public void appendBlock(final int sampleCount, final long minTs, final long maxTs,
       final byte[][] compressedColumns,
       final double[] columnMins, final double[] columnMaxs, final double[] columnSums,
       final String[][] tagDistinctValues) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
     // Upgrade version 0 files to version 1 format
     if (fileVersion < 1) {
       if (!blockDirectory.isEmpty()) {
@@ -238,16 +243,24 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       globalMaxTs = maxTs;
 
     headerDirty = true;
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
   }
 
   /**
    * Flushes the header to disk if any blocks have been appended since the last flush.
    * Called automatically by {@link #close()}.
    */
-  public synchronized void flushHeader() throws IOException {
-    if (headerDirty) {
-      rewriteHeader();
-      headerDirty = false;
+  public void flushHeader() throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      if (headerDirty) {
+        rewriteHeader();
+        headerDirty = false;
+      }
+    } finally {
+      directoryLock.writeLock().unlock();
     }
   }
 
@@ -258,30 +271,45 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final TagFilter tagFilter) throws IOException {
     final List<Object[]> results = new ArrayList<>();
 
-    for (final BlockEntry entry : blockDirectory) {
+    final List<BlockEntry> snapshot;
+    directoryLock.readLock().lock();
+    try {
+      snapshot = new ArrayList<>(blockDirectory);
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+
+    final int tsColIdx = findTimestampColumnIndex();
+    for (final BlockEntry entry : snapshot) {
       if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
         continue;
 
-      if (tagFilter != null && blockMatchesTagFilter(entry, tagFilter) == BlockMatchResult.SKIP)
+      final BlockMatchResult tagMatch = tagFilter != null
+          ? blockMatchesTagFilter(entry, tagFilter)
+          : BlockMatchResult.FAST_PATH;
+      if (tagMatch == BlockMatchResult.SKIP)
         continue;
 
       // Decompress timestamp column (always column 0)
-      final long[] timestamps = decompressTimestamps(entry, 0);
+      final long[] timestamps = decompressTimestamps(entry, tsColIdx);
 
       // Decompress requested columns
-      final int tsColIdx = findTimestampColumnIndex();
       final Object[][] decompressedCols = decompressColumns(entry, columnIndices, tsColIdx);
 
       // Filter by time range and build result rows
+      final int resultCols = decompressedCols.length + 1;
       for (int i = 0; i < timestamps.length; i++) {
         if (timestamps[i] < fromTs || timestamps[i] > toTs)
           continue;
 
-        final int resultCols = decompressedCols.length + 1;
         final Object[] row = new Object[resultCols];
         row[0] = timestamps[i];
         for (int c = 0; c < decompressedCols.length; c++)
           row[c + 1] = decompressedCols[c][i];
+
+        // For SLOW_PATH blocks (mixed tag values), apply per-row filtering
+        if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matches(row))
+          continue;
 
         results.add(row);
       }
@@ -308,7 +336,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
     final int tsColIdx = findTimestampColumnIndex();
-    final int dirSize = blockDirectory.size();
+
+    // Snapshot the directory under read lock to avoid ConcurrentModificationException
+    final List<BlockEntry> snapshot;
+    directoryLock.readLock().lock();
+    try {
+      snapshot = new ArrayList<>(blockDirectory);
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+    final int dirSize = snapshot.size();
 
     // Binary search: find first block whose maxTimestamp >= fromTs
     int startBlockIdx = 0;
@@ -316,7 +353,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       int lo = 0, hi = dirSize - 1;
       while (lo < hi) {
         final int mid = (lo + hi) >>> 1;
-        if (blockDirectory.get(mid).maxTimestamp < fromTs)
+        if (snapshot.get(mid).maxTimestamp < fromTs)
           lo = mid + 1;
         else
           hi = mid;
@@ -327,13 +364,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int firstBlockIdx = startBlockIdx;
 
     return new Iterator<>() {
-      private int        blockIdx    = firstBlockIdx;
-      private long[]     timestamps  = null;
-      private Object[][] decompCols  = null;
-      private int        rowIdx      = 0;
-      private int        rowEnd      = 0;  // exclusive upper bound within block
-      private int        resultCols  = 0;
-      private Object[]   nextRow     = null;
+      private int             blockIdx         = firstBlockIdx;
+      private long[]          timestamps       = null;
+      private Object[][]      decompCols       = null;
+      private int             rowIdx           = 0;
+      private int             rowEnd           = 0;  // exclusive upper bound within block
+      private int             resultCols       = 0;
+      private Object[]        nextRow          = null;
+      private BlockMatchResult currentTagMatch = BlockMatchResult.FAST_PATH;
 
       {
         advance();
@@ -345,12 +383,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           while (true) {
             // Yield from current decompressed block
             if (timestamps != null) {
-              if (rowIdx < rowEnd) {
+              while (rowIdx < rowEnd) {
                 final Object[] row = new Object[resultCols];
                 row[0] = timestamps[rowIdx];
                 for (int c = 0; c < decompCols.length; c++)
                   row[c + 1] = decompCols[c][rowIdx];
                 rowIdx++;
+                // For SLOW_PATH blocks, apply per-row tag filtering
+                if (currentTagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matches(row))
+                  continue;
                 nextRow = row;
                 return;
               }
@@ -363,7 +404,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             if (blockIdx >= dirSize)
               return;
 
-            final BlockEntry entry = blockDirectory.get(blockIdx);
+            final BlockEntry entry = snapshot.get(blockIdx);
 
             // Early termination: blocks are sorted, so if minTs > toTs all remaining are past range
             if (entry.minTimestamp > toTs)
@@ -375,7 +416,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
               continue;
 
             // Block-level tag filter: skip blocks that cannot contain matching rows
-            if (tagFilter != null && blockMatchesTagFilter(entry, tagFilter) == BlockMatchResult.SKIP)
+            currentTagMatch = tagFilter != null
+                ? blockMatchesTagFilter(entry, tagFilter)
+                : BlockMatchResult.FAST_PATH;
+            if (currentTagMatch == BlockMatchResult.SKIP)
               continue;
 
             // Decompress timestamps first
@@ -479,7 +523,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int tsColIdx = findTimestampColumnIndex();
     final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
 
-    for (final BlockEntry entry : blockDirectory) {
+    final List<BlockEntry> snapshot;
+    directoryLock.readLock().lock();
+    try {
+      snapshot = new ArrayList<>(blockDirectory);
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+
+    for (final BlockEntry entry : snapshot) {
       if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
         continue;
 
@@ -528,7 +580,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final double[] reusableValBuf = new double[MAX_BLOCK_SIZE];
 
-    for (final BlockEntry entry : blockDirectory) {
+    // Snapshot the directory under read lock to avoid concurrent-modification issues
+    final List<BlockEntry> snapshot;
+    directoryLock.readLock().lock();
+    try {
+      snapshot = new ArrayList<>(blockDirectory);
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+
+    for (final BlockEntry entry : snapshot) {
       if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
         if (metrics != null)
           metrics.addSkippedBlock();
@@ -710,49 +771,54 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Removes all blocks with maxTimestamp < threshold.
    */
-  public synchronized void truncateBefore(final long timestamp) throws IOException {
-    final List<BlockEntry> retained = new ArrayList<>();
-    for (final BlockEntry entry : blockDirectory)
-      if (entry.maxTimestamp >= timestamp)
-        retained.add(entry);
+  public void truncateBefore(final long timestamp) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      final List<BlockEntry> retained = new ArrayList<>();
+      for (final BlockEntry entry : blockDirectory)
+        if (entry.maxTimestamp >= timestamp)
+          retained.add(entry);
 
-    if (retained.size() == blockDirectory.size())
-      return; // Nothing to truncate
+      if (retained.size() == blockDirectory.size())
+        return; // Nothing to truncate
 
-    // Rewrite the file with only retained blocks
-    final int colCount = columns.size();
-    final String tempPath = basePath + ".ts.sealed.tmp";
-    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-      headerBuf.putInt(MAGIC_VALUE);
-      headerBuf.put((byte) CURRENT_VERSION);
-      headerBuf.putShort((short) colCount);
-      headerBuf.putInt(0);
-      headerBuf.putLong(Long.MAX_VALUE);
-      headerBuf.putLong(Long.MIN_VALUE);
-      headerBuf.flip();
-      tempFile.getChannel().write(headerBuf);
+      // Rewrite the file with only retained blocks
+      final int colCount = columns.size();
+      final String tempPath = basePath + ".ts.sealed.tmp";
+      try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+        final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+        headerBuf.putInt(MAGIC_VALUE);
+        headerBuf.put((byte) CURRENT_VERSION);
+        headerBuf.putShort((short) colCount);
+        headerBuf.putInt(0);
+        headerBuf.putLong(Long.MAX_VALUE);
+        headerBuf.putLong(Long.MIN_VALUE);
+        headerBuf.flip();
+        tempFile.getChannel().write(headerBuf);
 
-      blockDirectory.clear();
-      globalMinTs = Long.MAX_VALUE;
-      globalMaxTs = Long.MIN_VALUE;
+        blockDirectory.clear();
+        globalMinTs = Long.MAX_VALUE;
+        globalMaxTs = Long.MIN_VALUE;
 
-      for (final BlockEntry oldEntry : retained)
-        copyBlockToFile(tempFile, oldEntry, colCount);
+        for (final BlockEntry oldEntry : retained)
+          copyBlockToFile(tempFile, oldEntry, colCount);
+      }
+
+      // Atomic file swap — if move fails, the original file remains intact
+      indexChannel.close();
+      indexFile.close();
+
+      final File oldFile = new File(basePath + ".ts.sealed");
+      final File tmpFile = new File(tempPath);
+      Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+
+      indexFile = new RandomAccessFile(oldFile, "rw");
+      indexChannel = indexFile.getChannel();
+      fileVersion = CURRENT_VERSION;
+      rewriteHeader();
+    } finally {
+      directoryLock.writeLock().unlock();
     }
-
-    // Atomic file swap — if move fails, the original file remains intact
-    indexChannel.close();
-    indexFile.close();
-
-    final File oldFile = new File(basePath + ".ts.sealed");
-    final File tmpFile = new File(tempPath);
-    Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-
-    indexFile = new RandomAccessFile(oldFile, "rw");
-    indexChannel = indexFile.getChannel();
-    fileVersion = CURRENT_VERSION;
-    rewriteHeader();
   }
 
   /**
@@ -760,8 +826,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Blocks already at the target resolution or coarser are left untouched (idempotency).
    * Numeric fields are averaged per (bucketTs, tagKey) group; tag columns preserved.
    */
-  public synchronized void downsampleBlocks(final long cutoffTs, final long granularityMs,
+  public void downsampleBlocks(final long cutoffTs, final long granularityMs,
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
 
     final List<BlockEntry> toDownsample = new ArrayList<>();
     final List<BlockEntry> toKeep = new ArrayList<>();
@@ -941,6 +1009,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
     rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksMins, newBlocksMaxs, newBlocksSums,
         newBlocksTagDV);
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
   }
 
   /**
@@ -1102,48 +1173,58 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Truncates the sealed store to exactly {@code targetBlockCount} blocks,
    * removing any blocks appended after the watermark during an interrupted compaction.
    */
-  public synchronized void truncateToBlockCount(final long targetBlockCount) throws IOException {
-    if (targetBlockCount >= blockDirectory.size())
-      return; // nothing to truncate
+  public void truncateToBlockCount(final long targetBlockCount) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      if (targetBlockCount >= blockDirectory.size())
+        return; // nothing to truncate
 
-    final List<BlockEntry> retained = new ArrayList<>(blockDirectory.subList(0, (int) targetBlockCount));
-    final int colCount = columns.size();
-    final String tempPath = basePath + ".ts.sealed.tmp";
-    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-      headerBuf.putInt(MAGIC_VALUE);
-      headerBuf.put((byte) CURRENT_VERSION);
-      headerBuf.putShort((short) colCount);
-      headerBuf.putInt(0);
-      headerBuf.putLong(Long.MAX_VALUE);
-      headerBuf.putLong(Long.MIN_VALUE);
-      headerBuf.flip();
-      tempFile.getChannel().write(headerBuf);
+      final List<BlockEntry> retained = new ArrayList<>(blockDirectory.subList(0, (int) targetBlockCount));
+      final int colCount = columns.size();
+      final String tempPath = basePath + ".ts.sealed.tmp";
+      try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+        final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+        headerBuf.putInt(MAGIC_VALUE);
+        headerBuf.put((byte) CURRENT_VERSION);
+        headerBuf.putShort((short) colCount);
+        headerBuf.putInt(0);
+        headerBuf.putLong(Long.MAX_VALUE);
+        headerBuf.putLong(Long.MIN_VALUE);
+        headerBuf.flip();
+        tempFile.getChannel().write(headerBuf);
 
-      blockDirectory.clear();
-      globalMinTs = Long.MAX_VALUE;
-      globalMaxTs = Long.MIN_VALUE;
+        blockDirectory.clear();
+        globalMinTs = Long.MAX_VALUE;
+        globalMaxTs = Long.MIN_VALUE;
 
-      for (final BlockEntry entry : retained)
-        copyBlockToFile(tempFile, entry, colCount);
+        for (final BlockEntry entry : retained)
+          copyBlockToFile(tempFile, entry, colCount);
+      }
+
+      // Atomic file swap — if move fails, the original file remains intact
+      indexChannel.close();
+      indexFile.close();
+
+      final File oldFile = new File(basePath + ".ts.sealed");
+      final File tmpFile = new File(tempPath);
+      Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+
+      indexFile = new RandomAccessFile(oldFile, "rw");
+      indexChannel = indexFile.getChannel();
+      fileVersion = CURRENT_VERSION;
+      rewriteHeader();
+    } finally {
+      directoryLock.writeLock().unlock();
     }
-
-    // Atomic file swap — if move fails, the original file remains intact
-    indexChannel.close();
-    indexFile.close();
-
-    final File oldFile = new File(basePath + ".ts.sealed");
-    final File tmpFile = new File(tempPath);
-    Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-
-    indexFile = new RandomAccessFile(oldFile, "rw");
-    indexChannel = indexFile.getChannel();
-    fileVersion = CURRENT_VERSION;
-    rewriteHeader();
   }
 
   public int getBlockCount() {
-    return blockDirectory.size();
+    directoryLock.readLock().lock();
+    try {
+      return blockDirectory.size();
+    } finally {
+      directoryLock.readLock().unlock();
+    }
   }
 
   /**
@@ -1151,10 +1232,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * O(blockCount), all data already in memory from the block directory.
    */
   public long getTotalSampleCount() {
-    long total = 0;
-    for (final BlockEntry entry : blockDirectory)
-      total += entry.sampleCount;
-    return total;
+    directoryLock.readLock().lock();
+    try {
+      long total = 0;
+      for (final BlockEntry entry : blockDirectory)
+        total += entry.sampleCount;
+      return total;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
   }
 
   public long getGlobalMinTimestamp() {

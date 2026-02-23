@@ -176,6 +176,75 @@ class TimeSeriesSealedStoreTest {
     }
   }
 
+  /**
+   * Regression test: scanRange must apply per-row tag filtering for SLOW_PATH blocks
+   * (blocks containing multiple distinct tag values where only some match the filter).
+   */
+  @Test
+  void testTagFilterSlowPathScanRange() throws Exception {
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
+      // Single block with mixed tag values — triggers SLOW_PATH in blockMatchesTagFilter
+      final long[] timestamps = { 1000L, 2000L, 3000L, 4000L, 5000L };
+      final String[] sensorIds = { "A", "B", "A", "C", "B" };
+      final double[] temperatures = { 20.0, 21.5, 22.0, 19.5, 23.0 };
+
+      final String[][] tagDV = new String[3][];
+      tagDV[1] = new String[] { "A", "B", "C" }; // mixed → SLOW_PATH
+
+      final byte[][] compressed = {
+          DeltaOfDeltaCodec.encode(timestamps),
+          DictionaryCodec.encode(sensorIds),
+          GorillaXORCodec.encode(temperatures)
+      };
+      store.appendBlock(5, 1000L, 5000L, compressed,
+          new double[] { Double.NaN, Double.NaN, 19.5 },
+          new double[] { Double.NaN, Double.NaN, 23.0 },
+          new double[] { Double.NaN, Double.NaN, 106.0 }, tagDV);
+
+      // Filter for sensor_id == "A" only — should return rows at t=1000 and t=3000
+      final TagFilter filterA = TagFilter.eq(0, "A");
+      final List<Object[]> results = store.scanRange(1000L, 5000L, null, filterA);
+      assertThat(results).hasSize(2);
+      assertThat((long) results.get(0)[0]).isEqualTo(1000L);
+      assertThat((String) results.get(0)[1]).isEqualTo("A");
+      assertThat((long) results.get(1)[0]).isEqualTo(3000L);
+      assertThat((String) results.get(1)[1]).isEqualTo("A");
+    }
+  }
+
+  /**
+   * Regression test: iterateRange must apply per-row tag filtering for SLOW_PATH blocks.
+   */
+  @Test
+  void testTagFilterSlowPathIterateRange() throws Exception {
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
+      final long[] timestamps = { 1000L, 2000L, 3000L };
+      final String[] sensorIds = { "X", "Y", "X" };
+      final double[] temperatures = { 10.0, 20.0, 30.0 };
+
+      final String[][] tagDV = new String[3][];
+      tagDV[1] = new String[] { "X", "Y" }; // mixed → SLOW_PATH
+
+      store.appendBlock(3, 1000L, 3000L, new byte[][] {
+          DeltaOfDeltaCodec.encode(timestamps),
+          DictionaryCodec.encode(sensorIds),
+          GorillaXORCodec.encode(temperatures)
+      }, new double[] { Double.NaN, Double.NaN, 10.0 },
+          new double[] { Double.NaN, Double.NaN, 30.0 },
+          new double[] { Double.NaN, Double.NaN, 60.0 }, tagDV);
+
+      final TagFilter filterX = TagFilter.eq(0, "X");
+      final java.util.Iterator<Object[]> iter = store.iterateRange(1000L, 3000L, null, filterX);
+      final List<Object[]> results = new java.util.ArrayList<>();
+      while (iter.hasNext())
+        results.add(iter.next());
+
+      assertThat(results).hasSize(2);
+      assertThat((String) results.get(0)[1]).isEqualTo("X");
+      assertThat((String) results.get(1)[1]).isEqualTo("X");
+    }
+  }
+
   @Test
   void testTruncateBefore() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
