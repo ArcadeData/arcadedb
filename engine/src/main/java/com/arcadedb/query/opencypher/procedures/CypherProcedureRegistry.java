@@ -20,13 +20,20 @@ package com.arcadedb.query.opencypher.procedures;
 
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAPSP;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAStar;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAdamicAdar;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoAllSimplePaths;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoArticulationPoints;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoBellmanFord;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoBetweenness;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoBridges;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoClosenessCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDegreeCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDijkstra;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoEigenvectorCentrality;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoHITS;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoHarmonicCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoJaccardSimilarity;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoKCore;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoLabelPropagation;
@@ -35,6 +42,7 @@ import com.arcadedb.query.opencypher.procedures.algo.AlgoMST;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoPageRank;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoRandomWalk;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoSCC;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoTopologicalSort;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoTriangleCount;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoWCC;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
@@ -263,6 +271,14 @@ public final class CypherProcedureRegistry {
     register(new AlgoMST());
     register(new AlgoJaccardSimilarity());
     register(new AlgoRandomWalk());
+    register(new AlgoHITS());
+    register(new AlgoHarmonicCentrality());
+    register(new AlgoEigenvectorCentrality());
+    register(new AlgoArticulationPoints());
+    register(new AlgoBridges());
+    register(new AlgoTopologicalSort());
+    register(new AlgoAPSP());
+    register(new AlgoAdamicAdar());
   }
 
   private static void registerPathProcedures() {
