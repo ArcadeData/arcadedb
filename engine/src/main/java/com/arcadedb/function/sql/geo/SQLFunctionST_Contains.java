@@ -31,7 +31,7 @@ import org.locationtech.spatial4j.shape.SpatialRelation;
  * <p>Usage: {@code ST_Contains(g, shape)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Contains extends SQLFunctionST_Predicate {
+public class SQLFunctionST_Contains extends SQLFunctionGeoPredicate {
   public static final String NAME = "ST_Contains";
 
   public SQLFunctionST_Contains() {

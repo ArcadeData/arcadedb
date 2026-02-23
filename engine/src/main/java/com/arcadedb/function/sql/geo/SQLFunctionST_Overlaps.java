@@ -33,7 +33,7 @@ import org.locationtech.spatial4j.shape.Shape;
  * <p>Usage: {@code ST_Overlaps(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Overlaps extends SQLFunctionST_Predicate {
+public class SQLFunctionST_Overlaps extends SQLFunctionGeoPredicate {
   public static final String NAME = "ST_Overlaps";
 
   public SQLFunctionST_Overlaps() {

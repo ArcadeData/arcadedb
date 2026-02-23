@@ -32,7 +32,7 @@ import org.locationtech.spatial4j.shape.Shape;
  * <p>Usage: {@code ST_Crosses(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Crosses extends SQLFunctionST_Predicate {
+public class SQLFunctionST_Crosses extends SQLFunctionGeoPredicate {
   public static final String NAME = "ST_Crosses";
 
   public SQLFunctionST_Crosses() {

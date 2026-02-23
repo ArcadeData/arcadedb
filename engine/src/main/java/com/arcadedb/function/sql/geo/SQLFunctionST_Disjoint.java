@@ -31,7 +31,7 @@ import org.locationtech.spatial4j.shape.SpatialRelation;
  * <p>Usage: {@code ST_Disjoint(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Disjoint extends SQLFunctionST_Predicate {
+public class SQLFunctionST_Disjoint extends SQLFunctionGeoPredicate {
   public static final String NAME = "ST_Disjoint";
 
   public SQLFunctionST_Disjoint() {

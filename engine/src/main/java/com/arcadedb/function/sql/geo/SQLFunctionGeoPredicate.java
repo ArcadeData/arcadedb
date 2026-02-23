@@ -46,9 +46,9 @@ import java.util.List;
  * so that queries using these predicates automatically benefit from geospatial indexes.
  * </p>
  */
-public abstract class SQLFunctionST_Predicate extends SQLFunctionAbstract implements IndexableSQLFunction {
+public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implements IndexableSQLFunction {
 
-  protected SQLFunctionST_Predicate(final String name) {
+  protected SQLFunctionGeoPredicate(final String name) {
     super(name);
   }
 

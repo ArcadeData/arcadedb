@@ -31,7 +31,7 @@ import org.locationtech.spatial4j.shape.Shape;
  * <p>Usage: {@code ST_DWithin(g, shape, distanceDegrees)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_DWithin extends SQLFunctionST_Predicate {
+public class SQLFunctionST_DWithin extends SQLFunctionGeoPredicate {
   public static final String NAME = "ST_DWithin";
 
   public SQLFunctionST_DWithin() {

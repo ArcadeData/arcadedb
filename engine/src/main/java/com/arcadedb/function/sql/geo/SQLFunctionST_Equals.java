@@ -32,7 +32,7 @@ import org.locationtech.spatial4j.shape.Shape;
  * <p>Usage: {@code ST_Equals(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Equals extends SQLFunctionST_Predicate {
+public class SQLFunctionST_Equals extends SQLFunctionGeoPredicate {
   public static final String NAME = "ST_Equals";
 
   public SQLFunctionST_Equals() {

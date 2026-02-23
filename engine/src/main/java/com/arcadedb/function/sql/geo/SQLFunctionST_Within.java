@@ -27,7 +27,7 @@ import org.locationtech.spatial4j.shape.SpatialRelation;
  * <p>Usage: {@code ST_Within(g, shape)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Within extends SQLFunctionST_Predicate {
+public class SQLFunctionST_Within extends SQLFunctionGeoPredicate {
   public static final String NAME = "ST_Within";
 
   public SQLFunctionST_Within() {

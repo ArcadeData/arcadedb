@@ -27,7 +27,7 @@ import org.locationtech.spatial4j.shape.SpatialRelation;
  * <p>Usage: {@code ST_Intersects(g1, g2)}</p>
  * <p>Returns: Boolean</p>
  */
-public class SQLFunctionST_Intersects extends SQLFunctionST_Predicate {
+public class SQLFunctionST_Intersects extends SQLFunctionGeoPredicate {
   public static final String NAME = "ST_Intersects";
 
   public SQLFunctionST_Intersects() {
