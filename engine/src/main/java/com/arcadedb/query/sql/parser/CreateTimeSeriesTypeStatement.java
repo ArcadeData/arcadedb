@@ -154,8 +154,12 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
     result.shards = shards == null ? null : shards.copy();
     result.retentionMs = retentionMs;
     result.compactionIntervalMs = compactionIntervalMs;
-    result.tags = new ArrayList<>(tags);
-    result.fields = new ArrayList<>(fields);
+    result.tags = new ArrayList<>(tags.size());
+    for (final ColumnDef cd : tags)
+      result.tags.add(new ColumnDef(cd.name == null ? null : cd.name.copy(), cd.type == null ? null : cd.type.copy()));
+    result.fields = new ArrayList<>(fields.size());
+    for (final ColumnDef cd : fields)
+      result.fields.add(new ColumnDef(cd.name == null ? null : cd.name.copy(), cd.type == null ? null : cd.type.copy()));
     return result;
   }
 

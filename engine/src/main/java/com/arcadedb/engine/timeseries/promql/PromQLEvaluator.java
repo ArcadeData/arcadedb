@@ -61,7 +61,8 @@ import java.util.regex.Pattern;
  */
 public class PromQLEvaluator {
 
-  private static final long DEFAULT_LOOKBACK_MS = 5 * 60_000; // 5 minutes
+  private static final long DEFAULT_LOOKBACK_MS  = 5 * 60_000; // 5 minutes
+  private static final int  MAX_RECURSION_DEPTH  = 64;
 
   private final DatabaseInternal database;
   private final long             lookbackMs;
@@ -79,7 +80,7 @@ public class PromQLEvaluator {
    * Evaluate an instant query at a single timestamp.
    */
   public PromQLResult evaluateInstant(final PromQLExpr expr, final long evalTimeMs) {
-    return evaluate(expr, evalTimeMs, evalTimeMs, evalTimeMs, 0);
+    return evaluate(expr, evalTimeMs, evalTimeMs, evalTimeMs, 0, 0);
   }
 
   /**
@@ -91,7 +92,7 @@ public class PromQLEvaluator {
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
 
     for (long t = startMs; t <= endMs; t += stepMs) {
-      final PromQLResult result = evaluate(expr, t, startMs, endMs, stepMs);
+      final PromQLResult result = evaluate(expr, t, startMs, endMs, stepMs, 0);
       if (result instanceof InstantVector iv) {
         for (final VectorSample sample : iv.samples()) {
           final String key = labelKey(sample.labels());
@@ -112,16 +113,19 @@ public class PromQLEvaluator {
   }
 
   private PromQLResult evaluate(final PromQLExpr expr, final long evalTimeMs, final long queryStartMs, final long queryEndMs,
-      final long stepMs) {
+      final long stepMs, final int depth) {
+    if (depth > MAX_RECURSION_DEPTH)
+      throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_RECURSION_DEPTH);
+    final int next = depth + 1;
     return switch (expr) {
       case NumberLiteral nl -> new ScalarResult(nl.value(), evalTimeMs);
       case StringLiteral ignored -> new ScalarResult(Double.NaN, evalTimeMs);
       case VectorSelector vs -> evaluateVectorSelector(vs, evalTimeMs);
       case MatrixSelector ms -> evaluateMatrixSelector(ms, evalTimeMs);
-      case AggregationExpr agg -> evaluateAggregation(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs);
-      case FunctionCallExpr fn -> evaluateFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs);
-      case BinaryExpr bin -> evaluateBinary(bin, evalTimeMs, queryStartMs, queryEndMs, stepMs);
-      case UnaryExpr un -> evaluateUnary(un, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      case AggregationExpr agg -> evaluateAggregation(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+      case FunctionCallExpr fn -> evaluateFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+      case BinaryExpr bin -> evaluateBinary(bin, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+      case UnaryExpr un -> evaluateUnary(un, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
     };
   }
 
@@ -150,9 +154,10 @@ public class PromQLEvaluator {
     }
 
     // Post-filter for NEQ/RE/NRE and group by label combination
+    final Map<String, Pattern> patternCache = new HashMap<>();
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     for (final Object[] row : rows) {
-      if (!matchesPostFilters(row, vs.matchers(), columns))
+      if (!matchesPostFilters(row, vs.matchers(), columns, patternCache))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -191,10 +196,11 @@ public class PromQLEvaluator {
     }
 
     // Group rows by label combination
+    final Map<String, Pattern> patternCache = new HashMap<>();
     final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
     for (final Object[] row : rows) {
-      if (!matchesPostFilters(row, vs.matchers(), columns))
+      if (!matchesPostFilters(row, vs.matchers(), columns, patternCache))
         continue;
       final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
       final String key = labelKey(labels);
@@ -209,8 +215,8 @@ public class PromQLEvaluator {
   }
 
   private PromQLResult evaluateAggregation(final AggregationExpr agg, final long evalTimeMs, final long queryStartMs,
-      final long queryEndMs, final long stepMs) {
-    final PromQLResult inner = evaluate(agg.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      final long queryEndMs, final long stepMs, final int depth) {
+    final PromQLResult inner = evaluate(agg.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
     if (!(inner instanceof InstantVector iv))
       return new InstantVector(List.of());
 
@@ -274,14 +280,14 @@ public class PromQLEvaluator {
   }
 
   private PromQLResult evaluateFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
-      final long queryEndMs, final long stepMs) {
+      final long queryEndMs, final long stepMs, final int depth) {
     final String name = fn.name().toLowerCase();
 
     // Range-vector functions
     if (isRangeFunction(name)) {
       if (fn.args().isEmpty())
         throw new IllegalArgumentException("Function '" + fn.name() + "' requires a range vector argument");
-      final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
       if (!(argResult instanceof RangeVector rv))
         throw new IllegalArgumentException("Function '" + fn.name() + "' requires a range vector argument");
 
@@ -305,16 +311,16 @@ public class PromQLEvaluator {
 
     // Scalar functions
     if ("abs".equals(name) || "ceil".equals(name) || "floor".equals(name) || "round".equals(name))
-      return evaluateScalarFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      return evaluateScalarFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
     throw new IllegalArgumentException("Unknown function: " + fn.name());
   }
 
   private PromQLResult evaluateScalarFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
-      final long queryEndMs, final long stepMs) {
+      final long queryEndMs, final long stepMs, final int depth) {
     final String name = fn.name().toLowerCase();
-    final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
-    final double param = extractSecondParam(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs);
+    final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    final double param = extractSecondParam(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
     if (argResult instanceof ScalarResult sr)
       return new ScalarResult(applyScalarFn(name, sr.value(), param), evalTimeMs);
@@ -330,10 +336,10 @@ public class PromQLEvaluator {
   }
 
   private double extractSecondParam(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
-      final long queryEndMs, final long stepMs) {
+      final long queryEndMs, final long stepMs, final int depth) {
     if (fn.args().size() <= 1)
       return 1.0;
-    final PromQLResult paramResult = evaluate(fn.args().get(1), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+    final PromQLResult paramResult = evaluate(fn.args().get(1), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
     if (paramResult instanceof ScalarResult sr)
       return sr.value();
     return 1.0;
@@ -350,9 +356,9 @@ public class PromQLEvaluator {
   }
 
   private PromQLResult evaluateBinary(final BinaryExpr bin, final long evalTimeMs, final long queryStartMs,
-      final long queryEndMs, final long stepMs) {
-    final PromQLResult leftResult = evaluate(bin.left(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
-    final PromQLResult rightResult = evaluate(bin.right(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      final long queryEndMs, final long stepMs, final int depth) {
+    final PromQLResult leftResult = evaluate(bin.left(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    final PromQLResult rightResult = evaluate(bin.right(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
     // scalar-scalar
     if (leftResult instanceof ScalarResult ls && rightResult instanceof ScalarResult rs)
@@ -374,8 +380,8 @@ public class PromQLEvaluator {
   }
 
   private PromQLResult evaluateUnary(final UnaryExpr un, final long evalTimeMs, final long queryStartMs, final long queryEndMs,
-      final long stepMs) {
-    final PromQLResult result = evaluate(un.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs);
+      final long stepMs, final int depth) {
+    final PromQLResult result = evaluate(un.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
     if (un.op() == '-') {
       if (result instanceof ScalarResult sr)
         return new ScalarResult(-sr.value(), sr.timestampMs());
@@ -405,7 +411,7 @@ public class PromQLEvaluator {
   }
 
   private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
-      final List<ColumnDefinition> columns) {
+      final List<ColumnDefinition> columns, final Map<String, Pattern> patternCache) {
     for (final LabelMatcher m : matchers) {
       if (m.op() == MatchOp.EQ || "__name__".equals(m.name()))
         continue;
@@ -420,11 +426,11 @@ public class PromQLEvaluator {
             return false;
           break;
         case RE:
-          if (!Pattern.matches(m.value(), strVal))
+          if (!patternCache.computeIfAbsent(m.value(), Pattern::compile).matcher(strVal).matches())
             return false;
           break;
         case NRE:
-          if (Pattern.matches(m.value(), strVal))
+          if (patternCache.computeIfAbsent(m.value(), Pattern::compile).matcher(strVal).matches())
             return false;
           break;
         default:
@@ -582,7 +588,15 @@ public class PromQLEvaluator {
     };
   }
 
+  private static final int    MAX_TYPE_NAME_LENGTH   = 256;
+  private static final Pattern VALID_TYPE_NAME_PATTERN = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
+
   public static String sanitizeTypeName(final String name) {
-    return name.replace('.', '_').replace('-', '_').replace(':', '_');
+    final String sanitized = name.replace('.', '_').replace('-', '_').replace(':', '_');
+    if (sanitized.length() > MAX_TYPE_NAME_LENGTH)
+      throw new IllegalArgumentException("Metric name too long: " + sanitized.length() + " chars (max " + MAX_TYPE_NAME_LENGTH + ")");
+    if (!VALID_TYPE_NAME_PATTERN.matcher(sanitized).matches())
+      throw new IllegalArgumentException("Invalid metric name: '" + name + "'");
+    return sanitized;
   }
 }

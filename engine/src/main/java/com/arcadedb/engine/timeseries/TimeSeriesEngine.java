@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Coordinates N shards for a TimeSeries type. Routes writes to shards
- * using thread-based selection, merges reads from all shards.
+ * using random selection, merges reads from all shards.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

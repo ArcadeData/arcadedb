@@ -21,6 +21,9 @@ package com.arcadedb.database.async;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.log.LogManager;
+
+import java.util.logging.Level;
 
 public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
   private final TimeSeriesEngine engine;
@@ -41,6 +44,9 @@ public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
     try {
       engine.getShard(shardIndex).appendSamples(timestamps, columnValues);
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error appending timeseries samples to shard %d of type '%s' (%d points)",
+          e, shardIndex, engine.getTypeName(), timestamps.length);
       throw new DatabaseOperationException("Error appending timeseries samples to shard " + shardIndex, e);
     }
   }

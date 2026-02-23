@@ -52,6 +52,7 @@ public final class MultiColumnAggregationResult {
   private       double[][] flatValues;   // [bucketIdx][requestIdx]
   private       long[][]   flatCounts;   // [bucketIdx][requestIdx]
   private       boolean[]  bucketUsed;   // whether this bucket has been touched
+  private       List<Long> cachedBucketTimestamps; // cached result for flat mode
 
   /**
    * Map-mode constructor (original behavior).
@@ -112,7 +113,8 @@ public final class MultiColumnAggregationResult {
   public void accumulate(final long bucketTs, final int requestIndex, final double value) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      ensureFlatBucket(idx);
+      if (!ensureFlatBucket(idx))
+        return;
       accumulateInPlace(flatValues[idx], flatCounts[idx], requestIndex, value);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);
@@ -133,7 +135,8 @@ public final class MultiColumnAggregationResult {
   public void accumulateRow(final long bucketTs, final double[] values) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      ensureFlatBucket(idx);
+      if (!ensureFlatBucket(idx))
+        return;
       final double[] vals = flatValues[idx];
       final long[] counts = flatCounts[idx];
       for (int i = 0; i < requestCount; i++)
@@ -161,7 +164,8 @@ public final class MultiColumnAggregationResult {
   public void accumulateBlockStats(final long bucketTs, final double[] values, final int sampleCount) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      ensureFlatBucket(idx);
+      if (!ensureFlatBucket(idx))
+        return;
       accumulateBlockStatsInPlace(flatValues[idx], flatCounts[idx], values, sampleCount);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);
@@ -190,10 +194,11 @@ public final class MultiColumnAggregationResult {
    * @param count        number of samples that produced this value
    */
   public void accumulateSingleStat(final long bucketTs, final int requestIndex,
-      final double value, final int count) {
+      final double value, final long count) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      ensureFlatBucket(idx);
+      if (!ensureFlatBucket(idx))
+        return;
       accumulateStatInPlace(flatValues[idx], flatCounts[idx], requestIndex, value, count);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);
@@ -244,11 +249,14 @@ public final class MultiColumnAggregationResult {
    */
   public List<Long> getBucketTimestamps() {
     if (flatMode) {
-      final List<Long> result = new ArrayList<>();
-      for (int b = 0; b < maxBuckets; b++)
-        if (bucketUsed[b])
-          result.add(firstBucketTs + (long) b * bucketIntervalMs);
-      return result;
+      if (cachedBucketTimestamps == null) {
+        final List<Long> result = new ArrayList<>();
+        for (int b = 0; b < maxBuckets; b++)
+          if (bucketUsed[b])
+            result.add(firstBucketTs + (long) b * bucketIntervalMs);
+        cachedBucketTimestamps = result;
+      }
+      return cachedBucketTimestamps;
     }
     return orderedBuckets;
   }
@@ -325,7 +333,7 @@ public final class MultiColumnAggregationResult {
         for (int i = 0; i < requestCount; i++) {
           final double oVal = other.getValue(bucketTs, i);
           final long oCount = other.getCount(bucketTs, i);
-          accumulateStatInPlaceByTs(bucketTs, i, oVal, (int) oCount);
+          accumulateStatInPlaceByTs(bucketTs, i, oVal, oCount);
         }
       }
     }
@@ -342,15 +350,22 @@ public final class MultiColumnAggregationResult {
   }
 
   private int flatIndex(final long bucketTs) {
-    return (int) ((bucketTs - firstBucketTs) / bucketIntervalMs);
+    final int idx = (int) ((bucketTs - firstBucketTs) / bucketIntervalMs);
+    if (idx < 0 || idx >= maxBuckets)
+      return -1;
+    return idx;
   }
 
-  private void ensureFlatBucket(final int idx) {
+  private boolean ensureFlatBucket(final int idx) {
+    if (idx < 0 || idx >= maxBuckets)
+      return false;
     if (!bucketUsed[idx]) {
       bucketUsed[idx] = true;
       flatValues[idx] = newInitializedValues();
       flatCounts[idx] = new long[requestCount];
+      cachedBucketTimestamps = null; // invalidate cache
     }
+    return true;
   }
 
   private double[] newInitializedValues() {
@@ -417,7 +432,7 @@ public final class MultiColumnAggregationResult {
   }
 
   private void accumulateStatInPlace(final double[] vals, final long[] counts,
-      final int requestIndex, final double value, final int count) {
+      final int requestIndex, final double value, final long count) {
     switch (types[requestIndex]) {
     case MIN:
       if (value < vals[requestIndex])
@@ -439,10 +454,11 @@ public final class MultiColumnAggregationResult {
   }
 
   private void accumulateStatInPlaceByTs(final long bucketTs, final int requestIndex,
-      final double value, final int count) {
+      final double value, final long count) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      ensureFlatBucket(idx);
+      if (!ensureFlatBucket(idx))
+        return;
       accumulateStatInPlace(flatValues[idx], flatCounts[idx], requestIndex, value, count);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);

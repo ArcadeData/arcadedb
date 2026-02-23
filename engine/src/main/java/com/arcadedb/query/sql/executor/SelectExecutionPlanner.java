@@ -72,6 +72,7 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
+import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
@@ -1653,11 +1654,15 @@ public class SelectExecutionPlanner {
         }
       }
 
+      // Extract tag filter from WHERE clause
+      final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, tsType.getTsColumns(),
+          tsType.getTimestampColumn(), context);
+
       // Try push-down aggregation before falling back to full row fetch
       if (tryTimeSeriesAggregationPushDown(plan, tsType, fromTs, toTs, info, context))
         return;
 
-      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, context));
+      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, context));
       return;
     }
 
@@ -1771,6 +1776,56 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * Extracts a TagFilter from the flattened WHERE clause by matching equality predicates on TAG columns.
+   * Only simple equality conditions (column = 'value') on TAG columns are extracted.
+   */
+  private static TagFilter extractTagFilter(final List<AndBlock> flattenedWhere, final List<ColumnDefinition> columns,
+      final String timestampColumn, final CommandContext context) {
+    if (flattenedWhere == null)
+      return null;
+
+    TagFilter filter = null;
+    for (final AndBlock andBlock : flattenedWhere) {
+      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+        if (!(expr instanceof BinaryCondition binary))
+          continue;
+        if (!(binary.operator instanceof EqualsCompareOperator))
+          continue;
+        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+        if (leftStr == null || rightStr == null)
+          continue;
+        // Skip timestamp predicates — already handled by time range extraction
+        if (timestampColumn.equals(leftStr) || timestampColumn.equals(rightStr))
+          continue;
+
+        // Determine which side is the column name and which is the value
+        for (int i = 0; i < columns.size(); i++) {
+          final ColumnDefinition col = columns.get(i);
+          if (col.getRole() != ColumnDefinition.ColumnRole.TAG)
+            continue;
+          final boolean leftIsCol = col.getName().equals(leftStr);
+          final boolean rightIsCol = col.getName().equals(rightStr);
+          if (!leftIsCol && !rightIsCol)
+            continue;
+          final Expression valueExpr = leftIsCol ? binary.right : binary.left;
+          final Object value = valueExpr.execute((Identifiable) null, context);
+          if (value == null)
+            continue;
+          // Column index for TagFilter is the non-timestamp column index
+          int nonTsIdx = -1;
+          for (int j = 0; j <= i; j++)
+            if (columns.get(j).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+              nonTsIdx++;
+          filter = filter == null ? TagFilter.eq(nonTsIdx, value.toString()) : filter.and(nonTsIdx, value.toString());
+          break;
+        }
+      }
+    }
+    return filter;
+  }
+
+  /**
    * Attempts to push down aggregation into the TimeSeries engine.
    * Eligible queries have: ts.timeBucket GROUP BY, simple aggregate functions (avg, max, min, sum, count),
    * no DISTINCT, no HAVING, no UNWIND, no LET.
@@ -1873,16 +1928,19 @@ public class SelectExecutionPlanner {
       return false;
     }
 
+    // Extract tag filter from WHERE clause for push-down
+    final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context);
+
     // Chain the push-down step
     plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs,
-        timeBucketAlias, requestAliasToOutputAlias, context));
+        timeBucketAlias, requestAliasToOutputAlias, tagFilter, context));
 
     // Null out the aggregate projections so handleProjections doesn't add duplicate steps
     info.preAggregateProjection = null;
     info.aggregateProjection = null;
     info.groupBy = null;
     info.projectionsCalculated = true;
-    // The time range is already consumed by the push-down step;
+    // The time range and tag filters are consumed by the push-down step;
     // null out the WHERE clause so FilterStep doesn't re-apply it on aggregated rows
     info.whereClause = null;
     info.flattenedWhereClause = null;

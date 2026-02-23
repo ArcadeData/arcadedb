@@ -95,7 +95,7 @@ public class TimeSeriesMaintenanceScheduler {
         LogManager.instance().log(this, Level.WARNING,
             "Error in TimeSeries maintenance for type '%s': %s", e, typeName, e.getMessage());
       }
-    }, DEFAULT_CHECK_INTERVAL_MS, DEFAULT_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS));
+    }, 5_000, DEFAULT_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS));
   }
 
   /**

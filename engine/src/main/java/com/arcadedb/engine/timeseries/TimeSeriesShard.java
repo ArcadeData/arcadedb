@@ -226,19 +226,6 @@ public class TimeSeriesShard implements AutoCloseable {
         }
       }
 
-      // Pre-validate: ensure no DICTIONARY column exceeds max distinct values per chunk
-      for (int c = 0; c < colCount; c++) {
-        if (columns.get(c).getCompressionHint() == TimeSeriesCodec.DICTIONARY && sortedColArrays[c] != null) {
-          final HashSet<Object> distinct = new HashSet<>();
-          for (final Object v : sortedColArrays[c])
-            distinct.add(v != null ? v : "");
-          if (distinct.size() > DictionaryCodec.MAX_DICTIONARY_SIZE)
-            throw new IOException(
-                "Column '" + columns.get(c).getName() + "' has " + distinct.size() +
-                    " distinct values, exceeding dictionary limit of " + DictionaryCodec.MAX_DICTIONARY_SIZE);
-        }
-      }
-
       // Phase 3: Write sealed blocks in chunks with per-column stats.
       // When bucket-aligned compaction is configured, split at bucket boundaries
       // so each block fits entirely within one time bucket (enabling 100% fast-path aggregation).
@@ -272,6 +259,19 @@ public class TimeSeriesShard implements AutoCloseable {
         final double[] sums = new double[colCount];
         Arrays.fill(mins, Double.NaN);
         Arrays.fill(maxs, Double.NaN);
+
+        // Pre-validate: ensure no DICTIONARY column in this chunk exceeds max distinct values
+        for (int c = 0; c < colCount; c++) {
+          if (columns.get(c).getCompressionHint() == TimeSeriesCodec.DICTIONARY && sortedColArrays[c] != null) {
+            final HashSet<Object> distinct = new HashSet<>();
+            for (int i = chunkStart; i < chunkEnd; i++)
+              distinct.add(sortedColArrays[c][i] != null ? sortedColArrays[c][i] : "");
+            if (distinct.size() > DictionaryCodec.MAX_DICTIONARY_SIZE)
+              throw new IOException(
+                  "Column '" + columns.get(c).getName() + "' has " + distinct.size() +
+                      " distinct values in chunk, exceeding dictionary limit of " + DictionaryCodec.MAX_DICTIONARY_SIZE);
+          }
+        }
 
         final byte[][] compressedCols = new byte[colCount][];
         for (int c = 0; c < colCount; c++) {

@@ -101,7 +101,11 @@ public class SaveElementStep extends AbstractExecutionStep {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
 
     final long[] timestamps = new long[1];
-    final Object[][] columnValues = new Object[columns.size() - 1][1]; // exclude timestamp column
+    int nonTsCount = 0;
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        nonTsCount++;
+    final Object[][] columnValues = new Object[nonTsCount][1];
 
     int colIdx = 0;
     for (int i = 0; i < columns.size(); i++) {
