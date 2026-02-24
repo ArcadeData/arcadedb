@@ -18,6 +18,8 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.utility.CollectionUtils;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -45,7 +47,7 @@ public final class TagFilter {
    */
   public static TagFilter eq(final int nonTsColumnIndex, final Object value) {
     final List<Condition> conditions = new ArrayList<>(1);
-    conditions.add(new Condition(nonTsColumnIndex, Set.of(value)));
+    conditions.add(new Condition(nonTsColumnIndex, CollectionUtils.singletonSet(value)));
     return new TagFilter(conditions);
   }
 
@@ -70,7 +72,7 @@ public final class TagFilter {
   public TagFilter and(final int nonTsColumnIndex, final Object value) {
     final List<Condition> newConditions = new ArrayList<>(conditions.size() + 1);
     newConditions.addAll(conditions);
-    newConditions.add(new Condition(nonTsColumnIndex, Set.of(value)));
+    newConditions.add(new Condition(nonTsColumnIndex, CollectionUtils.singletonSet(value)));
     return new TagFilter(newConditions);
   }
 

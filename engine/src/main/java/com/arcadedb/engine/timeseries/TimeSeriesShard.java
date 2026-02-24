@@ -164,14 +164,9 @@ public class TimeSeriesShard implements AutoCloseable {
         mutableBucket.appendSamples(timestamps, columnValues);
         database.commit();
       } catch (final ConcurrentModificationException cme) {
-        // Roll back the nested TX (which failed to commit).
-        if (database.isTransactionActive())
-          database.rollback();
-        // Also roll back the enclosing TX that was restored to the stack after the nested TX
-        // was popped: since appendSamples always uses nested transactions, the enclosing TX
-        // has no dirty pages of its own, so this rollback is a no-op from a data perspective.
-        // It does, however, leave the caller in a clean "no active transaction" state so that
-        // an outer retry loop can call database.begin() without creating unwanted nested TXs.
+        // Roll back the nested TX only.  Do NOT touch the caller's outer transaction:
+        // the Javadoc promises it remains unaffected, and the caller must decide whether
+        // to rollback/retry their own transaction.
         if (database.isTransactionActive())
           database.rollback();
         throw cme; // propagate as-is so callers can catch and retry

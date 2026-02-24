@@ -51,7 +51,7 @@ public class TimeSeriesEmbeddedBenchmark {
   private static final int    PARALLEL_LEVEL       = Integer.getInteger("benchmark.parallelLevel", 3);
   private static final int    NUM_SENSORS          = Integer.getInteger("benchmark.numSensors", 100);
   public static final  int    ASYNCH_BACK_PRESSURE = 90;
-  public static final  int    ASYNC_COMMIT_EVERY   = 10;
+  public static final  int    ASYNC_COMMIT_EVERY   = 5;
 
   public static void main(final String[] args) throws Exception {
     new TimeSeriesEmbeddedBenchmark().run();

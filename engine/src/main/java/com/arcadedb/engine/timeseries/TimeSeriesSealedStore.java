@@ -340,7 +340,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @param toTs          end timestamp (inclusive)
    * @param columnIndices which columns to return (null = all)
    *
-   * @return iterator yielding Object[] { timestamp, col1, col2, ... }
+   * @return iterator yielding Object[] { timestamp, col1, col2, ... }.
+   *         <b>Note:</b> all matching rows are fully materialised into memory before the iterator
+   *         is returned, because the read lock must be held for all file I/O and released before
+   *         the caller iterates.  For very large time ranges consider using aggregation instead.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
@@ -532,183 +535,183 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // after atomic file replacement by concurrent writers (truncate/downsample).
     directoryLock.readLock().lock();
     try {
-    for (final BlockEntry entry : blockDirectory) {
-      if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
-        if (metrics != null)
-          metrics.addSkippedBlock();
-        continue;
-      }
-
-      // Block-level tag filter: SKIP blocks that cannot contain matching rows
-      final BlockMatchResult tagMatch = tagFilter != null
-          ? blockMatchesTagFilter(entry, tagFilter)
-          : BlockMatchResult.FAST_PATH;
-      if (tagMatch == BlockMatchResult.SKIP) {
-        if (metrics != null)
-          metrics.addSkippedBlock();
-        continue;
-      }
-
-      // Check if entire block falls within a single time bucket and is fully inside the query range
-      // FAST_PATH: block is homogeneous for the filtered tag, so block-level stats are valid
-      if (tagMatch == BlockMatchResult.FAST_PATH
-          && bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
-        final long blockMinBucket = (entry.minTimestamp / bucketIntervalMs) * bucketIntervalMs;
-        final long blockMaxBucket = (entry.maxTimestamp / bucketIntervalMs) * bucketIntervalMs;
-
-        if (blockMinBucket == blockMaxBucket) {
-          // FAST PATH: use block-level stats directly — no decompression needed
+      for (final BlockEntry entry : blockDirectory) {
+        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
           if (metrics != null)
-            metrics.addFastPathBlock();
-          for (int r = 0; r < reqCount; r++) {
-            if (isCount[r])
-              rowValues[r] = entry.sampleCount;
-            else {
-              final int sci = schemaColIndices[r];
-              rowValues[r] = switch (requests.get(r).type()) {
-                case MIN -> entry.columnMins[sci];
-                case MAX -> entry.columnMaxs[sci];
-                case SUM, AVG -> entry.columnSums[sci];
-                case COUNT -> entry.sampleCount;
-              };
-            }
-          }
-          result.accumulateBlockStats(blockMinBucket, rowValues, entry.sampleCount);
+            metrics.addSkippedBlock();
           continue;
         }
-      }
 
-      // SLOW PATH: decompress and iterate (boundary blocks spanning multiple buckets)
-      if (metrics != null)
-        metrics.addSlowPathBlock();
-
-      // Coalesced I/O: read all column data in one pread call
-      long t0 = metrics != null ? System.nanoTime() : 0;
-      final byte[] blockData = readBlockData(entry);
-      if (metrics != null)
-        metrics.addIo(System.nanoTime() - t0);
-
-      // Decode timestamps into reusable buffer
-      t0 = metrics != null ? System.nanoTime() : 0;
-      final int tsCount = DeltaOfDeltaCodec.decode(
-          sliceColumn(blockData, entry, tsColIdx), reusableTsBuf);
-      if (metrics != null)
-        metrics.addDecompTs(System.nanoTime() - t0);
-
-      // Decompress only the columns needed by the requests (deduplicated)
-      // Use reusable buffer for the first column; allocate for additional distinct columns
-      final double[][] decompressedCols = new double[columns.size()][];
-      boolean reusableValBufferUsed = false;
-      for (int r = 0; r < reqCount; r++) {
-        if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null) {
-          t0 = metrics != null ? System.nanoTime() : 0;
-          final byte[] colBytes = sliceColumn(blockData, entry, schemaColIndices[r]);
-          final ColumnDefinition col = columns.get(schemaColIndices[r]);
-          if (!reusableValBufferUsed && col.getCompressionHint() == TimeSeriesCodec.GORILLA_XOR) {
-            // Decode into reusable buffer (only safe for one column at a time)
-            GorillaXORCodec.decode(colBytes, reusableValBuf);
-            decompressedCols[schemaColIndices[r]] = reusableValBuf;
-            reusableValBufferUsed = true;
-          } else {
-            decompressedCols[schemaColIndices[r]] = decompressDoubleColumnFromBytes(colBytes, schemaColIndices[r]);
-          }
+        // Block-level tag filter: SKIP blocks that cannot contain matching rows
+        final BlockMatchResult tagMatch = tagFilter != null
+            ? blockMatchesTagFilter(entry, tagFilter)
+            : BlockMatchResult.FAST_PATH;
+        if (tagMatch == BlockMatchResult.SKIP) {
           if (metrics != null)
-            metrics.addDecompVal(System.nanoTime() - t0);
+            metrics.addSkippedBlock();
+          continue;
         }
-      }
 
-      // Decompress tag columns for SLOW_PATH tag filtering
-      final boolean needRowTagFilter = tagFilter != null && tagMatch == BlockMatchResult.SLOW_PATH;
-      String[][] tagCols = null;
-      List<TagFilter.Condition> filterConditions = null;
-      if (needRowTagFilter) {
-        filterConditions = tagFilter.getConditions();
-        tagCols = new String[filterConditions.size()][];
-        for (int ci = 0; ci < filterConditions.size(); ci++) {
-          final int schemaIdx = findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex());
-          final byte[] colBytes = sliceColumn(blockData, entry, schemaIdx);
-          tagCols[ci] = DictionaryCodec.decode(colBytes);
-        }
-      }
+        // Check if entire block falls within a single time bucket and is fully inside the query range
+        // FAST_PATH: block is homogeneous for the filtered tag, so block-level stats are valid
+        if (tagMatch == BlockMatchResult.FAST_PATH
+            && bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
+          final long blockMinBucket = (entry.minTimestamp / bucketIntervalMs) * bucketIntervalMs;
+          final long blockMaxBucket = (entry.maxTimestamp / bucketIntervalMs) * bucketIntervalMs;
 
-      // Use tsCount (not array length) since reusableTsBuf may be larger than actual data
-      final long[] timestamps = reusableTsBuf;
-
-      // Aggregate using segment-based vectorized accumulation
-      t0 = metrics != null ? System.nanoTime() : 0;
-
-      // Clip to query range using binary search on sorted timestamps
-      final int rangeStart = lowerBound(timestamps, 0, tsCount, fromTs);
-      final int rangeEnd = upperBound(timestamps, 0, tsCount, toTs);
-
-      if (bucketIntervalMs > 0) {
-        if (needRowTagFilter) {
-          // Per-row accumulation with tag filtering (cannot use SIMD on mixed-tag blocks)
-          for (int i = rangeStart; i < rangeEnd; i++) {
-            if (!matchesTagConditions(tagCols, filterConditions, i))
-              continue;
-            final long bucketTs = (timestamps[i] / bucketIntervalMs) * bucketIntervalMs;
+          if (blockMinBucket == blockMaxBucket) {
+            // FAST PATH: use block-level stats directly — no decompression needed
+            if (metrics != null)
+              metrics.addFastPathBlock();
             for (int r = 0; r < reqCount; r++) {
               if (isCount[r])
-                result.accumulateSingleStat(bucketTs, r, 1.0, 1);
-              else
-                result.accumulateSingleStat(bucketTs, r, decompressedCols[schemaColIndices[r]][i], 1);
+                rowValues[r] = entry.sampleCount;
+              else {
+                final int sci = schemaColIndices[r];
+                rowValues[r] = switch (requests.get(r).type()) {
+                  case MIN -> entry.columnMins[sci];
+                  case MAX -> entry.columnMaxs[sci];
+                  case SUM, AVG -> entry.columnSums[sci];
+                  case COUNT -> entry.sampleCount;
+                };
+              }
+            }
+            result.accumulateBlockStats(blockMinBucket, rowValues, entry.sampleCount);
+            continue;
+          }
+        }
+
+        // SLOW PATH: decompress and iterate (boundary blocks spanning multiple buckets)
+        if (metrics != null)
+          metrics.addSlowPathBlock();
+
+        // Coalesced I/O: read all column data in one pread call
+        long t0 = metrics != null ? System.nanoTime() : 0;
+        final byte[] blockData = readBlockData(entry);
+        if (metrics != null)
+          metrics.addIo(System.nanoTime() - t0);
+
+        // Decode timestamps into reusable buffer
+        t0 = metrics != null ? System.nanoTime() : 0;
+        final int tsCount = DeltaOfDeltaCodec.decode(
+            sliceColumn(blockData, entry, tsColIdx), reusableTsBuf);
+        if (metrics != null)
+          metrics.addDecompTs(System.nanoTime() - t0);
+
+        // Decompress only the columns needed by the requests (deduplicated)
+        // Use reusable buffer for the first column; allocate for additional distinct columns
+        final double[][] decompressedCols = new double[columns.size()][];
+        boolean reusableValBufferUsed = false;
+        for (int r = 0; r < reqCount; r++) {
+          if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null) {
+            t0 = metrics != null ? System.nanoTime() : 0;
+            final byte[] colBytes = sliceColumn(blockData, entry, schemaColIndices[r]);
+            final ColumnDefinition col = columns.get(schemaColIndices[r]);
+            if (!reusableValBufferUsed && col.getCompressionHint() == TimeSeriesCodec.GORILLA_XOR) {
+              // Decode into reusable buffer (only safe for one column at a time)
+              GorillaXORCodec.decode(colBytes, reusableValBuf);
+              decompressedCols[schemaColIndices[r]] = reusableValBuf;
+              reusableValBufferUsed = true;
+            } else {
+              decompressedCols[schemaColIndices[r]] = decompressDoubleColumnFromBytes(colBytes, schemaColIndices[r]);
+            }
+            if (metrics != null)
+              metrics.addDecompVal(System.nanoTime() - t0);
+          }
+        }
+
+        // Decompress tag columns for SLOW_PATH tag filtering
+        final boolean needRowTagFilter = tagFilter != null && tagMatch == BlockMatchResult.SLOW_PATH;
+        String[][] tagCols = null;
+        List<TagFilter.Condition> filterConditions = null;
+        if (needRowTagFilter) {
+          filterConditions = tagFilter.getConditions();
+          tagCols = new String[filterConditions.size()][];
+          for (int ci = 0; ci < filterConditions.size(); ci++) {
+            final int schemaIdx = findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex());
+            final byte[] colBytes = sliceColumn(blockData, entry, schemaIdx);
+            tagCols[ci] = DictionaryCodec.decode(colBytes);
+          }
+        }
+
+        // Use tsCount (not array length) since reusableTsBuf may be larger than actual data
+        final long[] timestamps = reusableTsBuf;
+
+        // Aggregate using segment-based vectorized accumulation
+        t0 = metrics != null ? System.nanoTime() : 0;
+
+        // Clip to query range using binary search on sorted timestamps
+        final int rangeStart = lowerBound(timestamps, 0, tsCount, fromTs);
+        final int rangeEnd = upperBound(timestamps, 0, tsCount, toTs);
+
+        if (bucketIntervalMs > 0) {
+          if (needRowTagFilter) {
+            // Per-row accumulation with tag filtering (cannot use SIMD on mixed-tag blocks)
+            for (int i = rangeStart; i < rangeEnd; i++) {
+              if (!matchesTagConditions(tagCols, filterConditions, i))
+                continue;
+              final long bucketTs = (timestamps[i] / bucketIntervalMs) * bucketIntervalMs;
+              for (int r = 0; r < reqCount; r++) {
+                if (isCount[r])
+                  result.accumulateSingleStat(bucketTs, r, 1.0, 1);
+                else
+                  result.accumulateSingleStat(bucketTs, r, decompressedCols[schemaColIndices[r]][i], 1);
+              }
+            }
+          } else {
+            // Vectorized path: find contiguous segments within each bucket and use SIMD ops
+            final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
+
+            int segStart = rangeStart;
+            while (segStart < rangeEnd) {
+              final long bucketTs = (timestamps[segStart] / bucketIntervalMs) * bucketIntervalMs;
+              final long nextBucketTs = bucketTs + bucketIntervalMs;
+
+              // Find end of this bucket's segment
+              int segEnd = segStart + 1;
+              while (segEnd < rangeEnd && timestamps[segEnd] < nextBucketTs)
+                segEnd++;
+
+              final int segLen = segEnd - segStart;
+
+              // Accumulate each request using vectorized ops on the segment
+              for (int r = 0; r < reqCount; r++) {
+                if (isCount[r]) {
+                  result.accumulateSingleStat(bucketTs, r, segLen, segLen);
+                } else {
+                  final double[] colData = decompressedCols[schemaColIndices[r]];
+                  final double val = switch (requests.get(r).type()) {
+                    case SUM, AVG -> ops.sum(colData, segStart, segLen);
+                    case MIN -> ops.min(colData, segStart, segLen);
+                    case MAX -> ops.max(colData, segStart, segLen);
+                    case COUNT -> segLen;
+                  };
+                  result.accumulateSingleStat(bucketTs, r, val, segLen);
+                }
+              }
+
+              segStart = segEnd;
             }
           }
         } else {
-          // Vectorized path: find contiguous segments within each bucket and use SIMD ops
-          final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
+          // No bucket interval — accumulate all into one bucket
+          for (int i = 0; i < tsCount; i++) {
+            final long ts = timestamps[i];
+            if (ts < fromTs || ts > toTs)
+              continue;
 
-          int segStart = rangeStart;
-          while (segStart < rangeEnd) {
-            final long bucketTs = (timestamps[segStart] / bucketIntervalMs) * bucketIntervalMs;
-            final long nextBucketTs = bucketTs + bucketIntervalMs;
+            if (needRowTagFilter && !matchesTagConditions(tagCols, filterConditions, i))
+              continue;
 
-            // Find end of this bucket's segment
-            int segEnd = segStart + 1;
-            while (segEnd < rangeEnd && timestamps[segEnd] < nextBucketTs)
-              segEnd++;
+            for (int r = 0; r < reqCount; r++)
+              rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
 
-            final int segLen = segEnd - segStart;
-
-            // Accumulate each request using vectorized ops on the segment
-            for (int r = 0; r < reqCount; r++) {
-              if (isCount[r]) {
-                result.accumulateSingleStat(bucketTs, r, segLen, segLen);
-              } else {
-                final double[] colData = decompressedCols[schemaColIndices[r]];
-                final double val = switch (requests.get(r).type()) {
-                  case SUM, AVG -> ops.sum(colData, segStart, segLen);
-                  case MIN -> ops.min(colData, segStart, segLen);
-                  case MAX -> ops.max(colData, segStart, segLen);
-                  case COUNT -> segLen;
-                };
-                result.accumulateSingleStat(bucketTs, r, val, segLen);
-              }
-            }
-
-            segStart = segEnd;
+            result.accumulateRow(fromTs, rowValues);
           }
         }
-      } else {
-        // No bucket interval — accumulate all into one bucket
-        for (int i = 0; i < tsCount; i++) {
-          final long ts = timestamps[i];
-          if (ts < fromTs || ts > toTs)
-            continue;
-
-          if (needRowTagFilter && !matchesTagConditions(tagCols, filterConditions, i))
-            continue;
-
-          for (int r = 0; r < reqCount; r++)
-            rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
-
-          result.accumulateRow(fromTs, rowValues);
-        }
+        if (metrics != null)
+          metrics.addAccum(System.nanoTime() - t0);
       }
-      if (metrics != null)
-        metrics.addAccum(System.nanoTime() - t0);
-    }
     } finally {
       directoryLock.readLock().unlock();
     }

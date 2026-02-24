@@ -27,6 +27,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import java.lang.ref.WeakReference;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -50,9 +51,11 @@ public class TimeSeriesMaintenanceScheduler {
   /** Maximum number of concurrent maintenance tasks (compaction + retention per type). */
   private static final int MAX_THREADS = 4;
 
+  private static final AtomicInteger THREAD_COUNTER = new AtomicInteger();
+
   public TimeSeriesMaintenanceScheduler() {
     this.executor = Executors.newScheduledThreadPool(MAX_THREADS, r -> {
-      final Thread t = new Thread(r, "ArcadeDB-TS-Maintenance");
+      final Thread t = new Thread(r, "ArcadeDB-TS-Maintenance-" + THREAD_COUNTER.incrementAndGet());
       t.setDaemon(true);
       return t;
     });
