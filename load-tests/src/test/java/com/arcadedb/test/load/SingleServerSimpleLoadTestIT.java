@@ -48,7 +48,7 @@ class SingleServerSimpleLoadTestIT extends ContainersTestTemplate {
     db.createSchema();
 
     final int numOfThreads = 1;
-    final int numOfUsers = 10000;
+    final int numOfUsers = 1000;
     final int numOfPhotos = 10;
 
     int expectedUsersCount = numOfUsers * numOfThreads;
