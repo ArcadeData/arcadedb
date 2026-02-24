@@ -33,6 +33,11 @@ import java.util.logging.*;
 
 /**
  * Flushes pages to disk asynchronously.
+ * <p>
+ * A {@link ConcurrentHashMap} ({@code pageIndex}) provides O(1) lookup for pages
+ * waiting in the flush queue or currently being flushed.  This replaces the previous
+ * O(n) {@code queue.toArray()} scan that allocated a new array on every call and was
+ * a major bottleneck under high-throughput ingestion.
  */
 public class PageManagerFlushThread extends Thread {
   private final        PageManager                          pageManager;
@@ -42,6 +47,9 @@ public class PageManagerFlushThread extends Thread {
   private final        ConcurrentHashMap<Database, Boolean> suspended        = new ConcurrentHashMap<>(); // USED DURING BACKUP
   private final static PagesToFlush                         SHUTDOWN_THREAD  = new PagesToFlush(null);
   private final        AtomicReference<PagesToFlush>        nextPagesToFlush = new AtomicReference<>();
+
+  /** O(1) index: pageId → most recent MutablePage in the flush queue or currently being flushed. */
+  private final        ConcurrentHashMap<PageId, MutablePage> pageIndex = new ConcurrentHashMap<>();
 
   public static class PagesToFlush {
     public final BasicDatabase     database;
@@ -66,11 +74,20 @@ public class PageManagerFlushThread extends Thread {
       // AVOID INSERTING AN EMPTY LIST BECAUSE IS USED TO SHUTDOWN THE THREAD
       return;
 
+    // Index pages BEFORE enqueueing so that getCachedPageFromMutablePageInQueue()
+    // can find them even if the queue.offer() hasn't completed yet.
+    for (final MutablePage page : pages)
+      pageIndex.put(page.getPageId(), page);
+
     // TRY TO INSERT THE PAGE IN THE QUEUE UNTIL THE THREAD IS STILL RUNNING
     while (running) {
       if (queue.offer(new PagesToFlush(pages), 1, TimeUnit.SECONDS))
         return;
     }
+
+    // Failed to enqueue (shutdown in progress) — remove from index
+    for (final MutablePage page : pages)
+      pageIndex.remove(page.getPageId());
 
     LogManager.instance()
         .log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database (running=%s queue=%d)", pages, running,
@@ -116,8 +133,13 @@ public class PageManagerFlushThread extends Thread {
       pending = nextPagesToFlush.get();
     }
 
-    if (queue.isEmpty())
+    if (queue.isEmpty()) {
+      // All pages flushed — clean any stale index entries for this database.
+      // Entries can linger when remove(key, value) didn't match due to version differences
+      // (a newer version of the same page was committed after the older version was indexed).
+      pageIndex.keySet().removeIf(k -> database.equals(k.getDatabase()));
       return;
+    }
 
     boolean foundPages;
     do {
@@ -136,6 +158,9 @@ public class PageManagerFlushThread extends Thread {
         }
       }
     } while (foundPages);
+
+    // All pages for this database have been flushed — clean any stale index entries.
+    pageIndex.keySet().removeIf(k -> database.equals(k.getDatabase()));
   }
 
   protected void flushPagesFromQueueToDisk(final Database database, final long timeout) throws InterruptedException, IOException {
@@ -162,6 +187,13 @@ public class PageManagerFlushThread extends Thread {
                 } catch (final DatabaseMetadataException e) {
                   // FILE DELETED, CONTINUE WITH THE NEXT PAGES
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+                } finally {
+                  // Remove from index AFTER flushing: the page is now on disk and will be
+                  // found in the read cache (putPageInReadCache was called at commit time).
+                  // Use remove(key, value) so that a NEWER version of the same page (committed
+                  // by a later TX while this batch was queued) is NOT removed from the index.
+                  // BasePage.equals() compares both pageId and version, so this is safe.
+                  pageIndex.remove(page.getPageId(), page);
                 }
               }
             }
@@ -192,38 +224,9 @@ public class PageManagerFlushThread extends Thread {
   }
 
   public CachedPage getCachedPageFromMutablePageInQueue(final PageId pageId) {
-    final Object[] content = queue.toArray();
-    // Scan tail→head (newest→oldest) so we always return the most recent version of the page.
-    // ArrayBlockingQueue.toArray() returns elements head→tail (oldest→newest), so iterating
-    // in reverse gives the latest committed version and avoids stale-cache MVCC conflicts.
-    for (int i = content.length - 1; i >= 0; i--) {
-      final PagesToFlush pagesToFlush = (PagesToFlush) content[i];
-      if (pagesToFlush != null) {
-        synchronized (pagesToFlush.pages) {
-          for (int j = 0; j < pagesToFlush.pages.size(); j++) {
-            final MutablePage page = pagesToFlush.pages.get(j);
-            if (page.getPageId().equals(pageId))
-              return new CachedPage(page, true);
-          }
-        }
-      }
-    }
-
-    // Also check the entry currently being flushed by the flush thread.  After queue.poll()
-    // removes an entry from the queue but before flushPage() writes it to disk, the page is
-    // only reachable via nextPagesToFlush.  Without this check, getMostRecentVersionOfPage()
-    // would fall back to the on-disk version (stale) and cause spurious MVCC conflicts.
-    final PagesToFlush currentlyFlushing = nextPagesToFlush.get();
-    if (currentlyFlushing != null) {
-      synchronized (currentlyFlushing.pages) {
-        for (int j = 0; j < currentlyFlushing.pages.size(); j++) {
-          final MutablePage page = currentlyFlushing.pages.get(j);
-          if (page.getPageId().equals(pageId))
-            return new CachedPage(page, true);
-        }
-      }
-    }
-
+    final MutablePage page = pageIndex.get(pageId);
+    if (page != null)
+      return new CachedPage(page, true);
     return null;
   }
 
@@ -231,7 +234,12 @@ public class PageManagerFlushThread extends Thread {
     for (final PagesToFlush pagesToFlush : queue.stream().toList())
       if (database.equals(pagesToFlush.database))
         synchronized (pagesToFlush.pages) {
+          for (final MutablePage page : pagesToFlush.pages)
+            pageIndex.remove(page.getPageId());
           pagesToFlush.pages.clear();
         }
+
+    // Also clean index entries for pages currently being flushed
+    pageIndex.entrySet().removeIf(e -> database.equals(e.getKey().getDatabase()));
   }
 }
