@@ -1051,7 +1051,9 @@ public class LocalDocumentType implements DocumentType {
     final JSONObject type = new JSONObject();
 
     final String kind;
-    if (this instanceof LocalVertexType)
+    if (this instanceof LocalTimeSeriesType)
+      kind = "t";
+    else if (this instanceof LocalVertexType)
       kind = "v";
     else if (this instanceof LocalEdgeType)
       kind = "e";

@@ -201,11 +201,25 @@ public interface Schema {
 
   MaterializedViewBuilder buildMaterializedView();
 
+  // -- Continuous Aggregate management --
+
+  boolean existsContinuousAggregate(String name);
+
+  ContinuousAggregate getContinuousAggregate(String name);
+
+  ContinuousAggregate[] getContinuousAggregates();
+
+  void dropContinuousAggregate(String name);
+
+  ContinuousAggregateBuilder buildContinuousAggregate();
+
   TypeBuilder<? extends DocumentType> buildDocumentType();
 
   TypeBuilder<VertexType> buildVertexType();
 
   TypeBuilder<EdgeType> buildEdgeType();
+
+  TimeSeriesTypeBuilder buildTimeSeriesType();
 
   /**
    * Creates a new document type with the default settings of buckets.

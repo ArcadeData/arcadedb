@@ -35,6 +35,8 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.timeseries.TimeSeriesBucket;
+import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
 import com.arcadedb.event.*;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -93,6 +95,7 @@ public class LocalSchema implements Schema {
   protected final     Map<String, IndexInternal>             indexMap                      = new HashMap<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
   protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
+  protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new HashMap<>();
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
@@ -110,6 +113,7 @@ public class LocalSchema implements Schema {
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
   private              MaterializedViewScheduler              materializedViewScheduler;
+  private              TimeSeriesMaintenanceScheduler         timeSeriesMaintenanceScheduler;
 
   public LocalSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -128,6 +132,7 @@ public class LocalSchema implements Schema {
     componentFactory.registerComponent(LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
         new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
+    componentFactory.registerComponent(TimeSeriesBucket.BUCKET_EXT, new TimeSeriesBucket.PaginatedComponentFactoryHandler());
     // Note: LSMVectorIndexGraphFile is NOT registered here - it's a sub-component discovered by its parent LSMVectorIndex
 
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.LSMTreeIndexFactoryHandler());
@@ -264,6 +269,13 @@ public class LocalSchema implements Schema {
       return null;
 
     return files.get(id);
+  }
+
+  public Component getFileByName(final String name) {
+    for (final Component f : files)
+      if (f != null && name.equals(f.getName()))
+        return f;
+    return null;
   }
 
   public void removeFile(final int fileId) {
@@ -655,6 +667,48 @@ public class LocalSchema implements Schema {
     return new MaterializedViewBuilder((DatabaseInternal) database);
   }
 
+  // -- Continuous Aggregate management --
+
+  @Override
+  public synchronized boolean existsContinuousAggregate(final String name) {
+    return continuousAggregates.containsKey(name);
+  }
+
+  @Override
+  public synchronized ContinuousAggregate getContinuousAggregate(final String name) {
+    final ContinuousAggregateImpl ca = continuousAggregates.get(name);
+    if (ca == null)
+      throw new SchemaException("Continuous aggregate '" + name + "' not found");
+    return ca;
+  }
+
+  @Override
+  public synchronized ContinuousAggregate[] getContinuousAggregates() {
+    return continuousAggregates.values().toArray(new ContinuousAggregate[0]);
+  }
+
+  @Override
+  public synchronized void dropContinuousAggregate(final String name) {
+    final ContinuousAggregateImpl ca = continuousAggregates.get(name);
+    if (ca == null)
+      throw new SchemaException("Continuous aggregate '" + name + "' not found");
+
+    recordFileChanges(() -> {
+      continuousAggregates.remove(name);
+
+      if (existsType(ca.getBackingTypeName()))
+        dropType(ca.getBackingTypeName());
+
+      saveConfiguration();
+      return null;
+    });
+  }
+
+  @Override
+  public ContinuousAggregateBuilder buildContinuousAggregate() {
+    return new ContinuousAggregateBuilder((DatabaseInternal) database);
+  }
+
   /**
    * Register a trigger as an event listener on the appropriate type.
    */
@@ -868,9 +922,19 @@ public class LocalSchema implements Schema {
       materializedViewScheduler = null;
     }
 
+    if (timeSeriesMaintenanceScheduler != null) {
+      timeSeriesMaintenanceScheduler.shutdown();
+      timeSeriesMaintenanceScheduler = null;
+    }
+
     writeStatisticsFile();
     materializedViews.clear();
+    continuousAggregates.clear();
     files.clear();
+    for (final DocumentType type : types.values()) {
+      if (type instanceof LocalTimeSeriesType tsType)
+        tsType.close();
+    }
     types.clear();
     bucketMap.clear();
     indexMap.clear();
@@ -882,6 +946,12 @@ public class LocalSchema implements Schema {
     if (materializedViewScheduler == null)
       materializedViewScheduler = new MaterializedViewScheduler();
     return materializedViewScheduler;
+  }
+
+  public synchronized TimeSeriesMaintenanceScheduler getTimeSeriesMaintenanceScheduler() {
+    if (timeSeriesMaintenanceScheduler == null)
+      timeSeriesMaintenanceScheduler = new TimeSeriesMaintenanceScheduler();
+    return timeSeriesMaintenanceScheduler;
   }
 
   private void readStatisticsFile() {
@@ -989,7 +1059,7 @@ public class LocalSchema implements Schema {
   public void dropType(final String typeName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    // Prevent dropping a type that is a backing type or source type for a materialized view
+    // Prevent dropping a type that is a backing type or source type for a materialized view or continuous aggregate
     synchronized (this) {
       for (final MaterializedViewImpl view : materializedViews.values()) {
         if (view.getBackingTypeName().equals(typeName))
@@ -1000,6 +1070,16 @@ public class LocalSchema implements Schema {
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + view.getName() + "'. " +
                   "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
+      }
+      for (final ContinuousAggregateImpl ca : continuousAggregates.values()) {
+        if (ca.getBackingTypeName().equals(typeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '" + ca.getName() + "'. " +
+                  "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
+        if (ca.getSourceTypeName().equals(typeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '" + ca.getName() + "'. " +
+                  "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
       }
     }
 
@@ -1036,6 +1116,9 @@ public class LocalSchema implements Schema {
           type.removeBucket(b);
           dropBucket(b.getName());
         }
+
+        if (type instanceof LocalTimeSeriesType tsType)
+          tsType.close();
 
         if (types.remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");
@@ -1228,7 +1311,22 @@ public class LocalSchema implements Schema {
     return new TypeBuilder<>(database, EdgeType.class);
   }
 
+  @Override
+  public TimeSeriesTypeBuilder buildTimeSeriesType() {
+    return new TimeSeriesTypeBuilder(database);
+  }
+
   protected synchronized void readConfiguration() {
+    for (final DocumentType type : types.values()) {
+      if (type instanceof LocalTimeSeriesType tsType) {
+        try {
+          tsType.close();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error closing TimeSeries type '%s' during schema reload: %s", null,
+              tsType.getName(), e.getMessage());
+        }
+      }
+    }
     types.clear();
 
     loadInRamCompleted = false;
@@ -1286,6 +1384,18 @@ public class LocalSchema implements Schema {
           case "v" -> new LocalVertexType(this, typeName);
           case "e" -> new LocalEdgeType(this, typeName, !schemaType.has("bidirectional") || schemaType.getBoolean("bidirectional"));
           case "d" -> new LocalDocumentType(this, typeName);
+          case "t" -> {
+            final LocalTimeSeriesType tsType = new LocalTimeSeriesType(this, typeName);
+            tsType.fromJSON(schemaType);
+            try {
+              tsType.initEngine();
+            } catch (final IOException e) {
+              throw new ConfigurationException("Error initializing TimeSeries engine for type '" + typeName + "'", e);
+            }
+            // Schedule automatic retention/downsampling if policies are defined
+            getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
+            yield tsType;
+          }
           case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");
         };
 
@@ -1524,6 +1634,21 @@ public class LocalSchema implements Schema {
         }
       }
 
+      // Load continuous aggregates
+      continuousAggregates.clear();
+      if (root.has("continuousAggregates")) {
+        final JSONObject caJSON = root.getJSONObject("continuousAggregates");
+        for (final String caName : caJSON.keySet()) {
+          final JSONObject caDef = caJSON.getJSONObject(caName);
+          final ContinuousAggregateImpl ca = ContinuousAggregateImpl.fromJSON(database, caDef);
+          continuousAggregates.put(caName, ca);
+
+          // Crash recovery: if status is BUILDING, it was interrupted
+          if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
+            ca.setStatus(MaterializedViewStatus.STALE);
+        }
+      }
+
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
     } finally {
@@ -1592,7 +1717,17 @@ public class LocalSchema implements Schema {
       mvJSON.put(entry.getKey(), entry.getValue().toJSON());
     root.put("materializedViews", mvJSON);
 
+    // Serialize continuous aggregates
+    final JSONObject caJSON = new JSONObject();
+    for (final Map.Entry<String, ContinuousAggregateImpl> entry : continuousAggregates.entrySet())
+      caJSON.put(entry.getKey(), entry.getValue().toJSON());
+    root.put("continuousAggregates", caJSON);
+
     return root;
+  }
+
+  void registerType(final LocalDocumentType type) {
+    types.put(type.getName(), type);
   }
 
   public void registerFile(final Component file) {

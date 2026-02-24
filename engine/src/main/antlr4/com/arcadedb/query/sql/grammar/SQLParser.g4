@@ -95,6 +95,8 @@ statement
     | CREATE EDGE createEdgeBody                     # createEdgeStmt
     | CREATE TRIGGER createTriggerBody               # createTriggerStmt
     | CREATE MATERIALIZED VIEW createMaterializedViewBody   # createMaterializedViewStmt
+    | CREATE TIMESERIES TYPE createTimeSeriesTypeBody       # createTimeSeriesTypeStmt
+    | CREATE CONTINUOUS AGGREGATE createContinuousAggregateBody  # createContinuousAggregateStmt
 
     // DDL Statements - ALTER variants
     | ALTER TYPE alterTypeBody                       # alterTypeStmt
@@ -102,6 +104,7 @@ statement
     | ALTER BUCKET alterBucketBody                   # alterBucketStmt
     | ALTER DATABASE alterDatabaseBody               # alterDatabaseStmt
     | ALTER MATERIALIZED VIEW alterMaterializedViewBody     # alterMaterializedViewStmt
+    | ALTER TIMESERIES TYPE alterTimeSeriesTypeBody        # alterTimeSeriesTypeStmt
 
     // DDL Statements - DROP variants
     | DROP TYPE dropTypeBody                         # dropTypeStmt
@@ -110,6 +113,7 @@ statement
     | DROP BUCKET dropBucketBody                     # dropBucketStmt
     | DROP TRIGGER dropTriggerBody                   # dropTriggerStmt
     | DROP MATERIALIZED VIEW dropMaterializedViewBody       # dropMaterializedViewStmt
+    | DROP CONTINUOUS AGGREGATE dropContinuousAggregateBody # dropContinuousAggregateStmt
 
     // DDL Statements - TRUNCATE variants
     | TRUNCATE TYPE truncateTypeBody                 # truncateTypeStmt
@@ -118,6 +122,9 @@ statement
 
     // Materialized View Refresh
     | REFRESH MATERIALIZED VIEW refreshMaterializedViewBody # refreshMaterializedViewStmt
+
+    // Continuous Aggregate Refresh
+    | REFRESH CONTINUOUS AGGREGATE refreshContinuousAggregateBody # refreshContinuousAggregateStmt
 
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
@@ -426,6 +433,51 @@ createTypeBody
     ;
 
 /**
+ * CREATE TIMESERIES TYPE body
+ * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE) SHARDS 4 RETENTION 90 DAYS COMPACTION_INTERVAL 1 HOURS
+ */
+createTimeSeriesTypeBody
+    : identifier
+      (IF NOT EXISTS)?
+      (TIMESTAMP identifier)?
+      (TAGS LPAREN tsTagColumnDef (COMMA tsTagColumnDef)* RPAREN)?
+      (FIELDS LPAREN tsFieldColumnDef (COMMA tsFieldColumnDef)* RPAREN)?
+      (SHARDS INTEGER_LITERAL)?
+      (RETENTION INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
+      (COMPACTION_INTERVAL INTEGER_LITERAL (DAYS | HOURS | MINUTES)?)?
+    ;
+
+tsTagColumnDef
+    : identifier identifier
+    ;
+
+tsFieldColumnDef
+    : identifier identifier
+    ;
+
+/**
+ * ALTER TIMESERIES TYPE body - add or drop downsampling policy
+ * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS AFTER 30 DAYS GRANULARITY 1 DAYS
+ * Example: ALTER TIMESERIES TYPE SensorData DROP DOWNSAMPLING POLICY
+ */
+alterTimeSeriesTypeBody
+    : identifier ADD DOWNSAMPLING POLICY downsamplingTierClause+
+    | identifier DROP DOWNSAMPLING POLICY
+    ;
+
+downsamplingTierClause
+    : AFTER INTEGER_LITERAL tsTimeUnit GRANULARITY INTEGER_LITERAL tsTimeUnit
+    ;
+
+tsTimeUnit
+    : DAYS
+    | HOURS
+    | MINUTES
+    | HOUR
+    | MINUTE
+    ;
+
+/**
  * CREATE EDGE TYPE body (supports UNIDIRECTIONAL)
  */
 createEdgeTypeBody
@@ -683,6 +735,35 @@ refreshMaterializedViewBody
  */
 alterMaterializedViewBody
     : identifier materializedViewRefreshClause
+    ;
+
+// ============================================================================
+// DDL STATEMENTS - CONTINUOUS AGGREGATE
+// ============================================================================
+
+/**
+ * CREATE CONTINUOUS AGGREGATE statement
+ * Syntax: CREATE CONTINUOUS AGGREGATE [IF NOT EXISTS] name AS selectStatement
+ */
+createContinuousAggregateBody
+    : (IF NOT EXISTS)? identifier
+      AS selectStatement
+    ;
+
+/**
+ * DROP CONTINUOUS AGGREGATE statement
+ * Syntax: DROP CONTINUOUS AGGREGATE [IF EXISTS] name
+ */
+dropContinuousAggregateBody
+    : (IF EXISTS)? identifier
+    ;
+
+/**
+ * REFRESH CONTINUOUS AGGREGATE statement
+ * Syntax: REFRESH CONTINUOUS AGGREGATE name
+ */
+refreshContinuousAggregateBody
+    : identifier
     ;
 
 // ============================================================================
@@ -1315,6 +1396,20 @@ identifier
     | MANUAL
     | INCREMENTAL
     | MATERIALIZED
+    | CONTINUOUS
+    | AGGREGATE
+    | TIMESERIES
+    | TAGS
+    | FIELDS
+    | RETENTION
+    | COMPACTION_INTERVAL
+    | SHARDS
+    | DAYS
+    | HOURS
+    | MINUTES
+    | DOWNSAMPLING
+    | POLICY
+    | GRANULARITY
     // Additional keywords allowed as identifiers (matching JavaCC parser)
     | PROPERTY
     | BUCKETS

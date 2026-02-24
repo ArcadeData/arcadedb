@@ -153,7 +153,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       JSONObject payload = null;
       if (mustExecuteOnWorkerThread()) {
         final String payloadAsString = parseRequestPayload(exchange);
-        if (payloadAsString != null && !payloadAsString.isBlank())
+        if (requiresJsonPayload() && payloadAsString != null && !payloadAsString.isBlank())
           try {
             payload = new JSONObject(payloadAsString.trim());
           } catch (Exception e) {
@@ -295,6 +295,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected boolean mustExecuteOnWorkerThread() {
     return false;
+  }
+
+  protected boolean requiresJsonPayload() {
+    return true;
   }
 
   protected String encodeError(final String message) {
