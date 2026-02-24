@@ -97,6 +97,8 @@ public final class GorillaXORCodec {
     final DeltaOfDeltaCodec.BitReader reader = new DeltaOfDeltaCodec.BitReader(data);
 
     final int count = (int) reader.readBits(32);
+    if (count <= 0 || count > DeltaOfDeltaCodec.MAX_BLOCK_SIZE)
+      throw new IllegalArgumentException("GorillaXOR decode: invalid count " + count + " (expected 1.." + DeltaOfDeltaCodec.MAX_BLOCK_SIZE + ")");
     final double[] result = new double[count];
 
     long prevBits = reader.readBits(64);
@@ -144,6 +146,8 @@ public final class GorillaXORCodec {
 
     final DeltaOfDeltaCodec.BitReader reader = new DeltaOfDeltaCodec.BitReader(data);
     final int count = (int) reader.readBits(32);
+    if (count <= 0 || count > DeltaOfDeltaCodec.MAX_BLOCK_SIZE)
+      throw new IllegalArgumentException("GorillaXOR decode: invalid count " + count + " (expected 1.." + DeltaOfDeltaCodec.MAX_BLOCK_SIZE + ")");
 
     long prevBits = reader.readBits(64);
     output[0] = Double.longBitsToDouble(prevBits);

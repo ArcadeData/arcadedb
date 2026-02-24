@@ -21,8 +21,6 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
-import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
-import com.arcadedb.engine.timeseries.codec.Simple8bCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
@@ -151,11 +149,12 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
-   * Returns a lazy iterator over both sealed and mutable layers.
+   * Returns an iterator over both sealed and mutable layers.
    * Sealed data is iterated first, then mutable. Tag filter is applied inline.
-   * Both underlying iterators eagerly collect matching rows under the read lock,
-   * preventing concurrent {@link #compact()} from clearing the mutable bucket
-   * while data collection is in progress.
+   * The sealed iterator eagerly collects all matching rows under the read lock.
+   * The mutable iterator is lazy (pages loaded on demand) but the MVCC snapshot is
+   * established under the read lock, which prevents concurrent {@link #compact()} from
+   * clearing the mutable bucket while data collection is in progress.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
@@ -170,7 +169,8 @@ public class TimeSeriesShard implements AutoCloseable {
     }
 
     // Chain sealed then mutable, with inline tag filtering.
-    // Data is already in memory (both iterators are eager), so no lock needed here.
+    // The sealed iterator is fully materialised; the mutable iterator is lazy but its
+    // MVCC snapshot was already established under the read lock above.
     return new Iterator<>() {
       private Iterator<Object[]> current = sealedIter;
       private boolean            switchedToMutable = false;
@@ -451,7 +451,7 @@ public class TimeSeriesShard implements AutoCloseable {
           compressedCols[c] = DeltaOfDeltaCodec.encode(chunkTs);
         } else {
           final Object[] chunkValues = Arrays.copyOfRange(sortedColArrays[c], chunkStart, chunkEnd);
-          compressedCols[c] = compressColumn(columns.get(c), chunkValues);
+          compressedCols[c] = TimeSeriesSealedStore.compressColumn(columns.get(c), chunkValues);
 
           final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
           if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
@@ -514,6 +514,16 @@ public class TimeSeriesShard implements AutoCloseable {
 
   public TimeSeriesSealedStore getSealedStore() {
     return sealedStore;
+  }
+
+  /**
+   * Returns the compaction read/write lock.
+   * Callers that aggregate both sealed and mutable data must hold the read lock for the
+   * entire duration to prevent compaction from completing between the two reads (which
+   * would cause the compacted mutable data to be invisible to the caller).
+   */
+  java.util.concurrent.locks.ReadWriteLock getCompactionLock() {
+    return compactionLock;
   }
 
   public int getShardIndex() {
@@ -582,31 +592,6 @@ public class TimeSeriesShard implements AutoCloseable {
     for (int i = 0; i < indices.length; i++)
       result[i] = data[indices[i]];
     return result;
-  }
-
-  private byte[] compressColumn(final ColumnDefinition col, final Object[] values) {
-    final TimeSeriesCodec codec = col.getCompressionHint();
-    return switch (codec) {
-      case GORILLA_XOR -> {
-        final double[] doubles = new double[values.length];
-        for (int i = 0; i < values.length; i++)
-          doubles[i] = values[i] != null ? ((Number) values[i]).doubleValue() : 0.0;
-        yield GorillaXORCodec.encode(doubles);
-      }
-      case SIMPLE8B -> {
-        final long[] longs = new long[values.length];
-        for (int i = 0; i < values.length; i++)
-          longs[i] = values[i] != null ? ((Number) values[i]).longValue() : 0L;
-        yield Simple8bCodec.encode(longs);
-      }
-      case DICTIONARY -> {
-        final String[] strings = new String[values.length];
-        for (int i = 0; i < values.length; i++)
-          strings[i] = values[i] != null ? values[i].toString() : "";
-        yield DictionaryCodec.encode(strings);
-      }
-      default -> throw new IllegalStateException("Unknown compression codec: " + codec);
-    };
   }
 
   /**

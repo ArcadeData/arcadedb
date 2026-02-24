@@ -36,6 +36,9 @@ import java.nio.ByteBuffer;
  */
 public final class DeltaOfDeltaCodec {
 
+  /** Maximum number of values per encoded block — mirrors TimeSeriesSealedStore.MAX_BLOCK_SIZE. */
+  public static final int MAX_BLOCK_SIZE = 65536;
+
   private DeltaOfDeltaCodec() {
   }
 
@@ -88,6 +91,8 @@ public final class DeltaOfDeltaCodec {
     final BitReader reader = new BitReader(data);
 
     final int count = (int) reader.readBits(32);
+    if (count <= 0 || count > MAX_BLOCK_SIZE)
+      throw new IllegalArgumentException("DeltaOfDelta decode: invalid count " + count + " (expected 1.." + MAX_BLOCK_SIZE + ")");
     final long[] result = new long[count];
     result[0] = reader.readBits(64);
 
@@ -130,6 +135,8 @@ public final class DeltaOfDeltaCodec {
 
     final BitReader reader = new BitReader(data);
     final int count = (int) reader.readBits(32);
+    if (count <= 0 || count > MAX_BLOCK_SIZE)
+      throw new IllegalArgumentException("DeltaOfDelta decode: invalid count " + count + " (expected 1.." + MAX_BLOCK_SIZE + ")");
     output[0] = reader.readBits(64);
 
     if (count == 1)

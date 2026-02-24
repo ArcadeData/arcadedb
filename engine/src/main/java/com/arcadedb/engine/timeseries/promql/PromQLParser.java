@@ -141,16 +141,37 @@ public class PromQLParser {
 
   private PromQLExpr parsePow() {
     PromQLExpr left = parseUnary();
-    if (lexer.match("^"))
-      left = new BinaryExpr(left, BinaryOp.POW, parsePow()); // right-associative
+    if (lexer.match("^")) {
+      if (++parseDepth > MAX_PARSE_DEPTH)
+        throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_PARSE_DEPTH);
+      try {
+        left = new BinaryExpr(left, BinaryOp.POW, parsePow()); // right-associative
+      } finally {
+        parseDepth--;
+      }
+    }
     return left;
   }
 
   private PromQLExpr parseUnary() {
-    if (lexer.matchMinus())
-      return new UnaryExpr('-', parseUnary());
-    if (lexer.match("+"))
-      return parseUnary();
+    if (lexer.matchMinus()) {
+      if (++parseDepth > MAX_PARSE_DEPTH)
+        throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_PARSE_DEPTH);
+      try {
+        return new UnaryExpr('-', parseUnary());
+      } finally {
+        parseDepth--;
+      }
+    }
+    if (lexer.match("+")) {
+      if (++parseDepth > MAX_PARSE_DEPTH)
+        throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_PARSE_DEPTH);
+      try {
+        return parseUnary();
+      } finally {
+        parseDepth--;
+      }
+    }
     return parsePrimary();
   }
 

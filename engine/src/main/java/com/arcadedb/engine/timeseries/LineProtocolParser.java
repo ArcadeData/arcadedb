@@ -313,12 +313,10 @@ public class LineProtocolParser {
       return new ParsedValue(intVal, rawLen);
     }
 
-    // Unsigned integer (suffix 'u')
+    // Unsigned integer (suffix 'u'): values in [0, 2^64-1] are stored as the bit-pattern
+    // in a signed long (values >= 2^63 appear negative but are valid uint64 encodings)
     if (raw.endsWith("u")) {
       final long uintVal = Long.parseUnsignedLong(raw.substring(0, raw.length() - 1));
-      if (uintVal < 0)
-        throw new IllegalArgumentException(
-            "Unsigned integer value cannot be represented as a signed 64-bit integer (exceeds " + Long.MAX_VALUE + "): " + raw);
       return new ParsedValue(uintVal, rawLen);
     }
 

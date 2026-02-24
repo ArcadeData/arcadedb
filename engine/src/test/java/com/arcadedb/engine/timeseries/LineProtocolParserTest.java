@@ -203,15 +203,17 @@ public class LineProtocolParserTest {
    * Previously only NumberFormatException was caught, missing this case.
    */
   @Test
-  public void testUnsignedIntegerOverflowSkipsLine() {
-    // 18446744073709551615u = max uint64, which overflows a signed 64-bit long
+  public void testUnsignedIntegerMaxValueIsAccepted() {
+    // 18446744073709551615u = max uint64; stored as the signed bit-pattern -1L (correct per InfluxDB spec)
     final String text = "metric value=1.0 1000\n" +
         "metric overflow=18446744073709551615u 2000\n" +
         "metric value=3.0 3000\n";
     final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
-    assertThat(samples).hasSize(2);
+    assertThat(samples).hasSize(3);
     assertThat(samples.get(0).getTimestampMs()).isEqualTo(1000L);
-    assertThat(samples.get(1).getTimestampMs()).isEqualTo(3000L);
+    assertThat(samples.get(1).getTimestampMs()).isEqualTo(2000L);
+    assertThat(samples.get(1).getFields().get("overflow")).isEqualTo(-1L); // max uint64 stored as signed bit-pattern
+    assertThat(samples.get(2).getTimestampMs()).isEqualTo(3000L);
   }
 
   /**

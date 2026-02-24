@@ -62,7 +62,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
   public static final  String BUCKET_EXT       = "tstb";
   public static final  int    MAX_STRING_BYTES = 256;
-  private static final int    VERSION          = 0;
+  public static final  int    CURRENT_VERSION  = 0;
   private static final int    MAGIC_VALUE      = 0x54534243; // "TSBC"
 
   // Header page offsets (from PAGE_HEADER_SIZE)
@@ -104,7 +104,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath,
       final List<ColumnDefinition> columns) throws IOException {
     super(database, name, filePath, BUCKET_EXT, ComponentFile.MODE.READ_WRITE,
-        database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), VERSION);
+        database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
     initHeaderPage();
@@ -116,7 +116,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
       final List<ColumnDefinition> columns) throws IOException {
     super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
-        database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), VERSION);
+        database.getConfiguration().getValueAsInteger(com.arcadedb.GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
   }
@@ -500,7 +500,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final TransactionContext tx = database.getTransaction();
     final MutablePage headerPage = tx.addPage(new PageId(database, fileId, 0), pageSize);
     headerPage.writeInt(HEADER_MAGIC_OFFSET, MAGIC_VALUE);
-    headerPage.writeByte(HEADER_FORMAT_VERSION_OFFSET, (byte) VERSION);
+    headerPage.writeByte(HEADER_FORMAT_VERSION_OFFSET, (byte) CURRENT_VERSION);
     headerPage.writeShort(HEADER_COLUMN_COUNT_OFFSET, (short) columns.size());
     headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, 0L);
     headerPage.writeLong(HEADER_MIN_TS_OFFSET, Long.MAX_VALUE);

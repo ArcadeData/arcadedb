@@ -85,11 +85,12 @@ import java.util.zip.CRC32;
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
-  static final         int CURRENT_VERSION  = 0;
+  public static final  int CURRENT_VERSION  = 0;
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   private static final int BLOCK_MAGIC_VALUE = 0x5453424C; // "TSBL"
   private static final int HEADER_SIZE       = 27;
-  private static final int MAX_BLOCK_SIZE    = 65536;
+  // Shared with DeltaOfDeltaCodec and GorillaXORCodec: all three validate/use the same limit
+  private static final int MAX_BLOCK_SIZE    = DeltaOfDeltaCodec.MAX_BLOCK_SIZE;
 
   private final String               basePath;
   private final List<ColumnDefinition> columns;
@@ -721,6 +722,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Rewrite the file with only retained blocks
       final int colCount = columns.size();
       final String tempPath = basePath + ".ts.sealed.tmp";
+
+      // Build new directory in a local list — do NOT modify blockDirectory until after the
+      // atomic file swap. If Files.move() fails, the live file and blockDirectory remain intact.
+      final List<BlockEntry> newDirectory = new ArrayList<>();
       try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
         final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
         headerBuf.putInt(MAGIC_VALUE);
@@ -732,21 +737,27 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         headerBuf.flip();
         tempFile.getChannel().write(headerBuf);
 
-        blockDirectory.clear();
-        globalMinTs = Long.MAX_VALUE;
-        globalMaxTs = Long.MIN_VALUE;
-
         for (final BlockEntry oldEntry : retained)
-          copyBlockToFile(tempFile, oldEntry, colCount, blockDirectory);
+          copyBlockToFile(tempFile, oldEntry, colCount, newDirectory);
       }
 
-      // Atomic file swap — if move fails, the original file remains intact
+      // Atomic file swap — if move fails, the original file and blockDirectory remain intact
       indexChannel.close();
       indexFile.close();
 
       final File oldFile = new File(basePath + ".ts.sealed");
       final File tmpFile = new File(tempPath);
       Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+
+      // Only update in-memory state after the successful file swap
+      blockDirectory.clear();
+      blockDirectory.addAll(newDirectory);
+      globalMinTs = Long.MAX_VALUE;
+      globalMaxTs = Long.MIN_VALUE;
+      for (final BlockEntry e : blockDirectory) {
+        if (e.minTimestamp < globalMinTs) globalMinTs = e.minTimestamp;
+        if (e.maxTimestamp > globalMaxTs) globalMaxTs = e.maxTimestamp;
+      }
 
       indexFile = new RandomAccessFile(oldFile, "rw");
       indexChannel = indexFile.getChannel();
@@ -971,6 +982,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       writeOrder.add(new WriteSpec(newMeta.get(b)[0], false, b));
     writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
 
+    // Build new directory in a local list — do NOT modify blockDirectory until after the
+    // atomic file swap. If Files.move() fails, the live file and blockDirectory remain intact.
+    final List<BlockEntry> newDirectory = new ArrayList<>();
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
       tempFile.setLength(0);
       // Write placeholder header
@@ -984,36 +998,38 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       headerBuf.flip();
       tempFile.getChannel().write(headerBuf);
 
-      blockDirectory.clear();
-      globalMinTs = Long.MAX_VALUE;
-      globalMaxTs = Long.MIN_VALUE;
-
       // Write all blocks in ascending minTimestamp order
       for (final WriteSpec spec : writeOrder) {
         if (spec.retained()) {
-          copyBlockToFile(tempFile, retained.get(spec.idx()), colCount, blockDirectory);
+          copyBlockToFile(tempFile, retained.get(spec.idx()), colCount, newDirectory);
         } else {
           final int b = spec.idx();
           final long[] meta = newMeta.get(b);
           final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
               newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
               newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
-          blockDirectory.add(entry);
-          if (entry.minTimestamp < globalMinTs)
-            globalMinTs = entry.minTimestamp;
-          if (entry.maxTimestamp > globalMaxTs)
-            globalMaxTs = entry.maxTimestamp;
+          newDirectory.add(entry);
         }
       }
     }
 
-    // Atomic file swap — if move fails, the original file remains intact
+    // Atomic file swap — if move fails, the original file and blockDirectory remain intact
     indexChannel.close();
     indexFile.close();
 
     final File oldFile = new File(basePath + ".ts.sealed");
     final File tmpFile = new File(tempPath);
     Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+
+    // Only update in-memory state after the successful file swap
+    blockDirectory.clear();
+    blockDirectory.addAll(newDirectory);
+    globalMinTs = Long.MAX_VALUE;
+    globalMaxTs = Long.MIN_VALUE;
+    for (final BlockEntry e : blockDirectory) {
+      if (e.minTimestamp < globalMinTs) globalMinTs = e.minTimestamp;
+      if (e.maxTimestamp > globalMaxTs) globalMaxTs = e.maxTimestamp;
+    }
 
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = indexFile.getChannel();
@@ -1030,10 +1046,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         oldEntry.maxTimestamp, compressedCols, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums,
         colCount, oldEntry.tagDistinctValues);
     target.add(newEntry);
-    if (newEntry.minTimestamp < globalMinTs)
-      globalMinTs = newEntry.minTimestamp;
-    if (newEntry.maxTimestamp > globalMaxTs)
-      globalMaxTs = newEntry.maxTimestamp;
   }
 
   /**
@@ -1299,11 +1311,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   void deleteTempFileIfExists() {
     final File tmp = new File(basePath + ".ts.sealed.tmp");
-    if (tmp.exists())
-      tmp.delete();
+    if (tmp.exists() && !tmp.delete())
+      LogManager.instance().log(this, Level.WARNING,
+          "Failed to delete stale compaction temp file '%s'; next compaction may fail or use stale data",
+          null, tmp.getAbsolutePath());
   }
 
-  private static byte[] compressColumn(final ColumnDefinition col, final Object[] values) {
+  static byte[] compressColumn(final ColumnDefinition col, final Object[] values) {
     final TimeSeriesCodec codec = col.getCompressionHint();
     return switch (codec) {
       case GORILLA_XOR -> {
@@ -1341,6 +1355,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final List<BlockEntry> retained = new ArrayList<>(blockDirectory.subList(0, (int) targetBlockCount));
       final int colCount = columns.size();
       final String tempPath = basePath + ".ts.sealed.tmp";
+
+      // Build new directory in a local list — do NOT modify blockDirectory until after the
+      // atomic file swap. If Files.move() fails, the live file and blockDirectory remain intact.
+      final List<BlockEntry> newDirectory = new ArrayList<>();
       try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
         tempFile.setLength(0);
         final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
@@ -1353,21 +1371,27 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         headerBuf.flip();
         tempFile.getChannel().write(headerBuf);
 
-        blockDirectory.clear();
-        globalMinTs = Long.MAX_VALUE;
-        globalMaxTs = Long.MIN_VALUE;
-
         for (final BlockEntry entry : retained)
-          copyBlockToFile(tempFile, entry, colCount, blockDirectory);
+          copyBlockToFile(tempFile, entry, colCount, newDirectory);
       }
 
-      // Atomic file swap — if move fails, the original file remains intact
+      // Atomic file swap — if move fails, the original file and blockDirectory remain intact
       indexChannel.close();
       indexFile.close();
 
       final File oldFile = new File(basePath + ".ts.sealed");
       final File tmpFile = new File(tempPath);
       Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+
+      // Only update in-memory state after the successful file swap
+      blockDirectory.clear();
+      blockDirectory.addAll(newDirectory);
+      globalMinTs = Long.MAX_VALUE;
+      globalMaxTs = Long.MIN_VALUE;
+      for (final BlockEntry e : blockDirectory) {
+        if (e.minTimestamp < globalMinTs) globalMinTs = e.minTimestamp;
+        if (e.maxTimestamp > globalMaxTs) globalMaxTs = e.maxTimestamp;
+      }
 
       indexFile = new RandomAccessFile(oldFile, "rw");
       indexChannel = indexFile.getChannel();
@@ -1638,7 +1662,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (indexChannel.read(tagCountBuf, tagEndPos) < 2)
         break;
       tagCountBuf.flip();
-      final short tagColCount = tagCountBuf.getShort();
+      // Read as unsigned short for safety
+      final int tagColCount = tagCountBuf.getShort() & 0xFFFF;
       tagEndPos += 2;
 
       if (tagColCount > 0) {
@@ -1650,7 +1675,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final ByteBuffer dcBuf = ByteBuffer.allocate(2);
           indexChannel.read(dcBuf, tagEndPos);
           dcBuf.flip();
-          final short distinctCount = dcBuf.getShort();
+          // Read as unsigned short: values up to 65535 (MAX_DICTIONARY_SIZE) are valid
+          final int distinctCount = dcBuf.getShort() & 0xFFFF;
           tagEndPos += 2;
 
           blockTagDistinctValues[c] = new String[distinctCount];
@@ -1658,7 +1684,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             final ByteBuffer lenBuf = ByteBuffer.allocate(2);
             indexChannel.read(lenBuf, tagEndPos);
             lenBuf.flip();
-            final short valLen = lenBuf.getShort();
+            // Read as unsigned short: tag values are bounded to 32767 bytes at write time
+            final int valLen = lenBuf.getShort() & 0xFFFF;
             tagEndPos += 2;
 
             final byte[] valBytes = new byte[valLen];
@@ -1718,7 +1745,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       return result;
     }
 
-    return GorillaXORCodec.decode(compressed);
+    throw new IllegalArgumentException(
+        "decompressDoubleColumn: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
   }
 
   private Object[][] decompressColumns(final BlockEntry entry, final int[] columnIndices, final int tsColIdx) throws IOException {
@@ -1854,7 +1882,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       return result;
     }
 
-    return GorillaXORCodec.decode(compressed);
+    throw new IllegalArgumentException(
+        "decompressDoubleColumnFromBytes: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
   }
 
   private int findTimestampColumnIndex() {

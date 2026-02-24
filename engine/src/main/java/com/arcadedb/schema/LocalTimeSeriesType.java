@@ -21,7 +21,9 @@ package com.arcadedb.schema;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -140,8 +142,8 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     json.put("retentionMs", retentionMs);
     if (compactionBucketIntervalMs > 0)
       json.put("compactionBucketIntervalMs", compactionBucketIntervalMs);
-    json.put("sealedFormatVersion", sealedFormatVersion);
-    json.put("mutableFormatVersion", mutableFormatVersion);
+    json.put("sealedFormatVersion", TimeSeriesSealedStore.CURRENT_VERSION);
+    json.put("mutableFormatVersion", TimeSeriesBucket.CURRENT_VERSION);
 
     final JSONArray colArray = new JSONArray();
     for (final ColumnDefinition col : tsColumns) {
@@ -176,7 +178,15 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     retentionMs = json.getLong("retentionMs", 0L);
     compactionBucketIntervalMs = json.getLong("compactionBucketIntervalMs", 0L);
     sealedFormatVersion = json.getInt("sealedFormatVersion", 0);
+    if (sealedFormatVersion != TimeSeriesSealedStore.CURRENT_VERSION)
+      throw new IllegalStateException(
+          "Unsupported sealed store format version " + sealedFormatVersion + " (expected " +
+              TimeSeriesSealedStore.CURRENT_VERSION + ") for TimeSeries type '" + name + "'");
     mutableFormatVersion = json.getInt("mutableFormatVersion", 0);
+    if (mutableFormatVersion != TimeSeriesBucket.CURRENT_VERSION)
+      throw new IllegalStateException(
+          "Unsupported mutable bucket format version " + mutableFormatVersion + " (expected " +
+              TimeSeriesBucket.CURRENT_VERSION + ") for TimeSeries type '" + name + "'");
 
     tsColumns.clear();
     final JSONArray colArray = json.getJSONArray("tsColumns", null);
