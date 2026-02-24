@@ -82,7 +82,7 @@ class GeoConstructionFunctionsTest {
     void invalidWkt_execute_throwsException() {
       assertThatThrownBy(() -> new SQLFunctionGeoGeomFromText()
           .execute(null, null, null, new Object[] { "NOT VALID WKT ###" }, null))
-          .isInstanceOf(Exception.class);
+          .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
