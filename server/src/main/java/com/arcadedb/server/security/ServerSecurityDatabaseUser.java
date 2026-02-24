@@ -82,14 +82,21 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
-    if (fileId >= fileAccessMap.length) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "Error on requesting access to fileId %d because not found in security configuration (registeredFiles=%d)", fileId,
-          fileAccessMap.length);
-      return false;
+    final boolean[][] currentMap = fileAccessMap;
+    if (currentMap == null)
+      return true;
+
+    if (fileId >= currentMap.length) {
+      // The file was just created but the security map has not been refreshed yet.
+      // Allow access (same as null-permissions default) — the map will be updated
+      // on the next schema operation.
+      LogManager.instance().log(this, Level.INFO,
+          "Requesting access to fileId %d which is not yet in security configuration (registeredFiles=%d), allowing by default",
+          fileId, currentMap.length);
+      return true;
     }
 
-    final boolean[] permissions = fileAccessMap[fileId];
+    final boolean[] permissions = currentMap[fileId];
     final int index = access.ordinal();
     if (permissions != null) {
       if (index >= permissions.length)

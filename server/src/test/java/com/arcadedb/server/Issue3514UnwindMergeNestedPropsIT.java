@@ -272,4 +272,117 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
       }
     });
   }
+
+  /**
+   * Regression test for the security race condition in issue #3514:
+   * Rapidly creating many new edge types via MERGE must all succeed without
+   * "User 'root' is not allowed to create records" errors.
+   * <p>
+   * Before the fix, the fileAccessMap in ServerSecurityDatabaseUser could be stale
+   * when a new type was created, causing access to be denied for the new type's files.
+   */
+  @Test
+  void rapidMergeAutoCreatesMultipleEdgeTypesViaHttp() throws Exception {
+    testEachServer((serverIndex) -> {
+      final int typeCount = 10;
+      for (int i = 0; i < typeCount; i++) {
+        final String edgeType = "auto_edge_" + i;
+        final String query = "UNWIND $batch as row " +
+            "MATCH (a) WHERE ID(a) = row.source_id " +
+            "MATCH (b) WHERE ID(b) = row.target_id " +
+            "MERGE (a)-[r:`" + edgeType + "`{chunk: row.features.chunk}]->(b) " +
+            "RETURN a, b, r";
+
+        final JSONObject featuresMap = new JSONObject().put("chunk", chunkId);
+        final JSONObject rowObj = new JSONObject()
+            .put("source_id", sourceId)
+            .put("target_id", targetId)
+            .put("features", featuresMap);
+        final JSONArray batchArray = new JSONArray().put(rowObj);
+        final JSONObject params = new JSONObject().put("batch", batchArray);
+
+        final JSONObject payload = new JSONObject()
+            .put("language", "opencypher")
+            .put("command", query)
+            .put("params", params);
+
+        final HttpURLConnection connection = (HttpURLConnection) new URL(
+            "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+
+        connection.setRequestMethod("POST");
+        connection.setRequestProperty("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(
+                ("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+        connection.setRequestProperty("Content-Type", "application/json");
+
+        formatPayload(connection, payload);
+        connection.connect();
+
+        try {
+          assertThat(connection.getResponseCode())
+              .as("MERGE auto-creating edge type '" + edgeType + "' should succeed (no security exception)")
+              .isEqualTo(200);
+        } finally {
+          connection.disconnect();
+        }
+      }
+    });
+  }
+
+  /**
+   * Verifies that the nested property value (row.features.chunk) is correctly stored on the edge.
+   */
+  @Test
+  void unwindMatchMergeNestedPropertyValueIsStoredOnEdge() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String query = "UNWIND $batch as row " +
+          "MATCH (a) WHERE ID(a) = row.source_id " +
+          "MATCH (b) WHERE ID(b) = row.target_id " +
+          "MERGE (a)-[r:`risk_area`{chunk: row.features.chunk}]->(b) " +
+          "RETURN r.chunk as edgeChunk";
+
+      final JSONObject featuresMap = new JSONObject().put("chunk", chunkId);
+      final JSONObject rowObj = new JSONObject()
+          .put("source_id", sourceId)
+          .put("target_id", targetId)
+          .put("features", featuresMap);
+      final JSONArray batchArray = new JSONArray().put(rowObj);
+      final JSONObject params = new JSONObject().put("batch", batchArray);
+
+      final JSONObject payload = new JSONObject()
+          .put("language", "opencypher")
+          .put("command", query)
+          .put("params", params);
+
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(
+              ("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.setRequestProperty("Content-Type", "application/json");
+
+      formatPayload(connection, payload);
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode())
+            .as("MERGE with nested property access should succeed")
+            .isEqualTo(200);
+
+        final String response = readResponse(connection);
+        final JSONObject json = new JSONObject(response);
+        final JSONArray result = json.getJSONArray("result");
+        assertThat(result.length()).isEqualTo(1);
+
+        final JSONObject row = result.getJSONObject(0);
+        assertThat(row.getString("edgeChunk"))
+            .as("The nested property row.features.chunk should be stored on the edge")
+            .isEqualTo(chunkId);
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
 }
