@@ -466,6 +466,11 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
   /**
    * Clears all data pages after compaction.
+   * O(1): only the header page is touched; physical data pages remain allocated on disk
+   * and will be transparently reused as new samples arrive.
+   * {@link #getOrCreateActiveDataPage} uses {@code HEADER_DATA_PAGE_COUNT} (not the physical
+   * page count) to locate the current write position, so after this reset it starts from
+   * page 1 again, reinitialising its sample-count field on the first write.
    */
   public void clearDataPages() throws IOException {
     final TransactionContext tx = database.getTransaction();
@@ -473,17 +478,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
     headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, 0L);
     headerPage.writeLong(HEADER_MIN_TS_OFFSET, Long.MAX_VALUE);
     headerPage.writeLong(HEADER_MAX_TS_OFFSET, Long.MIN_VALUE);
-
-    // Reset existing data pages so they can be reused by next inserts
-    final int dataPages = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
-    for (int p = 1; p <= dataPages; p++) {
-      final MutablePage dataPage = tx.getPageToModify(new PageId(database, fileId, p), pageSize, false);
-      dataPage.writeShort(DATA_SAMPLE_COUNT_OFFSET, (short) 0);
-      dataPage.writeLong(DATA_MIN_TS_OFFSET, Long.MAX_VALUE);
-      dataPage.writeLong(DATA_MAX_TS_OFFSET, Long.MIN_VALUE);
-    }
-    // Keep data page count so physical pages can be reused; sample counts
-    // are reset to 0 so scanRange will skip empty pages
+    headerPage.writeInt(HEADER_DATA_PAGE_COUNT, 0);
+    // Physical pages are not touched: committing a single header page is O(1) regardless
+    // of how many data pages were previously allocated, preventing OOM on large datasets.
   }
 
   public List<ColumnDefinition> getColumns() {
@@ -515,27 +512,38 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   private MutablePage getOrCreateActiveDataPage(final TransactionContext tx) throws IOException {
-    final int totalPages = getTotalPages();
-    if (totalPages > 1) {
-      // Check if last data page has room
-      final MutablePage lastPage = tx.getPageToModify(new PageId(database, fileId, totalPages - 1), pageSize, false);
+    // Use the logical page count from the header, NOT getTotalPages() (physical).
+    // After clearDataPages() resets HEADER_DATA_PAGE_COUNT to 0, the physical pages
+    // still exist on disk; we transparently reuse them starting from page 1, avoiding
+    // allocating new pages and avoiding wasted space.
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+    final int dataPageCount = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
+
+    if (dataPageCount > 0) {
+      // Check if the last logical data page has room
+      final MutablePage lastPage = tx.getPageToModify(new PageId(database, fileId, dataPageCount), pageSize, false);
       final int sampleCount = lastPage.readShort(DATA_SAMPLE_COUNT_OFFSET);
       if (sampleCount < getMaxSamplesPerPage())
         return lastPage;
     }
 
-    // Need a new data page
-    final int newPageNum = totalPages > 0 ? totalPages : 1;
-    final MutablePage newPage = tx.addPage(new PageId(database, fileId, newPageNum), pageSize);
+    // Need a new (or reused) data page
+    final int newPageNum = dataPageCount + 1;
+    final MutablePage newPage;
+    if (newPageNum < getTotalPages()) {
+      // Physical page already exists — reuse it (typical after compaction clears the header)
+      newPage = tx.getPageToModify(new PageId(database, fileId, newPageNum), pageSize, false);
+    } else {
+      // Physical page does not yet exist — allocate it
+      newPage = tx.addPage(new PageId(database, fileId, newPageNum), pageSize);
+      pageCount.incrementAndGet();
+    }
+    // Initialise the page (old data bytes beyond sample-count are ignored by readers)
     newPage.writeShort(DATA_SAMPLE_COUNT_OFFSET, (short) 0);
     newPage.writeLong(DATA_MIN_TS_OFFSET, Long.MAX_VALUE);
     newPage.writeLong(DATA_MAX_TS_OFFSET, Long.MIN_VALUE);
-    pageCount.incrementAndGet();
 
-    // Update data page count in header
-    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
     headerPage.writeInt(HEADER_DATA_PAGE_COUNT, newPageNum);
-
     return newPage;
   }
 
