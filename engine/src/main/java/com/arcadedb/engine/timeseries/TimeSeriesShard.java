@@ -307,14 +307,21 @@ public class TimeSeriesShard implements AutoCloseable {
     // ── Phase 1 (no lock, read-only TX): read full/immutable pages ───────────────────────────
     // Full pages are never written to by concurrent appendSamples(); the read-only snapshot TX
     // is always conflict-free.  Roll it back immediately — nothing is modified.
+    // phase2Spill holds the raw samples of the last partial chunk from Phase 2 (if any).
+    // These samples are merged with Phase 4's partial-page data to avoid splitting a single
+    // sealed block across the Phase-2/Phase-4 page boundary.
+    Object[] phase2Spill = null;
     if (lastFullPage > 0) {
       database.begin();
       try {
         final Object[] snapshotData = mutableBucket.readFullPagesForCompaction(lastFullPage);
         if (snapshotData != null)
           // ── Phase 2 (lock-free, no TX): sort + compress immutable page data ─────────────
-          buildCompressedBlocks(snapshotData, allCompressedList, allMetaList, allMinsList, allMaxsList, allSumsList,
-              allTagDVList);
+          // returnSpill=true: the last partial chunk is returned as raw data instead of being
+          // emitted as a block, so Phase 4 can merge it with the partial-page samples and
+          // produce a single correctly-sized block.
+          phase2Spill = buildCompressedBlocks(snapshotData, allCompressedList, allMetaList, allMinsList, allMaxsList,
+              allSumsList, allTagDVList, true);
       } finally {
         database.rollback(); // read-only: rollback is always safe
       }
@@ -344,22 +351,26 @@ public class TimeSeriesShard implements AutoCloseable {
       try {
         // Read pages that were NOT in the Phase 1 snapshot: the partial last page (page N from
         // Phase 0) and any new pages (N+1..M) that arrived between Phase 0 and Phase 4.
+        // Prepend any Phase 2 spill so the last bucket/block is not split across phases.
         final int currentDataPageCount = mutableBucket.getDataPageCount();
-        if (currentDataPageCount > lastFullPage) {
-          final Object[] remainingData =
-              mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, currentDataPageCount);
-          if (remainingData != null) {
-            final List<byte[][]> remCompressed = new ArrayList<>();
-            final List<long[]>   remMeta       = new ArrayList<>();
-            final List<double[]> remMins       = new ArrayList<>();
-            final List<double[]> remMaxs       = new ArrayList<>();
-            final List<double[]> remSums       = new ArrayList<>();
-            final List<String[][]> remTagDV    = new ArrayList<>();
-            buildCompressedBlocks(remainingData, remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV);
-            // Append these blocks to the already-written temp file (fast: small data).
-            sealedStore.appendBlocksToTempFile(
-                remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV, newBlockDirectory);
-          }
+        Object[] remainingData = null;
+        if (currentDataPageCount > lastFullPage)
+          remainingData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, currentDataPageCount);
+        if (phase2Spill != null)
+          remainingData = remainingData != null ? mergeCompactionData(phase2Spill, remainingData) : phase2Spill;
+        if (remainingData != null) {
+          final List<byte[][]> remCompressed = new ArrayList<>();
+          final List<long[]>   remMeta       = new ArrayList<>();
+          final List<double[]> remMins       = new ArrayList<>();
+          final List<double[]> remMaxs       = new ArrayList<>();
+          final List<double[]> remSums       = new ArrayList<>();
+          final List<String[][]> remTagDV    = new ArrayList<>();
+          // returnSpill=false: Phase 4 processes ALL remaining data (including Phase 2 spill);
+          // the last partial chunk must become a block since there is no next phase.
+          buildCompressedBlocks(remainingData, remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV, false);
+          // Append these blocks to the already-written temp file (fast: small data).
+          sealedStore.appendBlocksToTempFile(
+              remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV, newBlockDirectory);
         }
 
         // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
@@ -391,17 +402,25 @@ public class TimeSeriesShard implements AutoCloseable {
    * Sorts the given snapshot data by timestamp and builds compressed sealed blocks,
    * appending the results to the supplied output lists.
    * Called from Phase 2 (lock-free) and Phase 4 (under writeLock).
+   *
+   * @param returnSpill when {@code true}, the last partial chunk is NOT emitted as a block but
+   *                    is instead returned as raw compaction data (same format as {@code data}).
+   *                    The caller (Phase 4) prepends this spill to the partial-page data so the
+   *                    bucket/block boundary is never split across phases.  Pass {@code false}
+   *                    in Phase 4 where all remaining data must become blocks.
+   * @return the spill raw data array, or {@code null} when {@code returnSpill} is {@code false}
+   *         or there is no partial last chunk.
    */
-  private void buildCompressedBlocks(
+  private Object[] buildCompressedBlocks(
       final Object[] data,
       final List<byte[][]> compressedOut, final List<long[]> metaOut,
       final List<double[]> minsOut, final List<double[]> maxsOut, final List<double[]> sumsOut,
-      final List<String[][]> tagDVOut) {
+      final List<String[][]> tagDVOut, final boolean returnSpill) {
 
     final long[] timestamps = (long[]) data[0];
     final int totalSamples = timestamps.length;
     if (totalSamples == 0)
-      return;
+      return null;
 
     final int[] sortedIndices = sortIndices(timestamps);
     final long[] sortedTs = applyOrder(timestamps, sortedIndices);
@@ -435,6 +454,21 @@ public class TimeSeriesShard implements AutoCloseable {
       }
 
       chunkEnd = adjustChunkForDictionaryLimit(chunkStart, chunkEnd, colCount, sortedColArrays);
+
+      // If this is the last chunk and it may be partial, return it as spill so Phase 4 can
+      // merge it with partial-page data and produce a single correctly-bounded block.
+      if (returnSpill && chunkEnd == totalSamples) {
+        final boolean isPartial;
+        if (compactionBucketIntervalMs > 0)
+          // Bucket-aligned: always hold back the last chunk since Phase 4 may have more
+          // samples in the same bucket.
+          isPartial = true;
+        else
+          // Fixed-size: partial when the chunk is smaller than a full sealed block.
+          isPartial = (chunkEnd - chunkStart) < SEALED_BLOCK_SIZE;
+        if (isPartial)
+          return extractSpillData(sortedTs, sortedColArrays, chunkStart, chunkEnd, colCount);
+      }
 
       final int chunkLen = chunkEnd - chunkStart;
       final long[] chunkTs = Arrays.copyOfRange(sortedTs, chunkStart, chunkEnd);
@@ -491,6 +525,50 @@ public class TimeSeriesShard implements AutoCloseable {
       tagDVOut.add(chunkTagDistinctValues);
       chunkStart = chunkEnd;
     }
+    return null; // no spill
+  }
+
+  /**
+   * Extracts the raw samples in {@code [from, to)} from the sorted compaction arrays and
+   * returns them in the same format as the {@code data} parameter of
+   * {@link #buildCompressedBlocks}: element 0 is {@code long[]} timestamps, subsequent
+   * elements are {@code Object[]} non-timestamp column arrays.
+   */
+  private Object[] extractSpillData(final long[] sortedTs, final Object[][] sortedColArrays,
+      final int from, final int to, final int colCount) {
+    final Object[] spill = new Object[colCount];
+    spill[0] = Arrays.copyOfRange(sortedTs, from, to);
+    int spillIdx = 1;
+    for (int c = 0; c < colCount; c++) {
+      if (sortedColArrays[c] == null)
+        continue; // TIMESTAMP column — skip; its data lives in element 0
+      spill[spillIdx++] = Arrays.copyOfRange(sortedColArrays[c], from, to);
+    }
+    return spill;
+  }
+
+  /**
+   * Concatenates two compaction data arrays (same format as the {@code data} parameter of
+   * {@link #buildCompressedBlocks}).  Used to merge Phase 2 spill with Phase 4 partial-page
+   * data before compressing them together.
+   */
+  private static Object[] mergeCompactionData(final Object[] a, final Object[] b) {
+    final long[] tsA = (long[]) a[0];
+    final long[] tsB = (long[]) b[0];
+    final long[] mergedTs = new long[tsA.length + tsB.length];
+    System.arraycopy(tsA, 0, mergedTs, 0, tsA.length);
+    System.arraycopy(tsB, 0, mergedTs, tsA.length, tsB.length);
+    final Object[] result = new Object[a.length];
+    result[0] = mergedTs;
+    for (int i = 1; i < a.length; i++) {
+      final Object[] colA = (Object[]) a[i];
+      final Object[] colB = (Object[]) b[i];
+      final Object[] merged = new Object[colA.length + colB.length];
+      System.arraycopy(colA, 0, merged, 0, colA.length);
+      System.arraycopy(colB, 0, merged, colA.length, colB.length);
+      result[i] = merged;
+    }
+    return result;
   }
 
   /** Best-effort: clear the compaction-in-progress flag after a non-crash error. */
