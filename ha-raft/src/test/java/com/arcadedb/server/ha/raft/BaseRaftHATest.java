@@ -36,9 +36,20 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   private static final int BASE_RAFT_PORT = 2434;
 
+  /**
+   * Returns true if Raft storage directories should be preserved across server stop/start
+   * within a single test. Override to true in tests that call {@link #restartServer(int)}.
+   * Default is false to match existing test behaviour.
+   */
+  protected boolean persistentRaftStorage() {
+    return false;
+  }
+
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     config.setValue(GlobalConfiguration.HA_IMPLEMENTATION, "raft");
+    if (persistentRaftStorage())
+      config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, true);
   }
 
   @Override
@@ -149,5 +160,33 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
         waitForReplicationIsCompleted(i);
     }
     checkDatabasesAreIdentical();
+  }
+
+  /**
+   * Stops server {@code serverIndex} then immediately restarts it using the same
+   * {@link com.arcadedb.server.ArcadeDBServer} instance and configuration. Waits for replication to
+   * catch up before returning.
+   * <p>
+   * Only valid when {@link #persistentRaftStorage()} returns true; otherwise Raft
+   * storage is deleted on restart and the peer cannot rejoin the same group.
+   */
+  protected void restartServer(final int serverIndex) {
+    LogManager.instance().log(this, Level.INFO, "TEST: Stopping server %d for restart", serverIndex);
+    getServer(serverIndex).stop();
+
+    // Brief pause to allow the OS to release the gRPC port
+    try {
+      Thread.sleep(2_000);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return;
+    }
+
+    LogManager.instance().log(this, Level.INFO, "TEST: Starting server %d again", serverIndex);
+    getServer(serverIndex).start();
+
+    // Wait for the restarted peer to catch up to the current leader's last applied index
+    waitForReplicationIsCompleted(serverIndex);
+    LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted and caught up", serverIndex);
   }
 }
