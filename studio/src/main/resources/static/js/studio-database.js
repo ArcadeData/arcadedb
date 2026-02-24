@@ -584,6 +584,334 @@ function dropIndex(indexName) {
   );
 }
 
+function collectTypeProperties(typeName) {
+  let props = [];
+  let visited = {};
+
+  function collect(name) {
+    if (visited[name]) return;
+    visited[name] = true;
+    let type = findTypeInResult(name, window._schemaTypes || []);
+    if (!type) return;
+    for (let k in type.properties) {
+      let p = type.properties[k];
+      if (!props.find(function (x) { return x.name == p.name; }))
+        props.push({ name: p.name, type: p.type || "" });
+    }
+    for (let ptidx in type.parentTypes)
+      if (type.parentTypes[ptidx] != "")
+        collect(type.parentTypes[ptidx]);
+  }
+  collect(typeName);
+  return props;
+}
+
+function refreshSchemaAndShowType(typeName) {
+  fetchSchemaTypes(function (types) {
+    let subTypes = {};
+    for (let i in types) {
+      let t = types[i];
+      for (let ptidx in t.parentTypes) {
+        let pt = t.parentTypes[ptidx];
+        if (subTypes[pt] == null) subTypes[pt] = [];
+        subTypes[pt].push(t.name);
+      }
+    }
+    window._schemaSubTypes = subTypes;
+    window._schemaTypes = types;
+    showTypeDetail(typeName);
+  });
+}
+
+function createProperty(typeName) {
+  let database = getCurrentDatabase();
+  if (database == "") {
+    globalNotify("Error", "Database not selected", "danger");
+    return;
+  }
+
+  let allTypes = [
+    "BOOLEAN", "INTEGER", "SHORT", "LONG", "FLOAT", "DOUBLE", "BYTE",
+    "STRING", "BINARY", "DATE", "DATETIME", "DATETIME_SECOND", "DATETIME_MICROS", "DATETIME_NANOS",
+    "DECIMAL", "LIST", "MAP", "LINK", "EMBEDDED",
+    "ARRAY_OF_SHORTS", "ARRAY_OF_INTEGERS", "ARRAY_OF_LONGS", "ARRAY_OF_FLOATS", "ARRAY_OF_DOUBLES"
+  ];
+
+  let linkedTypes = [
+    "BOOLEAN", "INTEGER", "SHORT", "LONG", "FLOAT", "DOUBLE", "BYTE",
+    "STRING", "BINARY", "DATE", "DATETIME", "DATETIME_SECOND", "DATETIME_MICROS", "DATETIME_NANOS",
+    "DECIMAL", "LINK", "EMBEDDED"
+  ];
+  if (window._schemaTypes) {
+    for (let i in window._schemaTypes)
+      linkedTypes.push(window._schemaTypes[i].name);
+  }
+
+  var dlg = document.getElementById("globalModalDialog");
+  dlg.classList.add("modal-lg");
+  var modalEl = document.getElementById("globalModal");
+  modalEl.addEventListener("hidden.bs.modal", function restorePropSize() {
+    dlg.classList.remove("modal-lg");
+    modalEl.removeEventListener("hidden.bs.modal", restorePropSize);
+  });
+
+  let html = "";
+
+  html += "<label for='inputCreatePropName'>Property name <span style='color:#dc3545'>*</span></label>";
+  html += "<input class='form-control mt-1 mb-3' id='inputCreatePropName' placeholder='e.g. myProperty'>";
+
+  html += "<label for='inputCreatePropType'>Type <span style='color:#dc3545'>*</span></label>";
+  html += "<select class='form-select mt-1 mb-3' id='inputCreatePropType'>";
+  for (let i = 0; i < allTypes.length; i++)
+    html += "<option value='" + allTypes[i] + "'" + (allTypes[i] == "STRING" ? " selected" : "") + ">" + allTypes[i] + "</option>";
+  html += "</select>";
+
+  html += "<div id='createPropOfTypeRow' style='display:none;'>";
+  html += "<label for='inputCreatePropOfType'>Of Type <small class='text-muted'>(element / linked type)</small></label>";
+  html += "<input class='form-control mt-1 mb-3' id='inputCreatePropOfType' list='createPropOfTypeList' placeholder='e.g. STRING'>";
+  html += "<datalist id='createPropOfTypeList'>";
+  for (let i = 0; i < linkedTypes.length; i++)
+    html += "<option value='" + escapeHtml(linkedTypes[i]) + "'>";
+  html += "</datalist>";
+  html += "</div>";
+
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreatePropDefault'>Default value</label>";
+  html += "<input class='form-control mt-1' id='inputCreatePropDefault' placeholder='(none)'>";
+  html += "</div>";
+  html += "<div class='col-6' id='createPropRegexpRow'>";
+  html += "<label for='inputCreatePropRegexp'>Regexp</label>";
+  html += "<input class='form-control mt-1' id='inputCreatePropRegexp' placeholder='e.g. [A-Za-z0-9]+'>";
+  html += "</div>";
+  html += "</div>";
+
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreatePropMin'>Min</label>";
+  html += "<input class='form-control mt-1' id='inputCreatePropMin' placeholder='(none)'>";
+  html += "</div>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreatePropMax'>Max</label>";
+  html += "<input class='form-control mt-1' id='inputCreatePropMax' placeholder='(none)'>";
+  html += "</div>";
+  html += "</div>";
+
+  html += "<div class='d-flex flex-wrap gap-3'>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropMandatory'><label class='form-check-label' for='inputCreatePropMandatory'>Mandatory</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropNotNull'><label class='form-check-label' for='inputCreatePropNotNull'>Not Null</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropHidden'><label class='form-check-label' for='inputCreatePropHidden'>Hidden</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropReadOnly'><label class='form-check-label' for='inputCreatePropReadOnly'>Read Only</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropIfNotExists'><label class='form-check-label' for='inputCreatePropIfNotExists'>If not exists</label></div>";
+  html += "</div>";
+
+  globalPrompt("Add Property to " + escapeHtml(typeName), html, "Create", function () {
+    let name = $("#inputCreatePropName").val().trim();
+    if (name == "") {
+      globalNotify("Error", "Property name is required", "danger");
+      return;
+    }
+
+    let type = $("#inputCreatePropType").val();
+    let ofType = $("#inputCreatePropOfType").val().trim();
+    let defaultVal = $("#inputCreatePropDefault").val().trim();
+    let regexp = $("#inputCreatePropRegexp").val().trim();
+    let min = $("#inputCreatePropMin").val().trim();
+    let max = $("#inputCreatePropMax").val().trim();
+    let mandatory = $("#inputCreatePropMandatory").prop("checked");
+    let notNull = $("#inputCreatePropNotNull").prop("checked");
+    let hidden = $("#inputCreatePropHidden").prop("checked");
+    let readOnly = $("#inputCreatePropReadOnly").prop("checked");
+    let ifNotExists = $("#inputCreatePropIfNotExists").prop("checked");
+
+    let command = "CREATE PROPERTY `" + typeName + "`.`" + name + "`";
+    if (ifNotExists) command += " IF NOT EXISTS";
+    command += " " + type;
+    if (ofType != "") command += " OF " + ofType;
+
+    let constraints = [];
+    if (mandatory) constraints.push("MANDATORY true");
+    if (notNull) constraints.push("NOTNULL true");
+    if (hidden) constraints.push("HIDDEN true");
+    if (readOnly) constraints.push("READONLY true");
+    if (defaultVal != "") constraints.push("DEFAULT " + defaultVal);
+    if (min != "") constraints.push("MIN " + min);
+    if (max != "") constraints.push("MAX " + max);
+    if (regexp != "") constraints.push("REGEXP '" + regexp.replace(/'/g, "''") + "'");
+    if (constraints.length > 0) command += " (" + constraints.join(", ") + ")";
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + database,
+      data: JSON.stringify({ language: "sql", command: command, serializer: "record" }),
+      beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    }).done(function (data) {
+      globalNotify("Success", "Property '" + escapeHtml(name) + "' created on '" + escapeHtml(typeName) + "'", "success");
+      refreshSchemaAndShowType(typeName);
+    }).fail(function (jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+    });
+  });
+
+  setTimeout(function () {
+    function updatePropVisibility() {
+      let sel = $("#inputCreatePropType").val();
+      if (sel == "LIST" || sel == "MAP" || sel == "LINK" || sel == "EMBEDDED")
+        $("#createPropOfTypeRow").show();
+      else
+        $("#createPropOfTypeRow").hide();
+      if (sel == "STRING")
+        $("#createPropRegexpRow").show();
+      else
+        $("#createPropRegexpRow").hide();
+    }
+    $("#inputCreatePropType").on("change", updatePropVisibility);
+    updatePropVisibility();
+  }, 100);
+}
+
+function createIndex(typeName) {
+  let database = getCurrentDatabase();
+  if (database == "") {
+    globalNotify("Error", "Database not selected", "danger");
+    return;
+  }
+
+  let properties = collectTypeProperties(typeName);
+
+  let vectorProps = properties.filter(function (p) {
+    return p.type == "ARRAY_OF_FLOATS" || p.type == "ARRAY_OF_DOUBLES";
+  });
+
+  let html = "";
+
+  // Normal properties (LSM_TREE / FULL_TEXT)
+  html += "<div id='createIdxPropsNormal'>";
+  html += "<label>Properties <span style='color:#dc3545'>*</span></label>";
+  if (properties.length > 0) {
+    html += "<small class='text-muted d-block mt-1'>Hold Ctrl/Cmd to select multiple for a composite index.</small>";
+    html += "<select class='form-select mt-1 mb-3' id='inputCreateIdxProps' multiple style='height:auto;min-height:60px;max-height:140px;'>";
+    for (let i = 0; i < properties.length; i++)
+      html += "<option value='" + escapeHtml(properties[i].name) + "'>" + escapeHtml(properties[i].name) + " <small>(" + escapeHtml(properties[i].type) + ")</small></option>";
+    html += "</select>";
+  } else {
+    html += "<input class='form-control mt-1 mb-3' id='inputCreateIdxPropsText' placeholder='Property names, comma-separated (e.g. name, age)'>";
+  }
+  html += "</div>";
+
+  // Vector property (LSM_VECTOR only — single property of type ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES)
+  html += "<div id='createIdxPropsVector' style='display:none;'>";
+  html += "<label>Property <span style='color:#dc3545'>*</span></label>";
+  html += "<small class='text-muted d-block mt-1'>LSM_VECTOR requires exactly one property of type ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES.</small>";
+  if (vectorProps.length > 0) {
+    html += "<select class='form-select mt-1 mb-3' id='inputCreateIdxPropsVector'>";
+    for (let i = 0; i < vectorProps.length; i++)
+      html += "<option value='" + escapeHtml(vectorProps[i].name) + "'>" + escapeHtml(vectorProps[i].name) + " (" + escapeHtml(vectorProps[i].type) + ")</option>";
+    html += "</select>";
+  } else {
+    html += "<input class='form-control mt-1 mb-3' id='inputCreateIdxPropsVectorText' placeholder='Property name (ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES)'>";
+  }
+  html += "</div>";
+
+  html += "<label for='inputCreateIdxAlgorithm'>Index Algorithm <span style='color:#dc3545'>*</span></label>";
+  html += "<select class='form-select mt-1 mb-3' id='inputCreateIdxAlgorithm'>";
+  html += "<option value='LSM_TREE' selected>LSM_TREE — default</option>";
+  html += "<option value='FULL_TEXT'>FULL_TEXT — full-text search index</option>";
+  html += "<option value='LSM_VECTOR'>LSM_VECTOR — vector/embedding similarity index</option>";
+  html += "</select>";
+
+  html += "<div id='createIdxLsmOptions'>";
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreateIdxNullStrategy'>Null Strategy <small class='text-muted'>(optional)</small></label>";
+  html += "<select class='form-select mt-1' id='inputCreateIdxNullStrategy'>";
+  html += "<option value='' selected>(default)</option>";
+  html += "<option value='SKIP'>SKIP — skip null values</option>";
+  html += "<option value='INDEX'>INDEX — index null values</option>";
+  html += "</select>";
+  html += "</div>";
+  html += "<div class='col-6 d-flex align-items-end pb-1'>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreateIdxUnique'><label class='form-check-label' for='inputCreateIdxUnique'>Unique</label></div>";
+  html += "</div>";
+  html += "</div>";
+  html += "</div>";
+
+  html += "<div class='form-check'>";
+  html += "<input class='form-check-input' type='checkbox' id='inputCreateIdxIfNotExists'>";
+  html += "<label class='form-check-label' for='inputCreateIdxIfNotExists'>If not exists</label>";
+  html += "</div>";
+
+  globalPrompt("Add Index to " + escapeHtml(typeName), html, "Create", function () {
+    let algorithm = $("#inputCreateIdxAlgorithm").val();
+    let selectedProps = [];
+    if (algorithm == "LSM_VECTOR") {
+      let vectorEl = document.getElementById("inputCreateIdxPropsVector");
+      if (vectorEl) {
+        let val = $("#inputCreateIdxPropsVector").val();
+        if (val) selectedProps = [val];
+      } else {
+        let text = $("#inputCreateIdxPropsVectorText").val().trim();
+        if (text != "") selectedProps = [text];
+      }
+    } else {
+      let multiEl = document.getElementById("inputCreateIdxProps");
+      if (multiEl) {
+        let vals = $("#inputCreateIdxProps").val();
+        if (vals && vals.length > 0) selectedProps = vals;
+      } else {
+        let text = $("#inputCreateIdxPropsText").val().trim();
+        if (text != "")
+          selectedProps = text.split(",").map(function (p) { return p.trim(); }).filter(function (p) { return p != ""; });
+      }
+    }
+
+    if (selectedProps.length == 0) {
+      globalNotify("Error", "At least one property is required", "danger");
+      return;
+    }
+    let unique = $("#inputCreateIdxUnique").prop("checked");
+    let nullStrategy = $("#inputCreateIdxNullStrategy").val();
+    let ifNotExists = $("#inputCreateIdxIfNotExists").prop("checked");
+
+    let indexTypeSql = algorithm == "LSM_TREE" ? (unique ? "UNIQUE" : "NOTUNIQUE") : algorithm;
+
+    let command = "CREATE INDEX";
+    if (ifNotExists) command += " IF NOT EXISTS";
+    command += " ON `" + typeName + "` (";
+    command += selectedProps.map(function (p) { return "`" + p + "`"; }).join(", ");
+    command += ") " + indexTypeSql;
+    if (algorithm == "LSM_TREE" && nullStrategy != "") command += " NULL_STRATEGY " + nullStrategy;
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + database,
+      data: JSON.stringify({ language: "sql", command: command, serializer: "record" }),
+      beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    }).done(function (data) {
+      globalNotify("Success", "Index created on '" + escapeHtml(typeName) + "'", "success");
+      refreshSchemaAndShowType(typeName);
+    }).fail(function (jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+    });
+  });
+
+  setTimeout(function () {
+    function updateIdxVisibility() {
+      let alg = $("#inputCreateIdxAlgorithm").val();
+      if (alg == "LSM_VECTOR") {
+        $("#createIdxPropsNormal").hide();
+        $("#createIdxPropsVector").show();
+        $("#createIdxLsmOptions").hide();
+      } else {
+        $("#createIdxPropsNormal").show();
+        $("#createIdxPropsVector").hide();
+        $("#createIdxLsmOptions").toggle(alg == "LSM_TREE");
+      }
+    }
+    $("#inputCreateIdxAlgorithm").on("change", updateIdxVisibility);
+  }, 100);
+}
+
 function validateTypeName(name) {
   if (name == null || name.trim() == "")
     return "Type name is required";
@@ -2257,7 +2585,10 @@ function showTypeDetail(typeName) {
   // Properties section (skip for timeseries — already shown in TimeSeries Columns)
   if (row.type != "t") {
     html += "<div class='db-detail-section'>";
-    html += "<h6><i class='fa fa-list'></i> Properties</h6>";
+    html += "<div class='d-flex align-items-center justify-content-between mb-2'>";
+    html += "<h6 class='mb-0'><i class='fa fa-list'></i> Properties</h6>";
+    html += "<button class='btn btn-sm btn-outline-primary' onclick='createProperty(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;'><i class='fa fa-plus'></i> Add Property</button>";
+    html += "</div>";
     let propHtml = renderProperties(row, types);
     if (propHtml == "") {
       html += "<p class='text-muted' style='font-size:0.85rem;'>No properties defined.</p>";
@@ -2271,7 +2602,22 @@ function showTypeDetail(typeName) {
   }
 
   // Indexes section
-  if (row.indexes && row.indexes.length > 0) {
+  if (row.type != "t") {
+    html += "<div class='db-detail-section'>";
+    html += "<div class='d-flex align-items-center justify-content-between mb-2'>";
+    html += "<h6 class='mb-0'><i class='fa fa-bolt'></i> Indexes</h6>";
+    html += "<button class='btn btn-sm btn-outline-primary' onclick='createIndex(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;'><i class='fa fa-plus'></i> Add Index</button>";
+    html += "</div>";
+    if (row.indexes && row.indexes.length > 0) {
+      html += "<div class='table-responsive'>";
+      html += "<table class='table table-sm db-detail-table'>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
+      html += "<tbody>" + renderIndexes(row, types) + "</tbody></table></div>";
+    } else {
+      html += "<p class='text-muted' style='font-size:0.85rem;'>No indexes defined.</p>";
+    }
+    html += "</div>";
+  } else if (row.indexes && row.indexes.length > 0) {
     html += "<div class='db-detail-section'>";
     html += "<h6><i class='fa fa-bolt'></i> Indexes</h6>";
     html += "<div class='table-responsive'>";
