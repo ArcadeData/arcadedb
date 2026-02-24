@@ -35,6 +35,62 @@ import java.util.*;
  */
 public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
+  // ── Embedding math utilities ─────────────────────────────────────────────
+
+  /** Normalises {@code vec} to unit L2 length in-place; no-op if the vector is zero. */
+  protected static void normalizeL2(final double[] vec) {
+    double norm = 0.0;
+    for (final double v : vec)
+      norm += v * v;
+    if (norm == 0.0)
+      return;
+    norm = Math.sqrt(norm);
+    for (int i = 0; i < vec.length; i++)
+      vec[i] /= norm;
+  }
+
+  /** Returns the dot product of two equal-length vectors. */
+  protected static double dot(final double[] a, final double[] b) {
+    double s = 0.0;
+    for (int i = 0; i < a.length; i++)
+      s += a[i] * b[i];
+    return s;
+  }
+
+  /** Logistic sigmoid: σ(x) = 1 / (1 + e^{-x}), clamped to avoid overflow. */
+  protected static double sigmoid(final double x) {
+    return 1.0 / (1.0 + Math.exp(-x));
+  }
+
+  /** Converts a {@code double[]} to an unmodifiable {@code List<Double>} for Cypher return. */
+  protected static List<Double> toEmbeddingList(final double[] vec) {
+    final List<Double> list = new ArrayList<>(vec.length);
+    for (final double v : vec)
+      list.add(v);
+    return list;
+  }
+
+  // ── Argument extractors ──────────────────────────────────────────────────
+
+  /**
+   * Extracts a list of vertices from an argument that may be a {@code List<Vertex>},
+   * a single {@code Vertex}, or similar.
+   */
+  @SuppressWarnings("unchecked")
+  protected List<Vertex> extractVertexList(final Object arg, final String paramName) {
+    if (arg == null)
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
+    if (arg instanceof List<?> list) {
+      final List<Vertex> result = new ArrayList<>(list.size());
+      for (final Object item : list)
+        result.add(extractVertex(item, paramName + "[*]"));
+      return result;
+    }
+    if (arg instanceof Vertex v)
+      return List.of(v);
+    throw new IllegalArgumentException(getName() + "(): " + paramName + " must be a list of nodes");
+  }
+
   protected Vertex extractVertex(final Object arg, final String paramName) {
     return switch (arg) {
       case null -> throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");

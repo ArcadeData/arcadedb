@@ -47,8 +47,15 @@ import com.arcadedb.query.opencypher.procedures.algo.AlgoLocalClusteringCoeffici
 import com.arcadedb.query.opencypher.procedures.algo.AlgoLongestPathDAG;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoPreferentialAttachment;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoResourceAllocation;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoFastRP;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoGraphSAGE;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoHashGNN;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoMaxKCut;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoMinSpanningArborescence;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoNode2Vec;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoSLPA;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoSameCommunity;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoSteinerTree;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoTotalNeighbors;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDegreeCentrality;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoDijkstra;
@@ -351,6 +358,13 @@ public final class CypherProcedureRegistry {
     register(new AlgoLongestPathDAG());
     register(new AlgoSLPA());
     register(new AlgoBiconnectedComponents());
+    register(new AlgoFastRP());
+    register(new AlgoNode2Vec());
+    register(new AlgoHashGNN());
+    register(new AlgoGraphSAGE());
+    register(new AlgoMinSpanningArborescence());
+    register(new AlgoMaxKCut());
+    register(new AlgoSteinerTree());
   }
 
   private static void registerPathProcedures() {
