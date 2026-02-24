@@ -409,41 +409,91 @@ public class TimeSeriesShard implements AutoCloseable {
       throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
     }
 
-    // ── Phase 4 (brief writeLock + brief TX): compress remaining pages + swap + clear all ──────
-    // All remaining partial pages (lastFullPage+1..current) are read here, merged with any
-    // Phase-2 spill, and compressed.  The write-lock ensures no concurrent appendSamples() can
-    // modify page-0 during this TX, so the commit is always MVCC-conflict-free.
+    // ── Phase 4a (brief writeLock + read-only TX): snapshot remaining pages ──────────────
+    // Grab the write lock just long enough to snapshot the current page count and read the
+    // pages accumulated since Phase 0.  Release the lock immediately so appends can resume
+    // while we sort + compress (Phase 4b).
+    final int phase4aPageCount;
+    Object[] phase4aData;
     compactionLock.writeLock().lock();
     try {
       database.begin();
       try {
-        final int currentDataPageCount = mutableBucket.getDataPageCount();
-
-        // Read partial pages that were not included in Phase 1 (full pages 1..lastFullPage).
-        Object[] remainingData = null;
-        if (currentDataPageCount > lastFullPage)
-          remainingData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, currentDataPageCount);
-
-        // Merge Phase-2 spill (tail of full-page data that didn't form a complete block) with
-        // any partial page data read above, then compress the combined result.
-        final Object[] toCompress;
-        if (phase2Spill != null && remainingData != null)
-          toCompress = mergeCompactionData(phase2Spill, remainingData);
-        else if (phase2Spill != null)
-          toCompress = phase2Spill;
+        phase4aPageCount = mutableBucket.getDataPageCount();
+        if (phase4aPageCount > lastFullPage)
+          phase4aData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, phase4aPageCount);
         else
-          toCompress = remainingData;
+          phase4aData = null;
+      } finally {
+        database.rollback(); // read-only snapshot
+      }
+    } finally {
+      compactionLock.writeLock().unlock();
+    }
 
-        if (toCompress != null) {
-          final List<byte[][]> remCompressed = new ArrayList<>();
-          final List<long[]> remMeta = new ArrayList<>();
-          final List<double[]> remMins = new ArrayList<>();
-          final List<double[]> remMaxs = new ArrayList<>();
-          final List<double[]> remSums = new ArrayList<>();
-          final List<String[][]> remTagDV = new ArrayList<>();
-          buildCompressedBlocks(toCompress, remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV, false);
-          sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV,
-              newBlockDirectory);
+    // ── Phase 4b (lock-free, no TX): compress remaining pages + write to temp file ────────
+    // Merge Phase-2 spill with the Phase-4a snapshot, then compress and append to the temp
+    // file.  Concurrent appends proceed freely during this CPU/IO-intensive step.
+    final Object[] toCompress4b;
+    if (phase2Spill != null && phase4aData != null)
+      toCompress4b = mergeCompactionData(phase2Spill, phase4aData);
+    else if (phase2Spill != null)
+      toCompress4b = phase2Spill;
+    else
+      toCompress4b = phase4aData;
+
+    // Use returnSpill=true so the last partial chunk is held back for Phase 4c,
+    // where it can be merged with any tail pages created during Phase 4b.
+    Object[] phase4bSpill = null;
+    if (toCompress4b != null) {
+      final List<byte[][]> remCompressed = new ArrayList<>();
+      final List<long[]> remMeta = new ArrayList<>();
+      final List<double[]> remMins = new ArrayList<>();
+      final List<double[]> remMaxs = new ArrayList<>();
+      final List<double[]> remSums = new ArrayList<>();
+      final List<String[][]> remTagDV = new ArrayList<>();
+      phase4bSpill = buildCompressedBlocks(toCompress4b, remCompressed, remMeta, remMins, remMaxs, remSums,
+          remTagDV, true);
+      if (!remCompressed.isEmpty())
+        sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV,
+            newBlockDirectory);
+    }
+
+    // ── Phase 4c (brief writeLock + brief TX): read tail pages, swap + clear ──────────────
+    // Only pages created DURING Phase 4b need to be processed under the lock.  This is
+    // typically just 0-2 pages worth of data, keeping the lock hold time minimal.
+    compactionLock.writeLock().lock();
+    try {
+      database.begin();
+      try {
+        final int finalPageCount = mutableBucket.getDataPageCount();
+
+        // Read only the tail pages created after Phase 4a's snapshot.
+        Object[] tailData = null;
+        if (finalPageCount > phase4aPageCount)
+          tailData = mutableBucket.readPagesRangeForCompaction(phase4aPageCount + 1, finalPageCount);
+
+        // Merge Phase 4b spill with tail data
+        final Object[] toCompressFinal;
+        if (phase4bSpill != null && tailData != null)
+          toCompressFinal = mergeCompactionData(phase4bSpill, tailData);
+        else if (phase4bSpill != null)
+          toCompressFinal = phase4bSpill;
+        else
+          toCompressFinal = tailData;
+
+        if (toCompressFinal != null) {
+          final List<byte[][]> tailCompressed = new ArrayList<>();
+          final List<long[]> tailMeta = new ArrayList<>();
+          final List<double[]> tailMins = new ArrayList<>();
+          final List<double[]> tailMaxs = new ArrayList<>();
+          final List<double[]> tailSums = new ArrayList<>();
+          final List<String[][]> tailTagDV = new ArrayList<>();
+          buildCompressedBlocks(toCompressFinal, tailCompressed, tailMeta, tailMins, tailMaxs, tailSums, tailTagDV,
+              false);
+          if (!tailCompressed.isEmpty())
+            sealedStore.appendBlocksToTempFile(tailCompressed, tailMeta, tailMins, tailMaxs, tailSums, tailTagDV,
+                newBlockDirectory);
         }
 
         // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
@@ -464,7 +514,7 @@ public class TimeSeriesShard implements AutoCloseable {
         } catch (final IOException te) {
           throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
         }
-        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 4", e);
+        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 4c", e);
       }
     } finally {
       compactionLock.writeLock().unlock();
