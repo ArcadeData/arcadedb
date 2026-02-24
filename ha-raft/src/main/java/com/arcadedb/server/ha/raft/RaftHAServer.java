@@ -37,9 +37,12 @@ import org.apache.ratis.util.TimeDuration;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
@@ -50,12 +53,21 @@ import java.util.logging.Level;
  */
 public class RaftHAServer {
 
-  private final ArcadeDBServer      arcadeServer;
-  private final ContextConfiguration configuration;
-  private final ArcadeStateMachine  stateMachine;
-  private final ClusterMonitor      clusterMonitor;
-  private final RaftGroup           raftGroup;
-  private final RaftPeerId          localPeerId;
+  /**
+   * Result of parsing the HA server list. Contains the Raft peers (with raft addresses) and
+   * a map from peer ID to HTTP address for replica-to-leader HTTP command forwarding.
+   * The {@code httpAddresses} map is empty when no httpPort is specified in the server list.
+   */
+  public record ParsedPeerList(List<RaftPeer> peers, Map<RaftPeerId, String> httpAddresses) {
+  }
+
+  private final ArcadeDBServer             arcadeServer;
+  private final ContextConfiguration       configuration;
+  private final ArcadeStateMachine         stateMachine;
+  private final ClusterMonitor             clusterMonitor;
+  private final RaftGroup                  raftGroup;
+  private final RaftPeerId                 localPeerId;
+  private final Map<RaftPeerId, String>    httpAddresses;
 
   private RaftServer raftServer;
   private RaftClient raftClient;
@@ -69,9 +81,11 @@ public class RaftHAServer {
     final long lagWarningThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
     final int raftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
 
-    final List<RaftPeer> peers = parsePeerList(serverList, raftPort);
+    final ParsedPeerList parsed = parsePeerList(serverList, raftPort);
+    final List<RaftPeer> peers = parsed.peers();
     final String serverName = arcadeServer.getServerName();
 
+    this.httpAddresses = parsed.httpAddresses();
     this.localPeerId = findLocalPeerId(peers, serverName, arcadeServer);
     this.raftGroup = RaftGroup.valueOf(
         RaftGroupId.valueOf(UUID.nameUUIDFromBytes(clusterName.getBytes())),
@@ -88,25 +102,63 @@ public class RaftHAServer {
   }
 
   /**
-   * Parses a comma-separated server list into RaftPeer objects.
-   * Each entry may be either {@code host:port} or just {@code host}.
-   * When no port is present, {@code defaultPort} (from {@code HA_RAFT_PORT}) is used.
+   * Parses a comma-separated server list into a {@link ParsedPeerList}.
+   * <p>
+   * Each entry supports the following formats:
+   * <ul>
+   *   <li>{@code host:raftPort:httpPort:priority} — explicit Raft port, HTTP port, and leader-election priority</li>
+   *   <li>{@code host:raftPort:httpPort} — explicit Raft and HTTP ports, priority defaults to 0</li>
+   *   <li>{@code host:raftPort} — explicit Raft port, no HTTP address stored, priority defaults to 0</li>
+   *   <li>{@code host} — Raft port defaults to {@code defaultPort}, no HTTP address, priority defaults to 0</li>
+   * </ul>
+   * The {@code httpAddresses} map in the result is populated only for entries with 3 or 4 parts;
+   * it is keyed by the {@link RaftPeerId} of each peer.
+   * <p>
+   * Priority is used for Raft leader election: the node with the highest priority is preferred as leader.
+   * This is a soft preference — if the preferred leader is unavailable, another node will take over.
    */
-  static List<RaftPeer> parsePeerList(final String serverList, final int defaultPort) {
+  static ParsedPeerList parsePeerList(final String serverList, final int defaultPort) {
     final String[] entries = serverList.split(",");
     final List<RaftPeer> peers = new ArrayList<>(entries.length);
+    final Map<RaftPeerId, String> httpAddresses = new HashMap<>(entries.length);
 
     for (int i = 0; i < entries.length; i++) {
       final String entry = entries[i].trim();
-      final String address = entry.contains(":") ? entry : entry + ":" + defaultPort;
+      final String[] parts = entry.split(":");
+
+      final String raftAddress;
+      String httpAddress = null;
+      int priority = 0;
+
+      if (parts.length == 4) {
+        // host:raftPort:httpPort:priority
+        raftAddress = parts[0] + ":" + parts[1];
+        httpAddress = parts[0] + ":" + parts[2];
+        priority = Integer.parseInt(parts[3]);
+      } else if (parts.length == 3) {
+        // host:raftPort:httpPort
+        raftAddress = parts[0] + ":" + parts[1];
+        httpAddress = parts[0] + ":" + parts[2];
+      } else if (parts.length == 2) {
+        // host:raftPort
+        raftAddress = entry;
+      } else {
+        // host only - use default Raft port
+        raftAddress = entry + ":" + defaultPort;
+      }
+
       final RaftPeer peer = RaftPeer.newBuilder()
           .setId("peer-" + i)
-          .setAddress(address)
+          .setAddress(raftAddress)
+          .setPriority(priority)
           .build();
       peers.add(peer);
+
+      if (httpAddress != null)
+        httpAddresses.put(peer.getId(), httpAddress);
     }
 
-    return Collections.unmodifiableList(peers);
+    return new ParsedPeerList(Collections.unmodifiableList(peers), Collections.unmodifiableMap(httpAddresses));
   }
 
   /**
@@ -148,6 +200,8 @@ public class RaftHAServer {
     if (storageDir.exists())
       deleteRecursive(storageDir);
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
+
+    initClusterToken(configuration, storageDir);
 
     raftServer = RaftServer.newBuilder()
         .setServerId(localPeerId)
@@ -223,6 +277,17 @@ public class RaftHAServer {
     }
   }
 
+  /**
+   * Returns the HTTP address (host:port) of the current Raft leader, or {@code null} if the leader
+   * is unknown or its HTTP address was not configured in the server list.
+   */
+  public String getLeaderHttpAddress() {
+    final RaftPeerId leaderId = getLeaderId();
+    if (leaderId == null)
+      return null;
+    return httpAddresses.get(leaderId);
+  }
+
   public RaftClient getClient() {
     return raftClient;
   }
@@ -241,6 +306,34 @@ public class RaftHAServer {
 
   public RaftPeerId getLocalPeerId() {
     return localPeerId;
+  }
+
+  /**
+   * Initialises the cluster token used for inter-node request forwarding.
+   * <ul>
+   *   <li>If {@code HA_CLUSTER_TOKEN} is already set in config, nothing changes.</li>
+   *   <li>If the token file exists in {@code storageDir}, its value is loaded into config.</li>
+   *   <li>Otherwise a new UUID is generated, written to the file, and set in config.</li>
+   * </ul>
+   */
+  static void initClusterToken(final ContextConfiguration configuration, final File storageDir) throws IOException {
+    final String configured = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+    if (configured != null && !configured.isBlank())
+      return;
+
+    final File tokenFile = new File(storageDir, "cluster-token.txt");
+    if (tokenFile.exists()) {
+      final String persisted = Files.readString(tokenFile.toPath()).trim();
+      configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, persisted);
+      return;
+    }
+
+    storageDir.mkdirs();
+    final String newToken = UUID.randomUUID().toString();
+    Files.writeString(tokenFile.toPath(), newToken);
+    configuration.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, newToken);
+    LogManager.instance().log(RaftHAServer.class, Level.INFO,
+        "Generated new cluster token (saved to %s)", tokenFile.getAbsolutePath());
   }
 
   private static void deleteRecursive(final File file) {

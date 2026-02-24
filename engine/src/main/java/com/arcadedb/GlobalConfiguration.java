@@ -517,7 +517,10 @@ public enum GlobalConfiguration {
       Constants.PRODUCT.toLowerCase(Locale.ENGLISH)),
 
   HA_SERVER_LIST("arcadedb.ha.serverList", SCOPE.SERVER,
-      "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
+      "Servers in the cluster as a list of <hostname/ip-address:raftPort:httpPort[:priority]> items separated by comma. " +
+          "The httpPort is required for replica-to-leader HTTP command forwarding. " +
+          "The optional priority (integer, default 0) sets the preferred leader: the node with the highest priority is preferred during elections. " +
+          "Example: localhost:2434:2480:10,192.168.0.1:2434:2480:0",
       String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", SCOPE.SERVER,
@@ -562,6 +565,12 @@ public enum GlobalConfiguration {
   HA_RAFT_PORT("arcadedb.ha.raftPort", SCOPE.SERVER,
       "TCP/IP port for Raft gRPC communication. Used as the default port when HA_SERVER_LIST entries do not specify an explicit port",
       Integer.class, 2434),
+
+  HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
+      "Shared secret for inter-node request forwarding authentication. " +
+      "Must be identical on all cluster nodes. " +
+      "If empty, a random token is auto-generated and stored in raft-storage at startup.",
+      String.class, ""),
 
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,

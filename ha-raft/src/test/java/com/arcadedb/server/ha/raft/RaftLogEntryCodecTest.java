@@ -22,6 +22,7 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -89,6 +90,20 @@ class RaftLogEntryCodecTest {
   }
 
   @Test
+  void roundTripInstallDatabaseEntry() {
+    final ByteString encoded = RaftLogEntryCodec.encodeInstallDatabaseEntry("mydb");
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.INSTALL_DATABASE_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo("mydb");
+    assertThat(decoded.walData()).isNull();
+    assertThat(decoded.schemaJson()).isNull();
+    assertThat(decoded.filesToAdd()).isNull();
+    assertThat(decoded.filesToRemove()).isNull();
+    assertThat(decoded.bucketRecordDelta()).isNull();
+  }
+
+  @Test
   void roundTripLargeWalData() {
     final byte[] walData = new byte[1024 * 1024]; // 1MB
     for (int i = 0; i < walData.length; i++)
@@ -98,5 +113,34 @@ class RaftLogEntryCodecTest {
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
 
     assertThat(decoded.walData()).isEqualTo(walData);
+  }
+
+  @Test
+  void schemaEntryWithEmbeddedWalRoundtrip() {
+    final byte[] fakeWal = new byte[] { 1, 2, 3, 4, 5 };
+    final Map<Integer, Integer> fakeDelta = Map.of(1, 5);
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb",
+        "{\"schemaVersion\": 1}",
+        Map.of(1, "User_0"),
+        Map.of(),
+        List.of(fakeWal),
+        List.of(fakeDelta));
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
+    assertThat(decoded.walEntries()).hasSize(1);
+    assertThat(decoded.walEntries().get(0)).isEqualTo(fakeWal);
+    assertThat(decoded.bucketDeltas().get(0)).isEqualTo(fakeDelta);
+  }
+
+  @Test
+  void schemaEntryWithNoWalHasEmptyLists() {
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}", Map.of(), Map.of());
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.walEntries()).isEmpty();
+    assertThat(decoded.bucketDeltas()).isEmpty();
   }
 }
