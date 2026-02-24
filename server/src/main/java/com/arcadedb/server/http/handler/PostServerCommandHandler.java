@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
@@ -35,10 +34,10 @@ import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.backup.DatabaseBackupConfig;
+import com.arcadedb.server.ha.HAReplicatedDatabase;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
 import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
-import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.ha.message.ServerShutdownRequest;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -216,10 +215,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final ServerDatabase db = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
-      final ReplicatedDatabase replicatedDatabase = (ReplicatedDatabase) db.getWrappedDatabaseInstance();
-      replicatedDatabase.createInReplicas();
-    }
+    final DatabaseInternal wrappedDb = db.getWrappedDatabaseInstance();
+    if (wrappedDb instanceof HAReplicatedDatabase haDb)
+      haDb.createInReplicas();
   }
 
   /**

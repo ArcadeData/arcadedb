@@ -46,6 +46,8 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.HAReplicatedDatabase;
+import com.arcadedb.server.ha.HAServer;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -60,7 +62,13 @@ import java.util.logging.Level;
  * On the leader, the transaction is committed locally after Raft consensus is reached.
  * On replicas, the transaction is forwarded to the leader via the Raft client.
  */
-public class RaftReplicatedDatabase implements DatabaseInternal {
+public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDatabase {
+  // Thread-local buffers used to accumulate WAL data when commit() is called inside
+  // a recordFileChanges() callback. The buffered entries are then embedded in the
+  // SCHEMA_ENTRY so replicas receive them atomically with the file-creation step.
+  private static final ThreadLocal<List<byte[]>>               schemaWalBuffer        = ThreadLocal.withInitial(ArrayList::new);
+  private static final ThreadLocal<List<Map<Integer, Integer>>> schemaBucketDeltaBuffer = ThreadLocal.withInitial(ArrayList::new);
+
   private final ArcadeDBServer server;
   private final LocalDatabase  proxied;
   private final RaftHAServer   raftHAServer;
@@ -78,6 +86,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal {
     proxied.incrementStatsWriteTx();
 
     final boolean leader = isLeader();
+
+    // When commit() is called from inside a recordFileChanges() callback on the leader,
+    // the files being created do not yet exist on replicas. Sending a TX_ENTRY now would
+    // fail on replicas because the target files are missing. Instead, buffer the WAL data
+    // here and embed it in the SCHEMA_ENTRY that recordFileChanges() sends after the callback.
+    if (leader && proxied.getFileManager().getRecordedChanges() != null) {
+      proxied.executeInReadLock(() -> {
+        proxied.checkTransactionIsActive(false);
+        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+        final TransactionContext tx = current.getLastTransaction();
+        try {
+          final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
+          if (phase1 != null) {
+            tx.commit2ndPhase(phase1);
+            schemaWalBuffer.get().add(phase1.result.toByteArray());
+            schemaBucketDeltaBuffer.get().add(new HashMap<>(tx.getBucketRecordDelta()));
+          } else
+            tx.reset();
+          if (getSchema().getEmbedded().isDirty())
+            getSchema().getEmbedded().saveConfiguration();
+        } finally {
+          current.popIfNotLastTransaction();
+        }
+        return null;
+      });
+      return;
+    }
 
     proxied.executeInReadLock(() -> {
       proxied.checkTransactionIsActive(false);
@@ -719,6 +754,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal {
     final Map<Integer, String> removeFiles = new HashMap<>();
     String serializedSchema = "";
 
+    // Clear thread-local WAL buffers so any commits inside the callback are captured fresh
+    schemaWalBuffer.get().clear();
+    schemaBucketDeltaBuffer.get().clear();
+
     try {
       final RET result = proxied.recordFileChanges(callback);
 
@@ -741,20 +780,31 @@ public class RaftReplicatedDatabase implements DatabaseInternal {
         serializedSchema = schemaJson.toString();
       }
 
-      // Send schema changes via Raft so replicas have the files before WAL pages arrive
+      // Collect any WAL entries buffered by commit() calls that occurred inside the callback
+      final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());
+      final List<Map<Integer, Integer>> bucketDeltas = new ArrayList<>(schemaBucketDeltaBuffer.get());
+      schemaWalBuffer.get().clear();
+      schemaBucketDeltaBuffer.get().clear();
+
+      // Send schema changes via Raft so replicas have the files before WAL pages arrive.
+      // Embedded walEntries carry the initial page writes (e.g. index root pages) so
+      // replicas apply them immediately after creating the files - in the correct order.
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
-        final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles);
+        final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
         final RaftClientReply reply = raftHAServer.getClient().io().send(Message.valueOf(schemaEntry));
         if (!reply.isSuccess())
           throw new TransactionException("Raft consensus failed for schema change on database '" + getName() + "'");
-        LogManager.instance().log(this, Level.FINE, "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s",
-            addFiles.size(), removeFiles.size(), schemaChanged);
+        LogManager.instance().log(this, Level.FINE,
+            "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d",
+            addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size());
       }
 
       return result;
     } catch (final IOException e) {
       throw new TransactionException("Error sending schema changes via Raft", e);
     } finally {
+      schemaWalBuffer.get().clear();
+      schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();
     }
   }
@@ -789,8 +839,35 @@ public class RaftReplicatedDatabase implements DatabaseInternal {
     return proxied.getSecurity();
   }
 
+  @Override
   public boolean isLeader() {
     return raftHAServer != null && raftHAServer.isLeader();
+  }
+
+  @Override
+  public String getLeaderHttpAddress() {
+    return raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+  }
+
+  @Override
+  public HAServer.QUORUM getQuorum() {
+    // Raft consensus is inherently majority-based
+    return HAServer.QUORUM.MAJORITY;
+  }
+
+  @Override
+  public void createInReplicas() {
+    final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(getName());
+    try {
+      final RaftClientReply reply = raftHAServer.getClient().io().send(Message.valueOf(entry));
+      if (!reply.isSuccess())
+        throw new TransactionException("Raft consensus failed while installing database '" + getName() + "' on replicas");
+    } catch (final TransactionException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
+    }
+    LogManager.instance().log(this, Level.INFO, "Database '%s' install-database entry committed via Raft", getName());
   }
 
   /**

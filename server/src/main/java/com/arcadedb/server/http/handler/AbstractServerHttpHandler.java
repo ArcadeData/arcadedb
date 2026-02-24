@@ -85,68 +85,80 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
-      final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
-      if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
-        exchange.setStatusCode(401);
-        exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
-        sendErrorResponse(exchange, 401, "", null, null);
-        return;
+      // Check cluster-internal forwarded auth (highest priority — bypasses session lookup)
+      final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
+      ServerSecurityUser user = null;
+      if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
+        user = validateClusterForwardedAuth(exchange,
+            clusterTokenHeader.getFirst(),
+            exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User"));
+        if (user == null)
+          return; // 401 already sent
       }
 
-      ServerSecurityUser user = null;
-      if (authorization != null) {
-        try {
-          final String auth = authorization.getFirst();
+      if (user == null) {
+        final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
+        if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
+          exchange.setStatusCode(401);
+          exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
+          sendErrorResponse(exchange, 401, "", null, null);
+          return;
+        }
 
-          if (auth.startsWith(AUTHORIZATION_BEARER)) {
-            // Bearer token authentication
-            final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
+        if (authorization != null) {
+          try {
+            final String auth = authorization.getFirst();
 
-            if (ApiTokenConfiguration.isApiToken(token)) {
-              // API token authentication (at- prefix)
-              try {
-                user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
-              } catch (final ServerSecurityException ex) {
-                exchange.setStatusCode(401);
-                sendErrorResponse(exchange, 401, "Invalid or expired API token", null, null);
+            if (auth.startsWith(AUTHORIZATION_BEARER)) {
+              // Bearer token authentication
+              final String token = auth.substring(AUTHORIZATION_BEARER.length()).trim();
+
+              if (ApiTokenConfiguration.isApiToken(token)) {
+                // API token authentication (at- prefix)
+                try {
+                  user = httpServer.getServer().getSecurity().authenticateByApiToken(token);
+                } catch (final ServerSecurityException ex) {
+                  exchange.setStatusCode(401);
+                  sendErrorResponse(exchange, 401, "Invalid or expired API token", null, null);
+                  return;
+                }
+              } else {
+                // Session token authentication (AU- prefix)
+                final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+                if (authSession == null) {
+                  exchange.setStatusCode(401);
+                  sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
+                  return;
+                }
+                user = authSession.getUser();
+              }
+
+            } else if (auth.startsWith(AUTHORIZATION_BASIC)) {
+              // Basic authentication
+              final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
+
+              final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
+
+              final String[] authPair = authPairClear.split(":");
+
+              if (authPair.length != 2) {
+                sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
                 return;
               }
+
+              user = authenticate(authPair[0], authPair[1]);
+
             } else {
-              // Session token authentication (AU- prefix)
-              final HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
-              if (authSession == null) {
-                exchange.setStatusCode(401);
-                sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
-                return;
-              }
-              user = authSession.getUser();
-            }
-
-          } else if (auth.startsWith(AUTHORIZATION_BASIC)) {
-            // Basic authentication
-            final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
-
-            final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
-
-            final String[] authPair = authPairClear.split(":");
-
-            if (authPair.length != 2) {
-              sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+              sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
               return;
             }
 
-            user = authenticate(authPair[0], authPair[1]);
-
-          } else {
-            sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
-            return;
+          } catch (ServerSecurityException e) {
+            // PASS THROUGH
+            throw e;
+          } catch (Exception e) {
+            throw new ServerSecurityException("Authentication error");
           }
-
-        } catch (ServerSecurityException e) {
-          // PASS THROUGH
-          throw e;
-        } catch (Exception e) {
-          throw new ServerSecurityException("Authentication error");
         }
       }
 
@@ -262,6 +274,35 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     } finally {
       LogManager.instance().setContext(null);
     }
+  }
+
+  /**
+   * Validates cluster-internal forwarded-auth headers.
+   * Returns the resolved user if both headers are valid, or {@code null} (after sending 401) if not.
+   */
+  private ServerSecurityUser validateClusterForwardedAuth(final HttpServerExchange exchange,
+      final String providedToken, final HeaderValues forwardedUserValues) {
+
+    final String clusterToken = httpServer.getServer().getConfiguration()
+        .getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+
+    if (clusterToken.isBlank() || !clusterToken.equals(providedToken)) {
+      sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
+      return null;
+    }
+
+    if (forwardedUserValues == null || forwardedUserValues.isEmpty()) {
+      sendErrorResponse(exchange, 401, "Missing forwarded user", null, null);
+      return null;
+    }
+
+    final ServerSecurityUser user = httpServer.getServer().getSecurity()
+        .getUser(forwardedUserValues.getFirst());
+    if (user == null) {
+      sendErrorResponse(exchange, 401, "Unknown forwarded user", null, null);
+      return null;
+    }
+    return user;
   }
 
   /**

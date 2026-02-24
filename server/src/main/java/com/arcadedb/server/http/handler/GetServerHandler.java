@@ -27,8 +27,8 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.HAReplicatedDatabase;
 import com.arcadedb.server.ha.HAServer;
-import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
@@ -125,11 +125,10 @@ public class GetServerHandler extends AbstractServerHttpHandler {
 
       for (String dbName : httpServer.getServer().getDatabaseNames()) {
         final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
-        final ReplicatedDatabase rdb = ((ReplicatedDatabase) db.getWrappedDatabaseInstance());
-
         final JSONObject databaseJSON = new JSONObject();
-        databaseJSON.put("name", rdb.getName());
-        databaseJSON.put("quorum", rdb.getQuorum());
+        databaseJSON.put("name", db.getName());
+        if (db.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
+          databaseJSON.put("quorum", haDb.getQuorum());
         databases.put(databaseJSON);
       }
 

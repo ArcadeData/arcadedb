@@ -35,6 +35,8 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
@@ -69,6 +71,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       switch (decoded.type()) {
         case TX_ENTRY -> applyTxEntry(decoded);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded);
+        case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
       }
 
       lastAppliedTermIndex = termIndex;
@@ -141,7 +144,42 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new RuntimeException("Failed to apply schema entry for database '" + decoded.databaseName() + "'", e);
     }
 
+    // Apply any WAL entries buffered during schema recording (e.g., initial index page writes)
+    // These must be applied after file creation so the target files already exist on the replica
+    final List<byte[]> walEntries = decoded.walEntries();
+    if (walEntries != null && !walEntries.isEmpty()) {
+      final List<Map<Integer, Integer>> bucketDeltas = decoded.bucketDeltas();
+      for (int i = 0; i < walEntries.size(); i++) {
+        final byte[] walData = walEntries.get(i);
+        final Map<Integer, Integer> bucketDelta = (bucketDeltas != null && i < bucketDeltas.size())
+            ? bucketDeltas.get(i)
+            : Collections.emptyMap();
+        final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
+        db.getTransactionManager().applyChanges(walTx, bucketDelta, false);
+      }
+      LogManager.instance().log(this, Level.FINE,
+          "Applied %d buffered WAL entries from schema entry to database '%s'",
+          walEntries.size(), decoded.databaseName());
+    }
+
     LogManager.instance().log(this, Level.FINE, "Applied schema change to database '%s'", decoded.databaseName());
+  }
+
+  private void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    // On the leader the database was already created locally; skip.
+    if (raftHAServer != null && raftHAServer.isLeader()) {
+      LogManager.instance().log(this, Level.FINE, "Skipping install-database on leader for '%s'", decoded.databaseName());
+      return;
+    }
+
+    final String databaseName = decoded.databaseName();
+    if (server.existsDatabase(databaseName)) {
+      LogManager.instance().log(this, Level.FINE, "Database '%s' already present on this replica, skipping install", databaseName);
+      return;
+    }
+
+    server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    LogManager.instance().log(this, Level.INFO, "Database '%s' created on replica via Raft install-database entry", databaseName);
   }
 
   /**

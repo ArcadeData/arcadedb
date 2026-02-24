@@ -18,9 +18,14 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import org.apache.ratis.protocol.RaftPeer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,14 +34,14 @@ class RaftHAServerTest {
 
   @Test
   void parsePeerListSingleServer() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("localhost:2434", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("localhost:2434", 2434).peers();
     assertThat(peers).hasSize(1);
     assertThat(peers.get(0).getAddress()).isEqualTo("localhost:2434");
   }
 
   @Test
   void parsePeerListMultipleServers() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("host1:2434,host2:2435,host3:2436", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("host1:2434,host2:2435,host3:2436", 2434).peers();
     assertThat(peers).hasSize(3);
     assertThat(peers.get(0).getAddress()).isEqualTo("host1:2434");
     assertThat(peers.get(1).getAddress()).isEqualTo("host2:2435");
@@ -45,19 +50,19 @@ class RaftHAServerTest {
 
   @Test
   void parsePeerListAssignsUniqueIds() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("a:2434,b:2435", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("a:2434,b:2435", 2434).peers();
     assertThat(peers.get(0).getId()).isNotEqualTo(peers.get(1).getId());
   }
 
   @Test
   void parsePeerListPreservesExactPort() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("myhost:9999", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("myhost:9999", 2434).peers();
     assertThat(peers.get(0).getAddress()).isEqualTo("myhost:9999");
   }
 
   @Test
   void parsePeerListHostnameOnlyUsesDefaultPort() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("node1,node2,node3", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("node1,node2,node3", 2434).peers();
     assertThat(peers).hasSize(3);
     assertThat(peers.get(0).getAddress()).isEqualTo("node1:2434");
     assertThat(peers.get(1).getAddress()).isEqualTo("node2:2434");
@@ -66,7 +71,7 @@ class RaftHAServerTest {
 
   @Test
   void parsePeerListMixedEntriesAppliesDefaultPortOnlyWhereNeeded() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("node1,node2:9000,node3", 2434);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("node1,node2:9000,node3", 2434).peers();
     assertThat(peers).hasSize(3);
     assertThat(peers.get(0).getAddress()).isEqualTo("node1:2434");
     assertThat(peers.get(1).getAddress()).isEqualTo("node2:9000");
@@ -75,7 +80,114 @@ class RaftHAServerTest {
 
   @Test
   void parsePeerListCustomDefaultPort() {
-    final List<RaftPeer> peers = RaftHAServer.parsePeerList("myhost", 9999);
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("myhost", 9999).peers();
     assertThat(peers.get(0).getAddress()).isEqualTo("myhost:9999");
+  }
+
+  @Test
+  void parsePeerListThreePartExtractsRaftAndHttpAddresses() {
+    final RaftHAServer.ParsedPeerList parsed = RaftHAServer.parsePeerList("node1:2434:2480", 2434);
+    assertThat(parsed.peers()).hasSize(1);
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("node1:2434");
+    assertThat(parsed.httpAddresses()).containsEntry(parsed.peers().get(0).getId(), "node1:2480");
+  }
+
+  @Test
+  void parsePeerListThreePartMultipleNodes() {
+    final RaftHAServer.ParsedPeerList parsed = RaftHAServer.parsePeerList("host1:2434:2480,host2:2435:2481,host3:2436:2482", 2434);
+    final List<RaftPeer> peers = parsed.peers();
+    assertThat(peers).hasSize(3);
+    assertThat(peers.get(0).getAddress()).isEqualTo("host1:2434");
+    assertThat(peers.get(1).getAddress()).isEqualTo("host2:2435");
+    assertThat(peers.get(2).getAddress()).isEqualTo("host3:2436");
+    assertThat(parsed.httpAddresses()).containsEntry(peers.get(0).getId(), "host1:2480");
+    assertThat(parsed.httpAddresses()).containsEntry(peers.get(1).getId(), "host2:2481");
+    assertThat(parsed.httpAddresses()).containsEntry(peers.get(2).getId(), "host3:2482");
+  }
+
+  @Test
+  void parsePeerListTwoPartHasNoHttpAddress() {
+    final RaftHAServer.ParsedPeerList parsed = RaftHAServer.parsePeerList("myhost:2434", 2434);
+    assertThat(parsed.httpAddresses()).isEmpty();
+  }
+
+  @Test
+  void parsePeerListOnePartHasNoHttpAddress() {
+    final RaftHAServer.ParsedPeerList parsed = RaftHAServer.parsePeerList("myhost", 2434);
+    assertThat(parsed.httpAddresses()).isEmpty();
+  }
+
+  @Test
+  void parsePeerListMixedThreePartAndTwoPart() {
+    final RaftHAServer.ParsedPeerList parsed = RaftHAServer.parsePeerList("node1:2434:2480,node2:2435", 2434);
+    final List<RaftPeer> peers = parsed.peers();
+    assertThat(peers).hasSize(2);
+    assertThat(peers.get(0).getAddress()).isEqualTo("node1:2434");
+    assertThat(peers.get(1).getAddress()).isEqualTo("node2:2435");
+    assertThat(parsed.httpAddresses()).containsEntry(peers.get(0).getId(), "node1:2480");
+    assertThat(parsed.httpAddresses()).doesNotContainKey(peers.get(1).getId());
+  }
+
+  @Test
+  void parsePeerListFourPartSetsPriority() {
+    final RaftHAServer.ParsedPeerList parsed = RaftHAServer.parsePeerList("node1:2434:2480:10,node2:2435:2481:0", 2434);
+    final List<RaftPeer> peers = parsed.peers();
+    assertThat(peers).hasSize(2);
+    assertThat(peers.get(0).getAddress()).isEqualTo("node1:2434");
+    assertThat(peers.get(1).getAddress()).isEqualTo("node2:2435");
+    assertThat(parsed.httpAddresses()).containsEntry(peers.get(0).getId(), "node1:2480");
+    assertThat(parsed.httpAddresses()).containsEntry(peers.get(1).getId(), "node2:2481");
+    assertThat(peers.get(0).getPriority()).isEqualTo(10);
+    assertThat(peers.get(1).getPriority()).isEqualTo(0);
+  }
+
+  @Test
+  void parsePeerListThreePartDefaultsPriorityToZero() {
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("node1:2434:2480", 2434).peers();
+    assertThat(peers.get(0).getPriority()).isEqualTo(0);
+  }
+
+  @Test
+  void parsePeerListTwoPartDefaultsPriorityToZero() {
+    final List<RaftPeer> peers = RaftHAServer.parsePeerList("node1:2434", 2434).peers();
+    assertThat(peers.get(0).getPriority()).isEqualTo(0);
+  }
+
+  @Test
+  void initClusterTokenGeneratesAndPersistsTokenWhenBlank(@TempDir final File tempDir) throws Exception {
+    final ContextConfiguration config = new ContextConfiguration();
+    // HA_CLUSTER_TOKEN starts blank by default
+
+    RaftHAServer.initClusterToken(config, tempDir);
+
+    final String token = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+    assertThat(token).isNotBlank();
+
+    // token must also be in the file
+    final File tokenFile = new File(tempDir, "cluster-token.txt");
+    assertThat(tokenFile).exists();
+    assertThat(Files.readString(tokenFile.toPath()).trim()).isEqualTo(token);
+  }
+
+  @Test
+  void initClusterTokenReadsExistingFileWhenConfigBlank(@TempDir final File tempDir) throws Exception {
+    final String existingToken = "my-existing-token";
+    Files.writeString(new File(tempDir, "cluster-token.txt").toPath(), existingToken);
+
+    final ContextConfiguration config = new ContextConfiguration();
+    RaftHAServer.initClusterToken(config, tempDir);
+
+    assertThat(config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN)).isEqualTo(existingToken);
+  }
+
+  @Test
+  void initClusterTokenKeepsExplicitConfigValueWithoutTouchingFile(@TempDir final File tempDir) throws Exception {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, "explicit-token");
+
+    RaftHAServer.initClusterToken(config, tempDir);
+
+    assertThat(config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN)).isEqualTo("explicit-token");
+    assertThat(new File(tempDir, "cluster-token.txt")).doesNotExist();
   }
 }

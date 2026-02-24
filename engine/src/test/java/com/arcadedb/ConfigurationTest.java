@@ -55,4 +55,10 @@ class ConfigurationTest {
     assertThat(out.size() > 0).isTrue();
   }
 
+  @Test
+  void haClusterTokenDefaultsToBlank() {
+    assertThat(GlobalConfiguration.HA_CLUSTER_TOKEN.getDefValue()).isEqualTo("");
+    assertThat(GlobalConfiguration.HA_CLUSTER_TOKEN.getValueAsString()).isEqualTo("");
+  }
+
 }

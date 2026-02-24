@@ -25,7 +25,10 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -45,7 +48,9 @@ public final class RaftLogEntryCodec {
       Map<Integer, Integer> bucketRecordDelta,
       String schemaJson,
       Map<Integer, String> filesToAdd,
-      Map<Integer, String> filesToRemove
+      Map<Integer, String> filesToRemove,
+      List<byte[]> walEntries,
+      List<Map<Integer, Integer>> bucketDeltas
   ) {
   }
 
@@ -84,12 +89,13 @@ public final class RaftLogEntryCodec {
    * Encodes a schema entry into a ByteString.
    * <p>
    * Binary format: type byte, databaseName (UTF), schemaJson (UTF),
-   * filesToAdd map, filesToRemove map.
-   * Each file map: count (int), followed by fileId (int), hasValue (boolean),
-   * and fileName (UTF) if hasValue is true.
+   * filesToAdd map, filesToRemove map,
+   * walEntries count (int), then for each WAL entry: length (int) + bytes,
+   * then for each bucket delta: entry count (int) + pairs of fileId (int) and delta (int).
    */
   public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
-      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove) {
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -101,10 +107,55 @@ public final class RaftLogEntryCodec {
       writeFileMap(dos, filesToAdd);
       writeFileMap(dos, filesToRemove);
 
+      final int walCount = walEntries != null ? walEntries.size() : 0;
+      dos.writeInt(walCount);
+      for (int i = 0; i < walCount; i++) {
+        final byte[] walData = walEntries.get(i);
+        dos.writeInt(walData.length);
+        dos.write(walData);
+
+        final Map<Integer, Integer> delta = (bucketDeltas != null && i < bucketDeltas.size())
+            ? bucketDeltas.get(i)
+            : Collections.emptyMap();
+        dos.writeInt(delta.size());
+        for (final Map.Entry<Integer, Integer> e : delta.entrySet()) {
+          dos.writeInt(e.getKey());
+          dos.writeInt(e.getValue());
+        }
+      }
+
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
     } catch (final IOException e) {
       throw new IllegalStateException("Failed to encode SCHEMA entry", e);
+    }
+  }
+
+  /**
+   * Convenience overload with no embedded WAL entries (for schema-only changes).
+   */
+  public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove) {
+    return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, Collections.emptyList(), Collections.emptyList());
+  }
+
+  /**
+   * Encodes an install-database entry into a ByteString.
+   * <p>
+   * Binary format: type byte, databaseName (UTF).
+   */
+  public static ByteString encodeInstallDatabaseEntry(final String databaseName) {
+    try {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      final DataOutputStream dos = new DataOutputStream(baos);
+
+      dos.writeByte(RaftLogEntryType.INSTALL_DATABASE_ENTRY.getId());
+      dos.writeUTF(databaseName);
+
+      dos.flush();
+      return ByteString.copyFrom(baos.toByteArray());
+    } catch (final IOException e) {
+      throw new IllegalStateException("Failed to encode INSTALL_DATABASE entry", e);
     }
   }
 
@@ -121,6 +172,7 @@ public final class RaftLogEntryCodec {
       return switch (type) {
         case TX_ENTRY -> decodeTxEntry(dis, databaseName);
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
+        case INSTALL_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName, null, null, null, null, null, null, null);
       };
     } catch (final IOException e) {
       throw new IllegalStateException("Failed to decode Raft log entry", e);
@@ -140,7 +192,7 @@ public final class RaftLogEntryCodec {
       bucketRecordDelta.put(bucketId, delta);
     }
 
-    return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta, null, null, null);
+    return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta, null, null, null, null, null);
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -148,7 +200,32 @@ public final class RaftLogEntryCodec {
     final Map<Integer, String> filesToAdd = readFileMap(dis);
     final Map<Integer, String> filesToRemove = readFileMap(dis);
 
-    return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null, schemaJson, filesToAdd, filesToRemove);
+    // Read embedded WAL entries; older entries without this section are handled gracefully
+    List<byte[]> walEntries = Collections.emptyList();
+    List<Map<Integer, Integer>> bucketDeltas = Collections.emptyList();
+    try {
+      final int walCount = dis.readInt();
+      if (walCount > 0) {
+        walEntries = new ArrayList<>(walCount);
+        bucketDeltas = new ArrayList<>(walCount);
+        for (int i = 0; i < walCount; i++) {
+          final int walLength = dis.readInt();
+          final byte[] walData = new byte[walLength];
+          dis.readFully(walData);
+          walEntries.add(walData);
+
+          final int deltaCount = dis.readInt();
+          final Map<Integer, Integer> delta = HashMap.newHashMap(deltaCount);
+          for (int j = 0; j < deltaCount; j++)
+            delta.put(dis.readInt(), dis.readInt());
+          bucketDeltas.add(delta);
+        }
+      }
+    } catch (final IOException ignored) {
+      // Older log entries without embedded WAL section - treat as empty
+    }
+
+    return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

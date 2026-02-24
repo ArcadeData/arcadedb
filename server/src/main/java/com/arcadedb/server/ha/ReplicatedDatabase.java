@@ -58,7 +58,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
-public class ReplicatedDatabase implements DatabaseInternal {
+public class ReplicatedDatabase implements DatabaseInternal, HAReplicatedDatabase {
   private final ArcadeDBServer server;
   private final LocalDatabase proxied;
   private final HAServer.QUORUM quorum;
@@ -820,8 +820,21 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return proxied.getOpenedOn();
   }
 
+  @Override
   public HAServer.QUORUM getQuorum() {
     return quorum;
+  }
+
+  @Override
+  public boolean isLeader() {
+    final HAServer ha = server.getHA();
+    return ha != null && ha.isLeader();
+  }
+
+  @Override
+  public String getLeaderHttpAddress() {
+    // Old HA uses its own command-forwarding channel; HTTP forwarding is not supported here.
+    return null;
   }
 
   /**
@@ -929,7 +942,4 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return new DatabaseChangeStructureRequest(proxied.getName(), serializedSchema, addFiles, removeFiles);
   }
 
-  private boolean isLeader() {
-    return server.getHA() != null && server.getHA().isLeader();
-  }
 }
