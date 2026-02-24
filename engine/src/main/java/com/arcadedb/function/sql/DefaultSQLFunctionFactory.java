@@ -29,6 +29,7 @@ import com.arcadedb.function.sql.coll.SQLFunctionMap;
 import com.arcadedb.function.sql.coll.SQLFunctionSet;
 import com.arcadedb.function.sql.coll.SQLFunctionSymmetricDifference;
 import com.arcadedb.function.sql.coll.SQLFunctionUnionAll;
+import com.arcadedb.function.sql.geo.SQLFunctionCircle;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoArea;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoAsGeoJson;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoAsText;
@@ -50,6 +51,7 @@ import com.arcadedb.function.sql.geo.SQLFunctionGeoTouches;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoWithin;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoX;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoY;
+import com.arcadedb.function.sql.geo.SQLFunctionRectangle;
 import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 import com.arcadedb.function.sql.graph.SQLFunctionBellmanFord;
 import com.arcadedb.function.sql.graph.SQLFunctionBoth;
@@ -180,6 +182,10 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionSet.NAME, SQLFunctionSet.class);
     register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
     register(SQLFunctionUnionAll.NAME, SQLFunctionUnionAll.class);
+
+    // Geo — deprecated aliases for backward compatibility (use geo.* variants instead)
+    register(SQLFunctionCircle.NAME, new SQLFunctionCircle());
+    register(SQLFunctionRectangle.NAME, new SQLFunctionRectangle());
 
     // Geo — geo.* constructor/accessor functions
     register(SQLFunctionGeoGeomFromText.NAME, new SQLFunctionGeoGeomFromText());

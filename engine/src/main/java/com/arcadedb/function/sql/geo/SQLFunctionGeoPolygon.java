@@ -96,6 +96,11 @@ public class SQLFunctionGeoPolygon extends SQLFunctionAbstract {
   }
 
   @Override
+  public String getAlias() {
+    return "polygon";
+  }
+
+  @Override
   public String getSyntax() {
     return "geo.polygon([[x1,y1],[x2,y2],...])";
   }

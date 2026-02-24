@@ -72,6 +72,11 @@ public class SQLFunctionGeoLineString extends SQLFunctionAbstract {
   }
 
   @Override
+  public String getAlias() {
+    return "linestring";
+  }
+
+  @Override
   public String getSyntax() {
     return "geo.lineString([[x1,y1],[x2,y2],...])";
   }

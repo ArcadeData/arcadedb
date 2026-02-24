@@ -46,6 +46,11 @@ public class SQLFunctionGeoPoint extends SQLFunctionAbstract {
   }
 
   @Override
+  public String getAlias() {
+    return "point";
+  }
+
+  @Override
   public String getSyntax() {
     return "geo.point(<x>, <y>)";
   }

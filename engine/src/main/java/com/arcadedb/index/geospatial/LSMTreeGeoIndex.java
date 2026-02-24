@@ -232,7 +232,11 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     final double distErr = args.resolveDistErr(GeoUtils.getSpatialContext(), strategy.getDistErrPct());
     final int detailLevel = grid.getLevelForDistance(distErr);
 
-    // Iterate all tree cells that cover the search shape and collect their GeoHash tokens
+    // Iterate all tree cells that cover the search shape and collect their GeoHash tokens.
+    // TODO: For large regions at high precision (up to 12 levels) this materialises the full
+    //       candidate RID set in memory before applying the limit. A streaming/lazy cursor
+    //       chaining cells on demand (similar to LSMTreeFullTextIndex) would reduce GC pressure
+    //       on production datasets with dense or wide-area queries.
     final CellIterator cellIter = grid.getTreeCellIterator(searchShape, detailLevel);
     final LinkedHashSet<RID> seen = new LinkedHashSet<>();
     while (cellIter.hasNext()) {

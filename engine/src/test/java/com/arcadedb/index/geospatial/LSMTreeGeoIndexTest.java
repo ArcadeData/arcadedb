@@ -63,7 +63,11 @@ class LSMTreeGeoIndexTest extends TestHelper {
     // Register the paginated component so commit2ndPhase can look it up by file ID
     schema.registerFile(idx.getComponent());
 
-    // Register the index by name so addFilesToLock can resolve it from the schema
+    // Reflection is required here because there is no public API to register an index in the
+    // schema outside of DDL execution. The LSMTreeIndexMutable constructor writes its first page
+    // inside the active transaction, so we cannot go through the normal CREATE INDEX path (which
+    // would open a second transaction). Instead we inject directly into the schema's indexMap so
+    // that the transaction commit machinery can resolve the index by name in addFilesToLock().
     final Field indexMapField = LocalSchema.class.getDeclaredField("indexMap");
     indexMapField.setAccessible(true);
     @SuppressWarnings("unchecked")

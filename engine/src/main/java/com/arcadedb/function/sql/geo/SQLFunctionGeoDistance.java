@@ -92,6 +92,11 @@ public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
   }
 
   @Override
+  public String getAlias() {
+    return "distance";
+  }
+
+  @Override
   public String getSyntax() {
     return "geo.distance(<point1>, <point2>[, <unit>])";
   }
