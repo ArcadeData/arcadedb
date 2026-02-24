@@ -35,7 +35,9 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -55,7 +57,11 @@ public class TimeSeriesShard implements AutoCloseable {
   // Read lock: held by scan/iterate (concurrent reads allowed).
   // Write lock: held by compact() to prevent queries from seeing data twice
   // during the window where sealed blocks are written but mutable not yet cleared.
-  private final ReadWriteLock          compactionLock = new ReentrantReadWriteLock();
+  private final ReadWriteLock compactionLock  = new ReentrantReadWriteLock();
+  // Prevents concurrent compact() calls on this shard (e.g. maintenance scheduler + explicit call).
+  // Both writeTempCompactionFile() and truncateToBlockCount() use the same .ts.sealed.tmp path;
+  // concurrent execution would corrupt each other's temp files.
+  private final Lock          compactionMutex = new ReentrantLock();
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
       final List<ColumnDefinition> columns) throws IOException {
@@ -106,12 +112,17 @@ public class TimeSeriesShard implements AutoCloseable {
 
   /**
    * Appends samples to the mutable bucket.
-   * No compactionLock needed: ArcadeDB's MVCC guarantees that if appendSamples() commits
-   * concurrently with compact(), the page-version conflict is detected at commit time and the
-   * losing transaction retries — preventing both data loss and double-counting.
+   * Holds the read lock so that compact()'s brief write lock (Phase 4) can safely clear the
+   * mutable bucket: while the write lock is held, no new samples can be appended, preventing
+   * data loss. Outside that brief window the read lock is uncontested and adds no overhead.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    mutableBucket.appendSamples(timestamps, columnValues);
+    compactionLock.readLock().lock();
+    try {
+      mutableBucket.appendSamples(timestamps, columnValues);
+    } finally {
+      compactionLock.readLock().unlock();
+    }
   }
 
   /**
@@ -211,18 +222,38 @@ public class TimeSeriesShard implements AutoCloseable {
    * Data is written in chunks of {@link #SEALED_BLOCK_SIZE} rows to keep
    * individual sealed blocks small for fast decompression during queries.
    * <p>
-   * Follows the same lock-free pattern as LSMTree compaction:
+   * Lock-free pattern (matching LSMTree compaction):
    * <ol>
    *   <li>Heavy work (read, sort, compress, write temp file) runs WITHOUT the write lock so
-   *       concurrent reads proceed unimpeded.</li>
+   *       concurrent {@link #appendSamples} calls proceed unimpeded (read lock acquired
+   *       instantly when write lock is not held).</li>
    *   <li>The write lock is held only for the brief atomic-swap window:
    *       temp-file rename + mutable-bucket clear + commit.</li>
    * </ol>
+   * <p>
+   * MVCC safety: because {@link #appendSamples} holds the read lock, and compact() keeps its
+   * database transaction open for the full duration (phases 1–4), the async insert threads
+   * commit page-0 many times during the heavy-work phase.  When compact() finally commits it
+   * always finds page-0 at a newer version → MVCC conflict → compact() rolls back and retries
+   * on the next maintenance cycle.  The insert threads are never affected.
+   * <p>
    * Crash-safe: the {@code compactionInProgress} flag is persisted inside the same transaction
    * as {@code clearDataPages}, so crash recovery via {@link #TimeSeriesShard} constructor
    * correctly handles an interrupted swap.
    */
   public void compact() throws IOException {
+    // Serialize concurrent compact() calls: writeTempCompactionFile() and truncateToBlockCount()
+    // both use the same .ts.sealed.tmp path; concurrent execution would corrupt each other's
+    // temp files (e.g. maintenance scheduler and an explicit compactAll() running in parallel).
+    compactionMutex.lock();
+    try {
+      compactInternal();
+    } finally {
+      compactionMutex.unlock();
+    }
+  }
+
+  private void compactInternal() throws IOException {
     // Capture the initial block count before writing any new blocks.
     // Used for truncation if an exception occurs mid-compaction.
     final long initialBlockCount = sealedStore.getBlockCount();

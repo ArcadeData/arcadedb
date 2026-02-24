@@ -972,6 +972,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
 
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+      tempFile.setLength(0);
       // Write placeholder header
       final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
       headerBuf.putInt(MAGIC_VALUE);
@@ -1154,7 +1155,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final List<BlockEntry> newDirectory = new ArrayList<>(writeOrder.size());
 
     // Write placeholder header + all blocks to the temp file (no lock held).
+    // Truncate first so any leftover bytes from a previous partial write are cleared.
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+      tempFile.setLength(0);
       final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
       headerBuf.putInt(MAGIC_VALUE);
       headerBuf.put((byte) CURRENT_VERSION);
@@ -1277,6 +1280,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final int colCount = columns.size();
       final String tempPath = basePath + ".ts.sealed.tmp";
       try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+        tempFile.setLength(0);
         final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
         headerBuf.putInt(MAGIC_VALUE);
         headerBuf.put((byte) CURRENT_VERSION);

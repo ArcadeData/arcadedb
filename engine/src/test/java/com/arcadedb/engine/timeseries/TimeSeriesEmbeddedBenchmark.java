@@ -71,6 +71,11 @@ public class TimeSeriesEmbeddedBenchmark {
           "CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, " +
               "humidity DOUBLE) SHARDS " + PARALLEL_LEVEL);
 
+      // Disable the auto-compaction scheduler so it doesn't interfere during inserts
+      ((com.arcadedb.schema.LocalSchema) database.getSchema())
+          .getTimeSeriesMaintenanceScheduler()
+          .cancel("SensorData");
+
       System.out.println("=== ArcadeDB TimeSeries Embedded Benchmark ===");
       System.out.printf("Total points: %,d | Batch size: %,d | Parallel level: %d | Sensors: %d%n",
           TOTAL_POINTS, BATCH_SIZE, PARALLEL_LEVEL, NUM_SENSORS);
