@@ -195,9 +195,16 @@ public class RaftHAServer {
     RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(5, TimeUnit.SECONDS));
     RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
 
+    final long snapshotThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_RAFT_SNAPSHOT_THRESHOLD);
+    RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, snapshotThreshold);
+    RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
+
     final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
-    // Clean existing Raft storage to avoid FORMAT conflicts on restart
-    if (storageDir.exists())
+    // Only delete existing Raft storage when persistence is not requested.
+    // Persistent mode (HA_RAFT_PERSIST_STORAGE=true) is used in tests that restart nodes
+    // within a single test run, so the Raft log survives across stop/start calls.
+    final boolean persistStorage = configuration.getValueAsBoolean(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE);
+    if (storageDir.exists() && !persistStorage)
       deleteRecursive(storageDir);
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 

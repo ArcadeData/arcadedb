@@ -566,6 +566,16 @@ public enum GlobalConfiguration {
       "TCP/IP port for Raft gRPC communication. Used as the default port when HA_SERVER_LIST entries do not specify an explicit port",
       Integer.class, 2434),
 
+  HA_RAFT_PERSIST_STORAGE("arcadedb.ha.raftPersistStorage", SCOPE.SERVER,
+      "If true, the Raft storage directory is not deleted when the server starts. " +
+      "Enables node restart and rejoin in integration tests. Not intended for production use.",
+      Boolean.class, false),
+
+  HA_RAFT_SNAPSHOT_THRESHOLD("arcadedb.ha.raftSnapshotThreshold", SCOPE.SERVER,
+      "Number of Raft log entries after which the leader automatically takes a snapshot. " +
+      "Lower values cause more frequent snapshots and earlier log compaction.",
+      Long.class, 10000L),
+
   HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
       "Shared secret for inter-node request forwarding authentication. " +
       "Must be identical on all cluster nodes. " +
