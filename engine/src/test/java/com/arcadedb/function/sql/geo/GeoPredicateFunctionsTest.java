@@ -244,6 +244,12 @@ class GeoPredicateFunctionsTest {
     }
 
     @Test
+    void nullSecondArg_execute_returnsNull() {
+      assertThat(new SQLFunctionGeoDWithin()
+          .execute(null, null, null, new Object[] { "POINT (0 0)", null, 2.0 }, null)).isNull();
+    }
+
+    @Test
     void nullThirdArg_execute_returnsNull() {
       assertThat(new SQLFunctionGeoDWithin()
           .execute(null, null, null, new Object[] { "POINT (0 0)", "POINT (1 1)", null }, null)).isNull();
@@ -372,6 +378,15 @@ class GeoPredicateFunctionsTest {
         final ResultSet r = db.query("sql",
             "select geo.crosses('LINESTRING (-1 5, 11 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
+      });
+    }
+
+    @Test
+    void sql_disjointLine_returnsFalse() throws Exception {
+      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+        final ResultSet r = db.query("sql",
+            "select geo.crosses('LINESTRING (20 20, 30 30)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
+        assertThat((Boolean) r.next().getProperty("v")).isFalse();
       });
     }
 
