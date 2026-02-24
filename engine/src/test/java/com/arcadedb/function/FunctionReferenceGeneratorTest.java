@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FunctionReferenceGeneratorTest {
 
   @Test
-  void generateFunctionReference() throws IOException {
+  void generateFunctionReference() throws Exception {
     final JSONObject root = new JSONObject();
     root.put("generated", LocalDate.now().toString());
 

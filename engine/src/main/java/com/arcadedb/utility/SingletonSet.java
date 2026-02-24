@@ -21,6 +21,7 @@ package com.arcadedb.utility;
 import java.util.AbstractSet;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Lightweight immutable set with exactly one element.
@@ -79,7 +80,7 @@ public class SingletonSet<E> extends AbstractSet<E> {
   public boolean equals(final Object o) {
     if (this == o)
       return true;
-    if (!(o instanceof java.util.Set<?> other))
+    if (!(o instanceof Set<?> other))
       return false;
     if (other.size() != 1)
       return false;

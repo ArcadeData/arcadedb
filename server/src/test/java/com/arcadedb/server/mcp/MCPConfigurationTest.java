@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,7 +44,7 @@ class MCPConfigurationTest {
   }
 
   @Test
-  void testDefaultValues() {
+  void defaultValues() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();
 
@@ -57,12 +58,12 @@ class MCPConfigurationTest {
   }
 
   @Test
-  void testSaveAndLoad() {
+  void saveAndLoad() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.setEnabled(true);
     config.setAllowInsert(true);
     config.setAllowUpdate(true);
-    config.setAllowedUsers(java.util.List.of("root", "admin"));
+    config.setAllowedUsers(List.of("root", "admin"));
     config.save();
 
     final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
@@ -76,7 +77,7 @@ class MCPConfigurationTest {
   }
 
   @Test
-  void testUserAllowed() {
+  void userAllowed() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();
 
@@ -85,16 +86,16 @@ class MCPConfigurationTest {
   }
 
   @Test
-  void testWildcardUser() {
+  void wildcardUser() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
-    config.setAllowedUsers(java.util.List.of("*"));
+    config.setAllowedUsers(List.of("*"));
 
     assertThat(config.isUserAllowed("root")).isTrue();
     assertThat(config.isUserAllowed("anyone")).isTrue();
   }
 
   @Test
-  void testToJSON() {
+  void toJSON() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();
 
@@ -107,7 +108,7 @@ class MCPConfigurationTest {
   }
 
   @Test
-  void testUpdateFrom() {
+  void updateFrom() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();
 
@@ -127,7 +128,7 @@ class MCPConfigurationTest {
   }
 
   @Test
-  void testUpdateFromNullAllowedUsersResultsInEmptyList() {
+  void updateFromNullAllowedUsersResultsInEmptyList() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();
 
@@ -142,7 +143,7 @@ class MCPConfigurationTest {
   }
 
   @Test
-  void testCreateDefaultFileOnFirstLoad() {
+  void createDefaultFileOnFirstLoad() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();
 

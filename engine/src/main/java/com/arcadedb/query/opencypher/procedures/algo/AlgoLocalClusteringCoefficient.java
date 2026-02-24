@@ -30,6 +30,7 @@ import java.util.BitSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -121,7 +122,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
       triangles[u] = count / 2;
     }
 
-    return java.util.stream.IntStream.range(0, n).mapToObj(i -> {
+    return IntStream.range(0, n).mapToObj(i -> {
       final long deg = adj[i].length;
       final double coeff = deg < 2 ? 0.0 : (2.0 * triangles[i]) / (double) (deg * (deg - 1));
       final ResultInternal r = new ResultInternal();

@@ -27,6 +27,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 import org.locationtech.spatial4j.io.GeohashUtils;
 import org.locationtech.spatial4j.shape.Shape;
@@ -506,13 +507,13 @@ class SQLGeoFunctionsTest {
       assertThat(result.hasNext()).isTrue();
       final Double x = result.next().getProperty("x");
       assertThat(x).isNotNull();
-      assertThat(x).isCloseTo(42.5, org.assertj.core.data.Offset.offset(1e-6));
+      assertThat(x).isCloseTo(42.5, Offset.offset(1e-6));
 
       result = db.query("sql", "select geo.y(geo.geomFromText(geo.point(42.5, -7.3))) as y");
       assertThat(result.hasNext()).isTrue();
       final Double y = result.next().getProperty("y");
       assertThat(y).isNotNull();
-      assertThat(y).isCloseTo(-7.3, org.assertj.core.data.Offset.offset(1e-6));
+      assertThat(y).isCloseTo(-7.3, Offset.offset(1e-6));
     });
   }
 

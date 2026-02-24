@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class MCPPermissionsTest {
 
   @Test
-  void testPermissionCheckDeniesInsert() {
+  void permissionCheckDeniesInsert() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowInsert(false);
 
@@ -44,7 +44,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testPermissionCheckAllowsInsert() {
+  void permissionCheckAllowsInsert() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowInsert(true);
 
@@ -53,7 +53,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testPermissionCheckDeniesUpdate() {
+  void permissionCheckDeniesUpdate() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowUpdate(false);
 
@@ -63,7 +63,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testPermissionCheckDeniesDelete() {
+  void permissionCheckDeniesDelete() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowDelete(false);
 
@@ -72,7 +72,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testPermissionCheckDeniesSchemaChange() {
+  void permissionCheckDeniesSchemaChange() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowSchemaChange(false);
 
@@ -81,7 +81,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testPermissionCheckDeniesRead() {
+  void permissionCheckDeniesRead() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowReads(false);
 
@@ -90,7 +90,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testUpsertRequiresBothCreateAndUpdate() {
+  void upsertRequiresBothCreateAndUpdate() {
     // UPSERT produces both CREATE and UPDATE operations
     final Set<OperationType> upsertOps = Set.of(OperationType.CREATE, OperationType.UPDATE);
 
@@ -116,7 +116,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testPermissionCheckDeniesAdmin() {
+  void permissionCheckDeniesAdmin() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowAdmin(false);
 
@@ -126,7 +126,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testPermissionCheckAllowsAdmin() {
+  void permissionCheckAllowsAdmin() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowAdmin(true);
 
@@ -135,7 +135,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testMultipleOperationTypesAllChecked() {
+  void multipleOperationTypesAllChecked() {
     // A command that does both DELETE and UPDATE (like MOVE VERTEX)
     final Set<OperationType> moveOps = Set.of(OperationType.UPDATE, OperationType.DELETE);
 
@@ -147,7 +147,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testMcpDisabledReturnsError() {
+  void mcpDisabledReturnsError() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setEnabled(false);
 
@@ -155,7 +155,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testMcpUserAllowedCheck() {
+  void mcpUserAllowedCheck() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowedUsers(List.of("root", "admin"));
 
@@ -165,7 +165,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testMcpWildcardUserAllowed() {
+  void mcpWildcardUserAllowed() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowedUsers(List.of("*"));
 
@@ -174,7 +174,7 @@ class MCPPermissionsTest {
   }
 
   @Test
-  void testMcpNullUserNotAllowed() {
+  void mcpNullUserNotAllowed() {
     final MCPConfiguration config = new MCPConfiguration("./target/test");
     config.setAllowedUsers(List.of("root"));
 

@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DatabaseStatsTest extends TestHelper {
 
   @Test
-  void testCRUDStatsCounters() {
+  void crudStatsCounters() {
     database.getSchema().createDocumentType("StatsDoc").createProperty("name", Type.STRING);
 
     final Map<String, Object> statsBefore = database.getStats();

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.mcp;
 
+import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
@@ -107,7 +108,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
 
     final JSONObject serverInfo = new JSONObject();
     serverInfo.put("name", "arcadedb");
-    serverInfo.put("version", com.arcadedb.Constants.getVersion());
+    serverInfo.put("version", Constants.getVersion());
     result.put("serverInfo", serverInfo);
 
     final JSONObject capabilities = new JSONObject();

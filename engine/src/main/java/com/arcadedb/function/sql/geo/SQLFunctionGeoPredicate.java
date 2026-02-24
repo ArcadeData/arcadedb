@@ -232,7 +232,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     if (oExpressions.length < 2 || oExpressions[1] == null)
       return null;
     // Evaluate the second expression in the context of a null record to get the shape value
-    final Object value = oExpressions[1].execute((com.arcadedb.database.Identifiable) null, context);
+    final Object value = oExpressions[1].execute((Identifiable) null, context);
     if (value == null)
       return null;
     return GeoUtils.parseGeometry(value);

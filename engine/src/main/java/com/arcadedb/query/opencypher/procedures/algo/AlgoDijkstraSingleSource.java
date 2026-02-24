@@ -28,10 +28,12 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -124,7 +126,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     heap.offer(new double[]{ 0.0, src });
 
     // Build rel-type filter set for fast lookup
-    final java.util.Set<String> relTypeSet = relTypes != null ? new java.util.HashSet<>(Arrays.asList(relTypes)) : null;
+    final Set<String> relTypeSet = relTypes != null ? new HashSet<>(Arrays.asList(relTypes)) : null;
 
     while (!heap.isEmpty()) {
       final double[] entry = heap.poll();
