@@ -222,24 +222,32 @@ public class TimeSeriesShard implements AutoCloseable {
    * Data is written in chunks of {@link #SEALED_BLOCK_SIZE} rows to keep
    * individual sealed blocks small for fast decompression during queries.
    * <p>
-   * Lock-free pattern (matching LSMTree compaction):
+   * <b>LSMTree-style lock-free pattern</b> — matches how {@code LSMTreeIndexCompactor} works:
    * <ol>
-   *   <li>Heavy work (read, sort, compress, write temp file) runs WITHOUT the write lock so
-   *       concurrent {@link #appendSamples} calls proceed unimpeded (read lock acquired
-   *       instantly when write lock is not held).</li>
-   *   <li>The write lock is held only for the brief atomic-swap window:
-   *       temp-file rename + mutable-bucket clear + commit.</li>
+   *   <li><b>Phase 0</b> (brief write lock + brief TX): snapshot the current data page count
+   *       N and persist the crash-recovery flag.  The write lock guarantees that no concurrent
+   *       {@link #appendSamples} can modify page-0 during this TX, so the commit always
+   *       succeeds.</li>
+   *   <li><b>Phase 1</b> (no lock, read-only TX then rollback): read full/immutable pages
+   *       1..N-1 via a short read-only transaction that is immediately rolled back.  These pages
+   *       are permanently full — {@link #appendSamples} always writes to the LAST page — so
+   *       their content is stable and no MVCC conflict is possible.</li>
+   *   <li><b>Phase 2</b> (lock-free, no TX): sort and compress the snapshot data.</li>
+   *   <li><b>Phase 3</b> (lock-free, no TX): write all sealed blocks to {@code .ts.sealed.tmp}.
+   *       Concurrent queries still read from the live sealed file; no double-counting.</li>
+   *   <li><b>Phase 4</b> (brief write lock + brief TX): atomically swap the temp file,
+   *       clear the compacted pages (1..N-1), and reset the crash-recovery flag.  The write
+   *       lock blocks concurrent {@link #appendSamples} so the TX commit cannot conflict.</li>
    * </ol>
    * <p>
-   * MVCC safety: because {@link #appendSamples} holds the read lock, and compact() keeps its
-   * database transaction open for the full duration (phases 1–4), the async insert threads
-   * commit page-0 many times during the heavy-work phase.  When compact() finally commits it
-   * always finds page-0 at a newer version → MVCC conflict → compact() rolls back and retries
-   * on the next maintenance cycle.  The insert threads are never affected.
+   * The result is that {@link #appendSamples} is never blocked during the heavy I/O phases
+   * (1–3), and is only briefly blocked (≤ a few milliseconds) during the two write-lock
+   * windows (phases 0 and 4).
    * <p>
-   * Crash-safe: the {@code compactionInProgress} flag is persisted inside the same transaction
-   * as {@code clearDataPages}, so crash recovery via {@link #TimeSeriesShard} constructor
-   * correctly handles an interrupted swap.
+   * Crash-safe: the {@code compactionInProgress} flag and watermark are committed in Phase 0.
+   * If the process crashes before Phase 4 clears the flag, the {@link #TimeSeriesShard}
+   * constructor truncates the sealed store back to the watermark and the mutable pages are
+   * left intact for re-compaction.
    */
   public void compact() throws IOException {
     // Serialize concurrent compact() calls: writeTempCompactionFile() and truncateToBlockCount()
@@ -254,47 +262,146 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   private void compactInternal() throws IOException {
-    // Capture the initial block count before writing any new blocks.
-    // Used for truncation if an exception occurs mid-compaction.
     final long initialBlockCount = sealedStore.getBlockCount();
 
-    // ── Phase 1 (lock-free): read mutable data inside a transaction ──────────────────────────
-    database.begin();
+    // ── Phase 0 (brief writeLock + brief TX): snapshot page count, set crash flag ─────────
+    // The write lock blocks concurrent appendSamples() so the TX modifying page-0 cannot
+    // get an MVCC conflict from a concurrent insert.
+    final int snapshotDataPageCount;
+    compactionLock.writeLock().lock();
     try {
-      if (mutableBucket.getSampleCount() == 0) {
-        database.rollback();
-        return;
+      database.begin();
+      try {
+        final int pageCount = mutableBucket.getDataPageCount();
+        if (pageCount == 0) {
+          database.rollback();
+          return;
+        }
+        snapshotDataPageCount = pageCount;
+        mutableBucket.setCompactionInProgress(true);
+        mutableBucket.setCompactionWatermark(initialBlockCount);
+        database.commit();
+      } catch (final Exception e) {
+        if (database.isTransactionActive())
+          database.rollback();
+        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
       }
-    } catch (final Exception e) {
-      if (database.isTransactionActive())
-        database.rollback();
-      throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed", e);
+    } finally {
+      compactionLock.writeLock().unlock();
     }
 
-    final Object[] allData;
-    try {
-      // Set crash-recovery flag before doing any sealed-store writes so that a crash
-      // between the file swap and the mutable-clear commit can be detected on restart.
-      mutableBucket.setCompactionInProgress(true);
-      mutableBucket.setCompactionWatermark(initialBlockCount);
+    // Pages 1..lastFullPage are FULL (immutable): appendSamples() never writes to full pages
+    // — it always appends to the LAST page.  These are safe to read without the write lock.
+    // Page snapshotDataPageCount is the current partial last page; it will be read in Phase 4
+    // under the write lock together with any new pages created between Phase 0 and Phase 4.
+    final int lastFullPage = snapshotDataPageCount - 1;
 
-      allData = mutableBucket.readAllForCompaction();
-      if (allData == null) {
+    // Shared output lists for compressed blocks built in Phases 1+2.
+    final List<byte[][]> allCompressedList = new ArrayList<>();
+    final List<long[]>   allMetaList       = new ArrayList<>();
+    final List<double[]> allMinsList       = new ArrayList<>();
+    final List<double[]> allMaxsList       = new ArrayList<>();
+    final List<double[]> allSumsList       = new ArrayList<>();
+    final List<String[][]> allTagDVList    = new ArrayList<>();
+
+    // ── Phase 1 (no lock, read-only TX): read full/immutable pages ───────────────────────────
+    // Full pages are never written to by concurrent appendSamples(); the read-only snapshot TX
+    // is always conflict-free.  Roll it back immediately — nothing is modified.
+    if (lastFullPage > 0) {
+      database.begin();
+      try {
+        final Object[] snapshotData = mutableBucket.readFullPagesForCompaction(lastFullPage);
+        if (snapshotData != null)
+          // ── Phase 2 (lock-free, no TX): sort + compress immutable page data ─────────────
+          buildCompressedBlocks(snapshotData, allCompressedList, allMetaList, allMinsList, allMaxsList, allSumsList,
+              allTagDVList);
+      } finally {
+        database.rollback(); // read-only: rollback is always safe
+      }
+    }
+
+    // ── Phase 3 (lock-free, no TX): write existing sealed + Phase 2 blocks to temp file ─────
+    // Concurrent queries still read from the CURRENT sealed file — no double-counting.
+    // The temp file is created even when allCompressedList is empty so that Phase 4 can
+    // append the partial page's data and then swap atomically in one shot.
+    final List<TimeSeriesSealedStore.BlockEntry> newBlockDirectory;
+    try {
+      newBlockDirectory = sealedStore.writeTempCompactionFile(
+          allCompressedList, allMetaList, allMinsList, allMaxsList, allSumsList, allTagDVList);
+    } catch (final Exception e) {
+      sealedStore.deleteTempFileIfExists();
+      clearCompactionFlagBestEffort();
+      throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
+    }
+
+    // ── Phase 4 (brief writeLock + brief TX): handle partial pages, swap, clear all ─────────
+    // Under the write lock the partial last page (and any new pages created between Phase 0
+    // and now) are stable.  We read, compress, and append their blocks to the temp file, then
+    // atomically swap and clear the entire mutable bucket in a single short transaction.
+    compactionLock.writeLock().lock();
+    try {
+      database.begin();
+      try {
+        // Read pages that were NOT in the Phase 1 snapshot: the partial last page (page N from
+        // Phase 0) and any new pages (N+1..M) that arrived between Phase 0 and Phase 4.
+        final int currentDataPageCount = mutableBucket.getDataPageCount();
+        if (currentDataPageCount > lastFullPage) {
+          final Object[] remainingData =
+              mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, currentDataPageCount);
+          if (remainingData != null) {
+            final List<byte[][]> remCompressed = new ArrayList<>();
+            final List<long[]>   remMeta       = new ArrayList<>();
+            final List<double[]> remMins       = new ArrayList<>();
+            final List<double[]> remMaxs       = new ArrayList<>();
+            final List<double[]> remSums       = new ArrayList<>();
+            final List<String[][]> remTagDV    = new ArrayList<>();
+            buildCompressedBlocks(remainingData, remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV);
+            // Append these blocks to the already-written temp file (fast: small data).
+            sealedStore.appendBlocksToTempFile(
+                remCompressed, remMeta, remMins, remMaxs, remSums, remTagDV, newBlockDirectory);
+          }
+        }
+
+        // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
+        sealedStore.commitTempCompactionFile(newBlockDirectory);
+
+        // Clear the entire mutable bucket and persist the crash-recovery flag reset.
+        // No MVCC conflict: writeLock blocks all concurrent appendSamples().
+        mutableBucket.clearDataPages();
         mutableBucket.setCompactionInProgress(false);
         database.commit();
-        return;
+      } catch (final Exception e) {
+        if (database.isTransactionActive())
+          database.rollback();
+        // Restore sealed store to initial state so the next run re-compacts cleanly.
+        // (The crash-recovery flag remains set, so a restart also handles this correctly.)
+        try {
+          sealedStore.truncateToBlockCount(initialBlockCount);
+        } catch (final IOException te) {
+          throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
+        }
+        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 4", e);
       }
-    } catch (final Exception e) {
-      if (database.isTransactionActive())
-        database.rollback();
-      throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed", e);
+    } finally {
+      compactionLock.writeLock().unlock();
     }
-    // Transaction stays open through the sort/compress/file-write phases so that
-    // any concurrent appendSamples() commit is detected via MVCC at our commit time.
+  }
 
-    // ── Phase 2 (lock-free): sort + compress ─────────────────────────────────────────────────
-    final long[] timestamps = (long[]) allData[0];
+  /**
+   * Sorts the given snapshot data by timestamp and builds compressed sealed blocks,
+   * appending the results to the supplied output lists.
+   * Called from Phase 2 (lock-free) and Phase 4 (under writeLock).
+   */
+  private void buildCompressedBlocks(
+      final Object[] data,
+      final List<byte[][]> compressedOut, final List<long[]> metaOut,
+      final List<double[]> minsOut, final List<double[]> maxsOut, final List<double[]> sumsOut,
+      final List<String[][]> tagDVOut) {
+
+    final long[] timestamps = (long[]) data[0];
     final int totalSamples = timestamps.length;
+    if (totalSamples == 0)
+      return;
 
     final int[] sortedIndices = sortIndices(timestamps);
     final long[] sortedTs = applyOrder(timestamps, sortedIndices);
@@ -306,20 +413,10 @@ public class TimeSeriesShard implements AutoCloseable {
       if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         sortedColArrays[c] = null;
       else {
-        sortedColArrays[c] = applyOrderObjects((Object[]) allData[nonTsIdx + 1], sortedIndices);
+        sortedColArrays[c] = applyOrderObjects((Object[]) data[nonTsIdx + 1], sortedIndices);
         nonTsIdx++;
       }
     }
-
-    // Build lists of compressed blocks (written to the temp file in Phase 3).
-    // When bucket-aligned compaction is configured, split at bucket boundaries
-    // so each block fits entirely within one time bucket (enabling fast-path aggregation).
-    final List<byte[][]> newCompressedList = new ArrayList<>();
-    final List<long[]> newMetaList = new ArrayList<>();    // [minTs, maxTs, sampleCount]
-    final List<double[]> newMinsList = new ArrayList<>();
-    final List<double[]> newMaxsList = new ArrayList<>();
-    final List<double[]> newSumsList = new ArrayList<>();
-    final List<String[][]> newTagDVList = new ArrayList<>();
 
     int chunkStart = 0;
     while (chunkStart < totalSamples) {
@@ -386,66 +483,26 @@ public class TimeSeriesShard implements AutoCloseable {
         }
       }
 
-      newCompressedList.add(compressedCols);
-      newMetaList.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
-      newMinsList.add(mins);
-      newMaxsList.add(maxs);
-      newSumsList.add(sums);
-      newTagDVList.add(chunkTagDistinctValues);
+      compressedOut.add(compressedCols);
+      metaOut.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
+      minsOut.add(mins);
+      maxsOut.add(maxs);
+      sumsOut.add(sums);
+      tagDVOut.add(chunkTagDistinctValues);
       chunkStart = chunkEnd;
     }
+  }
 
-    // ── Phase 3 (lock-free): write existing + new blocks to a temp file ──────────────────────
-    // Concurrent queries still read from the CURRENT sealed file — no double-counting possible.
-    final List<TimeSeriesSealedStore.BlockEntry> newBlockDirectory;
-    try {
-      newBlockDirectory = sealedStore.writeTempCompactionFile(
-          newCompressedList, newMetaList, newMinsList, newMaxsList, newSumsList, newTagDVList);
-    } catch (final Exception e) {
-      if (database.isTransactionActive())
-        database.rollback();
-      sealedStore.deleteTempFileIfExists();
-      throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
-    }
-
-    // ── Phase 4 (brief write lock): atomic file swap + clear mutable ─────────────────────────
-    // The write lock prevents queries from seeing both the new sealed blocks AND the mutable
-    // data simultaneously during the brief swap + clear window.
+  /** Best-effort: clear the compaction-in-progress flag after a non-crash error. */
+  private void clearCompactionFlagBestEffort() {
     compactionLock.writeLock().lock();
     try {
-      try {
-        // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
-        sealedStore.commitTempCompactionFile(newBlockDirectory);
-      } catch (final Exception e) {
-        if (database.isTransactionActive())
-          database.rollback();
-        // Temp file may have been partially swapped — restore sealed store to initial state.
-        try {
-          sealedStore.truncateToBlockCount(initialBlockCount);
-        } catch (final IOException te) {
-          throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
-        }
-        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed during file swap", e);
-      }
-
-      try {
-        // Clear mutable bucket and persist the crash-recovery flag (both in one commit so
-        // MVCC detects any concurrent appendSamples() that committed between Phase 1 and now).
-        mutableBucket.clearDataPages();
-        mutableBucket.setCompactionInProgress(false);
-        database.commit();
-      } catch (final Exception e) {
-        if (database.isTransactionActive())
-          database.rollback();
-        // The sealed file was already swapped. Truncate it back so the next run
-        // re-compacts from a clean state (crash-recovery flag is set, so restart also works).
-        try {
-          sealedStore.truncateToBlockCount(initialBlockCount);
-        } catch (final IOException te) {
-          throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
-        }
-        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed clearing mutable", e);
-      }
+      database.begin();
+      mutableBucket.setCompactionInProgress(false);
+      database.commit();
+    } catch (final Exception ignored) {
+      if (database.isTransactionActive())
+        try { database.rollback(); } catch (final Exception re) { /* ignored */ }
     } finally {
       compactionLock.writeLock().unlock();
     }

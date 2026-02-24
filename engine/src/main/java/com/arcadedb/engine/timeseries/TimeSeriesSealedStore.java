@@ -1232,6 +1232,68 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Appends additional blocks to the existing {@code .ts.sealed.tmp} file that was
+   * already written by {@link #writeTempCompactionFile}.
+   * <p>
+   * Used by Phase 4 of lock-free compaction (called under the caller's write lock) to
+   * include the partial last page's data that was read after the lock was acquired.
+   * Since the partial page is small (≤ one page's worth of samples), this is fast.
+   *
+   * @param newCompressed   compressed column bytes for each additional block
+   * @param newMeta         {@code [minTs, maxTs, sampleCount]} for each additional block
+   * @param newMins         per-column min stats for each block
+   * @param newMaxs         per-column max stats for each block
+   * @param newSums         per-column sum stats for each block
+   * @param newTagDV        tag metadata for each block (may be null)
+   * @param directory       block directory from {@link #writeTempCompactionFile}; new
+   *                        entries are appended in-place
+   */
+  void appendBlocksToTempFile(
+      final List<byte[][]> newCompressed, final List<long[]> newMeta,
+      final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums,
+      final List<String[][]> newTagDV,
+      final List<BlockEntry> directory) throws IOException {
+    if (newCompressed.isEmpty())
+      return;
+
+    final String tempPath = basePath + ".ts.sealed.tmp";
+    final int colCount = columns.size();
+
+    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+      // Read the current header to get existing block count and global min/max timestamps
+      final ByteBuffer hdrBuf = ByteBuffer.allocate(HEADER_SIZE);
+      tempFile.seek(0);
+      tempFile.getChannel().read(hdrBuf);
+      hdrBuf.flip();
+      hdrBuf.position(7); // skip magic(4) + version(1) + colCount(2)
+      final int existingBlockCount = hdrBuf.getInt();
+      long curGlobalMin = hdrBuf.getLong();
+      long curGlobalMax = hdrBuf.getLong();
+
+      // Append each new block; writeNewBlockToFile always seeks to tempFile.length()
+      for (int b = 0; b < newCompressed.size(); b++) {
+        final long[] meta = newMeta.get(b);
+        final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
+            newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
+            newTagDV != null ? newTagDV.get(b) : null);
+        directory.add(entry);
+        if (meta[0] < curGlobalMin)
+          curGlobalMin = meta[0];
+        if (meta[1] > curGlobalMax)
+          curGlobalMax = meta[1];
+      }
+
+      // Update the header: block count (offset 7) and global min/max (offsets 11 and 19)
+      final ByteBuffer updateBuf = ByteBuffer.allocate(4 + 8 + 8);
+      updateBuf.putInt(existingBlockCount + newCompressed.size());
+      updateBuf.putLong(curGlobalMin);
+      updateBuf.putLong(curGlobalMax);
+      updateBuf.flip();
+      tempFile.getChannel().write(updateBuf, 7);
+    }
+  }
+
+  /**
    * Deletes the temp compaction file ({@code .ts.sealed.tmp}) if it exists.
    * Called from error-recovery paths to leave a clean state.
    */

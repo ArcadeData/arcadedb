@@ -378,37 +378,90 @@ public class TimeSeriesBucket extends PaginatedComponent {
    */
   public Object[] readAllForCompaction() throws IOException {
     final List<Object[]> allRows = scanRange(Long.MIN_VALUE, Long.MAX_VALUE, null);
-    if (allRows.isEmpty())
-      return null;
+    return allRows.isEmpty() ? null : rowsToCompactionArrays(allRows);
+  }
 
-    final int size = allRows.size();
-    final int totalCols = columns.size();
-    final long[] timestamps = new long[size];
-    final Object[][] colArrays = new Object[totalCols - 1][];
+  /**
+   * Reads samples from data pages 1..toPage using the current transaction.
+   * <p>
+   * Pages 1..toPage must be FULL (immutable): once a data page is full it is never
+   * modified by {@link #appendSamples}, which always writes to the LAST page. This
+   * makes it safe to read them inside a short read-only transaction that is rolled
+   * back immediately after, with no MVCC conflict with concurrent writers.
+   *
+   * @param toPage last data page to read (inclusive); must be ≥ 1
+   *
+   * @return parallel arrays [long[] timestamps, Object[] col1, ...], or null if empty
+   */
+  public Object[] readFullPagesForCompaction(final int toPage) throws IOException {
+    return readPagesRangeForCompaction(1, toPage);
+  }
 
-    // Initialize column arrays based on type
-    int colIdx = 0;
-    for (int c = 0; c < totalCols; c++) {
-      if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+  /**
+   * Reads samples from data pages fromPage..toPage using the current transaction.
+   * Used by Phase 4 of lock-free compaction (under write lock) to read the partial
+   * last page(s) that arrived after the Phase 0 snapshot.
+   *
+   * @param fromPage first data page to read (inclusive, ≥ 1)
+   * @param toPage   last data page to read (inclusive, ≥ fromPage)
+   *
+   * @return parallel arrays [long[] timestamps, Object[] col1, ...], or null if empty
+   */
+  public Object[] readPagesRangeForCompaction(final int fromPage, final int toPage) throws IOException {
+    final List<Object[]> allRows = new ArrayList<>();
+    for (int pageNum = fromPage; pageNum <= toPage; pageNum++) {
+      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
+      final short sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET);
+      if (sampleCount <= 0)
         continue;
-      colArrays[colIdx] = new Object[size];
-      colIdx++;
+      for (int row = 0; row < sampleCount; row++)
+        allRows.add(readRow(page, DATA_ROWS_OFFSET + row * rowSize, null));
+    }
+    return allRows.isEmpty() ? null : rowsToCompactionArrays(allRows);
+  }
+
+  /**
+   * Clears data pages 1..upToPage and recomputes header stats from the remaining pages.
+   * Pages are physically kept for reuse but have their sample counts reset to 0.
+   * Called by lock-free compaction to clear only the pages that were compacted,
+   * leaving newer pages (upToPage+1..dataPageCount) intact.
+   *
+   * @param upToPage last page number to clear (inclusive); must be ≥ 1
+   */
+  public void clearDataPagesUpTo(final int upToPage) throws IOException {
+    final TransactionContext tx = database.getTransaction();
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+
+    // Clear pages 1..upToPage
+    for (int p = 1; p <= upToPage; p++) {
+      final MutablePage dataPage = tx.getPageToModify(new PageId(database, fileId, p), pageSize, false);
+      dataPage.writeShort(DATA_SAMPLE_COUNT_OFFSET, (short) 0);
+      dataPage.writeLong(DATA_MIN_TS_OFFSET, Long.MAX_VALUE);
+      dataPage.writeLong(DATA_MAX_TS_OFFSET, Long.MIN_VALUE);
     }
 
-    for (int i = 0; i < size; i++) {
-      final Object[] row = allRows.get(i);
-      timestamps[i] = (long) row[0];
-      for (int c = 1; c < row.length; c++)
-        colArrays[c - 1][i] = row[c];
+    // Recompute header stats from the remaining pages (upToPage+1..totalDataPages)
+    final int totalDataPages = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
+    long sampleCount = 0;
+    long minTs = Long.MAX_VALUE;
+    long maxTs = Long.MIN_VALUE;
+    for (int p = upToPage + 1; p <= totalDataPages; p++) {
+      final BasePage page = tx.getPage(new PageId(database, fileId, p), pageSize);
+      final int count = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      if (count > 0) {
+        sampleCount += count;
+        final long pMin = page.readLong(DATA_MIN_TS_OFFSET);
+        final long pMax = page.readLong(DATA_MAX_TS_OFFSET);
+        if (pMin < minTs)
+          minTs = pMin;
+        if (pMax > maxTs)
+          maxTs = pMax;
+      }
     }
-
-    final Object[] result = new Object[totalCols];
-    result[0] = timestamps;
-    int idx = 1;
-    for (final Object[] colArray : colArrays)
-      result[idx++] = colArray;
-
-    return result;
+    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, sampleCount);
+    headerPage.writeLong(HEADER_MIN_TS_OFFSET, minTs);
+    headerPage.writeLong(HEADER_MAX_TS_OFFSET, maxTs);
+    // Keep HEADER_DATA_PAGE_COUNT unchanged so cleared pages can be reused by new inserts
   }
 
   /**
@@ -626,5 +679,39 @@ public class TimeSeriesBucket extends PaginatedComponent {
       if (v == value)
         return true;
     return false;
+  }
+
+  /**
+   * Converts a list of sample rows into the parallel-array format expected by compaction.
+   * First element of the returned array is long[] timestamps; subsequent elements are
+   * Object[] column value arrays, one per non-timestamp column.
+   */
+  private Object[] rowsToCompactionArrays(final List<Object[]> allRows) {
+    final int size = allRows.size();
+    final int totalCols = columns.size();
+    final long[] timestamps = new long[size];
+    final Object[][] colArrays = new Object[totalCols - 1][];
+
+    int colIdx = 0;
+    for (int c = 0; c < totalCols; c++) {
+      if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      colArrays[colIdx] = new Object[size];
+      colIdx++;
+    }
+
+    for (int i = 0; i < size; i++) {
+      final Object[] row = allRows.get(i);
+      timestamps[i] = (long) row[0];
+      for (int c = 1; c < row.length; c++)
+        colArrays[c - 1][i] = row[c];
+    }
+
+    final Object[] result = new Object[totalCols];
+    result[0] = timestamps;
+    int idx = 1;
+    for (final Object[] colArray : colArrays)
+      result[idx++] = colArray;
+    return result;
   }
 }
