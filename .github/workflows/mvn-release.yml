@@ -81,22 +81,3 @@ jobs:
       - name: Set next development version
         if: success()
         run: mvn versions:set "-DnewVersion=${{ github.event.inputs.nextversion }}" --no-transfer-progress
-
-      - name: Update studio package.json to next development version
-        if: success()
-        run: |
-          cd studio
-          jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package.json > package.json.tmp
-          jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package-lock.json > package-lock.json.tmp
-          mv package.json.tmp package.json
-          mv package-lock.json.tmp package-lock.json
-
-      - name: Commit next development version
-        if: success()
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-          git commit -am "Set next development version to ${{ github.event.inputs.nextversion }}"
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
