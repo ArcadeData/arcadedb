@@ -191,7 +191,10 @@ public class PageManagerFlushThread extends Thread {
 
   public CachedPage getCachedPageFromMutablePageInQueue(final PageId pageId) {
     final Object[] content = queue.toArray();
-    for (int i = 0; i < content.length; i++) {
+    // Scan tail→head (newest→oldest) so we always return the most recent version of the page.
+    // ArrayBlockingQueue.toArray() returns elements head→tail (oldest→newest), so iterating
+    // in reverse gives the latest committed version and avoids stale-cache MVCC conflicts.
+    for (int i = content.length - 1; i >= 0; i--) {
       final PagesToFlush pagesToFlush = (PagesToFlush) content[i];
       if (pagesToFlush != null) {
         synchronized (pagesToFlush.pages) {
