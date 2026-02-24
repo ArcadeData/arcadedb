@@ -78,6 +78,12 @@
             <artifactId>ratis-metrics-default</artifactId>
             <version>${ratis.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.apache.ratis</groupId>
+            <artifactId>ratis-test</artifactId>
+            <version>${ratis.version}</version>
+            <scope>test</scope>
+        </dependency>
 
         <!-- Test dependencies -->
         <dependency>
