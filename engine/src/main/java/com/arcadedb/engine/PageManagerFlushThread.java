@@ -142,17 +142,19 @@ public class PageManagerFlushThread extends Thread {
     final PagesToFlush pagesToFlush = queue.poll(timeout, TimeUnit.MILLISECONDS);
 
     if (pagesToFlush != null) {
-      if (pagesToFlush == SHUTDOWN_THREAD)
-        // SPECIAL CONTENT FOR SHUTDOWN
-        running = false;
-      else if (!pagesToFlush.pages.isEmpty()) {
-        if (database == null || pagesToFlush.database.equals(database)) {
-          if (!pagesToFlush.database.isOpen())
-            return;
+      // Publish the entry immediately after polling so that getCachedPageFromMutablePageInQueue()
+      // can find pages that are no longer in the queue but not yet flushed to disk.  This
+      // minimizes the window where a page is invisible to getMostRecentVersionOfPage().
+      nextPagesToFlush.set(pagesToFlush);
+      try {
+        if (pagesToFlush == SHUTDOWN_THREAD)
+          // SPECIAL CONTENT FOR SHUTDOWN
+          running = false;
+        else if (!pagesToFlush.pages.isEmpty()) {
+          if (database == null || pagesToFlush.database.equals(database)) {
+            if (!pagesToFlush.database.isOpen())
+              return;
 
-          // SET THE PAGES TO FLUSH TO BE RETRIEVED BY A CONCURRENT DB CLOSE = FORCE FLUSH OF PAGES
-          nextPagesToFlush.set(pagesToFlush);
-          try {
             synchronized (pagesToFlush.pages) {
               for (final MutablePage page : pagesToFlush.pages) {
                 try {
@@ -163,10 +165,10 @@ public class PageManagerFlushThread extends Thread {
                 }
               }
             }
-          } finally {
-            nextPagesToFlush.set(null);
           }
         }
+      } finally {
+        nextPagesToFlush.set(null);
       }
     }
   }
@@ -206,6 +208,22 @@ public class PageManagerFlushThread extends Thread {
         }
       }
     }
+
+    // Also check the entry currently being flushed by the flush thread.  After queue.poll()
+    // removes an entry from the queue but before flushPage() writes it to disk, the page is
+    // only reachable via nextPagesToFlush.  Without this check, getMostRecentVersionOfPage()
+    // would fall back to the on-disk version (stale) and cause spurious MVCC conflicts.
+    final PagesToFlush currentlyFlushing = nextPagesToFlush.get();
+    if (currentlyFlushing != null) {
+      synchronized (currentlyFlushing.pages) {
+        for (int j = 0; j < currentlyFlushing.pages.size(); j++) {
+          final MutablePage page = currentlyFlushing.pages.get(j);
+          if (page.getPageId().equals(pageId))
+            return new CachedPage(page, true);
+        }
+      }
+    }
+
     return null;
   }
 
