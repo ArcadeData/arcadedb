@@ -62,6 +62,20 @@
             <version>${netty.version}</version>
             <scope>compile</scope>
         </dependency>
+        <!-- Force consistent Netty version to avoid classpath conflicts with the gremlin module's
+             shaded JAR (see https://github.com/ArcadeData/arcadedb/issues/3467).
+             mongo-java-server transitively pulls in older Netty artifacts (e.g. 4.2.2.Final)
+             which lack methods required by newer Netty code (DefaultHeaders.containsAny). -->
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-codec</artifactId>
+            <version>${netty.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-handler</artifactId>
+            <version>${netty.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>com.arcadedb</groupId>
