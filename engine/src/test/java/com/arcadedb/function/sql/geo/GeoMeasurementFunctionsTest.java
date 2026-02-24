@@ -79,7 +79,7 @@ class GeoMeasurementFunctionsTest {
     void invalidGeometry_execute_throwsException() {
       assertThatThrownBy(() -> new SQLFunctionGeoBuffer()
           .execute(null, null, null, new Object[] { "NOT VALID WKT", 1.0 }, null))
-          .isInstanceOf(Exception.class);
+          .isInstanceOf(IllegalArgumentException.class);
     }
   }
 
@@ -102,11 +102,10 @@ class GeoMeasurementFunctionsTest {
     @Test
     void sqlHappyPath_km_lessThanMeters() throws Exception {
       TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
-        ResultSet r = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)') as dist");
-        final Double distM = r.next().getProperty("dist");
-
-        r = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)', 'km') as dist");
-        final Double distKm = r.next().getProperty("dist");
+        final ResultSet rMeters = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)') as dist");
+        final Double distM = rMeters.next().getProperty("dist");
+        final ResultSet rKm = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)', 'km') as dist");
+        final Double distKm = rKm.next().getProperty("dist");
 
         assertThat(distKm).isGreaterThan(0.0);
         assertThat(distKm).isLessThan(distM);
@@ -267,7 +266,7 @@ class GeoMeasurementFunctionsTest {
     void invalidWkt_execute_throwsException() {
       assertThatThrownBy(() -> new SQLFunctionGeoEnvelope()
           .execute(null, null, null, new Object[] { "NOT VALID WKT" }, null))
-          .isInstanceOf(Exception.class);
+          .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
