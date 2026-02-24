@@ -66,8 +66,13 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
       if (!fetched) {
         try {
           final TimeSeriesEngine engine = tsType.getEngine();
+          if (engine == null)
+            throw new CommandExecutionException(
+                "TimeSeries engine for type '" + tsType.getName() + "' is not initialized");
           resultIterator = engine.iterateQuery(fromTs, toTs, null, tagFilter);
           fetched = true;
+        } catch (final CommandExecutionException e) {
+          throw e;
         } catch (final IOException e) {
           throw new CommandExecutionException("Error querying TimeSeries engine", e);
         }

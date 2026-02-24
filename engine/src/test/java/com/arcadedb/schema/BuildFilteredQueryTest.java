@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for {@link ContinuousAggregateRefresher#buildFilteredQuery}.
@@ -100,6 +101,51 @@ class BuildFilteredQueryTest {
         "SELECT sensor_id FROM SensorReading ORDER BY sensor_id");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 0);
     assertThat(result).isEqualTo("SELECT sensor_id FROM SensorReading ORDER BY sensor_id");
+  }
+
+  @Test
+  void testBlockCommentContainingWhereIsIgnored() {
+    // Regression: block comment containing WHERE must not be matched as the top-level WHERE
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id, avg(temp) /* WHERE not here */ FROM SensorReading GROUP BY sensor_id");
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    assertThat(result).isEqualTo(
+        "SELECT sensor_id, avg(temp) /* WHERE not here */ FROM SensorReading WHERE `ts` >= 1000 GROUP BY sensor_id");
+  }
+
+  @Test
+  void testLineCommentContainingWhereIsIgnored() {
+    // Regression: line comment containing WHERE must not be matched as the top-level WHERE
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id, avg(temp) FROM SensorReading -- no WHERE needed\nGROUP BY sensor_id");
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    assertThat(result).isEqualTo(
+        "SELECT sensor_id, avg(temp) FROM SensorReading -- no WHERE needed\nWHERE `ts` >= 1000 GROUP BY sensor_id");
+  }
+
+  @Test
+  void testLineCommentWithWhereKeywordIsNotMatched() {
+    // A -- comment containing WHERE should not be treated as a top-level WHERE clause
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT avg(temp) FROM SensorReading -- WHERE clause not needed\nGROUP BY sensor_id");
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    // Should insert before GROUP BY, not after comment's WHERE
+    assertThat(result).isEqualTo(
+        "SELECT avg(temp) FROM SensorReading -- WHERE clause not needed\nWHERE `ts` >= 1000 GROUP BY sensor_id");
+  }
+
+  @Test
+  void testDotInTimestampColumnIsRejected() {
+    // Regression: SAFE_COLUMN_NAME must not allow dots in column names (could allow injection)
+    final ContinuousAggregateImpl ca = new ContinuousAggregateImpl(null, "test_ca",
+        "SELECT avg(temp) FROM SensorReading GROUP BY sensor_id",
+        "test_backing",
+        "SensorReading", 3_600_000L, "hour",
+        "outer.inner"); // dot in timestamp column name
+
+    assertThatThrownBy(() -> ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unsafe timestamp column name");
   }
 
   private static ContinuousAggregateImpl buildCA(final String query) {

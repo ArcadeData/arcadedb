@@ -79,6 +79,9 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
       if (!fetched) {
         try {
           final TimeSeriesEngine engine = tsType.getEngine();
+          if (engine == null)
+            throw new CommandExecutionException(
+                "TimeSeries engine for type '" + tsType.getName() + "' is not initialized");
           if (context.isProfiling())
             aggregationMetrics = new AggregationMetrics();
           final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter, aggregationMetrics);
@@ -106,6 +109,8 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
             }
           };
           fetched = true;
+        } catch (final CommandExecutionException e) {
+          throw e;
         } catch (final IOException e) {
           throw new CommandExecutionException("Error in TimeSeries push-down aggregation", e);
         }

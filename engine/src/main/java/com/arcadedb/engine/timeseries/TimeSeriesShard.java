@@ -104,7 +104,15 @@ public class TimeSeriesShard implements AutoCloseable {
       }
     }
 
-    this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
+    // If sealedStore construction fails, close mutableBucket to avoid a resource leak
+    final TimeSeriesSealedStore tempSealedStore;
+    try {
+      tempSealedStore = new TimeSeriesSealedStore(shardPath, columns);
+    } catch (final IOException e) {
+      try { this.mutableBucket.close(); } catch (final Exception ignored) {}
+      throw e;
+    }
+    this.sealedStore = tempSealedStore;
 
     // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks
     database.begin();
@@ -120,6 +128,9 @@ public class TimeSeriesShard implements AutoCloseable {
     } catch (final Exception e) {
       if (database.isTransactionActive())
         database.rollback();
+      // Close both stores to avoid resource leaks before propagating the error
+      try { this.sealedStore.close(); } catch (final Exception ignored) {}
+      try { this.mutableBucket.close(); } catch (final Exception ignored) {}
       throw e instanceof IOException ? (IOException) e :
           new IOException("Crash recovery failed for shard " + shardIndex, e);
     }

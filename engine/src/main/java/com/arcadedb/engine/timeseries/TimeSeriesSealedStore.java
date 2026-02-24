@@ -750,13 +750,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           copyBlockToFile(tempFile, oldEntry, colCount, newDirectory);
       }
 
-      // Atomic file swap — if move fails, the original file and blockDirectory remain intact
+      // Atomic file swap: close handles first (required on Windows), then atomically replace.
+      // If the move fails, reopen the original file so the store remains usable.
       indexChannel.close();
       indexFile.close();
 
       final File oldFile = new File(basePath + ".ts.sealed");
       final File tmpFile = new File(tempPath);
-      Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      try {
+        Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final IOException moveEx) {
+        // Move failed — original file is still in place; reopen handles so the store stays usable
+        try {
+          indexFile = new RandomAccessFile(oldFile, "rw");
+          indexChannel = indexFile.getChannel();
+        } catch (final IOException reopenEx) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
+        }
+        throw moveEx;
+      }
 
       // Only update in-memory state after the successful file swap
       blockDirectory.clear();
@@ -1022,13 +1035,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
     }
 
-    // Atomic file swap — if move fails, the original file and blockDirectory remain intact
+    // Atomic file swap: close handles first (required on Windows), then atomically replace.
+    // If the move fails, reopen the original file so the store remains usable.
     indexChannel.close();
     indexFile.close();
 
     final File oldFile = new File(basePath + ".ts.sealed");
     final File tmpFile = new File(tempPath);
-    Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    try {
+      Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    } catch (final IOException moveEx) {
+      // Move failed — original file is still in place; reopen handles so the store stays usable
+      try {
+        indexFile = new RandomAccessFile(oldFile, "rw");
+        indexChannel = indexFile.getChannel();
+      } catch (final IOException reopenEx) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
+      }
+      throw moveEx;
+    }
 
     // Only update in-memory state after the successful file swap
     blockDirectory.clear();
@@ -1224,12 +1250,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   void commitTempCompactionFile(final List<BlockEntry> newBlockDirectory) throws IOException {
     directoryLock.writeLock().lock();
     try {
+      // Atomic file swap: close handles first (required on Windows), then atomically replace.
+      // If the move fails, reopen the original file so the store remains usable.
       indexChannel.close();
       indexFile.close();
 
       final File sealedFile = new File(basePath + ".ts.sealed");
       final File tmpFile = new File(basePath + ".ts.sealed.tmp");
-      Files.move(tmpFile.toPath(), sealedFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      try {
+        Files.move(tmpFile.toPath(), sealedFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final IOException moveEx) {
+        // Move failed — original file is still in place; reopen handles so the store stays usable
+        try {
+          indexFile = new RandomAccessFile(sealedFile, "rw");
+          indexChannel = indexFile.getChannel();
+        } catch (final IOException reopenEx) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to reopen sealed store after failed atomic move: %s", reopenEx, sealedFile.getAbsolutePath());
+        }
+        throw moveEx;
+      }
 
       indexFile = new RandomAccessFile(sealedFile, "rw");
       indexChannel = indexFile.getChannel();
@@ -1384,13 +1424,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           copyBlockToFile(tempFile, entry, colCount, newDirectory);
       }
 
-      // Atomic file swap — if move fails, the original file and blockDirectory remain intact
+      // Atomic file swap: close handles first (required on Windows), then atomically replace.
+      // If the move fails, reopen the original file so the store remains usable.
       indexChannel.close();
       indexFile.close();
 
       final File oldFile = new File(basePath + ".ts.sealed");
       final File tmpFile = new File(tempPath);
-      Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      try {
+        Files.move(tmpFile.toPath(), oldFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final IOException moveEx) {
+        // Move failed — original file is still in place; reopen handles so the store stays usable
+        try {
+          indexFile = new RandomAccessFile(oldFile, "rw");
+          indexChannel = indexFile.getChannel();
+        } catch (final IOException reopenEx) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
+        }
+        throw moveEx;
+      }
 
       // Only update in-memory state after the successful file swap
       blockDirectory.clear();
@@ -1444,11 +1497,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   public long getBlockMinTimestamp(final int blockIndex) {
-    return blockDirectory.get(blockIndex).minTimestamp;
+    directoryLock.readLock().lock();
+    try {
+      return blockDirectory.get(blockIndex).minTimestamp;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
   }
 
   public long getBlockMaxTimestamp(final int blockIndex) {
-    return blockDirectory.get(blockIndex).maxTimestamp;
+    directoryLock.readLock().lock();
+    try {
+      return blockDirectory.get(blockIndex).maxTimestamp;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
   }
 
   @Override

@@ -90,10 +90,17 @@ public class ContinuousAggregateRefresher {
       ca.updateLastRefreshTime();
       ca.setStatus(MaterializedViewStatus.VALID);
 
-      // Persist updated watermark only if it actually advanced
+      // Persist updated watermark only if it actually advanced.
+      // If saveConfiguration fails, revert the in-memory watermark to the original value
+      // so the next refresh re-processes the same window (delete-first design makes it safe).
       if (ca.getWatermarkTs() > watermark) {
         final LocalSchema schema = (LocalSchema) database.getSchema();
-        schema.saveConfiguration();
+        try {
+          schema.saveConfiguration();
+        } catch (final Exception saveEx) {
+          ca.setWatermarkTs(watermark);
+          throw saveEx;
+        }
       }
 
     } catch (final Exception e) {
@@ -107,9 +114,9 @@ public class ContinuousAggregateRefresher {
     }
   }
 
-  // Allows letters, digits, underscores, hyphens, and dots — all valid ArcadeDB identifier characters.
-  // Backtick and other injection-enabling characters remain excluded.
-  private static final java.util.regex.Pattern SAFE_COLUMN_NAME = java.util.regex.Pattern.compile("[A-Za-z0-9_.\\-]+");
+  // Allows letters, digits, and underscores only — consistent with ArcadeDB identifier rules.
+  // Backtick, dot, hyphen, and other injection-enabling characters are excluded.
+  private static final java.util.regex.Pattern SAFE_COLUMN_NAME = java.util.regex.Pattern.compile("[A-Za-z0-9_]+");
 
   static String buildFilteredQuery(final ContinuousAggregateImpl ca, final long watermark) {
     if (watermark <= 0)
@@ -151,14 +158,31 @@ public class ContinuousAggregateRefresher {
 
   private static int findWhereIndex(final String upperQuery) {
     // Find standalone WHERE keyword at the outermost nesting level (depth 0),
-    // skipping over string literals (single or double quoted) and parenthesized
-    // subqueries so that WHERE keywords inside them are not mistaken for the
-    // top-level WHERE. E.g.: SELECT func('(foo)') FROM t WHERE ts > 0
+    // skipping over string literals (single or double quoted), block comments (/* */),
+    // line comments (--), and parenthesized subqueries so that WHERE keywords inside
+    // them are not mistaken for the top-level WHERE.
+    // E.g.: SELECT func('(foo)') FROM t WHERE ts > 0
+    //        SELECT /* WHERE not here */ * FROM t WHERE ts > 0
     int depth = 0;
     int idx = 0;
     final int len = upperQuery.length();
     while (idx < len) {
       final char ch = upperQuery.charAt(idx);
+      // Skip over block comments: /* ... */
+      if (ch == '/' && idx + 1 < len && upperQuery.charAt(idx + 1) == '*') {
+        idx += 2;
+        while (idx + 1 < len && !(upperQuery.charAt(idx) == '*' && upperQuery.charAt(idx + 1) == '/'))
+          idx++;
+        idx += 2; // skip closing */
+        continue;
+      }
+      // Skip over line comments: -- ... \n
+      if (ch == '-' && idx + 1 < len && upperQuery.charAt(idx + 1) == '-') {
+        idx += 2;
+        while (idx < len && upperQuery.charAt(idx) != '\n')
+          idx++;
+        continue;
+      }
       // Skip over quoted string literals to avoid counting parens inside them
       if (ch == '\'' || ch == '"') {
         final char quote = ch;

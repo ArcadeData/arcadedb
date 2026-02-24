@@ -19,6 +19,8 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
@@ -80,6 +82,10 @@ public class TimeSeriesMaintenanceScheduler {
         return;
       }
 
+      // The maintenance thread is created by a ScheduledExecutorService and does not
+      // have a DatabaseContext initialized.  We must initialize it before calling any
+      // database operation (begin/commit) or we get "Transaction context not found".
+      DatabaseContext.INSTANCE.init((DatabaseInternal) db);
       try {
         final TimeSeriesEngine engine = type.getEngine();
         if (engine == null)
