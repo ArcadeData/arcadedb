@@ -48,10 +48,10 @@ public class TimeSeriesEmbeddedBenchmark {
   private static final String DB_PATH              = "target/databases/ts-benchmark-embedded";
   private static final int    TOTAL_POINTS         = Integer.getInteger("benchmark.totalPoints", 50_000_000);
   private static final int    BATCH_SIZE           = Integer.getInteger("benchmark.batchSize", 20_000);
-  private static final int    PARALLEL_LEVEL       = Integer.getInteger("benchmark.parallelLevel", 4);
+  private static final int    PARALLEL_LEVEL       = Integer.getInteger("benchmark.parallelLevel", 3);
   private static final int    NUM_SENSORS          = Integer.getInteger("benchmark.numSensors", 100);
-  public static final  int    ASYNCH_BACK_PRESSURE = 50;
-  public static final  int    ASYNC_COMMIT_EVERY   = 5;
+  public static final  int    ASYNCH_BACK_PRESSURE = 90;
+  public static final  int    ASYNC_COMMIT_EVERY   = 10;
 
   public static void main(final String[] args) throws Exception {
     new TimeSeriesEmbeddedBenchmark().run();
