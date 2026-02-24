@@ -36,6 +36,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.engine.WALFileFactoryEmbedded;
+import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -74,6 +75,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -136,7 +138,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
       LSMVectorIndex.FILE_EXT,
-      LSMVectorIndexGraphFile.FILE_EXT);
+      LSMVectorIndexGraphFile.FILE_EXT,
+      TimeSeriesBucket.BUCKET_EXT);
   public final         AtomicLong                                indexCompactions                     =
       new AtomicLong();
   protected final      String                                    name;
@@ -552,6 +555,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     return (Long) executeInReadLock((Callable<Object>) () -> {
       final DocumentType type = schema.getType(typeName);
+
+      // TimeSeries types store data in their own engine, not in regular buckets
+      if (type instanceof LocalTimeSeriesType tsType) {
+        try {
+          return tsType.getEngine().countSamples();
+        } catch (final IOException e) {
+          throw new DatabaseOperationException("Error counting TimeSeries samples for type '" + typeName + "'", e);
+        }
+      }
 
       long total = 0;
       for (final Bucket b : type.getBuckets(polymorphic))
@@ -1248,7 +1260,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Type is null");
 
     final LocalDocumentType type = schema.getType(typeName);
-    if (!type.getClass().equals(LocalDocumentType.class))
+    if (!type.getClass().equals(LocalDocumentType.class) && !(type instanceof com.arcadedb.schema.LocalTimeSeriesType))
       throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a " +
           "document type");
 

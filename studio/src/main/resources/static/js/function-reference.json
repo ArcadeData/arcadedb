@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-22",
+  "generated": "2026-02-24",
   "categories": {
     "SQL Functions": {
       "Collection": [
@@ -110,6 +110,12 @@
           "since": "sql"
         },
         {
+          "name": "bellmanford",
+          "syntax": "bellmanFord(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName> [, <direction>])",
+          "description": "bellmanFord(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName> [, <direction>])",
+          "since": "sql"
+        },
+        {
           "name": "bothe",
           "syntax": "Syntax error: bothE([<labels>])",
           "description": "Syntax error: bothE([<labels>])",
@@ -143,6 +149,12 @@
           "name": "in",
           "syntax": "Syntax error: in([<labels>])",
           "description": "Syntax error: in([<labels>])",
+          "since": "sql"
+        },
+        {
+          "name": "ciao",
+          "syntax": "just return 'ciao'",
+          "description": "just return 'ciao'",
           "since": "sql"
         },
         {
@@ -648,6 +660,12 @@
       ],
       "Misc": [
         {
+          "name": "test_dropdatabase",
+          "syntax": "test_dropDatabase",
+          "description": "test_dropDatabase",
+          "since": "sql"
+        },
+        {
           "name": "coalesce",
           "syntax": "Returns the first not-null parameter or null if all parameters are null. Syntax: coalesce(<field|value> [,<field|value>]*)",
           "description": "Returns the first not-null parameter or null if all parameters are null. Syntax: coalesce(<field|value> [,<field|value>]*)",
@@ -663,6 +681,18 @@
           "name": "ifempty",
           "syntax": "Syntax error: ifempty(<field|value>, <return_value_if_empty> [,<return_value_if_not_empty>])",
           "description": "Syntax error: ifempty(<field|value>, <return_value_if_empty> [,<return_value_if_not_empty>])",
+          "since": "sql"
+        },
+        {
+          "name": "test_executeinnewdatabase",
+          "syntax": "test_executeInNewDatabase",
+          "description": "test_executeInNewDatabase",
+          "since": "sql"
+        },
+        {
+          "name": "test_testreflectionmethod",
+          "syntax": "test_testReflectionMethod",
+          "description": "test_testReflectionMethod",
           "since": "sql"
         },
         {
@@ -684,6 +714,18 @@
           "since": "sql"
         },
         {
+          "name": "test_createdatabase",
+          "syntax": "test_createDatabase",
+          "description": "test_createDatabase",
+          "since": "sql"
+        },
+        {
+          "name": "test_checkactivedatabases",
+          "syntax": "test_checkActiveDatabases",
+          "description": "test_checkActiveDatabases",
+          "since": "sql"
+        },
+        {
           "name": "ifnull",
           "syntax": "Syntax error: ifnull(<field|value>, <return_value_if_null> [,<return_value_if_not_null>])",
           "description": "Syntax error: ifnull(<field|value>, <return_value_if_null> [,<return_value_if_not_null>])",
@@ -696,6 +738,18 @@
           "since": "sql"
         },
         {
+          "name": "test_expectexception",
+          "syntax": "test_expectException",
+          "description": "test_expectException",
+          "since": "sql"
+        },
+        {
+          "name": "test_createrandomtype",
+          "syntax": "test_createRandomType",
+          "description": "test_createRandomType",
+          "since": "sql"
+        },
+        {
           "name": "decode",
           "syntax": "decode(<value>, <format>)",
           "description": "decode(<value>, <format>)",
@@ -705,6 +759,12 @@
           "name": "uuid",
           "syntax": "uuid()",
           "description": "uuid()",
+          "since": "sql"
+        },
+        {
+          "name": "test_endalltests",
+          "syntax": "test_endAllTests",
+          "description": "test_endAllTests",
           "since": "sql"
         }
       ],
@@ -754,9 +814,63 @@
       ],
       "Time": [
         {
+          "name": "ts.rownumber",
+          "syntax": "ts.rowNumber(<timestamp>)",
+          "description": "ts.rowNumber(<timestamp>)",
+          "since": "sql"
+        },
+        {
+          "name": "ts.lead",
+          "syntax": "ts.lead(<value>, <offset>, <timestamp> [, <default>])",
+          "description": "ts.lead(<value>, <offset>, <timestamp> [, <default>])",
+          "since": "sql"
+        },
+        {
+          "name": "ts.delta",
+          "syntax": "ts.delta(<value>, <timestamp>)",
+          "description": "ts.delta(<value>, <timestamp>)",
+          "since": "sql"
+        },
+        {
+          "name": "ts.percentile",
+          "syntax": "ts.percentile(<value>, <percentile>)",
+          "description": "ts.percentile(<value>, <percentile>)",
+          "since": "sql"
+        },
+        {
+          "name": "ts.movingavg",
+          "syntax": "ts.movingAvg(<value>, <window_size>)",
+          "description": "ts.movingAvg(<value>, <window_size>)",
+          "since": "sql"
+        },
+        {
           "name": "duration",
           "syntax": "duration(<amount>, <time-unit>)",
           "description": "duration(<amount>, <time-unit>)",
+          "since": "sql"
+        },
+        {
+          "name": "promql",
+          "syntax": "promql(<expr> [,<evalTimeMs>])",
+          "description": "promql(<expr> [,<evalTimeMs>])",
+          "since": "sql"
+        },
+        {
+          "name": "ts.first",
+          "syntax": "ts.first(<value>, <timestamp>)",
+          "description": "ts.first(<value>, <timestamp>)",
+          "since": "sql"
+        },
+        {
+          "name": "ts.rank",
+          "syntax": "ts.rank(<value>, <timestamp>)",
+          "description": "ts.rank(<value>, <timestamp>)",
+          "since": "sql"
+        },
+        {
+          "name": "ts.interpolate",
+          "syntax": "ts.interpolate(<value>, <method> [, <timestamp>])",
+          "description": "ts.interpolate(<value>, <method> [, <timestamp>])",
           "since": "sql"
         },
         {
@@ -769,6 +883,36 @@
           "name": "sysdate",
           "syntax": "sysdate([<zoneid>])",
           "description": "sysdate([<zoneid>])",
+          "since": "sql"
+        },
+        {
+          "name": "ts.rate",
+          "syntax": "ts.rate(<value>, <timestamp> [, <counterResetDetection>])",
+          "description": "ts.rate(<value>, <timestamp> [, <counterResetDetection>])",
+          "since": "sql"
+        },
+        {
+          "name": "ts.correlate",
+          "syntax": "ts.correlate(<value_a>, <value_b>)",
+          "description": "ts.correlate(<value_a>, <value_b>)",
+          "since": "sql"
+        },
+        {
+          "name": "ts.timebucket",
+          "syntax": "time_bucket(<interval_string>, <timestamp>)",
+          "description": "time_bucket(<interval_string>, <timestamp>)",
+          "since": "sql"
+        },
+        {
+          "name": "ts.last",
+          "syntax": "ts.last(<value>, <timestamp>)",
+          "description": "ts.last(<value>, <timestamp>)",
+          "since": "sql"
+        },
+        {
+          "name": "ts.lag",
+          "syntax": "ts.lag(<value>, <offset>, <timestamp> [, <default>])",
+          "description": "ts.lag(<value>, <offset>, <timestamp> [, <default>])",
           "since": "sql"
         }
       ],
@@ -2259,6 +2403,7 @@
     "asstring",
     "astar",
     "avg",
+    "bellmanford",
     "bool_and",
     "bool_or",
     "both",
@@ -2266,6 +2411,7 @@
     "bothv",
     "capitalize",
     "charat",
+    "ciao",
     "circle",
     "coalesce",
     "coll.distinct",
@@ -2445,6 +2591,7 @@
     "pow",
     "precision",
     "prefix",
+    "promql",
     "randomint",
     "rectangle",
     "rel.endNode",
@@ -2472,6 +2619,14 @@
     "sum",
     "symmetricdifference",
     "sysdate",
+    "test_checkactivedatabases",
+    "test_createdatabase",
+    "test_createrandomtype",
+    "test_dropdatabase",
+    "test_endalltests",
+    "test_executeinnewdatabase",
+    "test_expectexception",
+    "test_testreflectionmethod",
     "text.byteCount",
     "text.camelCase",
     "text.capitalize",
@@ -2505,6 +2660,19 @@
     "trim",
     "trimprefix",
     "trimsuffix",
+    "ts.correlate",
+    "ts.delta",
+    "ts.first",
+    "ts.interpolate",
+    "ts.lag",
+    "ts.last",
+    "ts.lead",
+    "ts.movingavg",
+    "ts.percentile",
+    "ts.rank",
+    "ts.rate",
+    "ts.rownumber",
+    "ts.timebucket",
     "type",
     "unionall",
     "util.compress",

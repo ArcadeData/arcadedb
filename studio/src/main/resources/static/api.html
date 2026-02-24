@@ -110,6 +110,41 @@
           </div>
         </div>
 
+        <!-- TimeSeries -->
+        <div class="api-section">
+          <div class="api-section-label">TimeSeries</div>
+          <div class="api-endpoint" onclick="showApiDetail('tsWrite')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/ts/{db}/write</span>
+            <span class="api-desc">Ingest via Line Protocol</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('tsQuery')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/ts/{db}/query</span>
+            <span class="api-desc">Query timeseries data</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('tsLatest')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/ts/{db}/latest</span>
+            <span class="api-desc">Get latest value</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaHealth')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/ts/{db}/grafana/health</span>
+            <span class="api-desc">Grafana health check</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaMetadata')">
+            <span class="api-method api-method-get">GET</span>
+            <span class="api-path">/api/v1/ts/{db}/grafana/metadata</span>
+            <span class="api-desc">Grafana metadata</span>
+          </div>
+          <div class="api-endpoint" onclick="showApiDetail('tsGrafanaQuery')">
+            <span class="api-method api-method-post">POST</span>
+            <span class="api-path">/api/v1/ts/{db}/grafana/query</span>
+            <span class="api-desc">Grafana DataFrame query</span>
+          </div>
+        </div>
+
         <!-- Documentation -->
         <div class="api-section">
           <div class="api-section-label">Documentation</div>
@@ -307,6 +342,95 @@ var apiEndpoints = {
     responseCode: "200 OK",
     responseBody: '{\n  "result": true\n}',
     notes: null
+  },
+  tsWrite: {
+    method: "POST", path: "/api/v1/ts/{database}/write", auth: true, tryIt: true,
+    contentType: "text/plain",
+    docsAnchor: "http-timeseries",
+    title: "Ingest TimeSeries Data (Line Protocol)",
+    description: "Ingests time-series data using <a href='https://docs.influxdata.com/influxdb/v2/reference/syntax/line-protocol/' target='_blank'>InfluxDB Line Protocol</a> format. Each line represents one data point: <code>measurement,tag1=val1 field1=value1,field2=value2 timestamp</code>. This is the recommended method for bulk ingestion.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    queryParams: [
+      { name: "precision", desc: "Timestamp precision: <code>ns</code> (nanoseconds, default), <code>us</code> (microseconds), <code>ms</code> (milliseconds), <code>s</code> (seconds)" }
+    ],
+    requestHeaders: [
+      { name: "Content-Type", value: "text/plain", desc: "Line Protocol is plain text, not JSON" }
+    ],
+    requestBody: "stocks,symbol=TSLA open=250.64,close=252.10,high=253.50,low=249.80,volume=125000i 1700000000000000000\nstocks,symbol=AAPL open=195.20,close=196.50,high=197.00,low=194.80,volume=89000i 1700000000000000000",
+    responseCode: "204 No Content",
+    responseBody: null,
+    notes: "Returns <code>204 No Content</code> on success (InfluxDB convention). Unknown measurement names (no matching TimeSeries type) are silently skipped. Integer fields require an <code>i</code> suffix (e.g. <code>volume=125000i</code>). Multiple lines can be sent in a single request for batch ingestion."
+  },
+  tsQuery: {
+    method: "POST", path: "/api/v1/ts/{database}/query", auth: true, tryIt: true,
+    docsAnchor: "http-timeseries",
+    title: "Query TimeSeries Data",
+    description: "Queries time-series data with optional time range filtering, field projection, tag filtering, and aggregation with configurable bucket intervals. Returns either raw rows or aggregated buckets depending on whether an <code>aggregation</code> block is provided.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: '{\n  "type": "stocks",\n  "from": 1700000000000,\n  "to": 1700100000000,\n  "fields": ["open", "close", "volume"],\n  "tags": { "symbol": "TSLA" },\n  "aggregation": {\n    "bucketInterval": 3600000,\n    "requests": [\n      { "field": "close", "type": "AVG", "alias": "avg_close" },\n      { "field": "volume", "type": "SUM", "alias": "total_vol" }\n    ]\n  },\n  "limit": 10000\n}',
+    responseCode: "200 OK",
+    responseBody: '// Raw query (no aggregation):\n{\n  "type": "stocks",\n  "columns": ["ts", "symbol", "open", "close", "volume"],\n  "rows": [\n    [1700000000000, "TSLA", 250.64, 252.10, 125000],\n    [1700000060000, "TSLA", 251.30, 253.00, 130000]\n  ],\n  "count": 2\n}\n\n// Aggregated query:\n{\n  "type": "stocks",\n  "aggregations": ["avg_close", "total_vol"],\n  "buckets": [\n    { "timestamp": 1700000000000, "values": [252.55, 255000] },\n    { "timestamp": 1700003600000, "values": [254.10, 310000] }\n  ],\n  "count": 2\n}',
+    notes: "Request fields: <code>type</code> (required) &mdash; TimeSeries type name. <code>from</code>/<code>to</code> (optional) &mdash; epoch ms range. <code>fields</code> (optional) &mdash; subset of columns. <code>tags</code> (optional) &mdash; filter by tag values. <code>aggregation</code> (optional) &mdash; aggregate with bucket interval. Supported aggregation types: <code>AVG</code>, <code>SUM</code>, <code>MIN</code>, <code>MAX</code>, <code>COUNT</code>. <code>limit</code> (optional, default 20000) &mdash; max rows for raw queries."
+  },
+  tsLatest: {
+    method: "GET", path: "/api/v1/ts/{database}/latest", auth: true, tryIt: true,
+    docsAnchor: "http-timeseries",
+    title: "Get Latest TimeSeries Value",
+    description: "Returns the most recent data point for a TimeSeries type. Optionally filter by a single tag value to get the latest for a specific dimension (e.g. a specific sensor or stock symbol).",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    queryParams: [
+      { name: "type", desc: "TimeSeries type name (required)" },
+      { name: "tag", desc: "Optional tag filter in format <code>tagName:value</code> (e.g. <code>symbol:TSLA</code>)" }
+    ],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "type": "stocks",\n  "columns": ["ts", "symbol", "open", "close", "high", "low", "volume"],\n  "latest": [1700100000000, "TSLA", 255.30, 256.10, 257.00, 254.80, 142000]\n}\n\n// When no data exists:\n{\n  "type": "stocks",\n  "columns": ["ts", "symbol", "open", "close", "high", "low", "volume"],\n  "latest": null\n}',
+    notes: "Returns <code>\"latest\": null</code> if no data exists. The tag filter format is <code>key:value</code> (e.g. <code>?tag=symbol:TSLA</code>)."
+  },
+  tsGrafanaHealth: {
+    method: "GET", path: "/api/v1/ts/{database}/grafana/health", auth: true, tryIt: true,
+    docsAnchor: "http-timeseries",
+    title: "Grafana Health Check",
+    description: "Verifies the database exists and the Grafana endpoints are reachable. Use this as the health check URL when configuring a Grafana Infinity datasource.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "status": "ok",\n  "database": "mydb"\n}',
+    notes: "Returns <code>200</code> with status <code>ok</code> if the database exists."
+  },
+  tsGrafanaMetadata: {
+    method: "GET", path: "/api/v1/ts/{database}/grafana/metadata", auth: true, tryIt: true,
+    docsAnchor: "http-timeseries",
+    title: "Grafana Metadata",
+    description: "Discovers all TimeSeries types in the database with their fields, tags, and available aggregation types. Use this to configure Grafana panel queries.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: null,
+    responseCode: "200 OK",
+    responseBody: '{\n  "types": [\n    {\n      "name": "weather",\n      "fields": [{ "name": "temperature", "dataType": "DOUBLE" }],\n      "tags": [{ "name": "location", "dataType": "STRING" }]\n    }\n  ],\n  "aggregationTypes": ["SUM", "AVG", "MIN", "MAX", "COUNT"]\n}',
+    notes: "Lists only types that are TimeSeries types with an active engine. Non-TimeSeries types are excluded."
+  },
+  tsGrafanaQuery: {
+    method: "POST", path: "/api/v1/ts/{database}/grafana/query", auth: true, tryIt: true,
+    docsAnchor: "http-timeseries",
+    title: "Grafana DataFrame Query",
+    description: "Queries TimeSeries data and returns results in Grafana DataFrame wire format (columnar arrays with schema metadata). Supports multiple targets (one per Grafana panel query), raw and aggregated queries, tag filtering, and automatic bucket interval calculation.",
+    params: [
+      { name: "database", desc: "Database name" }
+    ],
+    requestBody: '{\n  "from": 1700000000000,\n  "to": 1700086400000,\n  "maxDataPoints": 1000,\n  "targets": [\n    {\n      "refId": "A",\n      "type": "weather",\n      "fields": ["temperature"],\n      "tags": { "location": "us-east" },\n      "aggregation": {\n        "bucketInterval": 60000,\n        "requests": [\n          { "field": "temperature", "type": "AVG", "alias": "avg_temp" }\n        ]\n      }\n    }\n  ]\n}',
+    responseCode: "200 OK",
+    responseBody: '{\n  "results": {\n    "A": {\n      "frames": [{\n        "schema": {\n          "fields": [\n            { "name": "time", "type": "time" },\n            { "name": "avg_temp", "type": "number" }\n          ]\n        },\n        "data": {\n          "values": [\n            [1700000000000, 1700000060000],\n            [23.5, 24.1]\n          ]\n        }\n      }]\n    }\n  }\n}',
+    notes: "Request fields: <code>from</code>/<code>to</code> (optional) &mdash; epoch ms shared across all targets. <code>maxDataPoints</code> (optional) &mdash; auto-calculates <code>bucketInterval</code> when aggregation is requested but interval is omitted. <code>targets[].refId</code> &mdash; Grafana panel query ID. <code>targets[].type</code> (required) &mdash; TimeSeries type name. <code>targets[].fields</code> (optional) &mdash; subset of columns. <code>targets[].tags</code> (optional) &mdash; tag filter. <code>targets[].aggregation</code> (optional) &mdash; aggregation with bucket interval and requests. Supported aggregation types: <code>AVG</code>, <code>SUM</code>, <code>MIN</code>, <code>MAX</code>, <code>COUNT</code>."
   }
 };
 
@@ -355,6 +479,17 @@ function showApiDetail(key) {
     html += "<table class='api-detail-table'><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody>";
     for (var i = 0; i < ep.params.length; i++)
       html += "<tr><td><code>" + ep.params[i].name + "</code></td><td>" + ep.params[i].desc + "</td></tr>";
+    html += "</tbody></table>";
+    html += "</div>";
+  }
+
+  // Query Parameters
+  if (ep.queryParams && ep.queryParams.length > 0) {
+    html += "<div class='api-detail-section'>";
+    html += "<h6>Query Parameters</h6>";
+    html += "<table class='api-detail-table'><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody>";
+    for (var i = 0; i < ep.queryParams.length; i++)
+      html += "<tr><td><code>" + ep.queryParams[i].name + "</code></td><td>" + ep.queryParams[i].desc + "</td></tr>";
     html += "</tbody></table>";
     html += "</div>";
   }
@@ -488,10 +623,24 @@ function renderApiPlayground(key, ep) {
     html += "</div>";
   }
 
+  // Query parameters
+  if (ep.queryParams && ep.queryParams.length > 0) {
+    html += "<div class='api-playground-section'>";
+    html += "<label>Query Parameters</label>";
+    for (var i = 0; i < ep.queryParams.length; i++) {
+      var qp = ep.queryParams[i];
+      html += "<div class='api-playground-param-row'>";
+      html += "<code>" + escapeHtml(qp.name) + "</code>";
+      html += "<input class='api-playground-input' id='apiQP_" + key + "_" + qp.name + "' placeholder='" + escapeHtml(qp.name) + "'>";
+      html += "</div>";
+    }
+    html += "</div>";
+  }
+
   // Request body
   if (ep.requestBody) {
     html += "<div class='api-playground-section'>";
-    html += "<label>Request Body</label>";
+    html += "<label>Request Body" + (ep.contentType ? " <code style='font-size:0.7rem'>(" + escapeHtml(ep.contentType) + ")</code>" : "") + "</label>";
     html += "<textarea class='api-playground-body-editor' id='apiBody_" + key + "'>" + escapeHtml(ep.requestBody) + "</textarea>";
     html += "</div>";
   }
@@ -542,6 +691,19 @@ function sendApiRequest(key) {
     }
   }
 
+  // Append query parameters
+  if (ep.queryParams) {
+    var qpParts = [];
+    for (var i = 0; i < ep.queryParams.length; i++) {
+      var qp = ep.queryParams[i];
+      var qpVal = (document.getElementById('apiQP_' + key + '_' + qp.name) || {}).value;
+      if (qpVal && qpVal.trim())
+        qpParts.push(encodeURIComponent(qp.name) + '=' + encodeURIComponent(qpVal.trim()));
+    }
+    if (qpParts.length > 0)
+      url += '?' + qpParts.join('&');
+  }
+
   // Build auth header
   var authType = document.getElementById('apiAuth_' + key).value;
   var headers = {};
@@ -577,11 +739,14 @@ function sendApiRequest(key) {
 
   var startTime = Date.now();
 
+  var ct = body ? (ep.contentType || 'application/json') : undefined;
+
   $.ajax({
     type: ep.method,
     url: url,
     data: body,
-    contentType: body ? 'application/json' : undefined,
+    contentType: ct,
+    processData: false,
     headers: headers,
     timeout: 30000
   })

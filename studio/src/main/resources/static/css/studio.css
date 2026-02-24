@@ -193,6 +193,8 @@ table,
 
 #tab-query {
   overflow-y: hidden !important;
+  display: flex;
+  flex-direction: column;
 }
 
 #tab-database {
@@ -1500,6 +1502,25 @@ div.dt-search {
   line-height: 1.5;
   overflow-x: auto;
   white-space: pre;
+}
+
+.ts-ingest-code {
+  background-color: var(--bg-code);
+  color: var(--text-code);
+  padding: 12px 14px;
+  border-radius: 6px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+  margin-bottom: 10px;
+}
+
+.ts-ingest-code code {
+  color: inherit;
+  background: none;
+  padding: 0;
 }
 
 .api-detail-response-code {

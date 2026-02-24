@@ -20,8 +20,26 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.ContinuousAggregate;
+import com.arcadedb.schema.ContinuousAggregateImpl;
+import com.arcadedb.schema.ContinuousAggregateRefresher;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.schema.Type;
+
+import java.io.IOException;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.util.Date;
+import java.util.List;
+import java.util.logging.Level;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -54,17 +72,15 @@ public class SaveElementStep extends AbstractExecutionStep {
           if (doc == null)
             throw new IllegalArgumentException("Cannot save a null document");
 
-          final MutableDocument modifiableDoc;
-//          if (createAlways) {
-//            // STRIPE OFF ANY IDENTITY TO FORCE AN INSERT. THIS IS NECESSARY IF THE RECORD IS COMING FROM A SELECT
-//            if (doc instanceof Vertex)
-//              modifiableDoc = context.getDatabase().newVertex(doc.getTypeName()).fromMap(doc.toMap(false));
-//            else if (doc instanceof Edge)
-//              throw new IllegalArgumentException("Cannot duplicate an edge");
-//            else
-//              modifiableDoc = context.getDatabase().newDocument(doc.getTypeName()).fromMap(doc.toMap(false));
-//          } else
-          modifiableDoc = doc.modify();
+          // Check if this is a TimeSeries type — route to TimeSeriesEngine
+          final var docType = context.getDatabase().getSchema().getType(doc.getTypeName());
+          if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
+            saveToTimeSeries(tsType, doc, context);
+            scheduleContinuousAggregateRefresh(context, tsType);
+            return result;
+          }
+
+          final MutableDocument modifiableDoc = doc.modify();
 
           if (bucket == null)
             modifiableDoc.save();
@@ -78,6 +94,103 @@ public class SaveElementStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
+    };
+  }
+
+  private void saveToTimeSeries(final LocalTimeSeriesType tsType, final Document doc, final CommandContext context) {
+    final TimeSeriesEngine engine = tsType.getEngine();
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+    final ZoneId zoneId = context.getDatabase().getSchema().getZoneId();
+
+    final long[] timestamps = new long[1];
+    int nonTsCount = 0;
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        nonTsCount++;
+    final Object[][] columnValues = new Object[nonTsCount][1];
+
+    int colIdx = 0;
+    for (int i = 0; i < columns.size(); i++) {
+      final ColumnDefinition col = columns.get(i);
+      final Object value = doc.get(col.getName());
+
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
+        timestamps[0] = toEpochMs(value, zoneId);
+      } else {
+        columnValues[colIdx][0] = convertValue(value, col.getDataType());
+        colIdx++;
+      }
+    }
+
+    try {
+      engine.appendSamples(timestamps, columnValues);
+    } catch (final IOException e) {
+      throw new CommandExecutionException("Error appending to TimeSeries engine", e);
+    }
+  }
+
+  private void scheduleContinuousAggregateRefresh(final CommandContext context, final LocalTimeSeriesType tsType) {
+    final LocalSchema schema = (LocalSchema) context.getDatabase().getSchema();
+    final ContinuousAggregate[] aggregates = schema.getContinuousAggregates();
+    if (aggregates.length == 0)
+      return;
+
+    final String typeName = tsType.getName();
+    final TransactionContext tx = context.getDatabase().getTransaction();
+
+    for (final ContinuousAggregate ca : aggregates) {
+      if (typeName.equals(ca.getSourceTypeName())) {
+        final String callbackKey = "ca-refresh:" + ca.getName();
+        final ContinuousAggregateImpl caImpl = (ContinuousAggregateImpl) ca;
+        tx.addAfterCommitCallbackIfAbsent(callbackKey, () -> {
+          try {
+            ContinuousAggregateRefresher.incrementalRefresh(context.getDatabase(), caImpl);
+          } catch (final Exception e) {
+            LogManager.instance().log(SaveElementStep.class, Level.WARNING,
+                "Error refreshing continuous aggregate '%s' after commit: %s", e, ca.getName(), e.getMessage());
+          }
+        });
+      }
+    }
+  }
+
+  private static long toEpochMs(final Object value, final ZoneId zoneId) {
+    if (value instanceof Long l)
+      return l;
+    if (value instanceof Date d)
+      return d.getTime();
+    if (value instanceof Instant i)
+      return i.toEpochMilli();
+    if (value instanceof Number n)
+      return n.longValue();
+    if (value instanceof java.time.LocalDateTime ldt)
+      return ldt.atZone(zoneId).toInstant().toEpochMilli();
+    if (value instanceof java.time.LocalDate ld)
+      return ld.atStartOfDay(zoneId).toInstant().toEpochMilli();
+    if (value instanceof String s) {
+      try {
+        return Instant.parse(s).toEpochMilli();
+      } catch (final Exception e) {
+        try {
+          return java.time.LocalDate.parse(s).atStartOfDay(zoneId).toInstant().toEpochMilli();
+        } catch (final Exception e2) {
+          throw new CommandExecutionException("Cannot parse timestamp: '" + s + "'", e);
+        }
+      }
+    }
+    throw new CommandExecutionException("Cannot convert to timestamp: " + (value != null ? value.getClass().getName() : "null"));
+  }
+
+  private static Object convertValue(final Object value, final Type targetType) {
+    if (value == null)
+      return null;
+    return switch (targetType) {
+      case DOUBLE -> value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString());
+      case LONG -> value instanceof Number n ? n.longValue() : Long.parseLong(value.toString());
+      case INTEGER -> value instanceof Number n ? n.intValue() : Integer.parseInt(value.toString());
+      case FLOAT -> value instanceof Number n ? n.floatValue() : Float.parseFloat(value.toString());
+      case SHORT -> value instanceof Number n ? n.shortValue() : Short.parseShort(value.toString());
+      default -> value;
     };
   }
 

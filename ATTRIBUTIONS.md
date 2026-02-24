@@ -145,6 +145,12 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 **License Note:** UPL = Universal Permissive License 1.0
 
+### Compression
+
+| Group ID | Artifact ID | Version | License | Homepage |
+|----------|-------------|---------|---------|----------|
+| org.xerial.snappy | snappy-java | 1.1.10.7 | Apache 2.0 | https://github.com/xerial/snappy-java |
+
 ### Server and Networking
 
 | Group ID | Artifact ID | Version | License | Homepage |

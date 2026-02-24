@@ -1,0 +1,568 @@
+<div class="tab-pane fade" id="tab-timeseries" role="tabpanel">
+  <div class="d-flex align-items-center justify-content-between flex-shrink-0" style="padding: 10px 12px 6px;">
+    <div class="d-flex align-items-center gap-2">
+      <i class="fa fa-chart-line" style="font-size: 1.2rem; color: #00aeee;"></i>
+      <label>Connected as&nbsp;</label><label id="tsUser"></label>@
+      <select id="tsInputDatabase" class="inputDatabase form-select form-select-sm" style="width: auto; display: inline-block;"></select>
+      <select id="tsType" class="form-select form-select-sm" style="width: auto; display: inline-block; min-width: 150px;" onchange="tsTypeChanged()">
+        <option value="">-- select type --</option>
+      </select>
+      <span id="tsTypeCount" style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;"></span>
+    </div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-sm db-action-btn" onclick="createTimeSeriesType()"><i class="fa fa-plus"></i> Create</button>
+      <button class="btn btn-sm db-action-btn db-action-btn-danger" onclick="tsDropType()"><i class="fa fa-trash"></i> Drop</button>
+    </div>
+  </div>
+
+  <ul class="nav nav-tabs flex-shrink-0" id="tabs-timeseries" style="padding: 0 12px;">
+    <li class="nav-item"><a data-toggle="tab" href="#tab-ts-query" class="active show nav-link" id="tab-ts-query-sel">Query</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-ts-schema" class="nav-link" id="tab-ts-schema-sel" onclick="tsLoadSchema()">Schema</a></li>
+    <li class="nav-item"><a data-toggle="tab" href="#tab-ts-ingestion" class="nav-link" id="tab-ts-ingestion-sel">Quick Tour</a></li>
+  </ul>
+
+  <div class="tab-content">
+    <!-- Query Tab -->
+    <div class="tab-pane fade show active" id="tab-ts-query" role="tabpanel">
+      <!-- Controls: all in one row -->
+      <div class="px-3 py-2" style="border-bottom: 1px solid var(--border-light);">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <div style="display:flex; align-items:center; background:#e9ecef; border-radius:20px; padding:2px; gap:2px;">
+            <button id="tsModeBuilderBtn" onclick="tsToggleQueryMode('builder')"
+              style="border:none; border-radius:18px; padding:3px 11px; font-size:0.78rem; cursor:pointer; background:var(--bs-primary,#0d6efd); color:#fff; transition:all 0.15s;">
+              <i class="fa fa-sliders" style="font-size:0.72rem;"></i> Builder
+            </button>
+            <button id="tsModePromQLBtn" onclick="tsToggleQueryMode('promql')"
+              style="border:none; border-radius:18px; padding:3px 11px; font-size:0.78rem; cursor:pointer; background:transparent; color:#6c757d; transition:all 0.15s;">
+              <i class="fa fa-code" style="font-size:0.72rem;"></i> PromQL
+            </button>
+          </div>
+          <div>
+            <label class="form-label form-label-sm mb-1">Time Range</label>
+            <select id="tsTimeRange" class="form-select form-select-sm" style="width: 110px;" onchange="tsTimeRangeChanged()">
+              <option value="5m">Last 5 min</option>
+              <option value="1h">Last 1 hour</option>
+              <option value="24h">Last 24 hours</option>
+              <option value="7d">Last 7 days</option>
+              <option value="all" selected>All data</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div id="tsCustomFromGroup" style="display:none;">
+            <label class="form-label form-label-sm mb-1">From</label>
+            <input type="datetime-local" id="tsCustomFrom" class="form-control form-control-sm" style="width: 170px;" />
+          </div>
+          <div id="tsCustomToGroup" style="display:none;">
+            <label class="form-label form-label-sm mb-1">To</label>
+            <input type="datetime-local" id="tsCustomTo" class="form-control form-control-sm" style="width: 170px;" />
+          </div>
+          <div class="ts-builder-only">
+            <label class="form-label form-label-sm mb-1">Aggregation</label>
+            <select id="tsAggType" class="form-select form-select-sm" style="width: 110px;">
+              <option value="">None (raw)</option>
+              <option value="AVG">AVG</option>
+              <option value="SUM">SUM</option>
+              <option value="MIN">MIN</option>
+              <option value="MAX">MAX</option>
+              <option value="COUNT">COUNT</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label form-label-sm mb-1">Bucket</label>
+            <select id="tsBucketInterval" class="form-select form-select-sm" style="width: 90px;">
+              <option value="1000">1 sec</option>
+              <option value="10000">10 sec</option>
+              <option value="60000" selected>1 min</option>
+              <option value="300000">5 min</option>
+              <option value="3600000">1 hour</option>
+              <option value="86400000">1 day</option>
+            </select>
+          </div>
+          <div id="tsTagFiltersGroup" class="ts-builder-only" style="display:none;">
+            <label class="form-label form-label-sm mb-1">Tags</label>
+            <div id="tsTagFilters" class="d-flex flex-wrap gap-2" style="min-height: 30px;"></div>
+          </div>
+          <div class="ts-builder-only">
+            <label class="form-label form-label-sm mb-1">Fields</label>
+            <div id="tsFieldCheckboxes" class="d-flex flex-wrap gap-2" style="min-height: 30px;">
+              <span class="text-muted" style="font-size: 0.8rem;">Select a type first</span>
+            </div>
+          </div>
+          <div class="d-flex gap-2 align-items-center ms-auto">
+            <button class="btn btn-sm btn-primary" style="height: 31px; line-height: 1;" onclick="tsExecuteQuery()"><i class="fa fa-play"></i> Query</button>
+            <button id="tsLatestBtn" class="btn btn-sm btn-outline-secondary" style="height: 31px; line-height: 1;" onclick="tsGetLatest()"><i class="fa fa-arrow-down"></i> Latest</button>
+            <div class="dropdown">
+              <button class="btn btn-sm btn-outline-secondary dropdown-toggle" style="height: 31px; line-height: 1;" data-bs-toggle="dropdown">
+                <i class="fa fa-sync"></i>
+              </button>
+              <ul class="dropdown-menu">
+                <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(0)">Off</a></li>
+                <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(10000)">10s</a></li>
+                <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(30000)">30s</a></li>
+                <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(60000)">1 min</a></li>
+              </ul>
+            </div>
+            <span id="tsQueryStats" style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;"></span>
+          </div>
+        </div>
+        <!-- PromQL expression row (only visible in PromQL mode) -->
+        <div id="tsPromQLInputGroup" style="display:none; margin-top:6px;">
+          <div class="d-flex gap-2 align-items-center">
+            <i class="fa fa-code" style="color:#6c757d; font-size:0.85rem;"></i>
+            <textarea id="tsPromQLExpr" class="form-control form-control-sm" rows="1"
+              placeholder="e.g. rate(http_requests[5m])  ·  sum by (host) (cpu_usage)  ·  avg_over_time(temp[1h])"
+              style="font-family: monospace; font-size: 0.82rem; resize: vertical;"
+              onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){tsExecuteQuery();event.preventDefault();}"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chart -->
+      <div class="px-3 py-2">
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div class="d-flex align-items-center gap-2">
+                <span style="font-size: 0.85rem; font-weight: 500;">Chart</span>
+                <div class="form-check form-switch mb-0" style="padding-left: 2.5em;">
+                  <input class="form-check-input" type="checkbox" id="tsChartEnabled" checked onchange="tsTogglePanel('chart')">
+                </div>
+              </div>
+              <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-secondary active" id="tsChartLineBtn" onclick="tsToggleChartType('line')">Line</button>
+                <button class="btn btn-outline-secondary" id="tsChartAreaBtn" onclick="tsToggleChartType('area')">Area</button>
+              </div>
+            </div>
+            <div id="tsChart" style="min-height: 350px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Data Table -->
+      <div class="px-3 py-2">
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <span style="font-size: 0.85rem; font-weight: 500;">Data</span>
+              <div class="form-check form-switch mb-0" style="padding-left: 2.5em;">
+                <input class="form-check-input" type="checkbox" id="tsTableEnabled" checked onchange="tsTogglePanel('table')">
+              </div>
+            </div>
+            <div class="table-responsive">
+              <table id="tsDataTable" class="table table-sm table-striped" style="width:100%"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Schema Tab -->
+    <div class="tab-pane fade" id="tab-ts-schema" role="tabpanel">
+      <div class="px-3 py-3">
+        <div id="tsSchemaContent">
+          <p class="text-muted">Select a database to view TimeSeries schema.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ingestion Tab -->
+    <div class="tab-pane fade" id="tab-ts-ingestion" role="tabpanel">
+      <div class="px-3 py-3" style="max-width: 960px;">
+
+        <p style="font-size: 0.9rem; color: var(--text-muted);">
+          ArcadeDB TimeSeries supports multiple ingestion methods and integrates with Grafana for visualization.
+          Before ingesting data, create a TimeSeries type that defines the timestamp column, tags (dimensions for filtering),
+          and fields (numeric measurements).
+        </p>
+
+        <!-- 1. Create Type -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-plus-circle" style="color: #00aeee;"></i> 1. Create a TimeSeries Type (SQL)</h6>
+            <p style="font-size: 0.85rem;">Define the schema before ingesting. Tags are indexed dimensions for fast filtering; fields are the numeric measurements.</p>
+<pre class="ts-ingest-code"><code>CREATE TIMESERIES TYPE stocks
+  TIMESTAMP ts
+  TAGS (symbol STRING)
+  FIELDS (open DOUBLE, close DOUBLE, high DOUBLE, low DOUBLE, volume LONG)
+  SHARDS 4</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              Optional parameters: <code>RETENTION &lt;ms&gt;</code> for automatic data expiration,
+              <code>COMPACTION_INTERVAL &lt;ms&gt;</code> for time-bucketed compaction,
+              <code>IF NOT EXISTS</code> to avoid errors if the type already exists.
+            </p>
+          </div>
+        </div>
+
+        <!-- 2. InfluxDB Line Protocol -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-bolt" style="color: #f59e0b;"></i> 2. InfluxDB Line Protocol (HTTP API) &mdash; Recommended for Bulk Ingestion</h6>
+            <p style="font-size: 0.85rem;">
+              The fastest way to ingest large volumes of data. Send one or more lines in
+              <a href="https://docs.influxdata.com/influxdb/v2/reference/syntax/line-protocol/" target="_blank">InfluxDB Line Protocol</a> format.
+              Each line is: <code>measurement,tag1=val1 field1=value1,field2=value2 timestamp</code>
+            </p>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Endpoint</div>
+<pre class="ts-ingest-code"><code>POST /api/v1/ts/{database}/write?precision=ns|us|ms|s</code></pre>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Line Protocol Format</div>
+<pre class="ts-ingest-code"><code># measurement,tag1=val1,tag2=val2 field1=value1,field2=value2 timestamp
+stocks,symbol=TSLA open=250.64,close=252.10,high=253.50,low=249.80,volume=125000i 1700000000000000000
+stocks,symbol=AAPL open=195.20,close=196.50,high=197.00,low=194.80,volume=89000i  1700000000000000000</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">
+              <b>Data type hints:</b> integers require an <code>i</code> suffix (e.g. <code>volume=125000i</code>), floats are bare numbers,
+              strings are quoted (<code>"value"</code>). Timestamp precision defaults to nanoseconds; use <code>?precision=ms</code> for milliseconds.
+            </p>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">curl Example &mdash; Single Point</div>
+<pre class="ts-ingest-code"><code>curl -u root:password -X POST \
+  "http://localhost:2480/api/v1/ts/mydb/write?precision=ms" \
+  -H "Content-Type: text/plain" \
+  --data-binary 'stocks,symbol=TSLA open=250.64,close=252.10,high=253.50,low=249.80,volume=125000i 1700000000000'</code></pre>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">curl + Python Example &mdash; Generate 5,000 Sample Points</div>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">Generates realistic stock data for 5 symbols, 1,000 points each at 1-minute intervals:</p>
+<pre class="ts-ingest-code"><code>curl -s -u root:password -X POST \
+  "http://localhost:2480/api/v1/ts/mydb/write" \
+  -H "Content-Type: text/plain" \
+  --data-binary "$(python3 -c "
+import random, time
+
+symbols = ['TSLA', 'AAPL', 'GOOGL', 'MSFT', 'AMZN']
+bases = {'TSLA': 250, 'AAPL': 195, 'GOOGL': 175, 'MSFT': 420, 'AMZN': 185}
+
+now_ns = int(time.time() * 1e9)
+interval = 60 * 1_000_000_000  # 1 min in ns
+
+lines = []
+for sym in symbols:
+    price = bases[sym]
+    for i in range(1000):
+        ts = now_ns - (1000 - i) * interval
+        o = round(price + random.uniform(-2, 2), 2)
+        c = round(o + random.uniform(-3, 3), 2)
+        h = round(max(o, c) + random.uniform(0, 2), 2)
+        l = round(min(o, c) - random.uniform(0, 2), 2)
+        v = random.randint(10000, 500000)
+        lines.append(f'stocks,symbol={sym} open={o},close={c},high={h},low={l},volume={v}i {ts}')
+        price = c
+print('\n'.join(lines))
+")"</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              Returns <code>204 No Content</code> on success. Unknown measurement names (no matching TimeSeries type) are silently skipped.
+            </p>
+          </div>
+        </div>
+
+        <!-- 3. SQL INSERT -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-database" style="color: #8b5cf6;"></i> 3. SQL INSERT (via Command API)</h6>
+            <p style="font-size: 0.85rem;">
+              Use standard SQL INSERT statements through the generic command endpoint. Useful for small batches or when integrating
+              with existing SQL-based workflows.
+            </p>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Endpoint</div>
+<pre class="ts-ingest-code"><code>POST /api/v1/command/{database}</code></pre>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">SQL Syntax</div>
+<pre class="ts-ingest-code"><code>INSERT INTO stocks (ts, symbol, open, close, high, low, volume)
+  VALUES (1700000000000, 'TSLA', 250.64, 252.10, 253.50, 249.80, 125000)</code></pre>
+
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">curl Example</div>
+<pre class="ts-ingest-code"><code>curl -u root:password -X POST \
+  "http://localhost:2480/api/v1/command/mydb" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "language": "sql",
+    "command": "INSERT INTO stocks (ts, symbol, open, close, high, low, volume) VALUES (1700000000000, '\''TSLA'\'', 250.64, 252.10, 253.50, 249.80, 125000)"
+  }'</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              Timestamps are in milliseconds (epoch). Each INSERT runs inside a transaction. For bulk inserts, prefer the Line Protocol endpoint.
+            </p>
+          </div>
+        </div>
+
+        <!-- 4. Java API -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-code" style="color: #10b981;"></i> 4. Java Embedded API</h6>
+            <p style="font-size: 0.85rem;">
+              For applications embedding ArcadeDB directly, use the <code>TimeSeriesEngine</code> API for maximum performance with zero network overhead.
+            </p>
+<pre class="ts-ingest-code"><code>// Get the TimeSeries type and engine
+LocalTimeSeriesType tsType = (LocalTimeSeriesType) db.getSchema().getType("stocks");
+TimeSeriesEngine engine = tsType.getEngine();
+
+// Prepare sample data (batch of N samples)
+long[] timestamps = new long[] { System.currentTimeMillis(), System.currentTimeMillis() + 1000 };
+Object[][] columns = new Object[][] {
+    { "TSLA", "TSLA" },        // symbol (tag)
+    { 250.64, 251.30 },        // open
+    { 252.10, 253.00 },        // close
+    { 253.50, 254.00 },        // high
+    { 249.80, 250.50 },        // low
+    { 125000L, 130000L }       // volume
+};
+
+db.begin();
+engine.appendSamples(timestamps, columns);
+db.commit();</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              The columns array must match the order of non-timestamp columns as defined in the type schema.
+              Use <code>tsType.getTsColumns()</code> to inspect the column order.
+            </p>
+          </div>
+        </div>
+
+        <!-- 5. Analytical SQL Functions -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-chart-bar" style="color: #f43f5e;"></i> 5. Analytical SQL Functions</h6>
+            <p style="font-size: 0.85rem;">
+              Use these aggregate functions in SQL queries via the Query tab for advanced time series analysis.
+            </p>
+            <div class="table-responsive">
+              <table class="table table-sm" style="font-size: 0.82rem;">
+                <thead><tr><th style="width:260px;">Function</th><th>Description</th></tr></thead>
+                <tbody>
+                  <tr><td><code>ts.rate(value, ts)</code></td><td>Per-second rate of change</td></tr>
+                  <tr><td><code>ts.rate(value, ts, true)</code></td><td>Rate with counter reset detection (Prometheus-style)</td></tr>
+                  <tr><td><code>ts.delta(value, ts)</code></td><td>Difference between first and last values</td></tr>
+                  <tr><td><code>ts.percentile(value, 0.95)</code></td><td>Approximate percentile (p50, p95, p99, etc.)</td></tr>
+                  <tr><td><code>ts.movingAvg(value, 10)</code></td><td>Moving average with configurable window size</td></tr>
+                  <tr><td><code>ts.interpolate(value, 'linear', ts)</code></td><td>Gap filling with linear interpolation</td></tr>
+                  <tr><td><code>ts.interpolate(value, 'prev')</code></td><td>Gap filling with previous value</td></tr>
+                  <tr><td><code>ts.first(value, ts)</code></td><td>First value ordered by timestamp</td></tr>
+                  <tr><td><code>ts.last(value, ts)</code></td><td>Last value ordered by timestamp</td></tr>
+                  <tr><td><code>ts.correlate(a, b)</code></td><td>Pearson correlation coefficient between two series</td></tr>
+                  <tr><td><code>ts.timeBucket(60000, ts)</code></td><td>Time bucketing for GROUP BY (interval in ms)</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Example: p95 Latency per Minute</div>
+<pre class="ts-ingest-code"><code>SELECT ts.timeBucket(60000, ts) AS bucket, ts.percentile(latency, 0.95) AS p95
+  FROM metrics
+  WHERE ts BETWEEN 1700000000000 AND 1700086400000
+  GROUP BY bucket ORDER BY bucket</code></pre>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Example: Rate with Counter Reset Detection</div>
+<pre class="ts-ingest-code"><code>SELECT ts.timeBucket(300000, ts) AS bucket, ts.rate(requests_total, ts, true) AS req_per_sec
+  FROM counters GROUP BY bucket ORDER BY bucket</code></pre>
+          </div>
+        </div>
+
+        <!-- 6. Downsampling & Retention -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-layer-group" style="color: #0ea5e9;"></i> 6. Downsampling &amp; Retention Policies</h6>
+            <p style="font-size: 0.85rem;">
+              Configure automatic data lifecycle management. Retention removes old data; downsampling reduces granularity for historical data.
+              Both policies are enforced automatically by a background scheduler (every 60 seconds).
+            </p>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Set Retention on Create</div>
+<pre class="ts-ingest-code"><code>CREATE TIMESERIES TYPE metrics TIMESTAMP ts
+  TAGS (host STRING) FIELDS (cpu DOUBLE, mem DOUBLE)
+  RETENTION 30 DAYS</code></pre>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Add Downsampling Policy</div>
+<pre class="ts-ingest-code"><code>ALTER TIMESERIES TYPE metrics ADD DOWNSAMPLING POLICY
+  AFTER 7 DAYS GRANULARITY 1 HOURS
+  AFTER 30 DAYS GRANULARITY 1 DAYS</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              You can also manage downsampling policies from the <b>Schema</b> tab using the visual controls.
+            </p>
+          </div>
+        </div>
+
+        <!-- Comparison Table -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-balance-scale" style="color: #6366f1;"></i> Method Comparison</h6>
+            <div class="table-responsive">
+              <table class="table table-sm" style="font-size: 0.85rem;">
+                <thead><tr><th>Method</th><th>Best For</th><th>Throughput</th><th>Batching</th></tr></thead>
+                <tbody>
+                  <tr><td><b>Line Protocol</b></td><td>Bulk ingestion, IoT, metrics collection</td><td>Highest</td><td>Native (multi-line)</td></tr>
+                  <tr><td><b>SQL INSERT</b></td><td>Small batches, ad-hoc inserts, SQL workflows</td><td>Medium</td><td>One row per statement</td></tr>
+                  <tr><td><b>Java API</b></td><td>Embedded applications, maximum control</td><td>Highest</td><td>Native (array-based)</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <hr style="margin: 24px 0;" />
+
+        <h5 style="margin-bottom: 16px;">Grafana Integration</h5>
+        <p style="font-size: 0.9rem; color: var(--text-muted);">
+          ArcadeDB exposes Grafana DataFrame-compatible endpoints so you can visualize TimeSeries data in Grafana
+          without a custom plugin. Use the
+          <a href="https://grafana.com/grafana/plugins/yesoreyeram-infinity-datasource/" target="_blank">Grafana Infinity datasource</a>
+          plugin to connect.
+        </p>
+
+        <!-- Grafana Setup -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-chart-area" style="color: #f46800;"></i> 1. Install the Infinity Datasource Plugin</h6>
+            <p style="font-size: 0.85rem;">
+              The Infinity plugin is a generic JSON/CSV/XML datasource maintained by the Grafana community.
+              Install it from the Grafana plugin catalog or via CLI:
+            </p>
+<pre class="ts-ingest-code"><code>grafana cli plugins install yesoreyeram-infinity-datasource
+# then restart Grafana</code></pre>
+          </div>
+        </div>
+
+        <!-- Grafana Datasource Config -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-cog" style="color: #f46800;"></i> 2. Configure the Datasource</h6>
+            <p style="font-size: 0.85rem;">
+              In Grafana, go to <b>Connections &rarr; Data Sources &rarr; Add data source</b>, select <b>Infinity</b>, and configure:
+            </p>
+            <div class="table-responsive">
+              <table class="table table-sm" style="font-size: 0.85rem;">
+                <thead><tr><th style="width:200px;">Setting</th><th>Value</th></tr></thead>
+                <tbody>
+                  <tr><td><b>URL</b></td><td><code>http://&lt;arcadedb-host&gt;:2480</code></td></tr>
+                  <tr><td><b>Authentication</b></td><td>Basic Auth</td></tr>
+                  <tr><td><b>User / Password</b></td><td>Your ArcadeDB credentials</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">
+              Test the connection using the <b>Health Check URL</b>:
+            </p>
+<pre class="ts-ingest-code"><code>GET /api/v1/ts/{database}/grafana/health
+
+# Response: { "status": "ok", "database": "mydb" }</code></pre>
+          </div>
+        </div>
+
+        <!-- Grafana Endpoints -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-plug" style="color: #f46800;"></i> 3. Available Endpoints</h6>
+            <div class="table-responsive">
+              <table class="table table-sm" style="font-size: 0.85rem;">
+                <thead><tr><th>Method</th><th>Endpoint</th><th>Purpose</th></tr></thead>
+                <tbody>
+                  <tr><td><code>GET</code></td><td><code>/api/v1/ts/{db}/grafana/health</code></td><td>Datasource health check</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/api/v1/ts/{db}/grafana/metadata</code></td><td>Discover types, fields, tags, aggregation types</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/v1/ts/{db}/grafana/query</code></td><td>Query &rarr; Grafana DataFrame JSON</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Grafana Metadata -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-list" style="color: #f46800;"></i> 4. Discover Available Metrics (Metadata)</h6>
+            <p style="font-size: 0.85rem;">
+              Use the metadata endpoint to discover TimeSeries types and their fields before configuring panels:
+            </p>
+<pre class="ts-ingest-code"><code>curl -u root:password \
+  "http://localhost:2480/api/v1/ts/mydb/grafana/metadata"</code></pre>
+            <div style="font-size: 0.82rem; font-weight: 600; margin: 8px 0 4px;">Response</div>
+<pre class="ts-ingest-code"><code>{
+  "types": [
+    {
+      "name": "weather",
+      "fields": [{ "name": "temperature", "dataType": "DOUBLE" }],
+      "tags": [{ "name": "location", "dataType": "STRING" }]
+    }
+  ],
+  "aggregationTypes": ["SUM", "AVG", "MIN", "MAX", "COUNT"]
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- Grafana Query -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-play" style="color: #f46800;"></i> 5. Build a Panel Query</h6>
+            <p style="font-size: 0.85rem;">
+              Configure the Infinity plugin to POST JSON to the query endpoint. Each target maps to a Grafana panel query
+              (refId A, B, C...). The response uses the columnar DataFrame format Grafana expects.
+            </p>
+            <div style="font-size: 0.82rem; font-weight: 600; margin-bottom: 4px;">Request</div>
+<pre class="ts-ingest-code"><code>{
+  "from": 1700000000000,
+  "to": 1700086400000,
+  "maxDataPoints": 1000,
+  "targets": [
+    {
+      "refId": "A",
+      "type": "weather",
+      "fields": ["temperature"],
+      "tags": { "location": "us-east" },
+      "aggregation": {
+        "bucketInterval": 60000,
+        "requests": [
+          { "field": "temperature", "type": "AVG", "alias": "avg_temp" }
+        ]
+      }
+    }
+  ]
+}</code></pre>
+            <div style="font-size: 0.82rem; font-weight: 600; margin: 8px 0 4px;">Response (DataFrame format)</div>
+<pre class="ts-ingest-code"><code>{
+  "results": {
+    "A": {
+      "frames": [{
+        "schema": {
+          "fields": [
+            { "name": "time", "type": "time" },
+            { "name": "avg_temp", "type": "number" }
+          ]
+        },
+        "data": {
+          "values": [
+            [1700000000000, 1700000060000],
+            [23.5, 24.1]
+          ]
+        }
+      }]
+    }
+  }
+}</code></pre>
+            <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0;">
+              <b>Auto bucket interval:</b> If <code>aggregation</code> is present but <code>bucketInterval</code> is omitted,
+              it is automatically calculated as <code>(to - from) / maxDataPoints</code>.
+              Omit <code>aggregation</code> entirely to get raw data points.
+            </p>
+          </div>
+        </div>
+
+        <!-- Grafana curl example -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6><i class="fa fa-terminal" style="color: #f46800;"></i> 6. curl Example</h6>
+<pre class="ts-ingest-code"><code>curl -u root:password -X POST \
+  "http://localhost:2480/api/v1/ts/mydb/grafana/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": 1700000000000,
+    "to": 1700086400000,
+    "maxDataPoints": 500,
+    "targets": [{
+      "refId": "A",
+      "type": "weather",
+      "aggregation": {
+        "requests": [
+          { "field": "temperature", "type": "AVG", "alias": "avg_temp" }
+        ]
+      }
+    }]
+  }'</code></pre>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>

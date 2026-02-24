@@ -305,6 +305,16 @@ public interface DatabaseAsyncExecutor {
       boolean light, NewEdgeCallback callback, Object... properties);
 
   /**
+   * Schedules the asynchronous append of time-series samples. The samples are routed to shards in a round-robin
+   * fashion, with each shard pinned to a dedicated async slot for zero-contention parallel ingestion.
+   *
+   * @param typeName     The name of the TimeSeries type
+   * @param timestamps   Array of timestamps for each sample
+   * @param columnValues One array per column (tags + fields), each with the same length as timestamps
+   */
+  void appendSamples(String typeName, long[] timestamps, Object[]... columnValues);
+
+  /**
    * Forces the shutdown of the asynchronous threads.
    */
   void kill();

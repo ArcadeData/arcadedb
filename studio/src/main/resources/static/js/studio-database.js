@@ -287,6 +287,7 @@ function updateDatabases(callback) {
       let username = data.user || globalUsername || 'unknown';
       $("#queryUser").html(username);
       $("#databaseUser").html(username);
+      $("#tsUser").html(username);
       console.log("Set user to:", username);
 
       // CRITICAL: Always hide login and show studio, even if other operations fail
@@ -583,6 +584,334 @@ function dropIndex(indexName) {
   );
 }
 
+function collectTypeProperties(typeName) {
+  let props = [];
+  let visited = {};
+
+  function collect(name) {
+    if (visited[name]) return;
+    visited[name] = true;
+    let type = findTypeInResult(name, window._schemaTypes || []);
+    if (!type) return;
+    for (let k in type.properties) {
+      let p = type.properties[k];
+      if (!props.find(function (x) { return x.name == p.name; }))
+        props.push({ name: p.name, type: p.type || "" });
+    }
+    for (let ptidx in type.parentTypes)
+      if (type.parentTypes[ptidx] != "")
+        collect(type.parentTypes[ptidx]);
+  }
+  collect(typeName);
+  return props;
+}
+
+function refreshSchemaAndShowType(typeName) {
+  fetchSchemaTypes(function (types) {
+    let subTypes = {};
+    for (let i in types) {
+      let t = types[i];
+      for (let ptidx in t.parentTypes) {
+        let pt = t.parentTypes[ptidx];
+        if (subTypes[pt] == null) subTypes[pt] = [];
+        subTypes[pt].push(t.name);
+      }
+    }
+    window._schemaSubTypes = subTypes;
+    window._schemaTypes = types;
+    showTypeDetail(typeName);
+  });
+}
+
+function createProperty(typeName) {
+  let database = getCurrentDatabase();
+  if (database == "") {
+    globalNotify("Error", "Database not selected", "danger");
+    return;
+  }
+
+  let allTypes = [
+    "BOOLEAN", "INTEGER", "SHORT", "LONG", "FLOAT", "DOUBLE", "BYTE",
+    "STRING", "BINARY", "DATE", "DATETIME", "DATETIME_SECOND", "DATETIME_MICROS", "DATETIME_NANOS",
+    "DECIMAL", "LIST", "MAP", "LINK", "EMBEDDED",
+    "ARRAY_OF_SHORTS", "ARRAY_OF_INTEGERS", "ARRAY_OF_LONGS", "ARRAY_OF_FLOATS", "ARRAY_OF_DOUBLES"
+  ];
+
+  let linkedTypes = [
+    "BOOLEAN", "INTEGER", "SHORT", "LONG", "FLOAT", "DOUBLE", "BYTE",
+    "STRING", "BINARY", "DATE", "DATETIME", "DATETIME_SECOND", "DATETIME_MICROS", "DATETIME_NANOS",
+    "DECIMAL", "LINK", "EMBEDDED"
+  ];
+  if (window._schemaTypes) {
+    for (let i in window._schemaTypes)
+      linkedTypes.push(window._schemaTypes[i].name);
+  }
+
+  var dlg = document.getElementById("globalModalDialog");
+  dlg.classList.add("modal-lg");
+  var modalEl = document.getElementById("globalModal");
+  modalEl.addEventListener("hidden.bs.modal", function restorePropSize() {
+    dlg.classList.remove("modal-lg");
+    modalEl.removeEventListener("hidden.bs.modal", restorePropSize);
+  });
+
+  let html = "";
+
+  html += "<label for='inputCreatePropName'>Property name <span style='color:#dc3545'>*</span></label>";
+  html += "<input class='form-control mt-1 mb-3' id='inputCreatePropName' placeholder='e.g. myProperty'>";
+
+  html += "<label for='inputCreatePropType'>Type <span style='color:#dc3545'>*</span></label>";
+  html += "<select class='form-select mt-1 mb-3' id='inputCreatePropType'>";
+  for (let i = 0; i < allTypes.length; i++)
+    html += "<option value='" + allTypes[i] + "'" + (allTypes[i] == "STRING" ? " selected" : "") + ">" + allTypes[i] + "</option>";
+  html += "</select>";
+
+  html += "<div id='createPropOfTypeRow' style='display:none;'>";
+  html += "<label for='inputCreatePropOfType'>Of Type <small class='text-muted'>(element / linked type)</small></label>";
+  html += "<input class='form-control mt-1 mb-3' id='inputCreatePropOfType' list='createPropOfTypeList' placeholder='e.g. STRING'>";
+  html += "<datalist id='createPropOfTypeList'>";
+  for (let i = 0; i < linkedTypes.length; i++)
+    html += "<option value='" + escapeHtml(linkedTypes[i]) + "'>";
+  html += "</datalist>";
+  html += "</div>";
+
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreatePropDefault'>Default value</label>";
+  html += "<input class='form-control mt-1' id='inputCreatePropDefault' placeholder='(none)'>";
+  html += "</div>";
+  html += "<div class='col-6' id='createPropRegexpRow'>";
+  html += "<label for='inputCreatePropRegexp'>Regexp</label>";
+  html += "<input class='form-control mt-1' id='inputCreatePropRegexp' placeholder='e.g. [A-Za-z0-9]+'>";
+  html += "</div>";
+  html += "</div>";
+
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreatePropMin'>Min</label>";
+  html += "<input class='form-control mt-1' id='inputCreatePropMin' placeholder='(none)'>";
+  html += "</div>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreatePropMax'>Max</label>";
+  html += "<input class='form-control mt-1' id='inputCreatePropMax' placeholder='(none)'>";
+  html += "</div>";
+  html += "</div>";
+
+  html += "<div class='d-flex flex-wrap gap-3'>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropMandatory'><label class='form-check-label' for='inputCreatePropMandatory'>Mandatory</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropNotNull'><label class='form-check-label' for='inputCreatePropNotNull'>Not Null</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropHidden'><label class='form-check-label' for='inputCreatePropHidden'>Hidden</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropReadOnly'><label class='form-check-label' for='inputCreatePropReadOnly'>Read Only</label></div>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropIfNotExists'><label class='form-check-label' for='inputCreatePropIfNotExists'>If not exists</label></div>";
+  html += "</div>";
+
+  globalPrompt("Add Property to " + escapeHtml(typeName), html, "Create", function () {
+    let name = $("#inputCreatePropName").val().trim();
+    if (name == "") {
+      globalNotify("Error", "Property name is required", "danger");
+      return;
+    }
+
+    let type = $("#inputCreatePropType").val();
+    let ofType = $("#inputCreatePropOfType").val().trim();
+    let defaultVal = $("#inputCreatePropDefault").val().trim();
+    let regexp = $("#inputCreatePropRegexp").val().trim();
+    let min = $("#inputCreatePropMin").val().trim();
+    let max = $("#inputCreatePropMax").val().trim();
+    let mandatory = $("#inputCreatePropMandatory").prop("checked");
+    let notNull = $("#inputCreatePropNotNull").prop("checked");
+    let hidden = $("#inputCreatePropHidden").prop("checked");
+    let readOnly = $("#inputCreatePropReadOnly").prop("checked");
+    let ifNotExists = $("#inputCreatePropIfNotExists").prop("checked");
+
+    let command = "CREATE PROPERTY `" + typeName + "`.`" + name + "`";
+    if (ifNotExists) command += " IF NOT EXISTS";
+    command += " " + type;
+    if (ofType != "") command += " OF " + ofType;
+
+    let constraints = [];
+    if (mandatory) constraints.push("MANDATORY true");
+    if (notNull) constraints.push("NOTNULL true");
+    if (hidden) constraints.push("HIDDEN true");
+    if (readOnly) constraints.push("READONLY true");
+    if (defaultVal != "") constraints.push("DEFAULT " + defaultVal);
+    if (min != "") constraints.push("MIN " + min);
+    if (max != "") constraints.push("MAX " + max);
+    if (regexp != "") constraints.push("REGEXP '" + regexp.replace(/'/g, "''") + "'");
+    if (constraints.length > 0) command += " (" + constraints.join(", ") + ")";
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + database,
+      data: JSON.stringify({ language: "sql", command: command, serializer: "record" }),
+      beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    }).done(function (data) {
+      globalNotify("Success", "Property '" + escapeHtml(name) + "' created on '" + escapeHtml(typeName) + "'", "success");
+      refreshSchemaAndShowType(typeName);
+    }).fail(function (jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+    });
+  });
+
+  setTimeout(function () {
+    function updatePropVisibility() {
+      let sel = $("#inputCreatePropType").val();
+      if (sel == "LIST" || sel == "MAP" || sel == "LINK" || sel == "EMBEDDED")
+        $("#createPropOfTypeRow").show();
+      else
+        $("#createPropOfTypeRow").hide();
+      if (sel == "STRING")
+        $("#createPropRegexpRow").show();
+      else
+        $("#createPropRegexpRow").hide();
+    }
+    $("#inputCreatePropType").on("change", updatePropVisibility);
+    updatePropVisibility();
+  }, 100);
+}
+
+function createIndex(typeName) {
+  let database = getCurrentDatabase();
+  if (database == "") {
+    globalNotify("Error", "Database not selected", "danger");
+    return;
+  }
+
+  let properties = collectTypeProperties(typeName);
+
+  let vectorProps = properties.filter(function (p) {
+    return p.type == "ARRAY_OF_FLOATS" || p.type == "ARRAY_OF_DOUBLES";
+  });
+
+  let html = "";
+
+  // Normal properties (LSM_TREE / FULL_TEXT)
+  html += "<div id='createIdxPropsNormal'>";
+  html += "<label>Properties <span style='color:#dc3545'>*</span></label>";
+  if (properties.length > 0) {
+    html += "<small class='text-muted d-block mt-1'>Hold Ctrl/Cmd to select multiple for a composite index.</small>";
+    html += "<select class='form-select mt-1 mb-3' id='inputCreateIdxProps' multiple style='height:auto;min-height:60px;max-height:140px;'>";
+    for (let i = 0; i < properties.length; i++)
+      html += "<option value='" + escapeHtml(properties[i].name) + "'>" + escapeHtml(properties[i].name) + " <small>(" + escapeHtml(properties[i].type) + ")</small></option>";
+    html += "</select>";
+  } else {
+    html += "<input class='form-control mt-1 mb-3' id='inputCreateIdxPropsText' placeholder='Property names, comma-separated (e.g. name, age)'>";
+  }
+  html += "</div>";
+
+  // Vector property (LSM_VECTOR only — single property of type ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES)
+  html += "<div id='createIdxPropsVector' style='display:none;'>";
+  html += "<label>Property <span style='color:#dc3545'>*</span></label>";
+  html += "<small class='text-muted d-block mt-1'>LSM_VECTOR requires exactly one property of type ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES.</small>";
+  if (vectorProps.length > 0) {
+    html += "<select class='form-select mt-1 mb-3' id='inputCreateIdxPropsVector'>";
+    for (let i = 0; i < vectorProps.length; i++)
+      html += "<option value='" + escapeHtml(vectorProps[i].name) + "'>" + escapeHtml(vectorProps[i].name) + " (" + escapeHtml(vectorProps[i].type) + ")</option>";
+    html += "</select>";
+  } else {
+    html += "<input class='form-control mt-1 mb-3' id='inputCreateIdxPropsVectorText' placeholder='Property name (ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES)'>";
+  }
+  html += "</div>";
+
+  html += "<label for='inputCreateIdxAlgorithm'>Index Algorithm <span style='color:#dc3545'>*</span></label>";
+  html += "<select class='form-select mt-1 mb-3' id='inputCreateIdxAlgorithm'>";
+  html += "<option value='LSM_TREE' selected>LSM_TREE — default</option>";
+  html += "<option value='FULL_TEXT'>FULL_TEXT — full-text search index</option>";
+  html += "<option value='LSM_VECTOR'>LSM_VECTOR — vector/embedding similarity index</option>";
+  html += "</select>";
+
+  html += "<div id='createIdxLsmOptions'>";
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreateIdxNullStrategy'>Null Strategy <small class='text-muted'>(optional)</small></label>";
+  html += "<select class='form-select mt-1' id='inputCreateIdxNullStrategy'>";
+  html += "<option value='' selected>(default)</option>";
+  html += "<option value='SKIP'>SKIP — skip null values</option>";
+  html += "<option value='INDEX'>INDEX — index null values</option>";
+  html += "</select>";
+  html += "</div>";
+  html += "<div class='col-6 d-flex align-items-end pb-1'>";
+  html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreateIdxUnique'><label class='form-check-label' for='inputCreateIdxUnique'>Unique</label></div>";
+  html += "</div>";
+  html += "</div>";
+  html += "</div>";
+
+  html += "<div class='form-check'>";
+  html += "<input class='form-check-input' type='checkbox' id='inputCreateIdxIfNotExists'>";
+  html += "<label class='form-check-label' for='inputCreateIdxIfNotExists'>If not exists</label>";
+  html += "</div>";
+
+  globalPrompt("Add Index to " + escapeHtml(typeName), html, "Create", function () {
+    let algorithm = $("#inputCreateIdxAlgorithm").val();
+    let selectedProps = [];
+    if (algorithm == "LSM_VECTOR") {
+      let vectorEl = document.getElementById("inputCreateIdxPropsVector");
+      if (vectorEl) {
+        let val = $("#inputCreateIdxPropsVector").val();
+        if (val) selectedProps = [val];
+      } else {
+        let text = $("#inputCreateIdxPropsVectorText").val().trim();
+        if (text != "") selectedProps = [text];
+      }
+    } else {
+      let multiEl = document.getElementById("inputCreateIdxProps");
+      if (multiEl) {
+        let vals = $("#inputCreateIdxProps").val();
+        if (vals && vals.length > 0) selectedProps = vals;
+      } else {
+        let text = $("#inputCreateIdxPropsText").val().trim();
+        if (text != "")
+          selectedProps = text.split(",").map(function (p) { return p.trim(); }).filter(function (p) { return p != ""; });
+      }
+    }
+
+    if (selectedProps.length == 0) {
+      globalNotify("Error", "At least one property is required", "danger");
+      return;
+    }
+    let unique = $("#inputCreateIdxUnique").prop("checked");
+    let nullStrategy = $("#inputCreateIdxNullStrategy").val();
+    let ifNotExists = $("#inputCreateIdxIfNotExists").prop("checked");
+
+    let indexTypeSql = algorithm == "LSM_TREE" ? (unique ? "UNIQUE" : "NOTUNIQUE") : algorithm;
+
+    let command = "CREATE INDEX";
+    if (ifNotExists) command += " IF NOT EXISTS";
+    command += " ON `" + typeName + "` (";
+    command += selectedProps.map(function (p) { return "`" + p + "`"; }).join(", ");
+    command += ") " + indexTypeSql;
+    if (algorithm == "LSM_TREE" && nullStrategy != "") command += " NULL_STRATEGY " + nullStrategy;
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + database,
+      data: JSON.stringify({ language: "sql", command: command, serializer: "record" }),
+      beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    }).done(function (data) {
+      globalNotify("Success", "Index created on '" + escapeHtml(typeName) + "'", "success");
+      refreshSchemaAndShowType(typeName);
+    }).fail(function (jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+    });
+  });
+
+  setTimeout(function () {
+    function updateIdxVisibility() {
+      let alg = $("#inputCreateIdxAlgorithm").val();
+      if (alg == "LSM_VECTOR") {
+        $("#createIdxPropsNormal").hide();
+        $("#createIdxPropsVector").show();
+        $("#createIdxLsmOptions").hide();
+      } else {
+        $("#createIdxPropsNormal").show();
+        $("#createIdxPropsVector").hide();
+        $("#createIdxLsmOptions").toggle(alg == "LSM_TREE");
+      }
+    }
+    $("#inputCreateIdxAlgorithm").on("change", updateIdxVisibility);
+  }, 100);
+}
+
 function validateTypeName(name) {
   if (name == null || name.trim() == "")
     return "Type name is required";
@@ -735,6 +1064,215 @@ function createType(category) {
       }
     });
   }, 200);
+}
+
+function createTimeSeriesType() {
+  // Widen the modal for the TimeSeries form
+  var dlg = document.getElementById("globalModalDialog");
+  dlg.classList.add("modal-lg");
+  var modalEl = document.getElementById("globalModal");
+  modalEl.addEventListener("hidden.bs.modal", function restoreSize() {
+    dlg.classList.remove("modal-lg");
+    modalEl.removeEventListener("hidden.bs.modal", restoreSize);
+  });
+
+  let html = "<label for='tsCreateName'>Type Name <span style='color:#dc3545'>*</span></label>";
+  html += "<input class='form-control mt-1' id='tsCreateName' placeholder='e.g. sensor_data'>";
+  html += "<div id='tsCreateNameFeedback' style='font-size:0.78rem;min-height:20px;margin-bottom:8px;'></div>";
+
+  html += "<label for='tsCreateTimestamp'>Timestamp Column Name <span style='color:#dc3545'>*</span></label>";
+  html += "<input class='form-control mt-1 mb-3' id='tsCreateTimestamp' value='ts' placeholder='e.g. ts'>";
+
+  // Tags section
+  html += "<label>Tags <small class='text-muted'>(indexed metadata columns for filtering)</small></label>";
+  html += "<div id='tsCreateTags' class='mb-2'></div>";
+  html += "<button type='button' class='btn btn-sm btn-outline-secondary mb-3' onclick='tsAddColumnRow(\"tsCreateTags\", \"TAG\")'><i class='fa fa-plus'></i> Add Tag</button>";
+
+  // Fields section
+  html += "<label>Fields <small class='text-muted'>(measurement value columns)</small></label>";
+  html += "<div id='tsCreateFields' class='mb-2'></div>";
+  html += "<button type='button' class='btn btn-sm btn-outline-secondary mb-3' onclick='tsAddColumnRow(\"tsCreateFields\", \"FIELD\")'><i class='fa fa-plus'></i> Add Field</button>";
+
+  // Advanced options
+  html += "<div class='mt-2 mb-2'>";
+  html += "<a href='#' onclick='$(\"#tsAdvancedOptions\").toggle(); return false;' style='font-size:0.85rem;'><i class='fa fa-cog'></i> Advanced Options</a>";
+  html += "</div>";
+  html += "<div id='tsAdvancedOptions' style='display:none;'>";
+
+  html += "<div class='row mb-2'>";
+  html += "<div class='col-4'>";
+  html += "<label for='tsCreateShards'>Shards</label>";
+  html += "<input class='form-control form-control-sm mt-1' id='tsCreateShards' type='number' min='1' max='64' placeholder='1'>";
+  html += "</div>";
+  html += "<div class='col-4'>";
+  html += "<label for='tsCreateRetention'>Retention</label>";
+  html += "<div class='d-flex gap-1 mt-1'>";
+  html += "<input class='form-control form-control-sm' id='tsCreateRetention' type='number' min='0' placeholder='0' style='width:70px;'>";
+  html += "<select class='form-select form-select-sm' id='tsCreateRetentionUnit' style='width:auto;'><option value='DAYS' selected>Days</option><option value='HOURS'>Hours</option><option value='MINUTES'>Minutes</option></select>";
+  html += "</div>";
+  html += "</div>";
+  html += "<div class='col-4'>";
+  html += "<label for='tsCreateCompaction'>Compaction Interval</label>";
+  html += "<div class='d-flex gap-1 mt-1'>";
+  html += "<input class='form-control form-control-sm' id='tsCreateCompaction' type='number' min='0' placeholder='0' style='width:70px;'>";
+  html += "<select class='form-select form-select-sm' id='tsCreateCompactionUnit' style='width:auto;'><option value='HOURS' selected>Hours</option><option value='DAYS'>Days</option><option value='MINUTES'>Minutes</option></select>";
+  html += "</div>";
+  html += "</div>";
+  html += "</div>";
+
+  // If not exists
+  html += "<div class='form-check mb-2'>";
+  html += "<input class='form-check-input' type='checkbox' id='tsCreateIfNotExists'>";
+  html += "<label class='form-check-label' for='tsCreateIfNotExists'>If not exists</label>";
+  html += "</div>";
+  html += "</div>";
+
+  globalPrompt("Create TimeSeries Type", html, "Create", function () {
+    let name = $("#tsCreateName").val().trim();
+    let error = validateTypeName(name);
+    if (error && !$("#tsCreateIfNotExists").prop("checked")) {
+      globalNotify("Error", error, "danger");
+      return;
+    }
+
+    let timestamp = $("#tsCreateTimestamp").val().trim();
+    if (!timestamp) {
+      globalNotify("Error", "Timestamp column name is required", "danger");
+      return;
+    }
+
+    // Collect tags
+    let tags = [];
+    $("#tsCreateTags .ts-col-row").each(function () {
+      let colName = $(this).find(".ts-col-name").val().trim();
+      let colType = $(this).find(".ts-col-type").val();
+      if (colName)
+        tags.push(colName + " " + colType);
+    });
+
+    // Collect fields
+    let fields = [];
+    $("#tsCreateFields .ts-col-row").each(function () {
+      let colName = $(this).find(".ts-col-name").val().trim();
+      let colType = $(this).find(".ts-col-type").val();
+      if (colName)
+        fields.push(colName + " " + colType);
+    });
+
+    if (tags.length == 0 && fields.length == 0) {
+      globalNotify("Error", "At least one tag or field is required", "danger");
+      return;
+    }
+
+    let command = "CREATE TIMESERIES TYPE `" + name + "`";
+
+    if ($("#tsCreateIfNotExists").prop("checked"))
+      command += " IF NOT EXISTS";
+
+    command += " TIMESTAMP " + timestamp;
+
+    if (tags.length > 0)
+      command += " TAGS (" + tags.join(", ") + ")";
+
+    if (fields.length > 0)
+      command += " FIELDS (" + fields.join(", ") + ")";
+
+    let shards = $("#tsCreateShards").val();
+    if (shards && parseInt(shards) > 0)
+      command += " SHARDS " + parseInt(shards);
+
+    let retention = $("#tsCreateRetention").val();
+    if (retention && parseInt(retention) > 0)
+      command += " RETENTION " + parseInt(retention) + " " + $("#tsCreateRetentionUnit").val();
+
+    let compaction = $("#tsCreateCompaction").val();
+    if (compaction && parseInt(compaction) > 0)
+      command += " COMPACTION_INTERVAL " + parseInt(compaction) + " " + $("#tsCreateCompactionUnit").val();
+
+    let database = getCurrentDatabase();
+    if (!database) {
+      globalNotify("Error", "Database not selected", "danger");
+      return;
+    }
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/command/" + database,
+      data: JSON.stringify({ language: "sql", command: command, serializer: "record" }),
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      }
+    })
+    .done(function (data) {
+      globalNotify("Success", "TimeSeries type '" + escapeHtml(name) + "' created", "success");
+      displaySchema();
+    })
+    .fail(function (jqXHR) {
+      globalNotifyError(jqXHR.responseText);
+    });
+  });
+
+  // Wire up live validation
+  setTimeout(function () {
+    $("#tsCreateName").on("input", function () {
+      let name = $(this).val().trim();
+      let feedback = $("#tsCreateNameFeedback");
+      if (name == "") {
+        feedback.html("");
+        $(this).removeClass("is-invalid is-valid");
+        return;
+      }
+      let error = validateTypeName(name);
+      if (error) {
+        feedback.html("<span style='color:#dc3545;'><i class='fa fa-circle-exclamation'></i> " + escapeHtml(error) + "</span>");
+        $(this).addClass("is-invalid").removeClass("is-valid");
+      } else {
+        feedback.html("<span style='color:#28a745;'><i class='fa fa-circle-check'></i> Name is available</span>");
+        $(this).addClass("is-valid").removeClass("is-invalid");
+      }
+    });
+
+    // Add one default tag and one default field row
+    tsAddColumnRow("tsCreateTags", "TAG");
+    tsAddColumnRow("tsCreateFields", "FIELD");
+  }, 200);
+}
+
+function tsAddColumnRow(containerId, role) {
+  let typeOptions = role == "TAG"
+    ? "<option value='STRING' selected>STRING</option><option value='INTEGER'>INTEGER</option><option value='LONG'>LONG</option>"
+    : "<option value='DOUBLE' selected>DOUBLE</option><option value='LONG'>LONG</option><option value='FLOAT'>FLOAT</option><option value='INTEGER'>INTEGER</option><option value='STRING'>STRING</option>";
+
+  let html = "<div class='d-flex gap-2 mb-1 ts-col-row'>";
+  html += "<input class='form-control form-control-sm ts-col-name' placeholder='Column name' style='flex:2;'>";
+  html += "<select class='form-select form-select-sm ts-col-type' style='flex:1;'>" + typeOptions + "</select>";
+  html += "<button type='button' class='btn btn-sm btn-outline-danger' onclick='$(this).closest(\".ts-col-row\").remove()'><i class='fa fa-times'></i></button>";
+  html += "</div>";
+  $("#" + containerId).append(html);
+}
+
+function formatTsDuration(ms) {
+  if (ms <= 0) return "none";
+  let days = ms / (24 * 60 * 60 * 1000);
+  if (days >= 1 && days == Math.floor(days))
+    return days + " day" + (days > 1 ? "s" : "");
+  let hours = ms / (60 * 60 * 1000);
+  if (hours >= 1 && hours == Math.floor(hours))
+    return hours + " hour" + (hours > 1 ? "s" : "");
+  let minutes = ms / (60 * 1000);
+  if (minutes >= 1)
+    return Math.round(minutes) + " min";
+  let seconds = ms / 1000;
+  return Math.round(seconds) + " sec";
+}
+
+function formatTsTimestamp(ms) {
+  if (ms == null) return "—";
+  try {
+    return new Date(ms).toISOString().replace("T", " ").replace("Z", "");
+  } catch (e) {
+    return ms.toLocaleString();
+  }
 }
 
 function getCurrentDatabase() {
@@ -1654,7 +2192,7 @@ function populateSettingsPanel() {
   html += "<div class='settings-section'>";
   html += "<div class='settings-section-header'>Graph Settings</div>";
   html += "<div class='settings-row'><label>Graph Spacing: <span id='settingGraphSpacingVal'>" + spacingVal + "</span></label>";
-  html += "<input type='range' class='form-range' id='settingGraphSpacing' min='10' max='100' step='10' value='" + spacingVal + "' onchange='applyGraphSpacing(this.value)'></div>";
+  html += "<input type='range' class='form-range' id='settingGraphSpacing' min='10' max='150' step='10' value='" + spacingVal + "' onchange='applyGraphSpacing(this.value)'></div>";
   html += "<div class='settings-row'><label>Cumulative Selection</label>";
   html += "<input type='checkbox' class='form-check-input' id='settingCumulativeSelection' " + cumulativeChecked + " onchange='applyCumulativeSelection(this.checked)'></div>";
   html += "</div>";
@@ -1906,18 +2444,19 @@ function displaySchema() {
     window._schemaTypes = types;
 
     // Group types by category
-    let groups = { vertex: [], edge: [], document: [] };
+    let groups = { vertex: [], edge: [], document: [], timeseries: [] };
     for (let i in types) {
       let row = types[i];
-      let cat = row.type == "vertex" ? "vertex" : (row.type == "edge" ? "edge" : "document");
+      let cat = row.type == "vertex" ? "vertex" : (row.type == "edge" ? "edge" : (row.type == "t" ? "timeseries" : "document"));
       groups[cat].push(row);
     }
 
     // Render badge sidebar
     let sections = [
-      { key: "vertex",   label: "Vertices",  icon: "fa-circle-nodes" },
-      { key: "edge",     label: "Edges",     icon: "fa-right-left" },
-      { key: "document", label: "Documents", icon: "fa-file-lines" }
+      { key: "vertex",     label: "Vertices",    icon: "fa-circle-nodes" },
+      { key: "edge",       label: "Edges",        icon: "fa-right-left" },
+      { key: "document",   label: "Documents",    icon: "fa-file-lines" },
+      { key: "timeseries", label: "TimeSeries",   icon: "fa-chart-line" }
     ];
 
     let html = "";
@@ -1932,7 +2471,10 @@ function displaySchema() {
 
       html += "<div class='sidebar-section'>";
       html += "<div class='sidebar-section-header'><i class='fa " + sec.icon + "'></i> " + sec.label + " <span class='sidebar-count'>(" + total.toLocaleString() + ")</span>";
-      html += "<span class='sidebar-section-header-actions'><button onclick='createType(\"" + sec.key + "\"); return false;' title='Create " + sec.key + " type'><i class='fa fa-plus'></i></button></span>";
+      if (sec.key == "timeseries")
+        html += "<span class='sidebar-section-header-actions'><button onclick='createTimeSeriesType(); return false;' title='Create timeseries type'><i class='fa fa-plus'></i></button></span>";
+      else
+        html += "<span class='sidebar-section-header-actions'><button onclick='createType(\"" + sec.key + "\"); return false;' title='Create " + sec.key + " type'><i class='fa fa-plus'></i></button></span>";
       html += "</div>";
       html += "<div class='sidebar-badges'>";
 
@@ -1981,8 +2523,8 @@ function showTypeDetail(typeName) {
       $(this).addClass("db-badge-active");
   });
 
-  let catLabel = row.type == "vertex" ? "Vertex" : (row.type == "edge" ? "Edge" : "Document");
-  let catColor = row.type == "vertex" ? "#3b82f6" : (row.type == "edge" ? "#f97316" : "#22c55e");
+  let catLabel = row.type == "vertex" ? "Vertex" : (row.type == "edge" ? "Edge" : (row.type == "t" ? "TimeSeries" : "Document"));
+  let catColor = row.type == "vertex" ? "#3b82f6" : (row.type == "edge" ? "#f97316" : (row.type == "t" ? "#ec4899" : "#22c55e"));
 
   let html = "";
   html += "<div class='d-flex align-items-center gap-3 mb-3'>";
@@ -2012,28 +2554,140 @@ function showTypeDetail(typeName) {
     html += "</div>";
   }
 
-  // Properties section
-  html += "<div class='db-detail-section'>";
-  html += "<h6><i class='fa fa-list'></i> Properties</h6>";
-  let propHtml = renderProperties(row, types);
-  if (propHtml == "") {
-    html += "<p class='text-muted' style='font-size:0.85rem;'>No properties defined.</p>";
-  } else {
+  // TimeSeries columns section
+  if (row.type == "t" && row.tsColumns && row.tsColumns.length > 0) {
+    html += "<div class='db-detail-section'>";
+    html += "<h6><i class='fa fa-chart-line'></i> TimeSeries Columns</h6>";
     html += "<div class='table-responsive'>";
     html += "<table class='table table-sm db-detail-table'>";
-    html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
-    html += "<tbody>" + propHtml + "</tbody></table></div>";
+    html += "<thead><tr><th>Name</th><th>Data Type</th><th>Role</th></tr></thead><tbody>";
+    for (let c = 0; c < row.tsColumns.length; c++) {
+      let col = row.tsColumns[c];
+      let roleBadge = col.role == "TIMESTAMP" ? "<span class='badge bg-primary'>TIMESTAMP</span>" :
+                      (col.role == "TAG" ? "<span class='badge bg-warning text-dark'>TAG</span>" :
+                       "<span class='badge bg-success'>FIELD</span>");
+      html += "<tr><td>" + escapeHtml(col.name) + "</td><td>" + escapeHtml(col.dataType || "") + "</td><td>" + roleBadge + "</td></tr>";
+    }
+    html += "</tbody></table></div>";
+
+    // TimeSeries configuration
+    html += "<div class='mt-2' style='font-size:0.85rem; color:#888;'>";
+    if (row.shardCount != null)
+      html += "<span class='me-3'>Shards: <strong>" + row.shardCount + "</strong></span>";
+    if (row.retentionMs != null && row.retentionMs > 0)
+      html += "<span class='me-3'>Retention: <strong>" + formatTsDuration(row.retentionMs) + "</strong></span>";
+    if (row.compactionBucketIntervalMs != null && row.compactionBucketIntervalMs > 0)
+      html += "<span class='me-3'>Compaction Interval: <strong>" + formatTsDuration(row.compactionBucketIntervalMs) + "</strong></span>";
+    html += "</div>";
+    html += "</div>";
   }
-  html += "</div>";
+
+  // Properties section (skip for timeseries — already shown in TimeSeries Columns)
+  if (row.type != "t") {
+    html += "<div class='db-detail-section'>";
+    html += "<div class='d-flex align-items-center justify-content-between mb-2'>";
+    html += "<h6 class='mb-0'><i class='fa fa-list'></i> Properties</h6>";
+    html += "<button class='btn btn-sm btn-outline-primary' onclick='createProperty(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;'><i class='fa fa-plus'></i> Add Property</button>";
+    html += "</div>";
+    let propHtml = renderProperties(row, types);
+    if (propHtml == "") {
+      html += "<p class='text-muted' style='font-size:0.85rem;'>No properties defined.</p>";
+    } else {
+      html += "<div class='table-responsive'>";
+      html += "<table class='table table-sm db-detail-table'>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
+      html += "<tbody>" + propHtml + "</tbody></table></div>";
+    }
+    html += "</div>";
+  }
 
   // Indexes section
-  if (row.indexes && row.indexes.length > 0) {
+  if (row.type != "t") {
+    html += "<div class='db-detail-section'>";
+    html += "<div class='d-flex align-items-center justify-content-between mb-2'>";
+    html += "<h6 class='mb-0'><i class='fa fa-bolt'></i> Indexes</h6>";
+    html += "<button class='btn btn-sm btn-outline-primary' onclick='createIndex(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;'><i class='fa fa-plus'></i> Add Index</button>";
+    html += "</div>";
+    if (row.indexes && row.indexes.length > 0) {
+      html += "<div class='table-responsive'>";
+      html += "<table class='table table-sm db-detail-table'>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
+      html += "<tbody>" + renderIndexes(row, types) + "</tbody></table></div>";
+    } else {
+      html += "<p class='text-muted' style='font-size:0.85rem;'>No indexes defined.</p>";
+    }
+    html += "</div>";
+  } else if (row.indexes && row.indexes.length > 0) {
     html += "<div class='db-detail-section'>";
     html += "<h6><i class='fa fa-bolt'></i> Indexes</h6>";
     html += "<div class='table-responsive'>";
     html += "<table class='table table-sm db-detail-table'>";
     html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
     html += "<tbody>" + renderIndexes(row, types) + "</tbody></table></div>";
+    html += "</div>";
+  }
+
+  // TimeSeries diagnostics section
+  if (row.type == "t") {
+    html += "<div class='db-detail-section'>";
+    html += "<h6><i class='fa fa-stethoscope'></i> TimeSeries Diagnostics</h6>";
+
+    // Global stats
+    html += "<div class='row mb-3'>";
+    html += "<div class='col-md-3'><div class='card'><div class='card-body py-2 px-3'><small class='text-muted'>Total Samples</small><div style='font-size:1.2rem;font-weight:600;'>" + (row.records || 0).toLocaleString() + "</div></div></div></div>";
+    html += "<div class='col-md-3'><div class='card'><div class='card-body py-2 px-3'><small class='text-muted'>Shards</small><div style='font-size:1.2rem;font-weight:600;'>" + (row.shardCount || 1) + "</div></div></div></div>";
+    html += "<div class='col-md-3'><div class='card'><div class='card-body py-2 px-3'><small class='text-muted'>Time Range (min)</small><div style='font-size:1.0rem;font-weight:600;'>" + (row.globalMinTimestamp != null ? formatTsTimestamp(row.globalMinTimestamp) : "—") + "</div></div></div></div>";
+    html += "<div class='col-md-3'><div class='card'><div class='card-body py-2 px-3'><small class='text-muted'>Time Range (max)</small><div style='font-size:1.0rem;font-weight:600;'>" + (row.globalMaxTimestamp != null ? formatTsTimestamp(row.globalMaxTimestamp) : "—") + "</div></div></div></div>";
+    html += "</div>";
+
+    // Configuration
+    html += "<h6 style='font-size:0.82rem;margin-top:12px;'>Configuration</h6>";
+    html += "<div class='table-responsive'>";
+    html += "<table class='table table-sm db-detail-table'>";
+    html += "<tbody>";
+    html += "<tr><td style='width:200px;'>Timestamp Column</td><td><code>" + escapeHtml(row.timestampColumn || "ts") + "</code></td></tr>";
+    html += "<tr><td>Retention</td><td>" + (row.retentionMs > 0 ? formatTsDuration(row.retentionMs) : "<span class='text-muted'>unlimited</span>") + "</td></tr>";
+    html += "<tr><td>Compaction Interval</td><td>" + (row.compactionBucketIntervalMs > 0 ? formatTsDuration(row.compactionBucketIntervalMs) : "<span class='text-muted'>none</span>") + "</td></tr>";
+    html += "</tbody></table></div>";
+
+    // Downsampling tiers
+    if (row.downsamplingTiers && row.downsamplingTiers.length > 0) {
+      html += "<h6 style='font-size:0.82rem;margin-top:12px;'>Downsampling Tiers</h6>";
+      html += "<div class='table-responsive'>";
+      html += "<table class='table table-sm db-detail-table'>";
+      html += "<thead><tr><th>After</th><th>Granularity</th></tr></thead><tbody>";
+      for (let d = 0; d < row.downsamplingTiers.length; d++) {
+        let tier = row.downsamplingTiers[d];
+        html += "<tr><td>" + formatTsDuration(tier.afterMs) + "</td><td>" + formatTsDuration(tier.granularityMs) + "</td></tr>";
+      }
+      html += "</tbody></table></div>";
+    }
+
+    // Per-shard stats
+    if (row.shards && row.shards.length > 0) {
+      html += "<h6 style='font-size:0.82rem;margin-top:12px;'>Shard Details</h6>";
+      html += "<div class='table-responsive'>";
+      html += "<table class='table table-sm db-detail-table'>";
+      html += "<thead><tr><th>Shard</th><th>Sealed Blocks</th><th>Sealed Samples</th><th>Mutable Samples</th><th>Total Samples</th><th>Min Timestamp</th><th>Max Timestamp</th></tr></thead><tbody>";
+      for (let s = 0; s < row.shards.length; s++) {
+        let sh = row.shards[s];
+        if (sh.error) {
+          html += "<tr><td>" + sh.shard + "</td><td colspan='6' class='text-danger'>" + escapeHtml(sh.error) + "</td></tr>";
+        } else {
+          html += "<tr>";
+          html += "<td>" + sh.shard + "</td>";
+          html += "<td>" + (sh.sealedBlocks || 0).toLocaleString() + "</td>";
+          html += "<td>" + (sh.sealedSamples || 0).toLocaleString() + "</td>";
+          html += "<td>" + (sh.mutableSamples || 0).toLocaleString() + "</td>";
+          html += "<td><strong>" + (sh.totalSamples || 0).toLocaleString() + "</strong></td>";
+          html += "<td>" + (sh.minTimestamp != null ? formatTsTimestamp(sh.minTimestamp) : (sh.mutableMinTimestamp != null ? formatTsTimestamp(sh.mutableMinTimestamp) : "—")) + "</td>";
+          html += "<td>" + (sh.maxTimestamp != null ? formatTsTimestamp(sh.maxTimestamp) : (sh.mutableMaxTimestamp != null ? formatTsTimestamp(sh.mutableMaxTimestamp) : "—")) + "</td>";
+          html += "</tr>";
+        }
+      }
+      html += "</tbody></table></div>";
+    }
+
     html += "</div>";
   }
 
@@ -2055,7 +2709,8 @@ var sidebarBadgeColors = {
   vertex:   ["#3b82f6", "#0ea5e9", "#6366f1", "#8b5cf6", "#06b6d4", "#2563eb", "#4f46e5", "#0284c7"],
   edge:     ["#f97316", "#f59e0b", "#ef4444", "#e11d48", "#ea580c", "#d97706", "#dc2626", "#be123c"],
   document: ["#22c55e", "#10b981", "#14b8a6", "#059669", "#16a34a", "#0d9488", "#15803d", "#047857"],
-  materializedView: ["#a855f7", "#9333ea", "#7c3aed", "#8b5cf6", "#a78bfa", "#7c3aed", "#6d28d9", "#c084fc"]
+  materializedView: ["#a855f7", "#9333ea", "#7c3aed", "#8b5cf6", "#a78bfa", "#7c3aed", "#6d28d9", "#c084fc"],
+  timeseries: ["#ec4899", "#db2777", "#be185d", "#f472b6", "#e879a8", "#d946ef", "#c026d3", "#a21caf"]
 };
 
 function populateQuerySidebar() {
@@ -2067,21 +2722,22 @@ function populateQuerySidebar() {
     return;
   }
 
-  let groups = { vertex: [], edge: [], document: [] };
-  let totals = { vertex: 0, edge: 0, document: 0 };
+  let groups = { vertex: [], edge: [], document: [], timeseries: [] };
+  let totals = { vertex: 0, edge: 0, document: 0, timeseries: 0 };
 
   for (let i in globalSchemaTypes) {
     let row = globalSchemaTypes[i];
-    let cat = row.type == "vertex" ? "vertex" : (row.type == "edge" ? "edge" : "document");
+    let cat = row.type == "vertex" ? "vertex" : (row.type == "edge" ? "edge" : (row.type == "t" ? "timeseries" : "document"));
     groups[cat].push(row);
     totals[cat] += (row.records || 0);
   }
 
   let html = "";
   let sections = [
-    { key: "vertex",   label: "Vertices",  icon: "fa-circle-nodes" },
-    { key: "edge",     label: "Edges",     icon: "fa-right-left" },
-    { key: "document", label: "Documents", icon: "fa-file-lines" }
+    { key: "vertex",     label: "Vertices",    icon: "fa-circle-nodes" },
+    { key: "edge",       label: "Edges",        icon: "fa-right-left" },
+    { key: "document",   label: "Documents",    icon: "fa-file-lines" },
+    { key: "timeseries", label: "TimeSeries",   icon: "fa-chart-line" }
   ];
 
   for (let s = 0; s < sections.length; s++) {

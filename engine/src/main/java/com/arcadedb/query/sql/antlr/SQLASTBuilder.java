@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * ANTLR4 visitor that builds ArcadeDB's internal AST from the SQL parse tree.
@@ -45,6 +47,13 @@ import java.util.Map;
  * and executor steps.
  */
 public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
+
+  /**
+   * Known function namespace prefixes. When the parser sees {@code namespace.method(args)} and the namespace
+   * is in this set, the AST builder produces a {@link FunctionCall} node with the qualified name
+   * (e.g., "ts.first") instead of an identifier chain with a method modifier.
+   */
+  private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts");
 
   private int positionalParamCounter = 0;
 
@@ -3078,6 +3087,36 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         baseExpr.identifier = baseId;
       }
 
+      // Check for namespaced function call pattern: namespace.method(args)
+      // e.g., ts.first(value, ts) → builds FunctionCall with name "ts.first"
+      if (ctx.identifier().size() == 1
+          && ctx.methodCall() != null && ctx.methodCall().size() == 1
+          && (ctx.arraySelector() == null || ctx.arraySelector().isEmpty())
+          && (ctx.modifier() == null || ctx.modifier().isEmpty())) {
+        final String baseIdName = ctx.identifier(0).getText();
+
+        if (FUNCTION_NAMESPACES.contains(baseIdName)) {
+          final SQLParser.MethodCallContext methodCtx = ctx.methodCall(0);
+          final String qualifiedName = baseIdName + "." + methodCtx.identifier().getText();
+
+          final FunctionCall funcCall = new FunctionCall(-1);
+          funcCall.name = new Identifier(qualifiedName);
+          funcCall.params = new ArrayList<>();
+          if (methodCtx.expression() != null)
+            for (final SQLParser.ExpressionContext exprCtx : methodCtx.expression())
+              funcCall.params.add((Expression) visit(exprCtx));
+
+          final LevelZeroIdentifier levelZero = new LevelZeroIdentifier(-1);
+          levelZero.functionCall = funcCall;
+
+          final BaseIdentifier baseId2 = new BaseIdentifier(-1);
+          baseId2.levelZero = levelZero;
+
+          baseExpr.identifier = baseId2;
+          return baseExpr;
+        }
+      }
+
       // Build modifier chain from additional identifiers, methodCalls, arraySelectors and modifiers
       Modifier firstModifier = null;
       Modifier currentModifier = null;
@@ -5723,6 +5762,180 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   @Override
+  public CreateTimeSeriesTypeStatement visitCreateTimeSeriesTypeStmt(
+      final SQLParser.CreateTimeSeriesTypeStmtContext ctx) {
+    final CreateTimeSeriesTypeStatement stmt = new CreateTimeSeriesTypeStatement(-1);
+    final SQLParser.CreateTimeSeriesTypeBodyContext bodyCtx = ctx.createTimeSeriesTypeBody();
+
+    stmt.name = (Identifier) visit(bodyCtx.identifier(0));
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+
+    // TIMESTAMP column
+    if (bodyCtx.TIMESTAMP() != null && bodyCtx.identifier().size() > 1)
+      stmt.timestampColumn = (Identifier) visit(bodyCtx.identifier(1));
+
+    // TAGS (name type, ...)
+    if (bodyCtx.TAGS() != null) {
+      for (final SQLParser.TsTagColumnDefContext colCtx : bodyCtx.tsTagColumnDef()) {
+        final Identifier colName = (Identifier) visit(colCtx.identifier(0));
+        final Identifier colType = (Identifier) visit(colCtx.identifier(1));
+        stmt.tags.add(new CreateTimeSeriesTypeStatement.ColumnDef(colName, colType));
+      }
+    }
+
+    // FIELDS (name type, ...)
+    if (bodyCtx.FIELDS() != null) {
+      for (final SQLParser.TsFieldColumnDefContext colCtx : bodyCtx.tsFieldColumnDef()) {
+        final Identifier colName = (Identifier) visit(colCtx.identifier(0));
+        final Identifier colType = (Identifier) visit(colCtx.identifier(1));
+        stmt.fields.add(new CreateTimeSeriesTypeStatement.ColumnDef(colName, colType));
+      }
+    }
+
+    // SHARDS count
+    if (bodyCtx.SHARDS() != null) {
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.SHARDS) {
+          // Next INTEGER_LITERAL
+          for (int j = i + 1; j < bodyCtx.children.size(); j++) {
+            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+                && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+              stmt.shards = new PInteger(-1);
+              stmt.shards.setValue(Integer.parseInt(tn2.getText()));
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    // RETENTION value with optional time unit
+    if (bodyCtx.RETENTION() != null) {
+      long retentionValue = 0;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.RETENTION) {
+          for (int j = i + 1; j < bodyCtx.children.size(); j++) {
+            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+                && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+              retentionValue = Long.parseLong(tn2.getText());
+              break;
+            }
+          }
+          break;
+        }
+      }
+
+      // Determine time unit by looking at tokens after RETENTION + INTEGER_LITERAL
+      long multiplier = 86400000L; // default: DAYS
+      boolean foundRetention = false;
+      boolean foundValue = false;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn) {
+          if (tn.getSymbol().getType() == SQLParser.RETENTION)
+            foundRetention = true;
+          else if (foundRetention && tn.getSymbol().getType() == SQLParser.INTEGER_LITERAL)
+            foundValue = true;
+          else if (foundRetention && foundValue) {
+            if (tn.getSymbol().getType() == SQLParser.HOURS)
+              multiplier = 3600000L;
+            else if (tn.getSymbol().getType() == SQLParser.MINUTES)
+              multiplier = 60000L;
+            break;
+          }
+        }
+      }
+
+      stmt.retentionMs = retentionValue * multiplier;
+    }
+
+    // COMPACTION_INTERVAL value with optional time unit
+    if (bodyCtx.COMPACTION_INTERVAL() != null) {
+      long compactionValue = 0;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL) {
+          for (int j = i + 1; j < bodyCtx.children.size(); j++) {
+            if (bodyCtx.children.get(j) instanceof org.antlr.v4.runtime.tree.TerminalNode tn2
+                && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
+              compactionValue = Long.parseLong(tn2.getText());
+              break;
+            }
+          }
+          break;
+        }
+      }
+
+      // Determine time unit (default: HOURS for compaction interval)
+      long multiplier = 3600000L; // HOURS
+      // Check for unit keywords AFTER the COMPACTION_INTERVAL token
+      // We need to look at the remaining children after the integer literal
+      boolean foundCompaction = false;
+      for (int i = 0; i < bodyCtx.children.size(); i++) {
+        if (bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn
+            && tn.getSymbol().getType() == SQLParser.COMPACTION_INTERVAL)
+          foundCompaction = true;
+        else if (foundCompaction && bodyCtx.children.get(i) instanceof org.antlr.v4.runtime.tree.TerminalNode tn) {
+          if (tn.getSymbol().getType() == SQLParser.DAYS) {
+            multiplier = 86400000L;
+            break;
+          } else if (tn.getSymbol().getType() == SQLParser.HOURS) {
+            multiplier = 3600000L;
+            break;
+          } else if (tn.getSymbol().getType() == SQLParser.MINUTES) {
+            multiplier = 60000L;
+            break;
+          }
+        }
+      }
+
+      stmt.compactionIntervalMs = compactionValue * multiplier;
+    }
+
+    return stmt;
+  }
+
+  @Override
+  public AlterTimeSeriesTypeStatement visitAlterTimeSeriesTypeStmt(
+      final SQLParser.AlterTimeSeriesTypeStmtContext ctx) {
+    final AlterTimeSeriesTypeStatement stmt = new AlterTimeSeriesTypeStatement(-1);
+    final SQLParser.AlterTimeSeriesTypeBodyContext bodyCtx = ctx.alterTimeSeriesTypeBody();
+
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+
+    if (bodyCtx.ADD() != null) {
+      stmt.addPolicy = true;
+      for (final SQLParser.DownsamplingTierClauseContext tierCtx : bodyCtx.downsamplingTierClause()) {
+        final long afterValue = Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText());
+        final long afterMs = afterValue * parseTimeUnitMs(tierCtx.tsTimeUnit(0));
+
+        final long granValue = Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText());
+        final long granMs = granValue * parseTimeUnitMs(tierCtx.tsTimeUnit(1));
+
+        stmt.tiers.add(new DownsamplingTier(afterMs, granMs));
+      }
+      // Sort tiers by afterMs ascending
+      stmt.tiers.sort((a, b) -> Long.compare(a.afterMs(), b.afterMs()));
+    } else {
+      stmt.addPolicy = false;
+    }
+
+    return stmt;
+  }
+
+  private static long parseTimeUnitMs(final SQLParser.TsTimeUnitContext unitCtx) {
+    if (unitCtx.DAYS() != null)
+      return 86400000L;
+    if (unitCtx.HOURS() != null || unitCtx.HOUR() != null)
+      return 3600000L;
+    if (unitCtx.MINUTES() != null || unitCtx.MINUTE() != null)
+      return 60000L;
+    return 86400000L; // default to days
+  }
+
+  @Override
   public DropMaterializedViewStatement visitDropMaterializedViewStmt(
       final SQLParser.DropMaterializedViewStmtContext ctx) {
     final DropMaterializedViewStatement stmt = new DropMaterializedViewStatement(-1);
@@ -5766,6 +5979,41 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.refreshUnit = "HOUR";
     }
 
+    return stmt;
+  }
+
+  // =========================================================================
+  // CONTINUOUS AGGREGATE MANAGEMENT
+  // =========================================================================
+
+  @Override
+  public CreateContinuousAggregateStatement visitCreateContinuousAggregateStmt(
+      final SQLParser.CreateContinuousAggregateStmtContext ctx) {
+    final CreateContinuousAggregateStatement stmt = new CreateContinuousAggregateStatement(-1);
+    final SQLParser.CreateContinuousAggregateBodyContext bodyCtx = ctx.createContinuousAggregateBody();
+
+    stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.selectStatement = (SelectStatement) visit(bodyCtx.selectStatement());
+
+    return stmt;
+  }
+
+  @Override
+  public DropContinuousAggregateStatement visitDropContinuousAggregateStmt(
+      final SQLParser.DropContinuousAggregateStmtContext ctx) {
+    final DropContinuousAggregateStatement stmt = new DropContinuousAggregateStatement(-1);
+    final SQLParser.DropContinuousAggregateBodyContext bodyCtx = ctx.dropContinuousAggregateBody();
+    stmt.name = (Identifier) visit(bodyCtx.identifier());
+    stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;
+    return stmt;
+  }
+
+  @Override
+  public RefreshContinuousAggregateStatement visitRefreshContinuousAggregateStmt(
+      final SQLParser.RefreshContinuousAggregateStmtContext ctx) {
+    final RefreshContinuousAggregateStatement stmt = new RefreshContinuousAggregateStatement(-1);
+    stmt.name = (Identifier) visit(ctx.refreshContinuousAggregateBody().identifier());
     return stmt;
   }
 

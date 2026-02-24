@@ -1,5 +1,13 @@
 <div class="tab-pane fade show active" id="tab-query" role="tabpanel">
-  <div class="d-flex" style="height: 100%;">
+  <div class="d-flex align-items-center flex-shrink-0" style="padding: 10px 12px 6px;" id="queryPanel">
+    <div class="d-flex align-items-center gap-2">
+      <i class="fa fa-terminal" style="font-size: 1.2rem; color: #00aeee;"></i>
+      <label>Connected as&nbsp;</label><label for="queryInputDatabase" id="queryUser"></label>@
+      <select id="queryInputDatabase" class="inputDatabase form-select form-select-sm" style="width: auto; display: inline-block;"></select>
+    </div>
+  </div>
+
+  <div class="d-flex" style="flex: 1; min-height: 0;">
     <!-- Icon Sidebar -->
     <div id="queryIconSidebar">
       <button class="icon-sidebar-btn active" data-panel="overview" onclick="switchSidebarPanel('overview')" title="Database Overview">
@@ -45,12 +53,6 @@
 
     <!-- Query Work Area -->
     <div id="queryWorkArea" style="flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding-left: 12px; padding-right: 12px;">
-      <div class="row mb-2" id="queryPanel">
-        <div class="col">
-          <label>Connected as&nbsp;</label><label for="queryInputDatabase" id="queryUser"></label>@
-          <select id="queryInputDatabase" class="inputDatabase form-select"></select>
-        </div>
-      </div>
 
       <div class="row mb-2">
         <div class="col-4">
@@ -455,6 +457,9 @@
       displayDatabaseSettings();
       // Refresh active sidebar panel on database change
       refreshActiveSidebarPanel();
+      // Reload timeseries types if on that tab
+      if (typeof tsLoadTypes === "function")
+        tsLoadTypes();
     });
   }
 

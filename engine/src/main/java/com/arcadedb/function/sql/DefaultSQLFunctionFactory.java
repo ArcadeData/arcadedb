@@ -86,6 +86,20 @@ import com.arcadedb.function.sql.text.SQLFunctionStrcmpci;
 import com.arcadedb.function.sql.time.SQLFunctionDate;
 import com.arcadedb.function.sql.time.SQLFunctionDuration;
 import com.arcadedb.function.sql.time.SQLFunctionSysdate;
+import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
+import com.arcadedb.function.sql.time.SQLFunctionCorrelate;
+import com.arcadedb.function.sql.time.SQLFunctionDelta;
+import com.arcadedb.function.sql.time.SQLFunctionInterpolate;
+import com.arcadedb.function.sql.time.SQLFunctionMovingAvg;
+import com.arcadedb.function.sql.time.SQLFunctionRate;
+import com.arcadedb.function.sql.time.SQLFunctionTsPercentile;
+import com.arcadedb.function.sql.time.SQLFunctionLag;
+import com.arcadedb.function.sql.time.SQLFunctionLead;
+import com.arcadedb.function.sql.time.SQLFunctionRank;
+import com.arcadedb.function.sql.time.SQLFunctionRowNumber;
+import com.arcadedb.function.sql.time.SQLFunctionTsFirst;
+import com.arcadedb.function.sql.time.SQLFunctionTsLast;
+import com.arcadedb.function.sql.time.SQLFunctionPromQL;
 import com.arcadedb.function.sql.vector.SQLFunctionDenseVectorToSparse;
 import com.arcadedb.function.sql.vector.SQLFunctionMultiVectorScore;
 import com.arcadedb.function.sql.vector.SQLFunctionSparseVectorCreate;
@@ -220,6 +234,22 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionDate.NAME, new SQLFunctionDate());
     register(SQLFunctionDuration.NAME, new SQLFunctionDuration());
     register(SQLFunctionSysdate.NAME, SQLFunctionSysdate.class);
+    // TimeSeries (ts.* namespace)
+    register(SQLFunctionTimeBucket.NAME, new SQLFunctionTimeBucket());
+    register(SQLFunctionCorrelate.NAME, SQLFunctionCorrelate.class);
+    register(SQLFunctionDelta.NAME, SQLFunctionDelta.class);
+    register(SQLFunctionTsFirst.NAME, SQLFunctionTsFirst.class);
+    register(SQLFunctionTsLast.NAME, SQLFunctionTsLast.class);
+    register(SQLFunctionInterpolate.NAME, SQLFunctionInterpolate.class);
+    register(SQLFunctionMovingAvg.NAME, SQLFunctionMovingAvg.class);
+    register(SQLFunctionRate.NAME, SQLFunctionRate.class);
+    register(SQLFunctionTsPercentile.NAME, SQLFunctionTsPercentile.class);
+    register(SQLFunctionPromQL.NAME, new SQLFunctionPromQL());
+    // Window functions
+    register(SQLFunctionLag.NAME, SQLFunctionLag.class);
+    register(SQLFunctionLead.NAME, SQLFunctionLead.class);
+    register(SQLFunctionRowNumber.NAME, SQLFunctionRowNumber.class);
+    register(SQLFunctionRank.NAME, SQLFunctionRank.class);
 
     // Vectors
     // Basic Operations

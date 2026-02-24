@@ -149,6 +149,7 @@
     <script src="js/studio-graph-widget.js"></script>
     <script src="js/studio-graph-functions.js"></script>
     <script src="js/studio-record-editor.js"></script>
+    <script src="js/studio-timeseries.js"></script>
   </head>
   <body>
     <div id="welcomePanel" style="display: none;"></div>
@@ -172,6 +173,14 @@
                   <center>
                     <i class="fa fa-database" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Database</div>
+                  </center>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a data-bs-toggle="tab" href="#tab-timeseries" class="vertical-tab nav-link" id="tab-timeseries-sel">
+                  <center>
+                    <i class="fa fa-chart-line" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">TimeSeries</div>
                   </center>
                 </a>
               </li>
@@ -244,7 +253,7 @@
 
           <div class="col-11">
             <div class="tab-content">
-              ${include:query.html} ${include:database.html} ${include:server.html} ${include:security.html} ${include:cluster.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
+              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:server.html} ${include:security.html} ${include:cluster.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
             </div>
           </div>
         </div>
@@ -297,6 +306,9 @@
           if (activeTab == "tab-query-sel") {
             studioCurrentTab = "query";
             editorFocus();
+          } else if (activeTab == "tab-timeseries-sel") {
+            studioCurrentTab = "timeseries";
+            initTimeSeries();
           } else if (activeTab == "tab-server-sel") {
             studioCurrentTab = "server";
             updateServer();
