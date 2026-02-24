@@ -113,54 +113,32 @@ public class PageManagerFlushThread extends Thread {
   }
 
   /**
-   * Waits until all the pages of a database are flushed.
+   * Waits until all the pages of a database are flushed to disk.
+   * <p>
+   * Uses the {@link #pageIndex} as the authoritative source of truth for pending pages.
+   * Entries are added to pageIndex BEFORE enqueueing and removed AFTER flushing each page,
+   * so checking pageIndex is race-free unlike checking queue + nextPagesToFlush separately.
    */
   protected void waitAllPagesOfDatabaseAreFlushed(final Database database) {
-    // WAIT FOR PENDING THREAD
-    PagesToFlush pending = nextPagesToFlush.get();
     while (true) {
-      if (pending == null || !database.equals(pending.database))
-        break;
-
-      // WAIT UNTIL
-      try {
-        Thread.sleep(10);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        break;
-      }
-
-      pending = nextPagesToFlush.get();
-    }
-
-    if (queue.isEmpty()) {
-      // All pages flushed — clean any stale index entries for this database.
-      // Entries can linger when remove(key, value) didn't match due to version differences
-      // (a newer version of the same page was committed after the older version was indexed).
-      pageIndex.keySet().removeIf(k -> database.equals(k.getDatabase()));
-      return;
-    }
-
-    boolean foundPages;
-    do {
-      foundPages = false;
-      for (final PagesToFlush pages : queue.stream().toList()) {
-        if (database.equals(pages.database)) {
-          foundPages = true;
-          // WAIT UNTIL
-          try {
-            Thread.sleep(10);
-          } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return;
-          }
+      boolean hasPendingPages = false;
+      for (final PageId key : pageIndex.keySet()) {
+        if (database.equals(key.getDatabase())) {
+          hasPendingPages = true;
           break;
         }
       }
-    } while (foundPages);
 
-    // All pages for this database have been flushed — clean any stale index entries.
-    pageIndex.keySet().removeIf(k -> database.equals(k.getDatabase()));
+      if (!hasPendingPages)
+        return;
+
+      try {
+        Thread.sleep(10);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
   }
 
   protected void flushPagesFromQueueToDisk(final Database database, final long timeout) throws InterruptedException, IOException {
